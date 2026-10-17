@@ -296,18 +296,19 @@ class TestReconcilesIndexAgainstPatterns:
 
         assert _ignored_sources([self._src("note.md")], IgnoreRules.for_corpus(cfg.data_root)) == []
 
-    def test_removal_writes_no_skip_marker(self, isolated_env, monkeypatch):
+    def test_removal_writes_no_held_out_record(self, isolated_env, monkeypatch):
         from lilbee.data.ingest import pipeline
         from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules
-        from lilbee.data.ingest.skip_marker import load_skip_markers
 
         _write(cfg.documents_dir / IGNORE_FILENAME, "*.min.js\n")
         _write(cfg.documents_dir / "app.min.js")
+        holds: list[object] = []
 
         class _Store:
-            def remove_documents(self, names):
+            def remove_documents(self, names, held=None):
                 from lilbee.data.store.types import RemoveResult
 
+                holds.append(held)
                 return RemoveResult(removed=list(names), not_found=[])
 
         monkeypatch.setattr(pipeline, "get_services", lambda: type("S", (), {"store": _Store()})())
@@ -319,9 +320,9 @@ class TestReconcilesIndexAgainstPatterns:
             [self._src("app.min.js")], IgnoreRules.for_corpus(cfg.data_root)
         )
         assert removed == ["app.min.js"]
-        # A marker would outlive the pattern and hold the file out after the
+        # A record would outlive the pattern and hold the file out after the
         # pattern was deleted; the ignore file is the only durable statement.
-        assert load_skip_markers(cfg.data_root) == {}
+        assert holds == [None]
 
     def test_nothing_ignored_touches_no_store(self, isolated_env, monkeypatch):
         from lilbee.data.ingest import pipeline

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -546,7 +545,14 @@ class TestWikiEnabled:
         assert on_loop == [False]
 
     async def test_stubs_list_the_pages_the_corpus_could_have(self, isolated_env: Path):
-        _save_stubs(_stub("ford", "Ford", mentions=(("cars.txt", 4), ("usa.txt", 2))))
+        """The index names each source by id; the response shows its path."""
+        _save_stubs(_stub("ford", "Ford", mentions=(("id-a", 4), ("id-b", 2))))
+        from conftest import make_mock_services
+
+        paths = {"id-a": "usa.txt", "id-b": "cars.txt"}
+        mock_svc = make_mock_services()
+        mock_svc.store.source_paths.side_effect = lambda ids: {i: paths[i] for i in ids}
+        set_services(mock_svc)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/stubs", headers=_h())
         assert resp.status_code == 200
@@ -881,7 +887,7 @@ class TestWikiEnabled:
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
-        set_services(dataclasses.replace(make_mock_services(), store=None))
+        set_services(make_mock_services())
         monkeypatch.setattr(lint_mod, "lint_all", lambda *a, **kw: lint_mod.LintReport())
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/status", headers=_h())
@@ -899,7 +905,7 @@ class TestWikiEnabled:
         _make_wiki_page(wiki_root, "summaries", "beta")
         _make_wiki_page(wiki_root, "drafts", "gamma")
 
-        set_services(dataclasses.replace(make_mock_services(), store=None))
+        set_services(make_mock_services())
         monkeypatch.setattr(lint_mod, "lint_all", lambda *a, **kw: lint_mod.LintReport())
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/status", headers=_h())
@@ -984,7 +990,7 @@ class TestWikiDraftsEndpoints:
         _make_draft(wiki_root, "cv-manual", drift_pct=30)
         on_loop: list[bool] = []
 
-        def fake_diff(slug: str, root: Path) -> str:
+        def fake_diff(slug: str, root: Path, store: object) -> str:
             on_loop.append(_on_the_event_loop())
             return ""
 
@@ -1005,7 +1011,7 @@ class TestWikiDraftsEndpoints:
 
         # The traversal guard raises ValueError carrying the absolute candidate
         # path; the route must map it to a generic 400 that does not leak it.
-        def _raise(slug: str, root: Path) -> str:
+        def _raise(slug: str, root: Path, store: object) -> str:
             raise PathTraversalError(f"Path escapes allowed directory: {root}/secret.md")
 
         monkeypatch.setattr(server_wiki_mod, "diff_draft", _raise)

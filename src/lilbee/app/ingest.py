@@ -6,19 +6,11 @@ import asyncio
 import fnmatch
 import logging
 from collections import Counter
-from collections.abc import Callable, Generator, Iterable
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable, Collection, Generator, Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lilbee.app.absorb import (
-    SYNC_RUNNING_ADD_AGAIN,
-    UNFINISHED_ADD_HELD,
-    absorb,
-    finish_absorb,
-    keys_of_pending_absorb,
-    new_journal,
-)
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
@@ -31,24 +23,14 @@ from lilbee.data.ingest.discovery import (
     walk_reaches,
 )
 from lilbee.data.ingest.ignore import IgnoreRules
-from lilbee.data.ingest.skip_marker import (
-    SkipRecords,
-    SkipRecordsLockError,
-    held_out_names,
-    mark_removed,
-    skip_records_lock,
-    update_skip_records,
-)
+from lilbee.data.store import REMOVED_REASON, HeldOut, HeldRecord
+from lilbee.data.store.locations import SourceLocations, root_location
 from lilbee.data.store.types import RemoveResult
 from lilbee.data.types import is_under
-from lilbee.runtime.absorb_journal import AbsorbJournal, AbsorbJournalError, absorb_pending
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.lock import (
-    LOCK_TIMEOUT,
     LibraryUnlockableError,
     LockingUnsupportedError,
-    SyncRunningError,
-    library_held,
     refuse_where_a_sync_cannot_lock,
 )
 
@@ -57,12 +39,9 @@ _ADD_CANCELLED_ONE = "Add cancelled. {name} was not added."
 _ADD_CANCELLED_MANY = "Add cancelled. {names} were not added."
 _ALSO_HIT_ERROR = " It also hit an error: {error}."
 _CANCEL_ERRORS = (asyncio.CancelledError, TaskCancelledError, KeyboardInterrupt)
-# What an add, a remove or a sync raises when another lilbee process, an add it
-# cannot finish, or a data root it cannot lock keeps it from starting.
+# What an add, a remove or a sync raises when another lilbee process or a data
+# root it cannot lock keeps it from starting.
 LIBRARY_REFUSALS = (
-    SkipRecordsLockError,
-    SyncRunningError,
-    AbsorbJournalError,
     LibraryUnlockableError,
     LockingUnsupportedError,
 )
@@ -168,29 +147,16 @@ def _reached_below(src: Path, spelled: dict[str, Path]) -> dict[str, Path]:
     return {label: path for label, path in below.items() if walk_reaches(src, path, rules)}
 
 
-def _keys_below(
-    label: str, src: Path, reached: dict[str, Path], sources: frozenset[str]
-) -> dict[str, str]:
-    """The key below *label* that each root in *reached* takes, if it is one of *sources*."""
-    return {
-        child: f"{label}/{path.relative_to(src).as_posix()}"
-        for child, path in reached.items()
-        if child in sources
-    }
-
-
 def _classify(
     paths: list[Path], roots: dict[str, str], docs_resolved: Path, *, force: bool
-) -> tuple[RegisterResult, dict[str, str]]:
+) -> RegisterResult:
     """Sort *paths* by what registering each one does, leaving *roots* as the registry after it.
 
-    Also returns the key of each source a new parent takes in, with the key it gets.
     A path of this call that a later path of it contains was never a source: it
-    leaves the registry and nothing moves.
+    leaves the registry and is not reported as taken in.
     """
     result = RegisterResult()
     sources = frozenset(roots)
-    moves: dict[str, str] = {}
     spelling = DiskSpelling()
     # The disk is asked one time for each root; every comparison below reads this.
     spelled = {label: spelling.of(Path(target)) for label, target in roots.items()}
@@ -229,16 +195,15 @@ def _classify(
         for child in reached:
             del roots[child]
             by_target.pop(spelled.pop(child), None)
-        taken = _keys_below(label, src, reached, sources)
-        moves.update(taken)
+        taken = sorted(child for child in reached if child in sources)
         roots[label] = str(src)
         spelled[label] = src
         by_target[src] = label
         result.registered = [name for name in result.registered if name not in reached] + [label]
         if taken:
-            result.absorbed_into[label] = sorted(taken)
+            result.absorbed_into[label] = taken
     result.outside_corpus = list(outside.values())
-    return result, moves
+    return result
 
 
 def names_outside_corpus(paths: list[Path]) -> list[str]:
@@ -247,7 +212,7 @@ def names_outside_corpus(paths: list[Path]) -> list[str]:
         return []  # a stopped sync has no paths, and reads no registry to say so
     config = active_config()
     roots = dict(settings.load(config.data_root).get("linked_roots") or {})
-    plan, _moves = _classify(paths, roots, disk_path(config.documents_dir), force=False)
+    plan = _classify(paths, roots, disk_path(config.documents_dir), force=False)
     return [*plan.outside_corpus, *plan.registered]
 
 
@@ -268,9 +233,7 @@ def source_label_taken(name: str, target: Path | None = None) -> bool:
     return _resolve_label(name, roots, config.documents_dir.resolve(), force=False) is None
 
 
-def register_sources(
-    paths: list[Path], *, force: bool = False, cancel: CancelSignal | None = None
-) -> RegisterResult:
+def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResult:
     """Register each path as a root lilbee indexes where it already lives.
 
     A prepared corpus is already on local disk, so ``add`` records where it is
@@ -282,19 +245,14 @@ def register_sources(
     so later processes index the same roots.
 
     A directory that contains registered sources takes each one its walk reaches:
-    the source leaves the registry and its indexed files, skip records and wiki
-    citations move below the new label, with nothing extracted or embedded again.
-    That needs every sync and wiki write stopped; a running one raises
-    ``SyncRunningError`` and a removal in progress raises ``SkipRecordsLockError``,
-    with nothing changed. A data root that cannot be locked raises
-    ``LibraryUnlockableError`` or ``LockingUnsupportedError``, with nothing changed.
+    the source leaves the registry, and its files, held-out records and wiki
+    citations show below the new label, with nothing moved, extracted or embedded
+    again. A label that takes a new folder takes the sources of its old one along;
+    an add that stops before that leaves them to the next sync, which pairs them
+    with their files by content.
     A data root whose filesystem cannot lock files raises ``LockingUnsupportedError``
     for every add, and a sync lock that cannot be opened raises
     ``LibraryUnlockableError``, because the sync after the add refuses there.
-    Setting *cancel* ends the wait for the records lock with
-    ``SkipRecordsWaitCancelledError``, with nothing changed. An add does not wait
-    for a running sync: it takes the sync lock once, and a *cancel* set at that
-    take raises the same error, with nothing changed.
     """
     config = active_config()
     if paths:
@@ -307,99 +265,100 @@ def register_sources(
 
     def _mutate(
         persisted: dict[str, str] | None,
-    ) -> tuple[dict[str, str] | None, tuple[RegisterResult, AbsorbJournal | None]]:
+    ) -> tuple[dict[str, str], tuple[RegisterResult, dict[str, str]]]:
         # Read the registry from config.toml INSIDE the lock (not the possibly
         # stale in-memory copy) so two processes registering roots concurrently
         # cannot lose each other's entry.
         before = dict(persisted or {})
         roots = dict(before)
-        result, moves = _classify(paths, roots, docs_resolved, force=force)
-        if not moves:
-            config.linked_roots = roots  # refresh the in-process view (picks up merges)
-            return roots, (result, None)
-        # The absorb writes the registry after it moved the keys.
-        config.linked_roots = before
-        add = {label: target for label, target in roots.items() if before.get(label) != target}
-        drop = [label for label in before if label not in roots]
-        return persisted, (result, new_journal(config.data_root, moves, add, drop))
+        result = _classify(paths, roots, docs_resolved, force=force)
+        config.linked_roots = roots  # refresh the in-process view (picks up merges)
+        return roots, (result, before)
 
-    names = [p.name for p in paths]
-    in_progress = keys_of_pending_absorb()
-    # Taken before the registry changes, so a held lock refuses the add with nothing done.
-    with skip_records_lock(config.data_root, cancel):
-        # An absorb writes its journal under the records lock, so none appears in here.
-        if not absorb_pending(config.data_root):
-            result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
-            if journal is None:
-                unmark_sources_under(paths, spared=in_progress)
-                return result
-            # A source moves, so nothing is registered yet; the error names what takes it in.
-            names = list(result.absorbed_into)
-    # A source that moves and an unfinished add both need every sync stopped. The registry
-    # is read again under that hold: the read above only chose it. The services are built
-    # here, with no library lock held; an add that registers above builds none.
-    store = get_services(cancel).store
-    running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
-    with library_held(config, running, 0.0, cancel) as hold:
-        taken = [*in_progress, *finish_absorb(store, hold)]
-        result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
-        if journal is not None:
-            absorb(store, journal, hold)
-            taken = [*taken, *journal.moves.values()]
-        unmark_sources_under(paths, spared=taken)
+    result, before = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    if result.registered:
+        _follow_registered(before, result)
+    names = SourceLocations(config.linked_roots)
+    taken = [names.name(root_location(before[label])) for label in result.absorbed]
+    if taken:
+        show_current_paths_in_wiki()
+    unmark_sources_under(paths, spared=[*taken, *_kept_sources(result)])
     return result
 
 
-def unmark_sources_under(paths: list[Path], *, spared: Iterable[str] = ()) -> None:
-    """Drop the skip records (marker, reason and kind) of every source *paths* covers.
+def _follow_registered(before: dict[str, str], result: RegisterResult) -> None:
+    """Move the sources of each label *result* gave a new folder there, then name by location.
 
-    A record at or below a key in *spared* stays: a parent that takes in a
+    A source whose label is now registered is stored where it is. A parent that
+    takes in the source of its own label leaves that source's files where they are.
+    """
+    store = get_services().store
+    for label in result.registered:
+        if label in before and label not in result.absorbed_into.get(label, []):
+            store.relocate_root(before[label], active_config().linked_roots[label])
+    store.fill_locations()
+
+
+def _kept_sources(result: RegisterResult) -> list[str]:
+    """The label of each registered source the add did not name, whose records stay."""
+    named = {*result.registered, *result.tracked}
+    return [label for label in active_config().linked_roots if label not in named]
+
+
+def unmark_sources_under(paths: list[Path], *, spared: Iterable[str] = ()) -> None:
+    """Hold out of a sync no more any source *paths* covers.
+
+    A record at or below a key in *spared* stays, unless a path names a file
+    inside that source: the add asks for that file back. A parent that takes in a
     source keeps what the user removed from it and what failed in it.
 
-    A marker exists to stop *discovery* from resurrecting a source the user
+    A record exists to stop *discovery* from resurrecting a source the user
     removed, or from re-paying the extract cost on a file that yielded nothing.
     Naming the path outranks it: ``add`` is the user asking for that source
-    back, so the marker goes and the sync that follows ingests the file again.
+    back, so the record goes and the sync that follows ingests the file again.
     Without this a removal would be permanent, undoable only by ``rebuild``,
     which the user has no reason to reach for after typing the path they want.
 
-    Each root in *paths* must be registered when this runs: marker keys resolve
+    Each root in *paths* must be registered when this runs: held keys resolve
     to files through the live registry.
     """
-
     kept = list(spared)
-
-    def _drop_covered(records: SkipRecords) -> None:
-        for name in _markers_covering(records.markers, paths):
-            if not any(is_under(name, key) for key in kept):
-                records.markers.pop(name)
-
-    update_skip_records(active_config().data_root, _drop_covered)
+    store = get_services().store
+    covered, inside = _held_covering(store.held_records(), paths)
+    store.release_held(
+        name for name in covered if name in inside or not any(is_under(name, key) for key in kept)
+    )
 
 
-def _markers_covering(markers: dict[str, str], paths: list[Path]) -> set[str]:
-    """Marker keys whose file is one of *paths* or lives beneath one.
+def _held_covering(held: Collection[str], paths: list[Path]) -> tuple[set[str], set[str]]:
+    """Held keys whose file is one of *paths* or lives beneath one, and those a path below
+    their own root covers.
 
     Each key is resolved back to the file it tracks -- the same mapping
     discovery keyed it by -- so an owned ``documents_dir`` entry, a file under a
     registered root, and a single-file root are all matched by the one rule
     instead of three shape-specific ones.
     """
-    if not markers:
-        return set()  # nothing to match, so the disk is not asked
+    if not held:
+        return set(), set()  # nothing to match, so the disk is not asked
     config = active_config()
     spelling = DiskSpelling()
     named = [spelling.of(p) for p in paths]
     bases = (config.documents_dir, *map(Path, config.linked_roots.values()))
-    covered = set()
-    for name in markers:
+    covered: set[str] = set()
+    inside: set[str] = set()
+    for name in held:
         stored = resolve_source_path(name)
         base = next(base for base in bases if stored.is_relative_to(base))
         # The disk spells the root, one time; the rest of a key is the walk's own spelling.
-        tracked = (spelling.of(base) / stored.relative_to(base)).resolve(strict=False)
-        if any(tracked == path or path in tracked.parents for path in named):
+        root = spelling.of(base)
+        tracked = (root / stored.relative_to(base)).resolve(strict=False)
+        hits = [path for path in named if tracked == path or path in tracked.parents]
+        if hits:
             covered.add(name)
-    return covered
+        if any(path != root and path.is_relative_to(root) for path in hits):
+            inside.add(name)
+    return covered, inside
 
 
 _GLOB_CHARS = frozenset("*?[")
@@ -420,27 +379,30 @@ def folder_members(name: str, known: Iterable[str]) -> list[str]:
     return [source for source in known if source.startswith(prefix)]
 
 
+def held_failures() -> dict[str, HeldRecord]:
+    """The record of each file an ingestion failure holds out, by path, sorted."""
+    held = get_services().store.held_records()
+    return {name: held[name] for name in sorted(held) if held[name].kind is HeldOut.FAILED}
+
+
 def removable_names(indexed: list[str] | None = None) -> list[str]:
     """What a remove can name: *indexed* (the store's sources when not given), then failures."""
     if indexed is None:
         indexed = [s["filename"] for s in get_services().store.get_sources()]
     seen = set(indexed)
-    failed = held_out_names(active_config().data_root)
-    return indexed + [name for name in failed if name not in seen]
+    return indexed + [name for name in held_failures() if name not in seen]
 
 
-def expand_remove_targets(names: list[str], known: list[str] | None = None) -> list[str]:
+def expand_remove_targets(names: list[str], known: list[str]) -> list[str]:
     """Expand folder names and glob patterns to the known sources they cover.
 
     An exact source name is kept. A folder name (a parent directory of known
     sources) expands to every source beneath it. A glob (a name containing
     ``* ? [``) expands to every source it fnmatches. A name matching none of
     these is kept unchanged so the caller reports it not-found. Order and
-    de-duplication are preserved. *known* is ``removable_names()`` when not
-    supplied; a caller that already has it passes it to avoid a second read.
+    de-duplication are preserved. *known* is what a remove can name,
+    ``removable_names()``.
     """
-    if known is None:
-        known = removable_names()
     known_set = set(known)
     expanded: list[str] = []
     seen: set[str] = set()
@@ -470,7 +432,7 @@ def unregister_roots(names: Iterable[str]) -> list[str]:
     """Un-register any top-level source root named in *names*. Returns removed labels.
 
     ``add`` registers a source root; removing it by its label drops the registry
-    entry so discovery stops finding its files, which then need no skip marker.
+    entry so discovery stops finding its files, which then need no held-out record.
     The source bytes on disk are never touched. Nested names (``corpus/a.txt``)
     are not roots and are left alone.
     """
@@ -500,8 +462,6 @@ log = logging.getLogger(__name__)
 def remove_documents_durably(
     names: list[str],
     targets: list[str] | None = None,
-    *,
-    cancel: CancelSignal | None = None,
 ) -> RemoveResult:
     """Remove documents from the index (folders and globs expand) and make it stick.
 
@@ -509,44 +469,26 @@ def remove_documents_durably(
     failure holds out, a folder or glob covering either, or a registered root.
     Each removed file is held out of every later sync as a removal, at its
     current hash, so a held-out failure stays out instead of being retried.
-    Removing a registered root un-registers it and drops the skip records under
+    Removing a registered root un-registers it and drops the held-out records under
     it: discovery can no longer find its files. Editing the source (new hash),
     ``rebuild`` or adding the path again restores it; ``retry-skipped`` does not.
     *targets* (the expanded names) is computed when not supplied; a caller that
     already expanded for a confirmation prompt passes it to avoid re-expanding.
 
-    An interrupted absorb is finished first, and the removal runs under the same
-    hold of the locks an absorb holds from start to end, so no removal runs on keys
-    that are part way through a move. The records lock is free during the wait for
-    a running sync. The names are then expanded at the keys the library holds. Raises one of
-    ``LIBRARY_REFUSALS`` with nothing removed when it cannot start. Setting
-    *cancel* ends the wait for the records lock, and the wait for a running sync
-    before it finishes an absorb, with ``SkipRecordsWaitCancelledError`` and
-    nothing removed.
+    The removal and the records it holds out are one write of the index.
     """
-    config = active_config()
-    data_root = config.data_root
-    # Built before the first library lock.
-    store = get_services(cancel).store
-    with ExitStack() as locks:
-        # Taken before the index changes, so a held lock refuses the removal with nothing done.
-        locks.enter_context(skip_records_lock(data_root, cancel))
-        # An absorb writes its journal under the records lock, so none appears under a hold.
-        if absorb_pending(data_root):
-            # The records lock is free during the wait for a running sync.
-            locks.close()
-            hold = locks.enter_context(
-                library_held(config, UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel)
-            )
-            finish_absorb(store, hold)
-            targets = None
-        if targets is None:
-            targets = expand_remove_targets(names)
-        result = store.remove_documents(targets)
-        failed = set(held_out_names(data_root))
-        held = [name for name in result.not_found if name in failed]
-        roots = forget_roots(names)
-        _hold_out_removed([*result.removed, *held], roots)
+    store = get_services().store
+    known = removable_names()
+    if targets is None:
+        targets = expand_remove_targets(names, known)
+    failed = held_failures()
+    linked = active_config().linked_roots
+    going = [label for label in (name.strip("/") for name in names) if label in linked]
+    removable = set(known)
+    holds = _removal_holds([name for name in targets if name in removable], going, failed)
+    result = store.remove_documents(targets, holds)
+    held = [name for name in result.not_found if name in failed]
+    roots = forget_roots(names)
     forget_removed_from_wiki_index(list(result.removed))
     missing = [name for name in result.not_found if name not in failed]
     emptied = [name for name in missing if name.strip("/") in roots]
@@ -557,8 +499,9 @@ def remove_documents_durably(
 
 
 def forget_roots(names: list[str]) -> list[str]:
-    """Un-register every root named in *names* and drop the skip records under it.
+    """Un-register every root named in *names* and drop the held-out records under it.
 
+    A source row a root keeps for a citation is stored by its shown name first.
     The roots are un-registered even when the records cannot be changed; the
     error is raised after.
     """
@@ -569,6 +512,7 @@ def forget_roots(names: list[str]) -> list[str]:
         # Records resolve through the registry, so they go before un-registering.
         # A root that stays keeps its records, also when it names the folder of one that goes.
         unmark_sources_under(named, spared=roots.keys() - set(labels))
+        get_services().store.name_by_label(labels)
     finally:
         unregistered = unregister_roots(names)
     return unregistered
@@ -696,40 +640,36 @@ def forget_unfinished_on_cancel(
         yield rollback
 
 
-def _hold_out_removed(names: list[str], roots: list[str]) -> None:
-    """Hold each of *names* out of later syncs as a removal, except under an un-registered root.
+def _removal_holds(
+    names: list[str], roots: list[str], failed: dict[str, HeldRecord]
+) -> dict[str, HeldRecord]:
+    """The removal record each of *names* takes, except under a root that is un-registered.
 
-    The marker takes the file's current hash. An imported source has no file and
-    needs no marker; a held-out file that is not reachable keeps its marker's hash.
+    The record takes the file's current hash. A source with no file, an imported
+    one or an archive member, takes none; a held-out failure that is not
+    reachable keeps the hash it failed at.
     """
-    hashes: dict[str, str] = {}
-    unreachable: list[str] = []
+    holds: dict[str, HeldRecord] = {}
     for name in names:
         if any(is_under(name, root) for root in roots):
             continue  # the root is gone; discovery won't resurrect these
         path = resolve_source_path(name)
-        if path.exists():
-            hashes[name] = file_hash(path)
-        else:
-            unreachable.append(name)
-    mark_removed(active_config().data_root, hashes, unreachable)
+        if path.is_file():
+            holds[name] = HeldRecord(HeldOut.REMOVED, file_hash(path), REMOVED_REASON)
+        elif name in failed:
+            holds[name] = HeldRecord(HeldOut.REMOVED, failed[name].file_hash, REMOVED_REASON)
+    return holds
 
 
 def forget_removed_from_wiki_index(removed: list[str]) -> None:
     """Drop removed documents from the wiki's browse index.
 
-    Their skip markers keep them out of later syncs, so no refresh would ever
+    Their removal records keep them out of later syncs, so no refresh would ever
     revisit their entries and the tree would keep offering pages the library
     can no longer support. Best effort: the removal itself already succeeded.
     """
-    if not active_config().wiki or not removed:
-        return
-    from lilbee.wiki.stubs import drop_sources_from_index
-
-    try:
-        drop_sources_from_index(set(removed))
-    except Exception:
-        log.warning("Failed to drop removed documents from the wiki index", exc_info=True)
+    if removed:
+        forget_missing_from_wiki_index()
 
 
 def forget_missing_from_wiki_index() -> None:
@@ -747,6 +687,24 @@ def forget_missing_from_wiki_index() -> None:
         drop_removed_sources(get_services().store, config)
     except Exception:
         log.warning("Failed to drop missing documents from the wiki index", exc_info=True)
+
+
+def show_current_paths_in_wiki() -> None:
+    """Render again each wiki page that shows a path its cited source no longer has.
+
+    Best effort, as the sync itself already succeeded.
+    """
+    store = get_services().store
+    try:
+        citations = store.wiki_citations_by_page()
+        if not citations:
+            return
+        # heavy: the wiki package loads spaCy
+        from lilbee.wiki.rerender import rerender_stale_pages
+
+        rerender_stale_pages(store, active_config(), citations)
+    except Exception:
+        log.warning("Failed to show the current document paths in the wiki pages", exc_info=True)
 
 
 @contextmanager

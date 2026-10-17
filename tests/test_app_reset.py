@@ -6,22 +6,13 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from filelock import FileLock
 
 from lilbee.app.reset import _clear_dir, perform_reset
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.data.ingest import skip_marker
 from lilbee.data.ingest.discovery import discover_files
-from lilbee.data.ingest.skip_marker import (
-    SKIP_MARKER_FILENAME,
-    load_skip_markers,
-    load_skip_reasons,
-    write_skip_markers,
-    write_skip_reasons,
-)
-from lilbee.runtime.lock import ResetRefusedError
-from tests._records_wait import files_under
+from lilbee.data.store import Store
+from tests._held import held_hashes, hold_failed
 
 
 def test_clears_files_and_dirs(tmp_path: Path) -> None:
@@ -66,6 +57,7 @@ def isolated_cfg(tmp_path: Path) -> Iterator[Path]:
     cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.data_dir.mkdir()
+    cfg.lancedb_dir = cfg.data_dir / "lancedb"
     cfg.linked_roots = {}
     yield tmp_path
     for name in type(cfg).model_fields:
@@ -88,15 +80,26 @@ def test_reset_unregisters_linked_roots(isolated_cfg: Path, tmp_path: Path) -> N
     assert (corpus / "doc.md").read_text(encoding="utf-8") == "linked"  # the corpus is untouched
 
 
-def test_reset_clears_skip_markers(isolated_cfg: Path) -> None:
-    """Reset drops the skip sidecars, so a re-added file is extracted again."""
-    write_skip_markers(cfg.data_root, {"stubborn.pdf": "abc123"})
-    write_skip_reasons(cfg.data_root, {"stubborn.pdf": "no text extracted"})
+def test_reset_clears_held_out_records(isolated_cfg: Path) -> None:
+    """Reset drops the held-out records, so a re-added file is extracted again."""
+    hold_failed({"stubborn.pdf": "abc123"}, store=Store(cfg))
+    assert held_hashes(Store(cfg)) == {"stubborn.pdf": "abc123"}
 
     perform_reset()
 
-    assert load_skip_markers(cfg.data_root) == {}
-    assert load_skip_reasons(cfg.data_root) == {}
+    assert held_hashes(Store(cfg)) == {}
+
+
+def test_reset_drops_the_held_out_files_of_an_older_lilbee(isolated_cfg: Path) -> None:
+    """Reset before the first open deletes the older record files, so none comes back."""
+    (isolated_cfg / "skipped_sources.json").write_text('{"gone.md": "abc"}', encoding="utf-8")
+    (isolated_cfg / "skip_reasons.json").write_text('{"gone.md": "bad"}', encoding="utf-8")
+
+    perform_reset()
+
+    assert not (isolated_cfg / "skipped_sources.json").exists()
+    assert not (isolated_cfg / "skip_reasons.json").exists()
+    assert held_hashes(Store(cfg)) == {}
 
 
 def test_reset_keeps_other_settings(isolated_cfg: Path) -> None:
@@ -107,32 +110,3 @@ def test_reset_keeps_other_settings(isolated_cfg: Path) -> None:
     perform_reset()
 
     assert settings.get(cfg.data_root, "chat_model") == "qwen3:8b"
-
-
-def test_a_reset_while_another_process_holds_the_records_lock_deletes_nothing(
-    isolated_cfg: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A reset takes the records lock before it deletes: a held lock refuses it, nothing gone."""
-    (cfg.documents_dir / "doc.md").write_text("kept", encoding="utf-8")
-    (cfg.data_dir / "chunks.bin").write_text("kept", encoding="utf-8")
-    settings.set_value(cfg.data_root, "linked_roots", {"corpus": "/somewhere"})
-    cfg.linked_roots = {"corpus": "/somewhere"}
-    write_skip_markers(cfg.data_root, {"stubborn.pdf": "abc123"})
-    before = files_under(isolated_cfg)
-    monkeypatch.setattr(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", 0.05)
-    lock_file = str(cfg.data_root / SKIP_MARKER_FILENAME) + ".lock"
-    other_process = FileLock(lock_file)
-    other_process.acquire()
-    try:
-        with pytest.raises(ResetRefusedError) as refused:
-            perform_reset()
-    finally:
-        other_process.release()
-
-    assert str(refused.value) == (
-        f"Could not lock {lock_file}, so the list of held-out files was not changed. "
-        "If no other lilbee process is running, delete that file and try again."
-    )
-    assert files_under(isolated_cfg) == before
-    assert set(before) >= {"documents/doc.md", "data/chunks.bin", SKIP_MARKER_FILENAME}
-    assert cfg.linked_roots == {"corpus": "/somewhere"}

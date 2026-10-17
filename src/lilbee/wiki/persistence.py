@@ -10,11 +10,13 @@ content assembly.
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 
 from lilbee.core.config import Config
-from lilbee.data.store import CitationRecord, Store
+from lilbee.data.store import CitationRecord, SourceType, Store
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.shared import (
     PENDING_COLLISION_MARKER_PREFIX,
@@ -22,6 +24,7 @@ from lilbee.wiki.shared import (
     WikiLogAction,
     WikiSubdir,
     atomic_write_text,
+    frontmatter_span,
     is_pending_marker_text,
     parse_frontmatter,
 )
@@ -55,6 +58,41 @@ _DRIFT_SOURCE_FIELD = "source: "
 
 # Frontmatter field listing the sources a generated page was written from.
 _DRAFT_SOURCES_FIELD = "sources"
+
+# Frontmatter field of a draft naming the id of each source path it was written with.
+SOURCE_IDS_FIELD = "source_ids"
+
+
+def with_source_ids(content: str, source_ids: Mapping[str, str]) -> str:
+    """*content* with a frontmatter line naming the id of each source path it shows."""
+    lines = content.split("\n")
+    span = frontmatter_span(lines)
+    if span is None:
+        return content
+    _start, end = span
+    lines.insert(end, f"{SOURCE_IDS_FIELD}: {json.dumps(dict(sorted(source_ids.items())))}")
+    return "\n".join(lines)
+
+
+def without_source_ids(text: str) -> str:
+    """*text* without the frontmatter line naming the ids of its sources."""
+    lines = text.split("\n")
+    span = frontmatter_span(lines)
+    if span is None:
+        return text
+    start, end = span
+    field = f"{SOURCE_IDS_FIELD}:"
+    kept = [line for line in lines[start + 1 : end] if not line.startswith(field)]
+    return "\n".join([*lines[: start + 1], *kept, *lines[end:]])
+
+
+def recorded_source_ids(text: str) -> dict[str, str] | None:
+    """The id of each source path a draft records, or None when it records none."""
+    recorded = parse_frontmatter(text).get(SOURCE_IDS_FIELD)
+    # Frontmatter is untyped YAML: a hand-edited draft can hold anything here.
+    if not isinstance(recorded, dict):
+        return None
+    return {str(path): str(source_id) for path, source_id in recorded.items()}
 
 
 def _read_draft(draft_path: Path) -> str | None:
@@ -110,6 +148,8 @@ def divert_to_drafts(
     diff_text: str,
     origin_subdir: str,
     source_names: list[str],
+    *,
+    source_ids: Mapping[str, str],
 ) -> Path:
     """Write new content to wiki/drafts/ with a drift note instead of overwriting.
 
@@ -146,8 +186,9 @@ def divert_to_drafts(
             content=note + new_content,
             drafts_dir=drafts_dir,
             origin_subdir=origin_subdir,
+            source_ids=source_ids,
         )
-    atomic_write_text(draft_path, note + new_content)
+    atomic_write_text(draft_path, note + with_source_ids(new_content, source_ids))
     return draft_path
 
 
@@ -196,6 +237,7 @@ def persist_and_finalize(
         config.wiki_drift_threshold,
         source_names,
         target.page_type,
+        source_ids=store.source_ids(source_names, SourceType.DOCUMENT),
     )
     published_path = target.wiki_root / target.subdir / f"{target.slug}.md"
     if page_path != published_path:
@@ -233,7 +275,7 @@ def persist_and_finalize(
     if config.wiki_prune_raw and target.supersedes_sources:
         for name in source_names:
             try:
-                store.delete_by_source(name)
+                store.delete_by_source(name, SourceType.DOCUMENT)
             except Exception:
                 # Best-effort pruning of raw sources the new page supersedes; one
                 # failed delete must not abort the loop or fail the generated page.
@@ -331,6 +373,7 @@ def divert_concept_collision(
     content: str,
     drafts_dir: Path,
     origin_subdir: str,
+    source_ids: Mapping[str, str],
 ) -> Path:
     """Write the losing concept to ``drafts/<slug>-collision-<hash>.md``.
 
@@ -354,7 +397,7 @@ def divert_concept_collision(
         f"content from {source} held for review; origin: {origin_subdir} -->\n\n"
     )
     path = drafts_dir / f"{collision_slug}.md"
-    atomic_write_text(path, marker + content)
+    atomic_write_text(path, marker + with_source_ids(content, source_ids))
     log.warning(
         "Concept slug collision: %s already written by %s; diverted %s's version to %s",
         slug,

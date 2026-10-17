@@ -10,9 +10,10 @@ import typer
 from typer._click import Context
 from typer.core import TyperCommand
 
-from lilbee.app.services import install_engine_lifecycle_hooks
+from lilbee.app.services import install_engine_lifecycle_hooks, report_library_upgrade
 from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
+from lilbee.cli.upgrade_line import UpgradeLine
 from lilbee.core.config import RefusedVariableError, cfg, refuse_environment
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.runtime.console import PlainConsole
@@ -232,6 +233,8 @@ def _default(
     # A terminal close or `kill` otherwise leaves the engine fleet running and its
     # VRAM pinned, because the default disposition skips the atexit teardown.
     install_engine_lifecycle_hooks()
+    # On stderr, so stdout stays the command's output.
+    report_library_upgrade(UpgradeLine(PlainConsole(stderr=True)))
 
     cfg.json_mode = json_output
     # Typer binds options placed before the subcommand name to this callback;

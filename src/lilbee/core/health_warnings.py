@@ -27,6 +27,8 @@ class WarningCode(StrEnum):
     """Embed window below chunk budget: semantic chunks lose text; token-sized ones are capped."""
     PLACEMENT_DIVERGED = "placement_diverged"
     """The engine allocated materially more or less GPU memory than planned."""
+    LIBRARY_UPGRADING = "library_upgrading"
+    """A first open is upgrading the library's format; requests that need it wait."""
 
 
 class HealthWarning(BaseModel):

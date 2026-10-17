@@ -7,7 +7,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
-from lilbee.data.store import Store
+from lilbee.data.store import SourceType, Store
 
 
 @pytest.fixture(autouse=True)
@@ -107,7 +107,7 @@ class TestStoreOperations:
                 }
             ]
         )
-        store.delete_by_source("remove_me.txt")
+        store.delete_by_source("remove_me.txt", SourceType.DOCUMENT)
         results = store.search(vec, top_k=5)
         assert all(r.source != "remove_me.txt" for r in results)
 
@@ -129,13 +129,13 @@ class TestStoreOperations:
                 }
             ]
         )
-        store.delete_by_source("it's_a_file.txt")
+        store.delete_by_source("it's_a_file.txt", SourceType.DOCUMENT)
         results = store.search(vec, top_k=5)
         assert all(r.source != "it's_a_file.txt" for r in results)
 
     def test_delete_by_source_no_table(self, store):
         # Should not raise on empty store
-        store.delete_by_source("nonexistent.txt")
+        store.delete_by_source("nonexistent.txt", SourceType.DOCUMENT)
 
     def testsafe_delete_exception(self):
         """Cover safe_delete logging on failure."""

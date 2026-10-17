@@ -394,7 +394,7 @@ def run_full_build(
     Holds the wiki build mutex for the whole run, so a build started from any
     surface waits for one already in flight instead of interleaving writes.
     Holds the data root's sync mark from before the first read, and takes it
-    before the mutex, so an add that moves source keys is refused or waited for.
+    before the mutex, so a reset is refused or waited for.
     Setting *cancel* stops the run at the next source boundary and releases the
     mutex; without it a client that disconnects mid-stream leaves a build
     holding the mutex until it finishes the whole corpus. Setting it during the

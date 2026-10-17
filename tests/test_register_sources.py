@@ -27,14 +27,14 @@ from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.system import DiskSpelling
 from lilbee.data.ingest.discovery import discover_files
-from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds, mark_removed
-from lilbee.data.store import Store
+from lilbee.data.store import HeldOut, Store
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
     LockingUnsupportedError,
     _no_sync_running,
     _NoHardLinksError,
 )
+from tests._held import held_kinds, hold_removed
 from tests.conftest import filesystem_without_locking, make_mock_services
 from tests.test_lock import _sync_lock_close_refused
 
@@ -108,7 +108,7 @@ class TestADataRootThatCannotLockFiles:
     def test_the_refusal_leaves_the_library_as_it_was(self, library, notes):
         other = _write(notes.parent / "other" / "memo.md").parent
         register_sources([other])
-        mark_removed(cfg.data_root, {"notes/loose.md": "hash of notes/loose.md"})
+        hold_removed({"notes/loose.md": "hash of notes/loose.md"})
         before = _files(library)
         assert "config.toml" in before
 
@@ -121,16 +121,16 @@ class TestADataRootThatCannotLockFiles:
         assert _files(library) == before
         assert sorted(_registry()) == ["other"]
         assert sorted(cfg.linked_roots) == ["other"]
-        assert load_skip_kinds(cfg.data_root) == {"notes/loose.md": SkipKind.REMOVED}
+        assert held_kinds() == {"notes/loose.md": HeldOut.REMOVED}
 
     def test_the_same_add_registers_on_a_data_root_that_locks(self, library, notes):
         """The control for the test above: the add registers and drops the removal record."""
-        mark_removed(cfg.data_root, {"notes/loose.md": "hash of notes/loose.md"})
+        hold_removed({"notes/loose.md": "hash of notes/loose.md"})
 
         assert register_sources([notes]).registered == ["notes"]
 
         assert sorted(_registry()) == ["notes"]
-        assert load_skip_kinds(cfg.data_root) == {}
+        assert held_kinds() == {}
 
     def test_a_data_root_that_does_not_exist_yet_is_refused_too(self, library, notes, tmp_path):
         cfg.data_root = tmp_path / "fresh"
@@ -410,12 +410,12 @@ class TestOnePathInAnotherLetterCase:
         stored, named = (typed, notes) if stored_as_typed else (notes, typed)
         settings.set_value(cfg.data_root, "linked_roots", {"notes": str(stored)})
         cfg.linked_roots = {"notes": str(stored)}
-        mark_removed(cfg.data_root, {"notes/loose.md": "0" * 64})
+        hold_removed({"notes/loose.md": "0" * 64})
 
         register_sources([named])
 
-        held = {} if one_entry else {"notes/loose.md": SkipKind.REMOVED}
-        assert load_skip_kinds(cfg.data_root) == held
+        held = {} if one_entry else {"notes/loose.md": HeldOut.REMOVED}
+        assert held_kinds() == held
 
     def test_the_overwrite_question_is_not_asked_for_the_same_folder(self, library, notes):
         register_sources([notes])
@@ -472,6 +472,30 @@ class TestOnePathInAnotherLetterCase:
         assert _registry() == {"src": str(notes.parent)}
 
 
+class TestAddingAFileInsideASource:
+    """Naming a file of a registered source asks for that file back."""
+
+    def test_the_file_named_again_loses_its_removal_record(self, library, notes):
+        register_sources([notes])
+        hold_removed({"notes/loose.md": "0" * 64, "notes/work/plan.md": "1" * 64})
+
+        register_sources([notes / "loose.md"])
+
+        assert _registry() == {"notes": str(notes)}
+        assert held_kinds() == {"notes/work/plan.md": HeldOut.REMOVED}
+
+    def test_a_source_that_holds_no_named_path_keeps_its_records(self, library, notes):
+        """The control for the test above: a file of another source releases nothing here."""
+        other = _write(notes.parent / "other" / "memo.md").parent
+        register_sources([notes, other])
+        hold_removed({"notes/loose.md": "0" * 64, "other/memo.md": "1" * 64})
+
+        register_sources([other / "memo.md"])
+
+        assert sorted(_registry()) == ["notes", "other"]
+        assert held_kinds() == {"notes/loose.md": HeldOut.REMOVED}
+
+
 class TestTwoSourcesOfOneFolder:
     """A library that holds one folder under two labels keeps the records of each apart."""
 
@@ -485,14 +509,12 @@ class TestTwoSourcesOfOneFolder:
         pair = {"notes": str(notes), other.name: str(other)}
         settings.set_value(cfg.data_root, "linked_roots", pair)
         cfg.linked_roots = dict(pair)
-        mark_removed(
-            cfg.data_root, {"notes/loose.md": "0" * 64, f"{other.name}/loose.md": "1" * 64}
-        )
+        hold_removed({"notes/loose.md": "0" * 64, f"{other.name}/loose.md": "1" * 64})
 
         remove_documents_durably([other.name])
 
         assert _registry() == {"notes": str(notes)}
-        assert load_skip_kinds(cfg.data_root) == {"notes/loose.md": SkipKind.REMOVED}
+        assert held_kinds() == {"notes/loose.md": HeldOut.REMOVED}
 
 
 def _junk_sync_lock(root: Path) -> Path:
@@ -509,7 +531,7 @@ class TestASyncLockThatCannotBeOpened:
     def test_the_refusal_leaves_the_library_as_it_was(self, library, notes):
         other = _write(notes.parent / "other" / "memo.md").parent
         register_sources([other])
-        mark_removed(cfg.data_root, {"notes/loose.md": "hash of notes/loose.md"})
+        hold_removed({"notes/loose.md": "hash of notes/loose.md"})
         lock_file = _junk_sync_lock(library)
         before = _files(library)
         assert "config.toml" in before
@@ -524,7 +546,7 @@ class TestASyncLockThatCannotBeOpened:
         assert _files(library) == before
         assert sorted(_registry()) == ["other"]
         assert sorted(cfg.linked_roots) == ["other"]
-        assert load_skip_kinds(cfg.data_root) == {"notes/loose.md": SkipKind.REMOVED}
+        assert held_kinds() == {"notes/loose.md": HeldOut.REMOVED}
 
     def test_the_same_add_registers_after_the_lock_file_is_deleted(self, library, notes):
         """The control for the test above: the advice in the refusal makes the add work."""

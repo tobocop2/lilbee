@@ -49,9 +49,24 @@ def dump_index(lancedb_dir: Path) -> dict[str, list[str]]:
     if not lancedb_dir.exists():
         return tables
     database = lancedb.connect(str(lancedb_dir))
-    for name in sorted(database.table_names()):
+    names = database.table_names()
+    paths = {}
+    if "_sources" in names:
+        paths = {
+            r["source_id"]: r["path"]
+            for r in database.open_table("_sources").to_arrow().to_pylist()
+        }
+    for name in sorted(names):
         rows = database.open_table(name).to_arrow().to_pylist()
-        kept = [{k: v for k, v in row.items() if k not in _VOLATILE} for row in rows]
+        # A source id is random; two runs agree on the path it names.
+        kept = [
+            {
+                k: paths.get(v, v) if k == "source_id" else v
+                for k, v in row.items()
+                if k not in _VOLATILE
+            }
+            for row in rows
+        ]
         tables[name] = sorted(json.dumps(row, sort_keys=True, default=str) for row in kept)
     return tables
 
@@ -110,7 +125,9 @@ class Library:
         table = Store(cfg).open_table("chunks")
         if table is None:
             return []
-        return sorted(table.to_arrow().column("source").to_pylist())
+        ids = table.to_arrow().column("source_id").to_pylist()
+        paths = Store(cfg).source_paths(ids)
+        return sorted(paths[source_id] for source_id in ids)
 
     def dump(self) -> dict[str, list[str]]:
         return dump_index(self.root / "data" / "lancedb")

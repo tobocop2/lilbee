@@ -320,21 +320,13 @@ class TestColumnarSourceMetadata:
         # A join fans out on duplicate keys where the dict it replaced took the
         # last one, so a doubled source row (a re-merged shard) would silently
         # export every one of its pages twice.
-        import pyarrow as pa
+        from lilbee.data.store import SourceMeta
 
+        store.upsert_source("a.pdf", "h1", 1, meta=SourceMeta("First", "x", "2020"))
         store.add_page_texts([_page("a.pdf", 1, "one")])
-        store.get_db().create_table(
-            "_sources",
-            pa.table(
-                {
-                    "filename": pa.array(["a.pdf", "a.pdf"]),
-                    "file_hash": pa.array(["h1", "h2"]),
-                    "title": pa.array(["First", "Second"]),
-                    "authors": pa.array(["x", "y"]),
-                    "created_at": pa.array(["2020", "2021"]),
-                }
-            ),
-        )
+        sources = store.open_table("_sources")
+        (row,) = sources.to_arrow().to_pylist()
+        sources.add([{**row, "file_hash": "h2", "title": "Second", "authors": "y"}])
         rows = build_page_dataset(store).to_pylist()
         assert len(rows) == 1
         # Last wins, as the dict did, and the metadata comes from one row.

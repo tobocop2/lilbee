@@ -9,7 +9,7 @@ import pytest
 
 from conftest import make_citation, source_hash, write_source, write_wiki_page
 from lilbee.core.config import cfg
-from lilbee.data.store import Store
+from lilbee.data.store import SourceType, Store
 from lilbee.wiki.prune import (
     PruneAction,
     PruneRecord,
@@ -285,7 +285,7 @@ class TestArchivePage:
         archive_path = wiki_root / "archive" / "summaries" / "doc.md"
         assert archive_path.exists()
         assert archive_path.read_text() == "# Doc\n"
-        store.delete_by_source.assert_called_once_with("wiki/summaries/doc.md")
+        store.delete_by_source.assert_called_once_with("wiki/summaries/doc.md", SourceType.WIKI)
         store.delete_citations_for_wiki.assert_called_once_with("wiki/summaries/doc.md")
 
     def test_the_file_moves_before_the_store_is_cleaned(self, tmp_path: Path):
@@ -296,7 +296,9 @@ class TestArchivePage:
         wiki_root = tmp_path / "wiki"
         store = MagicMock(spec=Store)
         page_present_at_delete: list[bool] = []
-        store.delete_by_source.side_effect = lambda _s: page_present_at_delete.append(page.exists())
+        store.delete_by_source.side_effect = lambda _s, _t: page_present_at_delete.append(
+            page.exists()
+        )
 
         _archive_page("wiki/summaries/doc.md", wiki_root, store, cfg)
 
@@ -548,7 +550,7 @@ class TestReconcileOrphanRows:
 
         assert [r.wiki_source for r in report.records] == [wiki_source]
         assert report.records[0].action == PruneAction.RECONCILED
-        store.delete_by_source.assert_called_once_with(wiki_source)
+        store.delete_by_source.assert_called_once_with(wiki_source, SourceType.WIKI)
         store.delete_citations_for_wiki.assert_called_once_with(wiki_source)
         assert "reconciled" in (tmp_path / "wiki" / "log.md").read_text()
 

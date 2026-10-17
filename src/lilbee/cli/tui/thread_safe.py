@@ -11,20 +11,8 @@ from typing import Any
 
 from textual.dom import DOMNode
 from textual.message import Message
-from textual.worker import get_current_worker
 
 log = logging.getLogger(__name__)
-
-
-class WorkerCancel:
-    """The cancel of the Textual worker it is made in, as the signal a wait polls."""
-
-    def __init__(self) -> None:
-        self._worker = get_current_worker()
-
-    def is_set(self) -> bool:
-        """True once the worker is cancelled, by ``/cancel`` or at app exit."""
-        return self._worker.is_cancelled
 
 
 def call_from_thread(node: DOMNode, fn: Any, *args: Any, **kwargs: Any) -> None:

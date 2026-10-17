@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from unittest import mock
 
 import numpy as np
+import pyarrow as pa
 import pytest
 
 from lilbee.core.config import CHUNKS_TABLE, META_TABLE, PAGE_TEXTS_TABLE, SOURCES_TABLE, cfg
@@ -36,6 +37,8 @@ from lilbee.data.store.lance_helpers import (
     _has_scalar_index,
     _has_vector_index,
     _index_registry,
+    open_committed,
+    table_names,
 )
 from lilbee.runtime.lock import LockingUnsupportedError, write_lock
 from tests._mock_effects import repeat_last
@@ -71,6 +74,45 @@ def _make_records(n=3, dim=None, chunk_type="raw"):
         }
         for i in range(n)
     ]
+
+
+_EARLY_SOURCES_SCHEMA = pa.schema(
+    [
+        pa.field("filename", pa.utf8()),
+        pa.field("file_hash", pa.utf8()),
+        pa.field("ingested_at", pa.utf8()),
+        pa.field("chunk_count", pa.int32()),
+        pa.field("source_type", pa.utf8()),
+    ]
+)
+
+
+def _early_source(filename, file_hash="h", ingested_at="", chunk_count=1):
+    """One ``_sources`` row as a lilbee from before the stat and metadata columns wrote it."""
+    return {
+        "filename": filename,
+        "file_hash": file_hash,
+        "ingested_at": ingested_at,
+        "chunk_count": chunk_count,
+        "source_type": "document",
+    }
+
+
+def _open_after(config, tables):
+    """A Store over a library an older lilbee wrote: *tables* maps a name to its Arrow rows."""
+    import lancedb
+
+    db = lancedb.connect(str(config.lancedb_dir))
+    for name, rows in tables.items():
+        db.create_table(name, rows)
+    return Store(config)
+
+
+def _sources_of(store, table_name=CHUNKS_TABLE):
+    """The path of the source of each row of *table_name*."""
+    ids = store.open_table(table_name).to_arrow().column("source_id").to_pylist()
+    paths = store.source_paths(ids)
+    return [paths[source_id] for source_id in ids]
 
 
 def _axis_record(source, axis, dim):
@@ -201,43 +243,59 @@ class TestClearAndAdd:
         assert {r["concept"] for r in rows} == {"old"}  # unchanged; new rows not added
 
 
+def _page_records(source, n, chunk_type=ChunkType.WIKI):
+    """*n* chunk records of the one source *source*."""
+    return [{**record, "source": source} for record in _make_records(n, chunk_type=chunk_type)]
+
+
 class TestReplaceChunks:
-    def test_replaces_matching_rows_in_place(self, store):
-        store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
-        store.add_chunks(_make_records(1, chunk_type="raw"))
-        replacement = _make_records(1, chunk_type=ChunkType.WIKI)
+    def test_replaces_the_source_rows_of_the_type_in_place(self, store):
+        store.add_chunks(_page_records("wiki/a.md", 2))
+        store.add_chunks(_page_records("a.md", 1, chunk_type="raw"))
+        store.add_chunks(_page_records("wiki/b.md", 1))
+        replacement = _page_records("wiki/a.md", 1)
         replacement[0]["chunk"] = "the only wiki row left"
 
-        added = store.replace_chunks(replacement, f"chunk_type = '{ChunkType.WIKI}'")
+        added = store.replace_chunks("wiki/a.md", ChunkType.WIKI, replacement)
 
         assert added == 1
-        rows = store.open_table(CHUNKS_TABLE).search().to_list()
-        wiki_chunks = [r["chunk"] for r in rows if r["chunk_type"] == ChunkType.WIKI]
-        assert wiki_chunks == ["the only wiki row left"]
-        assert sum(1 for r in rows if r["chunk_type"] == "raw") == 1
+        rows = store.get_chunks_by_source("wiki/a.md")
+        assert [(r.chunk_type, r.chunk) for r in rows] == [
+            (ChunkType.WIKI, "the only wiki row left")
+        ]
+        assert len(store.get_chunks_by_source("wiki/b.md")) == 1
+        assert len(store.get_chunks_by_source("a.md")) == 1
 
     def test_empty_replacement_just_clears(self, store):
-        store.add_chunks(_make_records(2, chunk_type=ChunkType.WIKI))
-        assert store.replace_chunks([], f"chunk_type = '{ChunkType.WIKI}'") == 0
+        store.add_chunks(_page_records("wiki/a.md", 2))
+        assert store.replace_chunks("wiki/a.md", ChunkType.WIKI, []) == 0
         assert store.open_table(CHUNKS_TABLE).search().to_list() == []
 
+    def test_a_page_with_no_rows_takes_a_wiki_source_row_no_listing_shows(self, store):
+        store.replace_chunks("wiki/a.md", ChunkType.WIKI, _page_records("wiki/a.md", 1))
+
+        assert store.get_sources() == []
+        assert [r.source for r in store.get_chunks_by_source("wiki/a.md")] == ["wiki/a.md"]
+        types = store.open_table(SOURCES_TABLE).to_arrow().column("source_type").to_pylist()
+        assert types == [SourceType.WIKI]
+
     def test_bad_dimension_is_rejected_before_the_delete(self, store):
-        store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
+        store.add_chunks(_page_records("wiki/a.md", 1))
         bad = _make_records(1, dim=cfg.embedding_dim - 1, chunk_type=ChunkType.WIKI)
 
         with pytest.raises(ValueError, match="Vector dimension mismatch"):
-            store.replace_chunks(bad, f"chunk_type = '{ChunkType.WIKI}'")
+            store.replace_chunks("wiki/a.md", ChunkType.WIKI, bad)
 
         assert len(store.open_table(CHUNKS_TABLE).search().to_list()) == 1
 
     def test_delete_failure_propagates_without_adding(self, store, monkeypatch):
         """The caller has to see it: a wiki page whose rows were not swapped is stale."""
-        store.add_chunks(_make_records(1, chunk_type=ChunkType.WIKI))
+        store.add_chunks(_page_records("wiki/a.md", 1))
         real = store._chunks_table
         monkeypatch.setattr(store, "_chunks_table", lambda: _TableProxy(real(), _raising_delete))
 
         with pytest.raises(RuntimeError, match="delete failed"):
-            store.replace_chunks(_make_records(1, chunk_type=ChunkType.WIKI), "1 = 1")
+            store.replace_chunks("wiki/a.md", ChunkType.WIKI, _page_records("wiki/a.md", 1))
         assert len(store.open_table(CHUNKS_TABLE).search().to_list()) == 1
 
 
@@ -307,7 +365,75 @@ def _mention(slug, source, count, indices, kind="entity", type_hint="ORG"):
     }
 
 
+class TestWikiPagesCiting:
+    def test_it_names_the_pages_citing_a_source_at_or_below_each_path(self, store):
+        from tests.conftest import make_citation
+
+        cited = {
+            "work/a.md": "wiki/entities/a.md",
+            "work/deep/b.md": "wiki/entities/b.md",
+            "docs.zip/m.md": "wiki/entities/m.md",
+            "workshop/x.md": "wiki/entities/x.md",
+            "plan.md": "wiki/concepts/plan.md",
+        }
+        store.add_citations(
+            [make_citation(wiki_source=page, source_filename=src) for src, page in cited.items()]
+        )
+
+        assert store.wiki_pages_citing(["work", "docs.zip"]) == {
+            "wiki/entities/a.md",
+            "wiki/entities/b.md",
+            "wiki/entities/m.md",
+        }
+        assert store.wiki_pages_citing(["plan.md"]) == {"wiki/concepts/plan.md"}
+        assert store.wiki_pages_citing(["elsewhere"]) == set()
+        assert store.wiki_pages_citing([]) == set()
+
+    def test_a_store_with_no_citation_table_names_none(self, store):
+        assert store.wiki_pages_citing(["work"]) == set()
+
+
+class TestWikiCitationsByPage:
+    def test_each_page_holds_its_citations_with_the_path_its_source_has_now(
+        self, store, test_config, tmp_path
+    ):
+        from tests.conftest import make_citation
+
+        notes = tmp_path / "notes"
+        test_config.linked_roots = {"work": str(notes / "work")}
+        store.add_citations(
+            [
+                make_citation(wiki_source="wiki/entities/a.md", source_filename="work/a.md"),
+                make_citation(
+                    wiki_source="wiki/entities/a.md", source_filename="plan.md", citation_key="src2"
+                ),
+                make_citation(wiki_source="wiki/concepts/b.md", source_filename="work/a.md"),
+            ]
+        )
+        test_config.linked_roots = {"notes": str(notes)}
+
+        by_page = store.wiki_citations_by_page()
+
+        shown = {
+            page: sorted((r["citation_key"], r["source_filename"]) for r in records)
+            for page, records in by_page.items()
+        }
+        assert shown == {
+            "wiki/entities/a.md": [("src1", "notes/work/a.md"), ("src2", "plan.md")],
+            "wiki/concepts/b.md": [("src1", "notes/work/a.md")],
+        }
+
+    def test_a_store_with_no_citation_table_holds_none(self, store):
+        assert store.wiki_citations_by_page() == {}
+
+
 class TestWikiMentions:
+    def test_a_row_names_its_source_by_id_and_by_path(self, store):
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
+        (row,) = store.wiki_mention_rows()
+        assert row["source"] == "a.md"
+        assert row["source_id"] == store.source_ids(["a.md"], SourceType.DOCUMENT)["a.md"]
+
     def test_round_trips_rows(self, store):
         store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
         rows = store.wiki_mention_rows()
@@ -364,7 +490,7 @@ class TestWikiMentions:
         store.add_chunks(_records_for("doc.md", 1))
         store.replace_wiki_mentions_for_source("doc.md", [_mention("boeing", "doc.md", 2, [0])])
         store.replace_wiki_mentions_for_source("keep.md", [_mention("airbus", "keep.md", 2, [0])])
-        store.delete_by_source("doc.md")
+        store.delete_by_source("doc.md", SourceType.DOCUMENT)
         assert {r["source"] for r in store.wiki_mention_rows()} == {"keep.md"}
 
 
@@ -513,7 +639,7 @@ class TestEnsureFtsIndex:
         There is nothing to degrade, so the warning must not fire."""
         store.add_chunks(_make_records())
         for record in _make_records():
-            store.delete_by_source(record["source"])
+            store.delete_by_source(record["source"], SourceType.DOCUMENT)
         with mock.patch.object(type(store), "ensure_fts_index"):
             store.search([0.5] * cfg.embedding_dim, top_k=1, query_text="anything")
 
@@ -903,9 +1029,9 @@ class TestEnsureScalarIndexes:
         assert table is not None
         with mock.patch.object(type(table), "create_scalar_index") as spy:
             store.ensure_scalar_indexes()
-        assert [c.args[0] for c in spy.call_args_list] == ["source", "chunk_type"]
+        assert [c.args[0] for c in spy.call_args_list] == ["source_id", "chunk_type"]
         kinds = {c.args[0]: c.kwargs.get("index_type") for c in spy.call_args_list}
-        assert kinds == {"source": "BTREE", "chunk_type": "BITMAP"}
+        assert kinds == {"source_id": "BTREE", "chunk_type": "BITMAP"}
         assert all(c.kwargs.get("replace") is False for c in spy.call_args_list)
 
     def test_idempotent_once_the_indexes_exist(self, store):
@@ -929,7 +1055,7 @@ class TestEnsureScalarIndexes:
         store.ensure_scalar_indexes()  # empty store, no chunks table yet
 
     def test_indexes_chunk_concepts_source_column(self, store):
-        """The concept-boost path filters chunk_concepts by chunk_source per
+        """The concept-boost path filters chunk_concepts by source_id per
         result, so that column gets its own BTree index too."""
         from lilbee.core.config import CHUNK_CONCEPTS_TABLE
         from lilbee.data.store import ensure_table
@@ -937,10 +1063,10 @@ class TestEnsureScalarIndexes:
 
         store.add_chunks(_make_records())
         cc = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
-        cc.add([{"chunk_source": "doc.md", "chunk_index": 0, "concept": "alpha"}])
+        cc.add([{"source_id": "doc.md", "chunk_index": 0, "concept": "alpha"}])
         store.ensure_scalar_indexes()
         indices = _readable_registry(store.open_table(CHUNK_CONCEPTS_TABLE))
-        assert _has_scalar_index(indices, "chunk_source")
+        assert _has_scalar_index(indices, "source_id")
 
     def test_one_column_failure_does_not_skip_the_other(self, store):
         """A BTree failure on 'source' must not skip the independent Bitmap on
@@ -951,12 +1077,12 @@ class TestEnsureScalarIndexes:
 
         def _record(self, column, **kwargs):
             attempted.append(column)
-            if column == "source":
+            if column == "source_id":
                 raise RuntimeError("boom")
 
         with mock.patch.object(type(table), "create_scalar_index", _record):
             store.ensure_scalar_indexes()
-        assert attempted == ["source", "chunk_type"]
+        assert attempted == ["source_id", "chunk_type"]
 
     def test_scalar_index_failure_on_populated_table_warns(self, store, caplog):
         """A create failure on a non-empty table warns (it silently loses the
@@ -978,7 +1104,7 @@ class TestEnsureScalarIndexes:
         lock; a table gone by then is skipped instead of crashing the build."""
         store.add_chunks(_make_records())
         assert store.open_table("no_such_table") is None
-        store._ensure_scalar_index_on("no_such_table", (("source", "BTREE"),))  # must not raise
+        store._ensure_scalar_index_on("no_such_table", (("source_id", "BTREE"),))  # must not raise
 
     def test_scalar_build_skips_a_column_the_table_does_not_have(self, store):
         """Columns are re-checked at build time, so one the schema lacks is
@@ -1007,7 +1133,7 @@ class TestEnsureScalarIndexes:
         assert spy.call_count == built  # second search probed, built nothing
 
         table = store.open_table("chunks")
-        assert _has_scalar_index(_readable_registry(table), "source")
+        assert _has_scalar_index(_readable_registry(table), "source_id")
         assert _has_scalar_index(_readable_registry(table), "chunk_type")
 
     def test_fts_language_reaches_every_index_build(self, store, test_config):
@@ -1152,10 +1278,10 @@ class TestEnsureScalarIndexes:
         store.search([0.5] * test_config.embedding_dim, top_k=3)
         assert store._scalar_ready is False  # concepts table not there yet
         table = ensure_table(store.get_db(), "chunk_concepts", _chunk_concepts_schema())
-        table.add([{"chunk_source": "doc0.md", "chunk_index": 0, "concept": "x"}])
+        table.add([{"source_id": "doc0.md", "chunk_index": 0, "concept": "x"}])
         store.search([0.5] * test_config.embedding_dim, top_k=3)
         indices = _readable_registry(store.open_table("chunk_concepts"))
-        assert _has_scalar_index(indices, "chunk_source")
+        assert _has_scalar_index(indices, "source_id")
         assert store._scalar_ready is True
 
 
@@ -1203,7 +1329,7 @@ class TestScalarIndexDangling:
 
         fresh = self._store_with_missing_scalar_files(store, test_config)
 
-        assert sorted(_dangling_scalar(fresh)) == ["chunk_type", "source"]
+        assert sorted(_dangling_scalar(fresh)) == ["chunk_type", "source_id"]
         codes = [w.code for w in fresh.health_warnings()]
         assert WarningCode.SCALAR_INDEX_UNAVAILABLE in codes
         assert WarningCode.FTS_UNAVAILABLE not in codes
@@ -1244,12 +1370,12 @@ class TestScalarIndexDangling:
         store.ensure_scalar_indexes()
         store.ensure_fts_index()
         _remove_index_files(test_config, index_types={"BTree"})
-        assert _dangling_scalar(store) == ["source"]
+        assert _dangling_scalar(store) == ["source_id"]
 
         with _spy_scalar_builds() as builds:
             store.ensure_scalar_indexes()
 
-        assert builds == [("source", True)]
+        assert builds == [("source_id", True)]
         indices = _readable_registry(store.open_table("chunks"))
         assert _has_fts_index(indices)
         assert _dangling_scalar(store) == []
@@ -1264,10 +1390,10 @@ class TestScalarIndexDangling:
 
         store.add_chunks(_make_records())
         cc = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
-        cc.add([{"chunk_source": "doc0.md", "chunk_index": 0, "concept": "alpha"}])
+        cc.add([{"source_id": "doc0.md", "chunk_index": 0, "concept": "alpha"}])
         store.ensure_scalar_indexes()
         _remove_index_files(test_config, CHUNK_CONCEPTS_TABLE)
-        assert _dangling_scalar(store, CHUNK_CONCEPTS_TABLE) == ["chunk_source"]
+        assert _dangling_scalar(store, CHUNK_CONCEPTS_TABLE) == ["source_id"]
 
         store.ensure_scalar_indexes()
 
@@ -1284,7 +1410,7 @@ class TestScalarIndexDangling:
             hits = fresh.search(query, top_k=1, query_text="chunk number 1")
         assert hits
         assert fresh._scalar_ready is False
-        assert sorted(_dangling_scalar(fresh)) == ["chunk_type", "source"]
+        assert sorted(_dangling_scalar(fresh)) == ["chunk_type", "source_id"]
 
         fresh.search(query, top_k=1, query_text="chunk number 1")
 
@@ -1310,7 +1436,7 @@ class TestScalarIndexDangling:
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         assert table is not None
-        no_uuid = mock.MagicMock(index_type="BTree", columns=["source"], index_uuid=None)
+        no_uuid = mock.MagicMock(index_type="BTree", columns=["source_id"], index_uuid=None)
         assert _dangling_indices(table, [no_uuid], test_config.lancedb_dir) == []
 
 
@@ -1346,7 +1472,7 @@ class TestUnreadableIndexRegistry:
         assert builds == []
         after = _index_uuids(store)
         assert after["chunk_idx"] != before["chunk_idx"]
-        assert after["source_idx"] == before["source_idx"]
+        assert after["source_id_idx"] == before["source_id_idx"]
         assert after["chunk_type_idx"] == before["chunk_type_idx"]
         assert store.bm25_probe("chunk number 1")
 
@@ -1423,7 +1549,7 @@ class TestUnreadableIndexRegistry:
             mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")),
             _spy_scalar_builds() as builds,
         ):
-            store._ensure_scalar_index_on("chunks", (("source", "BTREE"),))
+            store._ensure_scalar_index_on("chunks", (("source_id", "BTREE"),))
         assert builds == []
 
     def test_title_index_build_repairs_an_unreadable_registry(self, store, test_config):
@@ -1723,32 +1849,32 @@ class TestWriteChunksBatch:
         self._flush(store, "a.md")
         self._flush(store, "b.md", page_texts=_page_rows("b.md"))
         sources, chunks = store.open_table(SOURCES_TABLE), store.open_table(CHUNKS_TABLE)
-        assert sources.index_stats("filename_idx") is None
-        assert chunks.index_stats("source_idx") is None
+        assert sources.index_stats("path_idx") is None
+        assert chunks.index_stats("source_id_idx") is None
 
         self._flush(store, "c.md")
 
-        assert store.open_table(SOURCES_TABLE).index_stats("filename_idx").num_indexed_rows == 2
-        assert store.open_table(CHUNKS_TABLE).index_stats("source_idx").num_indexed_rows == 4
+        assert store.open_table(SOURCES_TABLE).index_stats("path_idx").num_indexed_rows == 2
+        assert store.open_table(CHUNKS_TABLE).index_stats("source_id_idx").num_indexed_rows == 4
         # One flush of page texts is under the bound of two.
-        assert store.open_table(PAGE_TEXTS_TABLE).index_stats("source_idx") is None
+        assert store.open_table(PAGE_TEXTS_TABLE).index_stats("source_id_idx") is None
 
     def test_an_index_is_rebuilt_only_after_enough_new_rows(self, store, monkeypatch):
         monkeypatch.setattr("lilbee.data.store.core._KEY_INDEX_STALE_FLUSHES", 2)
         for name in ("a.md", "b.md", "c.md", "d.md"):
             self._flush(store, name)
         # Built by the third flush over two rows; the fourth finds one row past it.
-        assert store.open_table(SOURCES_TABLE).index_stats("filename_idx").num_indexed_rows == 2
+        assert store.open_table(SOURCES_TABLE).index_stats("path_idx").num_indexed_rows == 2
 
         self._flush(store, "e.md")
 
-        assert store.open_table(SOURCES_TABLE).index_stats("filename_idx").num_indexed_rows == 4
+        assert store.open_table(SOURCES_TABLE).index_stats("path_idx").num_indexed_rows == 4
 
     def test_a_flush_replaces_rows_the_index_covers_and_rows_past_it(self, store, monkeypatch):
         monkeypatch.setattr("lilbee.data.store.core._KEY_INDEX_STALE_FLUSHES", 2)
         for name in ("a.md", "b.md", "c.md", "d.md"):
             self._flush(store, name, chunks=3)
-        stats = store.open_table(CHUNKS_TABLE).index_stats("source_idx")
+        stats = store.open_table(CHUNKS_TABLE).index_stats("source_id_idx")
         assert (stats.num_indexed_rows, stats.num_unindexed_rows) == (6, 6)
 
         self._flush(store, "a.md", chunks=1)
@@ -1796,12 +1922,13 @@ class TestWriteChunksBatch:
             self._flush(store, "d.md", chunks=2)
         scans = "each write scans the table until it succeeds"
         assert once == [
-            f"Key index refresh failed on '_sources.filename'; {scans}",
-            f"Key index refresh failed on 'chunks.source'; {scans}",
+            f"Key index refresh failed on '_sources.path'; {scans}",
+            f"Key index refresh failed on 'chunks.source_id'; {scans}",
         ]
         assert _warned() == once
         # The later failures are still logged, below the level a user sees.
-        assert sum("Key index refresh" in record.getMessage() for record in caplog.records) == 6
+        # Three key columns, three flushes; one warning a table, the rest at debug.
+        assert sum("Key index refresh" in record.getMessage() for record in caplog.records) == 9
 
     def test_a_refresh_that_fails_on_an_empty_table_is_not_a_warning(
         self, store, monkeypatch, caplog
@@ -1906,13 +2033,14 @@ class TestWriteChunksBatch:
         ]
         with mock.patch.object(
             core_mod.Store,
-            "_delete_by_sources_unlocked",
+            "_delete_rows_of_unlocked",
             autospec=True,
-            side_effect=core_mod.Store._delete_by_sources_unlocked,
+            side_effect=core_mod.Store._delete_rows_of_unlocked,
         ) as spy:
             store.write_chunks_batch(items)
         assert spy.call_count == 1
-        assert sorted(spy.call_args.args[1]) == [f"f{i}.md" for i in range(total)]
+        ids = store.source_ids((f"f{i}.md" for i in range(total)), SourceType.DOCUMENT)
+        assert sorted(spy.call_args.args[1]) == sorted(ids.values())
         # End state matches the per-item behavior: replaced rows, no orphans.
         for i in range(total):
             assert len(store.get_chunks_by_source(f"f{i}.md")) == 2
@@ -2458,7 +2586,7 @@ class TestRemoveDocuments:
             result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
             assert result.not_found == []
-            mock_del.assert_called_once_with(["a.md"])
+            mock_del.assert_called_once_with(["a.md"], None)
 
     def test_removes_an_archive_with_its_members(self, store):
         rows = [{"filename": n} for n in ("docs.zip", "docs.zip/a.pdf", "docs.zip.bak", "other.md")]
@@ -2469,7 +2597,7 @@ class TestRemoveDocuments:
             result = store.remove_documents(["docs.zip"])
             assert result.removed == ["docs.zip", "docs.zip/a.pdf"]
             assert result.not_found == []
-            mock_del.assert_called_once_with(["docs.zip", "docs.zip/a.pdf"])
+            mock_del.assert_called_once_with(["docs.zip", "docs.zip/a.pdf"], None)
 
     def test_removing_many_names_reads_the_source_table_once(self, store):
         names = [f"n{index}.md" for index in range(500)]
@@ -2481,7 +2609,7 @@ class TestRemoveDocuments:
             result = store.remove_documents([*names, "a/b.zip"])
         assert reads.call_count == 1
         assert result.removed == [*names, "a/b.zip", "n7.md/inside.txt", "a/b.zip/c/d.txt"]
-        mock_del.assert_called_once_with(result.removed)
+        mock_del.assert_called_once_with(result.removed, None)
 
     def test_not_found(self, store):
         with mock.patch.object(store, "get_sources", return_value=[]):
@@ -2527,14 +2655,16 @@ class TestRemoveDocuments:
             mock.patch.object(
                 store, "get_sources", return_value=[{"filename": "a.md"}, {"filename": "b.md"}]
             ),
-            mock.patch.object(store, "_delete_by_sources_unlocked") as mock_chunks,
-            mock.patch.object(store, "open_table", return_value=None),
+            mock.patch.object(store, "source_ids", return_value={"a.md": "ida", "b.md": "idb"}),
+            mock.patch.object(store, "_delete_rows_of_unlocked") as mock_chunks,
+            mock.patch.object(store, "_drop_source_rows_unlocked") as mock_sources,
             mock.patch("lilbee.data.store.core.write_lock", _tracking_lock),
         ):
             result = store.remove_documents(["a.md", "b.md"])
 
         assert result.removed == ["a.md", "b.md"]
-        mock_chunks.assert_called_once_with(["a.md", "b.md"])
+        mock_chunks.assert_called_once_with(["ida", "idb"])
+        mock_sources.assert_called_once_with(["ida", "idb"])
         # Exactly one lock acquisition covers every delete for the whole set.
         assert acquisitions == ["acquire"]
 
@@ -2576,7 +2706,7 @@ class TestClearTable:
     def testclear_table_deletes_matching_rows(self, store):
         records = _make_records(n=1)
         store.add_chunks(records)
-        assert store.clear_table("chunks", "source = 'doc0.md'") is True
+        assert store.clear_table("chunks", "chunk_index = 0") is True
         table = store.open_table("chunks")
         remaining = table.to_arrow()
         assert len(remaining) == 0
@@ -2620,10 +2750,9 @@ class TestEscapeSqlString:
         plain[0]["chunk_index"] = 1
         store.add_chunks(backslash + plain)
 
-        store.delete_by_source(backslash_src)
+        store.delete_by_source(backslash_src, SourceType.DOCUMENT)
 
-        rows = store.open_table("chunks").search().to_list()
-        sources = {r["source"] for r in rows}
+        sources = set(_sources_of(store))
         assert backslash_src not in sources
         assert "plain.md" in sources
 
@@ -2788,14 +2917,8 @@ class TestPageTexts:
     def test_sources_arrow_fills_columns_an_older_index_lacks(self, store):
         # A sources table written before the metadata columns existed must still
         # join, with nulls, rather than losing the column and breaking the export.
-        import pyarrow as pa
-
-        db = store.get_db()
-        db.create_table(
-            "_sources",
-            pa.table({"filename": pa.array(["old.pdf"]), "file_hash": pa.array(["h"])}),
-        )
-        arrow = store.sources_arrow()
+        early = pa.Table.from_pylist([_early_source("old.pdf")], schema=_EARLY_SOURCES_SCHEMA)
+        arrow = _open_after(store._config, {"_sources": early}).sources_arrow()
         assert arrow.schema.names == ["source", "title", "authors", "created_at"]
         assert arrow.to_pylist() == [
             {"source": "old.pdf", "title": None, "authors": None, "created_at": None}
@@ -2804,7 +2927,7 @@ class TestPageTexts:
     def test_delete_by_source_removes_page_texts(self, store):
         store.add_chunks(_make_records(n=1))
         store.add_page_texts(_page_rows("doc0.md", (1,)))
-        store.delete_by_source("doc0.md")
+        store.delete_by_source("doc0.md", SourceType.DOCUMENT)
         assert store.get_page_texts("doc0.md") == []
 
 
@@ -3150,7 +3273,6 @@ class TestSuppressLancedbThreadError:
 
     def test_install_suppresses_lancedb_thread(self):
         """Errors from LanceDB background threads are silently dropped."""
-        import threading
 
         from lilbee.data.store import install_lancedb_thread_error_suppressor
 
@@ -3168,7 +3290,6 @@ class TestSuppressLancedbThreadError:
 
     def test_install_propagates_non_lancedb_thread(self):
         """Errors from other threads are forwarded to the original excepthook."""
-        import threading
 
         from lilbee.data.store import install_lancedb_thread_error_suppressor
 
@@ -3630,37 +3751,18 @@ class TestSourceStatColumns:
         import pyarrow as pa
 
         from lilbee.core.config import SOURCES_TABLE
-        from lilbee.data.store import SourceStat, ensure_table, source_stat
+        from lilbee.data.store import SourceStat, source_stat
 
-        legacy_schema = pa.schema(
-            [
-                pa.field("filename", pa.utf8()),
-                pa.field("file_hash", pa.utf8()),
-                pa.field("ingested_at", pa.utf8()),
-                pa.field("chunk_count", pa.int32()),
-                pa.field("source_type", pa.utf8()),
-            ]
-        )
-        table = ensure_table(store.get_db(), SOURCES_TABLE, legacy_schema)
-        table.add(
-            [
-                {
-                    "filename": "old.md",
-                    "file_hash": "h",
-                    "ingested_at": "",
-                    "chunk_count": 1,
-                    "source_type": "document",
-                }
-            ]
-        )
+        early = pa.Table.from_pylist([_early_source("old.md")], schema=_EARLY_SOURCES_SCHEMA)
+        store = _open_after(store._config, {SOURCES_TABLE: early})
 
-        # First write through the new path migrates the table and lands the stat.
+        # The open migrated the table; a write lands the stat.
         store.upsert_source("new.md", "h2", 1, stat=SourceStat(5, 6))
         records = {r["filename"]: r for r in store.get_sources()}
         assert source_stat(records["old.md"]) is None  # backfilled sentinel
         assert source_stat(records["new.md"]) == SourceStat(5, 6)
 
-    def test_update_source_stats_batches_one_delete_one_add(self, store):
+    def test_update_source_stats_batches_one_write(self, store):
         from lilbee.data.store import SourceStat, SourceStatBackfill, source_stat
 
         store.upsert_source("a.md", "ha", 1)
@@ -3672,7 +3774,7 @@ class TestSourceStatColumns:
             SourceStatBackfill(records["b.md"], SourceStat(3, 4)),
         ]
         with mock.patch.object(
-            store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+            store, "_put_sources_unlocked", wraps=store._put_sources_unlocked
         ) as spy:
             store.update_source_stats(backfills)
         spy.assert_called_once()
@@ -3700,12 +3802,12 @@ class TestSourceStatColumns:
         with (
             mock.patch.object(core_mod, "_SOURCE_STAT_BATCH_ROWS", batch_rows),
             mock.patch.object(
-                store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+                store, "_put_sources_unlocked", wraps=store._put_sources_unlocked
             ) as spy,
         ):
             store.update_source_stats(backfills)
         assert spy.call_count == math.ceil(total / batch_rows)
-        assert all(len(call.args[0]) <= batch_rows for call in spy.call_args_list)
+        assert all(len(call.args[1]) <= batch_rows for call in spy.call_args_list)
 
         records = {r["filename"]: r for r in store.get_sources()}
         assert len(records) == total
@@ -3719,9 +3821,9 @@ class TestSourceStatColumns:
 
 
 class TestBatchedSourceUpserts:
-    """One flush of N files produces one delete + one add on the sources table."""
+    """One flush of N files gives the new ones ids in one write and every row in one more."""
 
-    def test_write_chunks_batch_single_source_table_pass(self, store):
+    def test_write_chunks_batch_puts_every_source_row_in_one_write(self, store):
         from lilbee.data.store import ChunkWrite
 
         items = [
@@ -3729,11 +3831,11 @@ class TestBatchedSourceUpserts:
             for i in range(5)
         ]
         with mock.patch.object(
-            store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+            store, "_put_sources_unlocked", wraps=store._put_sources_unlocked
         ) as spy:
             store.write_chunks_batch(items)
-        spy.assert_called_once()
-        assert len(spy.call_args.args[0]) == 5
+        assert spy.call_count == 2
+        assert len(spy.call_args.args[1]) == 5
         assert len(store.get_sources()) == 5
 
     def test_optimize_sources_compacts(self, store):
@@ -3764,18 +3866,19 @@ class TestDeleteBySourceConceptRows:
         from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
 
         store.add_chunks(_records_for("doc.md", 2))
+        doc = store.source_ids(["doc.md"], SourceType.DOCUMENT)["doc.md"]
         cc_table = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
         cc_table.add(
             [
-                {"chunk_source": "doc.md", "chunk_index": 0, "concept": "alpha"},
-                {"chunk_source": "other.md", "chunk_index": 0, "concept": "beta"},
+                {"source_id": doc, "chunk_index": 0, "concept": "alpha"},
+                {"source_id": "other", "chunk_index": 0, "concept": "beta"},
             ]
         )
 
-        store.delete_by_source("doc.md")
+        store.delete_by_source("doc.md", SourceType.DOCUMENT)
         cc_table.checkout_latest()  # bypass the read-consistency interval
         remaining = cc_table.search().limit(None).to_list()
-        assert [r["chunk_source"] for r in remaining] == ["other.md"]
+        assert [r["source_id"] for r in remaining] == ["other"]
         assert store.get_chunks_by_source("doc.md") == []
 
 
@@ -3825,10 +3928,8 @@ def _titled_records(source, n, *, title, base=0.1, dim=None):
     ]
 
 
-def _create_pre_title_chunks_table(store):
-    """Create the chunks table with the pre-title schema, as an old index would have."""
-    import pyarrow as pa
-
+def _pre_title_store(config, records):
+    """A Store over a library whose chunks table an old lilbee wrote, before titles."""
     schema = pa.schema(
         [
             pa.field("source", pa.utf8()),
@@ -3843,7 +3944,8 @@ def _create_pre_title_chunks_table(store):
             pa.field("vector", pa.list_(pa.float32(), cfg.embedding_dim)),
         ]
     )
-    return store.get_db().create_table("chunks", schema=schema)
+    store = _open_after(config, {"chunks": pa.Table.from_pylist(records, schema=schema)})
+    return store, store.open_table("chunks")
 
 
 class TestTitleSearch:
@@ -3872,10 +3974,10 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("a.pdf", 5, title="zebra manifesto"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._title_arm(table, "zebra", 5, None)
+        rows = store._with_paths(store._title_arm(table, "zebra", 5, None))
         assert [(r.source, r.chunk_index) for r in rows] == [("a.pdf", 0)]
         # Deterministic across repeated calls (no implementation-defined tie order).
-        again = store._title_arm(table, "zebra", 5, None)
+        again = store._with_paths(store._title_arm(table, "zebra", 5, None))
         assert [(r.source, r.chunk_index) for r in again] == [("a.pdf", 0)]
 
     def test_title_arm_one_row_per_matched_document(self, store, test_config):
@@ -3886,7 +3988,7 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("safari.pdf", 4, title="zebra safari"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._title_arm(table, "zebra", 5, None)
+        rows = store._with_paths(store._title_arm(table, "zebra", 5, None))
         assert sorted(r.source for r in rows) == ["safari.pdf", "zebra.pdf"]
         assert all(r.chunk_index == 0 for r in rows)
 
@@ -3906,7 +4008,7 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("note.pdf", 1, title="zebra safari park visit"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._title_arm(table, "zebra", 2, None)
+        rows = store._with_paths(store._title_arm(table, "zebra", 2, None))
         assert sorted(r.source for r in rows) == ["note.pdf", "tome.pdf"]
 
     def test_title_search_weight_reaches_fusion(self, store, test_config):
@@ -3984,8 +4086,7 @@ class TestTitleSearch:
         """Feature detection: a pre-title index searches fine and the title arm
         silently contributes nothing."""
         test_config.title_search = True
-        table = _create_pre_title_chunks_table(store)
-        table.add(_make_records())
+        store, table = _pre_title_store(test_config, _make_records())
         store.ensure_fts_index()
         assert store._title_arm(table, "chunk", 5, None) == []
         query_vec = [0.5] * test_config.embedding_dim
@@ -3995,8 +4096,7 @@ class TestTitleSearch:
 
     def test_add_chunks_evolves_pre_title_table(self, store):
         """A write to an old index adds the title column in place."""
-        table = _create_pre_title_chunks_table(store)
-        table.add(_make_records())
+        store, table = _pre_title_store(store._config, _make_records())
         assert "title" not in table.schema.names
         store.add_chunks(_titled_records("new.pdf", 1, title="fresh document"))
         assert "title" in store.open_table("chunks").schema.names
@@ -4019,10 +4119,9 @@ class TestTitleSearch:
         """A failing backfill degrades to the old NULL-title behavior."""
         import logging
 
-        table = _create_pre_title_chunks_table(store)
         records = _make_records()
         records[0]["source"] = "project_falcon_notes.pdf"
-        table.add(records)
+        store, table = _pre_title_store(store._config, records)
         with (
             mock.patch.object(type(table), "update", side_effect=RuntimeError("boom")),
             caplog.at_level(logging.WARNING),
@@ -4036,15 +4135,14 @@ class TestTitleSearch:
         titles still need a rebuild and the log says so."""
         import logging
 
-        table = _create_pre_title_chunks_table(store)
         records = _make_records()
         records[0]["source"] = "project_falcon_notes.pdf"
-        table.add(records)
+        store, _table = _pre_title_store(store._config, records)
         with caplog.at_level(logging.INFO):
             store.add_chunks(_titled_records("new.pdf", 1, title="fresh document"))
         assert any("lilbee rebuild" in r.message for r in caplog.records)
-        rows = store.open_table("chunks").search().select(["source", "title"]).to_list()
-        titles = {r["source"]: r["title"] for r in rows}
+        batches = store.chunk_batches(["source", "title"], 100)
+        titles = {row["source"]: row["title"] for rows in batches for row in rows}
         assert titles["project_falcon_notes.pdf"] == "project falcon notes"
         assert titles["doc1.md"] is None  # junk counter stem stays NULL
 
@@ -4108,27 +4206,9 @@ class TestSourceMetadata:
         """An old sources table gains the metadata columns on the next write."""
         import pyarrow as pa
 
-        old_schema = pa.schema(
-            [
-                pa.field("filename", pa.utf8()),
-                pa.field("file_hash", pa.utf8()),
-                pa.field("ingested_at", pa.utf8()),
-                pa.field("chunk_count", pa.int32()),
-                pa.field("source_type", pa.utf8()),
-            ]
-        )
-        table = store.get_db().create_table("_sources", schema=old_schema)
-        table.add(
-            [
-                {
-                    "filename": "old.pdf",
-                    "file_hash": "h0",
-                    "ingested_at": "2020-01-01T00:00:00+00:00",
-                    "chunk_count": 1,
-                    "source_type": "document",
-                }
-            ]
-        )
+        old = _early_source("old.pdf", "h0", "2020-01-01T00:00:00+00:00")
+        early = pa.Table.from_pylist([old], schema=_EARLY_SOURCES_SCHEMA)
+        store = _open_after(store._config, {"_sources": early})
         store.upsert_source("new.pdf", "h1", 2, meta=SourceMeta(title="New Doc"))
         rows = {r["filename"]: r for r in store.get_sources()}
         assert rows["old.pdf"]["title"] is None
@@ -4181,12 +4261,6 @@ class TestRelocateSources:
     def test_relocate_rekeys_every_source_table(self, store):
         # Guards _RELOCATABLE_TABLES: page_texts.source and citations.source_filename
         # must move too, so dropping a table from the list fails here.
-        from lilbee.core.config import (
-            CHUNKS_TABLE,
-            CITATIONS_TABLE,
-            PAGE_TEXTS_TABLE,
-            WIKI_MENTIONS_TABLE,
-        )
         from lilbee.data.store import SourceType
         from lilbee.data.store.types import SourceStat
 
@@ -4219,18 +4293,42 @@ class TestRelocateSources:
 
         store.relocate_sources([SourceMove(("old/a.md",), "new/a.md", SourceStat(1, 2, 3))])
 
-        chunks = store.open_table(CHUNKS_TABLE)
-        pages = store.open_table(PAGE_TEXTS_TABLE)
-        cites = store.open_table(CITATIONS_TABLE)
-        mentions = store.open_table(WIKI_MENTIONS_TABLE)
-        assert chunks.count_rows("source = 'new/a.md'") == 1
-        assert chunks.count_rows("source = 'old/a.md'") == 0
-        assert pages.count_rows("source = 'new/a.md'") == 1
-        assert pages.count_rows("source = 'old/a.md'") == 0
-        assert cites.count_rows("source_filename = 'new/a.md'") == 1
-        assert cites.count_rows("source_filename = 'old/a.md'") == 0
-        assert mentions.count_rows("source = 'new/a.md'") == 1
-        assert mentions.count_rows("source = 'old/a.md'") == 0
+        assert len(store.get_chunks_by_source("new/a.md")) == 1
+        assert store.get_chunks_by_source("old/a.md") == []
+        assert [row["source"] for row in store.get_page_texts("new/a.md")] == ["new/a.md"]
+        assert store.get_page_texts("old/a.md") == []
+        assert len(store.get_citations_for_source("new/a.md")) == 1
+        assert store.get_citations_for_source("old/a.md") == []
+        assert [row["source"] for row in store.wiki_mention_rows()] == ["new/a.md"]
+        assert _holders(store, "old/a.md") == set()
+
+    def test_a_move_commits_the_source_table_alone(self, store):
+        """No title changes: every other table names the source by id and stays as it was."""
+        from lilbee.data.store.lance_helpers import table_names
+
+        _seed_source(store, "old/a.md", title="a")
+        db = store.get_db()
+        before = {name: db.open_table(name).version for name in table_names(db)}
+
+        store.relocate_sources([SourceMove(("old/a.md",), "new/a.md", None)])
+
+        after = {name: db.open_table(name).version for name in table_names(db)}
+        changed = [name for name in after if after[name] != before[name]]
+        assert changed == [SOURCES_TABLE]
+        assert after[SOURCES_TABLE] == before[SOURCES_TABLE] + 1
+
+    def test_the_sources_inside_a_moved_archive_move_with_it(self, store):
+        for key in ("old/bundle.zip", "old/bundle.zip/m0.md", "old/bundle.zip.md"):
+            _seed_source(store, key)
+
+        store.relocate_sources([SourceMove(("old/bundle.zip",), "new/bundle.zip", None)])
+
+        assert sorted(row["filename"] for row in store.get_sources()) == [
+            "new/bundle.zip",
+            "new/bundle.zip/m0.md",
+            "old/bundle.zip.md",
+        ]
+        assert len(store.get_chunks_by_source("new/bundle.zip/m0.md")) == 1
 
     def test_relocate_empty_is_noop(self, store):
         store.relocate_sources([])  # must not raise or acquire the lock
@@ -4251,6 +4349,34 @@ class TestRelocateTitles:
         assert row["title"] == "annual summary"
         chunks = store.get_chunks_by_source("annual_summary.md")
         assert all(c.title == "annual summary" for c in chunks)
+
+    def test_a_folder_move_of_files_with_the_same_title_writes_no_chunk_row(self, store):
+        from lilbee.data.store import SourceMeta, SourceType
+        from lilbee.data.title import derive_title
+
+        moves = []
+        for number in range(3):
+            old, new = f"old/report_{number}.md", f"new/report_{number}.md"
+            title = derive_title(old)
+            store.add_chunks(_titled_records(old, 2, title=title))
+            store.upsert_source(
+                old, f"h{number}", 2, SourceType.DOCUMENT, meta=SourceMeta(title=title)
+            )
+            moves.append(SourceMove((old,), new, None))
+        store.ensure_fts_index()
+        chunks = store.open_table(CHUNKS_TABLE)
+        version = chunks.version
+        index = next(i.name for i in chunks.list_indices() if i.columns == ["chunk"])
+
+        store.relocate_sources(moves)
+
+        assert sorted(row["filename"] for row in store.get_sources()) == [
+            move.new for move in moves
+        ]
+        chunks = store.open_table(CHUNKS_TABLE)
+        assert chunks.version == version
+        assert chunks.index_stats(index).num_unindexed_rows == 0
+        assert len(store.get_chunks_by_source("new/report_1.md")) == 2
 
     def test_extraction_title_survives_the_move(self, store):
         from lilbee.data.store import SourceMeta, SourceType
@@ -4280,34 +4406,12 @@ class TestRelocateTitles:
         row = next(s for s in store.get_sources() if s["filename"] == "IMG_1234.md")
         assert row["title"] is None
 
-    def test_relocated_title_guard_branches(self, store):
-        """No sources table, a failing read, and a missing row all keep the title."""
-        from lilbee.data.store.core import _KEEP_TITLE
-        from lilbee.data.title import derive_title
-
-        assert store._relocated_title(None, "a.md", "b.md", derive_title) is _KEEP_TITLE
-        broken = mock.MagicMock()
-        broken.search.side_effect = RuntimeError("boom")
-        assert store._relocated_title(broken, "a.md", "b.md", derive_title) is _KEEP_TITLE
-        from lilbee.data.store import SourceType
-
-        store.upsert_source("real.md", "h1", 1, SourceType.DOCUMENT)
-        table = store.open_table("_sources")
-        assert store._relocated_title(table, "absent.md", "b.md", derive_title) is _KEEP_TITLE
-
 
 # How long a blocked write gets to prove it is not blocked; an unlocked one takes milliseconds.
 _LOCKED_WRITE_WAIT_S = 1.0
 
-_KEY_COLUMNS = {
-    ("chunks", "source"),
-    ("_page_texts", "source"),
-    ("chunk_concepts", "chunk_source"),
-    ("entities", "source"),
-    ("_wiki_mentions", "source"),
-    ("_citations", "source_filename"),
-    ("_sources", "filename"),
-}
+# The one column that holds a source's path; every other table names the source by id.
+_KEY_COLUMNS = {("_sources", "path")}
 
 
 def _seed_source(store, key, *, title=None):
@@ -4319,7 +4423,8 @@ def _seed_source(store, key, *, title=None):
     store.add_chunks(_titled_records(key, 1, title=title, dim=store._config.embedding_dim))
     store.add_page_texts([{"source": key, "page": 1, "text": "t", "content_type": "text"}])
     concepts = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
-    concepts.add([{"chunk_source": key, "chunk_index": 0, "concept": "roadmap"}])
+    source_id = store.source_ids([key], SourceType.DOCUMENT)[key]
+    concepts.add([{"source_id": source_id, "chunk_index": 0, "concept": "roadmap"}])
     store.add_entities(
         [
             {
@@ -4375,321 +4480,19 @@ def _dump(store):
     from lilbee.data.store.lance_helpers import table_names
 
     db = store.get_db()
+    paths = store._all_source_paths()
+
+    def _shown(row):
+        # A new source's id is random; two libraries of one history agree on its path.
+        return {
+            name: paths.get(value, value) if name == "source_id" else value
+            for name, value in row.items()
+        }
+
     return {
-        name: sorted(map(repr, db.open_table(name).to_arrow().to_pylist()))
+        name: sorted(repr(_shown(row)) for row in db.open_table(name).to_arrow().to_pylist())
         for name in table_names(db)
     }
-
-
-class TestRekeySourcesUnder:
-    """A re-key moves a source and every source below it, in every table that holds a key."""
-
-    def test_the_table_list_is_every_key_column(self):
-        from lilbee.data.store.core import _REKEY_TABLES
-
-        assert set(_REKEY_TABLES) == _KEY_COLUMNS
-
-    def test_every_table_that_holds_a_key_follows(self, store):
-        _seed_source(store, "work/a.md")
-        _seed_source(store, "workshop/x.md")
-        assert _holders(store, "work/a.md") == _KEY_COLUMNS
-
-        store.rekey_sources_under("work", "notes/work")
-
-        assert _holders(store, "notes/work/a.md") == _KEY_COLUMNS
-        assert _holders(store, "work/a.md") == set()
-        assert _holders(store, "workshop/x.md") == _KEY_COLUMNS
-
-    @pytest.mark.parametrize("indexed", [False, True], ids=["flat", "btree"])
-    @pytest.mark.parametrize(
-        ("old", "decoy"),
-        [
-            ("it's", "its"),
-            ("100%", "100abc"),
-            ("a_b", "axb"),
-            ("back\\slash", "backslash"),
-            ("früh/日本語", "fruh/日本語"),
-            ("😀 dir", "😀"),
-            ("u\u0308ber", "über"),
-            ("%_", "ab"),
-        ],
-        ids=[
-            "quote",
-            "percent",
-            "underscore",
-            "backslash",
-            "non-ascii",
-            "astral",
-            "combining",
-            "wildcards",
-        ],
-    )
-    def test_a_key_with_filter_characters_matches_itself_only(self, store, old, decoy, indexed):
-        new = f"pa'r%e_n\\t ü/{old}"
-        moving = [f"{old}/f.md", f"{old}/sub/g's 50%_.md"]
-        staying = [f"{decoy}/f.md", f"{old}x/f.md", f"x{old}/f.md", f"up/{old}/f.md"]
-        for key in (*moving, *staying):
-            _seed_source(store, key)
-        if indexed:
-            store.ensure_scalar_indexes()
-            indexed_columns = [i.columns for i in store.open_table(CHUNKS_TABLE).list_indices()]
-            assert ["source"] in indexed_columns
-
-        store.rekey_sources_under(old, new)
-
-        for key in moving:
-            assert _holders(store, key) == set()
-            assert _holders(store, new + key[len(old) :]) == _KEY_COLUMNS
-        for key in staying:
-            assert _holders(store, key) == _KEY_COLUMNS
-        assert len(store.get_chunks_by_source(f"{new}/f.md")) == 1
-
-    def test_a_single_file_source_moves_by_its_whole_key(self, store):
-        for key in ("plan.md", "plan.md.bak", "plan.mdx/y.md", "my/plan.md"):
-            _seed_source(store, key)
-
-        store.rekey_sources_under("plan.md", "notes/work/plan.md")
-
-        assert _holders(store, "notes/work/plan.md") == _KEY_COLUMNS
-        assert _holders(store, "plan.md") == set()
-        for key in ("plan.md.bak", "plan.mdx/y.md", "my/plan.md"):
-            assert _holders(store, key) == _KEY_COLUMNS
-
-    @pytest.mark.parametrize(
-        ("old", "new"),
-        [("wo\x00rk", "notes/wo\x00rk"), ("work", "no\x00tes/work"), ("work\x00", "work\x00")],
-        ids=["old-holds-a-nul", "new-holds-a-nul", "both-end-in-a-nul"],
-    )
-    def test_a_key_with_a_nul_is_refused_by_name_and_nothing_moves(self, store, old, new):
-        _seed_source(store, "work/a.md")
-        before = _dump(store)
-
-        with pytest.raises(ValueError, match="without a NUL character, not ") as refused:
-            store.rekey_sources_under(old, new)
-
-        assert repr(old if "\x00" in old else new) in str(refused.value)
-        assert _dump(store) == before
-
-    @pytest.mark.parametrize(
-        "name",
-        ["back\\slash.md", "new\nline.md", "tab\there.md"],
-        ids=["backslash", "newline", "tab"],
-    )
-    def test_a_character_a_file_name_can_hold_stays_a_key(self, store, name):
-        """Discovery writes these keys on macOS and Linux, so a re-key moves them."""
-        _seed_source(store, f"work/{name}")
-
-        store.rekey_sources_under("work", "notes/work")
-
-        assert _holders(store, f"notes/work/{name}") == _KEY_COLUMNS
-
-    def test_the_members_of_a_single_file_archive_move_with_it(self, store):
-        _seed_source(store, "docs.zip")
-        _seed_source(store, "docs.zip/in/a.txt")
-
-        store.rekey_sources_under("docs.zip", "notes/docs.zip")
-
-        assert store.member_sources("notes/docs.zip") == ["notes/docs.zip/in/a.txt"]
-        assert _holders(store, "notes/docs.zip") == _KEY_COLUMNS
-        assert _holders(store, "docs.zip") == set()
-        assert _holders(store, "docs.zip/in/a.txt") == set()
-
-    def test_it_leaves_the_tables_the_per_source_relocate_leaves(self, store, tmp_path):
-        import shutil
-
-        keys = ["work/old_report.md", "work/deep/notes-2024.md", "work/IMG_1234.md"]
-        _seed_source(store, keys[0], title="old report")
-        _seed_source(store, keys[1], title="Frankenstein Analysis")
-        _seed_source(store, keys[2])
-        _seed_source(store, "workshop/x.md", title="x")
-        twin_dir = tmp_path / "twin"
-        shutil.copytree(store._config.lancedb_dir, twin_dir)
-        twin = Store(store._config.model_copy(update={"lancedb_dir": twin_dir}))
-        assert _dump(twin) == _dump(store)
-        before = _dump(store)
-
-        twin.relocate_sources([SourceMove((key,), f"notes/{key}", None) for key in keys])
-        store.rekey_sources_under("work", "notes/work")
-
-        assert _dump(store) == _dump(twin)
-        assert _dump(store) != before
-
-    def test_moved_rows_stay_searchable_through_every_index(self, store):
-        for key in ("work/a.md", "other/b.md"):
-            _seed_source(store, key)
-        store.ensure_fts_index()
-        store.ensure_scalar_indexes()
-        table = store.open_table(CHUNKS_TABLE)
-        indexes = sorted(index.name for index in table.list_indices())
-        vector = table.search().where("source = 'work/a.md'").limit(1).to_list()[0]["vector"]
-
-        store.rekey_sources_under("work", "notes/work")
-
-        table = store.open_table(CHUNKS_TABLE)
-        assert sorted(index.name for index in table.list_indices()) == indexes
-        assert len(indexes) >= 2
-        assert [c.source for c in store.get_chunks_by_source("notes/work/a.md")] == [
-            "notes/work/a.md"
-        ]
-        by_text = table.search("work/a.md", query_type="fts").limit(5).to_list()
-        assert "notes/work/a.md" in [row["source"] for row in by_text]
-        assert "work/a.md" not in [row["source"] for row in by_text]
-        nearest = table.search(vector).where("source != 'other/b.md'").limit(1).to_list()
-        assert [row["source"] for row in nearest] == ["notes/work/a.md"]
-
-    def test_the_ingested_at_cache_follows(self, store):
-        _seed_source(store, "work/a.md")
-        assert list(store.source_ingested_at_map()) == ["work/a.md"]
-
-        store.rekey_sources_under("work", "notes/work")
-
-        assert list(store.source_ingested_at_map()) == ["notes/work/a.md"]
-
-    def test_a_store_without_the_optional_tables_is_rekeyed(self, store):
-        from lilbee.data.store import SourceType
-
-        store.upsert_source("work/a.md", "h", 0, SourceType.DOCUMENT)
-
-        store.rekey_sources_under("work", "notes/work")
-
-        assert [s["filename"] for s in store.get_sources()] == ["notes/work/a.md"]
-
-    @staticmethod
-    def _titles(store, key) -> set[str | None]:
-        """The title of *key* in the sources row and on each of its chunks."""
-        row = next(s for s in store.get_sources() if s["filename"] == key)
-        return {row["title"], *(chunk.title for chunk in store.get_chunks_by_source(key))}
-
-    def test_a_changed_file_name_gives_a_title_that_came_from_the_old_name(self, store):
-        _seed_source(store, "renamed", title="renamed")
-        _seed_source(store, "renamed.bak", title="kept")
-
-        store.rekey_sources_under("renamed", "notes/spring_plan.md")
-
-        assert _holders(store, "notes/spring_plan.md") == _KEY_COLUMNS
-        assert _holders(store, "renamed") == set()
-        assert self._titles(store, "notes/spring_plan.md") == {"spring plan"}
-        assert self._titles(store, "renamed.bak") == {"kept"}
-
-    def test_a_changed_file_name_keeps_a_title_the_document_gave(self, store):
-        _seed_source(store, "renamed", title="Spring Release Plan")
-
-        store.rekey_sources_under("renamed", "notes/plan.md")
-
-        assert self._titles(store, "notes/plan.md") == {"Spring Release Plan"}
-
-    def test_a_changed_folder_name_keeps_the_title_of_each_file_below_it(self, store):
-        _seed_source(store, "renamed/plan.md", title="plan")
-        _seed_source(store, "renamed/renamed", title="renamed")
-
-        store.rekey_sources_under("renamed", "notes/work")
-
-        assert _holders(store, "notes/work/plan.md") == _KEY_COLUMNS
-        assert self._titles(store, "notes/work/plan.md") == {"plan"}
-        assert self._titles(store, "notes/work/renamed") == {"renamed"}
-
-    @pytest.mark.parametrize("table", range(1, len(_KEY_COLUMNS) + 1))
-    def test_a_rename_that_dies_at_any_table_and_runs_again_gives_the_new_title(self, store, table):
-        """Each table's title is written before its key, and the sources table moves last."""
-        import lilbee.data.store.core as core_mod
-
-        _seed_source(store, "renamed", title="renamed")
-        real, calls = core_mod._rekey_sql, []
-
-        def _dies(column, old, new):
-            calls.append(column)
-            if len(calls) == table:
-                raise KeyboardInterrupt
-            return real(column, old, new)
-
-        with mock.patch.object(core_mod, "_rekey_sql", _dies), pytest.raises(KeyboardInterrupt):
-            store.rekey_sources_under("renamed", "notes/spring_plan.md")
-        store.rekey_sources_under("renamed", "notes/spring_plan.md")
-
-        assert _holders(store, "notes/spring_plan.md") == _KEY_COLUMNS
-        assert self._titles(store, "notes/spring_plan.md") == {"spring plan"}
-
-    def test_the_same_file_name_leaves_every_title_as_stored(self, store):
-        """A title that only looks derived stays when the name does not change."""
-        _seed_source(store, "plan.md", title="plan")
-        with mock.patch.object(type(store), "_relocated_title") as relocated:
-            store.rekey_sources_under("plan.md", "notes/plan.md")
-
-        relocated.assert_not_called()
-        assert self._titles(store, "notes/plan.md") == {"plan"}
-
-    @pytest.mark.parametrize(
-        ("old", "new", "refused"),
-        [
-            ("work", "notes/work/", "notes/work/"),
-            ("work", "notes//work", "notes//work"),
-            ("work", "./work", "./work"),
-            ("work/", "notes/work", "work/"),
-            ("", "/", ""),
-            (".", "", "."),
-            ("", "x", ""),
-        ],
-        ids=[
-            "new-trailing-slash",
-            "new-doubled-slash",
-            "new-dot-segment",
-            "old-trailing-slash",
-            "old-empty-new-root",
-            "old-dot-new-empty",
-            "old-empty",
-        ],
-    )
-    def test_a_malformed_key_is_refused_by_name_and_nothing_moves(self, store, old, new, refused):
-        for key in ("work/a.md", "work", "./a.md", "/abs.md"):
-            _seed_source(store, key)
-        before = _dump(store)
-
-        with pytest.raises(ValueError, match=re.escape(f"not {refused!r}")):
-            store.rekey_sources_under(old, new)
-
-        assert _dump(store) == before
-        assert _holders(store, "work/a.md") == _KEY_COLUMNS
-
-    @pytest.mark.parametrize("key", ["/work", "work/../notes", ".."])
-    def test_a_rooted_key_or_a_parent_segment_is_refused(self, store, key):
-        _seed_source(store, "work/a.md")
-
-        with pytest.raises(ValueError, match=re.escape(f"not {key!r}")):
-            store.rekey_sources_under("work", key)
-        with pytest.raises(ValueError, match=re.escape(f"not {key!r}")):
-            store.rekey_sources_under(key, "work")
-
-        assert _holders(store, "work/a.md") == _KEY_COLUMNS
-
-    def test_a_write_from_a_second_store_waits_until_the_rekey_ends(self, store, monkeypatch):
-        for key in ("work/a.md", "other/b.md"):
-            _seed_source(store, key)
-        writer = Store(store._config)
-        write = threading.Thread(
-            target=writer.upsert_source, args=("work/new.md", "h", 1, SourceType.DOCUMENT)
-        )
-        open_table = store.open_table
-        done_between_tables = []
-
-        def open_and_let_the_writer_try(name):
-            if name == SOURCES_TABLE and write.ident is None:  # the re-key holds the lock
-                write.start()
-                write.join(timeout=_LOCKED_WRITE_WAIT_S)
-                done_between_tables.append(not write.is_alive())
-            return open_table(name)
-
-        monkeypatch.setattr(store, "open_table", open_and_let_the_writer_try)
-
-        store.rekey_sources_under("work", "notes/work")
-        write.join(timeout=30)
-
-        assert done_between_tables == [False]
-        assert not write.is_alive()
-        assert sorted(s["filename"] for s in writer.get_sources()) == [
-            "notes/work/a.md",
-            "other/b.md",
-            "work/new.md",
-        ]
 
 
 class TestMemberSources:
@@ -4833,8 +4636,8 @@ class TestRelocateGivesEachMoveOneCandidate:
 
 
 def _relocate_one_update_for_each_move(store, moves):
-    """One update of each table for each move: what a batched re-key must leave."""
-    from lilbee.data.store.core import _KEEP_TITLE, _RELOCATABLE_TABLES
+    """One update of the source row for each move, and its chunk titles: what a hold must leave."""
+    from lilbee.data.store.core import _KEEP_TITLE, _title_after_move
     from lilbee.data.title import derive_title
 
     sources = store.open_table(SOURCES_TABLE)
@@ -4844,22 +4647,19 @@ def _relocate_one_update_for_each_move(store, moves):
         if old is None:
             continue
         held.discard(old)
-        title = store._relocated_title(sources, old, move.new, derive_title)
-        at_old = f"= '{escape_sql_string(old)}'"
-        for name, column in _RELOCATABLE_TABLES:
-            table = store.open_table(name)
-            values = {column: move.new}
-            if title is not _KEEP_TITLE and "title" in table.schema.names:
-                values["title"] = title
-            table.update(where=f"{column} {at_old}", values=values)
-        row = {"filename": move.new}
+        stored = sources.search().where(f"path = '{escape_sql_string(old)}'").to_list()[0]
+        title = _title_after_move(stored, old, move.new, derive_title)
+        row = {"path": move.new}
         if title is not _KEEP_TITLE:
             row["title"] = title
+            source_id = store.source_ids([old], SourceType.DOCUMENT)[old]
+            chunks = store.open_table(CHUNKS_TABLE)
+            chunks.update(where=f"source_id = '{source_id}'", values={"title": title})
         if move.stat is not None:
             row["size_bytes"] = move.stat.size_bytes
             row["mtime_ns"] = move.stat.mtime_ns
             row["stat_captured_ns"] = move.stat.captured_ns
-        sources.update(where=f"filename {at_old}", values=row)
+        sources.update(where=f"path = '{escape_sql_string(old)}'", values=row)
 
 
 def _relocate_in_holds(store, moves):
@@ -4976,28 +4776,11 @@ _RELOCATE_HISTORIES = {
 
 class TestRelocateInOnePass:
     @pytest.mark.parametrize("history", sorted(_RELOCATE_HISTORIES))
-    @pytest.mark.parametrize(
-        "bounds",
-        [
-            (2000, 16, 32, 256, 500_000),
-            (2, 16, 32, 256, 500_000),
-            (2000, 1, 2, 256, 500_000),
-            # Every source swaps its own leading text; and a key map of two sources.
-            (2000, 16, 32, 1, 500_000),
-            (2000, 16, 32, 256, 4),
-            (2000, 1, 32, 3, 4),
-            (2000, 16, 256, 256, 500_000),
-        ],
-        ids=str,
-    )
+    @pytest.mark.parametrize("hold_moves", [2000, 2])
     def test_a_batch_leaves_each_table_as_one_update_for_each_move_does(
-        self, store, tmp_path, monkeypatch, history, bounds
+        self, store, tmp_path, monkeypatch, history, hold_moves
     ):
-        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_MOVES", bounds[0])
-        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", bounds[1])
-        monkeypatch.setattr("lilbee.data.store.core._TITLE_MAP_KEYS", bounds[2])
-        monkeypatch.setattr("lilbee.data.store.core._SWAP_MIN_SOURCES", bounds[3])
-        monkeypatch.setattr("lilbee.data.store.core._MAP_CELLS", bounds[4])
+        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_MOVES", hold_moves)
         seeds, moves = _RELOCATE_HISTORIES[history]
         for key, title in seeds:
             _seed_source(store, key, title=title)
@@ -5015,70 +4798,6 @@ class TestRelocateInOnePass:
             {row["filename"] for row in store.get_sources()} & {move.new for move in moves}
         )
 
-    def test_a_renamed_folder_takes_one_update_of_each_table(self, store, monkeypatch):
-        """No title changes, so the six files do not count against the titles of one update."""
-        from lancedb.table import LanceTable
-
-        from lilbee.data.store.core import _RELOCATABLE_TABLES
-
-        monkeypatch.setattr("lilbee.data.store.core._TITLE_MAP_KEYS", 2)
-        seeds, moves = _folder(6)
-        for key, title in seeds:
-            _seed_source(store, key, title=title)
-        with (
-            mock.patch.object(
-                LanceTable, "update", autospec=True, side_effect=LanceTable.update
-            ) as updates,
-            mock.patch.object(
-                LanceTable, "merge_insert", autospec=True, side_effect=LanceTable.merge_insert
-            ) as merges,
-        ):
-            store.relocate_sources(moves)
-
-        assert sorted(row["filename"] for row in store.get_sources()) == [m.new for m in moves]
-        assert updates.call_count == len(_RELOCATABLE_TABLES)
-        assert merges.call_count == 1
-
-    @pytest.mark.parametrize(("map_keys", "chunk_updates"), [(32, 1), (2, 3)])
-    def test_new_file_names_in_one_folder_share_updates_and_take_their_titles(
-        self, store, monkeypatch, map_keys, chunk_updates
-    ):
-        from lancedb.table import LanceTable
-
-        from lilbee.data.store.core import _RELOCATABLE_TABLES
-
-        monkeypatch.setattr("lilbee.data.store.core._TITLE_MAP_KEYS", map_keys)
-        monkeypatch.setattr("lilbee.data.store.core._SWAP_MIN_SOURCES", 1)
-        seeds, moves = _RELOCATE_HISTORIES["new-file-names-in-one-folder"]
-        for key, title in seeds:
-            _seed_source(store, key, title=title)
-        real = LanceTable.update
-        with mock.patch.object(LanceTable, "update", autospec=True, side_effect=real) as updates:
-            step = store.relocate_sources(moves)
-
-        assert step.settled == 5
-        assert updates.call_count == chunk_updates + len(_RELOCATABLE_TABLES) - 1
-        chunks = store.open_table(CHUNKS_TABLE).to_arrow()
-        assert sorted(
-            zip(
-                chunks.column("source").to_pylist(), chunks.column("title").to_pylist(), strict=True
-            )
-        ) == [(f"bulk/paper's_{number}.md", f"paper's {number}") for number in range(5)]
-
-    def test_a_hold_counts_the_updates_that_own_titles_add(self, store, monkeypatch):
-        """Five files with a title each, two titles an update, two updates a hold: four files."""
-        monkeypatch.setattr("lilbee.data.store.core._TITLE_MAP_KEYS", 2)
-        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", 2)
-        seeds, moves = _RELOCATE_HISTORIES["new-file-names-in-one-folder"]
-        for key, title in seeds:
-            _seed_source(store, key, title=title)
-
-        first = store.relocate_sources(moves)
-
-        assert first.settled == 4
-        assert store.relocate_sources(moves[4:]).settled == 1
-        assert _holders(store, "bulk/ledger_4.md") == set()
-
     def test_a_hold_settles_no_more_moves_than_its_bound(self, store, monkeypatch):
         monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_MOVES", 2)
         seeds, moves = _folder(5)
@@ -5092,141 +4811,7 @@ class TestRelocateInOnePass:
         assert left == [m.candidates[0] for m in moves[2:]]
         assert _relocate_in_holds(store, moves[2:])[1] == 2
 
-    def _unrelated(self, store, count, chunks=1):
-        """Seed *count* files with titles from the documents; moves of them to unrelated names."""
-        moves = []
-        for number in range(count):
-            old = f"ledger/entry_{number}.md"
-            _seed_source(store, old, title="Annual Ledger")
-            if chunks > 1:
-                dim = store._config.embedding_dim
-                more = _titled_records(old, chunks, title="Annual Ledger", dim=dim)
-                store.add_chunks(more[1:])
-                store.upsert_source(old, "h", chunks, meta=SourceMeta(title="Annual Ledger"))
-            moves.append(SourceMove((old,), f"shelf{number}/{number * 7} study {number}.txt", None))
-        return moves
-
-    def _chunk_updates(self, store, moves):
-        """Relocate *moves* in one call; the step and the SQL of each update of the chunk table."""
-        from lancedb.table import LanceTable
-
-        real = LanceTable.update
-        with mock.patch.object(LanceTable, "update", autospec=True, side_effect=real) as updates:
-            step = store.relocate_sources(moves)
-        chunk_updates = [
-            call.kwargs["values_sql"]["source"]
-            for call in updates.call_args_list
-            if call.args[0].name == CHUNKS_TABLE
-        ]
-        return step, chunk_updates
-
-    def test_files_moved_to_unrelated_names_share_one_update_of_each_table(self, store, tmp_path):
-        from lancedb.table import LanceTable
-
-        from lilbee.data.store.core import _RELOCATABLE_TABLES
-
-        moves = self._unrelated(store, 6)
-        twin = _twin(store, tmp_path)
-        _relocate_one_update_for_each_move(twin, moves)
-        vectors = _vector_bytes(store)
-        real = LanceTable.update
-        with mock.patch.object(LanceTable, "update", autospec=True, side_effect=real) as updates:
-            step = store.relocate_sources(moves)
-
-        assert step.settled == 6
-        assert updates.call_count == len(_RELOCATABLE_TABLES)
-        assert _dump(store) == _dump(twin)
-        assert _vector_bytes(store) == vectors
-        assert sorted(row["filename"] for row in store.get_sources()) == sorted(
-            m.new for m in moves
-        )
-
-    def test_titles_of_their_own_count_twice_against_the_bound_of_the_maps(
-        self, store, monkeypatch
-    ):
-        """One chunk a file and a bound of 12: two files with keys and titles are 3 x 2 x 2."""
-        monkeypatch.setattr("lilbee.data.store.core._MAP_CELLS", 12)
-        seeds, moves = _RELOCATE_HISTORIES["new-file-names-in-one-folder"]
-        for key, title in seeds:
-            _seed_source(store, key, title=title)
-
-        step, chunk_updates = self._chunk_updates(store, moves)
-
-        assert step.settled == 5
-        assert [sql.count("bulk/ledger_") for sql in chunk_updates] == [2, 2, 1]
-        titles = store.open_table(CHUNKS_TABLE).to_arrow().column("title").to_pylist()
-        assert sorted(titles) == [f"paper's {number}" for number in range(5)]
-
-    def test_a_key_map_stops_at_its_bound_on_keys_times_chunk_rows(self, store, monkeypatch):
-        """Two chunks a file and a bound of 16: two files are 2 x 4, three would be 3 x 6."""
-        monkeypatch.setattr("lilbee.data.store.core._MAP_CELLS", 16)
-        moves = self._unrelated(store, 5, chunks=2)
-
-        step, chunk_updates = self._chunk_updates(store, moves)
-
-        assert step.settled == 5
-        assert [sql.count("ledger/entry_") for sql in chunk_updates] == [2, 2, 1]
-        assert sorted(
-            set(store.open_table(CHUNKS_TABLE).to_arrow().column("source").to_pylist())
-        ) == (sorted(move.new for move in moves))
-
-    def test_one_file_past_the_bound_of_a_key_map_still_moves(self, store, monkeypatch):
-        monkeypatch.setattr("lilbee.data.store.core._MAP_CELLS", 1)
-        moves = self._unrelated(store, 2, chunks=3)
-
-        step, chunk_updates = self._chunk_updates(store, moves)
-
-        assert step.settled == 2
-        assert len(chunk_updates) == 2
-
-    def test_a_hold_counts_the_updates_that_key_maps_add(self, store, monkeypatch):
-        """One file a map and two updates a hold: the third file waits for the next hold."""
-        monkeypatch.setattr("lilbee.data.store.core._MAP_CELLS", 1)
-        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", 2)
-        moves = self._unrelated(store, 3)
-
-        first = store.relocate_sources(moves)
-
-        assert first.settled == 2
-        assert _holders(store, moves[2].candidates[0]) != set()
-        assert store.relocate_sources(moves[2:]).settled == 1
-        assert _holders(store, moves[2].candidates[0]) == set()
-
-    @pytest.mark.parametrize(("files", "by"), [(3, "concat("), (2, "map_extract(")])
-    def test_enough_files_that_swap_one_leading_text_take_an_update_of_their_own(
-        self, store, monkeypatch, files, by
-    ):
-        monkeypatch.setattr("lilbee.data.store.core._SWAP_MIN_SOURCES", 3)
-        seeds, moves = _folder(files)
-        for key, title in seeds:
-            _seed_source(store, key, title=title)
-
-        step, chunk_updates = self._chunk_updates(store, moves)
-
-        assert step.settled == files
-        assert len(chunk_updates) == 1
-        assert chunk_updates[0].startswith(by)
-
-    def test_a_hold_stops_before_the_update_past_its_bound(self, store, monkeypatch):
-        """Each of these files swaps a leading text of its own, so each is one update."""
-        monkeypatch.setattr("lilbee.data.store.core._SWAP_MIN_SOURCES", 1)
-        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", 2)
-        names = ["alpha_plan", "beta_plan", "gamma_plan"]
-        for name in names:
-            _seed_source(store, f"{name}.md", title=name.replace("_", " "))
-        moves = [SourceMove((f"{name}.md",), f"{name}_final.md", None) for name in names]
-
-        first = store.relocate_sources(moves)
-
-        assert first.settled == 2
-        assert sorted(first.taken) == ["alpha_plan_final.md", "beta_plan_final.md"]
-        assert store.relocate_sources(moves[first.settled :]) == SourceRelocation(
-            {"gamma_plan_final.md": "gamma_plan.md"}, settled=1
-        )
-        assert _holders(store, "gamma_plan.md") == set()
-
-    def test_a_move_with_no_candidate_left_is_settled_without_an_update(self, store, monkeypatch):
-        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", 1)
+    def test_a_move_with_no_candidate_left_is_settled_without_an_update(self, store):
         _seed_source(store, "kept.md", title="kept")
         moves = [SourceMove(("ghost.md",), f"new{number}.md", None) for number in range(3)]
         before = _dump(store)
@@ -5234,120 +4819,32 @@ class TestRelocateInOnePass:
         assert store.relocate_sources(moves) == SourceRelocation({}, settled=3)
         assert _dump(store) == before
 
-    def test_a_hold_that_dies_before_the_source_rows_is_finished_by_the_next(self, store, tmp_path):
-        seeds, moves = _folder(4)
-        for key, title in seeds:
-            _seed_source(store, key, title=title)
-        twin = _twin(store, tmp_path)
-        _relocate_one_update_for_each_move(twin, moves)
-
-        with (
-            mock.patch.object(
-                type(store), "_replace_moved_source_rows_unlocked", side_effect=KeyboardInterrupt
-            ),
-            pytest.raises(KeyboardInterrupt),
-        ):
-            store.relocate_sources(moves)
-        assert sorted(row["filename"] for row in store.get_sources()) == [
-            m.candidates[0] for m in moves
-        ]
-        store.relocate_sources(moves)
-
-        assert _dump(store) == _dump(twin)
-
-    def test_a_hold_stopped_after_its_first_step_is_finished_by_the_next(self, store, tmp_path):
-        """The step a hold runs first must leave the old names for the next call to move."""
-        seeds, moves = _folder(4)
-        for key, title in seeds:
-            _seed_source(store, key, title=title)
-        twin = _twin(store, tmp_path)
-        _relocate_one_update_for_each_move(twin, moves)
-        before = _dump(store)
-        steps_run = []
-
-        def stop_after_the_first(real):
-            def step(*args):
-                if steps_run:
-                    raise KeyboardInterrupt
-                steps_run.append(real)
-                return real(*args)
-
-            return step
-
-        steps = ("_rekey_tables_unlocked", "_replace_moved_source_rows_unlocked")
-        stopped = {name: stop_after_the_first(getattr(type(store), name)) for name in steps}
-        with mock.patch.multiple(type(store), **stopped), pytest.raises(KeyboardInterrupt):
-            store.relocate_sources(moves)
-        assert len(steps_run) == 1
-        assert _dump(store) != before
-        store.relocate_sources(moves)
-
-        assert _dump(store) == _dump(twin)
-
-    def test_a_name_the_source_table_holds_twice_moves_with_both_rows(self, store, tmp_path):
-        _seed_source(store, "twice.md", title="twice")
-        store.open_table(SOURCES_TABLE).add(store.open_table(SOURCES_TABLE).to_arrow())
-        twin = _twin(store, tmp_path)
-        moves = [SourceMove(("twice.md",), "moved/twice.md", None)]
-        _relocate_one_update_for_each_move(twin, moves)
-
-        store.relocate_sources(moves)
-
-        assert [row["filename"] for row in store.get_sources()] == ["moved/twice.md"] * 2
-        assert _dump(store) == _dump(twin)
-
     def test_a_move_onto_a_name_that_holds_a_row_leaves_the_moved_row_there(self, store):
-        """One update for each move leaves two rows for the name; the merge leaves the moved one."""
+        store.add_chunks(_titled_records("old.md", 1, title="old"))
         store.upsert_source("old.md", "hash of the moved file", 1)
-        store.upsert_source("new.md", "hash of another file", 1)
+        store.add_chunks(_titled_records("new.md", 2, title="new"))
+        store.upsert_source("new.md", "hash of another file", 2)
 
         store.relocate_sources([SourceMove(("old.md",), "new.md", None)])
 
         assert [(row["filename"], row["file_hash"]) for row in store.get_sources()] == [
             ("new.md", "hash of the moved file")
         ]
+        assert len(store.get_chunks_by_source("new.md")) == 1
+        assert store.open_table(CHUNKS_TABLE).count_rows() == 1
 
-    def test_a_source_table_from_before_titles_and_stats_keeps_its_columns(self, store):
-        """An index a much earlier lilbee wrote: the move changes the key and nothing else.
+    def test_two_sources_that_swap_names_both_move(self, store):
+        store.upsert_source("a.md", "hash of a", 1)
+        store.upsert_source("b.md", "hash of b", 1)
 
-        The old name gives no title and the new one does, so a missing title
-        column read as an empty title would put a title on the chunk.
-        """
-        import pyarrow as pa
-
-        from lilbee.data.store import ensure_table
-        from lilbee.data.store.types import SourceStat
-
-        early_schema = pa.schema(
-            [
-                pa.field("filename", pa.utf8()),
-                pa.field("file_hash", pa.utf8()),
-                pa.field("ingested_at", pa.utf8()),
-                pa.field("chunk_count", pa.int32()),
-                pa.field("source_type", pa.utf8()),
-            ]
-        )
-        row = {
-            "filename": "IMG_1234.md",
-            "file_hash": "h",
-            "ingested_at": "",
-            "chunk_count": 1,
-            "source_type": "document",
-        }
-        ensure_table(store.get_db(), SOURCES_TABLE, early_schema).add([row])
-        store.add_chunks(_titled_records("IMG_1234.md", 1, title=None))
-
-        step = store.relocate_sources(
-            [SourceMove(("IMG_1234.md",), "annual_summary.md", SourceStat(1, 2, 3))]
+        store.relocate_sources(
+            [SourceMove(("a.md",), "b.md", None), SourceMove(("b.md",), "a.md", None)]
         )
 
-        assert step == SourceRelocation({"annual_summary.md": "IMG_1234.md"}, settled=1)
-        assert store.open_table(SOURCES_TABLE).to_arrow().to_pylist() == [
-            {**row, "filename": "annual_summary.md"}
+        assert sorted((row["filename"], row["file_hash"]) for row in store.get_sources()) == [
+            ("a.md", "hash of b"),
+            ("b.md", "hash of a"),
         ]
-        chunks = store.open_table(CHUNKS_TABLE).to_arrow()
-        assert chunks.column("source").to_pylist() == ["annual_summary.md"]
-        assert chunks.column("title").to_pylist() == [None]
 
     def test_files_of_one_content_share_one_pass_over_their_old_names(self):
         from lilbee.data.store.core import _claimed_names
@@ -5366,6 +4863,521 @@ class TestRelocateInOnePass:
 
         assert claimed == [*names[100:], *([None] * 100)]
         assert Counted.reads <= 4 * len(names)
+
+
+def _path_keyed_library(config):
+    """A Store over a library the layout before source ids wrote: every table keys by path."""
+    return _open_after(config, _path_keyed_tables(config))
+
+
+def _path_keyed_tables(config):
+    """The tables of a library that keys by path, by name.
+
+    ``a.md`` and ``b.md`` are indexed; ``wiki/concepts/x.md`` has chunks and no source
+    row; ``gone.md`` was removed and a citation still names it.
+    """
+    dim = config.embedding_dim
+    sources = [
+        {**_early_source("a.md", "ha"), "size_bytes": 1, "mtime_ns": 2, "stat_captured_ns": 3},
+        {**_early_source("b.md", "hb"), "size_bytes": 4, "mtime_ns": 5, "stat_captured_ns": 6},
+    ]
+    sources = [{**row, "title": None, "authors": None, "created_at": None} for row in sources]
+    chunks = [
+        {**_axis_record(key, axis, dim), "chunk_type": chunk_type, "title": None}
+        for axis, (key, chunk_type) in enumerate(
+            [("a.md", "raw"), ("b.md", "raw"), ("wiki/concepts/x.md", ChunkType.WIKI)]
+        )
+    ]
+    cited = {**_citation("gone.md"), "wiki_source": "wiki/concepts/x.md"}
+    return {
+        SOURCES_TABLE: pa.Table.from_pylist(sources),
+        CHUNKS_TABLE: pa.Table.from_pylist(chunks),
+        PAGE_TEXTS_TABLE: pa.Table.from_pylist(
+            [{"source": "a.md", "page": 1, "text": "t", "content_type": "text"}]
+        ),
+        "_citations": pa.Table.from_pylist([_citation("a.md"), cited]),
+        "_wiki_mentions": pa.Table.from_pylist([{**_mention("boeing", "b.md", 1, [0])}]),
+        "chunk_concepts": pa.Table.from_pylist(
+            [{"chunk_source": "a.md", "chunk_index": 0, "concept": "roadmap"}]
+        ),
+    }
+
+
+def _meta_rows(config, stamped):
+    """The ``_meta`` row of a library stamped schema version *stamped*."""
+    from lilbee.data.store.schema import _meta_schema
+
+    row = {
+        "embedding_model": config.embedding_model,
+        "embedding_dim": config.embedding_dim,
+        "schema_version": stamped,
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    return pa.Table.from_pylist([row], schema=_meta_schema())
+
+
+def _untimed(dump):
+    """*dump* without the time each source row was written."""
+    return {
+        name: sorted(re.sub(r"'ingested_at': '[^']*'", "", row) for row in rows)
+        for name, rows in dump.items()
+    }
+
+
+def _md5(text):
+    import hashlib
+
+    return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
+
+
+class TestChunkBatches:
+    def test_an_empty_store_yields_no_batch(self, store):
+        assert list(store.chunk_batches(["source", "chunk"], 10)) == []
+
+    def test_a_chunk_no_source_row_names_is_left_out(self, store):
+        store.add_chunks(_make_records(2))
+        assert [len(rows) for rows in store.chunk_batches(["source"], 10)] == [2]
+        store.get_db().drop_table(SOURCES_TABLE)
+
+        assert list(store.chunk_batches(["source", "chunk_index"], 10)) == [[]]
+
+    def test_each_row_names_its_source_by_path(self, store):
+        store.add_chunks(_make_records(3))
+
+        batches = list(store.chunk_batches(["source", "chunk_index"], 2))
+
+        assert [len(rows) for rows in batches] == [2, 1]
+        assert sorted((r["source"], r["chunk_index"]) for rows in batches for r in rows) == [
+            ("doc0.md", 0),
+            ("doc1.md", 1),
+            ("doc2.md", 2),
+        ]
+
+
+class TestOpenTimeMigration:
+    """The first open keys every table by ``source_id``; nothing is embedded again."""
+
+    def test_every_table_names_its_source_by_id_and_no_path_column_is_left(self, test_config):
+        store = _path_keyed_library(test_config)
+        db = store.get_db()
+
+        for name in ("chunks", "_page_texts", "_citations", "_wiki_mentions", "chunk_concepts"):
+            names = db.open_table(name).schema.names
+            assert "source_id" in names
+            assert not {"source", "chunk_source", "source_filename"} & set(names), name
+        names = db.open_table(SOURCES_TABLE).schema.names
+        assert "path" in names and "filename" not in names and "held_out" in names
+
+    def test_an_existing_source_takes_the_md5_of_its_path(self, test_config):
+        store = _path_keyed_library(test_config)
+
+        assert store.source_ids(["a.md", "b.md"], SourceType.DOCUMENT) == {
+            "a.md": _md5("a.md"),
+            "b.md": _md5("b.md"),
+        }
+
+    def test_what_a_reader_sees_is_unchanged(self, test_config):
+        store = _path_keyed_library(test_config)
+        dim = test_config.embedding_dim
+
+        assert [(r["filename"], r["file_hash"]) for r in store.get_sources()] == [
+            ("a.md", "ha"),
+            ("b.md", "hb"),
+        ]
+        hits = store.search(_axis_record("q", 1, dim)["vector"], top_k=1, max_distance=0)
+        assert [hit.source for hit in hits] == ["b.md"]
+        assert [r["source"] for r in store.get_page_texts("a.md")] == ["a.md"]
+        assert [r["source"] for r in store.wiki_mention_rows()] == ["b.md"]
+        assert store.wiki_chunk_sources() == {"wiki/concepts/x.md"}
+        cited = store.get_citations_for_wiki("wiki/concepts/x.md")
+        assert [r["source_filename"] for r in cited] == ["gone.md"]
+        assert len(store.get_citations_for_source("a.md")) == 1
+
+    def test_a_path_no_source_row_held_keeps_a_row_no_listing_shows(self, test_config):
+        store = _path_keyed_library(test_config)
+        rows = {r["path"]: r for r in store.open_table(SOURCES_TABLE).to_arrow().to_pylist()}
+
+        assert (
+            rows["wiki/concepts/x.md"]["source_type"],
+            rows["wiki/concepts/x.md"]["held_out"],
+        ) == (
+            SourceType.WIKI,
+            None,
+        )
+        assert rows["gone.md"]["held_out"] == "removed"
+        assert store.count_sources() == 2
+        assert store.missing_sources(["gone.md", "a.md"]) == {"gone.md"}
+
+    def test_the_key_comparison_makes_no_row_a_python_object(self, test_config):
+        from lancedb.query import LanceQueryBuilder
+
+        store = _path_keyed_library(test_config)
+
+        real, converted = LanceQueryBuilder.to_list, []
+
+        def _counted(self, *args, **kwargs):
+            rows = real(self, *args, **kwargs)
+            converted.extend(rows)
+            return rows
+
+        with mock.patch.object(LanceQueryBuilder, "to_list", _counted):
+            store.get_db()
+
+        assert converted == []
+
+        rows = store.open_table(SOURCES_TABLE).to_arrow().to_pylist()
+        assert sorted(r["path"] for r in rows) == ["a.md", "b.md", "gone.md", "wiki/concepts/x.md"]
+
+    def test_a_table_gains_its_id_column_while_the_next_table_is_compared(
+        self, test_config, monkeypatch
+    ):
+        from lancedb.table import LanceTable
+
+        import lilbee.data.store.core as core_mod
+
+        store = _path_keyed_library(test_config)
+        compared, overlapped = threading.Event(), []
+        real_add, real_missing = LanceTable.add_columns, core_mod._keys_missing_from
+
+        def _add(self, *args, **kwargs):
+            if self.name == CHUNKS_TABLE:
+                overlapped.append(compared.wait(timeout=5))
+            return real_add(self, *args, **kwargs)
+
+        def _missing(sources, table, column):
+            if table.name == PAGE_TEXTS_TABLE:
+                compared.set()
+            return real_missing(sources, table, column)
+
+        monkeypatch.setattr(LanceTable, "add_columns", _add)
+        monkeypatch.setattr(core_mod, "_keys_missing_from", _missing)
+
+        store.get_db()
+
+        assert overlapped == [True]
+        assert "source_id" in store.open_table(CHUNKS_TABLE).schema.names
+
+    def test_the_id_columns_are_added_while_the_source_table_is_upgraded(
+        self, test_config, monkeypatch
+    ):
+        from lancedb.table import LanceTable
+
+        import lilbee.data.store.core as core_mod
+
+        store = _path_keyed_library(test_config)
+        adding, overlapped = threading.Event(), []
+        real_add, real_sources = LanceTable.add_columns, core_mod._migrate_sources_table
+
+        def _add(self, *args, **kwargs):
+            if self.name == CHUNKS_TABLE:
+                adding.set()
+            return real_add(self, *args, **kwargs)
+
+        def _sources(table):
+            overlapped.append(adding.wait(timeout=5))
+            real_sources(table)
+
+        monkeypatch.setattr(LanceTable, "add_columns", _add)
+        monkeypatch.setattr(core_mod, "_migrate_sources_table", _sources)
+
+        store.get_db()
+
+        assert overlapped == [True]
+        names = store.open_table(CHUNKS_TABLE).schema.names
+        assert "source_id" in names and "source" not in names
+        assert _sources_of(store) == ["a.md", "b.md", "wiki/concepts/x.md"]
+
+    @pytest.mark.parametrize("key_type", [pa.string(), pa.large_string()])
+    def test_the_missing_keys_are_the_keys_no_source_row_holds(self, tmp_path, key_type):
+        import lancedb
+
+        from lilbee.data.store.core import _keys_missing_from
+
+        keys = ["a.md", "a.md", "", "it's.md", "日本/文書.md", "held.md", "wiki/p.md", "b.md"]
+        keys += ["wiki/p.md", "wiki/p.md"]
+        held = ["a.md", "held.md", "c.md", ""]
+        db = lancedb.connect(str(tmp_path))
+        table = db.create_table("t", pa.table({"source": pa.array(keys, key_type)}))
+        rows = {"path": held, "source_type": [SourceType.DOCUMENT] * len(held)}
+        sources = db.create_table("s", pa.table(rows))
+
+        missing = _keys_missing_from(sources, table, "source")
+
+        assert [key for key, _ in missing] == sorted(set(keys) - set(held))
+        assert missing == [
+            (key, SourceType.DOCUMENT) for key in ["b.md", "it's.md", "wiki/p.md", "日本/文書.md"]
+        ]
+
+    def test_a_wiki_chunk_misses_a_page_row_and_any_other_key_a_document_row(self, tmp_path):
+        import lancedb
+
+        from lilbee.data.store.core import _keys_missing_from
+
+        chunks = {
+            "source": ["wiki/p.md", "wiki/p.md", "wiki/q.md", "wiki/q.md", "d.md", "e.md", "f.md"],
+            "chunk_type": ["wiki", "raw", "wiki", "raw", "raw", None, "raw"],
+        }
+        held = {
+            "path": ["wiki/p.md", "wiki/q.md", "d.md", "f.md"],
+            "source_type": [SourceType.DOCUMENT, SourceType.WIKI, SourceType.WIKI, None],
+        }
+        db = lancedb.connect(str(tmp_path))
+        table = db.create_table(CHUNKS_TABLE, pa.table(chunks))
+        sources = db.create_table("s", pa.table(held))
+
+        assert _keys_missing_from(sources, table, "source") == [
+            ("wiki/p.md", SourceType.WIKI),
+            ("d.md", SourceType.DOCUMENT),
+            ("e.md", SourceType.DOCUMENT),
+            ("wiki/q.md", SourceType.DOCUMENT),
+        ]
+
+    def test_a_key_in_many_rows_of_several_tables_gets_one_row_for_each_type(self, test_config):
+        tables = _path_keyed_tables(test_config)
+        pages = [
+            {"source": "wiki/concepts/x.md", "page": number, "text": "t", "content_type": "text"}
+            for number in range(3)
+        ]
+        tables[PAGE_TEXTS_TABLE] = pa.Table.from_pylist(
+            tables[PAGE_TEXTS_TABLE].to_pylist() + pages
+        )
+        wiki = tables[CHUNKS_TABLE].to_pylist()[-1]
+        chunks = [{**wiki, "chunk_index": number} for number in range(1, 3)]
+        tables[CHUNKS_TABLE] = pa.Table.from_pylist(
+            tables[CHUNKS_TABLE].to_pylist() + chunks, schema=tables[CHUNKS_TABLE].schema
+        )
+        store = _open_after(test_config, tables)
+
+        rows = store.open_table(SOURCES_TABLE).to_arrow().to_pylist()
+
+        assert sorted((r["path"], r["source_type"]) for r in rows) == [
+            ("a.md", SourceType.DOCUMENT),
+            ("b.md", SourceType.DOCUMENT),
+            ("gone.md", SourceType.DOCUMENT),
+            ("wiki/concepts/x.md", SourceType.DOCUMENT),
+            ("wiki/concepts/x.md", SourceType.WIKI),
+        ]
+        assert store.source_ids(["wiki/concepts/x.md"], SourceType.WIKI) == {
+            "wiki/concepts/x.md": _md5("wiki/concepts/x.md\0wiki")
+        }
+        assert store.source_ids(["wiki/concepts/x.md"], SourceType.DOCUMENT) == {
+            "wiki/concepts/x.md": _md5("wiki/concepts/x.md")
+        }
+
+    def test_a_second_open_changes_nothing(self, test_config):
+        from lilbee.data.store.lance_helpers import table_names
+
+        _path_keyed_library(test_config)
+        db = Store(test_config).get_db()
+        before = {name: db.open_table(name).version for name in table_names(db)}
+
+        db = Store(test_config).get_db()
+
+        assert {name: db.open_table(name).version for name in table_names(db)} == before
+
+    @pytest.mark.parametrize(
+        ("stop", "nth"),
+        [
+            *(("add_columns", nth) for nth in range(1, 8)),
+            *(("drop_columns", nth) for nth in range(1, 6)),
+            ("alter_columns", 1),
+            *(("merge_insert", nth) for nth in (1, 2)),
+        ],
+    )
+    def test_an_open_stopped_part_way_is_finished_by_the_next(
+        self, test_config, tmp_path, stop, nth
+    ):
+        from lancedb.table import LanceTable
+
+        clean = _dump(
+            _path_keyed_library(test_config.model_copy(update={"lancedb_dir": tmp_path / "clean"}))
+        )
+        real, calls = getattr(LanceTable, stop), []
+
+        def _stops(self, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == nth:
+                raise KeyboardInterrupt
+            return real(self, *args, **kwargs)
+
+        with mock.patch.object(LanceTable, stop, _stops), pytest.raises(KeyboardInterrupt):
+            _path_keyed_library(test_config).get_db()
+
+        assert _untimed(_dump(Store(test_config))) == _untimed(clean)
+
+    def test_two_stores_that_open_one_after_the_other_agree(self, test_config):
+        _path_keyed_library(test_config)
+
+        first, second = Store(test_config), Store(test_config)
+
+        assert first.get_sources() == second.get_sources()
+        assert _dump(first) == _dump(second)
+
+    def test_the_open_takes_the_write_lock(self, test_config, monkeypatch):
+        import lancedb
+
+        import lilbee.data.store.core as core_mod
+
+        db = lancedb.connect(str(test_config.lancedb_dir))
+        db.create_table(SOURCES_TABLE, pa.Table.from_pylist([_early_source("a.md")]))
+        taken = []
+        real = core_mod.write_lock
+
+        @contextmanager
+        def _lock(*args, **kwargs):
+            with real(*args, **kwargs):
+                taken.append(Store(test_config)._config.lancedb_dir)
+                yield
+
+        monkeypatch.setattr(core_mod, "write_lock", _lock)
+
+        Store(test_config).get_db()
+
+        assert taken[:1] == [test_config.lancedb_dir]
+
+    def test_a_key_index_moves_to_the_id_and_the_path(self, test_config):
+        import lancedb
+        from lancedb.index import BTree
+
+        db = lancedb.connect(str(test_config.lancedb_dir))
+        for name, rows in _path_keyed_tables(test_config).items():
+            db.create_table(name, rows)
+        for name, column in (
+            ("chunks", "source"),
+            ("_page_texts", "source"),
+            (SOURCES_TABLE, "filename"),
+        ):
+            db.open_table(name).create_index(column, config=BTree())
+
+        db = Store(test_config).get_db()
+
+        def _indexes(name):
+            return {(i.name, tuple(i.columns)) for i in db.open_table(name).list_indices()}
+
+        assert ("source_id_idx", ("source_id",)) in _indexes("chunks")
+        assert ("source_id_idx", ("source_id",)) in _indexes("_page_texts")
+        assert _indexes(SOURCES_TABLE) == {
+            ("path_idx", ("path",)),
+            ("source_id_idx", ("source_id",)),
+        }
+
+    @pytest.mark.parametrize(("stamped", "after"), [(2, 3), (1, 1)])
+    def test_a_migrated_library_reads_schema_version_three(self, test_config, stamped, after):
+        tables = _path_keyed_tables(test_config)
+        tables[META_TABLE] = _meta_rows(test_config, stamped)
+
+        store = _open_after(test_config, tables)
+
+        assert store.get_meta()["schema_version"] == after
+
+    def test_an_open_stopped_before_its_schema_stamp_is_stamped_by_the_next(self, test_config):
+        import lancedb
+        from lancedb.table import LanceTable
+
+        tables = _path_keyed_tables(test_config)
+        tables[META_TABLE] = _meta_rows(test_config, 2)
+        real = LanceTable.update
+
+        def _stops(self, *args, **kwargs):
+            if self.name == META_TABLE:
+                raise KeyboardInterrupt
+            return real(self, *args, **kwargs)
+
+        with mock.patch.object(LanceTable, "update", _stops), pytest.raises(KeyboardInterrupt):
+            _open_after(test_config, tables).get_db()
+        db = lancedb.connect(str(test_config.lancedb_dir))
+        left = {name: set(db.open_table(name).schema.names) for name in tables}
+        assert not any({"source", "chunk_source", "source_filename"} & n for n in left.values())
+        assert db.open_table(META_TABLE).to_arrow().column("schema_version").to_pylist() == [2]
+
+        assert Store(test_config).get_meta()["schema_version"] == 3
+
+    def test_the_stamped_schema_version_is_three(self):
+        from lilbee.data.store.types import META_SCHEMA_VERSION
+
+        assert META_SCHEMA_VERSION == 3
+
+
+def _shared_key_tables(config):
+    """A library keyed by path where a document and a wiki page share ``wiki/concepts/x.md``."""
+    tables = _path_keyed_tables(config)
+    shared = "wiki/concepts/x.md"
+    sources = tables[SOURCES_TABLE].to_pylist()
+    tables[SOURCES_TABLE] = pa.Table.from_pylist([*sources, {**sources[0], "filename": shared}])
+    document = {**_axis_record(shared, 3, config.embedding_dim), "title": None}
+    tables[CHUNKS_TABLE] = pa.Table.from_pylist(
+        [*tables[CHUNKS_TABLE].to_pylist(), document], schema=tables[CHUNKS_TABLE].schema
+    )
+    return tables
+
+
+def _bodies(store, source_type):
+    """The text of each chunk of ``wiki/concepts/x.md`` as a source of *source_type*."""
+    source_id = store.source_ids(["wiki/concepts/x.md"], source_type)["wiki/concepts/x.md"]
+    rows = store.open_table(CHUNKS_TABLE).search().where(f"source_id = '{source_id}'")
+    return sorted(row["chunk"] for row in rows.limit(None).to_list())
+
+
+class TestAnUpgradeTypesWikiChunks:
+    """A document and a wiki page that share a key keep two rows and two ids at an upgrade."""
+
+    def test_the_page_and_the_document_each_keep_their_own_row_and_chunks(self, test_config):
+        store = _open_after(test_config, _shared_key_tables(test_config))
+        key = "wiki/concepts/x.md"
+
+        page = store.source_ids([key], SourceType.WIKI)
+        document = store.source_ids([key], SourceType.DOCUMENT)
+
+        assert page == {key: _md5(f"{key}\0wiki")}
+        assert document == {key: _md5(key)}
+        assert _bodies(store, SourceType.WIKI) == [f"{key} body"]
+        assert _bodies(store, SourceType.DOCUMENT) == [f"{key} body"]
+        assert [r["filename"] for r in store.get_sources()] == ["a.md", "b.md", key]
+
+    def test_a_page_written_again_leaves_no_old_body_and_the_document_keeps_its(self, test_config):
+        store = _open_after(test_config, _shared_key_tables(test_config))
+        key = "wiki/concepts/x.md"
+        page = {**_axis_record(key, 4, test_config.embedding_dim), "chunk_type": ChunkType.WIKI}
+
+        store.replace_chunks(key, ChunkType.WIKI, [{**page, "chunk": "new body"}])
+
+        assert _bodies(store, SourceType.WIKI) == ["new body"]
+        assert _bodies(store, SourceType.DOCUMENT) == [f"{key} body"]
+
+    def test_an_upgrade_killed_after_the_id_column_is_finished_by_the_next(
+        self, test_config, tmp_path
+    ):
+        from lancedb.table import LanceTable
+
+        whole = _open_after(
+            test_config.model_copy(update={"lancedb_dir": tmp_path / "whole"}),
+            _shared_key_tables(test_config),
+        )
+        whole.get_db()
+        killed = test_config.model_copy(update={"lancedb_dir": tmp_path / "killed"})
+        real = LanceTable.update
+
+        def _dies_typing_pages(self, *args, **kwargs):
+            if kwargs.get("where") == "chunk_type = 'wiki'":
+                raise KeyboardInterrupt
+            return real(self, *args, **kwargs)
+
+        with (
+            mock.patch.object(LanceTable, "update", _dies_typing_pages),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _open_after(killed, _shared_key_tables(test_config)).get_db()
+        import lancedb
+
+        half = lancedb.connect(str(killed.lancedb_dir)).open_table(CHUNKS_TABLE).schema.names
+        assert {"source", "source_id"} <= set(half)
+
+        store = Store(killed)
+
+        assert _untimed(_dump(store)) == _untimed(_dump(whole))
+        assert store.source_ids(["wiki/concepts/x.md"], SourceType.WIKI) == {
+            "wiki/concepts/x.md": _md5("wiki/concepts/x.md\0wiki")
+        }
 
 
 class TestSourcesWithoutChunks:
@@ -5479,7 +5491,8 @@ class TestSourcesCheckpoint:
             item = ChunkWrite(source="a.md", file_hash="h", records=[], needs_cleanup=False)
             store.write_chunks_batch([item])
 
-        assert stamped_under_lock == [True]
+        # A new source of a flush takes a held-out row first, then its listed one.
+        assert stamped_under_lock == ([True] if write == "upsert_source" else [True, True])
         assert [row["filename"] for row in store.get_sources()] == ["a.md"]
 
 
@@ -5566,16 +5579,63 @@ class TestWikiRefreshed:
         assert store.sources_version() is None
 
 
-class TestRekeyReplacesAndSkips:
-    def test_a_table_with_no_row_to_move_gets_no_new_version(self, store):
-        _seed_source(store, "work/a.md")
-        versions = {name: store.open_table(name).version for name, _ in _KEY_COLUMNS}
+class TestATableAnotherProcessIsCreating:
+    """The listing names a table once its folder exists, before its first version does."""
 
-        store.rekey_sources_under("elsewhere", "notes/elsewhere")
+    @pytest.fixture()
+    def half_made(self, test_config):
+        store = Store(test_config)
+        store.get_db()
 
-        assert {name: store.open_table(name).version for name, _ in _KEY_COLUMNS} == versions
-        store.rekey_sources_under("work", "notes/work")
-        assert store.open_table("_sources").version > versions["_sources"]
+        def make(name):
+            (test_config.lancedb_dir / f"{name}.lance").mkdir()
+            assert name in table_names(store.get_db()), "the folder must be listed"
+            with pytest.raises(ValueError, match="was not found"):
+                store.get_db().open_table(name)
+            return store
+
+        return make
+
+    def test_a_second_process_opens_the_library(self, half_made, test_config):
+        half_made("_sources")
+
+        assert Store(test_config).get_db() is not None
+
+    def test_the_table_reads_as_absent(self, half_made):
+        store = half_made("_sources")
+
+        assert store.open_table("_sources") is None
+        assert store.source_ids(["a.md"], SourceType.DOCUMENT) == {}
+
+    def test_the_store_identity_reads_as_unset(self, half_made):
+        assert half_made(META_TABLE).get_meta() is None
+
+
+class TestATableThatCannotBeRead:
+    """A table that exists but fails to open for a real reason is an error, not an absent table."""
+
+    @staticmethod
+    def _garble(store, config, name):
+        import pyarrow as pa
+
+        store.get_db().create_table(name, schema=pa.schema([("a", pa.string())]))
+        versions = config.lancedb_dir / f"{name}.lance" / "_versions"
+        manifests = [path for path in versions.iterdir() if path.suffix == ".manifest"]
+        assert manifests, "the table must have a manifest to garble"
+        for manifest in manifests:
+            manifest.write_bytes(b"garbage")
+
+    def test_the_helper_raises(self, store, test_config):
+        self._garble(store, test_config, "scratch")
+
+        with pytest.raises(RuntimeError, match="does not have sufficient data"):
+            open_committed(Store(test_config).get_db(), "scratch")
+
+    def test_the_store_raises(self, store, test_config):
+        self._garble(store, test_config, "scratch")
+
+        with pytest.raises(RuntimeError, match="does not have sufficient data"):
+            Store(test_config).open_table("scratch")
 
 
 def _citation(source, key="src1", **changes):
@@ -5594,43 +5654,3 @@ def _citation(source, key="src1", **changes):
         "created_at": "",
         **changes,
     }
-
-
-class TestDropCitationsRepeatedUnder:
-    def test_only_a_row_the_kept_key_holds_is_deleted(self, store):
-        store.add_citations(
-            [
-                _citation("inner/a.md"),
-                _citation("inner/b.md", page_start=None),
-                _citation("outer/deep/a.md", created_at="later"),
-                _citation("outer/deep/a.md", key="src2"),
-                _citation("outer/deep/b.md", page_start=None),
-                _citation("outer/a.md"),
-            ]
-        )
-
-        store.drop_citations_repeated_under("outer/deep", "inner")
-
-        left = sorted(
-            (row["source_filename"], row["citation_key"])
-            for row in store.open_table("_citations").to_arrow().to_pylist()
-        )
-        assert left == [
-            ("inner/a.md", "src1"),
-            ("inner/b.md", "src1"),
-            ("outer/a.md", "src1"),
-            ("outer/deep/a.md", "src2"),
-        ]
-
-    def test_a_store_without_citations_is_left_alone(self, store):
-        store.drop_citations_repeated_under("outer/deep", "inner")
-
-        assert store.open_table("_citations") is None
-
-    def test_a_removed_document_keeps_the_citations_of_it(self, store):
-        """Lint and prune read them to report and retire a page whose source is gone."""
-        _seed_source(store, "work/a.md")
-
-        assert store.remove_documents(["work/a.md"]).removed == ["work/a.md"]
-
-        assert len(store.get_citations_for_source("work/a.md")) == 1

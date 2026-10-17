@@ -91,7 +91,7 @@ class TestDiscoveryShardFilter:
     def test_a_worker_sees_only_its_own_slice(self, corpus):
         whole = set(discover_files())
         slices = [
-            set(discover_files(ShardId(index=index, count=3, records_root=cfg.data_root)))
+            set(discover_files(ShardId(index=index, count=3, corpus_root=cfg.data_root)))
             for index in range(3)
         ]
         assert set().union(*slices) == whole
@@ -162,7 +162,7 @@ class TestSyncDispatch:
             pipeline_mod, "plan_fanout", lambda: pytest.fail("a worker planned a fan-out")
         )
         await pipeline_mod.sync(
-            quiet=True, shard=ShardId(index=0, count=2, records_root=cfg.data_root)
+            quiet=True, shard=ShardId(index=0, count=2, corpus_root=cfg.data_root)
         )
 
     async def test_a_worker_leaves_the_corpus_wide_passes_to_the_parent(
@@ -176,7 +176,7 @@ class TestSyncDispatch:
             lambda *args, **kwargs: ran.append(True) or asyncio.sleep(0),
         )
         await pipeline_mod.sync(
-            quiet=True, shard=ShardId(index=0, count=2, records_root=cfg.data_root)
+            quiet=True, shard=ShardId(index=0, count=2, corpus_root=cfg.data_root)
         )
         assert ran == []
         await pipeline_mod.sync(quiet=True)
@@ -208,7 +208,7 @@ class TestSyncAcrossWorkers:
     def specs(self):
         return [
             fanout.ShardSpec(
-                shard=ShardId(index=index, count=2, records_root=cfg.data_root),
+                shard=ShardId(index=index, count=2, corpus_root=cfg.data_root),
                 device=index,
                 config=cfg.model_copy(),
                 engine_dir=cfg.data_root / f"e{index}",

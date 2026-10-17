@@ -199,13 +199,12 @@ class TestDelete:
         sources_after = [r.source for r in results_after]
         assert "specs.md" not in sources_after, "specs.md should be gone after delete"
 
-        # Durable delete skip-marks specs.md so sync won't resurrect it; clear the
-        # marker before re-syncing to restore the shared session fixture for the
+        # Durable delete holds specs.md out so sync won't resurrect it; release the
+        # record before re-syncing to restore the shared session fixture for the
         # downstream status test, which expects specs.md present.
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import clear_skip_markers
 
-        clear_skip_markers(cfg.data_root)
+        get_services().store.release_held(["specs.md"])
         await sync(quiet=True)
         get_services().store.ensure_fts_index()
 

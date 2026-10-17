@@ -18,6 +18,7 @@ from lilbee.app.services import reset_services as reset_provider
 from lilbee.catalog import download_model
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
+from lilbee.data.store import SourceType
 from tests.integration.conftest import EMBED_ENTRY
 
 pytestmark = pytest.mark.slow
@@ -223,7 +224,7 @@ class TestRegressionGuards:
         assert "specs.md" in _source_names(before)
 
         # Delete it
-        s.delete_by_source("specs.md")
+        s.delete_by_source("specs.md", SourceType.DOCUMENT)
         s.delete_source("specs.md")
         s.ensure_fts_index()
 

@@ -48,6 +48,17 @@ def _isolated_cfg(tmp_path):
         setattr(cfg, name, getattr(snapshot, name))
 
 
+@pytest.fixture()
+def held_store(tmp_path):
+    """A real store under *tmp_path*, bound as the ready container's store."""
+    from lilbee.app.services import get_services
+    from lilbee.data.store import Store
+
+    store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "lancedb"}))
+    get_services().store = store
+    return store
+
+
 class _MsgApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
@@ -2622,16 +2633,17 @@ class TestSlashSuggester:
         assert s._get_document_names() == ["notes.md", "todo.txt"]
         assert await s.get_suggestion("/delete no") == "/delete notes.md"
 
-    async def test_delete_suggests_a_held_out_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_delete_suggests_a_held_out_source(
+        self, monkeypatch: pytest.MonkeyPatch, held_store
+    ) -> None:
         """``/delete`` completes a file that ingestion held out, beside an indexed one."""
         from types import SimpleNamespace
 
         from lilbee.cli.tui.widgets import autocomplete as autocomplete_mod
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
-        from lilbee.core.config import cfg
-        from lilbee.data.ingest.skip_marker import write_skip_markers
+        from tests._held import hold_failed
 
-        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
+        hold_failed({"scan.pdf": "h1"}, store=held_store)
         fake = SimpleNamespace(
             store=SimpleNamespace(get_sources=lambda: [{"filename": "notes.md"}])
         )
@@ -3025,13 +3037,12 @@ class TestDocumentOptions:
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
             assert _document_options() == ["b.pdf"]
 
-    def test_held_out_sources_follow_indexed_ones(self) -> None:
+    def test_held_out_sources_follow_indexed_ones(self, held_store) -> None:
         """A held-out file is a ``/delete`` target; one also indexed is listed once."""
         from lilbee.cli.tui.widgets.autocomplete import _document_options
-        from lilbee.core.config import cfg
-        from lilbee.data.ingest.skip_marker import write_skip_markers
+        from tests._held import hold_failed
 
-        write_skip_markers(cfg.data_root, {"scan.pdf": "h1", "a.txt": "h2"})
+        hold_failed({"scan.pdf": "h1", "a.txt": "h2"}, store=held_store)
         mock_svc = mock.MagicMock()
         mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):

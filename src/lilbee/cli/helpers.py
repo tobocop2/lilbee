@@ -5,10 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import signal
-import threading
-from collections.abc import Callable, Generator, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,7 +23,6 @@ from lilbee.runtime.lock import LibraryUnlockableError
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus
-    from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 
@@ -210,15 +206,9 @@ def register_paths(
     con: PlainConsole,
     *,
     force: bool = False,
-    cancel: CancelSignal | None = None,
 ) -> RegisterResult:
-    """Register *paths* as source roots, reporting what happened to each.
-
-    Setting *cancel* ends the wait for the records lock, with nothing registered.
-    An add does not wait for a running sync: it takes the sync lock once, and a
-    *cancel* set at that take ends the add, with nothing registered.
-    """
-    result = register_sources(paths, force=force, cancel=cancel)
+    """Register *paths* as source roots, reporting what happened to each."""
+    result = register_sources(paths, force=force)
     for name in result.name_taken:
         warning = NAME_TAKEN_WARNING.format(name=name)
         print_prefixed(con, "Warning: ", warning, style=theme.WARNING)
@@ -259,7 +249,6 @@ def add_paths(
     sync_status: SyncStatus | None = None,
     run_sync: Callable[[RegisterResult], object] | None = None,
     sync_anyway: bool = False,
-    cancel: CancelSignal | None = None,
 ) -> None:
     """Register *paths* as source roots and sync (human output).
     When *background* is True (chat ``/add``), sync runs in a background thread
@@ -267,10 +256,9 @@ def add_paths(
     overrides the foreground sync call and receives the registration result
     (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
     ``asyncio.run(sync())``. The sync runs when a path reached the corpus, or
-    when *sync_anyway* says the caller has other new content to index. Setting
-    *cancel* ends the registration's wait for the records lock.
+    when *sync_anyway* says the caller has other new content to index.
     """
-    registration = register_paths(paths, con, force=force, cancel=cancel)
+    registration = register_paths(paths, con, force=force)
     summary = describe_registration(registration)
     if chat_mode:
         print(summary)
@@ -349,33 +337,3 @@ def auto_sync(
     )
     if summary:
         con.print(f"Synced: {summary}", style=theme.MUTED)
-
-
-@contextmanager
-def sigint_cancel() -> Iterator[threading.Event]:
-    """Turn Ctrl-C into a token the wiki pass polls, not a mid-page abort.
-
-    A build runs for hours and writes pages as it goes, so the default
-    KeyboardInterrupt drops it wherever the interpreter happened to be. Setting
-    a token instead lets it stop at a source boundary with what it wrote intact.
-    The previous handler is restored as soon as it fires, so a second Ctrl-C
-    still hard-exits a pass that is not checking the token.
-
-    signal.signal only works on the main thread; off it (pytest-xdist workers)
-    the token is simply never set and Ctrl-C keeps its default behaviour.
-    """
-    token = threading.Event()
-    if threading.current_thread() is not threading.main_thread():
-        yield token
-        return
-    previous = signal.getsignal(signal.SIGINT)
-
-    def _on_sigint(_signum: int, _frame: object) -> None:
-        signal.signal(signal.SIGINT, previous)
-        token.set()
-
-    signal.signal(signal.SIGINT, _on_sigint)
-    try:
-        yield token
-    finally:
-        signal.signal(signal.SIGINT, previous)

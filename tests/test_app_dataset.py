@@ -22,7 +22,7 @@ from lilbee.app.dataset import (
 )
 from lilbee.core.config import cfg
 from lilbee.data.export import DatasetFormat, ImportResult
-from lilbee.data.store import Store
+from lilbee.data.store import SourceType, Store
 from tests.conftest import make_mock_services
 
 # The name every ingest pool gives its threads.
@@ -187,7 +187,7 @@ class TestImportFromBytes:
     async def test_round_trip(self, store):
         _seed(store)
         payload = export_to_bytes("jsonl", None)
-        store.delete_by_source("doc.pdf")
+        store.delete_by_source("doc.pdf", SourceType.DOCUMENT)
 
         summary = await import_from_bytes(payload.data, "jsonl")
         assert summary.sources == ["doc.pdf"]
@@ -200,7 +200,7 @@ class TestImportFromBytes:
         )
         store.upsert_source("uni.pdf", "h", 1)
         payload = export_to_bytes("parquet", None)
-        store.delete_by_source("uni.pdf")
+        store.delete_by_source("uni.pdf", SourceType.DOCUMENT)
 
         await import_from_bytes(payload.data, "parquet")
         assert store.get_page_texts("uni.pdf")[0]["text"] == text

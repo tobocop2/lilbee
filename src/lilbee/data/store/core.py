@@ -2,27 +2,30 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
-import os
-from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import AbstractContextManager, suppress
-from dataclasses import dataclass, field
+import threading
+import time
+import uuid
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, ExitStack, contextmanager, suppress
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
+from lilbee.core import settings
 from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
     CHUNKS_TABLE,
     CITATIONS_TABLE,
     ENTITIES_TABLE,
     ENTITY_SCHEMA_TABLE,
-    INGEST_SOURCE_COLUMNS,
     MEMORIES_TABLE,
     META_TABLE,
     PAGE_TEXTS_TABLE,
@@ -40,8 +43,18 @@ from lilbee.runtime.lock import (
     LockTimeoutError,
     write_lock,
 )
+from lilbee.runtime.progress import (
+    UPGRADE_HEADLINE,
+    DetailedProgressCallback,
+    EventType,
+    LibraryUpgradeEvent,
+    TableWork,
+    UpgradePhase,
+    noop_callback,
+)
 
 from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
+from .held_import import legacy_files, read_legacy_records, remove_legacy_files
 from .lance_helpers import (
     _CHUNK_COLUMN,
     _chunk_type_predicate,
@@ -51,13 +64,14 @@ from .lance_helpers import (
     _index_registry,
     _safe_delete_unlocked,
     _scalar_index_dangling,
-    _sources_search_filter,
     _vector_index_dangling,
     ensure_table,
     escape_sql_string,
+    open_committed,
     refs_compatible,
     table_names,
 )
+from .locations import SourceLocations, root_location, under_sql
 from .ranking import mmr_rerank
 from .schema import (
     _citations_schema,
@@ -78,6 +92,8 @@ from .types import (
     CitationRecord,
     EmbeddingModelMismatchError,
     EntitySchemaState,
+    HeldOut,
+    HeldRecord,
     MemoryKind,
     MemoryRow,
     PageTextRecord,
@@ -96,6 +112,7 @@ from .types import (
 
 if TYPE_CHECKING:
     from lancedb.db import LanceDBConnection
+    from lancedb.expr import Expr
     from lancedb.index import FTS, IndexConfig
     from lancedb.query import LanceFtsQueryBuilder
     from lancedb.table import LanceTable
@@ -154,7 +171,7 @@ def _lexical_rows(
     limit: int,
     chunk_type: ChunkType | None,
     column: str = _CHUNK_COLUMN,
-) -> list[SearchChunk]:
+) -> list[dict[str, Any]]:
     """BM25 rows for *query_text* over a single FTS *column*.
 
     ``MatchQuery`` pins the column and matches plain terms, so an unpinned search
@@ -172,7 +189,7 @@ def _lexical_rows(
     ).limit(limit)
     if chunk_type:
         query = query.where(_chunk_type_predicate(chunk_type))
-    return [SearchChunk(**r) for r in query.to_list()]
+    return cast("list[dict[str, Any]]", query.to_list())
 
 
 # Vector ANN index. IVF_PQ compresses vectors so search scales to millions;
@@ -204,86 +221,130 @@ _SOURCE_META_COLUMNS = ("title", "authors", "created_at")
 # writers that carry no title (wiki pages) read as NULL.
 _TITLE_COLUMN = "title"
 
-# (table, source column) pairs deleted when a source's rows are replaced. The
-# concept nodes/edges tables carry no source column (corpus-level aggregates),
-# so only the per-chunk concept mapping is source-scoped.
+# The column that names a source in every table; ``_sources`` alone maps it to a path.
+_SOURCE_ID = "source_id"
+# The name of each thread an upgrade adds a table's id column on.
+_UPGRADE_THREAD_PREFIX = "library-upgrade"
+# The ``_sources`` column that holds a source's path.
+_PATH = "path"
+# The ``_sources`` column that names why a sync holds a row's path out (``HeldOut``).
+_HELD_OUT = "held_out"
+# The content hash a sync holds the path out at, and the reason shown for it.
+_HELD_HASH = "held_hash"
+_HELD_REASON = "held_reason"
+_HELD_COLUMNS = (_HELD_OUT, _HELD_HASH, _HELD_REASON)
+
+# Tables that hold a source's rows, deleted with the source. The concept
+# nodes/edges tables carry no source column (corpus-level aggregates).
 _PER_SOURCE_TABLES = (
-    *(
-        (name, INGEST_SOURCE_COLUMNS[name])
-        for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE, CHUNK_CONCEPTS_TABLE, ENTITIES_TABLE)
-    ),
-    # Per-(subject, source), so removing a source drops its mention evidence
-    # here with its chunks; the wiki refresh only ever re-adds a source, never
-    # has to remember to subtract a deleted one. Not in INGEST_SOURCE_COLUMNS
-    # (a wiki table, not an ingest one), so its column is named directly.
+    CHUNKS_TABLE,
+    PAGE_TEXTS_TABLE,
+    CHUNK_CONCEPTS_TABLE,
+    ENTITIES_TABLE,
+    WIKI_MENTIONS_TABLE,
+)
+
+# Each table that named a source by its path before ``source_id``, and that column.
+_PATH_KEY_COLUMNS = (
+    (CHUNKS_TABLE, "source"),
+    (PAGE_TEXTS_TABLE, "source"),
+    (CHUNK_CONCEPTS_TABLE, "chunk_source"),
+    (ENTITIES_TABLE, "source"),
+    (CITATIONS_TABLE, "source_filename"),
     (WIKI_MENTIONS_TABLE, "source"),
 )
+_PATH_KEY_BY_TABLE = dict(_PATH_KEY_COLUMNS)
+# The tables an upgrade visits, in its order: ``_sources`` first.
+_UPGRADE_ORDER = (SOURCES_TABLE, *_PATH_KEY_BY_TABLE)
+# The name an upgrade shows each table by.
+_UPGRADE_LABELS = {
+    SOURCES_TABLE: "source list",
+    CHUNKS_TABLE: "search chunks",
+    PAGE_TEXTS_TABLE: "page text",
+    CHUNK_CONCEPTS_TABLE: "concept links",
+    ENTITIES_TABLE: "entities",
+    CITATIONS_TABLE: "citations",
+    WIKI_MENTIONS_TABLE: "wiki mentions",
+}
+# The path column of ``_sources`` before it was renamed.
+_OLD_PATH = "filename"
+# The ``_meta`` rows an upgrade has yet to stamp; a store stamped 1 keeps 1.
+_UNSTAMPED = f"schema_version >= 2 AND schema_version < {META_SCHEMA_VERSION}"
 
-# (table, source column) pairs re-keyed when a source is relocated (moved on
-# disk, same content). Extends the per-source set with the wiki citation's raw
-# source_filename so citations keep pointing at the source after a move.
-_RELOCATABLE_TABLES = (
-    *_PER_SOURCE_TABLES,
-    (CITATIONS_TABLE, INGEST_SOURCE_COLUMNS[CITATIONS_TABLE]),
+# The type column of ``_sources``, and of the chunks table.
+_SOURCE_TYPE = "source_type"
+_CHUNK_TYPE = "chunk_type"
+# The source rows a listing shows: each that holds a document, failed at a later edit or not.
+_LISTED = (
+    f"{_SOURCE_TYPE} != '{SourceType.WIKI}' AND ({_HELD_OUT} IS NULL"
+    f" OR {_HELD_OUT} = '{HeldOut.FAILED}' AND file_hash IS NOT NULL)"
 )
-
-# (table, key column) pairs a re-key of a source and everything below it updates,
-# the sources table last.
-_REKEY_TABLES = (*_RELOCATABLE_TABLES, (SOURCES_TABLE, INGEST_SOURCE_COLUMNS[SOURCES_TABLE]))
-
-# The columns two citation rows share when they are one citation under two source keys.
-_CITATION_SAME_COLUMNS = (
-    "wiki_source",
-    "wiki_chunk_index",
-    "citation_key",
-    "claim_type",
-    "source_hash",
-    "page_start",
-    "page_end",
-    "line_start",
-    "line_end",
-    "excerpt",
+# The source rows stored at their location; every other source is stored by its key.
+_DOCUMENT = f"{_SOURCE_TYPE} = '{SourceType.DOCUMENT}'"
+# The source rows of wiki pages, which share no row with a source of another type.
+_WIKI = f"{_SOURCE_TYPE} = '{SourceType.WIKI}'"
+# The chunks of wiki pages; an upgrade gives them the id of a page, never of a document.
+_WIKI_CHUNK = f"{_CHUNK_TYPE} = '{ChunkType.WIKI}'"
+# Every other chunk, whose key names a document.
+_NOT_WIKI_CHUNK = f"({_CHUNK_TYPE} IS NULL OR NOT ({_WIKI_CHUNK}))"
+# What a wiki page's key is joined with before its md5 gives the page its id at an upgrade.
+_WIKI_ID_SUFFIX = "wiki"
+_WIKI_ID_SQL = "md5(concat({key}, chr(0), '" + _WIKI_ID_SUFFIX + "'))"
+# The source rows a move found by a sync carries: the listed ones and every failure.
+_MOVABLE = (
+    f"{_SOURCE_TYPE} != '{SourceType.WIKI}'"
+    f" AND ({_HELD_OUT} IS NULL OR {_HELD_OUT} = '{HeldOut.FAILED}')"
 )
-
-# What stands between two slashes of a source key that is not a file or folder name.
-_NOT_A_KEY_SEGMENT = frozenset({"", ".", ".."})
-# No file name holds it, so no key discovery writes does.
-_NUL = "\x00"
+# The source rows an upgrade compares a document key with: any row whose type is not wiki.
+_NOT_WIKI_SOURCE = f"({_SOURCE_TYPE} IS NULL OR NOT ({_WIKI}))"
 
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
-# Sentinel: each source of a re-key pattern takes a title of its own.
-_OWN_TITLE = "\x00own"
 
-# The key column a batched flush deletes by in each table it appends to.
-_FLUSH_KEY_COLUMNS = tuple(
-    (name, INGEST_SOURCE_COLUMNS[name]) for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE, SOURCES_TABLE)
+# The key columns a batched flush deletes, looks up or merges by in each table it writes.
+_FLUSH_KEY_COLUMNS = (
+    (CHUNKS_TABLE, _SOURCE_ID),
+    (PAGE_TEXTS_TABLE, _SOURCE_ID),
+    (SOURCES_TABLE, _PATH),
+    (SOURCES_TABLE, _SOURCE_ID),
 )
 
 # A filtered delete scans every row its key index does not cover. The index is
 # rebuilt once this many flushes of rows sit past it.
 _KEY_INDEX_STALE_FLUSHES = 32
 
-# Stat backfills replace this many source rows per locked write: the first
-# sync after a stat-column upgrade backfills every source, and an unchunked
-# replace would join millions of filenames into one delete predicate.
+# Source rows per locked write or per ``IN`` list: the first sync after a
+# stat-column upgrade backfills every source, and an unchunked replace would
+# join millions of paths into one predicate.
 _SOURCE_STAT_BATCH_ROWS = 2000
 
-# One hold of the write lock re-keys at most this many moved sources, with at
-# most this many updates of each table, so a writer that waits is not kept out
-# for the length of a whole plan batch.
+# One hold of the write lock moves at most this many sources, so a writer that
+# waits is not kept out for the length of a whole plan batch.
 _RELOCATE_HOLD_MOVES = 2000
-_RELOCATE_HOLD_UPDATES = 16
-# One update gives at most this many sources a title of their own.
-_TITLE_MAP_KEYS = 256
-# Sources that swap the same leading text of their key take an update of their
-# own from this many on; fewer share an update that maps each old key to its new one.
-_SWAP_MIN_SOURCES = 256
-# One update keeps the keys of its maps times the chunk rows it re-keys under
-# this: the store library builds each map once for each row it updates.
-_MAP_CELLS = 500_000
 
 _NULL_TEXT_SQL = "CAST(NULL AS STRING)"
+
+# What a dropped source row a citation names keeps: its path, and no record a sync reads.
+_CITED_ONLY_SQL = {
+    _HELD_OUT: f"'{HeldOut.REMOVED}'",
+    "chunk_count": "0",
+    _HELD_HASH: _NULL_TEXT_SQL,
+    _HELD_REASON: _NULL_TEXT_SQL,
+}
+
+# Rows a location fill reads and writes back in one batch: bounds its memory at any row count.
+_FILL_BATCH_ROWS = 8192
+# The address LanceDB gives a row in one version of its table.
+_ROW_ID = "_rowid"
+# The scratch table a fill pairs each row already at a new place with the row moving onto it in.
+_FILL_PAIRS_TABLE = "_fill_pairs"
+_LANDING_ID = "landing_id"
+_MOVED_ID = "moved_id"
+_FILL_PAIRS_SCHEMA = pa.schema(
+    [pa.field(_PATH, pa.utf8()), pa.field(_LANDING_ID, pa.utf8()), pa.field(_MOVED_ID, pa.utf8())]
+)
+# Ids one citation update re-points: its lookup list is built again for every row it reads.
+_CITATION_LOOKUP_IDS = 128
 
 # Beside the tables: the checkpoint up to which the wiki's page index covers the source rows.
 _WIKI_REFRESHED_NAME = ".wiki_refreshed"
@@ -326,25 +387,6 @@ def _citations_for_wiki_predicate(wiki_source: str) -> str:
     return f"wiki_source = '{escape_sql_string(wiki_source)}'"
 
 
-def _refuse_malformed_key(key: str) -> None:
-    """Raise ValueError unless each slash-separated segment of *key* is a file or folder name."""
-    if _NOT_A_KEY_SEGMENT.intersection(key.split("/")):
-        raise ValueError(f"A re-key takes a source key with a name in each segment, not {key!r}")
-    if _NUL in key:
-        raise ValueError(f"A re-key takes a source key without a NUL character, not {key!r}")
-
-
-def _rekey_sql(column: str, old: str, new: str) -> tuple[str, str]:
-    """The filter for *old* and each key below it, and the SQL value that puts *new* in its place.
-
-    ``starts_with`` and ``substr`` take the key literally and count characters,
-    so no character in a key is a wildcard.
-    """
-    old_literal = escape_sql_string(old)
-    where = f"{column} = '{old_literal}' OR starts_with({column}, '{old_literal}/')"
-    return where, _swap_head_sql(column, old, new)
-
-
 def _swap_head_sql(column: str, old_head: str, new_head: str) -> str:
     """The SQL value of *column* with *new_head* in place of the characters of *old_head*."""
     return f"concat('{escape_sql_string(new_head)}', substr({column}, {len(old_head) + 1}))"
@@ -353,82 +395,6 @@ def _swap_head_sql(column: str, old_head: str, new_head: str) -> str:
 def _in_list(names: Iterable[str]) -> str:
     """The body of a SQL ``IN`` list that holds *names*."""
     return ", ".join(f"'{escape_sql_string(name)}'" for name in names)
-
-
-def _lookup_sql(column: str, texts: Mapping[str, str]) -> str:
-    """The SQL value that gives each key of *texts* in *column* its text.
-
-    An update of the key and the title can read either key for the title: the
-    store library computes the two columns in an order that varies between
-    updates. A caller that sets titles lists each source under both its keys.
-    """
-    keys, values = _in_list(texts), _in_list(texts.values())
-    return f"map_extract(map(make_array({keys}), make_array({values})), {column})[1]"
-
-
-def _swapped_heads(old: str, new: str) -> tuple[str, str]:
-    """*old* and *new* without the end they share."""
-    shared = len(os.path.commonprefix((old[::-1], new[::-1])))
-    return old[: len(old) - shared], new[: len(new) - shared]
-
-
-class _RekeyPattern(NamedTuple):
-    """Sources that swap *old_head* for *new_head*, or that a map re-keys when both are None.
-
-    *title* is one text, or a sentinel.
-    """
-
-    old_head: str | None
-    new_head: str | None
-    title: str | None
-
-    def key_sql(self, column: str, new: Mapping[str, str]) -> str:
-        """The SQL value of *column* for sources of this pattern; *new* maps their keys."""
-        if self.old_head is None or self.new_head is None:
-            return _lookup_sql(column, new)
-        return _swap_head_sql(column, self.old_head, self.new_head)
-
-    def takes(self, sources: int, chunk_rows: int) -> bool:
-        """Whether one update stays in the bounds of its maps at *sources* and their *chunk_rows*.
-
-        A map of keys lists each source once, a map of titles under both its keys.
-        """
-        own = self.title is _OWN_TITLE
-        if own and sources > _TITLE_MAP_KEYS:
-            return False
-        maps = (self.old_head is None) + 2 * own
-        return maps * sources * chunk_rows <= _MAP_CELLS
-
-
-@dataclass
-class _RelocationHold:
-    """What one hold re-keys: old names by update, the source rows renamed, the names taken.
-
-    A pattern's old names are split where an update with a map would pass its bound.
-    """
-
-    patterns: dict[_RekeyPattern, list[list[str]]] = field(default_factory=dict)
-    chunk_rows: dict[_RekeyPattern, int] = field(default_factory=dict)
-    titles: dict[str, str] = field(default_factory=dict)
-    rows: list[dict[str, Any]] = field(default_factory=list)
-    taken: dict[str, str] = field(default_factory=dict)
-    updates: int = 0
-    settled: int = 0
-
-    def update_for(self, pattern: _RekeyPattern, chunk_rows: int) -> list[str] | None:
-        """The old names of the update that takes one more source of *pattern*; None when full."""
-        parts = self.patterns.get(pattern)
-        held = self.chunk_rows.get(pattern, 0) + chunk_rows
-        if parts is not None and pattern.takes(len(parts[-1]) + 1, held):
-            self.chunk_rows[pattern] = held
-            return parts[-1]
-        if self.updates == _RELOCATE_HOLD_UPDATES:
-            return None
-        self.updates += 1
-        self.chunk_rows[pattern] = chunk_rows
-        olds: list[str] = []
-        self.patterns.setdefault(pattern, []).append(olds)
-        return olds
 
 
 def _claimed_names(moves: Sequence[SourceMove], unclaimed: set[str]) -> list[str | None]:
@@ -453,24 +419,41 @@ def _claimed_names(moves: Sequence[SourceMove], unclaimed: set[str]) -> list[str
     return claimed
 
 
+def _located_moves(
+    moves: Sequence[SourceMove], locations: SourceLocations
+) -> tuple[list[SourceMove], dict[str, str]]:
+    """*moves* with every name as its location, and the name of each location.
+
+    Moves that share one candidates tuple still share one, which the claim reads.
+    """
+    names: dict[str, str] = {}
+
+    def _at(name: str) -> str:
+        names[location := locations.location(name)] = name
+        return location
+
+    pools = {id(move.candidates): tuple(map(_at, move.candidates)) for move in moves}
+    located = [SourceMove(pools[id(move.candidates)], _at(move.new), move.stat) for move in moves]
+    return located, names
+
+
 def _title_after_move(
     row: Mapping[str, Any], old: str, new: str, derive: Callable[[str], str]
 ) -> str | None:
     """The title the source *row* takes when *old* becomes *new*, or ``_KEEP_TITLE``.
 
-    A title that came from the old name follows the new one; any other title stays.
+    A title that came from the old name follows the new one; any other title stays,
+    and so does a title the new name derives again, so that no row is written for it.
     """
-    if _TITLE_COLUMN not in row:
-        return _KEEP_TITLE
     stored = row[_TITLE_COLUMN] or ""
-    if stored != (derive(old) or ""):
+    if stored != (derive(old) or "") or stored == (derive(new) or ""):
         return _KEEP_TITLE
     return derive(new) or None
 
 
 def _moved_source_row(row: dict[str, Any], move: SourceMove, title: str | None) -> dict[str, Any]:
     """The source *row* under *move*'s new name, with *title* and the stat of the file."""
-    moved = {**row, "filename": move.new}
+    moved = {**row, _PATH: move.new}
     if title is not _KEEP_TITLE:
         moved[_TITLE_COLUMN] = title
     if move.stat is not None:
@@ -480,54 +463,159 @@ def _moved_source_row(row: dict[str, Any], move: SourceMove, title: str | None) 
     return moved
 
 
-def _pattern_title(title: str | None, stored: object) -> str | None:
-    """What a re-key pattern does to titles: keep them, clear them, or give each source its own."""
-    if title is _KEEP_TITLE or title == stored:
-        return _KEEP_TITLE
-    return None if title is None else _OWN_TITLE
+def _member_rows(rows: Iterable[dict[str, Any]], moves: Mapping[str, str]) -> list[dict[str, Any]]:
+    """The *rows* below a moved archive, each under the archive's new name."""
+    members = _members_by_archive(moves, (row[_PATH] for row in rows))
+    paths = {
+        path: moves[archive] + path[len(archive) :]
+        for archive, found in members.items()
+        for path in found
+    }
+    return [{**row, _PATH: paths[row[_PATH]]} for row in rows if row[_PATH] in paths]
 
 
-def _plan_hold(
-    moves: Sequence[SourceMove],
-    claimed: list[str | None],
-    rows: Mapping[str, list[dict[str, Any]]],
-    derive: Callable[[str], str],
-) -> _RelocationHold:
-    """Group the claimed *moves* by the update that re-keys them, up to the hold's bound.
+def _new_source_id() -> str:
+    """An id for a source no row holds: random, so a new file at a vacated path takes none."""
+    return uuid.uuid4().hex
 
-    ``_SWAP_MIN_SOURCES`` sources or more that swap the same leading text of
-    their key share an update of their own. The others share updates that map
-    each old key to its new one. Either kind is split by what it does to
-    titles. An update with a map takes sources up to ``_MAP_CELLS``, and up to
-    ``_TITLE_MAP_KEYS`` of them when each takes a title of its own. The plan
-    stops before the move that would need one update more than a hold runs.
+
+def _keyed(rows: Iterable[Mapping[str, Any]], key: str, ids: Mapping[str, str]) -> list[dict]:
+    """*rows* with the id of the path under *key* in its place."""
+    return [
+        {**{name: value for name, value in row.items() if name != key}, _SOURCE_ID: ids[row[key]]}
+        for row in rows
+    ]
+
+
+def _pathed(rows: Iterable[Mapping[str, Any]], key: str, paths: Mapping[str, str]) -> list[dict]:
+    """*rows* with the path of their source id under *key*; a row of no source row drops."""
+    return [
+        {
+            **{name: value for name, value in row.items() if name != _SOURCE_ID},
+            key: paths[row[_SOURCE_ID]],
+        }
+        for row in rows
+        if row[_SOURCE_ID] in paths
+    ]
+
+
+def _id_chunks(rows: list[dict[str, Any]]) -> list[SearchChunk]:
+    """Search results of chunk *rows* that name their source by id until the search ends."""
+    return [
+        SearchChunk(
+            **{name: value for name, value in row.items() if name != _SOURCE_ID},
+            source=row[_SOURCE_ID],
+        )
+        for row in rows
+    ]
+
+
+def _source_record(row: Mapping[str, Any], locations: SourceLocations) -> SourceRecord:
+    """The ``SourceRecord`` a ``_sources`` row shows: its shown name as ``filename``, no id."""
+    shown = {name: value for name, value in row.items() if name not in (_SOURCE_ID, *_HELD_COLUMNS)}
+    shown[_OLD_PATH] = locations.name(shown.pop(_PATH))
+    return cast("SourceRecord", shown)
+
+
+class _SourceWrite(NamedTuple):
+    """One source row a write puts in ``_sources``, by the name and type of its source.
+
+    With *fields* the row holds them; without, a found row keeps its own and a new
+    row only names the source. A *record* holds the source out of a sync.
     """
-    hold = _RelocationHold()
-    shapes: list[tuple[_RekeyPattern, str | None] | None] = []
-    for move, old in zip(moves, claimed, strict=True):
-        if old is None:
-            shapes.append(None)
-            continue
-        title = _title_after_move(rows[old][0], old, move.new, derive)
-        shared = _pattern_title(title, rows[old][0].get(_TITLE_COLUMN))
-        shapes.append((_RekeyPattern(*_swapped_heads(old, move.new), shared), title))
-    sizes = Counter(shape[0] for shape in shapes if shape is not None)
-    for move, old, shape in zip(moves, claimed, shapes, strict=True):
-        if old is not None and shape is not None:
-            pattern, title = shape
-            if sizes[pattern] < _SWAP_MIN_SOURCES:
-                pattern = _RekeyPattern(None, None, pattern.title)
-            stored = rows[old]
-            olds = hold.update_for(pattern, max(1, stored[0]["chunk_count"]))
-            if olds is None:
-                break
-            olds.append(old)
-            if title is not None and pattern.title is _OWN_TITLE:
-                hold.titles[old] = title
-            hold.rows.extend(_moved_source_row(row, move, title) for row in stored)
-            hold.taken[move.new] = old
-        hold.settled += 1
-    return hold
+
+    name: str
+    source_type: SourceType
+    fields: Mapping[str, Any] | None = None
+    record: HeldRecord | None = None
+    new_id: str | None = None
+
+
+class _TableStep(NamedTuple):
+    """What an upgrade does to the table in progress, and how many tables of all are done."""
+
+    work: TableWork
+    table: str
+    rows: int
+    tables_done: int
+    tables_total: int
+
+
+def _documents(names: Iterable[str]) -> Iterator[tuple[str, SourceType]]:
+    """Each of *names* as the name of a document."""
+    return ((name, SourceType.DOCUMENT) for name in names)
+
+
+def _source_type_of(chunk_type: str) -> SourceType:
+    """The type of the source a chunk of *chunk_type* is of: a wiki page, else a document."""
+    return SourceType.WIKI if chunk_type == ChunkType.WIKI else SourceType.DOCUMENT
+
+
+# The order a lookup by a name with no type tries the types in.
+_READ_ORDER = (SourceType.WIKI, SourceType.IMPORTED, SourceType.DOCUMENT)
+
+
+def _is_wiki(source_type: str) -> bool:
+    """Whether *source_type* is a wiki page's, the one type no other source shares a row with."""
+    return source_type == SourceType.WIKI
+
+
+def _write_paths(write: _SourceWrite, locations: SourceLocations) -> tuple[str, ...]:
+    """Where the row *write* finds can be: its key, then, for a non-wiki source, its other form."""
+    if _is_wiki(write.source_type):
+        return (write.name,)
+    return tuple(
+        dict.fromkeys(
+            (
+                locations.key(write.name, write.source_type),
+                write.name,
+                locations.location(write.name),
+            )
+        )
+    )
+
+
+def _found_rows(
+    sources: LanceTable, writes: Sequence[_SourceWrite], locations: SourceLocations
+) -> dict[str, dict[str, Any]]:
+    """The row of its type class each of *writes* finds, by name; the key is looked at first."""
+    paths = sorted({path for write in writes for path in _write_paths(write, locations)})
+    held: dict[tuple[str, bool], dict[str, Any]] = {}
+    for start in range(0, len(paths), _SOURCE_STAT_BATCH_ROWS):
+        where = f"{_PATH} IN ({_in_list(paths[start : start + _SOURCE_STAT_BATCH_ROWS])})"
+        for row in sources.search().where(where).limit(None).to_list():
+            held[row[_PATH], _is_wiki(row[_SOURCE_TYPE])] = row
+    found: dict[str, dict[str, Any]] = {}
+    for write in writes:
+        wiki = _is_wiki(write.source_type)
+        rows = [held[path, wiki] for path in _write_paths(write, locations) if (path, wiki) in held]
+        if rows:
+            found[write.name] = rows[0]
+    return found
+
+
+def _stat_write(backfill: SourceStatBackfill) -> _SourceWrite:
+    """The write that gives a tracked source its verified stat; a record names no held-out one."""
+    record, stat = backfill
+    fields = {name: value for name, value in record.items() if name != _OLD_PATH}
+    fields |= {
+        "size_bytes": stat.size_bytes,
+        "mtime_ns": stat.mtime_ns,
+        "stat_captured_ns": stat.captured_ns,
+    }
+    return _SourceWrite(record["filename"], SourceType(record["source_type"]), fields)
+
+
+def _at_or_below(path: str, roots: set[str]) -> bool:
+    """Whether *path* is one of *roots* or lies below one, on whole path segments."""
+    if path in roots:
+        return True
+    cut = path.find("/")
+    while cut != -1:
+        if path[:cut] in roots:
+            return True
+        cut = path.find("/", cut + 1)
+    return False
 
 
 def _members_by_archive(names: Iterable[str], filenames: Iterable[str]) -> dict[str, list[str]]:
@@ -544,24 +632,325 @@ def _members_by_archive(names: Iterable[str], filenames: Iterable[str]) -> dict[
 
 
 def _held_sources(sources: LanceTable, names: Iterable[str]) -> set[str]:
-    """The *names* that hold a row in the source table."""
+    """The *names* that hold a row a move carries in the source table."""
     wanted = sorted(names)
     held: set[str] = set()
     for start in range(0, len(wanted), _SOURCE_STAT_BATCH_ROWS):
         quoted = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
-        query = sources.search().where(f"filename IN ({quoted})").select(["filename"])
-        held.update(row["filename"] for row in query.limit(None).to_list())
+        query = sources.search().where(f"{_PATH} IN ({quoted}) AND {_MOVABLE}").select([_PATH])
+        held.update(row[_PATH] for row in query.limit(None).to_list())
     return held
 
 
-def _source_rows(sources: LanceTable, names: list[str]) -> dict[str, list[dict[str, Any]]]:
-    """The rows the source table holds for *names*, by filename."""
-    rows: dict[str, list[dict[str, Any]]] = {}
-    if names:
-        query = sources.search().where(f"filename IN ({_in_list(names)})").limit(None)
-        for row in query.to_list():
-            rows.setdefault(row["filename"], []).append(row)
-    return rows
+def _source_rows(sources: LanceTable, names: list[str]) -> dict[str, dict[str, Any]]:
+    """The row a move carries that the source table holds for each of *names*, by path."""
+    if not names:
+        return {}
+    query = sources.search().where(f"{_PATH} IN ({_in_list(names)}) AND {_MOVABLE}")
+    return {row[_PATH]: row for row in query.limit(None).to_list()}
+
+
+def _listed_matching(search: str | None, locations: SourceLocations) -> str:
+    """The listed source rows whose shown name or title holds *search*."""
+    if not search:
+        return _LISTED
+    return f"{_LISTED} AND {locations.search_filter(search, _PATH, _TITLE_COLUMN)}"
+
+
+def _md5(text: str) -> str:
+    """The id the migration gives the source at *text*, as LanceDB's ``md5`` computes it."""
+    return hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _wiki_id(key: str) -> str:
+    """The id the migration gives the wiki page at *key*, as ``_WIKI_ID_SQL`` computes it."""
+    return _md5(f"{key}\0{_WIKI_ID_SUFFIX}")
+
+
+def _holds_document(row: Mapping[str, Any]) -> bool:
+    """Whether a document source *row* holds an indexed document, as ``_LISTED`` reads it."""
+    kind = row[_HELD_OUT]
+    return kind is None or (kind == HeldOut.FAILED and row["file_hash"] is not None)
+
+
+def _held_row(row: dict[str, Any], record: HeldRecord, *, holds_document: bool) -> dict[str, Any]:
+    """*row* with *record*; a failure keeps the document the row holds, a removal holds none."""
+    held = {
+        **row,
+        _HELD_OUT: record.kind.value,
+        _HELD_HASH: record.file_hash,
+        _HELD_REASON: record.reason,
+    }
+    if record.kind is HeldOut.FAILED and holds_document:
+        return held
+    return {**held, "file_hash": None, "chunk_count": 0}
+
+
+def _keyed_by_path(db: LanceDBConnection) -> bool:
+    """Whether a table of *db* still names a source by path, or ``_sources`` lacks a column."""
+    sources = open_committed(db, SOURCES_TABLE)
+    if sources is not None:
+        added = (_SOURCE_ID, _PATH, *_SOURCE_STAT_COLUMNS, *_SOURCE_META_COLUMNS, _HELD_OUT)
+        if not set(sources.schema.names).issuperset(added):
+            return True
+    for name, column in _PATH_KEY_COLUMNS:
+        table = open_committed(db, name)
+        if table is not None and column in table.schema.names:
+            return True
+    return False
+
+
+def _upgrade_pending(db: LanceDBConnection) -> bool:
+    """Whether *db* is keyed by path, or ``_meta`` still waits for the upgrade's stamp."""
+    if _keyed_by_path(db):
+        return True
+    meta = open_committed(db, META_TABLE)
+    return meta is not None and meta.count_rows(_UNSTAMPED) > 0
+
+
+def _upgrade_steps(db: LanceDBConnection, names: list[str]) -> list[tuple[str, LanceTable]]:
+    """The tables of *db* an upgrade visits: ``_sources``, then each still keyed by path."""
+    tables = [(name, db.open_table(name)) for name in _UPGRADE_ORDER if name in names]
+    return [
+        (name, table)
+        for name, table in tables
+        if name == SOURCES_TABLE or _PATH_KEY_BY_TABLE[name] in table.schema.names
+    ]
+
+
+def _held_unmigrated(db: LanceDBConnection, data_root: Path) -> bool:
+    """Whether ``_sources`` lacks a held-out record column, or a record file is at *data_root*."""
+    if legacy_files(data_root):
+        return True
+    sources = open_committed(db, SOURCES_TABLE)
+    return sources is not None and not {_HELD_HASH, _HELD_REASON} <= set(sources.schema.names)
+
+
+def _add_held_columns(db: LanceDBConnection) -> None:
+    """Give an existing ``_sources`` the held-out record columns it lacks. Lock held."""
+    sources = open_committed(db, SOURCES_TABLE)
+    if sources is None:
+        return
+    missing = [name for name in (_HELD_HASH, _HELD_REASON) if name not in sources.schema.names]
+    if missing:
+        sources.add_columns(dict.fromkeys(missing, _NULL_TEXT_SQL))
+
+
+def _index_names(table: LanceTable) -> dict[str, list[str]]:
+    """The columns of each index of *table*, by index name; none when the listing fails."""
+    return {index.name: index.columns for index in _index_registry(table) or []}
+
+
+def _key_column(table: LanceTable, column: str, where: str | None) -> pa.ChunkedArray:
+    """*column* of each row of *table* that *where* selects, or of every row, read as Arrow."""
+    query = table.search() if where is None else table.search().where(where)
+    return query.select([column]).limit(None).to_arrow().column(column)
+
+
+def _keys_missing_from(
+    sources: LanceTable, table: LanceTable, column: str
+) -> list[tuple[str, SourceType]]:
+    """Each distinct key in *column* of *table* that no ``_sources`` row of its class holds.
+
+    A wiki chunk names a wiki page; every other key names a document. Each class
+    reads only its own keys and its own source paths, and Arrow compares them,
+    so no row becomes a Python object and one key column is held at a time.
+    """
+    typed = table.name == CHUNKS_TABLE
+    classes = [(SourceType.DOCUMENT, _NOT_WIKI_CHUNK if typed else None, _NOT_WIKI_SOURCE)]
+    if typed:
+        classes.insert(0, (SourceType.WIKI, _WIKI_CHUNK, _WIKI))
+    missing: list[tuple[str, SourceType]] = []
+    for source_type, mine, theirs in classes:
+        keys = _key_column(table, column, mine)
+        held = _key_column(sources, _PATH, theirs).cast(keys.type)
+        absent = pc.filter(keys, pc.invert(pc.is_in(keys, value_set=held)))
+        missing += [(key, source_type) for key in sorted(pc.unique(absent).to_pylist())]
+    return missing
+
+
+def _add_source_id(db: LanceDBConnection, name: str, column: str) -> None:
+    """Give table *name* its ``source_id`` from the path in *column*, indexed as the path is."""
+    from lancedb.index import BTree
+
+    table = db.open_table(name)
+    if _SOURCE_ID not in table.schema.names:
+        table.add_columns({_SOURCE_ID: f"md5({column})"})
+    if name == CHUNKS_TABLE:
+        table.update(where=_WIKI_CHUNK, values_sql={_SOURCE_ID: _WIKI_ID_SQL.format(key=column)})
+    indexes = _index_names(table)
+    if [column] in indexes.values() and [_SOURCE_ID] not in indexes.values():
+        table.create_index(_SOURCE_ID, config=BTree())
+
+
+def _migrate_sources_table(table: LanceTable) -> None:
+    """Give ``_sources`` an id per row, its path column, and every column it lacks. Lock held."""
+    from lancedb.index import BTree
+
+    if _SOURCE_ID not in table.schema.names:
+        table.add_columns({_SOURCE_ID: f"md5({_OLD_PATH})"})
+    if _OLD_PATH in table.schema.names:
+        # lancedb's stub types each alteration as an iterable; it takes one dict.
+        table.alter_columns({"path": _OLD_PATH, "rename": _PATH})  # type: ignore[dict-item]
+    if f"{_OLD_PATH}_idx" in _index_names(table):
+        # A key index keeps its name through the rename; the flush refreshes it by the new one.
+        table.create_index(_PATH, config=BTree(), replace=True)
+        table.create_index(_SOURCE_ID, config=BTree(), replace=True)
+        table.drop_index(f"{_OLD_PATH}_idx")
+    defaults = {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in _SOURCE_STAT_COLUMNS}
+    defaults |= {name: _NULL_TEXT_SQL for name in (*_SOURCE_META_COLUMNS, _HELD_OUT)}
+    missing = {name: sql for name, sql in defaults.items() if name not in table.schema.names}
+    if missing:
+        table.add_columns(missing)
+
+
+def _label_keyed(locations: SourceLocations) -> str:
+    """The document rows still named by a registered label in place of their location."""
+    labels = " OR ".join(under_sql(_PATH, label) for label in locations.roots)
+    return f"{_DOCUMENT} AND ({labels})"
+
+
+def _holds_label_keys(db: LanceDBConnection, locations: SourceLocations) -> bool:
+    """Whether a source row of *db* is still named by a registered label."""
+    sources = open_committed(db, SOURCES_TABLE)
+    if sources is None or not locations.roots or _PATH not in sources.schema.names:
+        return False
+    return bool(sources.count_rows(_label_keyed(locations)))
+
+
+def _pinned(db: LanceDBConnection, table: LanceTable) -> LanceTable:
+    """*table* held at its version now, read while later commits go to *table*."""
+    pinned: LanceTable = db.open_table(table.name)
+    pinned.checkout(table.version)
+    return pinned
+
+
+def _rekey_prefix(
+    db: LanceDBConnection, sources: LanceTable, where: str, old: str, new: str
+) -> None:
+    """Put each source row *where* selects at the place below *new* it has below *old*. Lock held.
+
+    A row whose new place a row it does not move holds folds into that row. A
+    selection of no row writes nothing. Rows stream in batches of
+    ``_FILL_BATCH_ROWS``, so memory does not follow the row count.
+    """
+    if not sources.count_rows(where):
+        return
+    _fold_landings(db, sources, where, old, new)
+    _rewrite_prefix(db, sources, where, old, new)
+
+
+def _rewrite_prefix(
+    db: LanceDBConnection, sources: LanceTable, where: str, old: str, new: str
+) -> None:
+    """Give each row *where* selects *new* in place of its head *old*: one update a batch.
+
+    Each update names its rows by their address in the version read, which a row
+    keeps until it is rewritten, so no update reads past its own rows.
+    """
+    query = _pinned(db, sources).search().where(where).select([_SOURCE_ID]).with_row_id(True)
+    values = {_PATH: _swap_head_sql(_PATH, old, new)}
+    for batch in query.limit(None).to_batches(_FILL_BATCH_ROWS):
+        rows = ", ".join(map(str, batch.column(_ROW_ID).to_pylist()))
+        sources.update(where=f"{_ROW_ID} IN ({rows})", values_sql=values)
+
+
+def _fold_landings(
+    db: LanceDBConnection, sources: LanceTable, where: str, old: str, new: str
+) -> None:
+    """Fold each row *where* selects into the non-wiki row not moving at its place below *new*.
+
+    The citations of the folded row cite the row it lands on; its own rows go.
+    """
+    landed = f"NOT ({_WIKI}) AND {under_sql(_PATH, new)} AND NOT ({where})"
+    if not sources.count_rows(landed):
+        return
+    pairs = _fill_pairs(db, sources, where, landed, (old, new))
+    found = pairs.search().where(f"{_MOVED_ID} IS NOT NULL").select([_MOVED_ID, _LANDING_ID])
+    for batch in found.limit(None).to_batches(_FILL_BATCH_ROWS):
+        moved, landing = batch.column(_MOVED_ID), batch.column(_LANDING_ID)
+        _fold_batch(db, sources, moved.to_pylist(), landing.to_pylist())
+    db.drop_table(_FILL_PAIRS_TABLE)
+
+
+def _fill_pairs(
+    db: LanceDBConnection, sources: LanceTable, where: str, landed: str, heads: tuple[str, str]
+) -> LanceTable:
+    """A scratch table of each *landed* row under its *old* path, with the row moving onto it.
+
+    It replaces any table of its name, so one a killed fold left is made again.
+    """
+    from lancedb.index import BTree
+
+    old, new = heads
+    pairs: LanceTable = db.create_table(
+        _FILL_PAIRS_TABLE, schema=_FILL_PAIRS_SCHEMA, mode="overwrite"
+    )
+    labelled: dict[str, str | Expr] = {
+        _PATH: _swap_head_sql(_PATH, new, old),
+        _LANDING_ID: _SOURCE_ID,
+    }
+    for batch in (
+        sources.search().where(landed).select(labelled).limit(None).to_batches(_FILL_BATCH_ROWS)
+    ):
+        empty = pa.nulls(batch.num_rows, pa.utf8())
+        pairs.add(
+            pa.table(
+                [batch.column(_PATH), batch.column(_LANDING_ID), empty], schema=_FILL_PAIRS_SCHEMA
+            )
+        )
+    pairs.create_index(_PATH, config=BTree())
+    moving = (
+        _pinned(db, sources).search().where(where).select({_PATH: _PATH, _MOVED_ID: _SOURCE_ID})
+    )
+    for batch in moving.limit(None).to_batches(_FILL_BATCH_ROWS):
+        pairs.merge_insert(_PATH).when_matched_update_all().execute(pa.Table.from_batches([batch]))
+    return pairs
+
+
+def _fold_batch(
+    db: LanceDBConnection, sources: LanceTable, moved: list[str], landing: list[str]
+) -> None:
+    """Fold each of the ids *moved* into the id *landing* holds beside it. Lock held."""
+    folded = f"{_SOURCE_ID} IN ({_in_list(moved)})"
+    citations = open_committed(db, CITATIONS_TABLE)
+    if citations is not None:
+        _repoint_citations(citations, moved, landing)
+    for name in _PER_SOURCE_TABLES:
+        table = open_committed(db, name)
+        if table is not None:
+            table.delete(folded)
+    _safe_delete_unlocked(sources, folded)
+
+
+def _repoint_citations(citations: LanceTable, moved: list[str], landing: list[str]) -> None:
+    """Make each citation of an id of *moved* cite the id of *landing* beside it. Lock held."""
+    for start in range(0, len(moved), _CITATION_LOOKUP_IDS):
+        keys = moved[start : start + _CITATION_LOOKUP_IDS]
+        values = landing[start : start + _CITATION_LOOKUP_IDS]
+        where = f"{_SOURCE_ID} IN ({_in_list(keys)})"
+        citations.update(where=where, values_sql={_SOURCE_ID: _looked_up_sql(keys, values)})
+
+
+def _looked_up_sql(keys: list[str], values: list[str]) -> str:
+    """The SQL value of the item of *values* at the place of ``source_id`` in *keys*."""
+    at = f"CAST(array_position(make_array({_in_list(keys)}), {_SOURCE_ID}) AS BIGINT)"
+    return f"array_element(make_array({_in_list(values)}), {at})"
+
+
+def _fill_locations(db: LanceDBConnection, locations: SourceLocations) -> None:
+    """Give each source row a registered label names its location in place of that key. Lock held.
+
+    A deeper root goes first, so a row an outer root keeps for a file of a root
+    inside it folds into the inner root's row. Each batch is one commit, and a
+    filled row matches no label, so a killed run is finished by the next.
+    """
+    sources = open_committed(db, SOURCES_TABLE)
+    if sources is None or not _holds_label_keys(db, locations):
+        return
+    for root, label in locations.deepest_first:
+        _rekey_prefix(db, sources, f"{_DOCUMENT} AND {under_sql(_PATH, label)}", label, root)
+    log.info("Stored where each source of the library at %s is", db.uri)
 
 
 def _refresh_key_index_unlocked(table: LanceTable, column: str, flush_rows: int) -> None:
@@ -587,15 +976,6 @@ def _holds_rows(table: LanceTable) -> bool:
         return True
 
 
-def _sql_equals(column: str, value: object) -> str:
-    """A predicate for *column* holding *value*, a string, an integer or NULL."""
-    if value is None:
-        return f"{column} IS NULL"
-    if isinstance(value, str):  # a citation column is text or an integer
-        return f"{column} = '{escape_sql_string(value)}'"
-    return f"{column} = {value}"
-
-
 def _get_distance(chunk: SearchChunk) -> float:
     """Extract distance as a sortable float (inf for None)."""
     return chunk.distance if chunk.distance is not None else float("inf")
@@ -612,8 +992,16 @@ def _count_within_threshold(sorted_results: list[SearchChunk], threshold: float)
 class Store:
     """LanceDB vector store: wraps all DB operations with config-driven defaults."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self, config: Config, on_upgrade: DetailedProgressCallback = noop_callback
+    ) -> None:
         self._config = config
+        self._on_upgrade = on_upgrade
+        # The latest event of an upgrade that runs, and when it began; None when none runs.
+        self._upgrade: LibraryUpgradeEvent | None = None
+        self._upgrade_started = 0.0
+        # One open at a time: a caller that finds an open running waits for it.
+        self._open_lock = threading.Lock()
         self._fts_ready: bool = False
         self._title_fts_ready: bool = False
         self._doc_prefix_warned: bool = False
@@ -629,6 +1017,11 @@ class Store:
         # Cache of {filename: ingested_at} rebuilt only when sources
         # mutate; callers (temporal filter) hit it per-query.
         self._source_ingested_cache: dict[str, str] | None = None
+        # The source registry names are shown by, the config.toml state it was read at,
+        # and how many blocks hold it fixed.
+        self._registry = SourceLocations({})
+        self._registry_stamp: tuple[int, int, int] | None = None
+        self._registry_pins = 0
 
     def _fts_config(self) -> FTS:
         """Shared FTS index config: positionless (with_position=True overflows
@@ -649,7 +1042,34 @@ class Store:
         global ``cfg`` dir instead would leave those writes uncoordinated across
         processes.
         """
+        self.get_db()  # opens the library, and so migrates it, outside the lock
         return write_lock(self._config.lancedb_dir, timeout)
+
+    def _locations(self) -> SourceLocations:
+        """The rule sources are named by: the registry, read again when config.toml changes."""
+        if not self._registry_pins:
+            stamp = settings.overlay_stamp(self._config.data_root)
+            if stamp != self._registry_stamp:
+                self._registry_stamp = stamp
+                settings.overlay_persisted_roots(self._config)
+            self._take_registry()
+        return self._registry
+
+    def _take_registry(self) -> None:
+        """Name sources by the registry the config holds."""
+        if self._config.linked_roots != self._registry.roots:
+            self._registry = SourceLocations(self._config.linked_roots)
+            self._invalidate_source_cache()
+
+    @contextmanager
+    def registry_pinned(self) -> Iterator[None]:
+        """Name sources by the registry the config holds now, whatever changes it in the block."""
+        self._take_registry()
+        self._registry_pins += 1
+        try:
+            yield
+        finally:
+            self._registry_pins -= 1
 
     def _invalidate_source_cache(self) -> None:
         """Drop the cached {filename: ingested_at} map."""
@@ -672,9 +1092,9 @@ class Store:
     def _chunks_schema(self) -> pa.Schema:
         return pa.schema(
             [
-                pa.field("source", pa.utf8()),
+                pa.field(_SOURCE_ID, pa.utf8()),
                 pa.field("content_type", pa.utf8()),
-                pa.field("chunk_type", pa.utf8()),
+                pa.field(_CHUNK_TYPE, pa.utf8()),
                 pa.field("page_start", pa.int32()),
                 pa.field("page_end", pa.int32()),
                 pa.field("line_start", pa.int32()),
@@ -704,15 +1124,14 @@ class Store:
         from lilbee.data.title import derive_title  # circular at module scope
 
         try:
-            rows = table.search().select(["source"]).limit(None).to_list()
-            sources = sorted({r["source"] for r in rows})
+            rows = table.search().select([_SOURCE_ID]).limit(None).to_list()
+            sources = self.source_paths({r[_SOURCE_ID] for r in rows})
             filled = 0
-            for source in sources:
+            for source_id, source in sorted(sources.items(), key=lambda item: item[1]):
                 title = derive_title(source)
                 if not title:
                     continue
-                escaped = source.replace("'", "''")
-                table.update(where=f"source = '{escaped}'", values={_TITLE_COLUMN: title})
+                table.update(where=f"{_SOURCE_ID} = '{source_id}'", values={_TITLE_COLUMN: title})
                 filled += 1
             log.info(
                 "Backfilled filename titles for %d of %d existing sources; run "
@@ -870,6 +1289,22 @@ class Store:
             self._config.embedding_model,
         )
 
+    def upgrade_progress(self) -> LibraryUpgradeEvent | None:
+        """The upgrade that runs, timed to now, or None when none does."""
+        upgrade = self._upgrade
+        if upgrade is None:
+            return None
+        return upgrade.model_copy(update={"elapsed_s": time.monotonic() - self._upgrade_started})
+
+    def _upgrade_warnings(self) -> list[HealthWarning]:
+        """The warning of an upgrade that runs, or none."""
+        upgrade = self.upgrade_progress()
+        if upgrade is None:
+            return []
+        message = f"{UPGRADE_HEADLINE} {upgrade.text}"
+        remedy = "Server requests answer 503 after 10 s. Try again when it ends."
+        return [HealthWarning(code=WarningCode.LIBRARY_UPGRADING, message=message, remedy=remedy)]
+
     def _index_mismatch_warning(self) -> HealthWarning | None:
         """The stale-index degradation, from the same verdict search refuses on."""
         mismatch = self.index_mismatch()
@@ -889,7 +1324,13 @@ class Store:
         )
 
     def health_warnings(self) -> list[HealthWarning]:
-        """Retrieval degradations a client should know about before it searches."""
+        """Retrieval degradations a client should know about before it searches.
+
+        A library that is not open reports only an upgrade that runs: opening it here
+        would wait for that upgrade.
+        """
+        if self._db is None:
+            return self._upgrade_warnings()
         warnings: list[HealthWarning] = []
         if (stale := self._index_mismatch_warning()) is not None:
             warnings.append(stale)
@@ -988,23 +1429,184 @@ class Store:
             return True
 
     def get_db(self) -> LanceDBConnection:
-        if self._db is None:
-            from lancedb.db import LanceDBConnection
+        """The open library; the first call opens it, and upgrades it when it is older."""
+        db = self._db
+        if db is None:
+            with self._open_lock:
+                db = self._open_held()
+        return db
 
-            self._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
-            self._db = LanceDBConnection(
-                str(self._config.lancedb_dir),
-                read_consistency_interval=READ_CONSISTENCY_INTERVAL,
+    @property
+    def is_open(self) -> bool:
+        """Whether the library is open, so a call needs no open or upgrade first."""
+        return self._db is not None
+
+    def open_in_background(self) -> None:
+        """Open the library on a daemon thread; ``wait_for_open`` waits from this call on.
+
+        An open that already runs is left to finish: its waiters wait for it.
+        """
+        if not self._open_lock.acquire(blocking=False):
+            return
+        threading.Thread(target=self._open_then_release, name="library-open", daemon=True).start()
+
+    def wait_for_open(self, timeout: float) -> bool:
+        """Wait up to *timeout* seconds for another thread to open the library.
+
+        Return False when the open is still running at the deadline.
+        """
+        if not self._open_lock.acquire(timeout=timeout):
+            return False
+        self._open_lock.release()
+        return True
+
+    def _open_then_release(self) -> None:
+        """Open the library, then free the open lock ``open_in_background`` took."""
+        try:
+            self._open_held()
+        finally:
+            self._open_lock.release()
+
+    def _open_held(self) -> LanceDBConnection:
+        """The library, opened unless it is open. Caller holds the open lock."""
+        if self._db is not None:
+            return self._db
+        from lancedb.db import LanceDBConnection
+
+        self._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
+        db = LanceDBConnection(
+            str(self._config.lancedb_dir), read_consistency_interval=READ_CONSISTENCY_INTERVAL
+        )
+        if self._upgrade_needed(db):
+            self._upgrade_library(db)
+        self._db = db
+        return db
+
+    def _upgrade_needed(self, db: LanceDBConnection) -> bool:
+        """Whether *db* is keyed by path, keeps the older record files, or keys a row by label."""
+        return (
+            _upgrade_pending(db)
+            or _held_unmigrated(db, self._config.data_root)
+            or _holds_label_keys(db, self._locations())
+        )
+
+    def _upgrade_library(self, db: LanceDBConnection) -> None:
+        """Upgrade *db* under the write lock, waiting for it without a deadline, and report it."""
+        self._upgrade_started = time.monotonic()
+        try:
+            with ExitStack() as held:
+                try:
+                    held.enter_context(write_lock(self._config.lancedb_dir, timeout=0.0))
+                except LockTimeoutError:
+                    self._report_upgrade(UpgradePhase.WAITING)
+                    held.enter_context(write_lock(self._config.lancedb_dir, timeout=None))
+                # Another process can have upgraded it during the wait.
+                if self._upgrade_needed(db):
+                    self._upgrade_unlocked(db)
+        except BaseException:
+            self._report_upgrade(UpgradePhase.FAILED)
+            raise
+        finally:
+            self._upgrade = None
+        self._report_upgrade(UpgradePhase.DONE)
+
+    def _upgrade_unlocked(self, db: LanceDBConnection) -> None:
+        """Run each step of the upgrade that *db* still needs. Caller holds the write lock."""
+        held = _held_unmigrated(db, self._config.data_root)
+        if held:
+            _add_held_columns(db)
+        if _upgrade_pending(db):
+            self._migrate_unlocked(db)
+        if held:
+            self._import_held_unlocked(db)
+        _fill_locations(db, self._locations())
+
+    def _report_upgrade(self, phase: UpgradePhase, step: _TableStep | None = None) -> None:
+        """Pass *phase* to the reporter, timed from the upgrade's start; record it while it runs."""
+        event = LibraryUpgradeEvent(
+            phase=phase,
+            elapsed_s=time.monotonic() - self._upgrade_started,
+            **({} if step is None else step._asdict()),
+        )
+        self._upgrade = event if event.running else None
+        self._on_upgrade(EventType.LIBRARY_UPGRADE, event)
+
+    def _migrate_unlocked(self, db: LanceDBConnection) -> None:
+        """Key every table by ``source_id``. Caller holds the write lock.
+
+        Each step reads the table's columns, and the stamp reads ``_meta``, so a
+        run that was killed is finished by the next one. An existing source takes
+        the md5 of its path as its id. A store stamped 2 is stamped 3 at the end; a
+        store stamped 1 predates the document prefix, and keeps 1 so that the
+        stale-prefix warning still names it.
+        """
+        names = table_names(db)
+        steps = _upgrade_steps(db, names)
+        keyed = [(name, _PATH_KEY_BY_TABLE[name]) for name, _ in steps if name != SOURCES_TABLE]
+        rows: dict[str, int] = {}
+        done = 0
+        # LanceDB adds a column one fragment at a time: each table's runs on its own thread
+        # from the start, and its path column goes once its every path has a source row.
+        # Only this thread reports, in table order, so the count of tables done only rises.
+        with ThreadPoolExecutor(len(_PATH_KEY_COLUMNS), _UPGRADE_THREAD_PREFIX) as pool:
+            added = [pool.submit(_add_source_id, db, name, column) for name, column in keyed]
+            for name, table in steps:
+                rows[name] = table.count_rows()
+                work = TableWork.UPDATING if name == SOURCES_TABLE else TableWork.CHECKING
+                step = _TableStep(work, _UPGRADE_LABELS[name], rows[name], done, len(steps))
+                self._report_upgrade(UpgradePhase.TABLE, step)
+                if name == SOURCES_TABLE:
+                    _migrate_sources_table(table)
+                    done += 1
+                else:
+                    self._hold_missing_paths(db, table, _PATH_KEY_BY_TABLE[name])
+            for (name, column), column_added in zip(keyed, added, strict=True):
+                step = _TableStep(
+                    TableWork.ADDING_IDS, _UPGRADE_LABELS[name], rows[name], done, len(steps)
+                )
+                self._report_upgrade(UpgradePhase.TABLE, step)
+                column_added.result()
+                db.open_table(name).drop_columns([column])
+                done += 1
+        if META_TABLE in names:
+            db.open_table(META_TABLE).update(
+                where="schema_version >= 2", values={"schema_version": META_SCHEMA_VERSION}
             )
-        return self._db
+        log.info("Keyed the library at %s by source id", self._config.lancedb_dir)
+
+    def _import_held_unlocked(self, db: LanceDBConnection) -> None:
+        """Move the held-out records of the older files into ``_sources``, then delete them.
+
+        Gives each recorded name its record in one commit; a row that holds an
+        indexed document takes no removal. Lock held. The files go last; an open
+        killed before then imports the same records again onto the same rows.
+        """
+        sources = ensure_table(db, SOURCES_TABLE, _sources_schema())
+        root = self._config.data_root
+        writes = [
+            _SourceWrite(name, SourceType.DOCUMENT, record=record)
+            for name, record in read_legacy_records(root).items()
+        ]
+        self._put_sources_unlocked(sources, writes, keep_documents=True)
+        remove_legacy_files(root)
+        log.info("Moved the held-out file records of %s into the index", root)
+
+    def _hold_missing_paths(self, db: LanceDBConnection, table: LanceTable, column: str) -> None:
+        """Give each key in *column* of *table* no source row of its class holds a row. Lock held.
+
+        A wiki page, or a removed source a citation names, gets one under the id the
+        column's key and type give, so no key is lost when the column goes.
+        """
+        sources = ensure_table(db, SOURCES_TABLE, _sources_schema())
+        writes = [
+            _SourceWrite(key, kind, new_id=_wiki_id(key) if _is_wiki(kind) else _md5(key))
+            for key, kind in _keys_missing_from(sources, table, column)
+        ]
+        self._put_sources_unlocked(sources, writes)
 
     def open_table(self, name: str) -> LanceTable | None:
         """Open a table if it exists, otherwise return None."""
-        db = self.get_db()
-        if name not in table_names(db):
-            return None
-        table: LanceTable = db.open_table(name)
-        return table
+        return open_committed(self.get_db(), name)
 
     def ensure_fts_index(self, *, blocking: bool = True) -> None:
         """Create the chunks FTS index, or run ``optimize()`` once it exists.
@@ -1190,8 +1792,8 @@ class Store:
     # chunk_concepts serves the concept boost (ConceptGraph._chunk_concepts_from);
     # without its index every boosted query full-scans the table.
     _SCALAR_TARGETS: tuple[tuple[str, tuple[tuple[str, ScalarIndexType], ...]], ...] = (
-        (CHUNKS_TABLE, (("source", "BTREE"), ("chunk_type", "BITMAP"))),
-        (CHUNK_CONCEPTS_TABLE, (("chunk_source", "BTREE"),)),
+        (CHUNKS_TABLE, ((_SOURCE_ID, "BTREE"), (_CHUNK_TYPE, "BITMAP"))),
+        (CHUNK_CONCEPTS_TABLE, ((_SOURCE_ID, "BTREE"),)),
     )
 
     def ensure_scalar_indexes(self, *, blocking: bool = True) -> None:
@@ -1360,8 +1962,11 @@ class Store:
         if not records:
             return 0
         _check_vector_dims(records, embedding_dim)
+        ids = self._ensure_ids_unlocked(
+            (record["source"], _source_type_of(record[_CHUNK_TYPE])) for record in records
+        )
         table = self._chunks_table()
-        table.add(records)
+        table.add(_keyed(records, "source", ids))
         if self.get_meta() is None:
             self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
         return len(records)
@@ -1380,23 +1985,24 @@ class Store:
         with self._write_lock():
             return self._add_chunks_unlocked(records)
 
-    def replace_chunks(self, records: list[dict], predicate: str) -> int:
-        """Replace the chunk rows matching *predicate* with *records* under one write lock.
+    def replace_chunks(self, source: str, chunk_type: ChunkType, records: list[dict]) -> int:
+        """Replace *source*'s chunk rows of *chunk_type* with *records* under one write lock.
 
         Same compatibility and dimension gates as :meth:`add_chunks`, both run
         before the delete so a rejected write leaves the existing rows in place.
         The lock serializes writers; delete and add are separate commits, so a
         concurrent reader can briefly see the rows absent, and callers retry on
         a crash between the two. A delete failure propagates, following the same
-        rule as :meth:`_delete_by_sources_unlocked`: swallowed, the caller would
+        rule as :meth:`_delete_rows_of_unlocked`: swallowed, the caller would
         read a success-shaped result over rows still describing the old body.
         Returns the count added.
         """
         with self._write_lock():
             self._ensure_embedding_compat()
             _check_vector_dims(records, self._config.embedding_dim)
+            source_id = self._ensure_ids_unlocked([(source, _source_type_of(chunk_type))])[source]
             table = self._chunks_table()
-            table.delete(predicate)
+            table.delete(f"{_SOURCE_ID} = '{source_id}' AND {_chunk_type_predicate(chunk_type)}")
             return self._add_chunks_unlocked(records)
 
     def bm25_probe(
@@ -1414,7 +2020,9 @@ class Store:
         if not self._fts_ready:
             return []
         try:
-            results = _lexical_rows(table, query_text, top_k, chunk_type)
+            results = self._with_paths(
+                _id_chunks(_lexical_rows(table, query_text, top_k, chunk_type))
+            )
             norms = normalized_bm25([r.bm25_score or 0.0 for r in results])
             return [
                 r.model_copy(update={"score": norm}) for r, norm in zip(results, norms, strict=True)
@@ -1464,7 +2072,7 @@ class Store:
                 table, query_text, query_vector, top_k, max_distance, chunk_type
             )
             if hits is not None:
-                return hits
+                return self._with_paths(hits)
 
         try:
             rows = self._vector_arm(
@@ -1487,7 +2095,7 @@ class Store:
             r.model_copy(
                 update={"score": vector_similarity(r.distance) if r.distance is not None else 0.0}
             )
-            for r in results
+            for r in self._with_paths(results)
         ]
 
     def _keyword_arm(
@@ -1553,7 +2161,14 @@ class Store:
             query = query.refine_factor(_ANN_REFINE_FACTOR)
         if chunk_type:
             query = query.where(_chunk_type_predicate(chunk_type))
-        return [SearchChunk(**r) for r in query.to_list()]
+        return _id_chunks(query.to_list())
+
+    def _with_paths(self, results: list[SearchChunk]) -> list[SearchChunk]:
+        """*results* with the path of each source in place of its id, in one lookup."""
+        paths = self.source_paths({r.source for r in results})
+        return [
+            r.model_copy(update={"source": paths[r.source]}) for r in results if r.source in paths
+        ]
 
     def _fts_arm(
         self,
@@ -1563,7 +2178,7 @@ class Store:
         chunk_type: ChunkType | None,
     ) -> list[SearchChunk]:
         """BM25-arm candidates over the chunk text."""
-        return _lexical_rows(table, query_text, limit, chunk_type)
+        return _id_chunks(_lexical_rows(table, query_text, limit, chunk_type))
 
     def _title_arm(
         self,
@@ -1597,16 +2212,17 @@ class Store:
         fetch = max(limit * _TITLE_FETCH_FACTOR, _TITLE_MIN_FETCH)
         while True:
             try:
-                rows = _lexical_rows(table, query_text, fetch, chunk_type, column=_TITLE_COLUMN)
+                hits = _lexical_rows(table, query_text, fetch, chunk_type, column=_TITLE_COLUMN)
             except Exception:
                 log.debug("Title arm search failed; contributing no title rows", exc_info=True)
                 return []
+            rows = _id_chunks(hits)
             best: dict[str, SearchChunk] = {}
             for row in rows:
                 seen = best.get(row.source)
                 if seen is None or row.chunk_index < seen.chunk_index:
                     best[row.source] = row
-            if len(best) >= limit or len(rows) < fetch or fetch >= _TITLE_FETCH_CEILING:
+            if len(best) >= limit or len(hits) < fetch or fetch >= _TITLE_FETCH_CEILING:
                 break
             fetch = min(fetch * 4, _TITLE_FETCH_CEILING)
         ordered = sorted(best.values(), key=lambda r: (-(r.bm25_score or 0.0), r.source))
@@ -1734,9 +2350,9 @@ class Store:
         from lilbee.retrieval.entities.schema import _entities_schema
 
         with self._write_lock():
-            db = self.get_db()
-            table = ensure_table(db, ENTITIES_TABLE, _entities_schema())
-            table.add(records)
+            ids = self._ensure_ids_unlocked(_documents(record["source"] for record in records))
+            table = ensure_table(self.get_db(), ENTITIES_TABLE, _entities_schema())
+            table.add(_keyed(records, "source", ids))
             return len(records)
 
     def entity_schema_state(self) -> EntitySchemaState | None:
@@ -1818,12 +2434,12 @@ class Store:
         if table is None:
             return {}
         per_chunk: dict[tuple[str, int], tuple[set[str], set[str]]] = {}
-        arrow = table.to_arrow().select(["type", "normalized_value", "source", "chunk_index"])
+        arrow = table.to_arrow().select(["type", "normalized_value", _SOURCE_ID, "chunk_index"])
         for batch in arrow.to_batches(max_chunksize=_TERM_SCAN_BATCH_ROWS):
             rows = zip(
                 batch.column("type").to_pylist(),
                 batch.column("normalized_value").to_pylist(),
-                batch.column("source").to_pylist(),
+                batch.column(_SOURCE_ID).to_pylist(),
                 batch.column("chunk_index").to_pylist(),
                 strict=True,
             )
@@ -1853,15 +2469,38 @@ class Store:
         needle = term.lower()
         chunk_hits = 0
         sources: set[str] = set()
-        arrow = table.to_arrow().select(["source", "chunk"])
+        arrow = table.to_arrow().select([_SOURCE_ID, "chunk"])
         for batch in arrow.to_batches(max_chunksize=_TERM_SCAN_BATCH_ROWS):
             texts = batch.column("chunk").to_pylist()
-            names = batch.column("source").to_pylist()
+            names = batch.column(_SOURCE_ID).to_pylist()
             for name, text in zip(names, texts, strict=True):
                 if text and needle in text.lower():
                     chunk_hits += 1
                     sources.add(name)
         return chunk_hits, len(sources)
+
+    def chunk_batches(
+        self, columns: list[str], batch_rows: int
+    ) -> Iterator[list[Mapping[str, Any]]]:
+        """Every chunk row in batches of *batch_rows*, for *columns*; ``source`` is the path."""
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return
+        paths = self._all_source_paths()
+        read = [_SOURCE_ID if column == "source" else column for column in columns]
+        arrow = table.search().select(read).limit(None).to_arrow()
+        for batch in arrow.to_batches(max_chunksize=batch_rows):
+            rows: list[Mapping[str, Any]] = list(_pathed(batch.to_pylist(), "source", paths))
+            yield rows
+
+    def _all_source_paths(self) -> dict[str, str]:
+        """The path of every source row, by id."""
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return {}
+        rows = table.search().select([_SOURCE_ID, _PATH]).limit(None).to_list()
+        name = self._locations().name
+        return {row[_SOURCE_ID]: name(row[_PATH]) for row in rows}
 
     def count_chunks(self) -> int:
         """Total chunks in the store."""
@@ -1876,12 +2515,17 @@ class Store:
         a document's chunks are a bounded read, and the scan that would rescue
         it costs the entire index, vectors included, in memory.
         """
+        return self._chunks_of(source, "1 = 1")
+
+    def _chunks_of(self, source: str, predicate: str) -> list[SearchChunk]:
+        """*source*'s chunk rows that *predicate* also matches."""
         table = self.open_table(CHUNKS_TABLE)
-        if table is None:
+        source_id = self.source_ids([source], None).get(source)
+        if table is None or source_id is None:
             return []
-        escaped = escape_sql_string(source)
-        rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
-        return [SearchChunk(**r) for r in rows]
+        query = table.search().where(f"{_SOURCE_ID} = '{source_id}' AND {predicate}")
+        rows = _pathed(query.limit(None).to_list(), "source", {source_id: source})
+        return [SearchChunk(**row) for row in rows]
 
     def get_chunks_by_indices(self, source: str, indices: Sequence[int]) -> list[SearchChunk]:
         """Return *source*'s chunks whose ``chunk_index`` is in *indices*.
@@ -1894,17 +2538,12 @@ class Store:
         """
         if not indices:
             return []
-        table = self.open_table(CHUNKS_TABLE)
-        if table is None:
-            return []
-        escaped = escape_sql_string(source)
         wanted = ", ".join(str(int(i)) for i in indices)
-        predicate = f"source = '{escaped}' AND chunk_index IN ({wanted})"
-        rows = table.search().where(predicate).limit(None).to_list()
-        return sorted((SearchChunk(**r) for r in rows), key=lambda c: c.chunk_index)
+        rows = self._chunks_of(source, f"chunk_index IN ({wanted})")
+        return sorted(rows, key=lambda c: c.chunk_index)
 
-    def _delete_by_sources_unlocked(self, sources: list[str]) -> None:
-        """Delete the sources' chunks, page texts, and chunk-concept rows.
+    def _delete_rows_of_unlocked(self, source_ids: Iterable[str]) -> None:
+        """Delete the rows the sources *source_ids* hold in every per-source table.
 
         Caller must hold ``write_lock()``. One ``IN`` delete per table covers
         every source, so a batched flush pays a constant number of predicate
@@ -1912,20 +2551,18 @@ class Store:
         swallowed, it would leave every flushed file silently stale; raised,
         the flush fails and the files replan on the next sync.
         """
-        quoted = ", ".join(f"'{escape_sql_string(source)}'" for source in sources)
-        for name, column in _PER_SOURCE_TABLES:
+        quoted = _in_list(source_ids)
+        if not quoted:
+            return
+        for name in _PER_SOURCE_TABLES:
             table = self.open_table(name)
             if table is not None:
-                table.delete(f"{column} IN ({quoted})")
+                table.delete(f"{_SOURCE_ID} IN ({quoted})")
 
-    def _delete_by_source_unlocked(self, source: str) -> None:
-        """Delete a single source's chunks, page texts, and chunk-concept rows."""
-        self._delete_by_sources_unlocked([source])
-
-    def delete_by_source(self, source: str) -> None:
-        """Delete a source's chunks and page texts."""
+    def delete_by_source(self, source: str, source_type: SourceType) -> None:
+        """Delete the chunks and page texts of *source* of *source_type*."""
         with self._write_lock():
-            self._delete_by_source_unlocked(source)
+            self._delete_rows_of_unlocked(self.source_ids([source], source_type).values())
         self._invalidate_source_cache()
 
     def add_page_texts(self, records: list[dict]) -> int:
@@ -1933,20 +2570,15 @@ class Store:
         if not records:
             return 0
         with self._write_lock():
-            db = self.get_db()
-            table = ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema())
-            table.add(records)
+            ids = self._ensure_ids_unlocked(_documents(record["source"] for record in records))
+            table = ensure_table(self.get_db(), PAGE_TEXTS_TABLE, _page_texts_schema())
+            table.add(_keyed(records, "source", ids))
         return len(records)
 
     def get_page_texts(self, source: str | None = None) -> list[PageTextRecord]:
         """Return per-page text rows, all or for a single *source*."""
-        table = self.open_table(PAGE_TEXTS_TABLE)
-        if table is None:
-            return []
-        query = table.search()
-        if source is not None:
-            query = query.where(f"source = '{escape_sql_string(source)}'")
-        return cast("list[PageTextRecord]", query.limit(None).to_list())
+        arrow = self.page_texts_arrow(source)
+        return cast("list[PageTextRecord]", arrow.to_pylist())
 
     def page_texts_arrow(self, source: str | None = None) -> pa.Table:
         """Return per-page text rows as an Arrow table in a single scan.
@@ -1955,13 +2587,22 @@ class Store:
         whole set in Arrow (no per-row Python objects) from read through file
         write. Empty with the canonical schema when the table or *source* is empty.
         """
+
         table = self.open_table(PAGE_TEXTS_TABLE)
-        if table is None:
-            return _page_texts_schema().empty_table()
-        query = table.search().select(["source", "page", "text", "content_type"])
+        source_id = None
         if source is not None:
-            query = query.where(f"source = '{escape_sql_string(source)}'")
-        return query.limit(None).to_arrow()
+            source_id = self.source_ids([source], SourceType.DOCUMENT).get(source, "")
+        if table is None:
+            arrow = _page_texts_schema().empty_table()
+        else:
+            query = table.search().select(_page_texts_schema().names)
+            if source_id is not None:
+                query = query.where(f"{_SOURCE_ID} = '{escape_sql_string(source_id)}'")
+            arrow = query.limit(None).to_arrow()
+        ids = arrow.column(_SOURCE_ID).to_pylist()
+        paths = self.source_paths(ids)
+        shown = pa.array([paths.get(key) for key in ids], pa.utf8())
+        return arrow.set_column(0, "source", shown).filter(pc.is_valid(shown))
 
     def sources_arrow(self) -> pa.Table:
         """Return each tracked source's extraction metadata as an Arrow table.
@@ -1969,23 +2610,19 @@ class Store:
         The columnar sibling of :meth:`get_sources`, keyed by ``source`` so it
         joins straight onto the page-text table. ``get_sources`` builds a dict per
         source, which on a corpus of millions of single-page documents costs more
-        than the text being exported. An index written before the metadata columns
-        existed gets them as nulls rather than missing, so the join has one shape.
+        than the text being exported.
         """
         import pyarrow as pa
-        import pyarrow.compute as pc
 
         table = self.open_table(SOURCES_TABLE)
         columns = ["source", *SourceMeta._fields]
         if table is None:
             return pa.schema([pa.field(name, pa.utf8()) for name in columns]).empty_table()
-        present = [name for name in SourceMeta._fields if name in table.schema.names]
-        arrow = table.search().select(["filename", *present]).limit(None).to_arrow()
-        arrow = arrow.rename_columns(["source", *present])
-        for name in SourceMeta._fields:
-            if name not in present:
-                arrow = arrow.append_column(name, pa.nulls(arrow.num_rows, pa.utf8()))
-        arrow = arrow.select(columns)
+        query = table.search().where(_LISTED).select([_PATH, *SourceMeta._fields])
+        arrow = query.limit(None).to_arrow().rename_columns(columns)
+        name = self._locations().name
+        shown = pa.array([name(path) for path in arrow.column("source").to_pylist()], pa.utf8())
+        arrow = arrow.set_column(0, "source", shown)
         if pc.count_distinct(arrow.column("source")).as_py() == arrow.num_rows:
             return arrow
         # One row per source, so a caller joining on it cannot fan out. A doubled
@@ -2004,14 +2641,32 @@ class Store:
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return set()
-        rows = (
-            table.search()
-            .where(f"chunk_type = '{ChunkType.WIKI}'")
-            .select(["source"])
-            .limit(None)
-            .to_list()
-        )
-        return {row["source"] for row in rows}
+        rows = table.search().where(_WIKI_CHUNK).select([_SOURCE_ID]).limit(None).to_list()
+        return set(self.source_paths(row[_SOURCE_ID] for row in rows).values())
+
+    def wiki_pages_citing(self, paths: Iterable[str]) -> set[str]:
+        """The wiki pages whose citations cite a source at or below one of *paths*."""
+        table = self.open_table(CITATIONS_TABLE)
+        roots = set(paths)
+        if table is None or not roots:
+            return set()
+        rows = table.search().select([_SOURCE_ID, "wiki_source"]).limit(None).to_list()
+        cited = self.source_paths(row[_SOURCE_ID] for row in rows)
+        return {
+            row["wiki_source"]
+            for row in rows
+            if row[_SOURCE_ID] in cited and _at_or_below(cited[row[_SOURCE_ID]], roots)
+        }
+
+    def wiki_citations_by_page(self) -> dict[str, list[CitationRecord]]:
+        """Every citation, naming its source by path, under the wiki page that holds it."""
+        table = self.open_table(CITATIONS_TABLE)
+        if table is None:
+            return {}
+        by_page: dict[str, list[CitationRecord]] = {}
+        for record in self._shown_citations(table.search().limit(None).to_list()):
+            by_page.setdefault(record["wiki_source"], []).append(record)
+        return by_page
 
     def wiki_citation_sources(self) -> set[str]:
         """Return the distinct wiki_source values present in the citations table."""
@@ -2032,14 +2687,11 @@ class Store:
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return []
-        query = table.search()
-        where = _sources_search_filter(search, include_title="title" in table.schema.names)
-        if where is not None:
-            query = query.where(where)
+        locations = self._locations()
+        query = table.search().where(_listed_matching(search, locations))
         if offset:
             query = query.offset(offset)
-        query = query.limit(limit)
-        return cast("list[SourceRecord]", query.to_list())
+        return [_source_record(row, locations) for row in query.limit(limit).to_list()]
 
     def get_sources_where(self, keep: Callable[[str], bool]) -> list[SourceRecord]:
         """Source records whose filename *keep* accepts, read in batches.
@@ -2053,9 +2705,12 @@ class Store:
         if table is None:
             return []
         kept: list[SourceRecord] = []
-        for batch in table.search().limit(None).to_batches(_SOURCE_SCAN_BATCH_ROWS):
-            mask = pa.array([keep(name) for name in batch.column("filename").to_pylist()])
-            kept.extend(cast("list[SourceRecord]", batch.filter(mask).to_pylist()))
+        locations = self._locations()
+        query = table.search().where(_LISTED).limit(None)
+        for batch in query.to_batches(_SOURCE_SCAN_BATCH_ROWS):
+            names = [locations.name(path) for path in batch.column(_PATH).to_pylist()]
+            mask = pa.array([keep(name) for name in names])
+            kept.extend(_source_record(row, locations) for row in batch.filter(mask).to_pylist())
         return kept
 
     def missing_sources(self, names: Iterable[str]) -> set[str]:
@@ -2064,9 +2719,10 @@ class Store:
         table = self.open_table(SOURCES_TABLE)
         if table is None or not missing:
             return missing
-        scan = table.search().select(["filename"]).limit(None)
+        name = self._locations().name
+        scan = table.search().where(_LISTED).select([_PATH]).limit(None)
         for batch in scan.to_batches(_SOURCE_SCAN_BATCH_ROWS):
-            missing.difference_update(batch.column("filename").to_pylist())
+            missing.difference_update(name(path) for path in batch.column(_PATH).to_pylist())
         return missing
 
     def sources_version(self) -> int | None:
@@ -2075,21 +2731,24 @@ class Store:
         return None if table is None else int(table.version)
 
     def sources_by_hash(self, hashes: Sequence[str], *, version: int) -> dict[str, list[str]]:
-        """Document sources at *version* of the source table, by content hash, for *hashes*."""
+        """Document sources at *version* of the source table, by content hash, for *hashes*.
+
+        A failed file counts at the hash it failed at.
+        """
         found: dict[str, list[str]] = {}
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return found
         table.checkout(version)
-        documents = f"source_type != '{escape_sql_string(SourceType.IMPORTED)}'"
+        name = self._locations().name
+        documents = f"{_SOURCE_TYPE} != '{SourceType.IMPORTED}' AND {_LISTED}"
+        failed = f"{_HELD_OUT} = '{HeldOut.FAILED}'"
         for start in range(0, len(hashes), _SOURCE_STAT_BATCH_ROWS):
-            quoted = ", ".join(
-                f"'{escape_sql_string(digest)}'"
-                for digest in hashes[start : start + _SOURCE_STAT_BATCH_ROWS]
-            )
-            query = table.search().where(f"file_hash IN ({quoted}) AND {documents}")
-            for row in query.select(["filename", "file_hash"]).limit(None).to_list():
-                found.setdefault(row["file_hash"], []).append(row["filename"])
+            quoted = _in_list(hashes[start : start + _SOURCE_STAT_BATCH_ROWS])
+            for column, where in (("file_hash", documents), (_HELD_HASH, failed)):
+                query = table.search().where(f"{column} IN ({quoted}) AND {where}")
+                for row in query.select([_PATH, column]).limit(None).to_list():
+                    found.setdefault(row[column], []).append(name(row[_PATH]))
         return found
 
     def sources_checkpoint(self) -> SourcesCheckpoint:
@@ -2138,72 +2797,172 @@ class Store:
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return []
-        query = table.search().where(f"ingested_at >= '{escape_sql_string(since)}'")
-        return [row["filename"] for row in query.select(["filename"]).limit(None).to_list()]
+        written = f"ingested_at >= '{escape_sql_string(since)}' AND {_LISTED}"
+        query = table.search().where(written).select([_PATH])
+        name = self._locations().name
+        return [name(row[_PATH]) for row in query.limit(None).to_list()]
 
     def count_sources(self, *, search: str | None = None) -> int:
         """Count tracked sources matching *search* without materializing rows."""
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return 0
-        where = _sources_search_filter(search, include_title="title" in table.schema.names)
-        count: int = table.count_rows() if where is None else table.count_rows(filter=where)
+        count: int = table.count_rows(filter=_listed_matching(search, self._locations()))
         return count
 
     def _source_row(
         self,
-        filename: str,
         file_hash: str,
         chunk_count: int,
-        source_type: str,
-        stat: SourceStat | None,
+        source_type: SourceType,
+        stat: SourceStat | None = None,
         meta: SourceMeta | None = None,
     ) -> dict:
-        """Build one ``_sources`` row, defaulting absent stat to the unknown sentinel.
+        """The fields of one ``_sources`` row but its id and path; no stat reads as unknown.
 
         Absent extraction metadata persists as NULL, matching rows written
         before the metadata columns existed.
         """
         meta = meta or SourceMeta()
         return {
-            "filename": filename,
             "file_hash": file_hash,
             # Stamped under the write lock that commits the row: sources_checkpoint relies on it.
             "ingested_at": datetime.now(UTC).isoformat(),
             "chunk_count": chunk_count,
-            "source_type": source_type,
+            _SOURCE_TYPE: source_type,
             "size_bytes": stat.size_bytes if stat else SOURCE_STAT_UNKNOWN,
             "mtime_ns": stat.mtime_ns if stat else SOURCE_STAT_UNKNOWN,
             "stat_captured_ns": stat.captured_ns if stat else SOURCE_STAT_UNKNOWN,
             "title": meta.title or None,
             "authors": meta.authors or None,
             "created_at": meta.created_at or None,
+            **dict.fromkeys(_HELD_COLUMNS),
         }
 
-    def _sources_table(self) -> LanceTable:
-        """Open/create ``_sources``, adding the stat and metadata columns to older tables."""
-        table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
-        defaults = {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in _SOURCE_STAT_COLUMNS}
-        defaults |= {name: _NULL_TEXT_SQL for name in _SOURCE_META_COLUMNS}
-        missing = {name: sql for name, sql in defaults.items() if name not in table.schema.names}
-        if missing:
-            table.add_columns(missing)
-        return table
+    def _placeholder_row(self, source_type: SourceType) -> dict:
+        """The fields of a row that only names a source: a wiki page, or a source held out."""
+        row = self._source_row("", 0, source_type)
+        return row if _is_wiki(source_type) else {**row, _HELD_OUT: HeldOut.REMOVED}
 
-    def _replace_source_rows_unlocked(self, rows: list[dict]) -> None:
-        """Replace source rows: one batched delete plus one batched add.
+    def _put_sources_unlocked(
+        self, sources: LanceTable, writes: Iterable[_SourceWrite], *, keep_documents: bool = False
+    ) -> dict[str, str]:
+        """Put each of *writes* in *sources* in one merge on id; returns each name's id. Lock held.
 
-        Caller must hold ``write_lock()``. A per-file delete+add pair costs two
-        LanceDB version commits, so bulk ingest folds every file in a flush into
-        a single pair.
+        A write keeps the id of the row of its type class it finds at its key or the
+        other form of its name, else takes its new id or a random one, and its row is
+        stored at its key. With *keep_documents* a removal leaves a row that holds a
+        document as it is.
         """
-        table = self._sources_table()
-        filenames = ", ".join(f"'{escape_sql_string(r['filename'])}'" for r in rows)
-        # Skip the add when the delete failed: adding over a stale row would leave
-        # two _sources rows for one filename. The file replans on the next sync.
-        if not _safe_delete_unlocked(table, f"filename IN ({filenames})"):
+        writes = list(
+            {(write.name, _is_wiki(write.source_type)): write for write in writes}.values()
+        )
+        locations = self._locations()
+        found = _found_rows(sources, writes, locations) if writes else {}
+        ids: dict[str, str] = {}
+        rows: dict[str, dict[str, Any]] = {}
+        for write in writes:
+            held = found.get(write.name)
+            ids[write.name] = held[_SOURCE_ID] if held else write.new_id or _new_source_id()
+            row = self._written_row(write, held, keep_documents=keep_documents)
+            if row is not None:
+                path = locations.key(write.name, write.source_type)
+                rows[ids[write.name]] = {**row, _SOURCE_ID: ids[write.name], _PATH: path}
+        if rows:
+            merge = sources.merge_insert(_SOURCE_ID).when_matched_update_all()
+            merge = merge.when_not_matched_insert_all()
+            merge.execute(pa.Table.from_pylist(list(rows.values()), schema=sources.schema))
+        return ids
+
+    def _written_row(
+        self, write: _SourceWrite, found: dict[str, Any] | None, *, keep_documents: bool
+    ) -> dict[str, Any] | None:
+        """The fields *write* puts over the row it *found*; None when it changes nothing."""
+        if write.record is None and write.fields is None and found is not None:
+            return None
+        base = write.fields if write.fields is not None else found
+        row = dict(base) if base is not None else self._placeholder_row(write.source_type)
+        if write.record is None:
+            return row
+        holds = found is not None and _holds_document(found)
+        if keep_documents and holds and write.record.kind is HeldOut.REMOVED:
+            return None
+        return _held_row(row, write.record, holds_document=holds)
+
+    def _sources_table(self) -> LanceTable:
+        """Open or create ``_sources``.
+
+        A table that names sources by id without a ``_sources`` beside it is what a
+        rebuild that stopped after its first drop leaves: no path names its rows,
+        so it goes before the new ``_sources`` comes.
+        """
+        db = self.get_db()
+        names = table_names(db)
+        if SOURCES_TABLE not in names:
+            for name in (*_PER_SOURCE_TABLES, CITATIONS_TABLE):
+                if name in names:
+                    db.drop_table(name)
+        return ensure_table(db, SOURCES_TABLE, _sources_schema())
+
+    def _lookup(self, column: str, values: Iterable[str], other: str) -> dict[str, str]:
+        """``{value: other}`` for the source rows whose *column* holds one of *values*."""
+        return {row[column]: row[other] for row in self._rows_where(column, values, [other])}
+
+    def _rows_where(
+        self, column: str, values: Iterable[str], others: list[str]
+    ) -> Iterator[dict[str, Any]]:
+        """*column* and *others* of each source row whose *column* holds one of *values*."""
+        table = self.open_table(SOURCES_TABLE)
+        wanted = sorted(set(values))
+        if table is None:
             return
-        table.add(rows)
+        for start in range(0, len(wanted), _SOURCE_STAT_BATCH_ROWS):
+            batch = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
+            query = table.search().where(f"{column} IN ({batch})").select([column, *others])
+            yield from query.limit(None).to_list()
+
+    def source_ids(self, paths: Iterable[str], source_type: SourceType | None) -> dict[str, str]:
+        """The id of each of the names *paths* that a source row of *source_type* holds.
+
+        A name finds its source at the key of each type of the class of *source_type*
+        (a wiki page, or not), the class a write keeps one row per name in. With
+        *source_type* None, a name finds a wiki page first.
+        """
+        names = list(paths)
+        types = [
+            kind
+            for kind in _READ_ORDER
+            if source_type is None or _is_wiki(kind) == _is_wiki(source_type)
+        ]
+        key = self._locations().key
+        wanted = [((key(name, kind), kind), name) for kind in types for name in names]
+        rows = self._rows_where(_PATH, {at[0] for at, _ in wanted}, [_SOURCE_TYPE, _SOURCE_ID])
+        held = {(row[_PATH], row[_SOURCE_TYPE]): row[_SOURCE_ID] for row in rows}
+        found: dict[str, str] = {}
+        for at, name in wanted:
+            if at in held:
+                found.setdefault(name, held[at])
+        return found
+
+    def source_paths(self, source_ids: Iterable[str]) -> dict[str, str]:
+        """The shown name of each of *source_ids* that a source row holds."""
+        name = self._locations().name
+        found = self._lookup(_SOURCE_ID, source_ids, _PATH)
+        return {source_id: name(path) for source_id, path in found.items()}
+
+    def keyed_source_ids(self, paths: Iterable[str]) -> dict[str, str]:
+        """The id the keying of an older library gave each of *paths*, when a row holds it."""
+        keyed = {path: _md5(path) for path in paths}
+        held = self.source_paths(keyed.values())
+        return {path: source_id for path, source_id in keyed.items() if source_id in held}
+
+    def _ensure_ids_unlocked(self, sources: Iterable[tuple[str, SourceType]]) -> dict[str, str]:
+        """The id of each named source of its type, adding a placeholder row where none is.
+
+        Caller holds the lock.
+        """
+        writes = [_SourceWrite(name, source_type) for name, source_type in sources]
+        return self._put_sources_unlocked(self._sources_table(), writes) if writes else {}
 
     def upsert_source(
         self,
@@ -2216,8 +2975,9 @@ class Store:
     ) -> None:
         """Add or update a source tracking record."""
         with self._write_lock():
-            row = self._source_row(filename, file_hash, chunk_count, source_type, stat, meta)
-            self._replace_source_rows_unlocked([row])
+            fields = self._source_row(file_hash, chunk_count, source_type, stat, meta)
+            write = _SourceWrite(filename, source_type, fields)
+            self._put_sources_unlocked(self._sources_table(), [write])
         self._invalidate_source_cache()
 
     def update_source_stats(self, backfills: list[SourceStatBackfill]) -> None:
@@ -2225,17 +2985,10 @@ class Store:
         if not backfills:
             return
         for start in range(0, len(backfills), _SOURCE_STAT_BATCH_ROWS):
-            rows = [
-                {
-                    **bf.record,
-                    "size_bytes": bf.stat.size_bytes,
-                    "mtime_ns": bf.stat.mtime_ns,
-                    "stat_captured_ns": bf.stat.captured_ns,
-                }
-                for bf in backfills[start : start + _SOURCE_STAT_BATCH_ROWS]
-            ]
+            batch = backfills[start : start + _SOURCE_STAT_BATCH_ROWS]
             with self._write_lock():
-                self._replace_source_rows_unlocked(rows)
+                writes = [_stat_write(backfill) for backfill in batch]
+                self._put_sources_unlocked(self._sources_table(), writes)
         self._invalidate_source_cache()
 
     def optimize_sources(self) -> None:
@@ -2273,10 +3026,17 @@ class Store:
             _check_vector_dims(all_records, embedding_dim)
             db = self.get_db()
             self._refresh_key_indexes_unlocked(items, len(all_records))
-            self._cleanup_batch_unlocked(items)
-            self._add_page_texts_unlocked(db, items)
-            self._add_chunk_records_unlocked(all_records, embedding_model, embedding_dim)
-            self._replace_source_rows_unlocked(self._batch_source_rows(items))
+            # A new source's row exists before its chunks, so a flush that stops
+            # between them leaves rows the next flush of the file finds and deletes.
+            ids = self._ensure_ids_unlocked((it.source, it.source_type) for it in items)
+            self._delete_rows_of_unlocked([ids[it.source] for it in items if it.needs_cleanup])
+            page_rows = [row for it in items for row in (it.page_texts or [])]
+            if page_rows:
+                table = ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema())
+                table.add(_keyed(page_rows, "source", ids))
+            keyed = _keyed(all_records, "source", ids)
+            self._add_chunk_records_unlocked(keyed, embedding_model, embedding_dim)
+            self._put_sources_unlocked(self._sources_table(), self._batch_source_writes(items))
         self._invalidate_source_cache()
         return len(all_records)
 
@@ -2313,18 +3073,6 @@ class Store:
             exc_info=True,
         )
 
-    def _cleanup_batch_unlocked(self, items: list[ChunkWrite]) -> None:
-        """One ``IN`` delete per table for the flagged documents. Caller holds ``write_lock()``."""
-        cleanup_sources = [it.source for it in items if it.needs_cleanup]
-        if cleanup_sources:
-            self._delete_by_sources_unlocked(cleanup_sources)
-
-    def _add_page_texts_unlocked(self, db: LanceDBConnection, items: list[ChunkWrite]) -> None:
-        """Add the batch's page-text rows. Caller holds ``write_lock()``."""
-        page_rows = [row for it in items for row in (it.page_texts or [])]
-        if page_rows:
-            ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema()).add(page_rows)
-
     def _add_chunk_records_unlocked(
         self,
         all_records: list[dict],
@@ -2338,60 +3086,150 @@ class Store:
         if self.get_meta() is None:
             self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
 
-    def _batch_source_rows(self, items: list[ChunkWrite]) -> list[dict]:
-        """One ``_sources`` row per batched document."""
+    def _batch_source_writes(self, items: list[ChunkWrite]) -> list[_SourceWrite]:
+        """One ``_sources`` row per batched document, of the type its item states."""
         return [
-            self._source_row(
-                it.source, it.file_hash, len(it.records), it.source_type, it.stat, it.meta
+            _SourceWrite(
+                it.source,
+                it.source_type,
+                self._source_row(it.file_hash, len(it.records), it.source_type, it.stat, it.meta),
             )
             for it in items
         ]
 
-    def _delete_source_unlocked(self, filename: str) -> None:
-        """Remove the *filename* source record. Caller must hold ``write_lock()``."""
-        table = self.open_table(SOURCES_TABLE)
-        if table is not None:
-            _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
+    def _drop_source_rows_unlocked(self, source_ids: list[str]) -> None:
+        """Delete the source rows of *source_ids*, holding out each that a citation names.
+
+        A held-out row keeps the path of a removed source for the citations of it,
+        and holds nothing out of a sync.
+        """
+        if not source_ids:
+            return
+        table = self._sources_table()
+        cited = self._cited_ids(source_ids)
+        if cited:
+            where = f"{_SOURCE_ID} IN ({_in_list(cited)})"
+            table.update(where=where, values_sql=_CITED_ONLY_SQL)
+        dropped = [source_id for source_id in source_ids if source_id not in cited]
+        if dropped:
+            _safe_delete_unlocked(table, f"{_SOURCE_ID} IN ({_in_list(dropped)})")
+
+    def _cited_ids(self, source_ids: list[str]) -> set[str]:
+        """The *source_ids* a citation row names."""
+        table = self.open_table(CITATIONS_TABLE)
+        if table is None:
+            return set()
+        query = table.search().where(f"{_SOURCE_ID} IN ({_in_list(source_ids)})")
+        return {row[_SOURCE_ID] for row in query.select([_SOURCE_ID]).limit(None).to_list()}
 
     def delete_source(self, filename: str) -> None:
         """Remove a source file tracking record."""
         with self._write_lock():
-            self._delete_source_unlocked(filename)
+            ids = self.source_ids([filename], SourceType.DOCUMENT)
+            self._drop_source_rows_unlocked(list(ids.values()))
         self._invalidate_source_cache()
 
-    def _remove_many_unlocked(self, names: list[str]) -> None:
-        """Delete the documents' chunks and source records together.
+    def _remove_many_unlocked(
+        self, names: list[str], held: Mapping[str, HeldRecord] | None = None
+    ) -> None:
+        """Delete the documents' rows and source records together; hold out each path in *held*.
 
         All deletes run under the caller's single ``write_lock()`` so no
         reader can observe chunks whose source record is already gone; one
         ``IN`` delete per table covers the whole set.
         """
-        self._delete_by_sources_unlocked(names)
-        quoted = ", ".join(f"'{escape_sql_string(name)}'" for name in names)
+        held = held or {}
+        ids = self.source_ids(names, SourceType.DOCUMENT)
+        self._delete_rows_of_unlocked(list(ids.values()))
+        self._drop_source_rows_unlocked([ids[name] for name in ids if name not in held])
+        self._hold_out_unlocked(held)
+
+    def held_records(self) -> dict[str, HeldRecord]:
+        """The record of every path a sync holds out, by path."""
         table = self.open_table(SOURCES_TABLE)
-        if table is not None:
-            _safe_delete_unlocked(table, f"filename IN ({quoted})")
+        if table is None:
+            return {}
+        query = table.search().where(f"{_HELD_HASH} IS NOT NULL")
+        rows = query.select([_PATH, *_HELD_COLUMNS]).limit(None).to_list()
+        name = self._locations().name
+        return {
+            name(row[_PATH]): HeldRecord(
+                HeldOut(row[_HELD_OUT]), row[_HELD_HASH], row[_HELD_REASON]
+            )
+            for row in rows
+        }
+
+    def hold_failed(self, failed: Mapping[str, HeldRecord]) -> None:
+        """Hold each path of *failed* out of later syncs at its hash; a row keeps its document."""
+        if not failed:
+            return
+        with self._write_lock():
+            self._hold_out_unlocked(failed)
+        self._invalidate_source_cache()
+
+    def _hold_out_unlocked(self, held: Mapping[str, HeldRecord]) -> None:
+        """Give each name of *held* its record in one commit. Caller holds ``write_lock()``."""
+        if not held:
+            return
+        writes = [
+            _SourceWrite(name, SourceType.DOCUMENT, record=record) for name, record in held.items()
+        ]
+        self._put_sources_unlocked(self._sources_table(), writes)
+
+    def release_held(self, paths: Iterable[str]) -> None:
+        """Hold none of *paths* out of a sync any more."""
+        key = self._locations().key
+        wanted = sorted({key(path, SourceType.DOCUMENT) for path in paths})
+        if not wanted:
+            return
+        with self._write_lock():
+            for start in range(0, len(wanted), _SOURCE_STAT_BATCH_ROWS):
+                batch = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
+                self._release_unlocked(f"{_PATH} IN ({batch})")
+        self._invalidate_source_cache()
+
+    def release_failed(self) -> list[str]:
+        """Hold no failed file out of a sync any more; returns their paths, sorted."""
+        with self._write_lock():
+            released = self._release_unlocked(f"{_HELD_OUT} = '{HeldOut.FAILED}'")
+        self._invalidate_source_cache()
+        return released
+
+    def _release_unlocked(self, where: str) -> list[str]:
+        """Release the held rows *where* selects; a row that holds no document goes.
+
+        Caller holds ``write_lock()``. Returns the released paths, sorted.
+        """
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return []
+        query = table.search().where(f"({where}) AND {_HELD_HASH} IS NOT NULL")
+        rows = query.select([_SOURCE_ID, _PATH, _HELD_OUT, "file_hash"]).limit(None).to_list()
+        kept = [row[_SOURCE_ID] for row in rows if _holds_document(row)]
+        if kept:
+            table.update(
+                where=f"{_SOURCE_ID} IN ({_in_list(kept)})",
+                values_sql=dict.fromkeys(_HELD_COLUMNS, _NULL_TEXT_SQL),
+            )
+        self._drop_source_rows_unlocked(
+            [row[_SOURCE_ID] for row in rows if not _holds_document(row)]
+        )
+        name = self._locations().name
+        return sorted(name(row[_PATH]) for row in rows)
 
     def relocate_sources(self, moves: Sequence[SourceMove]) -> SourceRelocation:
-        """Re-key the first of *moves* to their new names in one hold of the write lock.
+        """Move the first of *moves* to their new names in one hold of the write lock.
 
         Returns the old name each new name took and how many of *moves* the hold
         settled; the caller passes the rest again. A move takes the first of its
         candidates that holds a source row and that no earlier move took; a move
         with none left is settled and absent from the names taken. The choice and
-        the re-key share the lock, so no two writers take one old name.
+        the move share the lock, so no two writers take one old name.
 
-        A moved source keeps its chunks and vectors: only its key, a title that
-        came from the old name, and its disk stat change. Many sources that swap
-        the same leading text of their key take one update of each table
-        together, the others share updates that map each old key to its new
-        one, and either takes one update for at most ``_TITLE_MAP_KEYS``
-        sources when each takes a title of its own. The source table takes the new rows
-        and loses the old ones in one merge. A hold settles at most
-        ``_RELOCATE_HOLD_MOVES`` moves and runs at most
-        ``_RELOCATE_HOLD_UPDATES`` updates of each table. Chunk tables
-        change before the source table, so a hold that dies between them leaves
-        the old names for the next sync to move again.
+        A moved source keeps its id, so its rows in every other table follow it:
+        only its path, a title that came from the old name, and its disk stat
+        change, in one commit of the source table. The sources inside a moved
+        archive move with it. A hold settles at most ``_RELOCATE_HOLD_MOVES`` moves.
         """
         if not moves:
             return SourceRelocation({}, 0)
@@ -2401,158 +3239,116 @@ class Store:
         return step
 
     def _relocate_hold_unlocked(self, moves: Sequence[SourceMove]) -> SourceRelocation:
-        """Claim and re-key *moves* up to the hold's bound. Caller holds ``write_lock()``."""
+        """Claim and move *moves*. Caller holds ``write_lock()``."""
         from lilbee.data.title import derive_title  # circular at module scope
 
         sources = self.open_table(SOURCES_TABLE)
         if sources is None:
             return SourceRelocation({}, len(moves))
+        moves, names = _located_moves(moves, self._locations())
         pools = {id(move.candidates): move.candidates for move in moves}.values()
         unclaimed = _held_sources(sources, {name for pool in pools for name in pool})
         claimed = _claimed_names(moves, unclaimed)
         rows = _source_rows(sources, [old for old in claimed if old is not None])
-        hold = _plan_hold(moves, claimed, rows, derive_title)
-        if hold.taken:
-            self._rekey_tables_unlocked(hold)
-            self._replace_moved_source_rows_unlocked(sources, hold)
-        return SourceRelocation(hold.taken, hold.settled)
-
-    def _rekey_tables_unlocked(self, hold: _RelocationHold) -> None:
-        """Re-key *hold*'s sources in each per-source table. Caller holds ``write_lock()``."""
-        for name, column in _RELOCATABLE_TABLES:
-            table = self.open_table(name)
-            if table is None:
-                continue
-            titled = _TITLE_COLUMN in table.schema.names
-            new = {old: taken for taken, old in hold.taken.items()}
-            for pattern, parts in hold.patterns.items():
-                own = titled and pattern.title is _OWN_TITLE
-                # Only an update with a map has a bound on its sources.
-                mapped = own or pattern.old_head is None
-                for olds in parts if mapped else [[old for part in parts for old in part]]:
-                    values = {column: pattern.key_sql(column, {old: new[old] for old in olds})}
-                    if own:
-                        titles = {key: hold.titles[old] for old in olds for key in (old, new[old])}
-                        values[_TITLE_COLUMN] = _lookup_sql(column, titles)
-                    elif titled and pattern.title is None:
-                        values[_TITLE_COLUMN] = _NULL_TEXT_SQL
-                    table.update(where=f"{column} IN ({_in_list(olds)})", values_sql=values)
-
-    def _replace_moved_source_rows_unlocked(
-        self, sources: LanceTable, hold: _RelocationHold
-    ) -> None:
-        """Put *hold*'s source rows in place of the old ones in one commit. Lock held."""
-        moved = pa.Table.from_pylist(hold.rows, schema=sources.schema)
-        merge = sources.merge_insert("filename").when_matched_update_all()
-        merge = merge.when_not_matched_insert_all()
-        old_rows = f"filename IN ({_in_list(hold.taken.values())})"
-        merge.when_not_matched_by_source_delete(old_rows).execute(moved)
-
-    def _relocated_title(
-        self,
-        sources: LanceTable | None,
-        old: str,
-        new: str,
-        derive: Callable[[str], str],
-    ) -> str | None:
-        """New title for a moved source, or ``_KEEP_TITLE`` when it must not change.
-
-        Extraction-derived titles survive a move (the content is unchanged);
-        a stem-derived title tracks the filename it was derived from, so it is
-        re-derived from the new name instead of matching the old one forever.
-        """
-        if sources is None:
-            return _KEEP_TITLE
-        try:
-            rows = (
-                sources.search()
-                .where(f"filename = '{escape_sql_string(old)}'")
-                .select(["title"])
-                .limit(1)
-                .to_list()
+        taken = {move.new: old for move, old in zip(moves, claimed, strict=True) if old}
+        titles = {
+            old: _title_after_move(rows[old], old, move.new, derive_title)
+            for move, old in zip(moves, claimed, strict=True)
+            if old
+        }
+        moved = [
+            _moved_source_row(rows[old], move, titles[old])
+            for move, old in zip(moves, claimed, strict=True)
+            if old
+        ]
+        if moved:
+            movable = sources.search().where(_MOVABLE).limit(None).to_list()
+            moved += _member_rows(movable, {old: new for new, old in taken.items()})
+            self._delete_rows_of_unlocked(self._displaced_ids(moved))
+            merge = sources.merge_insert(_SOURCE_ID).when_matched_update_all()
+            displaced = f"{_PATH} IN ({_in_list(row[_PATH] for row in moved)})"
+            merge = merge.when_not_matched_by_source_delete(displaced)
+            merge.execute(pa.Table.from_pylist(moved, schema=sources.schema))
+            self._retitle_chunks_unlocked(
+                {rows[old][_SOURCE_ID]: title for old, title in titles.items()}
             )
-        except Exception:
-            return _KEEP_TITLE
-        if not rows:
-            return _KEEP_TITLE
-        return _title_after_move(rows[0], old, new, derive)
+        return SourceRelocation({names[new]: names[old] for new, old in taken.items()}, len(moves))
 
-    def rekey_sources_under(self, old: str, new: str) -> None:
-        """Re-key the source *old* and every source below it to *new*, keeping chunks and vectors.
+    def _displaced_ids(self, moved: list[dict[str, Any]]) -> list[str]:
+        """The ids of the rows at the new paths of *moved* that are not moving themselves."""
+        moving = {row[_SOURCE_ID] for row in moved}
+        held = self._lookup(_PATH, (row[_PATH] for row in moved), _SOURCE_ID).values()
+        return [source_id for source_id in held if source_id not in moving]
 
-        A key matches when it is *old* or starts with ``old/``, so ``work`` never
-        matches ``workshop/x``. Each table with a row to move takes one update. A
-        second run re-keys again when *new* starts with *old*.
-        When *new* ends in another name than
-        *old*, the source at exactly *old* takes the title of the new name if its
-        title came from the old one; every other title stays as stored. An empty
-        key, one with an empty, ``.`` or ``..`` segment, or one with a NUL raises
-        ValueError before any table changes.
+    def _retitle_chunks_unlocked(self, titles: Mapping[str, str | None]) -> None:
+        """Give the chunks of each source id its new title, one update a title. Lock held.
+
+        A title of ``_KEEP_TITLE`` leaves the chunks as they are.
         """
-        _refuse_malformed_key(old)
-        _refuse_malformed_key(new)
+        chunks = self.open_table(CHUNKS_TABLE)
+        if chunks is None or _TITLE_COLUMN not in chunks.schema.names:
+            return
+        by_title: dict[str | None, list[str]] = {}
+        for source_id, title in titles.items():
+            if title is not _KEEP_TITLE:
+                by_title.setdefault(title, []).append(source_id)
+        for title, source_ids in by_title.items():
+            where = f"{_SOURCE_ID} IN ({_in_list(source_ids)})"
+            chunks.update(where=where, values={_TITLE_COLUMN: title})
+
+    def relocate_root(self, old: str, new: str) -> None:
+        """Give each source at or below the root folder *old* the same place below *new*."""
+        old_at, new_at = root_location(old), root_location(new)
         with self._write_lock():
-            title = self._title_after_rekey(old, new)
-            for name, column in _REKEY_TABLES:
-                table = self.open_table(name)
-                where, value = _rekey_sql(column, old, new)
-                if table is None or table.count_rows(where) == 0:
-                    continue
-                if title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
-                    at_old = f"{column} = '{escape_sql_string(old)}'"
-                    table.update(where=at_old, values={_TITLE_COLUMN: title})
-                table.update(where=where, values_sql={column: value})
+            sources = self.open_table(SOURCES_TABLE)
+            if sources is not None and old_at != new_at:
+                _rekey_prefix(self.get_db(), sources, under_sql(_PATH, old_at), old_at, new_at)
         self._invalidate_source_cache()
 
-    def drop_citations_repeated_under(self, repeat: str, kept: str) -> None:
-        """Delete each citation at or below *repeat* that one at the same place below *kept* holds.
-
-        Two rows are one citation when only their source key and creation time differ.
-        """
-        column = INGEST_SOURCE_COLUMNS[CITATIONS_TABLE]
+    def fill_locations(self) -> None:
+        """Give each source row a registered label still names its location."""
         with self._write_lock():
-            table = self.open_table(CITATIONS_TABLE)
-            if table is None:
-                return
+            _fill_locations(self.get_db(), self._locations())
+        self._invalidate_source_cache()
 
-            def _rows(prefix: str) -> list[dict[str, Any]]:
-                where, _ = _rekey_sql(column, prefix, prefix)
-                rows = table.search().where(where).limit(None).to_list()
-                return cast("list[dict[str, Any]]", rows)
+    def name_by_label(self, labels: Iterable[str]) -> None:
+        """Store each document of the registered roots *labels* by its shown name.
 
-            def _same(row: dict[str, Any], prefix: str) -> tuple[object, ...]:
-                return (row[column][len(prefix) :], *(row[name] for name in _CITATION_SAME_COLUMNS))
-
-            held = {_same(row, kept) for row in _rows(kept)}
-            for row in _rows(repeat):
-                if _same(row, repeat) in held:
-                    names = (column, *_CITATION_SAME_COLUMNS)
-                    table.delete(" AND ".join(_sql_equals(name, row[name]) for name in names))
-
-    def _title_after_rekey(self, old: str, new: str) -> str | None:
-        """The title the source at exactly *old* takes at *new*, or ``_KEEP_TITLE``."""
-        if PurePosixPath(old).name == PurePosixPath(new).name:
-            return _KEEP_TITLE
-        from lilbee.data.title import derive_title  # circular at module scope
-
-        return self._relocated_title(self.open_table(SOURCES_TABLE), old, new, derive_title)
+        A root about to leave the registry calls it, so a row it keeps for a
+        citation shows its name and not a path on disk, as a label with no root
+        does. A document of a root below one of *labels* that stays keeps its place.
+        """
+        going = set(labels)
+        locations = self._locations()
+        with self._write_lock():
+            sources = self.open_table(SOURCES_TABLE)
+            for root, label in locations.deepest_first:
+                if sources is not None and label in going:
+                    where = f"{_DOCUMENT} AND {locations.named_by_sql(_PATH, root)}"
+                    _rekey_prefix(self.get_db(), sources, where, root, label)
+        self._invalidate_source_cache()
 
     def member_sources(self, name: str) -> list[str]:
-        """Sources ingested out of the archive *name*: every filename under ``name/``."""
+        """Sources ingested out of the archive *name*: every path under ``name/``."""
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return []
-        under = f"starts_with(filename, '{escape_sql_string(name)}/')"
-        rows = table.search().where(under).select(["filename"]).limit(None).to_list()
-        return [row["filename"] for row in rows]
+        locations = self._locations()
+        at = escape_sql_string(locations.location(name))
+        under = f"starts_with({_PATH}, '{at}/') AND {_LISTED}"
+        rows = table.search().where(under).select([_PATH]).limit(None).to_list()
+        return [locations.name(row[_PATH]) for row in rows]
 
-    def remove_documents(self, names: list[str]) -> RemoveResult:
+    def remove_documents(
+        self, names: list[str], held: Mapping[str, HeldRecord] | None = None
+    ) -> RemoveResult:
         """Remove documents from the knowledge base by source name.
 
         Looks up known sources and deletes their chunks and source records. Never
         touches files on disk: source bytes are the user's, and a linked-in corpus
-        must never be deleted. Durable, file-aware removal (skip-markers, unlinking
-        a top-level link) lives in :func:`lilbee.app.ingest.remove_documents_durably`.
+        must never be deleted. Each path of *held* takes its record in the same
+        write, so a later sync holds it out. Durable, file-aware removal lives in
+        :func:`lilbee.app.ingest.remove_documents_durably`.
 
         Returns a RemoveResult with removed and not_found lists.
         """
@@ -2563,12 +3359,12 @@ class Store:
         removed = [name for name in targets if name in known]
         not_found = [name for name in names if name not in known]
 
-        if removed:
+        if removed or held:
             # One lock acquisition and one IN-delete per table for the whole
             # set, mirroring the batched flush path, instead of a LanceDB
             # version commit per document.
             with self._write_lock():
-                self._remove_many_unlocked(removed)
+                self._remove_many_unlocked(removed, held)
             self._invalidate_source_cache()
 
         return RemoveResult(removed=removed, not_found=not_found)
@@ -2591,7 +3387,7 @@ class Store:
 
         Delete and add run under a single write lock, so a reader never observes
         the table emptied mid-rebuild. A delete failure propagates, following the
-        same rule as :meth:`_delete_by_sources_unlocked`: adding over rows whose
+        same rule as :meth:`_delete_rows_of_unlocked`: adding over rows whose
         predecessors are still there duplicates them, and reporting success would
         leave the caller acting on state it thinks it replaced.
         """
@@ -2607,10 +3403,20 @@ class Store:
         if not records:
             return 0
         with self._write_lock():
-            db = self.get_db()
-            table = ensure_table(db, CITATIONS_TABLE, _citations_schema())
-            table.add(records)
+            table = ensure_table(self.get_db(), CITATIONS_TABLE, _citations_schema())
+            table.add(self._keyed_citations_unlocked(records))
         return len(records)
+
+    def _keyed_citations_unlocked(self, records: Iterable[CitationRecord]) -> list[dict]:
+        """Citation rows that name each cited source by id. Caller holds the lock."""
+        records = list(records)
+        ids = self._ensure_ids_unlocked(_documents(record["source_filename"] for record in records))
+        return _keyed(records, "source_filename", ids)
+
+    def _shown_citations(self, rows: list[dict[str, Any]]) -> list[CitationRecord]:
+        """Citation *rows* as records, each naming its source by path."""
+        paths = self.source_paths(row[_SOURCE_ID] for row in rows)
+        return cast("list[CitationRecord]", _pathed(rows, "source_filename", paths))
 
     def get_citations_for_wiki(self, wiki_source: str) -> list[CitationRecord]:
         """Get all citations for a wiki page."""
@@ -2618,17 +3424,18 @@ class Store:
         if table is None:
             return []
         escaped = escape_sql_string(wiki_source)
-        rows = table.search().where(f"wiki_source = '{escaped}'").to_list()
-        return cast("list[CitationRecord]", rows)
+        return self._shown_citations(table.search().where(f"wiki_source = '{escaped}'").to_list())
 
     def get_citations_for_source(self, source_filename: str) -> list[CitationRecord]:
         """Get all citations that reference a source document (reverse lookup)."""
         table = self.open_table(CITATIONS_TABLE)
-        if table is None:
+        source_id = self.source_ids([source_filename], SourceType.DOCUMENT).get(source_filename)
+        if table is None or source_id is None:
             return []
-        escaped = escape_sql_string(source_filename)
-        rows = table.search().where(f"source_filename = '{escaped}'").to_list()
-        return cast("list[CitationRecord]", rows)
+        rows = table.search().where(f"{_SOURCE_ID} = '{source_id}'").to_list()
+        return cast(
+            "list[CitationRecord]", _pathed(rows, "source_filename", {source_id: source_filename})
+        )
 
     def delete_citations_for_wiki(self, wiki_source: str) -> bool:
         """Delete all citations for a wiki page. Returns whether the delete succeeded."""
@@ -2641,7 +3448,7 @@ class Store:
         mentions, so wiping it empties those tables outright. All deletes run
         before the results combine.
         """
-        chunks_cleared = self.clear_table(CHUNKS_TABLE, f"chunk_type = '{ChunkType.WIKI}'")
+        chunks_cleared = self.clear_table(CHUNKS_TABLE, _WIKI_CHUNK)
         citations_cleared = self.clear_table(CITATIONS_TABLE, "1 = 1")
         mentions_cleared = self.clear_wiki_mentions()
         return chunks_cleared and citations_cleared and mentions_cleared
@@ -2653,12 +3460,12 @@ class Store:
         add; the two remain separate commits, so a crash in between leaves the
         rows absent until the page is regenerated or accepted again.
         """
-        self.clear_and_add(
-            CITATIONS_TABLE,
-            _citations_schema(),
-            [dict(rec) for rec in records],
-            _citations_for_wiki_predicate(wiki_source),
-        )
+        with self._write_lock():
+            table = ensure_table(self.get_db(), CITATIONS_TABLE, _citations_schema())
+            rows = self._keyed_citations_unlocked(records)
+            table.delete(_citations_for_wiki_predicate(wiki_source))
+            if rows:
+                table.add(rows)
 
     def replace_wiki_mentions_for_source(self, source: str, rows: list[dict]) -> None:
         """Swap one source's wiki mention rows for *rows* under one write lock.
@@ -2667,16 +3474,16 @@ class Store:
         wiki refresh replaces exactly that source's rows and leaves every other
         source's evidence in place for the corpus-wide aggregate.
         """
-        escaped = escape_sql_string(source)
-        self.clear_and_add(
-            WIKI_MENTIONS_TABLE,
-            _wiki_mentions_schema(),
-            rows,
-            f"source = '{escaped}'",
-        )
+        with self._write_lock():
+            ids = self._ensure_ids_unlocked(_documents(row["source"] for row in rows))
+            table = ensure_table(self.get_db(), WIKI_MENTIONS_TABLE, _wiki_mentions_schema())
+            for source_id in self.source_ids([source], SourceType.DOCUMENT).values():
+                table.delete(f"{_SOURCE_ID} = '{source_id}'")
+            if rows:
+                table.add(_keyed(rows, "source", ids))
 
     def wiki_mention_rows(self, slugs: Iterable[str] | None = None) -> list[dict]:
-        """Every wiki mention row, or only those for *slugs*.
+        """Every wiki mention row, or only those for *slugs*, with its source's id and path.
 
         The wiki aggregates these across sources to rebuild the stub index. A
         full refresh reads them all; an incremental one reads only the slugs it
@@ -2692,8 +3499,13 @@ class Store:
                 return []
             joined = ", ".join(f"'{escape_sql_string(s)}'" for s in wanted)
             query = query.where(f"slug IN ({joined})")
-        rows: list[dict] = query.limit(None).to_list()
-        return rows
+        rows = query.limit(None).to_list()
+        paths = self.source_paths(row[_SOURCE_ID] for row in rows)
+        return [
+            {**row, "source": paths[source_id]}
+            for row in rows
+            if (source_id := row[_SOURCE_ID]) in paths
+        ]
 
     def clear_wiki_mentions(self) -> bool:
         """Drop every wiki mention row (a full rebuild starts from nothing)."""

@@ -795,6 +795,7 @@ class TestBuildStatsForABatch:
             "diff",
             WikiSubdir.ENTITIES,
             ["s.txt"],
+            source_ids={},
         )
         stats = BuildStats()
         pages = generate_source_batch(
@@ -1181,12 +1182,14 @@ class TestBatchGeneration:
             written_concept_slugs=written,
         )
         provider2 = _mock_batch_provider(_batch_text("s2.txt"))
+        store2 = MagicMock()
+        store2.source_ids.return_value = {"s2.txt": "id-of-s2"}
         generate_source_batch(
             source="s2.txt",
             entities=[],
             chunks=chunks2,
             provider=provider2,
-            store=MagicMock(),
+            store=store2,
             config=cfg,
             extract_concepts=True,
             written_concept_slugs=written,
@@ -1196,6 +1199,8 @@ class TestBatchGeneration:
         assert len(collision_files) == 1
         marker = collision_files[0].read_text()
         assert PENDING_MARKER_KEYWORD_COLLISION in marker
+        # The draft names its source by id, so a later move leaves it able to find it.
+        assert 'source_ids: {"s2.txt": "id-of-s2"}' in marker
         # Origin rides the marker so accepting the loser restores it to concepts/.
         assert f"origin: {WikiSubdir.CONCEPTS}" in marker
 

@@ -281,6 +281,23 @@ class TestSlugWhitespaceHandling:
         assert make_slug("  Caprice  ") == "caprice"
 
 
+class TestRewriteKeepingTime:
+    def test_the_text_is_replaced_and_the_modified_time_stays(self, tmp_path):
+        import os
+
+        from lilbee.wiki.shared import rewrite_keeping_time
+
+        path = tmp_path / "brakes.md"
+        path.write_text("first", encoding="utf-8")
+        os.utime(path, ns=(1_000_000_000_000_000_000, 1_500_000_000_000_000_000))
+
+        rewrite_keeping_time(path, "second")
+
+        assert path.read_text(encoding="utf-8") == "second"
+        assert path.stat().st_mtime_ns == 1_500_000_000_000_000_000
+        assert list(path.parent.iterdir()) == [path]
+
+
 class TestAtomicWriteText:
     def test_replaces_the_previous_file(self, tmp_path):
         from lilbee.wiki.shared import atomic_write_text

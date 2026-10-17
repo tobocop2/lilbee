@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
-from lilbee.app.services import set_server_exit_hook, wait_for_hard_exit_teardown
+from lilbee.app.services import (
+    report_library_upgrade,
+    set_server_exit_hook,
+    wait_for_hard_exit_teardown,
+)
 from lilbee.cli.app import (
     apply_overrides,
     console,
@@ -23,7 +27,9 @@ from lilbee.cli.commands.serve_logging import (
     setup_server_log_file,
     setup_server_logging,
 )
+from lilbee.cli.upgrade_line import UpgradeLine
 from lilbee.core.config import cfg
+from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.lock import (
     SERVER_LOCK_TIMEOUT,
     LockingUnsupportedError,
@@ -140,6 +146,11 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     return exit_request.status
 
 
+def _report_upgrade_as_log_lines() -> None:
+    """Show a library upgrade of this server as plain stderr lines, beside its log."""
+    report_library_upgrade(UpgradeLine(PlainConsole(stderr=True), live=False))
+
+
 def _refuse_to_start(message: str) -> NoReturn:
     """Report why the server will not start, to the log and the terminal, then exit."""
     logging.getLogger(__name__).error(message)
@@ -155,6 +166,7 @@ def serve(
 ) -> None:
     """Start the HTTP API server."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    _report_upgrade_as_log_lines()
     if host is not None:
         cfg.server_host = host
     if port is not None:
@@ -227,6 +239,7 @@ def mcp_cmd(
 ) -> None:
     """Start the MCP server (stdio transport) for agent integration."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    _report_upgrade_as_log_lines()
     from lilbee.mcp_server import main
 
     main()

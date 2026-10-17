@@ -19,6 +19,7 @@ from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chu
 from lilbee.data.types import SkippedSource
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
+from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.sessions import MessageRole
 from lilbee.wiki.entity_extractor import EntityKind
 
@@ -223,7 +224,7 @@ class StatusResponse(BaseModel):
     with ``config.embedding_model`` to tell a stale index before a search refuses it."""
     entities: StatusEntityInfo | None = None
     skipped: list[SkippedSource] = []
-    """Files a skip marker holds out of the index, capped; ``skipped_total`` is the real count."""
+    """Failed files held out of the index, capped; ``skipped_total`` is the real count."""
     skipped_total: int = 0
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
@@ -277,10 +278,13 @@ class HealthResponse(BaseModel):
     budget to this, so it is the largest chunk that reaches the index whole. None
     when no managed embedder is configured."""
     warnings: list[HealthWarning] = []
-    """Degradations that answer correctly but worse, so a client can say so.
+    """Degradations that answer correctly but worse, and a library upgrade that runs.
 
     Retrieval falling back to vector-only, or an index whose documents predate
     the embedder's prefixes, both return results and look healthy."""
+    upgrade: LibraryUpgradeEvent | None = None
+    """The one-time library upgrade while it runs: its phase, tables done of the
+    total, the table in progress and the seconds since it began. None otherwise."""
 
 
 class CompactionInfo(BaseModel):
@@ -498,7 +502,6 @@ class SyncSummary(BaseModel):
     held_out: list[SkippedSource] = []
     truncated: int = 0
     index_mismatch: IndexMismatch | None = None
-    skip_records_error: str | None = None
 
 
 class AddSummary(BaseModel):

@@ -33,8 +33,7 @@ from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
-from lilbee.runtime.absorb_journal import absorb_pending
-from lilbee.runtime.lock import ResetRefusedError, _no_sync_running
+from lilbee.runtime.lock import _no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
     EventType,
@@ -45,10 +44,9 @@ from lilbee.runtime.progress import (
 )
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
+from tests._held import held_kinds, hold_failed
 from tests._mock_effects import repeat_last
-from tests._windows_loop import windows_proactor_loop
-from tests.conftest import UnfinishedAdd, leave_unfinished_add, reset_held_on_a_thread
-from tests.test_lock import _mark_held_on_a_thread, _sync_write_takes
+from tests.conftest import make_mock_services, reset_held_on_a_thread
 
 runner = CliRunner()
 # How long a held reset lasts when a test hangs; no test waits for it.
@@ -60,6 +58,13 @@ _SYNC_NOOP = SyncResult()
 def _stub_build_summary(paths: list[str], count: int) -> dict:
     """``run_full_build`` result shape for tests that stub the whole run."""
     return {"paths": paths, "entities": 0, "count": count, "stats": BuildStats().as_dict()}
+
+
+def _install_real_store() -> None:
+    """Swap the mock store for a real one, so held-out records are real rows."""
+    from lilbee.data.store import Store
+
+    svc_mod.set_services(make_mock_services(store=Store(cfg)))
 
 
 def _mock_stream(*texts: str):
@@ -482,7 +487,24 @@ class TestAdd:
 
         assert result.exit_code == 0
         assert "Warning" in result.output
-        assert "is taken by another source" in result.output
+        said = " ".join(result.output.split())
+        assert "The name corpus is taken by another source (use --force to overwrite)." in said
+
+    @pytest.mark.parametrize("flags", [[], ["--force"]], ids=["plain", "force"])
+    def test_add_of_a_parent_named_like_its_source_takes_the_source_in(
+        self, isolated_env, tmp_path, flags
+    ):
+        inner = tmp_path / "src" / "work" / "work"
+        inner.mkdir(parents=True)
+        (inner / "doc.txt").write_text("content", encoding="utf-8")
+        runner.invoke(app, ["add", str(inner)])
+
+        result = runner.invoke(app, ["add", *flags, str(inner.parent)])
+
+        said = " ".join(result.output.split())
+        assert "Registered 1 source(s); work now includes work" in said
+        assert "is taken" not in said
+        assert cfg.linked_roots == {"work": str(inner.parent.resolve())}
 
     def test_add_nonexistent_bracketed_path_prints_it_literally(self, tmp_path):
         """A bracketed path in the not-found error must not go through markup."""
@@ -2160,31 +2182,22 @@ class TestDefaultCallback:
 class TestRemove:
     """Test remove command."""
 
-    def test_remove_holds_a_failed_file_out_as_a_removal(self, isolated_env, mock_svc):
-        from lilbee.data.ingest.skip_marker import (
-            SkipKind,
-            load_skip_kinds,
-            write_skip_markers,
-        )
-        from lilbee.data.store import RemoveResult
+    def test_remove_holds_a_failed_file_out_as_a_removal(self, isolated_env):
+        from lilbee.data.store import HeldOut
 
-        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        _install_real_store()
         (cfg.documents_dir / "scan.pdf").write_bytes(b"%PDF-1.4")
-        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
-        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
-            removed=[], not_found=list(names)
-        )
+        hold_failed({"scan.pdf": "h1"})
 
         result = runner.invoke(app, ["remove", "scan.pdf"])
 
         assert result.exit_code == 0
         assert "Removed" in result.output
-        assert load_skip_kinds(cfg.data_root) == {"scan.pdf": SkipKind.REMOVED}
+        assert held_kinds() == {"scan.pdf": HeldOut.REMOVED}
 
-    def test_remove_folder_counts_failed_files_in_the_prompt(self, isolated_env, mock_svc):
-        from lilbee.data.ingest.skip_marker import write_skip_markers
-
-        write_skip_markers(cfg.data_root, {"docs/a.pdf": "h1", "docs/b.pdf": "h2"})
+    def test_remove_folder_counts_failed_files_in_the_prompt(self, isolated_env):
+        _install_real_store()
+        hold_failed({"docs/a.pdf": "h1", "docs/b.pdf": "h2"})
 
         result = runner.invoke(app, ["remove", "docs"], input="n\n")
 
@@ -2200,6 +2213,20 @@ class TestRemove:
         assert result.exit_code == 0
         assert "Removed" in result.output
         assert "test.pdf" in result.output
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["text", "json"])
+    def test_remove_where_the_library_cannot_lock_files_exits_1(self, mock_svc, flags):
+        from lilbee.runtime.lock import LockingUnsupportedError
+
+        refused = "/data is on a filesystem that does not support file locking."
+        mock_svc.store.get_sources.return_value = [{"filename": "a.pdf"}]
+        mock_svc.store.remove_documents.side_effect = LockingUnsupportedError(refused)
+
+        result = runner.invoke(app, [*flags, "remove", "a.pdf"])
+
+        assert result.exit_code == 1
+        assert "does not support file locking" in result.output
+        assert "Removed" not in result.output
 
     def test_remove_nonexistent_source(self, mock_svc):
         from lilbee.data.store import RemoveResult
@@ -2257,7 +2284,7 @@ class TestRemove:
         ]
         captured: dict = {}
 
-        def _remove(names):
+        def _remove(names, held=None):
             captured["names"] = list(names)
             return RemoveResult(removed=list(names), not_found=[])
 
@@ -2274,7 +2301,7 @@ class TestRemove:
             {"filename": "docs/a.txt"},
             {"filename": "docs/b.txt"},
         ]
-        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+        mock_svc.store.remove_documents.side_effect = lambda names, held=None: RemoveResult(
             removed=list(names), not_found=[]
         )
         with mock.patch("typer.confirm", return_value=True) as confirm:
@@ -2292,7 +2319,7 @@ class TestRemove:
         ]
         captured: dict = {}
 
-        def _remove(names):
+        def _remove(names, held=None):
             captured["names"] = list(names)
             return RemoveResult(removed=list(names), not_found=[])
 
@@ -2337,7 +2364,7 @@ class TestRemove:
         settings.set_value(cfg.data_root, "linked_roots", {"corpus": str(source)})
 
         mock_svc.store.get_sources.return_value = [{"filename": "corpus/a.txt"}]
-        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+        mock_svc.store.remove_documents.side_effect = lambda names, held=None: RemoveResult(
             removed=list(names), not_found=[]
         )
         result = runner.invoke(app, ["remove", "--yes", "corpus"])
@@ -2522,43 +2549,6 @@ class TestChunks:
         assert result.exit_code == 0
         assert "chunks from note[draft].txt" in result.output
         assert "See [bold]section 2[/bold] for torque specs." in result.output
-
-
-class TestSkipRecordsLockHeld:
-    """A held skip-records lock refuses remove and reset cleanly, and rebuild reports it."""
-
-    @pytest.mark.parametrize("json_flag", [[], ["--json"]], ids=["plain", "json"])
-    def test_remove_is_refused_before_the_index_changes(
-        self, isolated_env, mock_svc, held_records_lock, json_flag
-    ):
-        result = runner.invoke(app, [*json_flag, "remove", "nothing.txt"])
-
-        assert result.exit_code == 1
-        assert "Could not lock" in result.output
-        assert Path(held_records_lock).name in result.output
-        assert "Traceback" not in result.output
-        mock_svc.store.remove_documents.assert_not_called()
-
-    def test_reset_is_refused_before_anything_is_deleted(self, isolated_env, held_records_lock):
-        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
-
-        result = runner.invoke(app, ["reset", "--yes"])
-
-        assert result.exit_code == 1
-        assert "Could not lock" in result.output
-        assert (cfg.documents_dir / "doc.txt").exists()
-
-    @pytest.mark.parametrize("json_flag", [[], ["--json"]], ids=["plain", "json"])
-    def test_rebuild_shows_an_unsaved_skip_record_error(self, json_flag):
-        from lilbee.data.ingest import SyncResult
-
-        unsaved = SyncResult(added=["a.txt"], skip_records_error="records.lock could not be locked")
-        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=unsaved):
-            result = runner.invoke(app, [*json_flag, "rebuild"])
-
-        assert result.exit_code == 0
-        assert "records.lock could not be locked" in result.output
-        assert "1" in result.output
 
 
 class TestReset:
@@ -3947,7 +3937,6 @@ class TestCrawlUrlsBlocking:
         assert call_kwargs["quiet"] is True
 
     def test_ctrl_c_during_the_first_url_exits_130_and_skips_the_next(self, isolated_env):
-        import signal
 
         crawled: list[str] = []
 
@@ -4624,9 +4613,8 @@ class TestSigintCancel:
     """Ctrl-C stops a build at a boundary instead of dropping it mid-page."""
 
     def test_the_token_is_set_when_sigint_arrives(self) -> None:
-        import signal
 
-        from lilbee.cli.helpers import sigint_cancel
+        from lilbee.runtime.cancellation import sigint_cancel
 
         with sigint_cancel() as token:
             assert not token.is_set()
@@ -4635,9 +4623,8 @@ class TestSigintCancel:
 
     def test_a_second_sigint_is_left_to_the_default_handler(self) -> None:
         """A pass that ignores the token must still be interruptible."""
-        import signal
 
-        from lilbee.cli.helpers import sigint_cancel
+        from lilbee.runtime.cancellation import sigint_cancel
 
         previous = signal.getsignal(signal.SIGINT)
         with sigint_cancel():
@@ -4649,10 +4636,9 @@ class TestSigintCancel:
     def test_off_the_main_thread_it_installs_no_handler(self) -> None:
         """signal.signal raises off the main thread (xdist workers run there),
         so the token is simply never set and Ctrl-C keeps its default."""
-        import signal
         import threading as _threading
 
-        from lilbee.cli.helpers import sigint_cancel
+        from lilbee.runtime.cancellation import sigint_cancel
 
         result: dict[str, object] = {}
 
@@ -4669,9 +4655,8 @@ class TestSigintCancel:
         assert result["handler_untouched"] is True
 
     def test_the_previous_handler_is_restored_on_exit(self) -> None:
-        import signal
 
-        from lilbee.cli.helpers import sigint_cancel
+        from lilbee.runtime.cancellation import sigint_cancel
 
         previous = signal.getsignal(signal.SIGINT)
         with sigint_cancel():
@@ -6062,7 +6047,6 @@ class TestSelfCheck:
         assert not work.exists()
 
     def test_sigterm_becomes_an_interrupt_and_the_handler_is_restored(self) -> None:
-        import signal
         import sys
 
         from lilbee.cli.commands import setup
@@ -6079,7 +6063,6 @@ class TestSelfCheck:
         """Windows registers the handler but never delivers SIGTERM, so the test
         above skips there and the handler body goes unexercised. Drive it directly
         so the conversion that makes teardown run is covered on every platform."""
-        import signal
 
         from lilbee.cli.commands import setup
 
@@ -7122,55 +7105,6 @@ class TestSyncCancelledExit:
         with _no_sync_running(cfg.data_root):
             pass
 
-    @pytest.mark.parametrize("command", [["sync"], ["rebuild"], ["--json", "sync"]])
-    def test_one_ctrl_c_ends_a_sync_that_waits_to_finish_an_add(
-        self, isolated_env, mock_svc, caplog, command
-    ):
-        leave_unfinished_add(cfg.data_root, UnfinishedAdd.HELD)
-        assert threading.current_thread() is threading.main_thread()
-
-        def _library() -> list[str]:
-            """Every name in the data root but the files of the sync lock itself."""
-            names = (path.name for path in cfg.data_root.iterdir())
-            return sorted(name for name in names if not name.startswith(("sync.", ".filelock-")))
-
-        before = _library()
-
-        def _ctrl_c_once(_outcome: str) -> None:
-            if len(takes) > 1:
-                return
-            # The main thread sleeps in its event loop: only a signal sent to it wakes it.
-            # On Windows the wakeup socket of the proactor loop does that.
-            if sys.platform == "win32":
-                _thread.interrupt_main()
-            else:
-                signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
-
-        # The other sync holds its mark until this block ends.
-        with (
-            caplog.at_level(logging.WARNING),
-            _mark_held_on_a_thread(cfg.data_root),
-            _sync_write_takes(after=_ctrl_c_once) as takes,
-            # The suite runs Windows on the selector loop, which no signal wakes.
-            windows_proactor_loop(),
-        ):
-            result = runner.invoke(app, command)
-            takes_of_the_wait = list(takes)
-            with pytest.raises(ResetRefusedError), _no_sync_running(cfg.data_root):
-                pass
-
-        assert takes_of_the_wait, "the sync never waited for the other sync"
-        assert set(takes_of_the_wait) == {"busy"}, "the sync ended only when the other sync did"
-        assert result.exit_code == 130, result.output
-        if "--json" in command:
-            assert json.loads(result.output) == {"error": "Sync cancelled."}
-        else:
-            assert result.output.strip() == "Sync cancelled."
-        assert _cancel_error_records(caplog) == []
-        assert absorb_pending(cfg.data_root)
-        assert _library() == before
-        assert mock_svc.store.method_calls == [], "the sync started under the held mark"
-
     @staticmethod
     def _source(tmp_path: Path, name: str = "scan.txt") -> Path:
         src = tmp_path / "source" / name
@@ -7274,7 +7208,7 @@ class TestSyncCancelledExit:
             assert "contains a source" not in printed
         # The parent took in the rows of sub, so the cancel leaves it registered.
         assert cfg.linked_roots == {"parent": str(sub.parent.resolve())}
-        mock_svc.store.rekey_sources_under.assert_called()
+        mock_svc.store.fill_locations.assert_called()
 
     @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
     def test_a_cancelled_add_names_a_taken_name_and_not_a_source_the_corpus_holds(
@@ -7511,10 +7445,10 @@ class TestSyncCancelledExit:
         else:
             assert " ".join(result.output.split()).endswith(stopped)
 
-    def test_a_cancelled_add_names_its_file_when_the_skip_records_cannot_change(
+    def test_a_cancelled_add_names_its_file_when_the_held_out_records_cannot_change(
         self, isolated_env, tmp_path, mock_svc
     ):
-        """The root is un-registered though its records failed, so the file is still named."""
+        """The root goes though its held-out records failed, so the file is still named."""
         import asyncio
 
         src = self._source(tmp_path)
@@ -7525,7 +7459,7 @@ class TestSyncCancelledExit:
             raise asyncio.CancelledError
 
         broken = mock.patch(
-            "lilbee.app.ingest.unmark_sources_under", side_effect=OSError("records locked")
+            "lilbee.app.ingest.unmark_sources_under", side_effect=OSError("store busy")
         )
         try:
             with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_as_the_records_break):
@@ -7534,7 +7468,7 @@ class TestSyncCancelledExit:
             broken.stop()
         assert result.exit_code == 130, result.output
         assert json.loads(result.output) == {
-            "error": "Add cancelled. scan.txt was not added. It also hit an error: records locked.",
+            "error": "Add cancelled. scan.txt was not added. It also hit an error: store busy.",
             "not_added": ["scan.txt"],
         }
         assert cfg.linked_roots == {}
@@ -7566,7 +7500,6 @@ class TestSyncCancelledExit:
     @staticmethod
     def _crawl_saves_a_page(*, ctrl_c: bool) -> contextlib.ExitStack:
         """Patch the crawler to save one page; with *ctrl_c* the Ctrl+C lands in the crawl."""
-        import signal
 
         async def _crawl(_url, **_kwargs):
             page = cfg.documents_dir / "_web" / "page.md"
@@ -7595,7 +7528,6 @@ class TestSyncCancelledExit:
     @staticmethod
     def _ctrl_c_as_registration_refuses() -> contextlib.ExitStack:
         """Patch registration so the Ctrl+C lands in it and no path reaches the corpus."""
-        import signal
 
         from lilbee.app.ingest import RegisterResult
 
@@ -7623,7 +7555,6 @@ class TestSyncCancelledExit:
     @staticmethod
     def _sync_recording_its_cancel(events: list[threading.Event], *, ctrl_c_after: bool):
         """Patch the real sync to record its cancel; with *ctrl_c_after* a Ctrl+C follows it."""
-        import signal
 
         from lilbee.data import ingest as ingest_mod
 
@@ -7641,7 +7572,6 @@ class TestSyncCancelledExit:
     @staticmethod
     def _ctrl_c_at(stage: str, events: list[threading.Event]):
         """Patch the real sync so the user's Ctrl+C lands at *stage*."""
-        import signal
 
         from lilbee.data.ingest import pipeline
 
@@ -7853,53 +7783,3 @@ class TestSyncCancelledExit:
         assert json.loads(result.output) == {"error": "Sync cancelled."}
         assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
         mock_svc.searcher.ask_raw.assert_not_called()
-
-
-class TestCtrlCAtTheRecordsLock:
-    """Ctrl+C while a command waits for the records lock ends it as a cancel, nothing changed."""
-
-    @staticmethod
-    def _ctrl_c() -> None:
-        import signal
-
-        signal.raise_signal(signal.SIGINT)
-
-    def _run_until_ctrl_c(self, args: list[str]):
-        """Run *args* against a held records lock; the Ctrl+C lands once the command waits."""
-        from tests._records_wait import files_under, records_lock_held_elsewhere
-
-        with records_lock_held_elsewhere(cfg.data_root, self._ctrl_c):
-            before = files_under(cfg.data_root)
-            result = runner.invoke(app, args)
-            assert files_under(cfg.data_root) == before
-        return result
-
-    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["human", "json"])
-    def test_an_add_stops_at_the_wait(self, isolated_env, tmp_path, mock_svc, flags):
-        src = tmp_path / "source" / "scan.txt"
-        src.parent.mkdir()
-        src.write_text("content", encoding="utf-8")
-
-        result = self._run_until_ctrl_c([*flags, "add", str(src)])
-
-        assert result.exit_code == 130, result.output
-        stopped = "Add cancelled. scan.txt was not added."
-        if flags:
-            assert json.loads(result.output) == {"error": stopped, "not_added": ["scan.txt"]}
-        else:
-            assert " ".join(result.output.split()) == stopped
-        assert cfg.linked_roots == {}
-
-    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["human", "json"])
-    def test_a_remove_stops_at_the_wait(self, isolated_env, mock_svc, flags):
-        mock_svc.store.get_sources.return_value = [{"filename": "a.md"}]
-
-        result = self._run_until_ctrl_c([*flags, "remove", "a.md"])
-
-        assert result.exit_code == 130, result.output
-        stopped = "Remove cancelled. Nothing was removed."
-        if flags:
-            assert json.loads(result.output) == {"error": stopped}
-        else:
-            assert " ".join(result.output.split()) == stopped
-        mock_svc.store.remove_documents.assert_not_called()

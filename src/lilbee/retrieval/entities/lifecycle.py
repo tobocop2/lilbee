@@ -225,13 +225,10 @@ def _full_pass(store: Store, schema: EntitySchema, cancel: CancelSignal | None) 
     written = 0
     stats = ExtractionStats()
     columns = ["chunk", "source", "chunk_index", "page_start"]
-    # Projection pushed into LanceDB; see _sample_chunks.
-    arrow = table.search().select(columns).limit(None).to_arrow()
-    for batch in arrow.to_batches(max_chunksize=_BACKFILL_BATCH):
+    for records in store.chunk_batches(columns, _BACKFILL_BATCH):
         if cancel is not None and cancel.is_set():
             log.info("Entity extraction cancelled; the next sync restarts the pass")
             return False
-        records = batch.to_pylist()
         rows = extract_entities(records, schema, provider=provider, nlp=nlp, stats=stats)
         written += store.add_entities(rows)
     if stats.llm_batches_failed:

@@ -94,10 +94,7 @@ class TestPdfExtraction:
     )
     def test_scanned_pdf_indexed(self, pdf_pipeline):
         """Scanned PDF is ingested and appears in the store."""
-        table = get_services().store.open_table("chunks")
-        assert table is not None
-        rows = table.to_arrow().to_pylist()
-        pdf_rows = [r for r in rows if r["source"] == "scanned_maintenance.pdf"]
+        pdf_rows = get_services().store.get_chunks_by_source("scanned_maintenance.pdf")
         assert len(pdf_rows) > 0, "No chunks from scanned PDF"
 
     @pytest.mark.skipif(
