@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import resource
 import sys
 import time
 from datetime import UTC, datetime
@@ -30,6 +29,8 @@ MAX_STATUS_RSS_GROWTH_BYTES = 200 * 1024 * 1024
 
 
 def _peak_rss_bytes() -> int:
+    import resource  # POSIX only; the one caller is skipped on Windows
+
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return peak if sys.platform == "darwin" else peak * 1024
 
@@ -89,6 +90,7 @@ def small_store(tmp_path):
 
 
 class TestStatusOnAMillionSources:
+    @pytest.mark.skipif(sys.platform == "win32", reason="peak RSS needs the POSIX resource module")
     def test_gather_status_is_bounded_in_time_and_memory(self, million_store):
         _use_store(million_store)
         rss_before = _peak_rss_bytes()
