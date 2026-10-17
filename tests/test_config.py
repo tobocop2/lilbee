@@ -1920,6 +1920,28 @@ class TestCrawlUserAgent:
             Config(crawl_user_agent=value)
 
 
+class TestCrawlBrowserExtraWait:
+    def test_default_is_one_second(self):
+        assert Config().crawl_browser_extra_wait_ms == 1000
+
+    def test_env_var_sets_the_wait(self, tmp_path):
+        env = clean_env(tmp_path)
+        env["LILBEE_CRAWL_BROWSER_EXTRA_WAIT_MS"] = "2500"
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_browser_extra_wait_ms == 2500
+
+    def test_config_toml_turns_the_wait_off(self, tmp_path):
+        (tmp_path / "config.toml").write_text("crawl_browser_extra_wait_ms = 0\n", encoding="utf-8")
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_browser_extra_wait_ms == 0
+
+    def test_a_negative_wait_is_refused_with_the_setting_named(self):
+        with pytest.raises(ValidationError, match="crawl_browser_extra_wait_ms"):
+            Config(crawl_browser_extra_wait_ms=-1)
+
+
 class TestPlainEnvSourceSkipsEmpty:
     def test_empty_chat_model_uses_default(self, tmp_path):
         env = clean_env(tmp_path)

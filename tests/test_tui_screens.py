@@ -1343,6 +1343,21 @@ async def test_settings_crawl_user_agent_editor_saves_the_override():
         assert cfg.crawl_user_agent == "Probe/1.0"
 
 
+async def test_settings_extra_browser_wait_editor_saves_the_wait():
+    """The extra browser wait editor stores the milliseconds it holds."""
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_browser_extra_wait_ms = 1000
+        editor = app.screen.query_one("#ed-crawl_browser_extra_wait_ms", Input)
+        editor.focus()
+        editor.value = "2500"
+        await pilot.press("enter")
+        await pump_until(pilot, lambda: cfg.crawl_browser_extra_wait_ms == 2500)
+        assert cfg.crawl_browser_extra_wait_ms == 2500
+
+
 async def test_settings_robots_txt_checkbox_turns_the_setting_off():
     """The robots.txt checkbox starts ticked and unticking it stores off."""
     from textual.widgets import Checkbox
