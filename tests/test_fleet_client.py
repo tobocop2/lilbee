@@ -1106,7 +1106,9 @@ def test_raise_for_status_surfaces_upstream_tail_on_premature_exit(monkeypatch, 
     assert seen["url"] == "http://127.0.0.1:9100/logs/stream/embed-0"
     # The captured server output goes to the log; the error stays one plain line.
     assert "couldn't bind HTTP server socket" in caplog.text
-    assert str(excinfo.value) == "The engine could not start because its port was taken (HTTP 500)."
+    assert (
+        str(excinfo.value) == "The engine could not start the model: its port was taken (HTTP 500)."
+    )
 
 
 def test_raise_for_status_bind_race_death_is_a_port_conflict(monkeypatch) -> None:
@@ -1177,7 +1179,9 @@ def test_raise_for_status_load_failure_message_is_plain_and_the_log_keeps_the_du
     monkeypatch.setattr(client_mod.httpx, "stream", lambda method, url, timeout: _Stream())
     with caplog.at_level("WARNING"), pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
-    assert str(excinfo.value) == "The engine stopped before it could answer (HTTP 500)."
+    assert (
+        str(excinfo.value) == "The engine for the model stopped before it could answer (HTTP 500)."
+    )
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
     assert "llama_model_loader" in caplog.text
     assert "unknown model architecture" in caplog.text
@@ -1209,7 +1213,24 @@ def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch)
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
     # An unreadable tail changes nothing; the plain error still propagates.
-    assert str(excinfo.value) == "The engine stopped before it could answer (HTTP 500)."
+    assert (
+        str(excinfo.value) == "The engine for the model stopped before it could answer (HTTP 500)."
+    )
+
+
+def test_a_clients_death_error_names_its_model_and_engine_log(monkeypatch, tmp_path) -> None:
+    """The client, not each caller, puts the model ref and its engine log in the plain line."""
+    import lilbee.providers.fleet.client as client_mod
+
+    monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda resp: "")
+    log = tmp_path / "engine-chat-0.log"
+    client = LlamaServerClient("http://x", "chat-0", model_ref="acme/m-GGUF/m.gguf", engine_log=log)
+    with pytest.raises(ProviderError) as excinfo:
+        client._raise_for_status(_premature_exit_response())
+    assert str(excinfo.value) == (
+        "The engine for acme/m-GGUF/m.gguf stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {log}."
+    )
 
 
 def test_chat_stream_surfaces_server_error_body() -> None:

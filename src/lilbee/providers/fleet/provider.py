@@ -56,6 +56,7 @@ from lilbee.providers.fleet.contract import (
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.readback import engine_log_path, writes_engine_log
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
     SwapManager,
@@ -381,11 +382,9 @@ def _retry_on_other_replica(
         retry.release()
 
 
-def _with_engine_log(message: str, engine_log: Path | None) -> str:
-    """*message*, followed by where the full engine output is kept when that is known."""
-    if engine_log is None:
-        return message
-    return f"{message} The full engine output is in {engine_log}."
+def _engine_log_of(launch: InstanceLaunch, log_dir: Path) -> Path | None:
+    """The file *launch*'s engine writes its own output to, or None when it writes none."""
+    return engine_log_path(log_dir, launch.model_id) if writes_engine_log(launch.argv) else None
 
 
 def _no_healthy_replica_error(failed: LlamaServerClient, cause: Exception) -> ProviderError:
@@ -1282,7 +1281,8 @@ class FleetProvider:
                     rerank_mode=launch.rerank_mode,
                     inline_reasoning=role is WorkerRole.CHAT,
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
-                    engine_log=swap.log_path,
+                    engine_log=_engine_log_of(launch, swap.log_path.parent),
+                    model_ref=launch.model,
                     # A cold embed replica 429s bulk ingest until its slots load; wait
                     # out the same cold-load budget llama-swap keeps it alive for so a
                     # burst never drops files while the server is legitimately warming.
@@ -2285,7 +2285,7 @@ class FleetProvider:
                 # carries its own cool-down, so a device that recovers rejoins
                 # without anything having to remember it was bad.
                 client.mark_unhealthy()
-                self._warm_errors[role] = _with_engine_log(str(exc), client.engine_log)
+                self._warm_errors[role] = str(exc)
                 log.warning(
                     "The %s model failed to load: %s",
                     role.value,
@@ -2362,7 +2362,7 @@ class FleetProvider:
         reason = self._warm_errors.get(WorkerRole.CHAT)
         if not reason:
             return "The chat model did not finish loading."
-        return f"The chat model {cfg.chat_model} did not load: {reason}"
+        return f"The chat model did not load: {reason}"
 
     def _prewarm_chat_weights(self) -> None:
         """Page the chat model's GGUF shards into the OS cache, reporting byte progress.

@@ -1879,7 +1879,7 @@ def test_lone_vision_replica_whose_engine_exited_names_the_death() -> None:
     assert f"The engine log is {lone.engine_log}." in str(info.value)
 
 
-def test_embed_through_the_fleet_names_the_group_engine_log(monkeypatch) -> None:
+def test_embed_through_the_fleet_names_the_engine_own_log(monkeypatch) -> None:
     # The product path: the fleet builds the embed client from its swap group, so
     # the error a failed ingest records names that group's llama-swap log.
     from lilbee.providers.base import ProviderError
@@ -1903,7 +1903,9 @@ def test_embed_through_the_fleet_names_the_group_engine_log(monkeypatch) -> None
     with pytest.raises(ProviderError) as info:
         FleetProvider().embed(["a"])
     assert "process exited and is being restarted" in str(info.value)
-    assert str(info.value).endswith(f"The engine log is {swap.log_path}.")
+    assert str(info.value).endswith(
+        f"The engine log is {swap.log_path.parent / 'engine-embed-0.log'}."
+    )
 
 
 def test_dispatch_vision_marks_second_replica_unhealthy_on_retry_failure() -> None:
@@ -2684,22 +2686,15 @@ def test_warm_up_blocking_fails_with_the_engine_when_no_engine_resolves(monkeypa
     assert "lilbee[engine]" in (snap.error or "")
 
 
-def test_a_chat_load_failure_names_the_model_and_where_the_engine_output_is(
-    monkeypatch, tmp_path
-) -> None:
-    """The warm failure a user reads names the model ref, the plain cause and the log file."""
-    from lilbee.providers.base import ProviderError, ProviderErrorKind
-    from lilbee.providers.fleet.client import LlamaServerClient
+def test_a_chat_load_failure_warm_text_carries_the_clients_plain_line(monkeypatch) -> None:
+    """The warm failure shows the client's own line unchanged after the plain prefix."""
+    from lilbee.providers.base import ProviderError
 
-    monkeypatch.setattr(cfg, "chat_model", "acme/gemma4-assistant-GGUF")
-    engine_log = tmp_path / "chat.log"
-    client = LlamaServerClient("http://127.0.0.1:1", "chat-0", engine_log=engine_log)
+    client = LlamaServerClient("http://127.0.0.1:1", "chat-0")
+    line = "The engine for acme/x stopped before it could answer (HTTP 500). Log: /l."
 
     def _dies(*_args, **_kwargs):
-        raise ProviderError(
-            "The engine stopped before it could answer (HTTP 500).",
-            kind=ProviderErrorKind.CONNECTION,
-        )
+        raise ProviderError(line, kind=ProviderErrorKind.CONNECTION)
 
     monkeypatch.setattr(client, "chat", _dies)
     p = FleetProvider()
@@ -2707,10 +2702,68 @@ def test_a_chat_load_failure_names_the_model_and_where_the_engine_output_is(
     p._warm_chat_role([client])
     snap = p.warm_progress()
     assert snap is not None
-    assert snap.error == (
-        "The chat model acme/gemma4-assistant-GGUF did not load: "
-        "The engine stopped before it could answer (HTTP 500). "
-        f"The full engine output is in {engine_log}."
+    assert snap.error == f"The chat model did not load: {line}"
+
+
+def _chat_that_cannot_load(monkeypatch, tmp_path: Path, argv: list[str]) -> FleetProvider:
+    """A provider whose chat engine dies on load, built through the fleet's own adopt path."""
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "unknown model architecture")
+    monkeypatch.setattr(cfg, "chat_model", "acme/bort-GGUF/unk-arch.gguf")
+    launch = _fake_launch(WorkerRole.CHAT, model="acme/bort-GGUF/unk-arch.gguf")
+    launch.model_id = "chat-0"
+    launch.argv = argv
+    swap = _FakeSwap()
+    swap.log_path = tmp_path / "logs" / "llama-swap-chat.log"
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
+    )
+
+    def _build(_endpoint, model, **kwargs):
+        def _handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                500, text="llama-swap-error: [chat-0] upstream command exited prematurely"
+            )
+
+        http = httpx.Client(transport=httpx.MockTransport(_handler), base_url="http://swap")
+        return LlamaServerClient("http://swap", model, http=http, **kwargs)
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _build)
+    return FleetProvider()
+
+
+def test_a_chat_request_into_a_model_that_cannot_load_names_the_model_and_its_engine_log(
+    monkeypatch, tmp_path
+) -> None:
+    """A request error and the warm text after it share one line with the model and its log."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = _chat_that_cannot_load(monkeypatch, tmp_path, ["llama-server"])
+    with pytest.raises(ProviderError) as info:
+        p.chat([{"role": "user", "content": "hi"}])
+    line = (
+        "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {tmp_path / 'logs' / 'engine-chat-0.log'}."
+    )
+    assert str(info.value) == line
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert snap.error == line
+
+
+def test_a_chat_request_names_no_log_for_an_engine_that_writes_none(monkeypatch, tmp_path) -> None:
+    """A launch that serves its numbers over HTTP has no engine log file, so none is named."""
+    from lilbee.providers.base import ProviderError
+
+    p = _chat_that_cannot_load(monkeypatch, tmp_path, ["llama-server", "--memory"])
+    with pytest.raises(ProviderError) as info:
+        p.chat([{"role": "user", "content": "hi"}])
+    assert str(info.value) == (
+        "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500)."
     )
 
 

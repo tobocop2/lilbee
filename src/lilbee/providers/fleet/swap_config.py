@@ -13,7 +13,7 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
-from lilbee.providers.fleet.readback import MEMORY_FLAG, engine_log_env
+from lilbee.providers.fleet.readback import engine_log_env, writes_engine_log
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
@@ -96,7 +96,7 @@ def build_swap_config(
             _KEY_TTL: ttl_seconds,
         }
         env = dict(launch.env_overrides)
-        if engine_log_dir is not None and MEMORY_FLAG not in launch.argv:
+        if engine_log_dir is not None and writes_engine_log(launch.argv):
             env.update(engine_log_env(engine_log_dir, launch.model_id))
         if env:
             entry[_KEY_ENV] = [f"{key}={value}" for key, value in env.items()]
