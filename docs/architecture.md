@@ -123,7 +123,7 @@ A crawled page is saved as `_web/<host>/<folders>/<name>~<hash>.md`. Three separ
 
 A name never escapes anything, so no escaping rule has to be both legal and one-to-one.
 
-At the start of each crawl, one pass moves a library saved under an earlier rule. With syncs held off, it keeps the latest entry for each canonical address, gives a file that several entries share to the page whose text it holds, re-keys each moved file's index source to its new name, moves the file, and removes the folders the move empties. The pass never changes text, so a later write of new text is an ordinary update, and a second pass moves nothing.
+At the start of each crawl, one pass moves a library saved under an earlier rule. With syncs held off, it keeps the latest entry for each canonical address and gives a file that several entries share to the page whose text it holds. It moves every file first, then changes the index, then writes the crawl metadata, so no index source names a file that is not in place. A moved file's index source takes its new name and keeps its stored stat, so the sync still sees a file written after its last sync. The latest entry decides which copy is current: when an older copy already holds the page's name, as after an earlier lilbee saved the page again, the recorded copy moves over it and the sync indexes it again. A pass cut short leaves each moved file at its own name, where the next pass finds it, so no entry is lost. The pass never changes text, so a later write of new text is an ordinary update, and a second pass moves nothing.
 
 ### Planning: which files to ingest
 
