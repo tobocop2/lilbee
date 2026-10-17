@@ -224,6 +224,41 @@ class TestMovesCarryHeldRecords:
         assert step.taken == ({new: old} if moves else {})
         assert store.held_records() == {new if moves else old: _removed("g")}
 
+    @pytest.mark.parametrize(
+        ("after", "new", "stays_removed"),
+        [
+            ({"notes": "after/notes"}, "notes/a/gone.md", True),
+            ({"notes": "after/notes"}, "notes/a/kept.md", False),
+            ({"notes": "after/notes"}, "notes/gone.md", True),
+            ({"notes": "before/notes"}, "notes/gone.md", False),
+            ({"notes": "before/notes", "work": "work"}, "work/a/gone.md", False),
+            ({"notes": "before/notes", "work": "work"}, "work/gone.md", False),
+            ({"notes": "before/notes"}, "notes/a/x/gone.md", False),
+        ],
+        ids=[
+            "same-name-root-moved",
+            "renamed-root-moved",
+            "up-one-root-moved",
+            "up-one-root-unmoved",
+            "other-root-same-tail",
+            "other-root-up-one",
+            "down-one-root-unmoved",
+        ],
+    )
+    def test_a_removal_moves_only_out_of_a_root_no_longer_registered(
+        self, store, tmp_path, after, new, stays_removed
+    ):
+        before = tmp_path / "before" / "notes"
+        store._config.linked_roots = {"notes": str(before)}
+        store.remove_documents([], {"notes/a/gone.md": _removed("g")})
+        store._config.linked_roots = {label: str(tmp_path / at) for label, at in after.items()}
+        old = (before / "a" / "gone.md").as_posix()
+
+        step = store.relocate_sources([SourceMove((old,), new, None)])
+
+        assert step.taken == ({new: old} if stays_removed else {})
+        assert (new in store.held_records()) is stays_removed
+
     def test_a_move_takes_the_removal_of_its_name_before_a_listed_file(self, store, tmp_path):
         before, after = tmp_path / "before" / "notes", tmp_path / "after" / "notes"
         store._config.linked_roots = {"notes": str(before)}

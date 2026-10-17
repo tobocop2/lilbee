@@ -394,7 +394,10 @@ def _claimed_names(
 
     A move takes a candidate of *removed* first, and only one whose location ends
     in the move's tail of *tails*, the part of its new place below its root: a
-    removal stays with a file whose name below its root is unchanged. Moves that
+    removal stays with a file whose name below a root that moved is unchanged.
+    The caller passes in *removed* only removals that lie below no registered
+    root, so a move inside a registered root or into another one finds the file
+    again. Moves that
     share one candidates tuple share one cursor into it, so files of one content
     cost one pass over their old names and not one for each file.
     """
@@ -3236,6 +3239,7 @@ class Store:
         moves, names = _located_moves(moves, locations)
         pools = {id(move.candidates): move.candidates for move in moves}.values()
         unclaimed, removed = _held_sources(sources, {name for pool in pools for name in pool})
+        removed = {name for name in removed if locations.below_root(name) is None}
         tails = [locations.below_root(move.new) for move in moves]
         claimed = _claimed_names(moves, unclaimed, removed, tails)
         rows = _source_rows(sources, [old for old in claimed if old is not None])

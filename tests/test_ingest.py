@@ -2185,6 +2185,40 @@ class TestHeldOutRecordLifecycle:
         old = (tmp_path / "src" / "notes" / "a" / "gone.md").as_posix()
         assert held_kinds() == {old: HeldOut.REMOVED}
 
+    @pytest.mark.parametrize(
+        ("target", "name"),
+        [("notes/gone.md", "notes/gone.md"), ("work/a/gone.md", "work/a/gone.md")],
+        ids=["up-one-in-its-root", "into-another-root"],
+    )
+    async def test_a_removed_file_moved_while_its_root_stays_is_indexed(
+        self, isolated_env, tmp_path, overlay_reads_config_toml, target, name
+    ):
+        """A removal moves only with a root that moved; a move inside the registry is new."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.core import settings
+        from lilbee.data.ingest import sync
+
+        _install_real_store()
+        src = tmp_path / "src"
+        (src / "notes" / "a").mkdir(parents=True)
+        (src / "work").mkdir()
+        (src / "notes" / "a" / "gone.md").write_text("removed by the user", encoding="utf-8")
+        (src / "work" / "kept.md").write_text("kept in the index", encoding="utf-8")
+        roots = {"notes": str(src / "notes"), "work": str(src / "work")}
+        settings.set_value(cfg.data_root, "linked_roots", roots)
+        await sync(quiet=True)
+        remove_documents_durably(["notes/a/gone.md"])
+        (src / target).parent.mkdir(parents=True, exist_ok=True)
+        (src / "notes" / "a" / "gone.md").rename(src / target)
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_for()
+        ) as produce:
+            moved = await sync(quiet=True)
+
+        assert [call.args[1] for call in produce.call_args_list] == [name]
+        assert moved.added == [name]
+        assert held_kinds() == {"notes/a/gone.md": HeldOut.REMOVED}
+
     @classmethod
     def _zero_for(cls, *targets: str):
         from lilbee.data.ingest.pipeline import produce_records as orig
