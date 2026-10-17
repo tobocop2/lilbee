@@ -18,7 +18,6 @@ from lilbee.crawler.crawlberg_fetcher import (
     CRAWLBERG_DENIED_NETWORKS,
     ROBOTS_REFUSED_MESSAGE,
     ROBOTS_UNREACHABLE_MESSAGE,
-    SITE_NO_ANSWER_MESSAGE,
     CrawlbergFetcher,
     _queued_url,
     admitted_networks,
@@ -651,37 +650,41 @@ class TestFetchSingle:
         [
             "connection: [network:connection] error sending request for url (http://h:9/robots.txt)",
             "timeout: [network:timeout] error sending request for url (http://h:9/robots.txt)",
+            "timeout: [network:timeout] error decoding response body for url (http://h:9/robots.txt)",
             "dns: [network:dns] error sending request for url (http://h:9/robots.txt)",
+            "ssl: [network:ssl] error sending request for url (https://h/robots.txt)",
+            "timeout: HTTP 408 for http://h:9/robots.txt",
+            "rate_limited: HTTP 429",
+            "forbidden: waf/blocked: challenge page",
+            "data_loss: error decoding response body for url (http://h:9/robots.txt)",
         ],
-        ids=["connection", "timeout", "dns"],
+        ids=[
+            "connection",
+            "timeout",
+            "body-stall",
+            "dns",
+            "ssl",
+            "request-timeout",
+            "rate-limited",
+            "waf",
+            "truncated",
+        ],
     )
-    async def test_a_site_that_never_answered_is_named_and_robots_txt_is_not_blamed(
+    async def test_every_robots_txt_that_cannot_be_read_gets_one_message_with_the_reason(
         self, reason: str
     ):
         script = [error(SEED, f"robots_unreachable: {reason}"), complete(0)]
         with StubCrawlberg(script).installed():
             fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
         assert fetched == FetchedPage(
-            url=SEED, success=False, error=f"The site did not answer ({reason})."
+            url=SEED,
+            success=False,
+            error=(
+                f"The site's robots.txt could not be read ({reason}), so no page of the site is "
+                "crawled. Set crawl_respect_robots_txt to false to crawl the site without "
+                "reading its robots.txt."
+            ),
         )
-        assert "robots" not in SITE_NO_ANSWER_MESSAGE
-        assert "crawl_respect_robots_txt" not in SITE_NO_ANSWER_MESSAGE
-
-    @pytest.mark.parametrize(
-        "reason",
-        [
-            "rate_limited: HTTP 429",
-            "forbidden: waf/blocked: challenge page",
-            "ssl: [network:ssl] error sending request for url (https://h/robots.txt)",
-            "timeout: HTTP 408 for http://h:9/robots.txt",
-        ],
-        ids=["rate-limited", "waf", "ssl", "request-timeout"],
-    )
-    async def test_a_robots_txt_the_site_answered_keeps_naming_the_setting(self, reason: str):
-        script = [error(SEED, f"robots_unreachable: {reason}"), complete(0)]
-        with StubCrawlberg(script).installed():
-            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
-        assert fetched.error == ROBOTS_UNREACHABLE_MESSAGE.format(reason=reason)
 
     async def test_a_seed_whose_robots_txt_address_ssrf_refuses_is_that_refusal(self):
         refusal = f"{_SSRF_ERROR_CODE}: {SEED}robots.txt - denied by SSRF policy: loopback"
