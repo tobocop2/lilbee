@@ -23,13 +23,7 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest.pipeline import sync as pipeline_sync
 from lilbee.data.store import Store
 from lilbee.runtime.lock import (
-    LOCK_TIMEOUT,
     ResetRefusedError,
-    SyncRunningError,
-    _HoldKind,
-    _library_hold,
-    _syncs_held_off,
-    library_held,
     library_held_for_reset,
     source_keys_in_use,
 )
@@ -331,82 +325,43 @@ class TestARebuildAfterAReset:
         assert builds.held_at_build == [[], [_SYNC_LOCK]]
 
 
-_A_SYNC_RUNS = "A sync is running."
-_FORMS_OF_THE_OWNER = {
-    "a change": lambda: library_held(cfg, _A_SYNC_RUNS),
-    "a reset": lambda: library_held_for_reset(cfg),
-}
-
-
-class TestTheOwnerHoldsTheSyncLock:
-    @pytest.mark.parametrize("form", list(_FORMS_OF_THE_OWNER))
-    def test_the_owner_holds_the_sync_lock_for_its_block_and_frees_it(self, form, takes):
+class TestTheResetHoldsTheSyncLock:
+    def test_the_reset_holds_the_sync_lock_for_its_block_and_frees_it(self, takes):
         held_at_take: list[list[str]] = []
         takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
 
-        with _FORMS_OF_THE_OWNER[form]() as hold:
-            assert hold.config is cfg
+        with library_held_for_reset(cfg):
             assert takes.held() == [_SYNC_LOCK]
 
         assert held_at_take == [[]]
         assert takes.sync_write_takes == 1
         assert takes.held() == []
 
-    @pytest.mark.parametrize(
-        ("form", "refusal"),
-        [("a change", SyncRunningError), ("a reset", ResetRefusedError)],
-    )
-    def test_a_held_sync_lock_refuses_the_owner(self, form, refusal, takes):
+    def test_a_held_sync_mark_refuses_the_reset(self, takes):
         with (
-            _syncs_held_off(cfg.data_root, _A_SYNC_RUNS),
-            pytest.raises(refusal),
-            _FORMS_OF_THE_OWNER[form](),
+            source_keys_in_use(cfg.data_root),
+            pytest.raises(ResetRefusedError),
+            library_held_for_reset(cfg),
         ):
-            pytest.fail("the block ran under a held sync lock")
+            pytest.fail("the block ran under a held sync mark")
 
-        assert takes.held() == []
-
-    @pytest.mark.parametrize(
-        ("kind", "refusal"),
-        [(_HoldKind.CHANGE, SyncRunningError), (_HoldKind.RESET, ResetRefusedError)],
-    )
-    def test_each_kind_of_the_owner_takes_the_sync_lock_itself(self, kind, refusal, takes):
-        with _library_hold(cfg, kind):
-            assert takes.held() == [_SYNC_LOCK]
-
-        with (
-            _syncs_held_off(cfg.data_root, _A_SYNC_RUNS),
-            pytest.raises(refusal),
-            _library_hold(cfg, kind),
-        ):
-            pytest.fail("the block ran under a held sync lock")
-
-        assert takes.sync_write_takes == 3
-
-    def test_the_form_of_a_reset_takes_no_wait(self, takes):
+    def test_the_reset_takes_no_wait(self, takes):
         with library_held_for_reset(cfg):
             pass
 
         assert takes.sync_write_waits == [None]
 
-    def test_the_form_of_a_change_takes_its_wait_to_the_sync_lock(self, takes):
-        """Control: the recorder reads the wait that the other form passes."""
-        with library_held(cfg, _A_SYNC_RUNS, LOCK_TIMEOUT):
-            pass
-
-        assert takes.sync_write_waits == [LOCK_TIMEOUT]
-
 
 _SOURCE_ROOT = Path(svc_mod.__file__).parents[1]
 _LOCK_MODULE = _SOURCE_ROOT / "runtime" / "lock.py"
-# The two takes of the sync write lock; only the owner of both library locks calls them.
-_A_WRITE_TAKE = re.compile(r"(?<![A-Za-z0-9_])_?(?:no_sync_running|syncs_held_off)(?![A-Za-z0-9_])")
+# The take of the sync write lock; only the owner of both library locks calls it.
+_A_WRITE_TAKE = re.compile(r"(?<![A-Za-z0-9_])_?no_sync_running(?![A-Za-z0-9_])")
 _A_MODULE_THAT_TAKES_THE_WRITE_LOCK = """
-from lilbee.runtime.lock import _syncs_held_off
+from lilbee.runtime.lock import _no_sync_running
 
 
 def change(root):
-    with _syncs_held_off(root, "busy"):
+    with _no_sync_running(root):
         pass
 """
 

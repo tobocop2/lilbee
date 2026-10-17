@@ -351,14 +351,14 @@ class TestStatus:
 class TestALibraryRefusal:
     """A refused library change comes back as a structured error."""
 
-    async def test_sync_reports_a_running_sync_it_cannot_join(self):
-        from lilbee.runtime.lock import SyncRunningError
+    async def test_sync_reports_a_library_it_cannot_lock(self):
+        from lilbee.runtime.lock import LibraryUnlockableError
 
-        refused = SyncRunningError("A sync is running")
+        refused = LibraryUnlockableError("The library cannot be locked")
         with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
             result = await sync(retry_skipped=True)
 
-        assert result == {"error": "A sync is running"}
+        assert result == {"error": "The library cannot be locked"}
 
     async def test_sync_that_cannot_open_its_sync_lock_returns_an_error(self):
         cfg.data_root.mkdir(parents=True, exist_ok=True)

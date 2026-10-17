@@ -31,7 +31,6 @@ from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
     LockingUnsupportedError,
-    SyncRunningError,
     refuse_where_a_sync_cannot_lock,
 )
 
@@ -43,7 +42,6 @@ _CANCEL_ERRORS = (asyncio.CancelledError, TaskCancelledError, KeyboardInterrupt)
 # What an add, a remove or a sync raises when another lilbee process or a data
 # root it cannot lock keeps it from starting.
 LIBRARY_REFUSALS = (
-    SyncRunningError,
     LibraryUnlockableError,
     LockingUnsupportedError,
 )

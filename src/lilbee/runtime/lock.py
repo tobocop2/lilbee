@@ -19,13 +19,11 @@ import uuid
 from collections.abc import AsyncGenerator, Generator, Iterator
 from contextlib import (
     AbstractContextManager,
-    ExitStack,
     asynccontextmanager,
     closing,
     contextmanager,
 )
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Literal, NoReturn, Self, overload
 
@@ -33,7 +31,7 @@ from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import Config, cfg
-from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 
@@ -116,10 +114,6 @@ class ResetRefusedError(RuntimeError):
     """Raised when a reset cannot safely run on the data root; nothing was deleted."""
 
 
-class SyncRunningError(RuntimeError):
-    """Raised when syncs must stay off the data root and one is running; nothing was changed."""
-
-
 class LibraryUnlockableError(RuntimeError):
     """Raised when a sync or a change that keeps syncs off cannot lock the data root."""
 
@@ -130,10 +124,6 @@ class _NoHardLinksError(OSError):
 
 class SyncMarkWaitCancelledError(Exception):
     """Raised when a cancel ends a wait for the sync lock; the block did not run."""
-
-
-class LibraryWaitCancelledError(TaskCancelledError):
-    """Raised when a cancel ends the wait of a library hold; nothing was changed."""
 
 
 # How each error that refuses a writer tells the user to run the command again.
@@ -412,36 +402,20 @@ class _SyncLockAttempt:
         return self.busy is not None
 
 
-def _sync_lock_wait(
-    cancel: CancelSignal | None, wait: float | None = None
-) -> Iterator[_SyncLockAttempt]:
+def _sync_lock_wait(cancel: CancelSignal | None) -> Iterator[_SyncLockAttempt]:
     """Every wait for a side of the sync lock: yield one attempt after another until one takes it.
 
     The caller takes the lock inside the ``with`` of each attempt, for its ``seconds``.
     *cancel* is read after every attempt, the one that took the lock included: a set
     *cancel* raises ``SyncMarkWaitCancelledError``, and the caller closes the lock.
-    A lock still busy *wait* seconds after the first attempt raises filelock's
-    ``Timeout``; None sets no limit. A wait with a limit and no *cancel* is one
-    attempt *wait* seconds long: a writer has its place ahead of later readers only
-    during an attempt, so with a *cancel* a later reader can pass it.
     """
-    if cancel is None and wait is not None:
-        attempt = _SyncLockAttempt(wait)
-        yield attempt
-        if attempt.busy is not None:
-            raise attempt.busy
-        return
-    deadline = None if wait is None else time.monotonic() + wait
     while True:
-        left = _SYNC_TAKE_SLICE_S if deadline is None else deadline - time.monotonic()
-        attempt = _SyncLockAttempt(max(0.0, min(_SYNC_TAKE_SLICE_S, left)))
+        attempt = _SyncLockAttempt(_SYNC_TAKE_SLICE_S)
         yield attempt
         if _is_set(cancel):
             raise SyncMarkWaitCancelledError
         if attempt.busy is None:
             return
-        if deadline is not None and time.monotonic() >= deadline:
-            raise attempt.busy
 
 
 def _is_set(cancel: CancelSignal | None) -> bool:
@@ -533,94 +507,12 @@ def _no_sync_running(data_root: Path) -> Generator[None, None, None]:
         yield
 
 
-@contextmanager
-def _syncs_held_off(
-    data_root: Path, running: str, wait: float = 0.0, cancel: CancelSignal | None = None
-) -> Generator[None, None, None]:
-    """Keep syncs off *data_root* for the block; a sync that outlasts *wait* raises *running*.
-
-    Raises ``SyncRunningError`` with the text *running*. A data root that cannot
-    be locked raises ``LibraryUnlockableError`` or ``LockingUnsupportedError``.
-    A *cancel* that is set during the wait, or when the lock is taken, raises
-    ``SyncMarkWaitCancelledError``: the block does not run and the lock is free.
-    """
-    lock = _open_sync_lock(data_root, write=True, refused=LibraryUnlockableError)
-    with closing(lock):
-        try:
-            for attempt in _sync_lock_wait(cancel, wait):
-                with attempt:
-                    lock.acquire_write(timeout=attempt.seconds, blocking=attempt.seconds > 0)
-        except FileLockTimeout:
-            raise SyncRunningError(running) from None
-        except _SYNC_LOCK_ERRORS as exc:
-            _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError)
-        yield
-
-
-class _HoldKind(StrEnum):
-    """What a hold of a library is for; the kind selects the take of the sync lock."""
-
-    CHANGE = "change"
-    RESET = "reset"
-
-
-@dataclass(frozen=True)
-class LibraryHold:
-    """What a hold of a library yields: its block has syncs off on the data root of *config*.
-
-    Only ``_library_hold`` makes one. Every path a function uses under the hold
-    comes from its *config*.
-    """
-
-    config: Config
-
-
-@contextmanager
-def _library_hold(
-    config: Config,
-    kind: _HoldKind,
-    *,
-    running: str = _SYNC_RUNNING,
-    wait: float = 0.0,
-    cancel: CancelSignal | None = None,
-) -> Generator[LibraryHold, None, None]:
-    """Keep syncs off *config*'s data root as *kind* does, for the block.
-
-    A reset takes the sync lock with no wait and reads no *running*, *wait* or
-    *cancel*. A *cancel* that ends the wait for the sync lock raises
-    ``LibraryWaitCancelledError``: the block does not run and the lock is free.
-    """
-    if kind is _HoldKind.RESET:
-        syncs_off = _no_sync_running(config.data_root)
-    else:
-        syncs_off = _syncs_held_off(config.data_root, running, wait, cancel)
-    with ExitStack() as held:
-        try:
-            held.enter_context(syncs_off)
-        except SyncMarkWaitCancelledError:
-            # No cause: a cancel that carries an error is reported as that error.
-            raise LibraryWaitCancelledError from None
-        yield LibraryHold(config)
-
-
-def library_held(
-    config: Config, running: str, wait: float = 0.0, cancel: CancelSignal | None = None
-) -> AbstractContextManager[LibraryHold]:
-    """Keep syncs off the data root of *config* for the block.
-
-    A sync that outlasts *wait* raises ``SyncRunningError`` with the text *running*.
-    A *cancel* that is set during the wait, or when the lock is taken, raises
-    ``LibraryWaitCancelledError``: the block does not run and the lock is free.
-    """
-    return _library_hold(config, _HoldKind.CHANGE, running=running, wait=wait, cancel=cancel)
-
-
-def library_held_for_reset(config: Config) -> AbstractContextManager[LibraryHold]:
+def library_held_for_reset(config: Config) -> AbstractContextManager[None]:
     """Keep syncs off *config*'s data root for the block of a reset, with no wait.
 
     A sync that runs, or a sync lock that cannot be taken, raises ``ResetRefusedError``.
     """
-    return _library_hold(config, _HoldKind.RESET)
+    return _no_sync_running(config.data_root)
 
 
 @contextmanager
