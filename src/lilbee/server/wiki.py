@@ -120,7 +120,8 @@ async def wiki_draft_diff_route(slug: FromPath[str]) -> WikiDraftDiffResponse:
     slug = slug.lstrip("/")
     try:
         # diff_draft reads both files and diffs them; offload like the listing.
-        diff = await asyncio.to_thread(diff_draft, slug, _wiki_root())
+        store = svc_mod.get_services().store
+        diff = await asyncio.to_thread(diff_draft, slug, _wiki_root(), store)
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except PathTraversalError as exc:

@@ -468,8 +468,13 @@ its frontmatter `sources` and provenance, and its citation footnotes. After a sy
 files, each page whose citation rows cite a moved id is rendered again. A footnote whose
 text is its citation row under another path takes the current path, and that old path is
 replaced by the new one in the frontmatter. The step reads only the page and the store,
-so running it again changes nothing. Drafts and archived pages have no citation rows and
-keep the paths they were written with. A subject index of an older version is aggregated
+so running it again changes nothing. A draft has no citation rows: its frontmatter
+`source_ids` names the id of each source path it was written with, and accepting it or
+showing its diff renders the path each id has now, so a move never rewrites a draft. A
+draft written before drafts named ids takes them the first time it is accepted or diffed:
+each cited path resolves to the id the first open of the older library gave the source at
+that path, and a path no row holds stays as written and is logged. Archived pages keep the
+paths they were written with; nothing restores them. A subject index of an older version is aggregated
 again from the mention rows the first time it is read, with no extraction.
 
 **The first open of an older library** keys it in place under the write lock. Each table

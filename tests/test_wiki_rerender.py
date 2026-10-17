@@ -10,7 +10,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.store import CitationRecord
-from lilbee.wiki.rerender import rerender_pages, rerendered_page
+from lilbee.wiki.rerender import renamed_page, rerender_pages, rerendered_page
 
 _PAGE = (
     "---\n"
@@ -232,3 +232,30 @@ class TestRerenderPages:
         assert written == []
         assert page.read_bytes() == b"\xff\xfe not utf-8"
         assert "cannot be read" in caplog.text
+
+
+class TestRenamedPage:
+    """A draft shows each path it was written with as the path its source has now."""
+
+    def test_footnotes_sources_and_provenance_show_the_new_path_and_nothing_else_moves(self):
+        shown = renamed_page(_PAGE, {"work/a.md": "notes/work/a.md", "plan.md": "p/plan.md"})
+
+        assert 'sources: ["notes/work/a.md", "workshop/x.md", "p/plan.md"]' in shown
+        assert "  - source: notes/work/a.md\n    chunk_index: 0\n" in shown
+        assert '[^src1]: notes/work/a.md, lines 1-2, excerpt: "work/a.md says so"' in shown
+        assert '[^src3]: p/plan.md, lines 4-5, excerpt: "the plan"' in shown
+        assert '[^src2]: workshop/x.md, page 3, excerpt: "x says"' in shown
+        assert "[^src1]: work/a.md, an example in a fence" in shown
+        assert "[^src5]: see work/a.md" in shown
+        assert "The words work/a.md stay in prose." in shown
+
+    def test_a_footnote_that_is_its_path_alone_and_the_longer_of_two_paths_move(self):
+        page = "# T\n\n[^src1]: a.md\n[^src2]: a.md, b.md, lines 1-2\n"
+
+        shown = renamed_page(page, {"a.md": "x/a.md", "a.md, b.md": "y/a.md, b.md"})
+
+        assert shown == "# T\n\n[^src1]: x/a.md\n[^src2]: y/a.md, b.md, lines 1-2\n"
+
+    def test_nothing_renamed_returns_the_page_as_it_is(self):
+        assert renamed_page(_PAGE, {}) is _PAGE
+        assert renamed_page(_PAGE, {"other.md": "o/other.md"}) == _PAGE

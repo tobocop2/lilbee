@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,8 @@ from lilbee.wiki.citations import (
 from lilbee.wiki.generation import rewrite_links_across_wiki
 from lilbee.wiki.index import update_wiki_index
 from lilbee.wiki.page import index_wiki_page, indexable_chunks
+from lilbee.wiki.persistence import recorded_source_ids, with_source_ids, without_source_ids
+from lilbee.wiki.rerender import renamed_page
 from lilbee.wiki.shared import (
     PENDING_COLLISION_MARKER_RE,
     PENDING_PARSE_MARKER_RE,
@@ -335,7 +338,48 @@ def list_drafts(wiki_root: Path) -> list[DraftInfo]:
     return infos
 
 
-def diff_draft(slug: str, wiki_root: Path) -> str:
+def _keyed_source_ids(draft: Path, text: str, store: Store) -> dict[str, str]:
+    """Record in *draft*, written before drafts named ids, the id of each source it cites.
+
+    A cited path no source row was keyed from stays as written, and is logged.
+    """
+    cited = _frontmatter_sources(text)
+    source_ids = store.keyed_source_ids(cited)
+    unresolved = sorted(set(cited) - set(source_ids))
+    if unresolved:
+        log.warning(
+            "Draft %s cites sources the library has no row for; they stay as written: %s",
+            draft.name,
+            ", ".join(unresolved),
+        )
+    recorded = with_source_ids(text, source_ids)
+    if recorded != text:
+        # The draft keeps its time: the stale check and the listing read it.
+        with WIKI_BUILD_LOCK:
+            # A writer that replaced the draft since the read keeps its text.
+            if draft.read_text(encoding="utf-8") == text:
+                written = draft.stat()
+                atomic_write_text(draft, recorded)
+                os.utime(draft, ns=(written.st_atime_ns, written.st_mtime_ns))
+    return source_ids
+
+
+def _shown_draft(draft: Path, store: Store) -> str:
+    """The text of *draft* showing the path each source it names by id has now."""
+    text = draft.read_text(encoding="utf-8")
+    source_ids = recorded_source_ids(text)
+    if source_ids is None:
+        source_ids = _keyed_source_ids(draft, text, store)
+    paths = store.source_paths(source_ids.values())
+    renamed = {
+        written: paths[source_id]
+        for written, source_id in source_ids.items()
+        if paths.get(source_id, written) != written
+    }
+    return renamed_page(without_source_ids(text), renamed)
+
+
+def diff_draft(slug: str, wiki_root: Path, store: Store) -> str:
     """Return a unified diff of the draft against its published counterpart.
 
     Raises :class:`FileNotFoundError` when the draft does not exist.
@@ -346,7 +390,7 @@ def diff_draft(slug: str, wiki_root: Path) -> str:
     draft = _draft_path(wiki_root, slug)
     if not draft.is_file():
         raise FileNotFoundError(f"draft not found: {slug}")
-    draft_text = draft.read_text(encoding="utf-8")
+    draft_text = _shown_draft(draft, store)
     published = _find_published(wiki_root, slug)
     baseline = published.read_text(encoding="utf-8") if published else ""
     diff = difflib.unified_diff(
@@ -388,6 +432,7 @@ def accept_draft(
       winning slug, overwrites the winning page with this draft's
       body, re-indexes, deletes the collision marker.
 
+    The draft shows the path each source it records by id has now.
     Drafts carry no store state, so accept is where a page's citation
     rows are created: the citation block embedded in the draft body is
     re-parsed, verified against the chunks of the sources its
@@ -418,7 +463,7 @@ def accept_draft(
         draft = _draft_path(wiki_root, slug)
         if not draft.is_file():
             raise FileNotFoundError(f"draft not found: {slug}")
-        raw = draft.read_text(encoding="utf-8")
+        raw = _shown_draft(draft, store)
         # Single-pass classify + strip (kind plus the three-marker removal), instead
         # of re-deriving the kind and re-stripping the markers separately.
         pending_kind, _drift, clean = _classify_and_strip_markers(raw)

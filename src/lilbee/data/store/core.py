@@ -2299,6 +2299,12 @@ class Store:
         """The path of each of *source_ids* that a source row holds."""
         return self._lookup(_SOURCE_ID, source_ids, _PATH)
 
+    def keyed_source_ids(self, paths: Iterable[str]) -> dict[str, str]:
+        """The id the keying of an older library gave each of *paths*, when a row holds it."""
+        keyed = {path: _md5(path) for path in paths}
+        held = self.source_paths(keyed.values())
+        return {path: source_id for path, source_id in keyed.items() if source_id in held}
+
     def _ids_for_unlocked(self, paths: Iterable[str]) -> dict[str, str]:
         """The id of each of *paths*: its row's, or a new one. Caller holds the lock."""
         found = self.source_ids(paths := list(paths))

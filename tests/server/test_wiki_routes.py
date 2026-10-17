@@ -991,7 +991,7 @@ class TestWikiDraftsEndpoints:
         _make_draft(wiki_root, "cv-manual", drift_pct=30)
         on_loop: list[bool] = []
 
-        def fake_diff(slug: str, root: Path) -> str:
+        def fake_diff(slug: str, root: Path, store: object) -> str:
             on_loop.append(_on_the_event_loop())
             return ""
 
@@ -1012,7 +1012,7 @@ class TestWikiDraftsEndpoints:
 
         # The traversal guard raises ValueError carrying the absolute candidate
         # path; the route must map it to a generic 400 that does not leak it.
-        def _raise(slug: str, root: Path) -> str:
+        def _raise(slug: str, root: Path, store: object) -> str:
             raise PathTraversalError(f"Path escapes allowed directory: {root}/secret.md")
 
         monkeypatch.setattr(server_wiki_mod, "diff_draft", _raise)

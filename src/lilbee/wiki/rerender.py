@@ -1,4 +1,4 @@
-"""Render again the paths a wiki page shows for the sources its citations name by id."""
+"""Render the current path a wiki page or draft shows for each source it names by id."""
 
 from __future__ import annotations
 
@@ -23,6 +23,8 @@ log = logging.getLogger(__name__)
 
 _SOURCES_PREFIX = "sources: "
 _PROVENANCE_LINE = "provenance:"
+# What follows the path in a footnote reference that names more than its path.
+_AFTER_PATH = ","
 
 
 def _shown_before(ref: str, record: CitationRecord) -> str | None:
@@ -110,17 +112,46 @@ def _frontmatter(lines: list[str], renamed: Mapping[str, str]) -> list[str]:
     return out
 
 
+def _with_frontmatter(lines: list[str], renamed: Mapping[str, str]) -> str:
+    """Page *lines* with the renamed paths of the frontmatter replaced, joined."""
+    span = frontmatter_span(lines)
+    if span is not None:
+        start, end = span
+        lines[start + 1 : end] = _frontmatter(lines[start + 1 : end], renamed)
+    return "\n".join(lines)
+
+
 def rerendered_page(text: str, records: Iterable[CitationRecord]) -> str:
     """Page *text* showing the current path of each source its citation *records* name."""
     by_key = {record["citation_key"]: record for record in records}
     lines, renamed = _rendered_footnotes(text.split("\n"), by_key)
     if not renamed:
         return text
-    span = frontmatter_span(lines)
-    if span is not None:
-        start, end = span
-        lines[start + 1 : end] = _frontmatter(lines[start + 1 : end], renamed)
-    return "\n".join(lines)
+    return _with_frontmatter(lines, renamed)
+
+
+def _renamed_footnote(line: str, renamed: Mapping[str, str]) -> str:
+    """A footnote whose reference starts with a path of *renamed*, showing its new path."""
+    match = FOOTNOTE_RE.match(line)
+    if match is None:
+        return line
+    ref = match.group(2)
+    for before in sorted(renamed, key=len, reverse=True):
+        if ref == before or ref.startswith(f"{before}{_AFTER_PATH}"):
+            return line[: match.start(2)] + renamed[before] + ref[len(before) :]
+    return line
+
+
+def renamed_page(text: str, renamed: Mapping[str, str]) -> str:
+    """Page *text* showing each path of *renamed* as its new path in footnotes and frontmatter."""
+    if not renamed:
+        return text
+    lines = text.split("\n")
+    shown = [
+        line if fenced else _renamed_footnote(line, renamed)
+        for line, fenced in zip(lines, fence_flags(lines), strict=True)
+    ]
+    return _with_frontmatter(shown, renamed)
 
 
 def _rerender(store: Store, page: Path, wiki_source: str) -> Path | None:

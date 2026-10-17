@@ -984,6 +984,36 @@ class TestAMovedFileInTheWiki:
         shown = page.read_text(encoding="utf-8")
         assert shown == before.replace("old.txt", "renamed.txt")
 
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_a_pending_draft_that_cites_it_is_accepted_under_its_new_name(
+        self, tmp_path, processes
+    ):
+        from lilbee.wiki.drafts import accept_draft
+        from tests.test_absorb import _pending_draft
+
+        excerpt = "The one file that is renamed."
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        library.write("old.txt", excerpt)
+        await library.sync()
+        library.use()
+        draft = _pending_draft(get_services().store, "old.txt", excerpt)
+        written = draft.read_text(encoding="utf-8")
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+
+        await library.sync()
+
+        library.use()
+        assert draft.read_text(encoding="utf-8") == written, "a move rewrote the draft"
+        store = get_services().store
+        with mock.patch("lilbee.wiki.drafts.rewrite_links_across_wiki"):
+            accepted = accept_draft("spring-release", cfg.data_root / cfg.wiki_dir, store, cfg)
+        published = accepted.moved_to.read_text(encoding="utf-8")
+        assert f'[^src1]: renamed.txt, excerpt: "{excerpt}"' in published
+        assert "old.txt" not in published
+        cited = store.get_citations_for_source("renamed.txt")
+        assert [row["wiki_source"] for row in cited] == ["wiki/concepts/spring-release.md"]
+
 
 class TestARemovedFileInTheWiki:
     async def test_a_cited_file_that_is_removed_leaves_the_index(self, tmp_path, monkeypatch):

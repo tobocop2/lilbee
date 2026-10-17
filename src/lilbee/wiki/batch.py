@@ -292,6 +292,7 @@ def finalize_section(
                 content=full_content,
                 drafts_dir=drafts_dir,
                 origin_subdir=page_type,
+                source_ids=store.source_ids(source_names),
             )
             return None
         written_concept_slugs.setdefault(slug, source)

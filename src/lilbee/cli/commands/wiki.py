@@ -780,7 +780,7 @@ def wiki_drafts_diff(
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     try:
-        diff = diff_draft(slug, wiki_root)
+        diff = diff_draft(slug, wiki_root, get_services().store)
     except FileNotFoundError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})

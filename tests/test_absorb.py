@@ -204,7 +204,10 @@ def _write_wiki_page(store: Store, keys: list[str], subdir: str = "entities") ->
         render_citation_block(records),
     )
     wiki_root = cfg.data_root / cfg.wiki_dir
-    return write_page(wiki_root, subdir, "boeing", content, 1.0, keys, "entities")
+    source_ids = store.source_ids(keys)
+    return write_page(
+        wiki_root, subdir, "boeing", content, 1.0, keys, "entities", source_ids=source_ids
+    )
 
 
 def _save_stub_index(store: Store) -> None:
@@ -1690,6 +1693,70 @@ class TestTheOracle:
 
         assert absorbed == fresh
         assert sum(len(rows) for rows in fresh["tables"].values()) > 3
+
+
+def _pending_draft(store: Store, key: str, excerpt: str) -> Path:
+    """A draft about the spring release that cites *key*, written by the wiki's own writer."""
+    from lilbee.wiki.page import assemble_content, build_frontmatter
+    from lilbee.wiki.persistence import persist_and_finalize
+    from lilbee.wiki.shared import PageTarget, WikiSubdir
+
+    chunk = store.get_chunks_by_source(key)[0]
+    assert excerpt in chunk.chunk
+    content = assemble_content(
+        build_frontmatter(cfg, [key], 0.2, chunks=[chunk]),
+        "# Spring release\n\nThe release has a plan.[^src1]\n",
+        f'[^src1]: {key}, excerpt: "{excerpt}"\n',
+    )
+    target = PageTarget(
+        wiki_root=cfg.data_root / cfg.wiki_dir,
+        subdir=WikiSubdir.DRAFTS,
+        slug="spring-release",
+        wiki_source=f"{cfg.wiki_dir}/drafts/spring-release.md",
+        page_type=WikiSubdir.CONCEPTS,
+        label="Spring release",
+    )
+    return persist_and_finalize(content, target, [], [key], store, cfg)
+
+
+class TestAPendingDraft:
+    _EXCERPT = "The plan for the spring release."
+
+    async def test_a_pending_draft_is_accepted_after_an_absorb(self, library, notes):
+        from lilbee.wiki.drafts import accept_draft
+        from lilbee.wiki.shared import parse_frontmatter
+
+        await _add(notes / "work")
+        store = library.store
+        draft = _pending_draft(store, "work/plan.md", self._EXCERPT)
+        written = draft.read_text(encoding="utf-8")
+
+        register_sources([notes])
+
+        assert draft.read_text(encoding="utf-8") == written, "a move rewrote the draft"
+        with mock.patch("lilbee.wiki.drafts.rewrite_links_across_wiki"):
+            accepted = accept_draft("spring-release", cfg.data_root / cfg.wiki_dir, store, cfg)
+
+        published = accepted.moved_to.read_text(encoding="utf-8")
+        assert f'[^src1]: notes/work/plan.md, excerpt: "{self._EXCERPT}"' in published
+        assert parse_frontmatter(published)["sources"] == ["notes/work/plan.md"]
+        assert "source_ids" not in published
+        assert "work/plan.md" not in published.replace("notes/work/plan.md", "")
+        rows = store.get_citations_for_source("notes/work/plan.md")
+        assert [row["wiki_source"] for row in rows] == ["wiki/concepts/spring-release.md"]
+        assert store.get_citations_for_source("work/plan.md") == []
+
+    async def test_the_diff_of_a_pending_draft_shows_the_new_path(self, library, notes):
+        from lilbee.wiki.drafts import diff_draft
+
+        await _add(notes / "work")
+        _pending_draft(library.store, "work/plan.md", self._EXCERPT)
+
+        register_sources([notes])
+
+        diff = diff_draft("spring-release", cfg.data_root / cfg.wiki_dir, library.store)
+        assert f'+[^src1]: notes/work/plan.md, excerpt: "{self._EXCERPT}"' in diff
+        assert '+sources: ["notes/work/plan.md"]' in diff
 
 
 class TestSkipRecordFiles:

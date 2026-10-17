@@ -6,6 +6,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -1269,7 +1270,7 @@ class TestDivertToDrafts:
     @staticmethod
     def _divert(drafts_dir: Path, content: str, sources: list[str]) -> Path:
         return divert_to_drafts(
-            content, drafts_dir, "my-page", 0.45, "diff text", "concepts", sources
+            content, drafts_dir, "my-page", 0.45, "diff text", "concepts", sources, source_ids={}
         )
 
     def test_writes_draft_with_note(self, tmp_path: Path):
@@ -1377,6 +1378,7 @@ class TestWritePageDrift:
             0.0,
             ["a.md"],
             WikiSubdir.CONCEPTS,
+            source_ids={},
         )
         assert result == page
 
@@ -1390,6 +1392,7 @@ class TestWritePageDrift:
             "diff",
             WikiSubdir.CONCEPTS,
             ["a.md"],
+            source_ids={},
         )
         assert stale.is_file()
         write_page(
@@ -1400,6 +1403,7 @@ class TestWritePageDrift:
             0.3,
             ["a.md"],
             WikiSubdir.CONCEPTS,
+            source_ids={},
         )
         assert not stale.exists()
 
@@ -1415,6 +1419,7 @@ class TestWritePageDrift:
             "diff",
             WikiSubdir.CONCEPTS,
             ["a.md"],
+            source_ids={},
         )
         write_page(
             wiki_root,
@@ -1424,6 +1429,7 @@ class TestWritePageDrift:
             0.3,
             ["b.md"],
             WikiSubdir.ENTITIES,
+            source_ids={},
         )
         assert other.is_file()
         assert "Ford the concept" in other.read_text()
@@ -1438,8 +1444,52 @@ class TestWritePageDrift:
             0.3,
             ["a.md"],
             WikiSubdir.CONCEPTS,
+            source_ids={},
         )
         assert result.is_file()
+
+
+class TestADraftRecordsTheIdsOfItsSources:
+    """Every draft a writer lands names each source path it shows by id."""
+
+    _IDS: ClassVar[dict[str, str]] = {"a.md": "id-of-a"}
+    _FIELD = 'source_ids: {"a.md": "id-of-a"}'
+
+    @staticmethod
+    def _page(body: str, sources: list[str]) -> str:
+        return f"---\nsources: {json.dumps(sources)}\nfaithfulness_score: 0.10\n---\n\n{body}\n"
+
+    def _write(self, wiki_root: Path, subdir: str, body: str, sources: list[str]) -> Path:
+        return write_page(
+            wiki_root,
+            subdir,
+            "brakes",
+            self._page(body, sources),
+            0.3,
+            sources,
+            WikiSubdir.CONCEPTS,
+            source_ids=self._IDS,
+        )
+
+    def test_a_page_held_by_the_quality_gate(self, tmp_path: Path):
+        draft = self._write(tmp_path, WikiSubdir.DRAFTS, "# Brakes\n\nheld", ["a.md"])
+
+        assert self._FIELD in draft.read_text(encoding="utf-8")
+
+    def test_a_page_diverted_by_drift_and_a_published_page_that_records_none(self, tmp_path):
+        published = self._write(tmp_path, WikiSubdir.CONCEPTS, "# Brakes\n\nfirst", ["a.md"])
+        diverted = self._write(tmp_path, WikiSubdir.CONCEPTS, "# Other\n\nall new", ["a.md"])
+
+        assert "source_ids" not in published.read_text(encoding="utf-8")
+        assert diverted.parent.name == WikiSubdir.DRAFTS
+        assert self._FIELD in diverted.read_text(encoding="utf-8")
+
+    def test_a_collision_draft(self, tmp_path: Path):
+        self._write(tmp_path, WikiSubdir.DRAFTS, "# Brakes\n\nfrom b", ["b.md"])
+        collision = self._write(tmp_path, WikiSubdir.DRAFTS, "# Brakes\n\nfrom a", ["a.md"])
+
+        assert collision.name.startswith("brakes-collision-")
+        assert self._FIELD in collision.read_text(encoding="utf-8")
 
 
 class TestWritePageToDrafts:
@@ -1462,6 +1512,7 @@ class TestWritePageToDrafts:
             0.3,
             sources,
             WikiSubdir.CONCEPTS,
+            source_ids={},
         )
 
     def test_the_same_sources_supersede_their_own_draft(self, tmp_path: Path):
@@ -1510,6 +1561,7 @@ class TestWritePageToDrafts:
             "diff",
             WikiSubdir.CONCEPTS,
             ["a.md"],
+            source_ids={},
         )
         result = self._write(wiki_root, "# Brakes\n\nlater proposal", ["a.md"])
         assert result == drift
@@ -1535,14 +1587,14 @@ class TestDeleteDriftDraftIfPresent:
 
     def test_removes_a_drift_draft(self, tmp_path: Path):
         draft = divert_to_drafts(
-            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"]
+            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"], source_ids={}
         )
         assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"]) is True
         assert not draft.exists()
 
     def test_keeps_a_drift_draft_belonging_to_another_source(self, tmp_path: Path):
         draft = divert_to_drafts(
-            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"]
+            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"], source_ids={}
         )
         assert delete_drift_draft_if_present(tmp_path, "x", ["b.md"]) is False
         assert draft.is_file()
@@ -2344,7 +2396,14 @@ class TestWritePendingMarker:
         never landed."""
         drafts = tmp_path / "drafts"
         review_path = divert_to_drafts(
-            "# Brakes\n\nReviewed body.\n", drafts, "brakes", 0.4, "diff", "concepts", ["a.md"]
+            "# Brakes\n\nReviewed body.\n",
+            drafts,
+            "brakes",
+            0.4,
+            "diff",
+            "concepts",
+            ["a.md"],
+            source_ids={},
         )
         with caplog.at_level("WARNING", logger="lilbee.wiki.persistence"):
             result = write_pending_marker(

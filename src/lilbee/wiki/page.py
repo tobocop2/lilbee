@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -47,6 +47,7 @@ from lilbee.wiki.persistence import (
     origin_marker,
     persist_and_finalize,
     subdir_from_wiki_source,
+    with_source_ids,
 )
 from lilbee.wiki.quality import check_faithfulness, content_change_ratio, diff_summary
 from lilbee.wiki.shared import (
@@ -219,6 +220,8 @@ def write_page(
     drift_threshold: float,
     source_names: list[str],
     page_type: str,
+    *,
+    source_ids: Mapping[str, str],
 ) -> Path:
     """Write page to disk with drift detection. Returns path written to.
 
@@ -228,12 +231,15 @@ def write_page(
     and accepting it would undo the regen. Another source's draft under the
     same slug is kept. A ``drafts/`` target skips drift entirely and routes
     through :func:`_write_draft_page`; ``page_type`` is the subdir the page
-    would have published to, which a diverted page carries in its marker.
+    would have published to, which a diverted page carries in its marker. A
+    draft records ``source_ids``, the id of each of *source_names*.
     """
     page_path = wiki_root / subdir / f"{slug}.md"
     drafts_dir = wiki_root / WikiSubdir.DRAFTS
     if subdir == WikiSubdir.DRAFTS:
-        return _write_draft_page(page_path, drafts_dir, slug, full_content, source_names, page_type)
+        return _write_draft_page(
+            page_path, drafts_dir, slug, full_content, source_names, page_type, source_ids
+        )
 
     if page_path.exists():
         old_content = page_path.read_text(encoding="utf-8")
@@ -243,7 +249,14 @@ def write_page(
         if ratio > drift_threshold:
             diff_text = diff_summary(old_content, full_content)
             return divert_to_drafts(
-                full_content, drafts_dir, slug, ratio, diff_text, subdir, source_names
+                full_content,
+                drafts_dir,
+                slug,
+                ratio,
+                diff_text,
+                subdir,
+                source_names,
+                source_ids=source_ids,
             )
 
     atomic_write_text(page_path, full_content)
@@ -258,6 +271,7 @@ def _write_draft_page(
     full_content: str,
     source_names: list[str],
     page_type: str,
+    source_ids: Mapping[str, str],
 ) -> Path:
     """Land a below-threshold page in ``drafts/``, keeping another source's draft.
 
@@ -275,8 +289,10 @@ def _write_draft_page(
             content=full_content,
             drafts_dir=drafts_dir,
             origin_subdir=page_type,
+            source_ids=source_ids,
         )
-    atomic_write_text(draft_path, f"{origin_marker(page_type)}\n\n{full_content}")
+    recorded = with_source_ids(full_content, source_ids)
+    atomic_write_text(draft_path, f"{origin_marker(page_type)}\n\n{recorded}")
     return draft_path
 
 

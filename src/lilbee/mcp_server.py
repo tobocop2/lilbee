@@ -1350,7 +1350,7 @@ def wiki_drafts_diff(slug: str) -> dict[str, Any]:
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     try:
-        diff = diff_draft(slug, wiki_root)
+        diff = diff_draft(slug, wiki_root, get_services().store)
     except FileNotFoundError as exc:
         return _error(str(exc))
     except PathTraversalError:
