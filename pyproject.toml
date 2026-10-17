@@ -162,6 +162,8 @@ dev = [
     # The saved-page names and their tests parse addresses with ada-url, which
     # otherwise only the crawler and release extras install.
     "ada-url>=4.0.0",
+    # The crawl tests sign a certificate for a local HTTPS site.
+    "cryptography>=44",
     "hypothesis>=6.100",
     "mypy>=1.19.1",
     "packaging>=24",

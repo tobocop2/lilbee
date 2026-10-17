@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import hashlib
 import ipaddress
 import json
 import os
 import re
 import socket
+import ssl
 import stat
 import threading
 import time
@@ -19,6 +21,10 @@ from pathlib import Path
 
 import pytest
 from click.testing import Result
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from typer.testing import CliRunner
 
 crawlberg = pytest.importorskip("crawlberg")
@@ -355,7 +361,7 @@ def _fixed_pages(filler: str, robots_status: int) -> dict[str, tuple[int, str]]:
 class _Site:
     """A threaded local site: a wide listing, a slow listing, and a special page."""
 
-    def __init__(self) -> None:
+    def __init__(self, tls: ssl.SSLContext | None = None) -> None:
         self.requests: list[tuple[float, str]] = []
         self.agents: list[tuple[str, str]] = []
         self.hints: list[tuple[str, dict[str, str]]] = []
@@ -366,11 +372,15 @@ class _Site:
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._server.daemon_threads = True
+        self._scheme = "http"
+        if tls is not None:
+            self._server.socket = tls.wrap_socket(self._server.socket, server_side=True)
+            self._scheme = "https"
         self.port = self._server.server_address[1]
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
     def url(self, path: str) -> str:
-        return f"http://127.0.0.1:{self.port}{path}"
+        return f"{self._scheme}://127.0.0.1:{self.port}{path}"
 
     def paths_since(self, since: float, prefix: str) -> list[str]:
         with self._lock:
@@ -484,6 +494,47 @@ class _Site:
 @pytest.fixture
 def site() -> Iterator[_Site]:
     running = _Site()
+    yield running
+    running.close()
+
+
+def _self_signed_context(folder: Path) -> ssl.SSLContext:
+    """A server context whose certificate for 127.0.0.1 is signed by its own key."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.datetime.now(datetime.UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_path, key_path = folder / "cert.pem", folder / "key.pem"
+    cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    return context
+
+
+@pytest.fixture
+def self_signed_site(tmp_path) -> Iterator[_Site]:
+    """The site over HTTPS with a certificate no authority signed."""
+    running = _Site(tls=_self_signed_context(tmp_path))
     yield running
     running.close()
 
@@ -1435,17 +1486,24 @@ async def _robots_site_crawl(site: _Site, mode: CrawlRenderMode) -> list[Path]:
     return await crawl_and_save(site.url(ROBOTS_LISTING), depth=1, max_pages=0, render_mode=mode)
 
 
-async def _robots_single_crawl(
-    site: _Site, mode: CrawlRenderMode
+async def _page_crawl(
+    site: _Site, path: str, mode: CrawlRenderMode
 ) -> tuple[list[Path], list[tuple[EventType, object]]]:
+    """The saved paths and the progress events of a one-page crawl of *path*."""
     events: list[tuple[EventType, object]] = []
     paths = await crawl_and_save(
-        site.url(ROBOTS_DISALLOWED),
+        site.url(path),
         depth=0,
         render_mode=mode,
         on_progress=lambda kind, data: events.append((kind, data)),
     )
     return paths, events
+
+
+async def _robots_single_crawl(
+    site: _Site, mode: CrawlRenderMode
+) -> tuple[list[Path], list[tuple[EventType, object]]]:
+    return await _page_crawl(site, ROBOTS_DISALLOWED, mode)
 
 
 def _assert_site_crawl_honours_robots(site: _Site, paths: list[Path]) -> None:
@@ -1553,6 +1611,22 @@ class TestRobotsTxtInBrowserMode:
             site_paths = asyncio.run(_robots_site_crawl(site, BROWSER))
             single_paths, _ = asyncio.run(_robots_single_crawl(site, BROWSER))
         _assert_robots_ignored(site, site_paths, single_paths)
+
+    def test_a_certificate_only_chrome_accepts_names_the_setting_that_crawls_the_page(
+        self, self_signed_site
+    ):
+        """crawlberg reads robots.txt without Chrome, so it refuses the certificate Chrome takes."""
+        with windows_proactor_loop():
+            refused, events = asyncio.run(_page_crawl(self_signed_site, ROBOTS_ALLOWED, BROWSER))
+            cfg.crawl_respect_robots_txt = False
+            crawled, _ = asyncio.run(_page_crawl(self_signed_site, ROBOTS_ALLOWED, BROWSER))
+        reasons = _failure_reasons(events)
+        assert refused == []
+        assert len(reasons) == 1
+        assert reasons[0].startswith("The site's robots.txt could not be read (ssl: "), reasons
+        assert "crawl_respect_robots_txt" in reasons[0]
+        assert len(crawled) == 1
+        assert self_signed_site.paths_since(0, ROBOTS_ALLOWED) == [ROBOTS_ALLOWED]
 
 
 async def _cookie_crawl(site: _Site, mode: CrawlRenderMode) -> list[Path]:
