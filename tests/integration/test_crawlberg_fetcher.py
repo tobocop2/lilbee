@@ -762,6 +762,25 @@ class TestCrawlAndSave:
         assert paths == []
         assert warnings == [LEFT_OUT.format(url=site.url("/"), pattern=ROOT_PATTERN)]
 
+    async def test_a_seed_with_a_username_and_password_is_named_as_crawlberg_matches_it(
+        self, site, caplog
+    ):
+        address = site.url(EXCLUDED_SEED)
+        pattern = f"^{re.escape(address)}$"
+        cfg.crawl_exclude_patterns = [pattern]
+        seed = address.replace("://", "://user:pw@", 1)
+        assert re.search(pattern, seed) is None
+        paths = await crawl_and_save(seed, render_mode=HTTP, depth=1, max_pages=2)
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == FETCHER_LOGGER and record.levelname == "WARNING"
+        ]
+        # crawlberg 1.11.1 matches a pattern against the address without its userinfo.
+        assert site.paths_since(0, EXCLUDED_SEED) == []
+        assert paths == []
+        assert warnings == [LEFT_OUT.format(url=address, pattern=pattern)]
+
     async def test_default_exclude_patterns_all_apply(self, site):
         """``/wiki/Special:`` is a default pattern that is not a regex anchor or digit class."""
         paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=0)
