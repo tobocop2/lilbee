@@ -1039,7 +1039,6 @@ class TestEveryEntryPoint:
             payload = ingest_sync._register_and_sync(
                 [notes],
                 [],
-                sync_urls=False,
                 force=False,
                 cancel_event=threading.Event(),
                 rollback=rollback,
@@ -1514,7 +1513,6 @@ class TestACancelledJsonAdd:
             ingest_sync._register_and_sync(
                 [notes],
                 [],
-                sync_urls=False,
                 force=False,
                 cancel_event=threading.Event(),
                 rollback=rollback,
