@@ -27,6 +27,7 @@ from lilbee.crawler.bootstrap import (
     CrawlEngineRefusedError,
 )
 from lilbee.crawler.models import CancelToken, ConcurrencySpec, FetchedPage, FilterSpec
+from lilbee.crawler.save import parsed_address
 
 # crawlberg is the optional ``crawler`` extra and loads a native library, so each
 # function that needs it imports it on call.
@@ -517,8 +518,15 @@ class _ExcludedLinks:
         self._checked: set[str] = set()
 
     def record_seed(self, seed_url: str) -> None:
-        """Log the seed when a pattern matches it: crawlberg then crawls nothing."""
-        url = _queued_url(seed_url)
+        """Log the seed when a pattern matches it: crawlberg then crawls nothing.
+
+        The seed is matched as crawlberg's URL parser writes it; a seed that does not parse is
+        one crawlberg refuses, so no pattern applies to it.
+        """
+        address = parsed_address(seed_url)
+        if address is None:
+            return
+        url = _queued_url(address)
         self._checked.add(url)
         self._check(url)
 
