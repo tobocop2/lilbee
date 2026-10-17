@@ -439,6 +439,25 @@ class TestTheMoveCarriesTheCitations:
         keys = sorted(row["citation_key"] for row in reopened.get_citations_for_source("deep/a.md"))
         assert keys == ["k", "k2"]
 
+    def test_each_citation_of_many_folds_cites_the_row_its_own_row_lands_on(self, config, tmp_path):
+        names = [f"p{i}.md" for i in range(5)]
+        store = Store(config)
+        for name in names:
+            _seed_source(store, f"work/deep/{name}")
+            _seed_source(store, f"deep/{name}")
+        store.add_citations([_citation(f"work/deep/{name}", key=f"c-{name}") for name in names])
+        landing = store.source_ids([f"deep/{name}" for name in names], SourceType.DOCUMENT)
+        store.close()
+        config.linked_roots = {"work": str(tmp_path / "w"), "deep": str(tmp_path / "w" / "deep")}
+
+        reopened = Store(config)
+
+        cited = reopened.open_table(CITATIONS_TABLE).search().limit(None).to_list()
+        pairs = {
+            row["citation_key"]: row["source_id"] for row in cited if row["citation_key"] != "k"
+        }
+        assert pairs == {f"c-{name}": landing[f"deep/{name}"] for name in names}
+
 
 def _folding_library(config, tmp_path) -> dict[str, str]:
     """A label-keyed library where two rows of an outer label land on rows of an inner root.
