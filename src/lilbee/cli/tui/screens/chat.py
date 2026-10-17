@@ -96,6 +96,7 @@ from lilbee.crawler import (
     require_valid_crawl_url,
 )
 from lilbee.crawler.events import BROWSER_SETUP_COMPONENT
+from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
     ChunkType,
     EmbeddingModelMismatchError,
@@ -1030,9 +1031,11 @@ class ChatScreen(Screen[None]):
         if render_mode is not None and render_mode is not cfg.crawl_render_mode:
             self._persist_crawl_render_mode(render_mode)
 
+        shown = without_userinfo(url)
+
         def _kick_off_crawl() -> None:
             self._task_bar.start_task(
-                msg.TASK_NAME_CRAWL.format(url=url),
+                msg.TASK_NAME_CRAWL.format(url=shown),
                 TaskType.CRAWL,
                 lambda reporter: self._do_crawl(
                     url,
@@ -1045,7 +1048,7 @@ class ChatScreen(Screen[None]):
                 on_success=lambda: call_from_thread(self, self._run_sync),
             )
 
-        self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
+        self.notify(msg.CMD_CRAWL_STARTED.format(url=shown))
         if mode is CrawlRenderMode.BROWSER:
             self._task_bar.ensure_chromium(_kick_off_crawl)
         else:
@@ -1110,7 +1113,8 @@ class ChatScreen(Screen[None]):
         from lilbee.crawler import crawl_and_save
         from lilbee.runtime.progress import CrawlPageEvent, CrawlPageFailedEvent, SetupProgressEvent
 
-        reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=url))
+        shown = without_userinfo(url)
+        reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=shown))
         failures: list[str] = []
         setup_labels = {BROWSER_SETUP_COMPONENT: msg.SETUP_BROWSER_WARM_UP}
 
@@ -1167,7 +1171,9 @@ class ChatScreen(Screen[None]):
             )
         )
         reporter.check_cancelled()
-        call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
+        call_from_thread(
+            self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=shown)
+        )
         if failures:
             call_from_thread(
                 self,

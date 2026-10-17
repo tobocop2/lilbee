@@ -68,6 +68,8 @@ from lilbee.runtime.progress import (
     noop_callback,
 )
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
+from tests._crawlberg_stub import StubCrawlberg, complete
+from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
 from tests._mcp_client import mcp_client
 from tests.conftest import summary_of
@@ -1369,6 +1371,37 @@ class TestAddWithUrls:
         assert result.get("error")
         assert "evil.test" in str(result)
 
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_a_refused_credentialed_seed_is_named_without_its_password(
+        self, mock_sync, _mock_avail, isolated_env
+    ):
+        result = await add(paths=["http://alice:hunter2@example.com:80a/"])
+        assert "http://example.com:80a/: URL has an invalid port" in result["error"]
+        assert "hunter2" not in str(result)
+        assert "alice" not in str(result)
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_a_credentialed_seed_whose_page_fails_names_no_password(
+        self, mock_sync, _mock_avail, isolated_env
+    ):
+        shown = "https://dead.example/page"
+        reason = f"not_found: HTTP 404 for {shown}"
+        stub = StubCrawlberg([crawlberg_error(shown, reason), complete(0)])
+        with (
+            mock.patch(
+                "lilbee.crawler.url_filter.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+            ),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+            stub.installed(),
+        ):
+            result = await add(paths=["https://alice:hunter2@dead.example/page"])
+        assert stub.seeds == ["https://alice:hunter2@dead.example/page"]
+        assert result["error"] == f"add indexed nothing. {shown}: {reason}"
+        assert "hunter2" not in str(result)
+
 
 class TestCrawl:
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
@@ -1387,6 +1420,16 @@ class TestCrawl:
             render_mode=None,
             include_subdomains=False,
         )
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
+    async def test_a_credentialed_seed_is_crawled_with_and_shown_without_its_password(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env
+    ):
+        result = await crawl(url="https://alice:hunter2@example.com/")
+        assert result["url"] == "https://example.com/"
+        assert mock_start.call_args.args == ("https://alice:hunter2@example.com/",)
 
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
@@ -1520,6 +1563,15 @@ class TestCrawlStatus:
         assert result["url"] == "https://example.com"
         assert result["status"] == "running"
         assert result["pages_crawled"] == 3
+
+    @mock.patch("lilbee.mcp_server.get_task")
+    def test_a_credentialed_seed_is_shown_without_its_password(self, mock_get_task, isolated_env):
+        from lilbee.crawler.task import CrawlTask
+
+        mock_get_task.return_value = CrawlTask(
+            task_id="abc123", url="https://alice:hunter2@example.com/", depth=0, max_pages=None
+        )
+        assert crawl_status("abc123")["url"] == "https://example.com/"
 
     @mock.patch("lilbee.mcp_server.get_task")
     def test_reports_page_failures(self, mock_get_task, isolated_env):

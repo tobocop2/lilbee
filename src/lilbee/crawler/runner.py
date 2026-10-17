@@ -36,7 +36,7 @@ from lilbee.crawler.events import (
 )
 from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED, CancelToken, CrawlResult
 from lilbee.crawler.save import CrawlRecord
-from lilbee.crawler.url_filter import validate_crawl_url
+from lilbee.crawler.url_filter import validate_crawl_url, without_userinfo
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
     CrawlPageEvent,
@@ -125,8 +125,9 @@ async def _fetch_single_page(
     except (CrawlerBrowserError, CrawlEngineRefusedError):
         raise
     except Exception as exc:
-        log.warning("Failed to crawl %s: %s", url, exc)
-        return CrawlResult(url=url, success=False, error=str(exc))
+        shown = without_userinfo(url)
+        log.warning("Failed to crawl %s: %s", shown, exc)
+        return CrawlResult(url=shown, success=False, error=str(exc))
 
 
 async def crawl_single(
@@ -151,7 +152,7 @@ async def crawl_single(
     try:
         return await _fetch_single_page(url, render_mode, on_progress)
     except ChromiumMissingError:
-        log.warning("Chromium missing for %s; bootstrapping then retrying", url)
+        log.warning("Chromium missing for %s; bootstrapping then retrying", without_userinfo(url))
         await bootstrap.bootstrap_chromium(on_progress=None)
         return await _fetch_single_page(url, render_mode, on_progress)
 
@@ -243,7 +244,7 @@ async def crawl_recursive(
     except (CrawlerBrowserError, CrawlEngineRefusedError):
         raise
     except Exception as exc:
-        _handle_crawl_teardown_error(url, exc, cancel=cancel, results=results)
+        _handle_crawl_teardown_error(without_userinfo(url), exc, cancel=cancel, results=results)
 
     return results
 
@@ -347,7 +348,8 @@ async def _run_crawl(
         except OSError:
             log.exception("Flush failed for %s", result.url)
         if on_progress:
-            on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
+            shown = without_userinfo(url)
+            on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=shown, current=1, total=1))
         _emit_page_failure(on_progress, result)
         return 1
     results = await crawl_recursive(
@@ -401,7 +403,8 @@ async def crawl_and_save(
     try:
         if on_progress:
             start_depth = depth if depth is not None else 0
-            on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=start_depth))
+            start = CrawlStartEvent(url=without_userinfo(url), depth=start_depth)
+            on_progress(EventType.CRAWL_START, start)
 
         record = await asyncio.to_thread(save.load_crawl_record)
         written_paths: list[Path] = []
