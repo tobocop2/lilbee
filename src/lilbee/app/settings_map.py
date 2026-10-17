@@ -1046,7 +1046,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text="Hard cap on generated tokens per response (blank = no cap)",
+        help_text="Hard cap on generated tokens per response (blank = the model's context window)",
     ),
     "max_reasoning_chars": SettingDef(
         int,

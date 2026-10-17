@@ -32,7 +32,7 @@ def _isolated_defaults():
 
 class TestGenerationOptions3LayerMerge:
     def test_no_defaults_no_user_config(self):
-        """All None -> empty dict (excluding max_tokens which has a default)."""
+        """All None -> empty dict."""
         cfg.max_tokens = None
         result = cfg.generation_options()
         assert result == {}
