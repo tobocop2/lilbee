@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from time import monotonic
 
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import ProgressBar, Static
 from textual.worker import get_current_worker
 
@@ -16,11 +18,21 @@ from lilbee.app.services import get_services, peek_services, report_library_upgr
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.runtime.bee_logo import BEE_LINES
-from lilbee.runtime.progress import EventType, LibraryUpgradeEvent, ProgressEvent
+from lilbee.runtime.progress import (
+    UPGRADE_HEADLINE,
+    EventType,
+    LibraryUpgradeEvent,
+    ProgressEvent,
+    UpgradePhase,
+)
 
 log = logging.getLogger(__name__)
 
 _LOGO = "\n".join(BEE_LINES)
+# How often the status line redraws the elapsed time of a library upgrade.
+_UPGRADE_TICK_SECONDS = 1.0
+# How long the finished upgrade's toast stays on the landing view.
+_UPGRADE_DONE_TOAST_SECONDS = 6
 
 
 class StartupGate(Screen[None]):
@@ -41,6 +53,14 @@ class StartupGate(Screen[None]):
     # which raises NoActiveAppError the moment the gate detaches. Captured
     # once in on_mount, on the UI thread, where resolution is certain.
     _ui_app: LilbeeApp
+
+    def __init__(self) -> None:
+        super().__init__()
+        # The latest event of a library upgrade that runs, when it began, and the
+        # timer that redraws its time; no timer while none runs.
+        self._upgrade_event = LibraryUpgradeEvent(phase=UpgradePhase.WAITING)
+        self._upgrade_started = 0.0
+        self._upgrade_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="gate-body"):
@@ -111,10 +131,38 @@ class StartupGate(Screen[None]):
         self._marshal(self._release)
 
     def _show_upgrade(self, _event_type: EventType, event: ProgressEvent) -> None:
-        """Show a library upgrade event's line in the status line, from the opening thread."""
+        """Hand a library upgrade event to the UI thread, from the opening thread."""
         # The reporter takes the whole progress union; the store passes it upgrade events only.
         if isinstance(event, LibraryUpgradeEvent) and self.is_mounted:
-            self._ui_app.call_from_thread(self._set_status, event.text)
+            self._ui_app.call_from_thread(self._show_event, event)
+
+    def _show_event(self, event: LibraryUpgradeEvent) -> None:
+        """Show *event* under the bar; while the upgrade runs its time redraws each second.
+
+        The finished line is also a toast, so it outlives the gate's handover.
+        """
+        if not event.running:
+            self._stop_ticking()
+            self._set_status(event.text)
+            if event.phase is UpgradePhase.DONE:
+                self._ui_app.notify(event.text, timeout=_UPGRADE_DONE_TOAST_SECONDS)
+            return
+        self._upgrade_event = event
+        self._upgrade_started = monotonic() - event.elapsed_s
+        if self._upgrade_timer is None:
+            self._upgrade_timer = self.set_interval(_UPGRADE_TICK_SECONDS, self._tick_upgrade)
+        self._tick_upgrade()
+
+    def _tick_upgrade(self) -> None:
+        """Redraw the upgrade's headline and its progress line, timed to now."""
+        line = self._upgrade_event.line_at(monotonic() - self._upgrade_started)
+        self._set_status(f"{UPGRADE_HEADLINE}\n{line}")
+
+    def _stop_ticking(self) -> None:
+        """Stop redrawing the upgrade's time; safe when it never started."""
+        if self._upgrade_timer is not None:
+            self._upgrade_timer.stop()
+            self._upgrade_timer = None
 
     def _set_status(self, text: str) -> None:
         """Put *text* in the status line under the bar."""
@@ -134,6 +182,7 @@ class StartupGate(Screen[None]):
 
     def _fail(self, error: str) -> None:
         """Surface a failed start and hand the user to the rest of the TUI to fix it."""
+        self._stop_ticking()
         self._ui_app.notify(msg.STARTUP_FAILED.format(error=error), severity="error", timeout=8)
         self._release()
 

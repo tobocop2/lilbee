@@ -44,9 +44,11 @@ from lilbee.runtime.lock import (
     write_lock,
 )
 from lilbee.runtime.progress import (
+    UPGRADE_HEADLINE,
     DetailedProgressCallback,
     EventType,
     LibraryUpgradeEvent,
+    TableWork,
     UpgradePhase,
     noop_callback,
 )
@@ -254,6 +256,16 @@ _PATH_KEY_COLUMNS = (
 _PATH_KEY_BY_TABLE = dict(_PATH_KEY_COLUMNS)
 # The tables an upgrade visits, in its order: ``_sources`` first.
 _UPGRADE_ORDER = (SOURCES_TABLE, *_PATH_KEY_BY_TABLE)
+# The name an upgrade shows each table by.
+_UPGRADE_LABELS = {
+    SOURCES_TABLE: "source list",
+    CHUNKS_TABLE: "search chunks",
+    PAGE_TEXTS_TABLE: "page text",
+    CHUNK_CONCEPTS_TABLE: "concept links",
+    ENTITIES_TABLE: "entities",
+    CITATIONS_TABLE: "citations",
+    WIKI_MENTIONS_TABLE: "wiki mentions",
+}
 # The path column of ``_sources`` before it was renamed.
 _OLD_PATH = "filename"
 # The ``_meta`` rows an upgrade has yet to stamp; a store stamped 1 keeps 1.
@@ -517,6 +529,16 @@ class _SourceWrite(NamedTuple):
     fields: Mapping[str, Any] | None = None
     record: HeldRecord | None = None
     new_id: str | None = None
+
+
+class _TableStep(NamedTuple):
+    """What an upgrade does to the table in progress, and how many tables of all are done."""
+
+    work: TableWork
+    table: str
+    rows: int
+    tables_done: int
+    tables_total: int
 
 
 def _documents(names: Iterable[str]) -> Iterator[tuple[str, SourceType]]:
@@ -975,8 +997,9 @@ class Store:
     ) -> None:
         self._config = config
         self._on_upgrade = on_upgrade
-        # The latest event of an upgrade that runs; None when none does.
+        # The latest event of an upgrade that runs, and when it began; None when none runs.
         self._upgrade: LibraryUpgradeEvent | None = None
+        self._upgrade_started = 0.0
         # One open at a time: a caller that finds an open running waits for it.
         self._open_lock = threading.Lock()
         self._fts_ready: bool = False
@@ -1266,15 +1289,21 @@ class Store:
             self._config.embedding_model,
         )
 
-    def _upgrade_warnings(self) -> list[HealthWarning]:
-        """The warning of an upgrade that runs, or none."""
+    def upgrade_progress(self) -> LibraryUpgradeEvent | None:
+        """The upgrade that runs, timed to now, or None when none does."""
         upgrade = self._upgrade
         if upgrade is None:
+            return None
+        return upgrade.model_copy(update={"elapsed_s": time.monotonic() - self._upgrade_started})
+
+    def _upgrade_warnings(self) -> list[HealthWarning]:
+        """The warning of an upgrade that runs, or none."""
+        upgrade = self.upgrade_progress()
+        if upgrade is None:
             return []
+        message = f"{UPGRADE_HEADLINE} {upgrade.text}"
         remedy = "Server requests answer 503 after 10 s. Try again when it ends."
-        return [
-            HealthWarning(code=WarningCode.LIBRARY_UPGRADING, message=upgrade.text, remedy=remedy)
-        ]
+        return [HealthWarning(code=WarningCode.LIBRARY_UPGRADING, message=message, remedy=remedy)]
 
     def _index_mismatch_warning(self) -> HealthWarning | None:
         """The stale-index degradation, from the same verdict search refuses on."""
@@ -1463,21 +1492,23 @@ class Store:
 
     def _upgrade_library(self, db: LanceDBConnection) -> None:
         """Upgrade *db* under the write lock, waiting for it without a deadline, and report it."""
-        started = time.monotonic()
+        self._upgrade_started = time.monotonic()
         try:
             with ExitStack() as held:
                 try:
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=0.0))
                 except LockTimeoutError:
-                    self._report_upgrade(LibraryUpgradeEvent(phase=UpgradePhase.WAITING))
+                    self._report_upgrade(UpgradePhase.WAITING)
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=None))
                 # Another process can have upgraded it during the wait.
                 if self._upgrade_needed(db):
                     self._upgrade_unlocked(db)
-            elapsed = time.monotonic() - started
-            self._report_upgrade(LibraryUpgradeEvent(phase=UpgradePhase.DONE, elapsed_s=elapsed))
+        except BaseException:
+            self._report_upgrade(UpgradePhase.FAILED)
+            raise
         finally:
             self._upgrade = None
+        self._report_upgrade(UpgradePhase.DONE)
 
     def _upgrade_unlocked(self, db: LanceDBConnection) -> None:
         """Run each step of the upgrade that *db* still needs. Caller holds the write lock."""
@@ -1490,9 +1521,14 @@ class Store:
             self._import_held_unlocked(db)
         _fill_locations(db, self._locations())
 
-    def _report_upgrade(self, event: LibraryUpgradeEvent) -> None:
-        """Record *event* as the upgrade's state, then pass it to the reporter."""
-        self._upgrade = event
+    def _report_upgrade(self, phase: UpgradePhase, step: _TableStep | None = None) -> None:
+        """Pass *phase* to the reporter, timed from the upgrade's start; record it while it runs."""
+        event = LibraryUpgradeEvent(
+            phase=phase,
+            elapsed_s=time.monotonic() - self._upgrade_started,
+            **({} if step is None else step._asdict()),
+        )
+        self._upgrade = event if event.running else None
         self._on_upgrade(EventType.LIBRARY_UPGRADE, event)
 
     def _migrate_unlocked(self, db: LanceDBConnection) -> None:
@@ -1507,28 +1543,31 @@ class Store:
         names = table_names(db)
         steps = _upgrade_steps(db, names)
         keyed = [(name, _PATH_KEY_BY_TABLE[name]) for name, _ in steps if name != SOURCES_TABLE]
+        rows: dict[str, int] = {}
+        done = 0
         # LanceDB adds a column one fragment at a time: each table's runs on its own thread
         # from the start, and its path column goes once its every path has a source row.
+        # Only this thread reports, in table order, so the count of tables done only rises.
         with ThreadPoolExecutor(len(_PATH_KEY_COLUMNS), _UPGRADE_THREAD_PREFIX) as pool:
             added = [pool.submit(_add_source_id, db, name, column) for name, column in keyed]
-            for step, (name, table) in enumerate(steps, start=1):
-                shown = name.strip("_").replace("_", " ")
-                self._report_upgrade(
-                    LibraryUpgradeEvent(
-                        phase=UpgradePhase.TABLE,
-                        table=shown,
-                        step=step,
-                        total_steps=len(steps),
-                        rows=table.count_rows(),
-                    )
-                )
+            for name, table in steps:
+                rows[name] = table.count_rows()
+                work = TableWork.UPDATING if name == SOURCES_TABLE else TableWork.CHECKING
+                step = _TableStep(work, _UPGRADE_LABELS[name], rows[name], done, len(steps))
+                self._report_upgrade(UpgradePhase.TABLE, step)
                 if name == SOURCES_TABLE:
                     _migrate_sources_table(table)
+                    done += 1
                 else:
                     self._hold_missing_paths(db, table, _PATH_KEY_BY_TABLE[name])
-            for (name, column), done in zip(keyed, added, strict=True):
-                done.result()
+            for (name, column), column_added in zip(keyed, added, strict=True):
+                step = _TableStep(
+                    TableWork.ADDING_IDS, _UPGRADE_LABELS[name], rows[name], done, len(steps)
+                )
+                self._report_upgrade(UpgradePhase.TABLE, step)
+                column_added.result()
                 db.open_table(name).drop_columns([column])
+                done += 1
         if META_TABLE in names:
             db.open_table(META_TABLE).update(
                 where="schema_version >= 2", values={"schema_version": META_SCHEMA_VERSION}

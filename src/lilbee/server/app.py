@@ -21,6 +21,7 @@ from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import get_services, peek_services
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
+from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
 from lilbee.server.auth import AuthMiddleware, session_manager
@@ -226,8 +227,11 @@ _UPGRADE_RETRY_AFTER_SECONDS = 10
 _UPGRADING_MESSAGE = "lilbee is upgrading the library. Try again in a few seconds."
 
 
-def _upgrading_response(path: str) -> Response:
-    """The 503 for a request that waited out the limit, in the error shape of its API."""
+def _upgrading_response(path: str, upgrade: LibraryUpgradeEvent | None) -> Response:
+    """The 503 for a request that waited out the limit, in the error shape of its API.
+
+    Every shape also carries the upgrade's progress, as health reports it.
+    """
     code = CompletionsErrorCode.INTERNAL_ERROR
     body: dict[str, Any]
     if path.startswith("/v1/messages"):
@@ -236,6 +240,7 @@ def _upgrading_response(path: str) -> Response:
         body = completions_error_body(code, _UPGRADING_MESSAGE)
     else:
         body = {"status_code": 503, "detail": _UPGRADING_MESSAGE}
+    body["upgrade"] = None if upgrade is None else upgrade.model_dump(mode="json")
     return Response(
         body,
         status_code=503,
@@ -269,7 +274,7 @@ class _LibraryOpenWait(ASGIMiddleware):
             and not store.is_open
             and not await asyncio.to_thread(store.wait_for_open, _UPGRADE_WAIT_SECONDS)
         ):
-            response = _upgrading_response(scope["path"])
+            response = _upgrading_response(scope["path"], store.upgrade_progress())
             await response.to_asgi_response(None, Request(scope, receive, send))(
                 scope, receive, send
             )

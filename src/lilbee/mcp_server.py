@@ -70,6 +70,7 @@ from lilbee.data.store import (
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.runtime.lock import ResetRefusedError
+from lilbee.runtime.progress import UPGRADE_HEADLINE
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -297,9 +298,12 @@ def search(
 
 @_tool
 def status() -> dict[str, Any]:
-    """Show indexed documents, configuration, and chunk counts."""
+    """Show documents, config and chunk counts, or the running upgrade."""
     from lilbee.app.status import gather_status
 
+    upgrade = get_services().store.upgrade_progress()
+    if upgrade is not None:
+        return {"detail": UPGRADE_HEADLINE, "upgrade": upgrade.model_dump(mode="json")}
     return gather_status().model_dump()
 
 

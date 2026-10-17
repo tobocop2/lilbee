@@ -270,33 +270,62 @@ class UpgradePhase(StrEnum):
     WAITING = "waiting"
     TABLE = "table"
     DONE = "done"
+    FAILED = "failed"
 
+
+class TableWork(StrEnum):
+    """What an upgrade does to the table in progress, as the line words it."""
+
+    UPDATING = "updating"
+    CHECKING = "checking"
+    ADDING_IDS = "adding ids to"
+
+
+UPGRADE_HEADLINE = (
+    "Upgrading your library (one time). "
+    "Large libraries take about a minute; nothing is re-embedded."
+)
 
 _UPGRADE_TEXT: dict[UpgradePhase, str] = {
-    UpgradePhase.WAITING: "Waiting for another lilbee process to finish with the library...",
-    UpgradePhase.TABLE: (
-        "Upgrading your library to the new format (one time): {table} "
-        "{step}/{total_steps}, {rows:,} rows..."
+    UpgradePhase.WAITING: (
+        "Waiting for another lilbee process to finish with the library · {seconds} s"
     ),
-    UpgradePhase.DONE: "The library upgrade finished in {elapsed_s:.1f} s.",
+    UpgradePhase.TABLE: (
+        "Tables done: {tables_done} of {tables_total} · {work} {table} · {seconds} s"
+    ),
+    UpgradePhase.DONE: "Library upgrade finished in {elapsed_s:.1f} s.",
+    UpgradePhase.FAILED: "Library upgrade stopped after {elapsed_s:.1f} s.",
 }
+_RUNNING_PHASES = frozenset({UpgradePhase.WAITING, UpgradePhase.TABLE})
 
 
 class LibraryUpgradeEvent(BaseModel):
     """Emitted while an open upgrades the library: the wait, each table, then the end.
 
-    ``table`` and ``rows`` name the table a TABLE event upgrades, ``step`` of
-    ``total_steps``; ``elapsed_s`` is the time a DONE event took, wait included.
+    ``tables_done`` of ``tables_total`` counts finished tables, so it only rises;
+    ``work``, ``table`` and ``rows`` say what is done to the one in progress;
+    ``elapsed_s`` is the time since the upgrade began, wait included.
     """
 
     phase: UpgradePhase
+    work: TableWork | None = None
     table: str = ""
-    step: int = 0
-    total_steps: int = 0
     rows: int = 0
+    tables_done: int = 0
+    tables_total: int = 0
     elapsed_s: float = 0.0
 
     @property
+    def running(self) -> bool:
+        """Whether the upgrade is still going, so its time keeps rising."""
+        return self.phase in _RUNNING_PHASES
+
+    def line_at(self, elapsed_s: float) -> str:
+        """The line every surface shows for this event, *elapsed_s* into the upgrade."""
+        fields = self.model_dump() | {"elapsed_s": elapsed_s, "seconds": int(elapsed_s)}
+        return _UPGRADE_TEXT[self.phase].format(**fields)
+
+    @property
     def text(self) -> str:
-        """The line every surface shows for this event."""
-        return _UPGRADE_TEXT[self.phase].format(**self.model_dump())
+        """The line every surface shows for this event, at the time it was emitted."""
+        return self.line_at(self.elapsed_s)

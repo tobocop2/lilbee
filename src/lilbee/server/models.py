@@ -19,6 +19,7 @@ from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chu
 from lilbee.data.types import SkippedSource
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
+from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.sessions import MessageRole
 from lilbee.wiki.entity_extractor import EntityKind
 
@@ -281,6 +282,9 @@ class HealthResponse(BaseModel):
 
     Retrieval falling back to vector-only, or an index whose documents predate
     the embedder's prefixes, both return results and look healthy."""
+    upgrade: LibraryUpgradeEvent | None = None
+    """The one-time library upgrade while it runs: its phase, tables done of the
+    total, the table in progress and the seconds since it began. None otherwise."""
 
 
 class CompactionInfo(BaseModel):

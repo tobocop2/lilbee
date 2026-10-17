@@ -4,6 +4,7 @@ StartupGate {
 
 #gate-body {
     width: auto;
+    max-width: 100%;
     height: auto;
     align: center middle;
 }
@@ -13,7 +14,8 @@ StartupGate {
    the bootstrap's dim rose to this once the TUI owns the screen.
    tests/test_startup_gate.py pins the two together. */
 #gate-logo {
-    width: auto;
+    width: 100%;
+    content-align-horizontal: center;
     color: #ffafaf;
     text-style: bold;
 }
@@ -22,7 +24,8 @@ StartupGate {
    a mid-rose sweep while indeterminate, and a dim-rose trough. Every hex is the
    xterm index in runtime/bee_logo.py; tests/test_startup_gate.py pins them. */
 #gate-bar {
-    width: 55;
+    width: 100%;
+    align-horizontal: center;
     margin: 1 0 0 0;
 }
 
@@ -40,8 +43,15 @@ StartupGate {
     color: #d7afaf;
 }
 
+/* A fixed size, so a longer status line never moves the wordmark and bar: the
+   upgrade's headline and progress line take at most three rows at 70 columns
+   and wider. A narrower terminal grows the box rather than cut the text. */
 #gate-status {
-    width: auto;
+    width: 96;
+    max-width: 100%;
+    height: auto;
+    min-height: 3;
+    text-align: center;
     margin: 1 0 0 0;
     color: $text-muted;
 }
