@@ -184,3 +184,12 @@ def test_built_slots_target_round_trips_through_the_state_file() -> None:
     legacy = launch.to_state()
     del legacy["built_slots_target"]
     assert InstanceLaunch.from_state(legacy).built_slots_target == 0
+
+
+def test_est_host_bytes_round_trips_through_the_state_file() -> None:
+    launch = _launch(WorkerRole.CHAT, "m-chat", slots=1)
+    launch.est_host_bytes = 3 << 30
+    assert InstanceLaunch.from_state(launch.to_state()).est_host_bytes == 3 << 30
+    legacy = launch.to_state()
+    del legacy["est_host_bytes"]
+    assert InstanceLaunch.from_state(legacy).est_host_bytes == 0
