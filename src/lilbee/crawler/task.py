@@ -10,6 +10,7 @@ from enum import StrEnum
 
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import crawl_and_save
+from lilbee.crawler.url_filter import without_userinfo
 from lilbee.runtime.progress import (
     CrawlPageEvent,
     CrawlPageFailedEvent,
@@ -65,6 +66,11 @@ class CrawlTask:
     # Cancelling _async_task instead would abort mid-page and lose them.
     cancel: threading.Event = field(default_factory=threading.Event, repr=False)
     _async_task: asyncio.Task[None] | None = field(default=None, repr=False, init=False)
+
+    @property
+    def shown_url(self) -> str:
+        """The crawled address without its username and password."""
+        return without_userinfo(self.url)
 
 
 class TaskRegistry:
@@ -128,12 +134,12 @@ async def run_crawl(task: CrawlTask) -> None:
             task.status = TaskStatus.CANCELLED
             task.pages_crawled = task.pages_crawled or len(paths)
             task.finished_at = now_iso()
-            log.info("Crawl cancelled: %s after %d files", task.url, len(paths))
+            log.info("Crawl cancelled: %s after %d files", task.shown_url, len(paths))
             return
         task.status = TaskStatus.DONE
         task.pages_crawled = task.pages_crawled or len(paths)
         task.finished_at = now_iso()
-        log.info("Crawl complete: %s → %d files", task.url, len(paths))
+        log.info("Crawl complete: %s → %d files", task.shown_url, len(paths))
         from lilbee.app.ingest import LIBRARY_REFUSALS
 
         try:
@@ -142,14 +148,14 @@ async def run_crawl(task: CrawlTask) -> None:
             await sync(quiet=True, cancel=task.cancel)
         except LIBRARY_REFUSALS as exc:
             # A refusal says what to do; a traceback adds nothing to it.
-            log.warning("Post-crawl sync failed for %s: %s", task.url, exc)
+            log.warning("Post-crawl sync failed for %s: %s", task.shown_url, exc)
         except Exception:
-            log.warning("Post-crawl sync failed for %s", task.url, exc_info=True)
+            log.warning("Post-crawl sync failed for %s", task.shown_url, exc_info=True)
     except Exception as exc:
         task.status = TaskStatus.FAILED
         task.error = str(exc)
         task.finished_at = now_iso()
-        log.warning("Crawl failed: %s: %s", task.url, exc)
+        log.warning("Crawl failed: %s: %s", task.shown_url, exc)
     finally:
         task._async_task = None
 
