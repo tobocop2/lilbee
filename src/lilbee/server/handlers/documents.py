@@ -9,6 +9,7 @@ from litestar.exceptions import ClientException
 from litestar.status_codes import HTTP_409_CONFLICT
 
 from lilbee.app.services import get_services
+from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT
 from lilbee.server.models import (
     DocumentInfo,
     DocumentListResponse,
@@ -83,7 +84,7 @@ async def delete_documents(names: list[str]) -> DocumentRemoveResponse:
 
 async def list_documents(
     search: str = "",
-    limit: int = 50,
+    limit: int = DOCUMENTS_PAGE_DEFAULT,
     offset: int = 0,
 ) -> DocumentListResponse:
     """Return indexed documents with metadata, paginated and filterable.

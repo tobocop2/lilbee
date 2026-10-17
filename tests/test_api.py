@@ -6,8 +6,9 @@ from unittest import mock
 import numpy as np
 import pytest
 
+from lilbee.app.status import STATUS_RECENT_LIMIT
 from lilbee.core.config import cfg
-from lilbee.data.store import ChunkType, SearchScope
+from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX, ChunkType, SearchScope
 from tests._held import held_kinds, hold_failed
 
 
@@ -292,6 +293,75 @@ class TestStatus:
         assert info["document_count"] == 1
         assert "s.md" in info["sources"]
         assert "documents_dir" in info
+
+
+def _synced_library(tmp_path, count):
+    from lilbee import Lilbee
+
+    bee = Lilbee(tmp_path / "proj")
+    for i in range(count):
+        _write_doc(
+            bee.config.documents_dir,
+            f"doc-{i:02d}.md",
+            f"# Doc {i}\nPage number {i} about subject {i}.",
+        )
+    bee.sync()
+    return bee
+
+
+class TestStatusIsBounded:
+    def test_status_counts_every_document_and_names_only_the_newest(self, tmp_path):
+        bee = _synced_library(tmp_path, 12)
+
+        info = bee.status()
+
+        assert info["document_count"] == 12
+        assert len(info["sources"]) == STATUS_RECENT_LIMIT
+
+    def test_status_never_loads_the_full_listing(self, tmp_path):
+        from lilbee.data.store import Store
+
+        bee = _synced_library(tmp_path, 3)
+        with mock.patch.object(Store, "get_sources", side_effect=AssertionError("full listing")):
+            info = bee.status()
+
+        assert info["document_count"] == 3
+
+
+class TestDocuments:
+    def test_pages_cover_every_document_once(self, tmp_path):
+        bee = _synced_library(tmp_path, 7)
+
+        pages = [bee.documents(limit=3, offset=offset) for offset in (0, 3, 6)]
+
+        assert [len(page) for page in pages] == [3, 3, 1]
+        names = [row["filename"] for page in pages for row in page]
+        assert sorted(names) == [f"doc-{i:02d}.md" for i in range(7)]
+
+    def test_default_page_is_the_http_default(self, tmp_path):
+        bee = _synced_library(tmp_path, 2)
+        with mock.patch.object(bee.store, "get_sources", return_value=[]) as listing:
+            bee.documents()
+
+        listing.assert_called_once_with(search=None, limit=DOCUMENTS_PAGE_DEFAULT, offset=0)
+
+    def test_search_filters_by_filename(self, tmp_path):
+        bee = _synced_library(tmp_path, 4)
+
+        assert [row["filename"] for row in bee.documents(search="doc-02")] == ["doc-02.md"]
+
+    @pytest.mark.parametrize("limit", [0, -1, DOCUMENTS_PAGE_MAX + 1])
+    def test_a_limit_outside_the_http_bounds_is_refused(self, tmp_path, limit):
+        from lilbee import Lilbee
+
+        with pytest.raises(ValueError, match="limit must be from 1 to 1000"):
+            Lilbee(tmp_path / "proj").documents(limit=limit)
+
+    def test_a_negative_offset_is_refused(self, tmp_path):
+        from lilbee import Lilbee
+
+        with pytest.raises(ValueError, match="offset must be 0 or more, got -1"):
+            Lilbee(tmp_path / "proj").documents(offset=-1)
 
 
 class TestRebuild:
