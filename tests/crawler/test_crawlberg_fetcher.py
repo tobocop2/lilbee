@@ -918,6 +918,14 @@ class TestNoUserinfoLeavesTheFetcher:
         assert stub.seeds == [CREDENTIALED_SEED]
         assert [one.url for one in fetched] == [SEED]
 
+    async def test_a_credentialed_seed_refused_by_crawlbergs_ssrf_policy_is_a_failed_page(self):
+        refusal = f"{_SSRF_ERROR_CODE}: {SEED} - dns resolution failed"
+        stub = StubCrawlberg([error(SEED, refusal)])
+        with stub.installed():
+            fetched = await _recursive(_http(), seed=CREDENTIALED_SEED)
+        assert stub.seeds == [CREDENTIALED_SEED]
+        assert fetched == [FetchedPage(url=SEED, success=False, error=refusal)]
+
     async def test_an_address_crawlberg_reports_with_userinfo_is_read_without_it(self):
         script = [
             page(SEED, depth=0),
