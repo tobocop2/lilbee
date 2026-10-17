@@ -37,6 +37,7 @@ from lilbee.data.store.lance_helpers import (
     _has_scalar_index,
     _has_vector_index,
     _index_registry,
+    open_committed,
     table_names,
 )
 from lilbee.runtime.lock import LockingUnsupportedError, write_lock
@@ -5628,6 +5629,33 @@ class TestATableAnotherProcessIsCreating:
     def test_the_table_reads_as_absent(self, half_made):
         assert half_made.open_table("_sources") is None
         assert half_made.source_ids(["a.md"]) == {}
+
+
+class TestATableThatCannotBeRead:
+    """A table that exists but fails to open for a real reason is an error, not an absent table."""
+
+    @staticmethod
+    def _garble(store, config, name):
+        import pyarrow as pa
+
+        store.get_db().create_table(name, schema=pa.schema([("a", pa.string())]))
+        versions = config.lancedb_dir / f"{name}.lance" / "_versions"
+        manifests = [path for path in versions.iterdir() if path.suffix == ".manifest"]
+        assert manifests, "the table must have a manifest to garble"
+        for manifest in manifests:
+            manifest.write_bytes(b"garbage")
+
+    def test_the_helper_raises(self, store, test_config):
+        self._garble(store, test_config, "scratch")
+
+        with pytest.raises(RuntimeError, match="does not have sufficient data"):
+            open_committed(Store(test_config).get_db(), "scratch")
+
+    def test_the_store_raises(self, store, test_config):
+        self._garble(store, test_config, "scratch")
+
+        with pytest.raises(RuntimeError, match="does not have sufficient data"):
+            Store(test_config).open_table("scratch")
 
 
 def _citation(source, key="src1", **changes):
