@@ -6752,6 +6752,7 @@ class TestSelfCheckExtras:
             "ok": True,
             "litellm": True,
             "crawlberg": True,
+            "ada_url": True,
             "spacy": True,
             "graspologic_native": True,
             "charset_detection": True,
