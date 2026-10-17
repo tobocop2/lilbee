@@ -1822,7 +1822,12 @@ def test_dispatch_vision_failover_wait_stops_on_cancel() -> None:
 _EXITED_BODY = "llama-swap-error: [embed-0] upstream command exited prematurely"
 
 
-def _exited_embed_client(engine_log: Path | None) -> LlamaServerClient:
+_EXITED_MODEL = "acme/embed-GGUF/embed.gguf"
+
+
+def _exited_embed_client(
+    engine_log: Path | None, model_ref: str = _EXITED_MODEL
+) -> LlamaServerClient:
     """A real client whose proxy answers every embed with llama-swap's exit body."""
     import httpx as _httpx
 
@@ -1830,7 +1835,9 @@ def _exited_embed_client(engine_log: Path | None) -> LlamaServerClient:
         return _httpx.Response(500, text=_EXITED_BODY)
 
     http = _httpx.Client(transport=_httpx.MockTransport(_handler), base_url="http://swap")
-    return LlamaServerClient("http://swap", "embed-0", http=http, engine_log=engine_log)
+    return LlamaServerClient(
+        "http://swap", "embed-0", http=http, model_ref=model_ref, engine_log=engine_log
+    )
 
 
 def test_lone_replica_whose_engine_exited_names_the_death_and_the_log(monkeypatch) -> None:
@@ -1843,8 +1850,8 @@ def test_lone_replica_whose_engine_exited_names_the_death_and_the_log(monkeypatc
     with pytest.raises(ProviderError) as info:
         prov_mod._call_with_failover([client], lambda c: c.embed(["a"]))
     assert str(info.value) == (
-        "The model server process exited and is being restarted. No other replica "
-        f"is available to take the request. The engine log is {log}."
+        f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {log}."
     )
     assert info.value.kind is ProviderErrorKind.CONNECTION
 
@@ -1857,9 +1864,24 @@ def test_exited_engine_without_a_known_log_still_names_the_death(monkeypatch) ->
     with pytest.raises(ProviderError) as info:
         prov_mod._call_with_failover([_exited_embed_client(None)], lambda c: c.embed(["a"]))
     assert str(info.value) == (
-        "The model server process exited and is being restarted. "
-        "No other replica is available to take the request."
+        f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500)."
     )
+
+
+def test_lone_rerank_replica_whose_engine_exited_names_the_model_and_the_log(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
+    log = Path("/engine/logs/llama-swap-rerank.log")
+    client = _exited_embed_client(log)
+    with pytest.raises(ProviderError) as info:
+        prov_mod._call_with_failover([client], lambda c: c.rerank("q", ["a"]))
+    assert str(info.value) == (
+        f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {log}."
+    )
+    assert info.value.kind is ProviderErrorKind.CONNECTION
 
 
 def test_lone_unreachable_replica_keeps_the_not_responding_text() -> None:
@@ -1878,48 +1900,63 @@ def test_lone_unreachable_replica_keeps_the_not_responding_text() -> None:
     )
 
 
-def test_lone_vision_replica_whose_engine_exited_names_the_death() -> None:
-    from lilbee.providers.base import ProviderError
-
-    lone = _fake_client()
-    lone.engine_log = Path("/engine/logs/llama-swap-vision.log")
-    lone.chat.side_effect = ProviderError(
-        "llama-server returned HTTP 500", kind=ProviderErrorKind.CONNECTION
-    )
-    with pytest.raises(ProviderError, match=r"process exited and is being restarted") as info:
-        prov_mod._dispatch_vision(
-            [prov_mod._VisionReplica(lone, 1)],
-            lambda c: c.chat([], options={}, stream=False),
-        )
-    assert f"The engine log is {lone.engine_log}." in str(info.value)
-
-
-def test_embed_through_the_fleet_names_the_engine_own_log(monkeypatch) -> None:
-    # The product path: the fleet builds the embed client from its swap group, so
-    # the error a failed ingest records names that group's llama-swap log.
+def test_lone_vision_replica_whose_engine_exited_names_the_death(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError
     from lilbee.providers.fleet import client as client_mod
 
     monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
-    launch = _fake_launch(WorkerRole.EMBED, weights_bytes=_GB)
-    launch.model_id = "embed-0"
+    log = Path("/engine/logs/llama-swap-vision.log")
+    lone = _exited_embed_client(log)
+    with pytest.raises(ProviderError) as info:
+        prov_mod._dispatch_vision(
+            [prov_mod._VisionReplica(lone, 1)],
+            lambda c: c.embed(["a"]),
+        )
+    assert str(info.value) == (
+        f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {log}."
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "model_id", "call"),
+    [
+        pytest.param(WorkerRole.EMBED, "embed-0", lambda p: p.embed(["a"]), id="embed"),
+        pytest.param(WorkerRole.RERANK, "rerank-0", lambda p: p.rerank("q", ["a"]), id="rerank"),
+    ],
+)
+def test_request_through_the_fleet_names_the_model_and_the_engine_own_log(
+    engine_installed: Path, monkeypatch, role: WorkerRole, model_id: str, call
+) -> None:
+    # The product path: the fleet builds the client from its swap group, so the
+    # error a failed ingest or search records names that group's llama-swap log.
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
+    launch = _fake_launch(role, weights_bytes=_GB)
+    launch.model_id = model_id
     launch.rerank_mode = None
     swap = _FakeSwap()
     swap.log_path = Path("/engine/logs/llama-swap-embed.log")
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
+    monkeypatch.setattr(prov_mod, "_configured_model_for", lambda r: "m" if r is role else "")
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
     monkeypatch.setattr(
         planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
     )
     monkeypatch.setattr(
         prov_mod,
         "LlamaServerClient",
-        lambda _endpoint, _model, **kwargs: _exited_embed_client(kwargs["engine_log"]),
+        lambda _endpoint, _model, **kwargs: _exited_embed_client(
+            kwargs["engine_log"], kwargs["model_ref"]
+        ),
     )
     with pytest.raises(ProviderError) as info:
-        FleetProvider().embed(["a"])
-    assert "process exited and is being restarted" in str(info.value)
+        call(FleetProvider())
+    assert str(info.value).startswith(f"The engine for {launch.model} stopped")
     assert str(info.value).endswith(
-        f"The engine log is {swap.log_path.parent / 'engine-embed-0.log'}."
+        f"The full engine output is in {swap.log_path.parent / f'engine-{model_id}.log'}."
     )
 
 

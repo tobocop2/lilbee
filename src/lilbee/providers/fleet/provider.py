@@ -20,7 +20,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, TypeVar, overload
 
 import httpx
 
@@ -114,15 +114,10 @@ if TYPE_CHECKING:
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
-# No-healthy-replica messages: the server stopped answering, or its process exited
-# and the proxy restarts it on the next request.
+# No-healthy-replica message for a server that stopped answering at the transport.
 _NOT_RESPONDING_MESSAGE = (
     "The model server is not responding and no healthy replica is available. "
     "It may be restarting; try again in a moment."
-)
-_ENGINE_EXITED_MESSAGE = (
-    "The model server process exited and is being restarted. "
-    "No other replica is available to take the request."
 )
 # Tokens held back from the served context for the model's own generation when the
 # request does not cap it, plus a margin for chat-template overhead and estimate drift.
@@ -369,7 +364,7 @@ def _retry_on_other_replica(
     """Retry *call* once on a replica other than *failed*, marking its health."""
     others = [c for c in clients if c is not failed]
     if not others:
-        raise _no_healthy_replica_error(failed, cause) from cause
+        _raise_no_healthy_replica(cause)
     retry = _reserve_least_in_flight(others)
     try:
         retry_result = call(retry)
@@ -389,20 +384,18 @@ def _engine_log_of(launch: InstanceLaunch, log_dir: Path) -> Path | None:
     return engine_log_path(log_dir, launch.model_id) if writes_engine_log(launch.argv) else None
 
 
-def _no_healthy_replica_error(failed: LlamaServerClient, cause: Exception) -> ProviderError:
-    """User-facing error for a call with no healthy replica left to retry on.
+def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
+    """Raise the user-facing error for a call with no healthy replica left to retry on.
 
-    A CONNECTION-kind ProviderError is the engine process exiting under the
-    proxy (a transport error has no kind), so the message says so and names
-    the log that records the exit.
+    A ``ProviderError`` cause is the client's own plain line for an engine that
+    died (model name, cause, engine log), so it surfaces unchanged. A transport
+    error has no such line and reads as an unresponsive server.
     """
-    if isinstance(cause, ProviderError) and cause.kind is ProviderErrorKind.CONNECTION:
-        message = _ENGINE_EXITED_MESSAGE
-        if failed.engine_log is not None:
-            message = f"{message} The engine log is {failed.engine_log}."
-    else:
-        message = _NOT_RESPONDING_MESSAGE
-    return ProviderError(message, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION)
+    if isinstance(cause, ProviderError):
+        raise cause
+    raise ProviderError(
+        _NOT_RESPONDING_MESSAGE, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION
+    ) from cause
 
 
 # Env vars a launch pins its devices with, one per backend (Metal has none).
@@ -608,7 +601,7 @@ def _dispatch_vision(
             return result
     others = [replica for replica in pool if replica.client is not failed]
     if not others:
-        raise _no_healthy_replica_error(failed, cause) from cause
+        _raise_no_healthy_replica(cause)
     with _VISION_DISPATCHER.slot(others, cancel) as retry_client:
         try:
             retry_result = call(retry_client)
