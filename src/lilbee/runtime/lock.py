@@ -492,7 +492,7 @@ def source_keys_in_use(
 ) -> Generator[None, None, None]:
     """Hold the sync mark of *data_root* for a block that reads and writes source keys.
 
-    Waits while a reset or an add that moves keys holds syncs off. A *cancel* that is
+    Waits while a reset holds syncs off. A *cancel* that is
     set during that wait, or when the mark is taken, raises
     ``SyncMarkWaitCancelledError``: the block does not run and the mark is free.
     """

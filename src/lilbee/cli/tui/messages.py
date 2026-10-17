@@ -34,10 +34,7 @@ CMD_ADD_RELOCATED = "{count} already indexed, location changed: relinked (no re-
 CMD_ADD_DUPLICATE_TITLE = "File already in knowledge base"
 CMD_ADD_DUPLICATE_MESSAGE = "{name} is already in the knowledge base. Overwrite and re-sync?"
 CMD_ADD_SKIPPED_DUPLICATE = "Kept existing copy of {name}."
-CMD_ADD_NAME_TAKEN = (
-    "The name {name} is taken by another source or by a source inside the folder "
-    "(--force replaces only another source)."
-)
+CMD_ADD_NAME_TAKEN = "The name {name} is taken by another source (use --force to overwrite)."
 CMD_ADD_TRACKED = "Already tracked: {names}. Syncing."
 CMD_ADD_OVERLAPPING = "Overlaps a registered source: {names}. Syncing."
 CMD_ADD_CONTAINING = "Not added, it contains a source lilbee already indexes: {names}."

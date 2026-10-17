@@ -24,7 +24,6 @@ from lilbee.data.ingest.pipeline import sync as pipeline_sync
 from lilbee.data.store import Store
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
-    LibraryWaitCancelledError,
     ResetRefusedError,
     SyncRunningError,
     _HoldKind,
@@ -220,17 +219,12 @@ class TestTheServicesAreBuiltUnderNoLibraryLock:
         assert takes.sync_write_takes == 0
         assert _registry() == {"notes": str(notes.resolve())}
 
-    def test_an_add_that_needs_the_owner_builds_before_it_takes_the_owner(
-        self, notes, takes, builds
-    ):
-        sync_takes_at_build: list[int] = []
-        builds.on_build.append(lambda: sync_takes_at_build.append(takes.sync_write_takes))
-
+    def test_an_add_that_takes_a_source_in_keeps_no_sync_off(self, notes, takes, builds):
         _add_that_takes_a_source_in(notes)
 
-        assert sync_takes_at_build == [0]
-        assert takes.sync_write_takes == 1
+        assert takes.sync_write_takes == 0
         assert builds.held_at_build == [[]]
+        assert _registry() == {"notes": str(notes.resolve())}
 
 
 def _full_wiki_build(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -337,20 +331,6 @@ class TestARebuildAfterAReset:
         assert builds.held_at_build == [[], [_SYNC_LOCK]]
 
 
-class TestACancelSetAtTheFirstBuild:
-    def test_the_add_is_cancelled_with_nothing_changed(self, notes, takes, builds):
-        _register_work(notes)
-        cancel = threading.Event()
-        builds.on_build.append(cancel.set)
-
-        with pytest.raises(LibraryWaitCancelledError):
-            register_sources([notes], cancel=cancel)
-
-        assert builds.held_at_build == [[]]
-        assert _registry() == {"work": str((notes / "work").resolve())}
-        assert takes.held() == []
-
-
 _A_SYNC_RUNS = "A sync is running."
 _FORMS_OF_THE_OWNER = {
     "a change": lambda: library_held(cfg, _A_SYNC_RUNS),
@@ -446,22 +426,3 @@ class TestNoModuleButTheLockModuleTakesTheSyncWriteLock:
     def test_the_census_finds_a_planted_take(self):
         """Control: the scan above reports a module that imports and calls a take."""
         assert len(_A_WRITE_TAKE.findall(_A_MODULE_THAT_TAKES_THE_WRITE_LOCK)) == 2
-
-
-class TestAnAddActsOnTheReadUnderItsFinalHold:
-    def test_a_registry_that_changes_before_the_owner_is_taken_is_read_again(
-        self, notes, takes, builds
-    ):
-        _register_work(notes)
-
-        def _work_leaves_the_registry() -> None:
-            assert takes.held() == []
-            settings.set_value(cfg.data_root, "linked_roots", {})
-
-        takes.on_sync_write_take.append(_work_leaves_the_registry)
-
-        result = register_sources([notes])
-
-        assert takes.sync_write_takes == 1
-        assert (result.registered, result.absorbed) == (["notes"], [])
-        assert _registry() == {"notes": str(notes.resolve())}

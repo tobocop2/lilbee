@@ -467,8 +467,8 @@ listing shows.
 name each source by its id, so a move leaves them as they are. A page file shows paths:
 its frontmatter `sources` and provenance, and its citation footnotes. Every sync renders
 again each page that shows a path other than the one the store holds for a cited id, so
-the next sync repairs a page that a stopped sync left. An absorb renders again the pages
-that cite the sources it moves. A
+the next sync repairs a page that a stopped sync left. An add that takes a source in
+renders again the pages that show the old names. A
 footnote whose text is its citation row under another path takes the current path, and
 that old path is replaced by the new one in the frontmatter. The step reads only the page
 and the store, so running it again changes nothing. A page written again keeps its

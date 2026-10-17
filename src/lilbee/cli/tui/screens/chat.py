@@ -112,7 +112,7 @@ from lilbee.retrieval.query.history_window import estimate_tokens
 from lilbee.retrieval.reasoning import RetrievalNotice
 from lilbee.runtime import asyncio_loop
 from lilbee.runtime.cancellation import TaskCancelledError
-from lilbee.runtime.lock import ResetRefusedError, SyncRunningError
+from lilbee.runtime.lock import ResetRefusedError
 from lilbee.runtime.progress import (
     EventType,
     ProgressEvent,
@@ -871,12 +871,9 @@ class ChatScreen(Screen[None]):
         unregistered = AddRollback(paths=paths, at_sync=False)
         try:
             with leave_as_cancel(unregistered, reporter, reporter.cancelled_by_user):
-                reg_result = register_sources(paths, force=force, cancel=reporter)
+                reg_result = register_sources(paths, force=force)
         except asyncio.CancelledError as exc:
             raise TaskCancelledError(unregistered.message(msg.SYNC_CANCELLED_RESUME)) from exc
-        except SyncRunningError as exc:
-            call_from_thread(self, self.notify, str(exc), severity="warning")
-            return
         self._notify_registration(reg_result)
         if not reg_result.reached_corpus:
             return

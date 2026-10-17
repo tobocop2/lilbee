@@ -1303,18 +1303,16 @@ class TestAddRegistersOffTheLoop:
         assert events[1:] == ["registered", "unlocked"]
 
     async def test_a_registration_that_raises_ends_the_add_with_its_error(self, tmp_path):
-        from lilbee.runtime.lock import SyncRunningError
+        from lilbee.runtime.lock import LockingUnsupportedError
         from lilbee.server.handlers import SseStream
         from lilbee.server.handlers.ingest import _run_add
 
         with (
             mock.patch(
                 "lilbee.server.handlers.ingest.register_sources",
-                side_effect=SyncRunningError(
-                    "A sync or a wiki build is running. Add notes again when it ends."
-                ),
+                side_effect=LockingUnsupportedError("The data root cannot lock files."),
             ),
-            pytest.raises(SyncRunningError, match="Add notes again when it ends"),
+            pytest.raises(LockingUnsupportedError, match="cannot lock files"),
         ):
             await _run_add([str(tmp_path)], False, None, None, SseStream())
 

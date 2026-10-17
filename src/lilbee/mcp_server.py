@@ -444,14 +444,11 @@ async def add(
         errors.extend(url_errors)
 
     # Registration touches config.toml (a locked read-modify-write); keep the
-    # blocking disk I/O off the event loop. A cancelled call ends the add when it
-    # takes the sync lock.
+    # blocking disk I/O off the event loop.
     try:
-        with _cancel_token() as cancel:
-            reg_result = await anyio.to_thread.run_sync(
-                functools.partial(register_sources, valid, force=force, cancel=cancel),
-                abandon_on_cancel=True,
-            )
+        reg_result = await anyio.to_thread.run_sync(
+            functools.partial(register_sources, valid, force=force), abandon_on_cancel=True
+        )
         errors.extend(reg_result.refused)
         reached = reg_result.reached_corpus or bool(crawled_count)
         sync_result = await _sync_after_add(reached, ocr, ocr_timeout)

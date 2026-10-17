@@ -11,7 +11,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lilbee.app.absorb import SYNC_RUNNING_ADD_AGAIN, AbsorbPlan, absorb
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
@@ -25,14 +24,14 @@ from lilbee.data.ingest.discovery import (
 )
 from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.store import REMOVED_REASON, HeldOut, HeldRecord
+from lilbee.data.store.locations import SourceLocations, root_location
 from lilbee.data.store.types import RemoveResult
 from lilbee.data.types import is_under
-from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError, sigint_deferred
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
     LockingUnsupportedError,
     SyncRunningError,
-    library_held,
     refuse_where_a_sync_cannot_lock,
 )
 
@@ -150,29 +149,16 @@ def _reached_below(src: Path, spelled: dict[str, Path]) -> dict[str, Path]:
     return {label: path for label, path in below.items() if walk_reaches(src, path, rules)}
 
 
-def _keys_below(
-    label: str, src: Path, reached: dict[str, Path], sources: frozenset[str]
-) -> dict[str, str]:
-    """The key below *label* that each root in *reached* takes, if it is one of *sources*."""
-    return {
-        child: f"{label}/{path.relative_to(src).as_posix()}"
-        for child, path in reached.items()
-        if child in sources
-    }
-
-
 def _classify(
     paths: list[Path], roots: dict[str, str], docs_resolved: Path, *, force: bool
-) -> tuple[RegisterResult, dict[str, str]]:
+) -> RegisterResult:
     """Sort *paths* by what registering each one does, leaving *roots* as the registry after it.
 
-    Also returns the key of each source a new parent takes in, with the key it gets.
     A path of this call that a later path of it contains was never a source: it
-    leaves the registry and nothing moves.
+    leaves the registry and is not reported as taken in.
     """
     result = RegisterResult()
     sources = frozenset(roots)
-    moves: dict[str, str] = {}
     spelling = DiskSpelling()
     # The disk is asked one time for each root; every comparison below reads this.
     spelled = {label: spelling.of(Path(target)) for label, target in roots.items()}
@@ -203,9 +189,7 @@ def _classify(
             outside.setdefault(src, p.name)
             continue
         others = {name: target for name, target in roots.items() if name not in reached}
-        # A parent never takes the label of a source it takes in: the key would move twice.
-        taken_in = src.name in reached and src.name in sources
-        label = None if taken_in else _resolve_label(src.name, others, docs_resolved, force=force)
+        label = _resolve_label(src.name, others, docs_resolved, force=force)
         if label is None:
             result.name_taken.append(src.name)
             outside.setdefault(src, src.name)
@@ -213,16 +197,15 @@ def _classify(
         for child in reached:
             del roots[child]
             by_target.pop(spelled.pop(child), None)
-        taken = _keys_below(label, src, reached, sources)
-        moves.update(taken)
+        taken = sorted(child for child in reached if child in sources)
         roots[label] = str(src)
         spelled[label] = src
         by_target[src] = label
         result.registered = [name for name in result.registered if name not in reached] + [label]
         if taken:
-            result.absorbed_into[label] = sorted(taken)
+            result.absorbed_into[label] = taken
     result.outside_corpus = list(outside.values())
-    return result, moves
+    return result
 
 
 def names_outside_corpus(paths: list[Path]) -> list[str]:
@@ -231,7 +214,7 @@ def names_outside_corpus(paths: list[Path]) -> list[str]:
         return []  # a stopped sync has no paths, and reads no registry to say so
     config = active_config()
     roots = dict(settings.load(config.data_root).get("linked_roots") or {})
-    plan, _moves = _classify(paths, roots, disk_path(config.documents_dir), force=False)
+    plan = _classify(paths, roots, disk_path(config.documents_dir), force=False)
     return [*plan.outside_corpus, *plan.registered]
 
 
@@ -252,9 +235,7 @@ def source_label_taken(name: str, target: Path | None = None) -> bool:
     return _resolve_label(name, roots, config.documents_dir.resolve(), force=False) is None
 
 
-def register_sources(
-    paths: list[Path], *, force: bool = False, cancel: CancelSignal | None = None
-) -> RegisterResult:
+def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResult:
     """Register each path as a root lilbee indexes where it already lives.
 
     A prepared corpus is already on local disk, so ``add`` records where it is
@@ -266,16 +247,14 @@ def register_sources(
     so later processes index the same roots.
 
     A directory that contains registered sources takes each one its walk reaches:
-    the source leaves the registry and its indexed files, held-out records and wiki
-    citations move below the new label, with nothing extracted or embedded again.
-    That needs every sync and wiki write stopped; a running one raises
-    ``SyncRunningError``, with nothing changed. A data root that cannot be locked raises
-    ``LibraryUnlockableError`` or ``LockingUnsupportedError``, with nothing changed.
+    the source leaves the registry, and its files, held-out records and wiki
+    citations show below the new label, with nothing moved, extracted or embedded
+    again. A label that takes a new folder takes the sources of its old one along;
+    an add that stops before that leaves them to the next sync, which pairs them
+    with their files by content.
     A data root whose filesystem cannot lock files raises ``LockingUnsupportedError``
     for every add, and a sync lock that cannot be opened raises
     ``LibraryUnlockableError``, because the sync after the add refuses there.
-    An add does not wait for a running sync: it takes the sync lock once, and a
-    *cancel* set at that take raises ``LibraryWaitCancelledError``, with nothing changed.
     """
     config = active_config()
     if paths:
@@ -288,39 +267,37 @@ def register_sources(
 
     def _mutate(
         persisted: dict[str, str] | None,
-    ) -> tuple[dict[str, str] | None, tuple[RegisterResult, AbsorbPlan | None]]:
+    ) -> tuple[dict[str, str], tuple[RegisterResult, dict[str, str]]]:
         # Read the registry from config.toml INSIDE the lock (not the possibly
         # stale in-memory copy) so two processes registering roots concurrently
         # cannot lose each other's entry.
         before = dict(persisted or {})
         roots = dict(before)
-        result, moves = _classify(paths, roots, docs_resolved, force=force)
-        if not moves:
-            config.linked_roots = roots  # refresh the in-process view (picks up merges)
-            return roots, (result, None)
-        # The absorb writes the registry after it moved the keys.
-        config.linked_roots = before
-        add = {label: target for label, target in roots.items() if before.get(label) != target}
-        drop = [label for label in before if label not in roots]
-        return persisted, (result, AbsorbPlan(moves, add, drop))
+        result = _classify(paths, roots, docs_resolved, force=force)
+        config.linked_roots = roots  # refresh the in-process view (picks up merges)
+        return roots, (result, before)
 
-    result, plan = settings.mutate_value(config.data_root, "linked_roots", _mutate)
-    if plan is None:
-        unmark_sources_under(paths, spared=_kept_sources(result))
-        return result
-    # A source that moves needs every sync stopped. The registry is read again under that
-    # hold: the read above only chose it. The services are built here, with no library
-    # lock held.
-    store = get_services().store
-    running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(result.absorbed_into))
-    with library_held(config, running, 0.0, cancel) as hold, sigint_deferred():
-        result, plan = settings.mutate_value(config.data_root, "linked_roots", _mutate)
-        taken: list[str] = []
-        if plan is not None:
-            absorb(store, plan, hold)
-            taken = list(plan.moves.values())
-        unmark_sources_under(paths, spared=[*taken, *_kept_sources(result)])
+    result, before = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    if result.registered:
+        _follow_registered(before, result.registered)
+    names = SourceLocations(config.linked_roots)
+    taken = [names.name(root_location(before[label])) for label in result.absorbed]
+    if taken:
+        show_current_paths_in_wiki()
+    unmark_sources_under(paths, spared=[*taken, *_kept_sources(result)])
     return result
+
+
+def _follow_registered(before: dict[str, str], labels: list[str]) -> None:
+    """Move the sources of each of *labels* that took a new folder there, then name by location.
+
+    A source whose label is now registered is stored where it is.
+    """
+    store = get_services().store
+    for label in labels:
+        if label in before:
+            store.relocate_root(before[label], active_config().linked_roots[label])
+    store.fill_locations()
 
 
 def _kept_sources(result: RegisterResult) -> list[str]:

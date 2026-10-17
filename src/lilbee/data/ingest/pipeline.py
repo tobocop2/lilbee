@@ -1337,14 +1337,6 @@ async def _sync_across_workers(
     return result
 
 
-def _config_with_persisted_roots(shard: ShardId | None) -> Config:
-    """The active config with its config.toml's source registry; a worker keeps its parent's."""
-    config = active_config()
-    if shard is None:
-        settings.overlay_persisted_roots(config)
-    return config
-
-
 _SyncParams = ParamSpec("_SyncParams")
 
 
@@ -1359,9 +1351,14 @@ def _marks_sync_running(
         # ``cancel`` is keyword-only on a sync, so it is never in *args*.
         cancel = cast("CancelSignal | None", kwargs.get("cancel"))
         # The services come before the mark.
-        await asyncio.to_thread(get_services)
+        store = (await asyncio.to_thread(get_services)).store
         async with sync_running(data_root, cancel):
-            return await run(*args, **kwargs)
+            # The sync walks and names sources by the registry config.toml holds at its
+            # start; a worker keeps its parent's.
+            if kwargs.get("shard") is None:
+                await asyncio.to_thread(settings.overlay_persisted_roots, active_config())
+            with store.registry_pinned():
+                return await run(*args, **kwargs)
 
     return _marked
 
@@ -1391,7 +1388,7 @@ async def sync(
     A *shard* runs this sync as one worker of a multi-GPU fan-out: it writes its
     slice of the corpus to the index and leaves the corpus-wide passes to the parent.
     """
-    config = await to_ingest_thread(_config_with_persisted_roots, shard)
+    config = active_config()
     _store = get_services().store
 
     if force_rebuild:

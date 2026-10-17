@@ -490,7 +490,7 @@ class TestAdd:
         assert "is taken by another source" in result.output
 
     @pytest.mark.parametrize("flags", [[], ["--force"]], ids=["plain", "force"])
-    def test_add_of_a_parent_named_like_its_source_says_force_does_not_help(
+    def test_add_of_a_parent_named_like_its_source_takes_the_source_in(
         self, isolated_env, tmp_path, flags
     ):
         inner = tmp_path / "src" / "work" / "work"
@@ -501,8 +501,9 @@ class TestAdd:
         result = runner.invoke(app, ["add", *flags, str(inner.parent)])
 
         said = " ".join(result.output.split())
-        assert "or by a source inside the folder (--force replaces only another source)" in said
-        assert "Registered 0 source(s)" in said
+        assert "Registered 1 source(s); work now includes work" in said
+        assert "is taken" not in said
+        assert cfg.linked_roots == {"work": str(inner.parent.resolve())}
 
     def test_add_nonexistent_bracketed_path_prints_it_literally(self, tmp_path):
         """A bracketed path in the not-found error must not go through markup."""
@@ -7192,7 +7193,7 @@ class TestSyncCancelledExit:
             assert "contains a source" not in printed
         # The parent took in the rows of sub, so the cancel leaves it registered.
         assert cfg.linked_roots == {"parent": str(sub.parent.resolve())}
-        mock_svc.store.rekey_sources_under.assert_called()
+        mock_svc.store.fill_locations.assert_called()
 
     @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
     def test_a_cancelled_add_names_a_taken_name_and_not_a_source_the_corpus_holds(

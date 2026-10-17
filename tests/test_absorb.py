@@ -2,61 +2,34 @@
 
 from __future__ import annotations
 
-import contextlib
-import contextvars
 import json
-import logging
 import shutil
-import sqlite3
 import zlib
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import ClassVar
 from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
-from filelock import ReadWriteLock
-from filelock import Timeout as FileLockTimeout
 
 import lilbee.app.services as svc_mod
-from lilbee.app import absorb as absorb_mod
-from lilbee.app import ingest as ingest_mod
-from lilbee.app.absorb import SYNC_RUNNING_ADD_AGAIN
 from lilbee.app.ingest import (
     forget_unfinished_on_cancel,
     register_sources,
     remove_documents_durably,
 )
-from lilbee.app.reset import perform_reset
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
 from lilbee.data.store import REMOVED_REASON, HeldOut, Store
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
-    LibraryWaitCancelledError,
     LockingUnsupportedError,
-    ResetRefusedError,
-    SyncRunningError,
-    _no_sync_running,
-    library_held,
-    source_keys_in_use,
-    sync_running,
 )
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
 from tests.conftest import (
-    cancel_set_when_the_sync_lock_is_granted,
     filesystem_without_locking,
     make_mock_services,
-    reset_held_on_a_thread,
     sync_lock_not_a_lock_file,
-)
-from tests.test_lock import (
-    _reset_held_in_another_process,
-    _sync_take_that_ends_busy,
-    _sync_write_takes,
 )
 from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
 
@@ -272,57 +245,22 @@ def _seeded_child(store: Store, parent: Path, child: str = "work") -> Path:
     return child_path
 
 
+def _raw_rows(store: Store) -> dict[str, list[str]]:
+    """Every row of every table as stored, sorted."""
+    from lilbee.data.store.lance_helpers import table_names
+
+    db = store.get_db()
+    return {
+        name: sorted(map(str, db.open_table(name).to_arrow().to_pylist()))
+        for name in table_names(db)
+    }
+
+
 def _register_as(roots: dict[str, Path]) -> None:
     """Write *roots* as the registry, label to path, as a hand edit leaves it."""
     stored = {label: str(path.resolve()) for label, path in roots.items()}
     settings.set_value(cfg.data_root, "linked_roots", stored)
     cfg.linked_roots = dict(stored)
-
-
-def _seeded_renamed_child(store: Store, parent: Path) -> Path:
-    """``parent/work`` registered under the label ``renamed``, seeded into every key holder."""
-    _register_as({"renamed": parent / "work"})
-    for name in ("plan.md", "budget.md"):
-        _seed(store, f"renamed/{name}")
-    _seed(store, "workshop/x.md")
-    _hold_out("renamed/gone.md", HeldOut.REMOVED)
-    _hold_out("renamed/broken.md", HeldOut.FAILED)
-    _write_wiki_page(store, ["renamed/budget.md", "renamed/plan.md"])
-    _save_stub_index(store)
-    return parent
-
-
-def _seeded_nested_children(store: Store, parent: Path) -> Path:
-    """``parent/work`` and ``parent/work/deep`` both registered, so ``deep`` is indexed twice."""
-    _write(parent / "work" / "deep" / "a.md", "# A\n\nA deep page.\n")
-    _register_as({"work": parent / "work", "deep": parent / "work" / "deep"})
-    for key in ("work/plan.md", "work/deep/a.md", "work/deep/b.md", "deep/a.md", "deep/b.md"):
-        _seed(store, key)
-    _seed(store, "work/deep/gone.md")  # removed from the inner source only
-    outer_copy = dict(store.get_citations_for_source("deep/a.md")[0])
-    store.add_citations([{**outer_copy, "source_filename": "work/deep/a.md", "created_at": "t"}])
-    _seed(store, "workshop/x.md")
-    _hold_out("deep/gone.md", HeldOut.REMOVED)
-    _hold_out("work/deep/kept.md", HeldOut.REMOVED)
-    _hold_out("work/broken.md", HeldOut.FAILED)
-    _write_wiki_page(store, ["deep/a.md", "work/deep/a.md", "work/plan.md"])
-    _save_stub_index(store)
-    return parent
-
-
-def _seeded_nested_inner_first(store: Store, parent: Path) -> Path:
-    """The nested pair of ``_seeded_nested_children``, with the inner source registered first."""
-    _seeded_nested_children(store, parent)
-    _register_as({"deep": parent / "work" / "deep", "work": parent / "work"})
-    return parent
-
-
-_NESTED_KEYS = [
-    "notes/work/deep/a.md",
-    "notes/work/deep/b.md",
-    "notes/work/plan.md",
-    "workshop/x.md",
-]
 
 
 class TestTheParentTakesTheChild:
@@ -369,18 +307,18 @@ class TestTheParentTakesTheChild:
         assert chunks and all("doubled" in chunk.chunk for chunk in chunks)
         assert library.store.get_chunks_by_source("work/budget.md") == []
 
-    def test_every_per_source_table_follows_the_absorb(self, library, notes):
+    def test_the_add_changes_no_row_of_the_index(self, library, notes):
         store = library.store
         _seeded_child(store, notes)
-        assert _holders(store, "work/plan.md") == _KEY_COLUMNS
+        before = _raw_rows(store)
+        assert _holders(store, (notes / "work" / "plan.md").resolve().as_posix()) == _KEY_COLUMNS
 
         register_sources([notes])
 
-        assert _holders(store, "notes/work/plan.md") == _KEY_COLUMNS
-        assert _holders(store, "notes/work/budget.md") == _KEY_COLUMNS
-        assert _holders(store, "work/plan.md") == set()
-        assert _holders(store, "workshop/x.md") == _KEY_COLUMNS
-        assert not [row for rows in _dump(store).values() for row in rows if ".absorb-" in row]
+        assert _raw_rows(store) == before
+        shown = {row["filename"] for row in store.get_sources()}
+        assert {"notes/work/plan.md", "notes/work/budget.md", "workshop/x.md"} <= shown
+        assert not shown & {"work/plan.md", "work/budget.md"}
 
     def test_the_wiki_page_and_the_subject_index_follow_the_absorb(self, library, notes):
         from lilbee.wiki.shared import parse_frontmatter
@@ -475,14 +413,14 @@ class TestTheParentTakesTheChild:
         _write(notes / "home" / "list.md", "# List\n\nThe list for the market.\n")
         register_sources([notes / "work", notes / "home"])
         await sync(quiet=True)
-        plans: list[absorb_mod.AbsorbPlan] = []
-        real = absorb_mod.absorb
+        written = []
+        real = settings.mutate_value
 
-        def _record(store, plan, hold):
-            plans.append(plan)
-            real(store, plan, hold)
+        def _record(*args, **kwargs):
+            written.append(args[1])
+            return real(*args, **kwargs)
 
-        with mock.patch.object(ingest_mod, "absorb", _record):
+        with mock.patch.object(settings, "mutate_value", _record):
             result = register_sources([notes])
 
         assert result.absorbed_into == {"notes": ["home", "work"]}
@@ -492,7 +430,7 @@ class TestTheParentTakesTheChild:
             "notes/work/budget.md",
             "notes/work/plan.md",
         ]
-        assert [plan.moves for plan in plans] == [{"work": "notes/work", "home": "notes/home"}]
+        assert written == ["linked_roots"]
 
     async def test_a_grandparent_carries_every_folder_between(self, library, notes):
         await _add(notes / "work")
@@ -609,66 +547,6 @@ class TestTheParentTakesTheChild:
         assert synced.added == ["notes/loose.md"] and synced.relocated == []
         assert all("harbour" in text for text in _embedded(library)) and _embedded(library)
 
-    def test_the_inner_source_decides_what_its_files_keep(self, library, notes):
-        """Of two entries for one file, the one the inner source wrote lands."""
-        store = library.store
-        _seeded_nested_children(store, notes)
-
-        register_sources([notes])
-
-        assert _keys(library) == _NESTED_KEYS
-        rows = {source["filename"]: source["file_hash"] for source in store.get_sources()}
-        assert rows["notes/work/deep/a.md"] == "hash of deep/a.md"
-        assert _holders(store, "notes/work/deep/a.md") == _KEY_COLUMNS
-        assert len(store.get_chunks_by_source("notes/work/deep/a.md")) == 1
-        markers = held_hashes()
-        assert sorted(markers) == ["notes/work/broken.md", "notes/work/deep/gone.md"]
-        assert held_kinds()["notes/work/broken.md"] is HeldOut.FAILED
-        page = cfg.data_root / cfg.wiki_dir / "entities" / "boeing.md"
-        from lilbee.wiki.shared import parse_frontmatter
-
-        assert parse_frontmatter(page.read_text(encoding="utf-8"))["sources"] == [
-            "notes/work/deep/a.md",
-            "notes/work/plan.md",
-        ]
-
-    def test_landing_without_the_drop_indexes_what_the_inner_source_removed(self, library, notes):
-        """The control for the test above: the outer source's entry for a removed file lands."""
-        _seeded_nested_children(library.store, notes)
-
-        with mock.patch.object(absorb_mod, "_drop_shadows"):
-            register_sources([notes])
-
-        assert "notes/work/deep/gone.md" in _keys(library)
-
-    def test_a_citation_both_nested_sources_hold_lands_once(self, library, notes):
-        store = library.store
-        _seeded_nested_children(store, notes)
-        assert len(store.get_citations_for_source("work/deep/a.md")) == 2
-
-        register_sources([notes])
-
-        cited = store.get_citations_for_source("notes/work/deep/a.md")
-        keys = {_citation_key(key) for key in ("deep/a.md", "work/deep/a.md")}
-        assert sorted(row["citation_key"] for row in cited) == sorted(keys)
-        page = (cfg.data_root / cfg.wiki_dir / "entities" / "boeing.md").read_text(encoding="utf-8")
-        footnotes = [line for line in page.split("\n") if line.startswith("[^src")]
-        assert footnotes and len(footnotes) == len(set(footnotes))
-        assert page.count("- source: notes/work/deep/a.md") == 1
-
-    def test_a_drop_after_the_rekey_finds_nothing_to_drop(self, library, notes):
-        """The wrong order: the outer source's entries have left the keys the drop reads."""
-        store = library.store
-        _seeded_nested_children(store, notes)
-        real_drop = absorb_mod._drop_shadows
-        moved: list[dict[str, str]] = []
-
-        with mock.patch.object(absorb_mod, "_drop_shadows", lambda _s, moves: moved.append(moves)):
-            register_sources([notes])
-        real_drop(store, moved[0])
-
-        assert "notes/work/deep/gone.md" in _keys(library)
-
 
 async def _moved_folder_with_a_source_inside(tmp_path: Path) -> Path:
     """Leave ``work`` holding a row for ``deep/a.md`` that the source ``deep`` also indexes.
@@ -694,12 +572,14 @@ async def _moved_folder_with_a_source_inside(tmp_path: Path) -> Path:
 
 
 class TestAMovedFolderWithASourceInside:
-    async def test_the_adds_leave_the_file_of_the_inner_source_at_two_keys(self, library, tmp_path):
+    async def test_the_adds_leave_the_file_of_the_inner_source_at_one_key(self, library, tmp_path):
+        """The outer row of the moved file lands on the inner source's row, which stays."""
         after = await _moved_folder_with_a_source_inside(tmp_path)
 
         assert sorted(_registry()) == ["deep", "work"]
         assert _registry()["work"] == str(after.resolve())
-        assert _keys(library) == ["deep/a.md", "work/deep/a.md", "work/plan.md"]
+        assert _keys(library) == ["deep/a.md", "work/plan.md"]
+        assert "second text" in library.store.get_chunks_by_source("deep/a.md")[0].chunk
 
     async def test_the_entry_of_the_inner_source_lands(self, library, tmp_path):
         after = await _moved_folder_with_a_source_inside(tmp_path)
@@ -714,28 +594,6 @@ class TestAMovedFolderWithASourceInside:
         assert landed["after/work/deep/a.md"] == inner
         assert len(store.get_chunks_by_source("after/work/deep/a.md")) == 1
         assert synced.added == [] and synced.updated == []
-
-    async def test_without_the_drop_the_outer_entry_folds_into_the_inner_one(
-        self, library, tmp_path
-    ):
-        """The re-key of the source table keeps the inner source when the drop is gone."""
-        after = await _moved_folder_with_a_source_inside(tmp_path)
-
-        with mock.patch.object(absorb_mod, "_drop_shadows"):
-            register_sources([after.parent])
-
-        # The source table holds one row a path: the outer entry folds into the inner one.
-        assert _keys(library).count("after/work/deep/a.md") == 1
-
-    async def test_a_removal_of_the_outer_entry_does_not_hold_the_file_out(self, library, tmp_path):
-        after = await _moved_folder_with_a_source_inside(tmp_path)
-        remove_documents_durably(["work/deep/a.md"])
-        assert sorted(held_hashes()) == ["work/deep/a.md"]
-
-        await _add(after.parent)
-
-        assert held_hashes() == {}
-        assert _keys(library) == ["after/work/deep/a.md", "after/work/plan.md"]
 
 
 class TestWhatIsNotAbsorbed:
@@ -880,13 +738,11 @@ class TestWhatIsNotAbsorbed:
         assert _registry() == {"notes": str(notes.resolve())}
 
     async def test_a_child_named_beside_its_parent_was_never_a_source(self, library, notes):
-        with mock.patch.object(ingest_mod, "absorb") as absorb:
-            result = register_sources([notes / "work", notes])
+        result = register_sources([notes / "work", notes])
 
         assert result.registered == ["notes"]
         assert result.absorbed_into == {}
         assert _registry() == {"notes": str(notes.resolve())}
-        absorb.assert_not_called()
 
     async def test_a_registered_child_named_beside_its_parent_is_absorbed(self, library, notes):
         await _add(notes / "work")
@@ -897,316 +753,6 @@ class TestWhatIsNotAbsorbed:
         assert result.absorbed_into == {"notes": ["work"]}
         assert _registry() == {"notes": str(notes.resolve())}
         assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
-
-
-class TestTheCommonAddPaysNothing:
-    def test_no_child_means_no_absorb_and_no_lock(self, library, notes):
-        with (
-            mock.patch.object(ingest_mod, "library_held") as held_off,
-            mock.patch.object(ingest_mod, "absorb") as absorb,
-            mock.patch("lilbee.app.ingest.IgnoreRules.for_corpus") as rules,
-        ):
-            result = register_sources([notes])
-
-        assert result.registered == ["notes"] and result.absorbed == []
-        held_off.assert_not_called()
-        absorb.assert_not_called()
-        rules.assert_not_called()
-        # The add opened the sync lock to check it and left it free.
-        with _no_sync_running(cfg.data_root):
-            pass
-        assert library.store.get_sources() == []
-
-    async def test_an_absorb_does_take_the_lock(self, library, notes):
-        """The control for the test above: the same probes fire when a child is there."""
-        await _add(notes / "work")
-        real_held_off = ingest_mod.library_held
-        with (
-            mock.patch.object(ingest_mod, "library_held", side_effect=real_held_off) as held_off,
-            mock.patch("lilbee.app.ingest.IgnoreRules.for_corpus", wraps=None) as rules,
-        ):
-            rules.return_value.excludes_entry.return_value = False
-            register_sources([notes])
-
-        held_off.assert_called_once()
-        # Once to choose the hold and once under it.
-        assert rules.call_count == 2
-
-
-class TestASyncIsRunning:
-    async def test_an_absorb_is_refused_while_a_sync_runs(self, library, notes):
-        await _add(notes / "work")
-        before = _everything(library.store)
-
-        async with sync_running(cfg.data_root):
-            with pytest.raises(SyncRunningError) as refused:
-                register_sources([notes])
-
-        assert (
-            str(refused.value) == "A sync or a wiki build is running. Add notes again when it ends."
-        )
-        assert _everything(library.store) == before
-        assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
-
-    async def test_a_plain_add_goes_through_while_a_sync_runs(self, library, notes):
-        async with sync_running(cfg.data_root):
-            result = register_sources([notes])
-
-        assert result.registered == ["notes"]
-
-    async def test_a_folder_and_its_parent_in_one_add_go_through_while_a_sync_runs(
-        self, library, notes
-    ):
-        async with sync_running(cfg.data_root):
-            result = register_sources([notes / "work", notes])
-
-        assert result.registered == ["notes"] and result.absorbed == []
-        assert _registry() == {"notes": str(notes.resolve())}
-
-    async def test_a_sync_mark_taken_during_the_absorb_waits_until_the_absorb_ends(
-        self, library, notes
-    ):
-        """A thread that takes the mark a sync takes gets it only when the absorb has ended."""
-        import threading
-
-        await _add(notes / "work")
-        waiting = threading.Event()
-        states: list[bool] = []
-
-        def _second_sync() -> None:
-            waiting.set()
-            with source_keys_in_use(cfg.data_root):
-                states.append(sorted(_registry()))
-
-        real_write = absorb_mod._write_registry
-
-        def _write_while_a_sync_waits(config, plan):
-            thread = threading.Thread(target=_second_sync)
-            thread.start()
-            assert waiting.wait(5)
-            thread.join(0.3)
-            assert thread.is_alive(), "the sync started in the middle of the absorb"
-            real_write(config, plan)
-            threads.append(thread)
-
-        threads: list[threading.Thread] = []
-        with mock.patch.object(absorb_mod, "_write_registry", _write_while_a_sync_waits):
-            register_sources([notes])
-        threads[0].join(5)
-
-        assert states == [["notes"]]
-
-
-class TestInterruptedAbsorb:
-    """A kill at any step of an add, then the add again, gives what one whole add gives."""
-
-    _KILL_POINTS = (
-        "shadows",
-        "rekey",
-        "source-update",
-        "wiki-pages",
-        "wiki-index",
-        "registry",
-    )
-
-    @staticmethod
-    def _nth_call(target, attribute, nth):
-        """Patch *attribute* so its *nth* call dies before it runs."""
-        real = getattr(target, attribute)
-        calls = {"count": 0}
-
-        def _dies(*args, **kwargs):
-            calls["count"] += 1
-            if calls["count"] == nth:
-                raise _Killed
-            return real(*args, **kwargs)
-
-        return mock.patch.object(target, attribute, _dies)
-
-    def _kill_nth(self, step: str, nth: int):
-        from lancedb.table import LanceTable
-
-        import lilbee.wiki.rerender as wiki_rerender_mod
-        import lilbee.wiki.stubs as wiki_stubs_mod
-
-        target, attribute = {
-            "shadows": (absorb_mod, "_drop_shadows"),
-            "rekey": (Store, "rekey_sources_under"),
-            "source-update": (LanceTable, "update"),
-            "table": (LanceTable, "update"),
-            "wiki-pages": (wiki_rerender_mod, "rerender_pages"),
-            "wiki-index": (wiki_stubs_mod, "drop_removed_sources"),
-            "registry": (absorb_mod, "_write_registry"),
-            "clear": (Store, "remove_documents"),
-            "citations": (Store, "drop_citations_repeated_under"),
-        }[step]
-        return self._nth_call(target, attribute, nth)
-
-    def _clean_absorb(self, tmp_path, label="notes", child="work", seed=None) -> dict[str, object]:
-        """The state a whole absorb leaves, built in a second library."""
-        saved = (cfg.data_root, cfg.documents_dir, cfg.data_dir, cfg.lancedb_dir, cfg.linked_roots)
-        services = svc_mod.get_services()
-        root = tmp_path / "twin-library"
-        cfg.data_root, cfg.documents_dir = root, root / "documents"
-        cfg.data_dir, cfg.lancedb_dir = root / "data", root / "data" / "lancedb"
-        cfg.linked_roots = {}
-        store = Store(cfg)
-        svc_mod.set_services(make_mock_services(store=store))
-        parent = tmp_path / "src" / label
-        if seed is None:
-            _seeded_child(store, parent, child)
-        else:
-            seed(store, parent)
-        register_sources([parent])
-        state = _everything(store)
-        svc_mod.set_services(services)
-        cfg.data_root, cfg.documents_dir, cfg.data_dir, cfg.lancedb_dir, cfg.linked_roots = saved
-        return state
-
-    @pytest.mark.parametrize("point", _KILL_POINTS)
-    def test_a_kill_at_each_step_then_the_add_again_ends_in_the_new_state(
-        self, library, notes, tmp_path, point
-    ):
-        store = library.store
-        _seeded_child(store, notes)
-        before = _everything(store)
-
-        with self._kill_nth(point, 1), pytest.raises(_Killed):
-            register_sources([notes])
-
-        assert _registry() == {"work": str((notes / "work").resolve())}
-        assert not list(cfg.data_root.glob("*absorb*"))
-        register_sources([notes])
-
-        clean = self._clean_absorb(tmp_path)
-        assert _everything(store) == clean
-        assert clean != before and clean["registry"] == ["notes"]
-        assert cfg.linked_roots == {"notes": str(notes.resolve())}
-
-    _SHAPES: ClassVar[dict[str, tuple[Callable[[Store, Path], Path], dict[str, str]]]] = {
-        "renamed": (_seeded_renamed_child, {"renamed": "work"}),
-        "nested": (_seeded_nested_children, {"work": "work", "deep": "work/deep"}),
-        "inner-first": (_seeded_nested_inner_first, {"deep": "work/deep", "work": "work"}),
-    }
-    _SHAPE_POINTS = (
-        ("renamed", "rekey", 1),
-        ("renamed", "table", 1),
-        *(("nested", "rekey", nth) for nth in (1, 2)),
-        *(("inner-first", "rekey", nth) for nth in (1, 2, 3)),
-        *(("nested", "table", nth) for nth in (1, 2)),
-        ("nested", "clear", 1),
-        ("nested", "citations", 1),
-        *((shape, step, 1) for shape in _SHAPES for step in ("shadows", "wiki-index", "registry")),
-    )
-
-    @pytest.mark.parametrize(("shape", "step", "nth"), _SHAPE_POINTS)
-    def test_a_kill_in_a_renamed_or_nested_absorb_then_the_add_again_ends_in_the_new_state(
-        self, library, notes, tmp_path, shape, step, nth
-    ):
-        store = library.store
-        seed, _roots = self._SHAPES[shape]
-        seed(store, notes)
-        before = _everything(store)
-
-        with self._kill_nth(step, nth), pytest.raises(_Killed):
-            register_sources([notes])
-        register_sources([notes])
-
-        clean = self._clean_absorb(tmp_path, seed=seed)
-        assert _everything(store) == clean
-        assert clean != before and clean["registry"] == ["notes"]
-        keys = _keys(library)
-        assert len(keys) == len(set(keys)) and "notes/work/plan.md" in keys
-
-    @pytest.mark.parametrize("shape", ["one", "renamed", "nested"])
-    def test_every_step_run_again_on_a_finished_absorb_changes_nothing(self, library, notes, shape):
-        store = library.store
-        if shape == "one":
-            _seeded_child(store, notes)
-        else:
-            self._SHAPES[shape][0](store, notes)
-        plans: list[absorb_mod.AbsorbPlan] = []
-        real = absorb_mod.absorb
-
-        def _kept(store_, plan, hold):
-            plans.append(plan)
-            real(store_, plan, hold)
-
-        with mock.patch.object(ingest_mod, "absorb", _kept):
-            register_sources([notes])
-        finished = _everything(store)
-
-        with library_held(cfg, "busy") as hold:
-            absorb_mod.absorb(store, plans[0], hold)
-
-        assert plans[0].moves and _everything(store) == finished
-
-    def test_a_parent_named_like_a_source_it_would_take_in_is_refused(self, library, tmp_path):
-        store = library.store
-        parent = tmp_path / "src" / "project"
-        _write(parent / "project" / "plan.md", "# Plan\n\nThe plan.\n")
-        _seeded_child(store, parent, "project")
-        before = _everything(store)
-
-        result = register_sources([parent], force=True)
-
-        assert result.name_taken == ["project"]
-        assert result.registered == [] and result.absorbed == []
-        assert _everything(store) == before
-
-    def test_a_ctrl_c_during_the_steps_ends_the_add_after_its_registry_write(
-        self, library, notes, tmp_path
-    ):
-        import signal
-        import threading
-
-        assert threading.current_thread() is threading.main_thread()
-        handler = signal.getsignal(signal.SIGINT)
-        store = library.store
-        _seeded_child(store, notes)
-        real = absorb_mod._drop_shadows
-        reached: list[str] = []
-
-        def _ctrl_c_then_drop(store_, moves):
-            signal.raise_signal(signal.SIGINT)
-            reached.append("after the signal")
-            real(store_, moves)
-
-        with (
-            mock.patch.object(absorb_mod, "_drop_shadows", _ctrl_c_then_drop),
-            pytest.raises(KeyboardInterrupt),
-        ):
-            register_sources([notes])
-
-        assert reached == ["after the signal"]
-        assert _everything(store) == self._clean_absorb(tmp_path)
-        assert signal.getsignal(signal.SIGINT) is handler
-
-    async def test_a_stale_process_sync_does_not_move_keys_back(self, library, notes):
-        await _add(notes / "work")
-        register_sources([notes])
-        cfg.linked_roots = {"work": str((notes / "work").resolve())}  # loaded before the absorb
-
-        synced = await sync(quiet=True)
-
-        assert synced.relocated == []
-        assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
-        assert cfg.linked_roots == {"notes": str(notes.resolve())}
-
-    async def test_stale_rows_at_the_keys_the_child_lands_on_are_replaced(self, library, notes):
-        """A label re-pointed from a vanished folder can still hold rows at those keys."""
-        await _add(notes / "work")
-        _seed(library.store, "notes/work/plan.md")
-        _seed(library.store, "notes/elsewhere.md")
-        assert len([key for key in _keys(library) if key == "notes/work/plan.md"]) == 1
-
-        register_sources([notes])
-
-        keys = _keys(library)
-        assert keys.count("notes/work/plan.md") == 1
-        assert "notes/elsewhere.md" in keys
-        row = next(s for s in library.store.get_sources() if s["filename"] == "notes/work/plan.md")
-        assert row["file_hash"] != "hash of notes/work/plan.md"
 
 
 class TestACancelledAdd:
@@ -1305,19 +851,6 @@ class TestEveryEntryPoint:
         assert json.loads(json.dumps(payload)) == payload
         assert rollback._roots == []
 
-    async def test_the_cli_refusal_is_one_error_line(self, library, notes):
-        from typer.testing import CliRunner
-
-        from lilbee.cli.app import app
-
-        await _add(notes / "work")
-        async with sync_running(cfg.data_root):
-            outcome = CliRunner().invoke(app, ["add", "--data-dir", str(cfg.data_root), str(notes)])
-
-        assert outcome.exit_code == 1
-        assert "A sync or a wiki build is running. Add notes again when it ends." in outcome.output
-        assert sorted(_registry()) == ["work"]
-
     async def test_the_tui_names_the_source_and_its_rollback_spares_the_parent(
         self, library, notes
     ):
@@ -1361,28 +894,6 @@ class TestEveryEntryPoint:
 
         assert _registry() == {"notes": str(notes.resolve())}
 
-    async def test_the_tui_says_a_sync_is_running_and_starts_none(self, library, notes):
-        from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-
-        await _add(notes / "work")
-        screen = ChatScreen.__new__(ChatScreen)
-        notify = MagicMock()
-        reporter = MagicMock(spec=ProgressReporter)
-        reporter.is_set.return_value = False
-        with (
-            mock.patch("lilbee.cli.tui.screens.chat.call_from_thread", notify),
-            mock.patch("lilbee.runtime.asyncio_loop.run") as run,
-        ):
-            async with sync_running(cfg.data_root):
-                screen._do_add([notes], reporter)
-
-        run.assert_not_called()
-        assert [call.args[2] for call in notify.call_args_list] == [
-            SYNC_RUNNING_ADD_AGAIN.format(names="notes")
-        ]
-        assert notify.call_args.kwargs == {"severity": "warning"}
-
     async def test_the_http_summary_lists_the_absorbed_source(self, library, notes):
         from lilbee.server.handlers.ingest import _run_add
         from lilbee.server.handlers.sse import SseStream
@@ -1408,18 +919,6 @@ class TestEveryEntryPoint:
 
         assert summary.absorbed == ["work"] and summary.sync is None
 
-    async def test_the_http_stream_ends_in_an_error_while_a_sync_runs(self, library, notes):
-        from lilbee.server.handlers import add_files_stream
-
-        await _add(notes / "work")
-        async with sync_running(cfg.data_root):
-            frames = [frame async for frame in add_files_stream([str(notes)])]
-
-        text = "".join(frames)
-        assert "A sync or a wiki build is running. Add notes again when it ends." in text
-        assert "event: done" not in text
-        assert sorted(_registry()) == ["work"]
-
     async def test_the_mcp_result_lists_the_absorbed_source(self, library, notes):
         from lilbee.mcp_server import add
 
@@ -1430,17 +929,6 @@ class TestEveryEntryPoint:
         assert result["copied"] == ["notes"] and result["absorbed"] == ["work"]
         assert result["overlapping"] == [] and result["errors"] == []
         assert result["sync"]["added"] == ["notes/loose.md"]
-
-    async def test_the_mcp_tool_returns_an_error_while_a_sync_runs(self, library, notes):
-        from lilbee.mcp_server import add
-
-        await _add(notes / "work")
-        async with sync_running(cfg.data_root):
-            result = await add([str(notes)])
-
-        assert result == {
-            "error": "A sync or a wiki build is running. Add notes again when it ends."
-        }
 
 
 _SEEDED_KEYS = ["work/budget.md", "work/plan.md", "workshop/x.md"]
@@ -1594,13 +1082,6 @@ async def _renamed_folder(parent: Path) -> None:
     await sync(quiet=True)
 
 
-async def _renamed_file(parent: Path) -> None:
-    """A file with no heading, so its title is the name it is indexed under."""
-    _write(parent / "work" / "ferry_memo.md", "A memo about the ferry, with no heading.\n")
-    _register_as({"renamed": parent / "work" / "ferry_memo.md"})
-    await sync(quiet=True)
-
-
 async def _nested(parent: Path) -> None:
     _write(parent / "work" / "deep" / "a.md", "# A\n\nA deep page.\n")
     _register_as({"work": parent / "work", "deep": parent / "work" / "deep"})
@@ -1616,7 +1097,7 @@ async def _nested_and_renamed(parent: Path) -> None:
 class TestTheOracle:
     @pytest.mark.parametrize(
         "registered_before",
-        [_one_child, _renamed_folder, _renamed_file, _nested, _nested_and_renamed],
+        [_one_child, _renamed_folder, _nested, _nested_and_renamed],
     )
     async def test_an_absorb_and_a_sync_equal_an_index_built_from_the_parent_alone(
         self, library, notes, tmp_path, registered_before
@@ -1812,549 +1293,6 @@ class TestWalkReaches:
         assert not walk_reaches(base, base / ".gone", rules)
 
 
-class TestSyncsHeldOff:
-    async def test_it_raises_the_text_it_was_given_while_a_sync_runs(self, tmp_path):
-        from lilbee.runtime.lock import _syncs_held_off
-
-        async with sync_running(tmp_path):
-            with (
-                pytest.raises(SyncRunningError, match=r"^try later$"),
-                _syncs_held_off(tmp_path, "try later"),
-            ):
-                pytest.fail("entered while a sync ran")
-        with _syncs_held_off(tmp_path, "try later"):
-            pass
-
-    def test_a_sync_in_another_process_waits_until_the_block_ends(self, tmp_path):
-        import subprocess
-        import sys
-
-        from lilbee.runtime.lock import _syncs_held_off
-
-        script = (
-            "import asyncio, sys\n"
-            "from pathlib import Path\n"
-            "from lilbee.runtime.lock import sync_running\n"
-            "async def main():\n"
-            "    async with sync_running(Path(sys.argv[1])):\n"
-            "        print('IN', flush=True)\n"
-            "asyncio.run(main())\n"
-        )
-        with _syncs_held_off(tmp_path, "busy"):
-            child = subprocess.Popen(
-                [sys.executable, "-c", script, str(tmp_path)],
-                stdout=subprocess.PIPE,
-                encoding="utf-8",
-            )
-            with pytest.raises(subprocess.TimeoutExpired):
-                child.wait(timeout=3)
-        assert child.communicate(timeout=30)[0].strip() == "IN"
-        assert child.returncode == 0
-
-    def test_with_a_wait_it_takes_the_lock_when_the_sync_ends(self, tmp_path):
-        import threading
-
-        from lilbee.runtime.lock import _syncs_held_off
-
-        held = threading.Event()
-        release = threading.Event()
-
-        def _a_sync() -> None:
-            with source_keys_in_use(tmp_path):
-                held.set()
-                release.wait(10)
-
-        thread = threading.Thread(target=_a_sync)
-        thread.start()
-        assert held.wait(10)
-        with (
-            pytest.raises(SyncRunningError, match="busy"),
-            _syncs_held_off(tmp_path, "busy", wait=0.2),
-        ):
-            pytest.fail("entered while a sync ran")
-        threading.Timer(0.3, release.set).start()
-        with _syncs_held_off(tmp_path, "busy", wait=10):
-            assert release.is_set()
-        thread.join(10)
-
-    def test_a_lock_that_cannot_be_taken_refuses_the_block(self, tmp_path):
-        from lilbee.runtime.lock import _syncs_held_off
-
-        with (
-            _sync_lock_take_refused(),
-            pytest.raises(LibraryUnlockableError, match="disk I/O error") as refused,
-            _syncs_held_off(tmp_path, "busy"),
-        ):
-            pytest.fail("entered without the lock")
-
-        assert f"delete {tmp_path / 'sync.lock'}, and try again." in str(refused.value)
-        assert "reset" not in str(refused.value)
-        with _syncs_held_off(tmp_path, "busy"):
-            pass
-
-    def test_a_data_root_that_cannot_be_made_refuses_the_block_as_an_add(self, tmp_path):
-        from lilbee.runtime.lock import _syncs_held_off
-
-        not_a_folder = tmp_path / "a-file"
-        not_a_folder.write_text("in the way", encoding="utf-8")
-        data_root = not_a_folder / "library"
-
-        with (
-            pytest.raises(LibraryUnlockableError, match="cannot be locked") as refused,
-            _syncs_held_off(data_root, "busy"),
-        ):
-            pytest.fail("entered without the lock")
-
-        assert str(refused.value).startswith(
-            f"Cannot tell whether a sync or import is running: {data_root} cannot be locked ("
-        )
-        assert not isinstance(refused.value, ResetRefusedError)
-
-
-@contextlib.contextmanager
-def _sync_lock_take_refused():
-    """Fail every take of a sync lock as a disk that refuses SQLite does; a probe works."""
-    real = {
-        "acquire_read": ReadWriteLock.acquire_read,
-        "acquire_write": ReadWriteLock.acquire_write,
-    }
-
-    def _refusing(name: str):
-        def _take(lock: ReadWriteLock, *args, **kwargs):
-            if Path(lock.lock_file).name.startswith("sync.probe."):
-                return real[name](lock, *args, **kwargs)
-            raise sqlite3.OperationalError("disk I/O error")
-
-        return _take
-
-    with (
-        mock.patch.object(ReadWriteLock, "acquire_read", _refusing("acquire_read")),
-        mock.patch.object(ReadWriteLock, "acquire_write", _refusing("acquire_write")),
-    ):
-        yield
-
-
-def _cannot_change(data_root: Path) -> str:
-    """What a sync or a wiki write says when a disk error stops it at the sync lock."""
-    return (
-        f"Cannot change the library: {data_root / 'sync.lock'} cannot be locked "
-        "(disk I/O error). Fix that problem, then try again."
-    )
-
-
-class TestSourceKeysInUse:
-    def test_a_lock_that_cannot_be_taken_refuses_the_block(self, tmp_path, caplog):
-        ran = []
-        with (
-            _sync_lock_take_refused(),
-            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
-            pytest.raises(LibraryUnlockableError) as refused,
-            source_keys_in_use(tmp_path),
-        ):
-            ran.append("block")
-
-        assert ran == []
-        assert str(refused.value) == _cannot_change(tmp_path)
-        assert caplog.text == ""
-        with _no_sync_running(tmp_path):
-            pass
-
-    def test_a_lock_file_that_cannot_be_opened_refuses_the_block(self, tmp_path, caplog):
-        def _probe_only(path, *args, **kwargs):
-            if Path(path).name.startswith("sync.probe."):
-                return ReadWriteLock(path, *args, **kwargs)
-            raise sqlite3.OperationalError("disk I/O error")
-
-        ran = []
-        with (
-            mock.patch("lilbee.runtime.lock.ReadWriteLock", _probe_only),
-            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
-            pytest.raises(LibraryUnlockableError) as refused,
-            source_keys_in_use(tmp_path),
-        ):
-            ran.append("block")
-
-        assert ran == []
-        assert str(refused.value) == _cannot_change(tmp_path)
-        assert caplog.text == ""
-
-
-@contextlib.contextmanager
-def _add_held_on_a_thread(data_root: Path):
-    """Hold syncs off *data_root* on a thread, as an add that moves keys does, for the block."""
-    import threading
-
-    from lilbee.runtime.lock import _syncs_held_off
-
-    held, release = threading.Event(), threading.Event()
-
-    def _an_add() -> None:
-        with _syncs_held_off(data_root, "held by an add"):
-            held.set()
-            release.wait(30)
-
-    adder = threading.Thread(target=_an_add)
-    adder.start()
-    try:
-        assert held.wait(5)
-        yield
-    finally:
-        release.set()
-        adder.join(timeout=5)
-
-
-_HOLDERS = {
-    "an add": _add_held_on_a_thread,
-    "a reset": reset_held_on_a_thread,
-    "another process": _reset_held_in_another_process,
-}
-# How long a test waits for a wiki writer to reach a step; reaching it fails the test.
-_WIKI_FAILURE_TIMEOUT_S = 10.0
-
-
-class TestAWikiWriterCancelledWhileItWaitsForTheMark:
-    """One cancel ends the wait for an add, a reset or another process; nothing is read."""
-
-    @staticmethod
-    def _writers(body: MagicMock) -> dict[str, tuple[Callable[..., object], object]]:
-        """Each writer with its body replaced by *body*, and what it returns for a cancel."""
-        from lilbee.wiki import generation, lazy
-
-        empty_stats = generation.BuildStats().as_dict()
-
-        def _build(cancel) -> object:
-            with mock.patch.object(generation, "get_entity_extractor", body):
-                return generation.run_full_build(cfg, cancel=cancel)
-
-        def _synthesis(cancel) -> object:
-            with mock.patch.object(generation, "generate_synthesis_pages", body):
-                return generation.run_full_synthesize(cfg, cancel=cancel)
-
-        def _page(cancel) -> object:
-            with mock.patch.object(lazy, "load_stub_index", body):
-                return lazy.generate_stub_page("boeing", MagicMock(), cfg, cancel=cancel)
-
-        return {
-            "build": (_build, {"paths": [], "entities": 0, "count": 0, "stats": empty_stats}),
-            "synthesis": (_synthesis, {"paths": [], "count": 0, "stats": empty_stats}),
-            "page": (_page, None),
-        }
-
-    def _cancel_while_held(self, writer: str, *, close_fails: bool = False) -> None:
-        """Start *writer* against a held mark, cancel it once, and wait until it returns.
-
-        The caller holds the mark until this returns, so the writer returned while it was held.
-        """
-        import threading
-
-        body = MagicMock()
-        run, cancelled_result = self._writers(body)[writer]
-        cancel = threading.Event()
-        outcome: list[object] = []
-        takes: list[int] = []
-        closes: list[int] = []
-        found_the_mark_held = threading.Event()
-        real_take, real_close = ReadWriteLock.acquire_read, ReadWriteLock.close
-
-        def _take(lock: ReadWriteLock, *args, **kwargs):
-            watched = (
-                threading.current_thread() is thread and Path(lock.lock_file).name == "sync.lock"
-            )
-            if watched:
-                takes.append(threading.get_ident())
-            try:
-                return real_take(lock, *args, **kwargs)
-            except FileLockTimeout:
-                if watched:
-                    found_the_mark_held.set()
-                raise
-
-        def _close(lock: ReadWriteLock) -> None:
-            real_close(lock)
-            if threading.current_thread() is thread and Path(lock.lock_file).name == "sync.lock":
-                closes.append(threading.get_ident())
-                if close_fails:
-                    raise sqlite3.OperationalError("disk I/O error")
-
-        def _run() -> None:
-            try:
-                outcome.append(run(cancel))
-            except BaseException as exc:
-                outcome.append(exc)
-
-        thread = threading.Thread(target=_run)
-        with (
-            mock.patch.object(ReadWriteLock, "acquire_read", _take),
-            mock.patch.object(ReadWriteLock, "close", _close),
-        ):
-            thread.start()
-            waited = found_the_mark_held.wait(_WIKI_FAILURE_TIMEOUT_S)
-            cancel.set()
-            thread.join(_WIKI_FAILURE_TIMEOUT_S)
-            returned = not thread.is_alive()
-        assert waited, "the writer did not wait for the holder"
-        assert returned, "one cancel did not end the wait for the holder"
-        assert outcome == [cancelled_result]
-        body.assert_not_called()
-        assert set(takes) == set(closes) == {thread.ident}
-
-    @staticmethod
-    def _assert_still_held() -> None:
-        """The holder has not released: a reset of the data root is refused."""
-        with (
-            pytest.raises(ResetRefusedError, match="is running on this library"),
-            _no_sync_running(cfg.data_root),
-        ):
-            pytest.fail("the holder released before the writer returned")
-
-    @pytest.mark.parametrize("holder", list(_HOLDERS))
-    @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
-    def test_it_returns_while_the_holder_holds_and_leaves_no_lock(self, library, writer, holder):
-        import threading
-
-        cfg.data_root.mkdir(parents=True, exist_ok=True)
-        before = set(threading.enumerate())
-        with _HOLDERS[holder](cfg.data_root):
-            self._cancel_while_held(writer)
-            self._assert_still_held()
-
-        assert set(threading.enumerate()) - before == set()
-        with _no_sync_running(cfg.data_root):
-            pass
-
-    @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
-    def test_a_close_error_does_not_replace_the_cancel(self, library, writer, caplog):
-        cfg.data_root.mkdir(parents=True, exist_ok=True)
-        with (
-            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
-            reset_held_on_a_thread(cfg.data_root, ends_after_s=3 * _WIKI_FAILURE_TIMEOUT_S),
-        ):
-            self._cancel_while_held(writer, close_fails=True)
-            self._assert_still_held()
-
-        assert f"Could not close {cfg.data_root / 'sync.lock'} (disk I/O error)." in caplog.text
-        with _no_sync_running(cfg.data_root):
-            pass
-
-    @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
-    def test_a_take_that_fails_as_the_cancel_arrives_does_not_run_the_writer(self, library, writer):
-        import threading
-
-        cancel = threading.Event()
-        body = MagicMock()
-        run, cancelled_result = self._writers(body)[writer]
-        real_take = ReadWriteLock.acquire_read
-
-        def _take(lock: ReadWriteLock, *args, **kwargs):
-            if Path(lock.lock_file).name != "sync.lock":
-                return real_take(lock, *args, **kwargs)
-            cancel.set()
-            raise sqlite3.OperationalError("disk I/O error")
-
-        with mock.patch.object(ReadWriteLock, "acquire_read", _take):
-            assert run(cancel) == cancelled_result
-
-        body.assert_not_called()
-        with _no_sync_running(cfg.data_root):
-            pass
-
-    @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant", "after a wait"])
-    @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
-    def test_a_writer_granted_the_mark_with_its_cancel_set_writes_nothing(
-        self, library, writer, cancel_set
-    ):
-        import threading
-
-        cancel = threading.Event()
-        body = MagicMock()
-        run, cancelled_result = self._writers(body)[writer]
-        outcome: list[object] = []
-        cfg.data_root.mkdir(parents=True, exist_ok=True)
-        if cancel_set == "before a free take":
-            cancel.set()
-        with cancel_set_when_the_sync_lock_is_granted(cancel) as grants:
-            if cancel_set == "after a wait":
-                with (
-                    reset_held_on_a_thread(cfg.data_root),
-                    _sync_take_that_ends_busy() as found_the_mark_held,
-                ):
-                    thread = threading.Thread(target=lambda: outcome.append(run(cancel)))
-                    thread.start()
-                    assert found_the_mark_held.wait(_WIKI_FAILURE_TIMEOUT_S)
-                    assert not cancel.is_set()
-                # A guard against a hang; the outcome below is what the test asserts.
-                thread.join(_WIKI_FAILURE_TIMEOUT_S)
-            else:
-                outcome.append(run(cancel))
-
-        if cancel_set != "before a free take":
-            assert grants == ["granted"], "the writer never held the mark"
-        assert outcome == [cancelled_result]
-        body.assert_not_called()
-        wiki_root = cfg.data_root / cfg.wiki_dir
-        assert not (wiki_root / "index.md").exists()
-        assert not (wiki_root / "log.md").exists()
-        with _no_sync_running(cfg.data_root):
-            pass
-
-    @pytest.mark.parametrize("block_error", [None, ValueError("the block failed")])
-    def test_a_close_error_is_logged_and_keeps_the_outcome_of_the_block(
-        self, library, tmp_path, caplog, block_error
-    ):
-        def _close(lock: ReadWriteLock) -> None:
-            real_close(lock)
-            if Path(lock.lock_file).name == "sync.lock":
-                raise sqlite3.OperationalError("disk I/O error")
-
-        def _block() -> str:
-            with source_keys_in_use(tmp_path):
-                if block_error is not None:
-                    raise block_error
-                return "finished"
-
-        real_close = ReadWriteLock.close
-        with (
-            mock.patch.object(ReadWriteLock, "close", _close),
-            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
-        ):
-            if block_error is None:
-                assert _block() == "finished"
-            else:
-                with pytest.raises(ValueError, match="the block failed"):
-                    _block()
-
-        assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
-        with _no_sync_running(tmp_path):
-            pass
-
-    def test_a_take_error_without_a_cancel_refuses_the_block(self, library, tmp_path):
-        import threading
-
-        ran = []
-        with (
-            _sync_lock_take_refused(),
-            pytest.raises(LibraryUnlockableError) as refused,
-            source_keys_in_use(tmp_path, threading.Event()),
-        ):
-            ran.append("block")
-
-        assert ran == []
-        assert str(refused.value) == _cannot_change(tmp_path)
-
-
-class TestAWikiBuildAndAnAbsorb:
-    """A wiki writer holds the sync mark from its first read of a source key to its last page."""
-
-    @staticmethod
-    def _refusal(notes: Path) -> str:
-        with pytest.raises(SyncRunningError) as raised:
-            register_sources([notes])
-        return str(raised.value)
-
-    def _full_build(self, notes: Path, refused: list[str]) -> None:
-        from lilbee.wiki import generation
-
-        refuse = self._refusal
-
-        class _Extractor:
-            def extract(self, chunks: list) -> list:
-                refused.append(refuse(notes))
-                return []
-
-        def _build(*_args: object, **_kwargs: object) -> list[Path]:
-            refused.append(refuse(notes))
-            return []
-
-        with (
-            mock.patch.object(generation, "get_entity_extractor", return_value=_Extractor()),
-            mock.patch.object(generation, "build_wiki", _build),
-        ):
-            assert generation.run_full_build(cfg)["count"] == 0
-
-    def _synthesis(self, notes: Path, refused: list[str]) -> None:
-        from lilbee.wiki import generation
-
-        def _pages(*_args: object, **_kwargs: object) -> list[Path]:
-            refused.append(self._refusal(notes))
-            return []
-
-        with mock.patch.object(generation, "generate_synthesis_pages", _pages):
-            assert generation.run_full_synthesize(cfg)["count"] == 0
-
-    def _one_page(self, notes: Path, refused: list[str]) -> None:
-        from lilbee.wiki import lazy
-
-        def _index(_config: object) -> dict:
-            refused.append(self._refusal(notes))
-            return {}
-
-        with (
-            mock.patch.object(lazy, "load_stub_index", _index),
-            pytest.raises(lazy.UnknownStubError, match="no indexed page named 'boeing'"),
-        ):
-            lazy.generate_stub_page("boeing", svc_mod.get_services().store, cfg)
-
-    @pytest.mark.parametrize(
-        ("writer", "reads"),
-        [("_full_build", 2), ("_synthesis", 1), ("_one_page", 1)],
-    )
-    def test_an_absorb_is_refused_while_a_wiki_writer_holds_source_keys(
-        self, library, notes, writer, reads
-    ):
-        _seeded_child(library.store, notes)
-        refused: list[str] = []
-
-        getattr(self, writer)(notes, refused)
-
-        text = "A sync or a wiki build is running. Add notes again when it ends."
-        assert refused == [text] * reads
-        assert sorted(_registry()) == ["work"]
-        assert register_sources([notes]).absorbed == ["work"]
-
-    @pytest.mark.parametrize("writer", ["_full_build", "_synthesis", "_one_page"])
-    def test_a_wiki_writer_takes_the_mark_while_the_wiki_mutex_is_free(
-        self, library, notes, writer
-    ):
-        """An absorb holds the mark and then takes the mutex; the other order would deadlock."""
-        import threading
-        from contextlib import contextmanager
-
-        from lilbee.runtime import lock
-        from lilbee.wiki import generation, lazy
-        from lilbee.wiki.shared import WIKI_BUILD_LOCK
-
-        _seeded_child(library.store, notes)
-        free: list[bool] = []
-        real = lock.source_keys_in_use
-
-        def _try() -> None:
-            taken = WIKI_BUILD_LOCK.acquire(blocking=False)
-            free.append(taken)
-            if taken:
-                WIKI_BUILD_LOCK.release()
-
-        @contextmanager
-        def _marked(data_root: Path, cancel: object = None):
-            other = threading.Thread(target=_try)
-            other.start()
-            other.join()
-            with real(data_root, cancel):
-                yield
-
-        with (
-            mock.patch.object(generation, "source_keys_in_use", _marked),
-            mock.patch.object(lazy, "source_keys_in_use", _marked),
-        ):
-            getattr(self, writer)(notes, [])
-
-        assert free == [True]
-        with WIKI_BUILD_LOCK:  # the control: the probe reads a held mutex as held
-            control = threading.Thread(target=_try)
-            control.start()
-            control.join()
-        assert free == [True, False]
-
-
 class TestACancelledJsonAdd:
     async def test_it_names_the_folder_that_stays_and_what_it_took_in(self, library, notes, capsys):
         import threading
@@ -2402,99 +1340,3 @@ class TestACancelledJsonAdd:
         payload = json.loads(capsys.readouterr().out)
         assert payload["not_added"] == ["notes"]
         assert "copied" not in payload and "absorbed" not in payload
-
-
-_RESET_REFUSED = (
-    "A sync, an import, an add or a wiki build is running on this library. "
-    "Reset again when it finishes."
-)
-# Only a hang guard: no assertion reads a duration.
-_RESET_HANG_GUARD_S = 60.0
-
-
-def _refusal_of_a_reset_from_another_thread() -> str:
-    """The text a reset is refused with, run as work that holds no lock of the caller."""
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        reset = pool.submit(contextvars.Context().run, perform_reset)
-        with pytest.raises(ResetRefusedError) as caught:
-            reset.result(timeout=_RESET_HANG_GUARD_S)
-    return str(caught.value)
-
-
-class TestAResetAndAnAbsorb:
-    async def test_a_reset_during_an_absorb_is_refused_and_the_absorb_ends(self, library, notes):
-        await _add(notes / "work")
-        refused: list[str] = []
-        real_write = absorb_mod._write_registry
-
-        def _reset_then_write(*args, **kwargs):
-            refused.append(_refusal_of_a_reset_from_another_thread())
-            return real_write(*args, **kwargs)
-
-        with mock.patch.object(absorb_mod, "_write_registry", side_effect=_reset_then_write):
-            register_sources([notes])
-
-        assert refused == [_RESET_REFUSED]
-        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
-        assert _registry() == {"notes": str(notes.resolve())}
-
-    def test_a_reset_while_a_wiki_writer_holds_source_keys_says_the_same(self, library):
-        with source_keys_in_use(cfg.data_root), pytest.raises(ResetRefusedError) as refused:
-            perform_reset()
-
-        assert str(refused.value) == _RESET_REFUSED
-
-    async def test_a_reset_after_a_killed_absorb_leaves_nothing_behind(self, library, notes):
-        await _add(notes / "work")
-        remove_documents_durably(["work/plan.md"])
-        with (
-            mock.patch.object(absorb_mod, "_write_registry", side_effect=_Killed),
-            pytest.raises(_Killed),
-        ):
-            register_sources([notes])
-
-        perform_reset()
-        svc_mod.set_services(make_mock_services(store=Store(cfg)))
-        result = await sync(quiet=True)
-
-        assert result.added == []
-        assert _registry() == {}
-        assert _keys(svc_mod.get_services()) == []
-        assert held_hashes() == {}
-
-
-class TestACancelAtTheWaitForARunningSync:
-    """A cancel set while a call waits for a running sync ends the call with nothing changed."""
-
-    def test_an_add_granted_the_lock_with_the_cancel_set_moves_no_key(self, library, notes):
-        import threading
-
-        _seeded_child(library.store, notes)
-        before = _everything(library.store)
-        cancel = threading.Event()
-
-        with (
-            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
-            pytest.raises(LibraryWaitCancelledError),
-        ):
-            register_sources([notes], cancel=cancel)
-
-        assert takes == ["granted"]
-        assert _everything(library.store) == before
-        assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
-        with _no_sync_running(cfg.data_root):
-            pass
-
-    def test_a_cancel_of_the_sync_lock_that_the_block_raises_is_not_the_cancel_of_the_wait(
-        self, library
-    ):
-        from lilbee.runtime.lock import SyncMarkWaitCancelledError
-
-        with (
-            pytest.raises(SyncMarkWaitCancelledError),
-            library_held(cfg, "a sync is running"),
-        ):
-            raise SyncMarkWaitCancelledError
-
-        with _no_sync_running(cfg.data_root):
-            pass

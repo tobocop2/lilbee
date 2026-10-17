@@ -878,22 +878,17 @@ it returns the result of the sync only and names no source. A script that
 names a document by its old name, such as
 `lilbee remove work/plan.md`, must use `notes/work/plan.md` from then on.
 
-The folder cannot take a source in while a sync runs, while the wiki writes
-pages (a wiki build, a synthesis run, or a page opened from the browse tree),
-or while a removal runs. The add then stops and changes nothing. During a sync
-or a wiki write it prints
-`A sync or a wiki build is running. Add notes again when it ends.` Run the add
-again when the other work ends. A
-source below a hidden folder, or one a `.lilbeeignore` pattern excludes, stays
-a source of its own.
+The index stores where each document is, and a name is the label of the
+deepest added folder that holds it plus the path below that folder. The add
+only writes the list of added folders, so it does not wait for a running sync
+or a wiki build. A source below a hidden folder, or one a `.lilbeeignore`
+pattern excludes, stays a source of its own.
 
-A folder cannot take in a source that has the same name as the folder:
-`lilbee add ~/work` after `lilbee add ~/work/work` reports the name `work` as
-taken, also with `--force`, and changes nothing.
+A folder can take in a source with the same name: `lilbee add ~/work` after
+`lilbee add ~/work/work` gives the documents the names `work/work/...`.
 
-If the add is interrupted, run the same `lilbee add` again. It finishes what
-the first add started. Until then, search can return the new names of the
-documents that moved.
+If you move an added folder, add it again at its new place. Its documents keep
+their index entries and their names.
 
 ### Manage documents
 
@@ -908,7 +903,7 @@ documents that moved.
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
 | `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
 | `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |
-| `lilbee reset` | Factory reset. Deletes all documents and data. Refuses while a sync, an import, a wiki build or an add that takes a source in runs on the same library |
+| `lilbee reset` | Factory reset. Deletes all documents and data. Refuses while a sync, an import or a wiki build runs on the same library |
 
 A file that fails to ingest is held out of later syncs, and `lilbee status`
 lists it. `lilbee remove` also takes held-out files, by name, folder or glob.

@@ -56,12 +56,3 @@ def sigint_cancel() -> Iterator[threading.Event]:
         yield token
     finally:
         signal.signal(signal.SIGINT, previous)
-
-
-@contextmanager
-def sigint_deferred() -> Iterator[None]:
-    """Hold Ctrl-C until the block ends, then deliver it to the handler before the block."""
-    with sigint_cancel() as pressed:
-        yield
-    if pressed.is_set():
-        signal.raise_signal(signal.SIGINT)

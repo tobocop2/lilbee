@@ -555,12 +555,11 @@ def _add_json_mode(
     *,
     force: bool,
     run_sync: Callable[[RegisterResult], object],
-    cancel_event: threading.Event,
 ) -> dict:
     """Run the JSON-mode finish: register roots, sync, return the one structured result."""
     reg_result = RegisterResult()
     if file_paths:
-        reg_result = register_sources(file_paths, force=force, cancel=cancel_event)
+        reg_result = register_sources(file_paths, force=force)
     # A sync is a whole-vault pass; run it only when something named reached the corpus.
     result = run_sync(reg_result) if reg_result.reached_corpus or crawled_paths else None
     return {
@@ -596,9 +595,7 @@ def _register_and_sync(
         return _run_sync(cancel_event, before_sync=_sync_starts)
 
     if cfg.json_mode:
-        return _add_json_mode(
-            file_paths, crawled_paths, force=force, run_sync=_sync, cancel_event=cancel_event
-        )
+        return _add_json_mode(file_paths, crawled_paths, force=force, run_sync=_sync)
     if file_paths:
         # Crawled pages are new content even when no file reached the corpus.
         add_paths(
@@ -607,7 +604,6 @@ def _register_and_sync(
             force=force,
             run_sync=_sync,
             sync_anyway=bool(crawled_paths),
-            cancel=cancel_event,
         )
     elif sync_urls:
         # URLs already saved; just trigger sync

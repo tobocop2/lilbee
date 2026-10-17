@@ -122,7 +122,7 @@ def generate_stub_page(
     Runs the same citation verification, faithfulness gate, and drafts
     quarantine a build does; nothing here bypasses them. Holds the wiki mutex,
     so a page generated from the browse tree cannot interleave with a build,
-    and the sync mark, so no source key moves while the page is written.
+    and the sync mark, so no reset runs while the page is written.
     Emits the same wiki_phase/wiki_page events a build does; a *cancel* set
     before the model call skips it, and one set during the wait for the sync
     mark ends the wait.

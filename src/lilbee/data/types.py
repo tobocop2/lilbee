@@ -40,11 +40,6 @@ def is_under(key: str, root: str) -> bool:
     return key == root or key.startswith(f"{root}/")
 
 
-def rekeyed_source(key: str, old: str, new: str) -> str | None:
-    """*key* with *new* in place of *old* when it is *old* or below it, else None."""
-    return new + key[len(old) :] if is_under(key, old) else None
-
-
 @dataclass(frozen=True)
 class ShardId:
     """Which slice of the corpus one ingest worker owns.

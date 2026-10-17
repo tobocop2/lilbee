@@ -23,7 +23,6 @@ from lilbee.runtime.lock import LibraryUnlockableError
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus
-    from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 
@@ -182,11 +181,8 @@ def render_status(con: PlainConsole) -> None:
         con.print(renderable)
 
 
-NAME_TAKEN_WARNING = (
-    "The name {name} is taken by another source or by a source inside the folder "
-    "(--force replaces only another source)."
-)
-"""Said when a label belongs to another source, or to a source inside the folder.
+NAME_TAKEN_WARNING = "The name {name} is taken by another source (use --force to overwrite)."
+"""Said when a label belongs to a different source, the one case --force fixes.
 
 The TUI states the same thing in its own words (``messages.CMD_ADD_NAME_TAKEN``);
 the two surfaces do not share a string because ``cli.tui.messages`` pulls the
@@ -210,14 +206,9 @@ def register_paths(
     con: PlainConsole,
     *,
     force: bool = False,
-    cancel: CancelSignal | None = None,
 ) -> RegisterResult:
-    """Register *paths* as source roots, reporting what happened to each.
-
-    An add does not wait for a running sync: it takes the sync lock once, and a
-    *cancel* set at that take ends the add, with nothing registered.
-    """
-    result = register_sources(paths, force=force, cancel=cancel)
+    """Register *paths* as source roots, reporting what happened to each."""
+    result = register_sources(paths, force=force)
     for name in result.name_taken:
         warning = NAME_TAKEN_WARNING.format(name=name)
         print_prefixed(con, "Warning: ", warning, style=theme.WARNING)
@@ -258,7 +249,6 @@ def add_paths(
     sync_status: SyncStatus | None = None,
     run_sync: Callable[[RegisterResult], object] | None = None,
     sync_anyway: bool = False,
-    cancel: CancelSignal | None = None,
 ) -> None:
     """Register *paths* as source roots and sync (human output).
     When *background* is True (chat ``/add``), sync runs in a background thread
@@ -266,10 +256,9 @@ def add_paths(
     overrides the foreground sync call and receives the registration result
     (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
     ``asyncio.run(sync())``. The sync runs when a path reached the corpus, or
-    when *sync_anyway* says the caller has other new content to index. A
-    *cancel* set when the registration takes the sync lock ends the add.
+    when *sync_anyway* says the caller has other new content to index.
     """
-    registration = register_paths(paths, con, force=force, cancel=cancel)
+    registration = register_paths(paths, con, force=force)
     summary = describe_registration(registration)
     if chat_mode:
         print(summary)

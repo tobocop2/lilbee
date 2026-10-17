@@ -149,6 +149,18 @@ def _overlay_file(root: Path) -> Path | None:
     return path
 
 
+def overlay_stamp(root: Path) -> tuple[int, int, int] | None:
+    """What a write of the config.toml an overlay of *root* reads changes; None without one."""
+    path = _overlay_file(root)
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None  # deleted since the check above
+    return stat.st_mtime_ns, stat.st_size, stat.st_ino
+
+
 def overlay_persisted_settings(root: Path) -> None:
     """Set on cfg each writable setting ``<root>/config.toml`` holds and no variable sets.
 

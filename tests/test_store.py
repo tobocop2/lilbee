@@ -394,9 +394,13 @@ class TestWikiPagesCiting:
 
 
 class TestWikiCitationsByPage:
-    def test_each_page_holds_its_citations_with_the_path_its_source_has_now(self, store):
+    def test_each_page_holds_its_citations_with_the_path_its_source_has_now(
+        self, store, test_config, tmp_path
+    ):
         from tests.conftest import make_citation
 
+        notes = tmp_path / "notes"
+        test_config.linked_roots = {"work": str(notes / "work")}
         store.add_citations(
             [
                 make_citation(wiki_source="wiki/entities/a.md", source_filename="work/a.md"),
@@ -406,7 +410,7 @@ class TestWikiCitationsByPage:
                 make_citation(wiki_source="wiki/concepts/b.md", source_filename="work/a.md"),
             ]
         )
-        store.rekey_sources_under("work", "notes/work")
+        test_config.linked_roots = {"notes": str(notes)}
 
         by_page = store.wiki_citations_by_page()
 
@@ -3269,7 +3273,6 @@ class TestSuppressLancedbThreadError:
 
     def test_install_suppresses_lancedb_thread(self):
         """Errors from LanceDB background threads are silently dropped."""
-        import threading
 
         from lilbee.data.store import install_lancedb_thread_error_suppressor
 
@@ -3287,7 +3290,6 @@ class TestSuppressLancedbThreadError:
 
     def test_install_propagates_non_lancedb_thread(self):
         """Errors from other threads are forwarded to the original excepthook."""
-        import threading
 
         from lilbee.data.store import install_lancedb_thread_error_suppressor
 
@@ -4404,21 +4406,6 @@ class TestRelocateTitles:
         row = next(s for s in store.get_sources() if s["filename"] == "IMG_1234.md")
         assert row["title"] is None
 
-    def test_relocated_title_guard_branches(self, store):
-        """No sources table, a failing read, and a missing row all keep the title."""
-        from lilbee.data.store.core import _KEEP_TITLE
-        from lilbee.data.title import derive_title
-
-        assert store._relocated_title(None, "a.md", "b.md", derive_title) is _KEEP_TITLE
-        broken = mock.MagicMock()
-        broken.search.side_effect = RuntimeError("boom")
-        assert store._relocated_title(broken, "a.md", "b.md", derive_title) is _KEEP_TITLE
-        from lilbee.data.store import SourceType
-
-        store.upsert_source("real.md", "h1", 1, SourceType.DOCUMENT)
-        table = store.open_table("_sources")
-        assert store._relocated_title(table, "absent.md", "b.md", derive_title) is _KEEP_TITLE
-
 
 # How long a blocked write gets to prove it is not blocked; an unlocked one takes milliseconds.
 _LOCKED_WRITE_WAIT_S = 1.0
@@ -4506,346 +4493,6 @@ def _dump(store):
         name: sorted(repr(_shown(row)) for row in db.open_table(name).to_arrow().to_pylist())
         for name in table_names(db)
     }
-
-
-class TestRekeySourcesUnder:
-    """A re-key moves a source and every source below it, in every table that holds a key."""
-
-    def test_every_table_that_holds_a_key_follows(self, store):
-        _seed_source(store, "work/a.md")
-        _seed_source(store, "workshop/x.md")
-        assert _holders(store, "work/a.md") == _KEY_COLUMNS
-
-        store.rekey_sources_under("work", "notes/work")
-
-        assert _holders(store, "notes/work/a.md") == _KEY_COLUMNS
-        assert _holders(store, "work/a.md") == set()
-        assert _holders(store, "workshop/x.md") == _KEY_COLUMNS
-
-    @pytest.mark.parametrize("indexed", [False, True], ids=["flat", "btree"])
-    @pytest.mark.parametrize(
-        ("old", "decoy"),
-        [
-            ("it's", "its"),
-            ("100%", "100abc"),
-            ("a_b", "axb"),
-            ("back\\slash", "backslash"),
-            ("früh/日本語", "fruh/日本語"),
-            ("😀 dir", "😀"),
-            ("u\u0308ber", "über"),
-            ("%_", "ab"),
-        ],
-        ids=[
-            "quote",
-            "percent",
-            "underscore",
-            "backslash",
-            "non-ascii",
-            "astral",
-            "combining",
-            "wildcards",
-        ],
-    )
-    def test_a_key_with_filter_characters_matches_itself_only(self, store, old, decoy, indexed):
-        new = f"pa'r%e_n\\t ü/{old}"
-        moving = [f"{old}/f.md", f"{old}/sub/g's 50%_.md"]
-        staying = [f"{decoy}/f.md", f"{old}x/f.md", f"x{old}/f.md", f"up/{old}/f.md"]
-        for key in (*moving, *staying):
-            _seed_source(store, key)
-        if indexed:
-            store.ensure_scalar_indexes()
-            indexed_columns = [i.columns for i in store.open_table(CHUNKS_TABLE).list_indices()]
-            assert ["source_id"] in indexed_columns
-
-        store.rekey_sources_under(old, new)
-
-        for key in moving:
-            assert _holders(store, key) == set()
-            assert _holders(store, new + key[len(old) :]) == _KEY_COLUMNS
-        for key in staying:
-            assert _holders(store, key) == _KEY_COLUMNS
-        assert len(store.get_chunks_by_source(f"{new}/f.md")) == 1
-
-    def test_a_single_file_source_moves_by_its_whole_key(self, store):
-        for key in ("plan.md", "plan.md.bak", "plan.mdx/y.md", "my/plan.md"):
-            _seed_source(store, key)
-
-        store.rekey_sources_under("plan.md", "notes/work/plan.md")
-
-        assert _holders(store, "notes/work/plan.md") == _KEY_COLUMNS
-        assert _holders(store, "plan.md") == set()
-        for key in ("plan.md.bak", "plan.mdx/y.md", "my/plan.md"):
-            assert _holders(store, key) == _KEY_COLUMNS
-
-    @pytest.mark.parametrize(
-        ("old", "new"),
-        [("wo\x00rk", "notes/wo\x00rk"), ("work", "no\x00tes/work"), ("work\x00", "work\x00")],
-        ids=["old-holds-a-nul", "new-holds-a-nul", "both-end-in-a-nul"],
-    )
-    def test_a_key_with_a_nul_is_refused_by_name_and_nothing_moves(self, store, old, new):
-        _seed_source(store, "work/a.md")
-        before = _dump(store)
-
-        with pytest.raises(ValueError, match="without a NUL character, not ") as refused:
-            store.rekey_sources_under(old, new)
-
-        assert repr(old if "\x00" in old else new) in str(refused.value)
-        assert _dump(store) == before
-
-    @pytest.mark.parametrize(
-        "name",
-        ["back\\slash.md", "new\nline.md", "tab\there.md"],
-        ids=["backslash", "newline", "tab"],
-    )
-    def test_a_character_a_file_name_can_hold_stays_a_key(self, store, name):
-        """Discovery writes these keys on macOS and Linux, so a re-key moves them."""
-        _seed_source(store, f"work/{name}")
-
-        store.rekey_sources_under("work", "notes/work")
-
-        assert _holders(store, f"notes/work/{name}") == _KEY_COLUMNS
-
-    def test_the_members_of_a_single_file_archive_move_with_it(self, store):
-        _seed_source(store, "docs.zip")
-        _seed_source(store, "docs.zip/in/a.txt")
-
-        store.rekey_sources_under("docs.zip", "notes/docs.zip")
-
-        assert store.member_sources("notes/docs.zip") == ["notes/docs.zip/in/a.txt"]
-        assert _holders(store, "notes/docs.zip") == _KEY_COLUMNS
-        assert _holders(store, "docs.zip") == set()
-        assert _holders(store, "docs.zip/in/a.txt") == set()
-
-    def test_it_leaves_the_tables_the_per_source_relocate_leaves(self, store, tmp_path):
-        import shutil
-
-        keys = ["work/old_report.md", "work/deep/notes-2024.md", "work/IMG_1234.md"]
-        _seed_source(store, keys[0], title="old report")
-        _seed_source(store, keys[1], title="Frankenstein Analysis")
-        _seed_source(store, keys[2])
-        _seed_source(store, "workshop/x.md", title="x")
-        twin_dir = tmp_path / "twin"
-        shutil.copytree(store._config.lancedb_dir, twin_dir)
-        twin = Store(store._config.model_copy(update={"lancedb_dir": twin_dir}))
-        assert _dump(twin) == _dump(store)
-        before = _dump(store)
-
-        twin.relocate_sources([SourceMove((key,), f"notes/{key}", None) for key in keys])
-        store.rekey_sources_under("work", "notes/work")
-
-        assert _dump(store) == _dump(twin)
-        assert _dump(store) != before
-
-    def test_moved_rows_stay_searchable_through_every_index(self, store):
-        for key in ("work/a.md", "other/b.md"):
-            _seed_source(store, key)
-        store.ensure_fts_index()
-        store.ensure_scalar_indexes()
-        table = store.open_table(CHUNKS_TABLE)
-        indexes = sorted(index.name for index in table.list_indices())
-        vector = store.get_chunks_by_source("work/a.md")[0].vector
-        version = table.version
-
-        store.rekey_sources_under("work", "notes/work")
-
-        table = store.open_table(CHUNKS_TABLE)
-        assert table.version == version
-        assert sorted(index.name for index in table.list_indices()) == indexes
-        assert len(indexes) >= 2
-        assert [c.source for c in store.get_chunks_by_source("notes/work/a.md")] == [
-            "notes/work/a.md"
-        ]
-        assert store.bm25_probe("work/a.md")[0].source == "notes/work/a.md"
-        nearest = store.search(vector, top_k=1, max_distance=0)
-        assert [row.source for row in nearest] == ["notes/work/a.md"]
-
-    def test_the_ingested_at_cache_follows(self, store):
-        _seed_source(store, "work/a.md")
-        assert list(store.source_ingested_at_map()) == ["work/a.md"]
-
-        store.rekey_sources_under("work", "notes/work")
-
-        assert list(store.source_ingested_at_map()) == ["notes/work/a.md"]
-
-    def test_a_store_without_the_optional_tables_is_rekeyed(self, store):
-        from lilbee.data.store import SourceType
-
-        store.upsert_source("work/a.md", "h", 0, SourceType.DOCUMENT)
-
-        store.rekey_sources_under("work", "notes/work")
-
-        assert [s["filename"] for s in store.get_sources()] == ["notes/work/a.md"]
-
-    @staticmethod
-    def _titles(store, key) -> set[str | None]:
-        """The title of *key* in the sources row and on each of its chunks."""
-        row = next(s for s in store.get_sources() if s["filename"] == key)
-        return {row["title"], *(chunk.title for chunk in store.get_chunks_by_source(key))}
-
-    def test_a_changed_file_name_gives_a_title_that_came_from_the_old_name(self, store):
-        _seed_source(store, "renamed", title="renamed")
-        _seed_source(store, "renamed.bak", title="kept")
-
-        store.rekey_sources_under("renamed", "notes/spring_plan.md")
-
-        assert _holders(store, "notes/spring_plan.md") == _KEY_COLUMNS
-        assert _holders(store, "renamed") == set()
-        assert self._titles(store, "notes/spring_plan.md") == {"spring plan"}
-        assert self._titles(store, "renamed.bak") == {"kept"}
-
-    def test_a_changed_file_name_keeps_a_title_the_document_gave(self, store):
-        _seed_source(store, "renamed", title="Spring Release Plan")
-
-        store.rekey_sources_under("renamed", "notes/plan.md")
-
-        assert self._titles(store, "notes/plan.md") == {"Spring Release Plan"}
-
-    def test_a_changed_folder_name_keeps_the_title_of_each_file_below_it(self, store):
-        _seed_source(store, "renamed/plan.md", title="plan")
-        _seed_source(store, "renamed/renamed", title="renamed")
-
-        store.rekey_sources_under("renamed", "notes/work")
-
-        assert _holders(store, "notes/work/plan.md") == _KEY_COLUMNS
-        assert self._titles(store, "notes/work/plan.md") == {"plan"}
-        assert self._titles(store, "notes/work/renamed") == {"renamed"}
-
-    @pytest.mark.parametrize("table", range(1, len(_KEY_COLUMNS) + 1))
-    def test_a_rename_that_dies_at_any_table_and_runs_again_gives_the_new_title(self, store, table):
-        """Each table's title is written before its key, and the sources table moves last."""
-        import lilbee.data.store.core as core_mod
-
-        _seed_source(store, "renamed", title="renamed")
-        real, calls = core_mod._rekey_sql, []
-
-        def _dies(column, old, new):
-            calls.append(column)
-            if len(calls) == table:
-                raise KeyboardInterrupt
-            return real(column, old, new)
-
-        with mock.patch.object(core_mod, "_rekey_sql", _dies), pytest.raises(KeyboardInterrupt):
-            store.rekey_sources_under("renamed", "notes/spring_plan.md")
-        store.rekey_sources_under("renamed", "notes/spring_plan.md")
-
-        assert _holders(store, "notes/spring_plan.md") == _KEY_COLUMNS
-        assert self._titles(store, "notes/spring_plan.md") == {"spring plan"}
-
-    def test_the_same_file_name_leaves_every_title_as_stored(self, store):
-        """A title that only looks derived stays when the name does not change."""
-        _seed_source(store, "plan.md", title="plan")
-        with mock.patch.object(type(store), "_relocated_title") as relocated:
-            store.rekey_sources_under("plan.md", "notes/plan.md")
-
-        relocated.assert_not_called()
-        assert self._titles(store, "notes/plan.md") == {"plan"}
-
-    @pytest.mark.parametrize(
-        ("old", "new", "refused"),
-        [
-            ("work", "notes/work/", "notes/work/"),
-            ("work", "notes//work", "notes//work"),
-            ("work", "./work", "./work"),
-            ("work/", "notes/work", "work/"),
-            ("", "/", ""),
-            (".", "", "."),
-            ("", "x", ""),
-        ],
-        ids=[
-            "new-trailing-slash",
-            "new-doubled-slash",
-            "new-dot-segment",
-            "old-trailing-slash",
-            "old-empty-new-root",
-            "old-dot-new-empty",
-            "old-empty",
-        ],
-    )
-    def test_a_malformed_key_is_refused_by_name_and_nothing_moves(self, store, old, new, refused):
-        for key in ("work/a.md", "work", "./a.md", "/abs.md"):
-            _seed_source(store, key)
-        before = _dump(store)
-
-        with pytest.raises(ValueError, match=re.escape(f"not {refused!r}")):
-            store.rekey_sources_under(old, new)
-
-        assert _dump(store) == before
-        assert _holders(store, "work/a.md") == _KEY_COLUMNS
-
-    @pytest.mark.parametrize("key", ["/work", "work/../notes", ".."])
-    def test_a_rooted_key_or_a_parent_segment_is_refused(self, store, key):
-        _seed_source(store, "work/a.md")
-
-        with pytest.raises(ValueError, match=re.escape(f"not {key!r}")):
-            store.rekey_sources_under("work", key)
-        with pytest.raises(ValueError, match=re.escape(f"not {key!r}")):
-            store.rekey_sources_under(key, "work")
-
-        assert _holders(store, "work/a.md") == _KEY_COLUMNS
-
-    def test_a_write_from_a_second_store_waits_until_the_rekey_ends(self, store, monkeypatch):
-        for key in ("work/a.md", "other/b.md"):
-            _seed_source(store, key)
-        writer = Store(store._config)
-        write = threading.Thread(
-            target=writer.upsert_source, args=("work/new.md", "h", 1, SourceType.DOCUMENT)
-        )
-        open_table = store.open_table
-        done_between_tables = []
-
-        def open_and_let_the_writer_try(name):
-            if name == SOURCES_TABLE and write.ident is None:  # the re-key holds the lock
-                write.start()
-                write.join(timeout=_LOCKED_WRITE_WAIT_S)
-                done_between_tables.append(not write.is_alive())
-            return open_table(name)
-
-        monkeypatch.setattr(store, "open_table", open_and_let_the_writer_try)
-
-        store.rekey_sources_under("work", "notes/work")
-        write.join(timeout=30)
-
-        assert done_between_tables == [False]
-        assert not write.is_alive()
-        assert sorted(s["filename"] for s in writer.get_sources()) == [
-            "notes/work/a.md",
-            "other/b.md",
-            "work/new.md",
-        ]
-
-
-class TestClearRekeyTarget:
-    """Rows at the key a source moves to go, in each table that still holds the source."""
-
-    def test_stale_rows_at_and_below_the_new_key_go_and_a_neighbour_stays(self, store):
-        _seed_source(store, "work/a.md")
-        _seed_source(store, "notes/work/a.md")
-        _seed_source(store, "notes/work/deep/b.md")
-        _seed_source(store, "notes/workshop/x.md")
-
-        store.clear_rekey_target("work", "notes/work")
-
-        assert _holders(store, "notes/work/a.md") == set()
-        assert _holders(store, "notes/work/deep/b.md") == set()
-        assert _holders(store, "work/a.md") == _KEY_COLUMNS
-        assert _holders(store, "notes/workshop/x.md") == _KEY_COLUMNS
-
-    def test_rows_already_moved_stay_when_the_old_key_holds_none(self, store):
-        _seed_source(store, "notes/work/a.md")
-
-        store.clear_rekey_target("work", "notes/work")
-
-        assert _holders(store, "notes/work/a.md") == _KEY_COLUMNS
-
-    def test_a_store_without_the_optional_tables_is_cleared(self, store):
-        from lilbee.data.store import SourceType
-
-        store.upsert_source("work/a.md", "h", 0, SourceType.DOCUMENT)
-        store.upsert_source("notes/work/a.md", "h", 0, SourceType.DOCUMENT)
-
-        store.clear_rekey_target("work", "notes/work")
-
-        assert [s["filename"] for s in store.get_sources()] == ["work/a.md"]
 
 
 class TestMemberSources:
@@ -4990,7 +4637,7 @@ class TestRelocateGivesEachMoveOneCandidate:
 
 def _relocate_one_update_for_each_move(store, moves):
     """One update of the source row for each move, and its chunk titles: what a hold must leave."""
-    from lilbee.data.store.core import _KEEP_TITLE
+    from lilbee.data.store.core import _KEEP_TITLE, _title_after_move
     from lilbee.data.title import derive_title
 
     sources = store.open_table(SOURCES_TABLE)
@@ -5000,7 +4647,8 @@ def _relocate_one_update_for_each_move(store, moves):
         if old is None:
             continue
         held.discard(old)
-        title = store._relocated_title(sources, old, move.new, derive_title)
+        stored = sources.search().where(f"path = '{escape_sql_string(old)}'").to_list()[0]
+        title = _title_after_move(stored, old, move.new, derive_title)
         row = {"path": move.new}
         if title is not _KEEP_TITLE:
             row["title"] = title
@@ -5794,18 +5442,6 @@ class TestWikiRefreshed:
         assert store.sources_version() is None
 
 
-class TestRekeyReplacesAndSkips:
-    def test_a_table_with_no_row_to_move_gets_no_new_version(self, store):
-        _seed_source(store, "work/a.md")
-        versions = {name: store.open_table(name).version for name, _ in _KEY_COLUMNS}
-
-        store.rekey_sources_under("elsewhere", "notes/elsewhere")
-
-        assert {name: store.open_table(name).version for name, _ in _KEY_COLUMNS} == versions
-        store.rekey_sources_under("work", "notes/work")
-        assert store.open_table("_sources").version > versions["_sources"]
-
-
 class TestATableAnotherProcessIsCreating:
     """The listing names a table once its folder exists, before its first version does."""
 
@@ -5881,43 +5517,3 @@ def _citation(source, key="src1", **changes):
         "created_at": "",
         **changes,
     }
-
-
-class TestDropCitationsRepeatedUnder:
-    def test_only_a_row_the_kept_key_holds_is_deleted(self, store):
-        store.add_citations(
-            [
-                _citation("inner/a.md"),
-                _citation("inner/b.md", page_start=None),
-                _citation("outer/deep/a.md", created_at="later"),
-                _citation("outer/deep/a.md", key="src2"),
-                _citation("outer/deep/b.md", page_start=None),
-                _citation("outer/a.md"),
-            ]
-        )
-
-        store.drop_citations_repeated_under("outer/deep", "inner")
-
-        rows = store.open_table("_citations").to_arrow().to_pylist()
-        left = sorted(
-            (row["source_filename"], row["citation_key"]) for row in store._shown_citations(rows)
-        )
-        assert left == [
-            ("inner/a.md", "src1"),
-            ("inner/b.md", "src1"),
-            ("outer/a.md", "src1"),
-            ("outer/deep/a.md", "src2"),
-        ]
-
-    def test_a_store_without_citations_is_left_alone(self, store):
-        store.drop_citations_repeated_under("outer/deep", "inner")
-
-        assert store.open_table("_citations") is None
-
-    def test_a_removed_document_keeps_the_citations_of_it(self, store):
-        """Lint and prune read them to report and retire a page whose source is gone."""
-        _seed_source(store, "work/a.md")
-
-        assert store.remove_documents(["work/a.md"]).removed == ["work/a.md"]
-
-        assert len(store.get_citations_for_source("work/a.md")) == 1

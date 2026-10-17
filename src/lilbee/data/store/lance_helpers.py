@@ -241,27 +241,6 @@ def _vector_index_dangling(
     return any(_is_vector_index(idx) for idx in _dangling_indices(table, indices, lancedb_dir))
 
 
-def _escape_like_wildcards(value: str) -> str:
-    """Escape LIKE metacharacters so a search term matches literally.
-
-    ``%`` and ``_`` are wildcards inside a LIKE pattern; without escaping, a
-    search for ``a_b`` would also match ``axb``. Backslash is escaped first
-    because it is the ESCAPE character the predicate declares.
-    """
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def _sources_search_filter(search: str | None) -> str | None:
-    """Case-insensitive path or title WHERE clause, or ``None``."""
-    if not search:
-        return None
-    escaped = escape_sql_string(_escape_like_wildcards(search.lower()))
-    return (
-        f"(LOWER(path) LIKE '%{escaped}%' ESCAPE '\\' "
-        f"OR LOWER(title) LIKE '%{escaped}%' ESCAPE '\\')"
-    )
-
-
 def refs_compatible(
     persisted_ref: str,
     current_ref: str,
