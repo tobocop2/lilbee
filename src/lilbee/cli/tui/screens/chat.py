@@ -89,7 +89,12 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
-from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.crawler import (
+    CRAWLER_MISSING_MESSAGE,
+    crawler_available,
+    is_url,
+    require_valid_crawl_url,
+)
 from lilbee.crawler.events import BROWSER_SETUP_COMPONENT
 from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
 from lilbee.data.store import (
@@ -973,7 +978,7 @@ class ChatScreen(Screen[None]):
 
     def _cmd_crawl(self, args: str) -> None:
         if not crawler_available():
-            self.notify(msg.CMD_CRAWL_UNAVAILABLE, severity="error")
+            self.notify(CRAWLER_MISSING_MESSAGE, severity="error")
             return
         if not args:
             self._open_crawl_dialog()

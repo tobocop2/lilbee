@@ -48,6 +48,7 @@ from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.crawler import CRAWLER_MISSING_MESSAGE
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
@@ -8042,9 +8043,13 @@ async def test_chat_slash_crawl_unavailable():
     """_cmd_crawl notifies when crawler is not installed."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=False):
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=False),
+            patch.object(app.screen, "notify") as notify,
+        ):
             app.screen._cmd_crawl("https://example.com")
             assert app.screen.is_current
+        notify.assert_called_once_with(CRAWLER_MISSING_MESSAGE, severity="error")
 
 
 async def test_chat_slash_crawl_no_args():

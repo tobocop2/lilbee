@@ -24,7 +24,7 @@ from lilbee.crawler.bootstrap import (
     CrawlEngineRefusedError,
     CrawlerBrowserError,
 )
-from lilbee.crawler.crawlberg_fetcher import CrawlbergFetcher
+from lilbee.crawler.crawlberg_fetcher import CRAWLER_MISSING_MESSAGE, CrawlbergFetcher
 from lilbee.crawler.discovery import build_concurrency_spec, build_filter_spec
 from lilbee.crawler.events import (
     _browser_warm_up,
@@ -93,6 +93,14 @@ def _resolve_page_limit(max_pages: int | None) -> int | None:
     return cfg.crawl_safety_max_pages
 
 
+def _require_crawler_extra() -> None:
+    """Raise :class:`CrawlerBackendError` when the crawler extra is not installed."""
+    from lilbee.crawler import crawler_available
+
+    if not crawler_available():
+        raise bootstrap.CrawlerBackendError(CRAWLER_MISSING_MESSAGE)
+
+
 def _fetcher(render_mode: CrawlRenderMode) -> CrawlbergFetcher:
     """The fetcher for one crawl, with its browser, user agent and robots.txt settings."""
     return CrawlbergFetcher(
@@ -139,12 +147,7 @@ async def crawl_single(
     once and retries.
     """
     validate_crawl_url(url)
-    from lilbee.crawler import crawler_available
-
-    if not crawler_available():
-        raise bootstrap.CrawlerBackendError(
-            "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
-        )
+    _require_crawler_extra()
     try:
         return await _fetch_single_page(url, render_mode, on_progress)
     except ChromiumMissingError:
@@ -192,12 +195,7 @@ async def crawl_recursive(
 
     # Fail fast when the ``crawler`` extra wasn't installed so SSE
     # callers see ``event: error`` instead of a silent zero-results run.
-    from lilbee.crawler import crawler_available
-
-    if not crawler_available():
-        raise bootstrap.CrawlerBackendError(
-            "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
-        )
+    _require_crawler_extra()
 
     # HTTP mode needs no browser, so the guard only applies to browser-mode crawls.
     if render_mode is CrawlRenderMode.BROWSER and not bootstrap.chromium_installed():
@@ -314,12 +312,7 @@ async def _ensure_crawler_ready(
     short-circuits when Chromium is already installed; any progress is forwarded
     through ``on_progress`` so downstream UIs surface a 'setup' stage.
     """
-    from lilbee.crawler import crawler_available
-
-    if not crawler_available():
-        raise bootstrap.CrawlerBackendError(
-            "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
-        )
+    _require_crawler_extra()
 
     if render_mode is CrawlRenderMode.BROWSER and not bootstrap.chromium_installed():
         await bootstrap.bootstrap_chromium(on_progress=on_progress)
