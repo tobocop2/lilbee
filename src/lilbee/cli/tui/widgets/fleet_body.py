@@ -158,7 +158,7 @@ class FleetBody(Widget):
 
     class PlacementReloading(Message):
         """Posted while an apply/clear reloads the fleet, so the chat screen can
-        hold submissions until the reload finishes instead of hitting a 429."""
+        hold submissions until the reload finishes instead of racing it."""
 
         def __init__(self, active: bool) -> None:
             self.active = active
@@ -496,8 +496,8 @@ class FleetBody(Widget):
 
         ``applying`` (and with it the chat screen's submit hold) stays up until the
         restarted chat role actually serves: releasing when the reload returns
-        still leaves the model warming, and a prompt sent then errors with the
-        busy 429 instead of an answer. The view is re-rendered from the live
+        still leaves the model warming, and a prompt sent then races the restart
+        instead of getting an answer. The view is re-rendered from the live
         placement whether the change applied or failed, so a rejected or failed
         draft returns to the current read-only state instead of stranding the
         stale 'edited'/won't-fit editor.

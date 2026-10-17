@@ -44,7 +44,7 @@ from lilbee.providers.fleet.client import (
     is_connection_failure,
     is_load_capacity_failure,
     is_rebuildable_failure,
-    retry_on_busy,
+    retry_on_gateway_error,
 )
 from lilbee.providers.fleet.contract import (
     chat_ctx_covers,
@@ -142,11 +142,11 @@ _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # The server parses tool calls natively via ``--jinja``; this probe only decides
 # whether to offer tools to a given model at all.
 _TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions|function_calls)\b")
-# Attempt cap for the busy-retry only when a page has no deadline (ocr_timeout=0,
-# "no limit"): it backstops the retry so a persistently busy fleet can't spin
+# Attempt cap for the gateway retry only when a page has no deadline (ocr_timeout=0,
+# "no limit"): it backstops the retry so a replica that never comes back can't spin
 # forever. A page with a deadline retries until that deadline instead (see
 # _ocr_dispatch), so the count doesn't bound the common case.
-_VISION_BUSY_RETRIES = 18
+_VISION_GATEWAY_RETRIES = 18
 # llama.cpp's repeat penalty on every vision OCR request: it damps tokens seen in
 # the last window, which stops a page looping one line to the token cap.
 _VISION_REPEAT_PENALTY = 1.1
@@ -510,8 +510,8 @@ class _VisionDispatcher:
 
     The ingest file fan-out runs many OCR requests at once; each request is
     assigned one specific replica and only while that replica has a free
-    continuous-batching slot, so lilbee's own traffic can never oversubscribe a
-    vision server into a 429 (an aggregate cap plus racy least-busy routing
+    continuous-batching slot, so lilbee's own traffic never queues past a
+    vision server's slots (an aggregate cap plus racy least-busy routing
     can). Requests past capacity wait in-process until any usable replica
     frees a slot; unhealthy replicas take no new work until their half-open
     cool-down re-admits them.
@@ -650,14 +650,13 @@ def _ocr_dispatch(
     deadline: float | None,
     cancel: CancelSignal | None = None,
 ) -> str:
-    """OCR *messages* on a free replica slot, retrying transient failures until *deadline*.
+    """OCR *messages* on a free replica slot, retrying gateway errors until *deadline*.
 
-    Backpressure (the dispatcher blocking until a slot frees) makes a
-    self-inflicted 429 unreachable; a residual busy response is a still-warming
-    server or foreign traffic, and a gateway error is a replica restarting
-    mid-run. The retry is deadline-bound rather than
-    attempt-bound so a page on a deep queue waits for a genuinely free slot until
-    its own budget passes instead of dropping after a fixed count. Each attempt
+    Backpressure (the dispatcher blocking until a slot frees) keeps lilbee's own
+    traffic within the slots; a gateway error is a replica restarting mid-run,
+    and a 429 is foreign overload that is reported, not re-sent. The retry is
+    deadline-bound rather than attempt-bound so a page keeps riding out a
+    restart until its own budget passes instead of dropping after a fixed count. Each attempt
     is bounded by the budget remaining before *deadline*; an exhausted budget
     raises :class:`_PageBudgetExhausted`. A ``None`` deadline (no limit) falls
     back to a bounded attempt count so the retry can't spin forever.
@@ -669,9 +668,9 @@ def _ocr_dispatch(
             raise _PageBudgetExhausted
         return _vision_call(client, messages, remaining, cancel)
 
-    return retry_on_busy(
+    return retry_on_gateway_error(
         lambda: _dispatch_vision(pool, _attempt, cancel),
-        retries=_VISION_BUSY_RETRIES,
+        retries=_VISION_GATEWAY_RETRIES,
         deadline=deadline,
     )
 
@@ -1317,14 +1316,6 @@ class FleetProvider:
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
                     engine_log=_engine_log_of(launch, swap.log_path.parent),
                     model_ref=launch.model,
-                    # A cold embed replica 429s bulk ingest until its slots load; wait
-                    # out the same cold-load budget llama-swap keeps it alive for so a
-                    # burst never drops files while the server is legitimately warming.
-                    embed_busy_deadline_s=(
-                        cold_load_timeout_s(launch.weights_bytes, role)
-                        if role is WorkerRole.EMBED
-                        else None
-                    ),
                 )
                 for launch in role_launches
             ]

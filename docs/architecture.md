@@ -925,7 +925,13 @@ touching the running fleet.
   per-role model change) never touches another group's loaded servers. A reload
   re-plans the whole fleet and diffs the fresh plan per group against the
   running launches, restarting only the groups whose launches changed; an
-  untouched 100GB chat model stays resident while the embedder moves. Each
+  untouched 100GB chat model stays resident while the embedder moves. llama-swap
+  answers 429 once a model has `concurrencyLimit` requests in flight and never
+  queues them, so each model's config sets that limit to four times the larger of
+  its slots and the ingest pool: one engine serves every lilbee process, and
+  llama-server queues past its slots by itself. A 429 is then reported to the
+  caller as a busy model, not retried; gateway errors (502/503/504) from a
+  restarting server are retried with backoff. Each
   server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
   the model loads); the cold-load health timeout scales with the heaviest member's

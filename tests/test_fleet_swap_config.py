@@ -349,3 +349,27 @@ class TestWarmTtlSeconds:
         monkeypatch.setattr(cfg, "keep_engine_warm", False)
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 0)
         assert _warm_ttl_seconds(EngineLifetime.BUILDER, tmp_path) == 0
+
+
+@pytest.mark.parametrize(
+    ("role", "slots", "ingest_workers", "expected"),
+    [
+        (WorkerRole.CHAT, 4, 14, 56),
+        (WorkerRole.CHAT, 40, 14, 160),
+        (WorkerRole.VISION, 8, 14, 56),
+        (WorkerRole.EMBED, 1, 32, 128),
+        (WorkerRole.RERANK, 8, 6, 32),
+    ],
+    ids=["chat", "chat-slots-past-pool", "vision", "embed", "rerank"],
+)
+def test_every_model_carries_a_concurrency_limit_for_several_processes(
+    monkeypatch, role: WorkerRole, slots: int, ingest_workers: int, expected: int
+) -> None:
+    # llama-swap answers 429 past the limit (default 10) and lilbee no longer
+    # waits a 429 out, so the limit covers four processes at their own ceiling.
+    monkeypatch.setattr(swap_config_mod, "max_workers", lambda: ingest_workers)
+    launch = InstanceLaunch(
+        role=role, replica=0, argv=["/bin/llama-server"], env_overrides={}, model="m", slots=slots
+    )
+    entry = _config([launch])["models"][launch.model_id]
+    assert entry["concurrencyLimit"] == expected

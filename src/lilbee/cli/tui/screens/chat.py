@@ -295,7 +295,7 @@ class ChatScreen(Screen[None]):
     # half-loaded fleet; cleared when the swap worker finishes (or fails).
     swapping_model: reactive[bool] = reactive(False)
     # True while a placement apply/clear reloads the fleet (from the Fleet drawer);
-    # holds chat submissions so they don't race the reload into a 429.
+    # holds chat submissions so they don't race the reload.
     reloading_placement: reactive[bool] = reactive(False)
 
     HELP = (
