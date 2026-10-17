@@ -711,8 +711,9 @@ async def test_a_folder_at_a_page_name_moves_out_before_the_page_moves_in(
     _write_earlier_library(_HOSTILE, _HOSTILE_FOLDER)
     _write_earlier_library(_OTHER_SITE, _OTHER_LIBRARY)
     await sync(quiet=True)
-    for _ in range(2):
-        await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "2")
+    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "2")
+    assert _at_their_names() == {}
+    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "2")
     await _crawl(monkeypatch, _HOSTILE, [path for path, _ in _HOSTILE_FOLDER], "2")
     await sync(quiet=True)
     versions = {path: "2" for path, _ in _HOSTILE_FOLDER} | {path: "2" for path in _OTHER_PAGES}
