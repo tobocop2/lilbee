@@ -802,10 +802,6 @@ class _StreamedPlan:
     # Processed files' content hashes, for the skip markers written after the run.
     pending_hashes: dict[str, str] = field(default_factory=dict)
     relocated: list[str] = field(default_factory=list)
-    # Old keys of relocated sources. The wiki index is keyed by source name, so
-    # without these a move leaves the old name in it forever: its mentions
-    # double-count and its dead chunk refs occupy the per-subject cap.
-    relocated_from: list[str] = field(default_factory=list)
     unchanged: int = 0
     # Files a skip marker held out of this run, in plan order (ordered set).
     held_out: dict[str, None] = field(default_factory=dict)
@@ -851,7 +847,6 @@ async def _absorb_plan_batch(
         taken = await to_ingest_thread(_relocate_in_holds, store, detected)
         # A file whose candidates other writers all took is an add.
         entries, relocated = _apply_moves(taken.keys(), entries, plan.added)
-        state.relocated_from.extend(taken.values())
         for name in relocated:
             state.added.pop(name, None)
         state.relocated.extend(relocated)
@@ -1184,6 +1179,14 @@ def _forget_in_wiki(removed: list[str]) -> None:
     forget_removed_from_wiki_index(removed)
 
 
+def _show_moves_in_wiki(moved: list[str]) -> None:
+    """Show the new paths of *moved* sources in the wiki pages that cite them."""
+    # circular: lilbee.app.ingest imports this module for sync
+    from lilbee.app.ingest import show_moves_in_wiki
+
+    show_moves_in_wiki(moved)
+
+
 def _forget_missing_in_wiki() -> None:
     """Drop from the wiki's browse index what the workers of a fan-out that stopped removed."""
     # circular: lilbee.app.ingest imports this module for sync
@@ -1224,13 +1227,15 @@ async def _run_post_ingest_passes(
     cluster_updated: Collection[str],
     cluster_removed: Collection[str],
     touched: set[str],
+    moved: Collection[str],
     cancel: CancelSignal | None,
 ) -> None:
     """Index maintenance, concept clusters, the wiki hook, and the entity lifecycle.
 
     The index pass only runs when this sync indexed something. The concept
     clusters are recomputed only when a source was added, updated or removed: a
-    relocation changes no co-occurrence. The wiki hook and the entity lifecycle
+    relocation changes no co-occurrence. The wiki pages that cite a *moved*
+    source are rendered with its new path. The wiki hook and the entity lifecycle
     run every sync (a cheap no-op when off or already current): the wiki index
     takes what any sync wrote and no refresh read, and turning the entity
     setting on takes effect without a separate operation.
@@ -1242,6 +1247,8 @@ async def _run_post_ingest_passes(
         store.optimize_sources()
     if cluster_added or cluster_updated or cluster_removed:
         await _rebuild_concept_clusters(cluster_added, cluster_updated, cluster_removed)
+    if moved:
+        await to_ingest_thread(_show_moves_in_wiki, list(moved))
     await _update_wiki(touched, active_config())
 
     from lilbee.retrieval.entities.lifecycle import ensure_entities
@@ -1338,6 +1345,7 @@ async def _sync_across_workers(
         cluster_updated=result.updated,
         cluster_removed=result.removed,
         touched=touched,
+        moved=result.relocated,
         cancel=cancel,
     )
     on_progress(
@@ -1530,9 +1538,8 @@ async def sync(
             cluster_added=added,
             cluster_updated=updated,
             cluster_removed=[*ignored, *refused],
-            # The old names of relocated sources ride along so the wiki index
-            # subtracts them in the same pass that merges their new ones.
-            touched=set(added) | set(updated) | set(relocated) | set(state.relocated_from),
+            touched=set(added) | set(updated) | set(relocated),
+            moved=relocated,
             cancel=cancel,
         )
 

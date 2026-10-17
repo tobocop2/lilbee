@@ -459,6 +459,18 @@ def _stored_row(record: Mapping[str, Any], source_id: str) -> dict[str, Any]:
     return {_SOURCE_ID: source_id, _PATH: record[_OLD_PATH], **row, _HELD_OUT: None}
 
 
+def _at_or_below(path: str, roots: set[str]) -> bool:
+    """Whether *path* is one of *roots* or lies below one, on whole path segments."""
+    if path in roots:
+        return True
+    cut = path.find("/")
+    while cut != -1:
+        if path[:cut] in roots:
+            return True
+        cut = path.find("/", cut + 1)
+    return False
+
+
 def _members_by_archive(names: Iterable[str], filenames: Iterable[str]) -> dict[str, list[str]]:
     """The *filenames* under ``name/`` for each of *names*, in one pass over *filenames*."""
     wanted = set(names)
@@ -2063,6 +2075,20 @@ class Store:
         )
         return set(self.source_paths(row[_SOURCE_ID] for row in rows).values())
 
+    def wiki_pages_citing(self, paths: Iterable[str]) -> set[str]:
+        """The wiki pages whose citations cite a source at or below one of *paths*."""
+        table = self.open_table(CITATIONS_TABLE)
+        roots = set(paths)
+        if table is None or not roots:
+            return set()
+        rows = table.search().select([_SOURCE_ID, "wiki_source"]).limit(None).to_list()
+        cited = self.source_paths(row[_SOURCE_ID] for row in rows)
+        return {
+            row["wiki_source"]
+            for row in rows
+            if row[_SOURCE_ID] in cited and _at_or_below(cited[row[_SOURCE_ID]], roots)
+        }
+
     def wiki_citation_sources(self) -> set[str]:
         """Return the distinct wiki_source values present in the citations table."""
         table = self.open_table(CITATIONS_TABLE)
@@ -2855,7 +2881,7 @@ class Store:
                 table.add(_keyed(rows, "source", ids))
 
     def wiki_mention_rows(self, slugs: Iterable[str] | None = None) -> list[dict]:
-        """Every wiki mention row, or only those for *slugs*.
+        """Every wiki mention row, or only those for *slugs*, with its source's id and path.
 
         The wiki aggregates these across sources to rebuild the stub index. A
         full refresh reads them all; an incremental one reads only the slugs it
@@ -2872,7 +2898,12 @@ class Store:
             joined = ", ".join(f"'{escape_sql_string(s)}'" for s in wanted)
             query = query.where(f"slug IN ({joined})")
         rows = query.limit(None).to_list()
-        return _pathed(rows, "source", self.source_paths(row[_SOURCE_ID] for row in rows))
+        paths = self.source_paths(row[_SOURCE_ID] for row in rows)
+        return [
+            {**row, "source": paths[source_id]}
+            for row in rows
+            if (source_id := row[_SOURCE_ID]) in paths
+        ]
 
     def clear_wiki_mentions(self) -> bool:
         """Drop every wiki mention row (a full rebuild starts from nothing)."""

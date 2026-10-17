@@ -63,7 +63,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     total_wiki_pages,
 )
-from lilbee.wiki.stubs import WikiStub, load_stub_index, ungenerated_stubs
+from lilbee.wiki.stubs import load_stub_index, shown_sources, ungenerated_stubs
 
 
 def _wiki_root() -> Path:
@@ -280,7 +280,12 @@ async def wiki_stubs_route() -> list[WikiEntityCandidateResponse]:
     _require_wiki()
     # Reading the index stats every candidate's page and draft; offload like
     # the page listing.
-    stubs = await asyncio.to_thread(_ungenerated_stubs)
+    return await asyncio.to_thread(_ungenerated_candidates)
+
+
+def _ungenerated_candidates() -> list[WikiEntityCandidateResponse]:
+    """The indexed subjects with no page yet, in slug order, each naming its documents."""
+    store = svc_mod.get_services().store
     return [
         WikiEntityCandidateResponse(
             slug=stub.slug,
@@ -288,15 +293,10 @@ async def wiki_stubs_route() -> list[WikiEntityCandidateResponse]:
             kind=stub.kind,
             type_hint=stub.type_hint,
             mentions=stub.mentions,
-            sources=list(stub.sources),
+            sources=shown_sources(stub, store),
         )
-        for stub in stubs
+        for stub in ungenerated_stubs(load_stub_index(), _wiki_root())
     ]
-
-
-def _ungenerated_stubs() -> list[WikiStub]:
-    """The indexed subjects with no page yet, in slug order."""
-    return ungenerated_stubs(load_stub_index(), _wiki_root())
 
 
 @post("/api/wiki/generate/{slug:path}", media_type=SSE_MEDIA_TYPE)

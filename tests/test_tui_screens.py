@@ -10080,11 +10080,11 @@ class TestWikiStubs:
 
     @pytest.mark.parametrize(
         ("sources", "expected"),
-        [(("a.md",), "a.md"), (("a.md", "b.md"), "2 documents")],
-        ids=["one-source", "several"],
+        [(("id-a",), "notes/a.md"), (("id-a", "id-b"), "2 documents"), (("gone",), "1 documents")],
+        ids=["one-source", "several", "one-source-that-left"],
     )
     def test_the_ask_names_where_the_evidence_comes_from(self, sources, expected):
-        """One document is worth naming; a dozen is not, so it says how many."""
+        """One document is worth naming by its path; a dozen is not, so it says how many."""
         from lilbee.cli.tui.screens.wiki import _describe_sources
         from lilbee.wiki.entity_extractor import EntityKind
         from lilbee.wiki.stubs import WikiStub
@@ -10097,7 +10097,11 @@ class TestWikiStubs:
             source_mentions=tuple((s, 1) for s in sources),
             chunk_refs=tuple((s, 0) for s in sources),
         )
-        assert _describe_sources(stub) == expected
+        paths = {"id-a": "notes/a.md", "id-b": "notes/b.md"}
+        store = MagicMock()
+        store.source_paths.side_effect = lambda ids: {i: paths[i] for i in ids if i in paths}
+        with patch("lilbee.cli.tui.screens.wiki.get_services", return_value=MagicMock(store=store)):
+            assert _describe_sources(stub) == expected
 
     async def test_the_ask_names_the_cost_and_the_way_out(self, tmp_path):
         """The copy has to reach the dialog, not merely exist. Reading the

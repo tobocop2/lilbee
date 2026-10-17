@@ -14,16 +14,16 @@ from lilbee.data.store import SourcesCheckpoint
 from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.shared import WikiSubdir
 from lilbee.wiki.stubs import (
+    _INDEX_VERSION,
     WikiStub,
     _owed_sources,
     _recut_refs,
-    _rekeyed_from,
     drop_removed_sources,
-    drop_sources_from_index,
     load_stub_index,
     refresh_owed_sources,
     refresh_stub_index,
     save_stub_index,
+    shown_sources,
     stub_index_path,
     ungenerated_stubs,
 )
@@ -49,11 +49,20 @@ class _FakeStore:
     refresh can write per-source evidence and aggregate it back the way the real
     store does. The mention table is the source of truth the index derives from,
     so a MagicMock (which never persists) would leave the whole flow unobserved.
+    A source's id is its path unless *paths* names another path for it.
     """
 
     def __init__(self, chunks_by_source: dict[str, list]):
         self._chunks = chunks_by_source
         self._mentions: dict[str, list[dict]] = {}
+        self.paths: dict[str, str] = {}
+
+    def source_paths(self, ids):
+        return {i: self.paths.get(i, i) for i in ids if i in self._chunks}
+
+    def source_ids(self, paths):
+        held = {self.paths.get(i, i): i for i in self._chunks}
+        return {path: held[path] for path in paths if path in held}
 
     def get_sources(self):
         return [{"filename": name} for name in sorted(self._chunks)]
@@ -68,7 +77,11 @@ class _FakeStore:
             self._mentions.pop(source, None)
 
     def wiki_mention_rows(self, slugs=None):
-        rows = [dict(r) for src_rows in self._mentions.values() for r in src_rows]
+        rows = [
+            {**r, "source_id": r["source"]}
+            for src_rows in self._mentions.values()
+            for r in src_rows
+        ]
         if slugs is not None:
             wanted = set(slugs)
             rows = [r for r in rows if r["slug"] in wanted]
@@ -171,10 +184,10 @@ class TestRoundTrip:
     @pytest.mark.parametrize(
         ("payload", "readable"),
         [
-            ({"version": 3, "stubs": [{"slug": "broken"}, {"nope": 1}]}, False),
-            ({"version": 3}, False),
-            ({"version": 3, "stubs": "garbage"}, False),
-            ({"version": 3, "stubs": []}, True),
+            ({"version": _INDEX_VERSION, "stubs": [{"slug": "broken"}, {"nope": 1}]}, False),
+            ({"version": _INDEX_VERSION}, False),
+            ({"version": _INDEX_VERSION, "stubs": "garbage"}, False),
+            ({"version": _INDEX_VERSION, "stubs": []}, True),
         ],
         ids=["all-rows-bad", "no-stubs-key", "stubs-not-a-list", "genuinely-empty"],
     )
@@ -195,7 +208,7 @@ class TestRoundTrip:
         path.write_text(
             json.dumps(
                 {
-                    "version": 3,
+                    "version": _INDEX_VERSION,
                     "stubs": [
                         {"slug": "broken"},
                         _stub("ford").to_dict(),
@@ -205,6 +218,61 @@ class TestRoundTrip:
             encoding="utf-8",
         )
         assert list(load_stub_index()) == ["ford"]
+
+
+class TestAnIndexOfAnOlderVersion:
+    """A file that named sources by path is aggregated again from the store's mention rows."""
+
+    def _write_v3(self, slug: str, source: str) -> None:
+        path = stub_index_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stub = _stub(slug, sources=(source,)).to_dict()
+        path.write_text(json.dumps({"version": 3, "stubs": [stub]}), encoding="utf-8")
+
+    def test_it_takes_the_ids_of_the_mention_rows_and_saves_them_with_no_extraction(self):
+        cfg.wiki_entity_min_mentions = 1
+        self._write_v3("acme", "notes/a.md")
+        store = _FakeStore({"doc-id": []})
+        store.paths = {"doc-id": "notes/a.md"}
+        store._mentions = {"doc-id": [_mention("acme", "doc-id")]}
+        extractor = MagicMock()
+        with (
+            patch("lilbee.wiki.stubs.get_services", return_value=MagicMock(store=store)),
+            patch("lilbee.wiki.stubs.get_entity_extractor", extractor),
+        ):
+            first = load_stub_index()
+            again = load_stub_index()
+
+        assert first["acme"].sources == ("doc-id",)
+        assert again == first
+        saved = json.loads(stub_index_path().read_text(encoding="utf-8"))
+        assert saved["version"] == _INDEX_VERSION
+        assert "notes/a.md" not in stub_index_path().read_text(encoding="utf-8")
+        extractor.assert_not_called()
+
+    def test_with_no_mention_rows_it_reads_as_absent_and_is_left_on_disk(self):
+        self._write_v3("acme", "notes/a.md")
+        before = stub_index_path().read_text(encoding="utf-8")
+        with patch("lilbee.wiki.stubs.get_services", return_value=MagicMock(store=_FakeStore({}))):
+            assert load_stub_index() == {}
+        assert stub_index_path().read_text(encoding="utf-8") == before
+
+    def test_a_sync_refresh_with_no_extractor_still_takes_it_to_this_version(self):
+        self._write_v3("acme", "notes/a.md")
+        store = _SourceTableStore({"doc-id": []}, version=2)
+        store.paths = {"doc-id": "notes/a.md"}
+        store._mentions = {"doc-id": [_mention("acme", "doc-id")]}
+        store.record = SourcesCheckpoint("time-1", 1)
+        extractor = MagicMock()
+        extractor.available.return_value = False
+        with (
+            patch("lilbee.wiki.stubs.get_services", return_value=MagicMock(store=store)),
+            patch("lilbee.wiki.stubs.get_entity_extractor", return_value=extractor),
+        ):
+            refresh_owed_sources(store, cfg, set())
+
+        saved = json.loads(stub_index_path().read_text(encoding="utf-8"))
+        assert saved["version"] == _INDEX_VERSION
 
 
 class TestRefresh:
@@ -487,7 +555,7 @@ class TestRefresh:
         provider.chat.assert_not_called()
 
 
-class TestDropSourcesFromIndex:
+class TestDropRemovedFromIndex:
     """Removed documents leave the index, without an extraction pass."""
 
     @pytest.fixture(autouse=True)
@@ -498,15 +566,13 @@ class TestDropSourcesFromIndex:
     def _drop(seed_entities, removed):
         """Seed store and index from a real sync, then drop *removed* the way
         remove_documents does: its mention rows are already gone with its chunks
-        before drop_sources_from_index re-aggregates the affected slugs."""
+        before the drop re-aggregates the affected slugs."""
         store = _FakeStore({})
         _seed_full(store, seed_entities)
         for source in removed:
             store.replace_wiki_mentions_for_source(source, [])
-        services = MagicMock()
-        services.store = store
-        with patch("lilbee.wiki.stubs.get_services", return_value=services):
-            drop_sources_from_index(removed)
+            store._chunks.pop(source)
+        drop_removed_sources(store, cfg)
         return load_stub_index()
 
     def test_a_removed_document_stops_contributing(self):
@@ -521,7 +587,9 @@ class TestDropSourcesFromIndex:
 
     def test_removing_nothing_leaves_the_index_alone(self):
         save_stub_index({"ford": _stub("ford")})
-        drop_sources_from_index(set())
+        with patch("lilbee.wiki.stubs.save_stub_index") as written:
+            drop_removed_sources(_FakeStore({"a.md": []}), cfg)
+        written.assert_not_called()
         assert list(load_stub_index()) == ["ford"]
 
     def test_a_subject_left_below_the_floor_is_dropped(self):
@@ -542,7 +610,7 @@ class TestDropSourcesFromIndex:
         assert result["ford"].sources == ("b.md",)
 
     def test_an_absent_index_is_not_created(self):
-        drop_sources_from_index({"a.md"})
+        drop_removed_sources(_FakeStore({}))
         assert not stub_index_path().exists()
 
 
@@ -631,9 +699,6 @@ class _SourceTableStore(_FakeStore):
         self.reads.append(f"rows since {since}")
         return list(self.written)
 
-    def missing_sources(self, names):
-        return {name for name in names if name not in self._chunks}
-
 
 def _mention(slug: str, source: str) -> dict:
     """One mention row of the store: *source* names *slug* once."""
@@ -649,42 +714,30 @@ def _mention(slug: str, source: str) -> dict:
 
 
 def _renamed_library() -> tuple[_SourceTableStore, dict[str, WikiStub]]:
-    """An index that lists old.md, which left the store, beside a store that holds new.md.
+    """An index that lists a renamed source by its id, and gone.md, which left the store.
 
-    The mention rows of old.md moved to new.md. The index lists kept.md under
-    both subjects, and elsewhere.md under none.
+    The source of id ``doc-id`` was renamed to new.md: its id and mention rows stay.
     """
     stubs = {
-        "acme": _stub("acme", sources=("kept.md", "old.md")),
-        "globex": _stub("globex", sources=("kept.md",)),
+        "acme": _stub("acme", sources=("doc-id", "kept.md")),
+        "globex": _stub("globex", sources=("gone.md", "kept.md")),
     }
     save_stub_index(stubs)
-    store = _SourceTableStore({"kept.md": [], "new.md": [], "elsewhere.md": [], "fresh.md": []})
+    store = _SourceTableStore({"kept.md": [], "doc-id": [], "fresh.md": []})
+    store.paths = {"doc-id": "new.md"}
     store._mentions = {
         "kept.md": [_mention("acme", "kept.md"), _mention("globex", "kept.md")],
-        "new.md": [_mention("acme", "new.md")],
-        "elsewhere.md": [_mention("globex", "elsewhere.md")],
+        "doc-id": [_mention("acme", "doc-id")],
     }
     return store, stubs
 
 
-class TestRekeyedFrom:
-    def test_it_names_the_source_that_holds_the_mention_rows_of_a_missing_one(self):
-        """Not kept.md, which the index lists, and not elsewhere.md, whose subject lost nothing."""
-        store, stubs = _renamed_library()
-        assert _rekeyed_from(store, stubs, {"old.md"}) == {"new.md"}
-
-    def test_with_no_missing_source_it_names_none(self):
-        store, stubs = _renamed_library()
-        assert _rekeyed_from(store, stubs, set()) == set()
-
-
 class TestOwedSources:
-    def test_it_owes_what_was_written_what_left_the_store_and_what_took_its_place(self):
+    def test_it_owes_what_was_written_and_names_the_ids_that_left_the_store(self):
         store, _stubs = _renamed_library()
         store.written = ["fresh.md"]
 
-        assert _owed_sources(store, cfg, "time-1") == {"fresh.md", "old.md", "new.md"}
+        assert _owed_sources(store, cfg, "time-1") == ({"fresh.md"}, {"gone.md"})
         assert store.reads == ["rows since time-1"]
 
     def test_with_every_listed_source_in_the_store_it_owes_the_written_rows_alone(self):
@@ -693,7 +746,7 @@ class TestOwedSources:
         store._mentions = {"kept.md": [_mention("acme", "kept.md")]}
         store.written = ["fresh.md"]
 
-        assert _owed_sources(store, cfg, "time-1") == {"fresh.md"}
+        assert _owed_sources(store, cfg, "time-1") == ({"fresh.md"}, set())
 
 
 class TestRefreshOwedSources:
@@ -844,10 +897,13 @@ class TestDropRemovedSources:
             "acme": ("kept.md",)
         }
 
-    def test_it_leaves_the_index_when_a_missing_source_was_re_keyed(self):
-        """The old key the index lists is how the next refresh finds new.md."""
+    def test_a_renamed_source_stays_under_its_id_and_shows_its_new_path(self):
+        """Only gone.md leaves; the renamed source keeps its subject."""
         store, stubs = _renamed_library()
 
         self._drop(store)
 
-        assert load_stub_index() == stubs
+        index = load_stub_index()
+        assert index["acme"] == stubs["acme"]
+        assert index["globex"].sources == ("kept.md",)
+        assert shown_sources(index["acme"], store) == ["kept.md", "new.md"]

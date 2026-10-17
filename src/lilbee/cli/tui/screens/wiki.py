@@ -32,7 +32,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhaseEvent
-from lilbee.wiki.stubs import WikiStub, load_stub_index, ungenerated_stubs
+from lilbee.wiki.stubs import WikiStub, load_stub_index, shown_sources, ungenerated_stubs
 
 log = logging.getLogger(__name__)
 
@@ -541,9 +541,8 @@ def start_wikify(app: LilbeeApp) -> None:
 def _describe_sources(stub: WikiStub) -> str:
     """Name the documents a stub's page would be written from."""
     count = len(stub.sources)
-    if count == 1:
-        return stub.sources[0]
-    return f"{count} documents"
+    shown = shown_sources(stub, get_services().store) if count == 1 else []
+    return shown[0] if shown else f"{count} documents"
 
 
 def confirm_stub_generation(app: LilbeeApp, stub: WikiStub) -> None:

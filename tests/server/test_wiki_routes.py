@@ -546,7 +546,14 @@ class TestWikiEnabled:
         assert on_loop == [False]
 
     async def test_stubs_list_the_pages_the_corpus_could_have(self, isolated_env: Path):
-        _save_stubs(_stub("ford", "Ford", mentions=(("cars.txt", 4), ("usa.txt", 2))))
+        """The index names each source by id; the response shows its path."""
+        _save_stubs(_stub("ford", "Ford", mentions=(("id-a", 4), ("id-b", 2))))
+        from conftest import make_mock_services
+
+        paths = {"id-a": "usa.txt", "id-b": "cars.txt"}
+        mock_svc = make_mock_services()
+        mock_svc.store.source_paths.side_effect = lambda ids: {i: paths[i] for i in ids}
+        set_services(mock_svc)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/stubs", headers=_h())
         assert resp.status_code == 200

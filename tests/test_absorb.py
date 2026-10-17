@@ -8,6 +8,7 @@ import json
 import logging
 import shutil
 import sqlite3
+import zlib
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -135,6 +136,11 @@ def _registry() -> dict[str, str]:
     return dict(settings.load(cfg.data_root).get("linked_roots") or {})
 
 
+def _citation_key(key: str) -> str:
+    """The footnote key the seed gives the citation of *key*: one per key on the page."""
+    return f"src{zlib.crc32(key.encode())}"
+
+
 def _seed(store: Store, key: str) -> None:
     """Write one row for *key* into every table that holds a source key, by the store's writers."""
     from lilbee.data.store import ConceptRecords, SourceType
@@ -169,7 +175,7 @@ def _seed(store: Store, key: str) -> None:
             {
                 "wiki_source": "wiki/entities/boeing.md",
                 "wiki_chunk_index": 0,
-                "citation_key": f"src{abs(hash(key)) % 97}",
+                "citation_key": _citation_key(key),
                 "claim_type": "fact",
                 "source_filename": key,
                 "source_hash": "h",
@@ -225,6 +231,31 @@ def _hold_out(key: str, kind: SkipKind) -> None:
     update_skip_records(cfg.data_root, _fail)
 
 
+def _shown_index(store: Store) -> str:
+    """The subject index with the path of each source it names by id, or the id with none."""
+    from lilbee.wiki.stubs import load_stub_index
+
+    stubs = load_stub_index(cfg)
+    paths = store.source_paths(i for stub in stubs.values() for i in stub.sources)
+    return json.dumps(
+        {
+            slug: [
+                sorted((paths.get(i, i), n) for i, n in stub.source_mentions),
+                sorted((paths.get(i, i), n) for i, n in stub.chunk_refs),
+            ]
+            for slug, stub in sorted(stubs.items())
+        }
+    )
+
+
+def _wiki_file(store: Store, path: Path) -> str:
+    """A wiki file as a person reads it, less its generation time."""
+    if path.name == "stubs.json":
+        return _shown_index(store)
+    text = path.read_text(encoding="utf-8")
+    return "\n".join(line for line in text.split("\n") if not line.startswith("generated_at: "))
+
+
 def _everything(store: Store) -> dict[str, object]:
     """What an absorb can change, less the time each source was indexed at."""
     wiki_root = cfg.data_root / cfg.wiki_dir
@@ -239,11 +270,7 @@ def _everything(store: Store) -> dict[str, object]:
         "reasons": load_skip_reasons(cfg.data_root),
         "kinds": load_skip_kinds(cfg.data_root),
         "wiki": {
-            path.relative_to(wiki_root).as_posix(): "\n".join(
-                line
-                for line in path.read_text(encoding="utf-8").split("\n")
-                if not line.startswith("generated_at: ")
-            )
+            path.relative_to(wiki_root).as_posix(): _wiki_file(store, path)
             for path in sorted(wiki_root.rglob("*"))
             if path.is_file()
         },
@@ -377,18 +404,19 @@ class TestTheParentTakesTheChild:
 
     def test_the_wiki_page_and_the_subject_index_follow_the_absorb(self, library, notes):
         from lilbee.wiki.shared import parse_frontmatter
-        from lilbee.wiki.stubs import load_stub_index
+        from lilbee.wiki.stubs import load_stub_index, shown_sources
 
         store = library.store
         _seeded_child(store, notes)
         page = cfg.data_root / cfg.wiki_dir / "entities" / "boeing.md"
         before = page.read_text(encoding="utf-8")
         assert "work/plan.md, lines 1-2" in before
-        assert load_stub_index(cfg)["boeing"].sources == (
+        listed = load_stub_index(cfg)["boeing"].sources
+        assert shown_sources(load_stub_index(cfg)["boeing"], store) == [
             "work/budget.md",
             "work/plan.md",
             "workshop/x.md",
-        )
+        ]
 
         register_sources([notes])
 
@@ -404,7 +432,12 @@ class TestTheParentTakesTheChild:
         assert all(line.split(": ", 1)[1].startswith("notes/work/") for line in footnotes)
         assert after.replace("notes/work/", "work/") == before
         stub = load_stub_index(cfg)["boeing"]
-        assert stub.sources == ("notes/work/budget.md", "notes/work/plan.md", "workshop/x.md")
+        assert stub.sources == listed
+        assert shown_sources(stub, store) == [
+            "notes/work/budget.md",
+            "notes/work/plan.md",
+            "workshop/x.md",
+        ]
         assert {source for source, _index in stub.chunk_refs} == set(stub.sources)
 
     def test_a_removed_file_stays_removed_and_a_failed_file_keeps_its_record(self, library, notes):
@@ -626,7 +659,7 @@ class TestTheParentTakesTheChild:
         register_sources([notes])
 
         cited = store.get_citations_for_source("notes/work/deep/a.md")
-        keys = {f"src{abs(hash(key)) % 97}" for key in ("deep/a.md", "work/deep/a.md")}
+        keys = {_citation_key(key) for key in ("deep/a.md", "work/deep/a.md")}
         assert sorted(row["citation_key"] for row in cited) == sorted(keys)
         page = (cfg.data_root / cfg.wiki_dir / "entities" / "boeing.md").read_text(encoding="utf-8")
         footnotes = [line for line in page.split("\n") if line.startswith("[^src")]
@@ -1036,7 +1069,7 @@ class TestInterruptedAbsorb:
     def _kill_nth(self, step: str, nth: int):
         from lancedb.table import LanceTable
 
-        import lilbee.wiki.rekey as wiki_rekey_mod
+        import lilbee.wiki.rerender as wiki_rerender_mod
         import lilbee.wiki.stubs as wiki_stubs_mod
 
         target, attribute = {
@@ -1045,8 +1078,8 @@ class TestInterruptedAbsorb:
             "rekey": (Store, "rekey_sources_under"),
             "source-update": (LanceTable, "update"),
             "table": (LanceTable, "update"),
-            "wiki-pages": (wiki_rekey_mod, "rekey_wiki_pages"),
-            "wiki-index": (wiki_stubs_mod, "refresh_sources_under"),
+            "wiki-pages": (wiki_rerender_mod, "rerender_pages"),
+            "wiki-index": (wiki_stubs_mod, "drop_removed_sources"),
             "prune-records": (absorb_mod, "_prune_records"),
             "registry": (absorb_mod, "_write_registry"),
             "clear": (Store, "remove_documents"),
@@ -1659,43 +1692,6 @@ class TestTheOracle:
         assert sum(len(rows) for rows in fresh["tables"].values()) > 3
 
 
-class TestAPendingDraft:
-    async def test_a_pending_draft_is_accepted_after_an_absorb(self, library, notes):
-        from lilbee.wiki.drafts import accept_draft
-        from lilbee.wiki.shared import parse_frontmatter
-
-        await _add(notes / "work")
-        store = library.store
-        chunk = store.get_chunks_by_source("work/plan.md")[0]
-        excerpt = "The plan for the spring release."
-        assert excerpt in chunk.chunk
-        from lilbee.wiki.page import assemble_content, build_frontmatter, write_page
-
-        content = assemble_content(
-            build_frontmatter(cfg, ["work/plan.md"], 0.2, chunks=[chunk]),
-            "# Spring release\n\nThe release has a plan.[^src1]\n",
-            f'[^src1]: work/plan.md, excerpt: "{excerpt}"\n',
-        )
-        wiki_root = cfg.data_root / cfg.wiki_dir
-        draft = write_page(
-            wiki_root, "drafts", "spring-release", content, 1.0, ["work/plan.md"], "concepts"
-        )
-
-        register_sources([notes])
-
-        assert parse_frontmatter(draft.read_text(encoding="utf-8"))["sources"] == [
-            "notes/work/plan.md"
-        ]
-        with mock.patch("lilbee.wiki.drafts.rewrite_links_across_wiki"):
-            accepted = accept_draft("spring-release", wiki_root, store, cfg)
-
-        published = accepted.moved_to.read_text(encoding="utf-8")
-        assert f'[^src1]: notes/work/plan.md, excerpt: "{excerpt}"' in published
-        rows = store.get_citations_for_source("notes/work/plan.md")
-        assert [row["wiki_source"] for row in rows] == ["wiki/concepts/spring-release.md"]
-        assert store.get_citations_for_source("work/plan.md") == []
-
-
 class TestSkipRecordFiles:
     def test_all_three_files_move(self, library, notes):
         _seeded_child(library.store, notes)
@@ -1758,247 +1754,6 @@ class TestWalkReaches:
         assert not walk_reaches(base, base / "skipped", rules)
         assert walk_reaches(base, base / "gone" / "folder", rules)
         assert not walk_reaches(base, base / ".gone", rules)
-
-
-class TestRekeyWikiPages:
-    _PAGE = (
-        "---\n"
-        "generated_by: m\n"
-        'sources: ["work/a.md", "workshop/x.md", "plan.md"]\n'
-        "faithfulness_score: 0.90\n"
-        "provenance:\n"
-        "  extraction_method: ner_entities\n"
-        "  chunks:\n"
-        "  - source: work/a.md\n"
-        "    chunk_index: 0\n"
-        "  - source: workshop/x.md\n"
-        "    chunk_index: 1\n"
-        "---\n"
-        "\n"
-        "# Title\n"
-        "\n"
-        "A claim.[^src1] Another.[^src2] The words work/a.md stay in prose.\n"
-        "\n"
-        "```\n"
-        "[^src9]: work/a.md, an example in a fence\n"
-        "```\n"
-        "\n"
-        "---\n"
-        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
-        '[^src1]: work/a.md, lines 1-2, excerpt: "work/a.md says so"\n'
-        "[^src2]: workshop/x.md, page 3\n"
-        "[^src3]: plan.md, lines 4-5\n"
-        "[^src4]: plan.md\n"
-        "[^src5]: see work/a.md\n"
-    )
-
-    def test_a_folder_key_moves_in_frontmatter_provenance_and_footnotes_only(self):
-        from lilbee.wiki.rekey import rekeyed_page
-
-        moved = rekeyed_page(self._PAGE, "work", "notes/work")
-
-        assert 'sources: ["notes/work/a.md", "plan.md", "workshop/x.md"]' in moved
-        assert "  - source: notes/work/a.md\n    chunk_index: 0\n" in moved
-        assert "  - source: workshop/x.md\n    chunk_index: 1\n" in moved
-        assert '[^src1]: notes/work/a.md, lines 1-2, excerpt: "work/a.md says so"' in moved
-        assert "[^src2]: workshop/x.md, page 3" in moved
-        assert "[^src9]: work/a.md, an example in a fence" in moved
-        assert "[^src5]: see work/a.md" in moved
-        assert "The words work/a.md stay in prose." in moved
-        assert moved.count("notes/work/a.md") == 3
-
-    def test_a_single_file_key_moves_alone_or_before_its_location(self):
-        from lilbee.wiki.rekey import rekeyed_page
-
-        moved = rekeyed_page(self._PAGE, "plan.md", "notes/work/plan.md")
-
-        assert "[^src3]: notes/work/plan.md, lines 4-5" in moved
-        assert "[^src4]: notes/work/plan.md\n" in moved
-        assert '"notes/work/plan.md"' in moved
-
-    def test_a_page_that_names_no_moved_key_is_returned_as_it_is(self):
-        from lilbee.wiki.rekey import rekeyed_page
-
-        assert rekeyed_page(self._PAGE, "other", "notes/other") == self._PAGE
-        assert rekeyed_page("# No frontmatter\n\nwork/a.md\n", "work", "n/work") == (
-            "# No frontmatter\n\nwork/a.md\n"
-        )
-
-    @pytest.mark.parametrize(
-        "frontmatter",
-        [
-            "sources: [not json\n",
-            'sources: "work/a.md"\n',
-            "sources: [1, 2]\n",
-            "provenance:\n  chunks: {unclosed\n",
-            "provenance:\n  chunks:\n  - 3\n",
-            "provenance:\n  other: 1\n",
-        ],
-        ids=["not-json", "a-string", "numbers", "bad-yaml", "chunk-not-a-table", "no-chunks"],
-    )
-    def test_hand_edited_frontmatter_is_left_as_it_is(self, frontmatter):
-        from lilbee.wiki.rekey import rekeyed_page
-
-        page = f"---\n{frontmatter}---\n\n# T\n"
-
-        assert rekeyed_page(page, "work", "notes/work") == page
-
-    def test_pages_in_every_folder_are_written_and_the_rest_are_not_touched(self, tmp_path):
-        from lilbee.wiki.rekey import rekey_wiki_pages
-
-        root = tmp_path / "wiki"
-        moved = [
-            _write(root / "entities" / "a.md", self._PAGE),
-            _write(root / "drafts" / "b.md", "<!-- origin: concepts -->\n\n" + self._PAGE),
-            _write(root / "archive" / "concepts" / "c.md", self._PAGE),
-        ]
-        untouched = _write(root / "concepts" / "d.md", "# D\n\nNo sources here.\n")
-        stamp = untouched.stat().st_mtime_ns
-        (root / "summaries").mkdir()
-        (root / "summaries" / "bytes.md").write_bytes(b"\xff\xfe not utf-8")
-
-        written = rekey_wiki_pages(root, "work", "notes/work")
-
-        assert written == sorted(moved)
-        assert all('"notes/work/a.md"' in page.read_text(encoding="utf-8") for page in moved)
-        assert untouched.stat().st_mtime_ns == stamp
-        assert (root / "summaries" / "bytes.md").read_bytes() == b"\xff\xfe not utf-8"
-        assert rekey_wiki_pages(root, "work", "notes/work") == []
-        assert rekey_wiki_pages(tmp_path / "no-wiki", "work", "notes/work") == []
-
-
-def _page_from(store: Store, keys: list[str]) -> str:
-    """The text of a generated page about the spring release, written from *keys*."""
-    from lilbee.wiki.page import assemble_content, build_frontmatter
-
-    chunks = [chunk for key in keys for chunk in store.get_chunks_by_source(key)]
-    frontmatter = build_frontmatter(cfg, keys, 0.9, chunks=chunks)
-    return assemble_content(frontmatter, "# Spring\n\nA release.[^src1]\n", f"[^src1]: {keys[0]}\n")
-
-
-class TestDraftMarkers:
-    @staticmethod
-    def _drafts() -> Path:
-        return cfg.data_root / cfg.wiki_dir / "drafts"
-
-    @staticmethod
-    def _collision(store: Store, drafts: Path, first: str, held: list[str]) -> Path:
-        from lilbee.wiki.persistence import divert_concept_collision
-
-        return divert_concept_collision(
-            slug="spring",
-            source=", ".join(sorted(held)),
-            first_source=first,
-            content=_page_from(store, held),
-            drafts_dir=drafts,
-            origin_subdir="concepts",
-        )
-
-    @pytest.mark.parametrize(
-        ("first", "held", "first_after"),
-        [
-            ("work/budget.md", ["work/plan.md"], "notes/work/budget.md"),
-            ("drafts/spring.md", ["work/budget.md", "work/plan.md"], "drafts/spring.md"),
-        ],
-    )
-    def test_a_collision_draft_is_the_one_its_writer_makes_for_the_new_keys(
-        self, library, notes, tmp_path, first, held, first_after
-    ):
-        """The same two sources that collide again land on this draft, not beside it."""
-        from lilbee.wiki.drafts import list_drafts
-        from lilbee.wiki.shared import PendingKind
-
-        store = library.store
-        _seeded_child(store, notes)
-        before = self._collision(store, self._drafts(), first, held)
-
-        register_sources([notes])
-
-        after_keys = [f"notes/{key}" for key in held]
-        expected = self._collision(store, tmp_path / "expected", first_after, after_keys)
-        assert expected.name != before.name
-        assert not before.exists()
-        moved = self._drafts() / expected.name
-        assert (
-            moved.read_text(encoding="utf-8").split("\n")[0]
-            == (expected.read_text(encoding="utf-8").split("\n")[0])
-        )
-        assert f"sources: {json.dumps(after_keys)}" in moved.read_text(encoding="utf-8")
-        assert sorted(page.name for page in self._drafts().iterdir()) == [expected.name]
-        listed = list_drafts(cfg.data_root / cfg.wiki_dir)
-        assert [(draft.slug, draft.pending_kind) for draft in listed] == [
-            (expected.stem, PendingKind.COLLISION)
-        ]
-
-    def test_a_collision_draft_under_another_name_keeps_that_name(self, library, notes):
-        from lilbee.wiki.rekey import rekey_wiki_pages
-
-        store = library.store
-        _seeded_child(store, notes)
-        written = self._collision(store, self._drafts(), "work/budget.md", ["work/plan.md"])
-        renamed = written.with_name("spring-collision-00000000.md")
-        written.rename(renamed)
-        plain = _write(self._drafts() / "autumn-collision-0a0b0c0d.md", _page_from(store, ["x.md"]))
-
-        pages = rekey_wiki_pages(cfg.data_root / cfg.wiki_dir, "work", "notes/work")
-
-        assert renamed in pages and plain not in pages
-        assert "content from notes/work/plan.md held" in renamed.read_text(encoding="utf-8")
-
-    def test_a_kill_between_the_new_draft_and_the_old_one_leaves_one_draft(self, library, notes):
-        from lilbee.wiki.rekey import rekey_wiki_pages
-
-        store = library.store
-        _seeded_child(store, notes)
-        before = self._collision(store, self._drafts(), "work/budget.md", ["work/plan.md"])
-        wiki_root = cfg.data_root / cfg.wiki_dir
-
-        with mock.patch.object(Path, "unlink", side_effect=_Killed), pytest.raises(_Killed):
-            rekey_wiki_pages(wiki_root, "work", "notes/work")
-        assert before.exists() and len(list(self._drafts().iterdir())) == 2
-        rekey_wiki_pages(wiki_root, "work", "notes/work")
-
-        drafts = list(self._drafts().iterdir())
-        assert len(drafts) == 1 and drafts[0] != before
-        assert "content from notes/work/plan.md held" in drafts[0].read_text(encoding="utf-8")
-
-    def _drift(self, store: Store, keys: list[str]) -> Path:
-        from lilbee.wiki.persistence import divert_to_drafts
-
-        return divert_to_drafts(
-            _page_from(store, keys), self._drafts(), "spring", 0.5, "diff", "concepts", keys
-        )
-
-    def test_the_next_build_takes_a_drift_draft_over_in_place(self, library, notes):
-        """The marker keeps the hash of the old keys; the draft is known by its sources list."""
-        from lilbee.wiki.persistence import delete_drift_draft_if_present
-
-        store = library.store
-        _seeded_child(store, notes)
-        draft = self._drift(store, ["work/plan.md"])
-        marker = draft.read_text(encoding="utf-8").split("\n")[0]
-
-        register_sources([notes])
-
-        assert draft.read_text(encoding="utf-8").split("\n")[0] == marker
-        assert self._drift(store, ["notes/work/plan.md"]) == draft
-        assert [page.name for page in self._drafts().iterdir()] == ["spring.md"]
-        assert draft.read_text(encoding="utf-8").split("\n")[0] != marker
-        assert delete_drift_draft_if_present(self._drafts(), "spring", ["notes/work/plan.md"])
-
-    def test_a_drift_draft_whose_sources_list_kept_the_old_keys_is_not_taken_over(
-        self, library, notes
-    ):
-        """The control for the test above: without the re-key of the page, a second draft."""
-        store = library.store
-        _seeded_child(store, notes)
-        draft = self._drift(store, ["work/plan.md"])
-
-        with mock.patch("lilbee.wiki.rekey.rekey_wiki_pages"):
-            register_sources([notes])
-
-        assert self._drift(store, ["notes/work/plan.md"]) != draft
-        assert len(list(self._drafts().iterdir())) == 2
 
 
 class TestSyncsHeldOff:
@@ -2673,46 +2428,6 @@ class TestACancelledJsonAdd:
         payload = json.loads(capsys.readouterr().out)
         assert payload["not_added"] == ["notes"]
         assert "copied" not in payload and "absorbed" not in payload
-
-
-class TestRepeatsAfterARekey:
-    def test_a_footnote_and_a_chunk_two_keys_shared_are_named_once(self):
-        from lilbee.wiki.rekey import rekeyed_page
-
-        page = "\n".join(
-            [
-                "---",
-                'sources: ["a/x.md", "b/x.md"]',
-                "provenance:",
-                "  chunks:",
-                "  - source: a/x.md",
-                "    chunk_index: 0",
-                "  - source: b/x.md",
-                "    chunk_index: 0",
-                "  - source: b/x.md",
-                "    chunk_index: 1",
-                "---",
-                "",
-                "Body.[^src1]",
-                "",
-                '[^src1]: a/x.md, excerpt: "one"',
-                '[^src1]: b/x.md, excerpt: "one"',
-                '[^src2]: b/x.md, excerpt: "two"',
-            ]
-        )
-
-        moved = rekeyed_page(page, "b", "a")
-
-        assert moved.count("- source: a/x.md") == 2
-        assert moved.count('[^src1]: a/x.md, excerpt: "one"') == 1
-        assert '[^src2]: a/x.md, excerpt: "two"' in moved
-
-    def test_a_page_the_rekey_does_not_touch_keeps_its_repeats(self):
-        from lilbee.wiki.rekey import rekeyed_page
-
-        page = '[^src1]: a/x.md, excerpt: "one"\n[^src1]: a/x.md, excerpt: "one"'
-
-        assert rekeyed_page(page, "b", "c") == page
 
 
 _RESET_REFUSED = (

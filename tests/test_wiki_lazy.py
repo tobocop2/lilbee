@@ -56,8 +56,10 @@ def _stub(
 
 
 def _store_with(chunks_by_source: dict[str, list]) -> MagicMock:
+    """A store whose source ids are their paths."""
     store = MagicMock()
     store.get_chunks_by_source.side_effect = lambda name: chunks_by_source.get(name, [])
+    store.source_paths.side_effect = lambda ids: {source_id: source_id for source_id in ids}
     return store
 
 

@@ -365,7 +365,41 @@ def _mention(slug, source, count, indices, kind="entity", type_hint="ORG"):
     }
 
 
+class TestWikiPagesCiting:
+    def test_it_names_the_pages_citing_a_source_at_or_below_each_path(self, store):
+        from tests.conftest import make_citation
+
+        cited = {
+            "work/a.md": "wiki/entities/a.md",
+            "work/deep/b.md": "wiki/entities/b.md",
+            "docs.zip/m.md": "wiki/entities/m.md",
+            "workshop/x.md": "wiki/entities/x.md",
+            "plan.md": "wiki/concepts/plan.md",
+        }
+        store.add_citations(
+            [make_citation(wiki_source=page, source_filename=src) for src, page in cited.items()]
+        )
+
+        assert store.wiki_pages_citing(["work", "docs.zip"]) == {
+            "wiki/entities/a.md",
+            "wiki/entities/b.md",
+            "wiki/entities/m.md",
+        }
+        assert store.wiki_pages_citing(["plan.md"]) == {"wiki/concepts/plan.md"}
+        assert store.wiki_pages_citing(["elsewhere"]) == set()
+        assert store.wiki_pages_citing([]) == set()
+
+    def test_a_store_with_no_citation_table_names_none(self, store):
+        assert store.wiki_pages_citing(["work"]) == set()
+
+
 class TestWikiMentions:
+    def test_a_row_names_its_source_by_id_and_by_path(self, store):
+        store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
+        (row,) = store.wiki_mention_rows()
+        assert row["source"] == "a.md"
+        assert row["source_id"] == store.source_ids(["a.md"])["a.md"]
+
     def test_round_trips_rows(self, store):
         store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
         rows = store.wiki_mention_rows()

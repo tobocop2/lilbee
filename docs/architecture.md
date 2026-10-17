@@ -462,6 +462,16 @@ A removed source that a wiki citation names keeps its row, held out of every lis
 the citation still shows its path. An indexed wiki page has a row of type `wiki` that no
 listing shows.
 
+**The wiki after a move.** The subject index `wiki/stubs.json` and the wiki mention rows
+name each source by its id, so a move leaves them as they are. A page file shows paths:
+its frontmatter `sources` and provenance, and its citation footnotes. After a sync moves
+files, each page whose citation rows cite a moved id is rendered again. A footnote whose
+text is its citation row under another path takes the current path, and that old path is
+replaced by the new one in the frontmatter. The step reads only the page and the store,
+so running it again changes nothing. Drafts and archived pages have no citation rows and
+keep the paths they were written with. A subject index of an older version is aggregated
+again from the mention rows the first time it is read, with no extraction.
+
 **The first open of an older library** keys it in place under the write lock. Each table
 gains `source_id` as the md5 of its path, takes the BTREE index of the path column when
 it had one, and loses the path column; `_sources.filename` becomes `path`. Each step reads

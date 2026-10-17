@@ -698,14 +698,8 @@ def forget_removed_from_wiki_index(removed: list[str]) -> None:
     revisit their entries and the tree would keep offering pages the library
     can no longer support. Best effort: the removal itself already succeeded.
     """
-    if not active_config().wiki or not removed:
-        return
-    from lilbee.wiki.stubs import drop_sources_from_index
-
-    try:
-        drop_sources_from_index(set(removed))
-    except Exception:
-        log.warning("Failed to drop removed documents from the wiki index", exc_info=True)
+    if removed:
+        forget_missing_from_wiki_index()
 
 
 def forget_missing_from_wiki_index() -> None:
@@ -723,6 +717,24 @@ def forget_missing_from_wiki_index() -> None:
         drop_removed_sources(get_services().store, config)
     except Exception:
         log.warning("Failed to drop missing documents from the wiki index", exc_info=True)
+
+
+def show_moves_in_wiki(moved: Iterable[str]) -> None:
+    """Show the new paths of the *moved* sources in the wiki pages that cite them.
+
+    Best effort, as the move itself already succeeded.
+    """
+    store = get_services().store
+    pages = store.wiki_pages_citing(moved)
+    if not pages:
+        return
+    # heavy: the wiki package loads spaCy
+    from lilbee.wiki.rerender import rerender_pages
+
+    try:
+        rerender_pages(store, active_config(), pages)
+    except Exception:
+        log.warning("Failed to show moved documents in the wiki pages", exc_info=True)
 
 
 @contextmanager

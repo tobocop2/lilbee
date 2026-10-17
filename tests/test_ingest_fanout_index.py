@@ -16,6 +16,7 @@ import time
 import zipfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple
 from unittest import mock
@@ -28,7 +29,7 @@ from lilbee.core.config import active_config, cfg
 from lilbee.core.config.model import Config
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
-from lilbee.data.store import Store
+from lilbee.data.store import CitationRecord, Store
 from lilbee.data.store.core import _WIKI_REFRESHED_NAME, _WIKI_REFRESHED_UNREADABLE
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.wiki import stubs as stubs_mod
@@ -928,6 +929,62 @@ def _forget_the_loaded_pipeline() -> None:
         function.cache_clear()
 
 
+def _shown_subjects() -> dict[str, tuple[str, ...]]:
+    """Each subject of the browse index with the paths of its sources."""
+    stubs = load_stub_index(cfg)
+    paths = get_services().store.source_paths(i for stub in stubs.values() for i in stub.sources)
+    return {
+        slug: tuple(sorted(paths.get(i, i) for i in stub.sources)) for slug, stub in stubs.items()
+    }
+
+
+def _cited_page(source: str) -> Path:
+    """A wiki page whose one citation names *source*, its row in the store and its file."""
+    from lilbee.wiki.citations import render_citation_block
+    from lilbee.wiki.page import assemble_content, build_frontmatter
+
+    record = CitationRecord(
+        wiki_source=f"{cfg.wiki_dir}/entities/renaming.md",
+        wiki_chunk_index=0,
+        citation_key="src1",
+        claim_type="fact",
+        source_filename=source,
+        source_hash="h",
+        page_start=0,
+        page_end=0,
+        line_start=1,
+        line_end=1,
+        excerpt="The one file",
+        created_at="",
+    )
+    Store(cfg).add_citations([record])
+    page = cfg.data_root / record["wiki_source"]
+    page.parent.mkdir(parents=True)
+    frontmatter = build_frontmatter(cfg, [source], 0.9)
+    block = render_citation_block([record])
+    page.write_text(assemble_content(frontmatter, "It renames.[^src1]\n", block), encoding="utf-8")
+    return page
+
+
+class TestAMovedFileInTheWiki:
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_the_page_that_cites_it_shows_its_new_name(self, tmp_path, processes):
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        library.write("old.txt", "The one file that is renamed.")
+        await library.sync()
+        library.use()
+        page = _cited_page("old.txt")
+        before = page.read_text(encoding="utf-8")
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+
+        await library.sync()
+
+        assert before.count("old.txt") == 2, "the page did not name the file, so it proves nothing"
+        shown = page.read_text(encoding="utf-8")
+        assert shown == before.replace("old.txt", "renamed.txt")
+
+
 class TestTheWikiIndex:
     """The browse index of the wiki after a fan-out sync lists what a one-process sync lists."""
 
@@ -942,9 +999,11 @@ class TestTheWikiIndex:
         return extractor
 
     def _listed(self, library) -> list[str]:
-        """Every source the browse index lists under a subject."""
+        """Every source the browse index lists under a subject: its path, or its id with none."""
         library.use()
-        return sorted({name for stub in load_stub_index(cfg).values() for name in stub.sources})
+        ids = {source_id for stub in load_stub_index(cfg).values() for source_id in stub.sources}
+        paths = get_services().store.source_paths(ids)
+        return sorted(paths.get(source_id, source_id) for source_id in ids)
 
     def _refuse_rst(self, patch) -> None:
         from lilbee.data.ingest import discovery
@@ -1012,7 +1071,7 @@ class TestTheWikiIndex:
             await library.sync()
             (library.documents / old).rename(library.documents / new)
             await library.sync()
-            subjects.append({slug: stub.sources for slug, stub in load_stub_index(cfg).items()})
+            subjects.append(_shown_subjects())
 
         await _play(tmp_path, history)
         fan_out, one_process = subjects
@@ -1022,7 +1081,7 @@ class TestTheWikiIndex:
 
     def _subjects(self, library) -> dict[str, tuple[str, ...]]:
         library.use()
-        return {slug: stub.sources for slug, stub in load_stub_index(cfg).items()}
+        return _shown_subjects()
 
     def _record(self, library):
         """The checkpoint the store records for the last wiki pass that completed."""
@@ -1295,20 +1354,22 @@ class TestTheWikiIndex:
         await library.sync()
         (library.documents / "old.txt").rename(library.documents / "renamed.txt")
         await self._stop_at_the_rename(library, monkeypatch)
-        assert "old.txt" in self._listed(library)
+        assert "renamed.txt" in self._listed(library)
+        assert "old.txt" not in self._listed(library)
 
         await library.sync()
 
-        subjects = self._subjects(library)
-        assert subjects["about-renamed.txt"] == ("renamed.txt",)
-        assert "about-old.txt" not in subjects
+        assert "renamed.txt" in self._listed(library)
         assert "old.txt" not in self._listed(library)
 
     @pytest.mark.parametrize("parent", ["stops_with_its_workers", "is_killed"])
     async def test_a_fan_out_that_stops_after_a_rename_leaves_the_index_under_the_new_name(
-        self, tmp_path, monkeypatch, parent
+        self, tmp_path, monkeypatch, parent, wiki_on
     ):
         """The oracle is a one-process library whose sync of the rename never stops."""
+        # Only the subject every file names: a subject named after a file's path would
+        # differ between a library that extracted the file again and one that did not.
+        wiki_on.extract.side_effect = lambda chunks: _subjects_of(chunks)[:1]
         subjects = []
 
         async def history(library):
@@ -1324,46 +1385,37 @@ class TestTheWikiIndex:
                             "lilbee.app.ingest.forget_missing_from_wiki_index", lambda: None
                         )
                     await self._stop_at_the_rename(library, patch)
-                assert "old.txt" in self._listed(library)
+                assert "renamed.txt" in self._listed(library)
+                assert "old.txt" not in self._listed(library)
             await library.sync()
-            subjects.append(self._subjects(library))
+            subjects.append(self._listed(library))
 
         fanned, single = await _play(tmp_path, history)
         fan_out, one_process = subjects
-        assert one_process["about-renamed.txt"] == ("renamed.txt",)
-        assert "about-old.txt" not in one_process
+        assert "renamed.txt" in one_process
+        assert "old.txt" not in one_process
         assert fan_out == one_process
         _assert_equal_to_one_process(fanned, single)
 
     @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
-    async def test_a_wiki_pass_that_stops_before_its_write_still_owes_the_renamed_file(
+    async def test_a_sync_that_stops_after_a_rename_owes_the_wiki_index_nothing(
         self, tmp_path, monkeypatch, processes
     ):
-        """The pass of the second sync fails where it writes, after every read of the index."""
+        """The index names the renamed file by its id, so the next sync reads no source."""
         library = Library(tmp_path / "lib", processes)
         library.write_notes("note", 4)
         library.write("old.txt", "The one file that is renamed.")
         await library.sync()
         (library.documents / "old.txt").rename(library.documents / "renamed.txt")
         await self._stop_at_the_rename(library, monkeypatch)
-        stopped_writes = mock.Mock(side_effect=OSError("stopped at its write"))
+        writes = mock.Mock(wraps=stubs_mod._write_source_mentions)
         with monkeypatch.context() as patch:
-            patch.setattr("lilbee.wiki.stubs._write_source_mentions", stopped_writes)
+            patch.setattr("lilbee.wiki.stubs._write_source_mentions", writes)
             await library.sync()
-        assert stopped_writes.call_count == 1
 
-        await library.sync()
-
-        def _renamed(clean):
-            (clean.documents / "old.txt").rename(clean.documents / "renamed.txt")
-
-        def _written(clean):
-            clean.write_notes("note", 4)
-            clean.write("old.txt", "The one file that is renamed.")
-
-        clean = await self._clean(tmp_path, _written, _renamed)
-        assert self._subjects(clean)["about-renamed.txt"] == ("renamed.txt",)
-        self._assert_equal_to(library, clean)
+        assert writes.call_count == 0
+        assert "renamed.txt" in self._listed(library)
+        assert "old.txt" not in self._listed(library)
 
     async def test_with_no_extractor_a_removed_file_leaves_the_index(
         self, tmp_path, monkeypatch, wiki_on

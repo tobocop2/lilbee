@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
-from lilbee.data.types import is_under
 
 from .entity_extractor import EntityKind, get_entity_extractor
 from .entity_extractor.factory import effective_entity_mode
@@ -33,7 +32,6 @@ from .shared import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
     from pathlib import Path
 
     from lilbee.core.config import Config
@@ -52,10 +50,9 @@ STUB_INDEX_FILENAME = "stubs.json"
 # Schema marker, so a future shape change can be detected rather than parsed
 # as garbage. A mismatch is treated as no index at all and the next sync
 # rebuilds it.
-# Bumped to 3 when the index became a derived view of the store mention table:
-# an older file reads as absent so the first refresh rebuilds in full and seeds
-# the table.
-_INDEX_VERSION = 3
+# Version 4 names each source by its id. A file of another version is
+# aggregated again from the store's mention table, which needs no extraction.
+_INDEX_VERSION = 4
 
 _NO_EXTRACTOR = "Wiki entity extractor unavailable; leaving the stub index unchanged"
 
@@ -68,7 +65,7 @@ class WikiStub:
     label: str
     kind: EntityKind
     type_hint: str
-    # Per-source mention counts, sorted by source, summed by ``mentions`` for
+    # Per-source mention counts by source id, sorted, summed by ``mentions`` for
     # the floor. Kept per source rather than as a single total because the
     # store aggregate produces them per source, and because chunk refs are
     # capped, so counting those would undercount a subject named more often
@@ -78,7 +75,7 @@ class WikiStub:
 
     @property
     def sources(self) -> tuple[str, ...]:
-        """Every document naming this subject."""
+        """The id of every document naming this subject."""
         return tuple(source for source, _ in self.source_mentions)
 
     @property
@@ -152,7 +149,7 @@ def _read_stub_index(config: Config | None = None) -> dict[str, WikiStub] | None
         return None
     if not isinstance(payload, dict) or payload.get("version") != _INDEX_VERSION:
         log.info("Wiki stub index version mismatch")
-        return None
+        return _index_from_mentions(config or cfg)
     rows = payload.get("stubs")
     if not isinstance(rows, list):
         # Every index this code writes carries a stubs list, so one without it
@@ -167,6 +164,18 @@ def _read_stub_index(config: Config | None = None) -> dict[str, WikiStub] | None
         log.warning("Wiki stub index holds no usable rows")
         return None
     return {stub.slug: stub for stub in parsed if stub is not None}
+
+
+def _index_from_mentions(config: Config) -> dict[str, WikiStub] | None:
+    """The index aggregated from the store's mention rows and saved; None with no rows."""
+    store = get_services().store
+    with WIKI_BUILD_LOCK:
+        if not store.has_wiki_mentions():
+            return None
+        rows = store.wiki_mention_rows()
+        stubs = _stubs_from_mention_rows(rows, config, config.wiki_stub_max_chunk_refs)
+        save_stub_index(stubs, config)
+    return stubs
 
 
 def load_stub_index(config: Config | None = None) -> dict[str, WikiStub]:
@@ -261,9 +270,9 @@ def _stubs_from_mention_rows(
             continue
         # The source that names the subject most often labels its page.
         canonical = max(slug_rows, key=lambda r: (r["mention_count"], r["source"]))
-        source_mentions = tuple(sorted((r["source"], r["mention_count"]) for r in slug_rows))
+        source_mentions = tuple(sorted((r["source_id"], r["mention_count"]) for r in slug_rows))
         refs = tuple(
-            (r["source"], index)
+            (r["source_id"], index)
             for r in sorted(slug_rows, key=lambda r: r["source"])
             for index in r["chunk_indices"]
         )
@@ -302,13 +311,19 @@ def _write_source_mentions(
 
 
 def _sources_of(stubs: dict[str, WikiStub]) -> set[str]:
-    """Every source *stubs* list under a subject."""
+    """The id of every source *stubs* list under a subject."""
     return {source for stub in stubs.values() for source in stub.sources}
 
 
-def listed_sources(config: Config) -> set[str]:
-    """Every source the index lists under a subject."""
-    return _sources_of(load_stub_index(config))
+def _gone_sources(store: Store, stubs: dict[str, WikiStub]) -> set[str]:
+    """The ids *stubs* list that no source row holds."""
+    listed = _sources_of(stubs)
+    return listed - store.source_paths(listed).keys()
+
+
+def shown_sources(stub: WikiStub, store: Store) -> list[str]:
+    """The paths of the documents naming *stub*, sorted."""
+    return sorted(store.source_paths(stub.sources).values())
 
 
 def _extractor_can_run(config: Config) -> bool:
@@ -332,11 +347,16 @@ def _available_extractor(config: Config) -> EntityExtractor | None:
 
 
 def _rebuild(
-    store: Store, config: Config, extractor: EntityExtractor, sources: set[str] | None
+    store: Store,
+    config: Config,
+    extractor: EntityExtractor,
+    sources: set[str] | None,
+    gone: set[str] | None = None,
 ) -> dict[str, WikiStub]:
     """Extract *sources*, or the whole corpus for None, and persist the index.
 
-    Caller holds ``WIKI_BUILD_LOCK``.
+    The subjects that list one of *sources* or one of the ids in *gone* are
+    aggregated again. Caller holds ``WIKI_BUILD_LOCK``.
     """
     cap = config.wiki_stub_max_chunk_refs
     # A cold or file-only-migrated store has no rows to aggregate, so an
@@ -351,7 +371,8 @@ def _rebuild(
         previous = load_stub_index(config)
         chunks = [c for name in sorted(sources) for c in store.get_chunks_by_source(name)]
         affected = _write_source_mentions(store, extractor, chunks, sources, cap)
-        affected |= {slug for slug, stub in previous.items() if set(stub.sources) & sources}
+        listed = set(store.source_ids(sources).values()) | (gone or set())
+        affected |= {slug for slug, stub in previous.items() if set(stub.sources) & listed}
         recomputed = _stubs_from_mention_rows(store.wiki_mention_rows(slugs=affected), config, cap)
         stubs = {slug: stub for slug, stub in previous.items() if slug not in affected}
         stubs.update(recomputed)
@@ -391,26 +412,9 @@ def refresh_stub_index(
         return _rebuild(store, config, extractor, sources)
 
 
-def _rekeyed_from(store: Store, stubs: dict[str, WikiStub], missing: set[str]) -> set[str]:
-    """The sources a re-key put in the place of *missing* names *stubs* list.
-
-    A re-key moves the mention rows to the new key, so they name a source that
-    the subjects of the old key do not list.
-    """
-    slugs = {slug for slug, stub in stubs.items() if set(stub.sources) & missing}
-    return {row["source"] for row in store.wiki_mention_rows(slugs=slugs)} - _sources_of(stubs)
-
-
-def _owed_sources(store: Store, config: Config, since: str) -> set[str]:
-    """What a refresh owes the index beside the sources its caller names.
-
-    Each source written at or after *since*, each source the index lists that
-    left the store, and each source a re-key put in the place of one of those.
-    """
-    stubs = load_stub_index(config)
-    missing = store.missing_sources(_sources_of(stubs))
-    written = set(store.sources_ingested_since(since))
-    return written | missing | _rekeyed_from(store, stubs, missing)
+def _owed_sources(store: Store, config: Config, since: str) -> tuple[set[str], set[str]]:
+    """The sources written at or after *since*, and the ids the index lists that left the store."""
+    return set(store.sources_ingested_since(since)), _gone_sources(store, load_stub_index(config))
 
 
 def _extractor_for_the_pass(config: Config, named: set[str]) -> EntityExtractor | None:
@@ -450,17 +454,20 @@ def refresh_owed_sources(store: Store, config: Config, named: set[str]) -> set[s
     if covered is not None and covered.version == store.sources_version():
         return set()
     with WIKI_BUILD_LOCK:
+        # The read takes an index of an older version to this one, extractor or not.
+        load_stub_index(config)
         if covered is None:
             _refresh_corpus(store, config, named)
             return set()
         # Before the read of the owed rows: a row committed after it is owed to the next refresh.
         checkpoint = store.sources_checkpoint()
-        owed = _owed_sources(store, config, covered.time) | named
-        if owed:
+        written, gone = _owed_sources(store, config, covered.time)
+        owed = written | named
+        if owed or gone:
             extractor = _extractor_for_the_pass(config, named)
             if extractor is None:
                 return set()
-            _rebuild(store, config, extractor, owed)
+            _rebuild(store, config, extractor, owed, gone)
         store.record_wiki_refreshed(checkpoint)
     return owed
 
@@ -484,59 +491,30 @@ def _page_exists(stub: WikiStub, wiki_root: Path) -> bool:
     return draft.is_file() and not _is_placeholder(draft)
 
 
-def drop_sources_from_index(names: set[str], config: Config | None = None) -> None:
-    """Forget documents the library no longer has.
+def drop_removed_sources(store: Store, config: Config | None = None) -> None:
+    """Forget each document the index lists that no source row holds.
 
     Re-aggregates the affected slugs from the store, whose rows for the removed
     sources went with their chunks, so it costs no extraction pass. Without it a
     removed document keeps its subjects in the browse tree forever: its skip
     marker keeps it out of later syncs, so no refresh ever revisits them.
     """
-    if not names:
-        return
     if config is None:
         config = cfg
     cap = config.wiki_stub_max_chunk_refs
     with WIKI_BUILD_LOCK:
         previous = load_stub_index(config)
-        affected = {slug for slug, stub in previous.items() if set(stub.sources) & names}
+        gone = _gone_sources(store, previous)
+        affected = {slug for slug, stub in previous.items() if set(stub.sources) & gone}
         if not affected:
             return
-        # The removed sources' mention rows went with their chunks, so
-        # re-aggregating the affected slugs reflects the smaller corpus: a
-        # subject only those sources named drops out, one still named elsewhere
-        # keeps its surviving evidence.
-        store = get_services().store
+        # A subject only the removed sources named drops out; one still named
+        # elsewhere keeps its surviving evidence.
         recomputed = _stubs_from_mention_rows(store.wiki_mention_rows(slugs=affected), config, cap)
         stubs = {slug: stub for slug, stub in previous.items() if slug not in affected}
         stubs.update(recomputed)
         if stubs != previous:
             save_stub_index(stubs, config)
-
-
-def drop_removed_sources(store: Store, config: Config) -> None:
-    """Drop each source the index lists that left the store, unless one of them was re-keyed.
-
-    The old key the index lists is how a refresh finds a re-keyed source, so
-    with one the index stays as it is for that refresh.
-    """
-    with WIKI_BUILD_LOCK:
-        stubs = load_stub_index(config)
-        missing = store.missing_sources(_sources_of(stubs))
-        if missing and not _rekeyed_from(store, stubs, missing):
-            drop_sources_from_index(missing, config)
-
-
-def refresh_sources_under(keys: Iterable[str], config: Config) -> None:
-    """Re-aggregate each subject the index lists under one of *keys* or a source below it.
-
-    For sources whose key changed in the store: their mention rows carry the new
-    key, and the index takes it from them.
-    """
-    prefixes = list(keys)
-    listed = listed_sources(config)
-    moved = {source for source in listed if any(is_under(source, prefix) for prefix in prefixes)}
-    drop_sources_from_index(moved, config)
 
 
 def _is_placeholder(draft: Path) -> bool:

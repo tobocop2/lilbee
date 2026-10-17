@@ -114,8 +114,8 @@ def absorb(store: Store, plan: AbsorbPlan, hold: LibraryHold) -> None:
     that died is finished by running it again.
     """
     # heavy: the wiki package loads spaCy
-    from lilbee.wiki.rekey import rekey_wiki_pages
-    from lilbee.wiki.stubs import refresh_sources_under
+    from lilbee.wiki.rerender import rerender_pages
+    from lilbee.wiki.stubs import drop_removed_sources
 
     config = hold.config
     _copy_records(config, plan.moves)
@@ -125,7 +125,8 @@ def absorb(store: Store, plan: AbsorbPlan, hold: LibraryHold) -> None:
     # Outer source first: after a kill, the rerun skips its clear and spares the moved inner rows.
     for old, new in sorted(plan.moves.items(), key=lambda move: move[1]):
         store.rekey_sources_under(old, new)
-        rekey_wiki_pages(config.data_root / config.wiki_dir, old, new)
-    refresh_sources_under(plan.moves, config)
+        rerender_pages(store, config, store.wiki_pages_citing([new]))
+    # A source that landed on a row outside its old path left the store.
+    drop_removed_sources(store, config)
     _prune_records(config, plan.moves)
     _write_registry(config, plan)
