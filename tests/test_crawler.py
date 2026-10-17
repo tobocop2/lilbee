@@ -1838,10 +1838,9 @@ class TestCrawlAndSave:
         assert called == []
 
     async def test_raises_backend_missing_before_bootstrap(self, isolated_env, monkeypatch):
-        """Without [crawler] extra, fail fast: never trigger Chromium bootstrap."""
+        """Without [crawler] extra, a browser crawl fails fast and never bootstraps Chromium."""
         from lilbee.crawler import CrawlerBackendError
 
-        monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         bootstrap_called: list[object] = []
@@ -1851,7 +1850,9 @@ class TestCrawlAndSave:
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", _fake_bootstrap)
         with pytest.raises(CrawlerBackendError, match=f"^{re.escape(CRAWLER_MISSING_MESSAGE)}$"):
-            await crawl_and_save("https://example.com", depth=0)
+            await crawl_and_save(
+                "https://example.com", depth=0, render_mode=CrawlRenderMode.BROWSER
+            )
         assert bootstrap_called == []
 
     @patch("lilbee.crawler.runner.crawl_recursive")
