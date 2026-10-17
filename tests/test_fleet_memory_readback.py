@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import readback
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
@@ -155,15 +156,12 @@ class TestCheckMemoryReport:
 
 
 class TestSupportsMemoryReadback:
-    def setup_method(self) -> None:
-        supports_memory_readback.cache_clear()
-
     def _binary_with_help(self, monkeypatch: pytest.MonkeyPatch, help_text: str) -> Path:
         class _Done:
             stdout = help_text
             stderr = ""
 
-        monkeypatch.setattr(readback.subprocess, "run", lambda *a, **k: _Done())
+        monkeypatch.setattr(binary_mod.subprocess, "run", lambda *a, **k: _Done())
         return Path("/fake/llama-server")
 
     def test_true_when_help_lists_the_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -184,7 +182,7 @@ class TestSupportsMemoryReadback:
         def _boom(*a, **k):
             raise OSError("no such file")
 
-        monkeypatch.setattr(readback.subprocess, "run", _boom)
+        monkeypatch.setattr(binary_mod.subprocess, "run", _boom)
         assert not supports_memory_readback(Path("/missing/llama-server"))
 
     def test_the_answer_is_cached_per_binary(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -198,7 +196,7 @@ class TestSupportsMemoryReadback:
             calls.append(a)
             return _Done()
 
-        monkeypatch.setattr(readback.subprocess, "run", _run)
+        monkeypatch.setattr(binary_mod.subprocess, "run", _run)
         binary = Path("/fake/llama-server")
         assert supports_memory_readback(binary)
         assert supports_memory_readback(binary)

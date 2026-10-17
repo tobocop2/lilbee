@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from lilbee.core.config.enums import RerankerType
 from lilbee.providers.fleet import adapters
+from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_SPEC,
     ROLE_SPECS,
@@ -326,7 +328,60 @@ def test_embed_spec_declared_none_falls_through_to_arch() -> None:
     assert LLM_RERANK_SPEC.server_capable is True
 
 
-def test_build_argv_no_mmap_appends_the_flag() -> None:
+_HELP_NO_MMAP = "--mmap, --no-mmap                       whether to memory-map model\n"
+_HELP_LOAD_MODE = "-lm,   --load-mode MODE                 model loading mode (default: auto)\n"
+_HELP_PROSE = "-ngl,  --n-gpu-layers N                  slower than --no-mmap; see --load-mode\n"
+
+
+def _argv_with_help(monkeypatch, help_text: str | None, *, no_mmap: bool = True) -> list[str]:
+    """A chat argv built against a binary whose ``--help`` prints *help_text* (None: cannot run)."""
+
+    def _run(*_a, **_k):
+        if help_text is None:
+            raise OSError("no such file")
+        return SimpleNamespace(stdout=help_text, stderr="")
+
+    monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+    return build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+        no_mmap=no_mmap,
+    )
+
+
+def _mmap_tokens(argv: list[str]) -> list[str]:
+    return [t for t in argv if t in ("--no-mmap", "--load-mode", "none")]
+
+
+@pytest.mark.parametrize(
+    ("help_text", "expected"),
+    [
+        (_HELP_LOAD_MODE, ["--load-mode", "none"]),
+        (_HELP_NO_MMAP, ["--no-mmap"]),
+        (_HELP_NO_MMAP + _HELP_LOAD_MODE, ["--load-mode", "none"]),
+        (_HELP_PROSE, []),
+        ("", []),
+        (None, []),
+    ],
+    ids=["load-mode", "no-mmap", "both-prefers-load-mode", "prose-only", "empty", "cannot-run"],
+)
+def test_build_argv_no_mmap_sends_the_flag_the_binary_lists(
+    monkeypatch, help_text: str | None, expected: list[str]
+) -> None:
+    assert _mmap_tokens(_argv_with_help(monkeypatch, help_text)) == expected
+
+
+def test_build_argv_no_mmap_reads_help_on_stderr(monkeypatch) -> None:
+    monkeypatch.setattr(
+        binary_mod.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(stdout="", stderr=_HELP_LOAD_MODE),
+    )
     argv = build_server_argv(
         binary=Path("/bin/llama-server"),
         spec=ROLE_SPECS[WorkerRole.CHAT],
@@ -337,20 +392,12 @@ def test_build_argv_no_mmap_appends_the_flag() -> None:
         ctx_per_slot=4096,
         no_mmap=True,
     )
-    assert "--no-mmap" in argv
+    assert _mmap_tokens(argv) == ["--load-mode", "none"]
 
 
-def test_build_argv_defaults_to_mmap() -> None:
-    argv = build_server_argv(
-        binary=Path("/bin/llama-server"),
-        spec=ROLE_SPECS[WorkerRole.CHAT],
-        model_path=Path("/models/chat.gguf"),
-        devices=(0,),
-        n_gpu_layers=-1,
-        slots=1,
-        ctx_per_slot=4096,
-    )
-    assert "--no-mmap" not in argv
+def test_build_argv_defaults_to_mmap(monkeypatch) -> None:
+    argv = _argv_with_help(monkeypatch, _HELP_NO_MMAP + _HELP_LOAD_MODE, no_mmap=False)
+    assert _mmap_tokens(argv) == []
 
 
 def _chat_argv(**kwargs) -> list[str]:

@@ -256,6 +256,16 @@ def _seal_litellm_distributions(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_engine_help():
+    """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
+    from lilbee.providers.fleet.binary import engine_help
+
+    engine_help.cache_clear()
+    yield
+    engine_help.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _sealed_engine_resolution(request, monkeypatch):
     """Seal engine-binary resolution so every machine behaves like CI.
 
