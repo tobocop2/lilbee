@@ -2928,11 +2928,10 @@ class TestToolsSchemaSize:
         # 8_800 originally, measured over whatever the environment registered.
         # Pinning the surface put it at 8_799; moving the session tools behind
         # mcp_sessions_enabled (off by default) takes them off the default wire
-        # and drops it to 6_996. 7_500 left room for a tool or two; paging
-        # list_documents (limit, offset) took 71 bytes of it, so the cap is 7_700. Each
+        # and drops it to 6_996. 7_500 leaves room for a tool or two. Each
         # tool's docstring becomes its schema description, so trim verbose Args
         # sections before raising this.
-        ceiling = 7_700
+        ceiling = 7_500
         assert total_bytes <= ceiling, (
             f"Default OpenAI tools schema is {total_bytes} bytes, exceeds {ceiling}."
         )
