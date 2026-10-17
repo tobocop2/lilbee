@@ -71,3 +71,33 @@ def test_auto_does_not_send_a_quantized_v_that_forces_flash_attention_on(
 
     assert "--cache-type-v" not in argv
     assert "--cache-type-k" not in argv
+
+
+class _Estimate:
+    """What gguf-parser would return; the test reads the KV type it was asked for."""
+
+    ram_bytes = 0
+
+    def footprint(self, *, unified: bool) -> int:
+        return 1
+
+
+@pytest.mark.parametrize(("backend", "flash", "flash_flag", "kv_type"), _CASES)
+def test_chat_placement_estimate_sizes_the_kv_type_the_launch_sends(
+    tmp_path, monkeypatch, backend, flash, flash_flag, kv_type
+) -> None:
+    """The placement estimate and the launch argv agree on the one KV type."""
+    argv = _chat_argv(tmp_path, monkeypatch, backend=backend, flash=flash, meta=_DENSE_META)
+    asked: list[KvCacheType] = []
+
+    def _record(*_a, kv_cache_type, **_k):
+        asked.append(kv_cache_type)
+        return _Estimate()
+
+    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _record)
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 4096)
+
+    planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1)
+
+    assert asked == [KvCacheType(_flag(argv, "--cache-type-k"))]
+    assert _flag(argv, "--cache-type-v") == kv_type

@@ -146,12 +146,15 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
     which dynamic ctx / FA / KV cache / GPU layers values their install
     chose without grepping debug logs.
     """
+    from lilbee.core.config.enums import KvCacheType
+    from lilbee.providers.fleet.planning import chat_cache_type_flag
+
     return {
         "num_ctx": cfg.num_ctx,
         "num_ctx_max": cfg.num_ctx_max,
         "chat_n_ctx_target": cfg.chat_n_ctx_target,
         "flash_attention": cfg.flash_attention,
-        "kv_cache_type": cfg.kv_cache_type.value,
+        "kv_cache_type": chat_cache_type_flag() or KvCacheType.F16.value,
         "n_gpu_layers": cfg.n_gpu_layers,
         "cpu_moe": cfg.cpu_moe,
         "n_cpu_moe": cfg.n_cpu_moe,

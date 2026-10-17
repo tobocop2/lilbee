@@ -366,7 +366,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Flash attention. Empty (auto) enables it; disable for backends or "
             "models where it misbehaves. Resolves the V-cache padding warning "
-            "on models with uneven per-layer V dims."
+            "on models with uneven per-layer V dims. On Vulkan and SYCL lilbee "
+            "sends auto, not on, even when this is true."
         ),
     ),
     "kv_cache_type": SettingDef(
@@ -375,8 +376,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.GENERATION,
         help_text=(
             "KV cache element type for both K and V. q8_0 / q4_0 halve or quarter "
-            "cache memory and apply only where flash attention is on; elsewhere the "
-            "cache is f16."
+            "cache memory and apply only where lilbee sends flash attention on. On "
+            "Vulkan and SYCL lilbee sends auto, so the cache is f16 there; it is "
+            "also f16 when flash attention is off."
         ),
     ),
     "n_gpu_layers": SettingDef(
