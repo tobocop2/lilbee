@@ -3875,6 +3875,16 @@ class TestAddWithUrls:
         else:
             assert str(refusal) in result.output
 
+    @pytest.mark.parametrize("crawl", [[], ["--crawl"]], ids=["one-page", "site"])
+    def test_a_seed_with_a_backslash_after_the_port_is_refused_by_name(self, crawl):
+        seed = "http://example.com:8080\\path"
+        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+            result = runner.invoke(app, ["--json", "add", seed, *crawl])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == {
+            "error": "URL has an invalid port: example.com:8080\\path"
+        }
+
     def test_add_nonexistent_path_fails(self, tmp_path):
         """Adding a nonexistent file path fails with error."""
         result = runner.invoke(app, ["add", str(tmp_path / "nonexistent_crawl_test_xyz.txt")])
