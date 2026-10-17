@@ -79,6 +79,9 @@ RETRY_STATUSES = {
     "/retry/broken": HTTPStatus.INTERNAL_SERVER_ERROR,
     "/retry/busy": HTTPStatus.SERVICE_UNAVAILABLE,
 }
+# A page that answers its first request with 429 and every later one with the page.
+RATE_LIMITED_ONCE = "/retry/once"
+ONE_PAGE_LIMITS = {"depth-0": {"depth": 0}, "one-page": {"depth": 1, "max_pages": 1}}
 SCOPE_LINKS = ("/scope/skip/a", "/scope/keep/b", "/scope/la/drop", "/scope/la/keepme")
 # Links as a page writes them: a raw letter, a raw space, one already percent-encoded, a
 # backslash, a raw letter before an escaped slash and before a slash, two control characters,
@@ -356,6 +359,7 @@ class _Site:
         self.accept_headers: list[tuple[str, dict[str, str]]] = []
         self.cookies: list[tuple[str, str]] = []
         self.robots_status = HTTPStatus.OK
+        self._answered: set[str] = set()
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._server.daemon_threads = True
@@ -397,7 +401,16 @@ class _Site:
         """The status and body for *path*; the cookie page refuses a request without the cookie."""
         if path == COOKIE_NEED and SESSION_COOKIE not in cookie:
             return HTTPStatus.FORBIDDEN, "<h1>forbidden</h1>"
+        if path == RATE_LIMITED_ONCE and self._first_request(path):
+            return HTTPStatus.TOO_MANY_REQUESTS, "<h1>slow down</h1>"
         return self._body(path)
+
+    def _first_request(self, path: str) -> bool:
+        """True the first time *path* is answered."""
+        with self._lock:
+            first = path not in self._answered
+            self._answered.add(path)
+            return first
 
     def close(self) -> None:
         self._server.shutdown()
@@ -549,13 +562,17 @@ class TestSsrfBlocklistsAgree:
     )
     async def test_fetch_refuses_an_ipv6_address_that_carries_a_private_ipv4(self, host: str):
         fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP)
-        fetched = await fetcher.fetch_single(f"http://{host}:9/", timeout=1)
+        fetched = await fetcher.fetch_single(
+            f"http://{host}:9/", timeout=1, concurrency=ConcurrencySpec()
+        )
         assert fetched.success is False
         assert fetched.error.startswith(_SSRF_ERROR_CODE), fetched.error
 
     async def test_fetch_tries_an_ipv6_address_that_carries_a_public_ipv4(self):
         fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP)
-        fetched = await fetcher.fetch_single(f"http://{IPV6_FORM_OF_PUBLIC_IPV4}:9/", timeout=1)
+        fetched = await fetcher.fetch_single(
+            f"http://{IPV6_FORM_OF_PUBLIC_IPV4}:9/", timeout=1, concurrency=ConcurrencySpec()
+        )
         assert fetched.success is False
         assert fetched.error
         assert not fetched.error.startswith(_SSRF_ERROR_CODE), fetched.error
@@ -957,6 +974,24 @@ class TestRetriedStatuses:
         cfg.crawl_retry_max_backoff = RETRY_DELAY_S
         await crawl_and_save(site.url("/retry/"), depth=1, max_pages=0)
         assert len(site.paths_since(0, "/retry/busy")) == 1 + CRAWLBERG_RETRY_LIMIT
+
+    @pytest.mark.parametrize("limit", ONE_PAGE_LIMITS.values(), ids=list(ONE_PAGE_LIMITS))
+    async def test_a_one_page_crawl_retries_a_rate_limited_page_and_saves_it(self, site, limit):
+        cfg.crawl_retry_on_rate_limit = True
+        cfg.crawl_retry_max_attempts = RETRY_ATTEMPTS
+        cfg.crawl_retry_base_delay_min = RETRY_DELAY_S
+        cfg.crawl_retry_base_delay_max = RETRY_DELAY_S
+        cfg.crawl_retry_max_backoff = RETRY_DELAY_S
+        paths = await crawl_and_save(site.url(RATE_LIMITED_ONCE), render_mode=HTTP, **limit)
+        assert site.paths_since(0, RATE_LIMITED_ONCE) == [RATE_LIMITED_ONCE] * 2
+        assert len(paths) == 1
+
+    @pytest.mark.parametrize("limit", ONE_PAGE_LIMITS.values(), ids=list(ONE_PAGE_LIMITS))
+    async def test_a_one_page_crawl_with_retries_off_asks_once_and_saves_nothing(self, site, limit):
+        cfg.crawl_retry_on_rate_limit = False
+        paths = await crawl_and_save(site.url(RATE_LIMITED_ONCE), render_mode=HTTP, **limit)
+        assert site.paths_since(0, RATE_LIMITED_ONCE) == [RATE_LIMITED_ONCE]
+        assert paths == []
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
