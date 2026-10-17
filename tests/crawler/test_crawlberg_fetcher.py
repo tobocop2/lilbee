@@ -650,8 +650,8 @@ class TestFetchSingle:
         "reason",
         [
             "connection: [network:connection] error sending request for url (http://h:9/robots.txt)",
-            "timeout: request timed out",
-            "dns: failed to lookup address information",
+            "timeout: [network:timeout] error sending request for url (http://h:9/robots.txt)",
+            "dns: [network:dns] error sending request for url (http://h:9/robots.txt)",
         ],
         ids=["connection", "timeout", "dns"],
     )
@@ -673,8 +673,9 @@ class TestFetchSingle:
             "rate_limited: HTTP 429",
             "forbidden: waf/blocked: challenge page",
             "ssl: [network:ssl] error sending request for url (https://h/robots.txt)",
+            "timeout: HTTP 408 for http://h:9/robots.txt",
         ],
-        ids=["rate-limited", "waf", "ssl"],
+        ids=["rate-limited", "waf", "ssl", "request-timeout"],
     )
     async def test_a_robots_txt_the_site_answered_keeps_naming_the_setting(self, reason: str):
         script = [error(SEED, f"robots_unreachable: {reason}"), complete(0)]
