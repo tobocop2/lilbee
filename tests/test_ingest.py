@@ -51,12 +51,14 @@ def isolated_env(tmp_path):
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Provide a mock Services container for all ingest tests."""
+    from lilbee.data.store import SourceSummary
     from tests.conftest import make_mock_services
 
     _sources: dict[str, dict] = {}
     store = MagicMock()
     store.search.return_value = []
     store.bm25_probe.return_value = []
+    store.source_summary.return_value = SourceSummary(0, 0, {}, [])
     store.get_sources.side_effect = lambda: list(_sources.values())
     store.add_chunks.side_effect = len
 

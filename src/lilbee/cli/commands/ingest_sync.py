@@ -363,6 +363,19 @@ def run_sync_with_signal_cancel(
         )
 
 
+def _default_progress() -> DetailedProgressCallback:
+    """Print a line per file when the live bar cannot draw (piped output); else stay silent.
+
+    JSON mode keeps stdout to the one document.
+    """
+    from lilbee.cli.sync import file_start_printer
+    from lilbee.runtime.progress import noop_callback
+
+    if cfg.json_mode or console.is_terminal:
+        return noop_callback
+    return file_start_printer(console)
+
+
 def _run_sync(
     cancel_event: threading.Event,
     *,
@@ -377,7 +390,6 @@ def _run_sync(
     *before_sync* runs once the eager warm is off, so a store read in it starts no model.
     """
     from lilbee.data.ingest import sync
-    from lilbee.runtime.progress import noop_callback
 
     # Batch ingest is a headless one-shot: skip the eager warm so services init
     # doesn't spawn every role. With lazy per-role spawn, the sync brings up only
@@ -387,7 +399,7 @@ def _run_sync(
     if before_sync is not None:
         before_sync()
 
-    callback = _cancellable_progress(cancel_event, on_progress or noop_callback)
+    callback = _cancellable_progress(cancel_event, on_progress or _default_progress())
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)

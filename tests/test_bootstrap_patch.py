@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
+import re
+import select
+import shutil
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -126,3 +133,80 @@ def test_bootstrap_centres_on_the_python_wordmark_width(added_lines):
 
     assert f"#define LILBEE_LOGO_WIDTH {LOGO_WIDTH}" in added_lines
     assert any("TIOCGWINSZ" in line for line in added_lines)
+
+
+_CURSOR_CODE = re.compile(r"\x1b\[\?25([lh])")
+_WORDMARK_MARK = "@@@"
+_PTY_WAIT_SECONDS = 30.0
+_PTY_POLL_SECONDS = 0.05
+
+
+def _run_progress_on_a_pty(tmp_path: pathlib.Path, added_lines: list[str], steps: str) -> str:
+    """Compile the patch's progress functions with a driver and return what they write to a pty."""
+    text = "\n".join(added_lines)
+    head = text[text.index("#if !defined(_WIN32)") : text.index("static void lilbee_stamp_path")]
+    end_of_progress = text.index("#endif\n", text.index("static void lilbee_progress_end"))
+    body = text[text.index("#define LILBEE_FRAME_ROWS_ABOVE_BAR") : end_of_progress]
+    source = tmp_path / "driver.c"
+    source.write_text(
+        "#include <stdio.h>\n#include <stdbool.h>\n#include <stdlib.h>\n#include <string.h>\n"
+        f"{head}\n{body}\n#endif\n"
+        f"int main(void) {{ lilbee_progress_begin(); {steps} return 0; }}\n",
+        encoding="utf-8",
+    )
+    binary = tmp_path / "driver"
+    subprocess.run(["cc", "-o", str(binary), str(source)], check=True)
+    import pty  # POSIX only; the only caller is skipped on Windows
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen([str(binary)], stderr=slave, stdout=slave, close_fds=True)
+    chunks: list[bytes] = []
+    try:
+        deadline = time.monotonic() + _PTY_WAIT_SECONDS
+        while True:
+            exited = proc.poll() is not None
+            timeout = 0 if exited else min(max(deadline - time.monotonic(), 0), _PTY_POLL_SECONDS)
+            if not select.select([master], [], [], timeout)[0]:
+                if exited or time.monotonic() >= deadline:
+                    break
+                continue
+            chunks.append(os.read(master, 65536))
+    finally:
+        os.close(slave)
+        os.close(master)
+        proc.kill()
+        proc.wait()
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("cc") is None,
+    reason="needs a POSIX pty and a C compiler",
+)
+class TestBootstrapCursor:
+    """What the bootstrap writes to a terminal decides where the cursor sits."""
+
+    def test_the_cursor_is_hidden_before_the_wordmark_is_drawn(self, added_lines, tmp_path):
+        out = _run_progress_on_a_pty(
+            tmp_path, added_lines, "lilbee_progress_update(50, 100); lilbee_progress_end(true);"
+        )
+        first_hide = out.index("\x1b[?25l")
+        assert first_hide < out.index(_WORDMARK_MARK)
+
+    def test_an_interactive_launch_hands_the_hidden_cursor_on(self, added_lines, tmp_path):
+        out = _run_progress_on_a_pty(
+            tmp_path, added_lines, "lilbee_progress_update(50, 100); lilbee_progress_end(true);"
+        )
+        assert _CURSOR_CODE.findall(out)[-1] == "l"
+
+    def test_a_launch_with_arguments_shows_the_cursor_again(self, added_lines, tmp_path):
+        out = _run_progress_on_a_pty(
+            tmp_path, added_lines, "lilbee_progress_update(50, 100); lilbee_progress_end(false);"
+        )
+        assert _CURSOR_CODE.findall(out)[-1] == "h"
+
+    def test_a_failed_extraction_does_not_leave_the_cursor_hidden(self, added_lines, tmp_path):
+        out = _run_progress_on_a_pty(
+            tmp_path, added_lines, "lilbee_progress_update(50, 100); exit(2);"
+        )
+        assert _CURSOR_CODE.findall(out)[-1] == "h"

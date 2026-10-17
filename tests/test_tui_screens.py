@@ -88,12 +88,14 @@ def _isolated_cfg(tmp_path):
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so TUI screens never touch real backends."""
+    from lilbee.data.store import SourceSummary
     from tests.conftest import make_mock_services
 
     store = MagicMock()
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
+    store.source_summary.return_value = SourceSummary(0, 0, {}, [])
     store.count_sources.return_value = 0
     store.add_chunks.side_effect = len
     store.delete_by_source.return_value = None
@@ -1742,24 +1744,29 @@ async def test_reset_nullable_to_none():
 
 async def test_reset_select_clears_when_default_none():
     """Resetting a Select-backed field to a None default clears the widget."""
+    import dataclasses
+
     from textual.widgets import Select
 
-    from lilbee.app.settings_map import SettingDef
+    from lilbee.app.settings_map import SETTINGS_MAP, SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
+    # The blank row exists only on a Select built for a nullable setting.
+    nullable = dataclasses.replace(SETTINGS_MAP["wiki_clusterer"], nullable=True)
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        # Find any existing Select editor (wiki_clusterer is a choice-based field).
-        select_widget = screen.query_one("#ed-wiki_clusterer", Select)
-        # Seed a non-default choice so we can detect the clear.
-        select_widget.value = "embedding"
-        defn = SettingDef(type=str, nullable=True, group="Wiki", choices=("embedding", "concepts"))
-        screen._refresh_editor("wiki_clusterer", defn, None)
-        # clear() yields the "no selection" sentinel; value should no longer be the seeded choice.
-        assert select_widget.value != "embedding"
-        assert select_widget.value not in {"embedding", "concepts"}
+    with patch.dict(SETTINGS_MAP, {"wiki_clusterer": nullable}):
+        async with app.run_test(size=(120, 40)) as _pilot:
+            screen = app.screen
+            assert isinstance(screen, SettingsScreen)
+            select_widget = screen.query_one("#ed-wiki_clusterer", Select)
+            # Seed a non-default choice so we can detect the clear.
+            select_widget.value = "embedding"
+            defn = SettingDef(
+                type=str, nullable=True, group="Wiki", choices=("embedding", "concepts")
+            )
+            screen._refresh_editor("wiki_clusterer", defn, None)
+            # clear() yields the "no selection" sentinel, not the seeded choice.
+            assert select_widget.value is Select.NULL
 
 
 async def test_reset_select_sets_value_when_default_provided():
@@ -2114,7 +2121,7 @@ class StatusTestApp(LilbeeAppHost):
 
 async def test_status_screen_renders_info(mock_svc):
     mock_svc.store.get_sources.return_value = [
-        {"source": "test.pdf", "chunk_count": 10, "content_type": "application/pdf"},
+        {"filename": "test.pdf", "chunk_count": 10},
     ]
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2192,10 +2199,17 @@ async def test_status_screen_config_pills_render(mock_svc):
         assert "loaded" in rendered or "not set" in rendered
 
 
-async def test_status_screen_shows_documents(mock_svc):
+def _serve_sources(mock_svc, *names: str, total: int | None = None) -> None:
+    """Make the store's paged listing return *names* and report *total* sources."""
     mock_svc.store.get_sources.return_value = [
-        {"source": "notes.md", "chunk_count": 5, "content_type": "text/markdown"},
+        {"filename": n, "file_hash": "h", "chunk_count": 5, "ingested_at": "2026-01-01"}
+        for n in names
     ]
+    mock_svc.store.count_sources.return_value = len(names) if total is None else total
+
+
+async def test_status_screen_shows_documents(mock_svc):
+    _serve_sources(mock_svc, "notes.md")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import DataTable
@@ -2205,7 +2219,7 @@ async def test_status_screen_shows_documents(mock_svc):
 
 
 async def test_status_screen_store_error(mock_svc):
-    mock_svc.store.get_sources.side_effect = Exception("no table")
+    mock_svc.store.count_sources.side_effect = Exception("no table")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         table = app.screen.query_one("#docs-table", DataTable)
@@ -2221,28 +2235,26 @@ async def _wait_for_row_count(pilot, table, expected: int, *, tries: int = 200) 
     assert table.row_count == expected
 
 
-async def test_status_screen_streams_documents_in_batches(mock_svc):
-    """A whole wiki's worth of sources streams into the table without freezing.
-
-    Before this, a per-source ``add_row`` loop on the UI thread softlocked
-    the status tab once thousands of files were ingested. The renderer now
-    appends a bounded batch per refresh, so the screen stays responsive and
-    every row eventually shows up to be scrolled through.
-    """
+async def test_status_screen_first_load_is_one_page_of_a_huge_library(mock_svc):
+    """A library of millions loads one page, says how many are loaded, and counts them all."""
     from textual.widgets import DataTable
 
-    from lilbee.cli.tui.screens.status import _DOC_RENDER_BATCH
+    from lilbee.cli.tui import messages as msg
+    from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT
 
-    total = _DOC_RENDER_BATCH * 3 + 11
-    mock_svc.store.get_sources.return_value = [
-        {"filename": f"doc_{i}.md", "chunk_count": i, "content_type": "text/markdown"}
-        for i in range(total)
-    ]
+    names = [f"doc_{i}.md" for i in range(DOCUMENTS_PAGE_DEFAULT)]
+    _serve_sources(mock_svc, *names, total=8_800_000)
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         table = app.screen.query_one("#docs-table", DataTable)
-        # Every row arrives within a bounded number of refreshes.
-        await _wait_for_row_count(pilot, table, total)
+        await _wait_for_row_count(pilot, table, DOCUMENTS_PAGE_DEFAULT)
+        hint = str(app.screen.query_one("#docs-more", Static).render())
+        storage = str(app.screen.query_one("#storage-info", Static).render())
+    assert hint == msg.STATUS_DOCS_MORE.format(count=DOCUMENTS_PAGE_DEFAULT)
+    assert "lilbee status" not in hint
+    assert "8800000" in storage.replace(",", "")
+    mock_svc.store.get_sources.assert_called_once_with(limit=DOCUMENTS_PAGE_DEFAULT, offset=0)
+    mock_svc.store.source_summary.assert_not_called()
 
 
 async def test_status_screen_lists_held_out_files(mock_svc, monkeypatch):
@@ -2272,9 +2284,7 @@ async def test_status_screen_renders_bracketed_held_out_and_doc_names_as_written
     from lilbee.cli.tui.screens import status as status_screen
     from lilbee.data.types import SkippedSource
 
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "doc[/x].md", "chunk_count": 1, "content_type": "text/markdown"}
-    ]
+    _serve_sources(mock_svc, "doc[/x].md")
     held = [SkippedSource(filename="scan[red].pdf", reason="bad [/x] header")]
     monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held, 1))
     app = StatusTestApp()
@@ -2304,9 +2314,7 @@ async def test_status_screen_keeps_the_held_out_section_closed_when_empty(mock_s
 
 
 async def test_status_screen_storage_section(mock_svc):
-    mock_svc.store.get_sources.return_value = [
-        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
-    ]
+    _serve_sources(mock_svc, "a.md")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         info = app.screen.query_one("#storage-info", Static)
@@ -2346,10 +2354,7 @@ async def test_status_screen_arch_with_vision(mock_svc):
 
 
 async def test_status_screen_vim_keys(mock_svc):
-    mock_svc.store.get_sources.return_value = [
-        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
-        {"source": "b.md", "chunk_count": 2, "content_type": "text/markdown"},
-    ]
+    _serve_sources(mock_svc, "a.md", "b.md")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import DataTable
@@ -8137,9 +8142,9 @@ async def test_settings_key_g_G():
 async def test_status_key_g_G(mock_svc):
     """g/G scroll the status page to top/bottom."""
     mock_svc.store.get_sources.return_value = [
-        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
-        {"source": "b.md", "chunk_count": 2, "content_type": "text/markdown"},
-        {"source": "c.md", "chunk_count": 3, "content_type": "text/markdown"},
+        {"filename": "a.md", "chunk_count": 1},
+        {"filename": "b.md", "chunk_count": 2},
+        {"filename": "c.md", "chunk_count": 3},
     ]
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -15829,7 +15834,7 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     screen._load_held_out = lambda _docs: None
     screen._load_arch = loaded_arch.append
 
-    docs_result = _DocsResult(sources=[{"a": 1}, {"b": 2}], load_failed=False)
+    docs_result = _DocsResult(sources=[], load_failed=False, document_count=2)
     sources_event = type(
         "Ev",
         (),
@@ -16176,3 +16181,50 @@ async def test_settings_invalid_regex_error_shows_brackets_as_written():
         error = screen.query_one(f"#{LIST_ERROR_ID_PREFIX}crawl_exclude_patterns", Static)
         rendered = str(error.render())
     assert "bad character in group name '[/x]'" in rendered
+
+
+async def test_a_choice_select_offers_no_blank_when_the_setting_is_not_nullable():
+    """A choice setting that cannot be unset gives the user no blank row to pick."""
+    from textual.widgets import Select
+    from textual.widgets._select import InvalidSelectValueError
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+    from tests._async_wait import wait_until
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        select = screen.query_one("#ed-chat_mode", Select)
+        before = cfg.chat_mode
+        with pytest.raises(InvalidSelectValueError):
+            select.value = Select.NULL
+        await wait_until(pilot, lambda: select.value == before)
+        assert select.value == before
+
+
+async def test_blanking_a_select_hands_the_save_an_empty_value():
+    """A blank Select saves "" (the unset value), never the text of the NULL sentinel."""
+    from textual.widgets import Select
+
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+    from lilbee.cli.tui.screens.settings_widgets import make_select
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        # A value outside the choices builds the Select with its blank row, as in production.
+        await screen.query_one("#ed-chat_mode", Select).remove()
+        select = make_select("chat_mode", SETTINGS_MAP["chat_mode"], "not-a-choice")
+        await screen.mount(select)
+        saved: list[str] = []
+        with patch.object(
+            screen, "_persist_value", side_effect=lambda _key, _defn, raw: saved.append(raw)
+        ):
+            select.value = "chat"
+            assert await pump_until(pilot, lambda: saved == ["chat"])
+            select.value = Select.NULL
+            assert await pump_until(pilot, lambda: len(saved) == 2)
+        assert saved == ["chat", ""]

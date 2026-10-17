@@ -3,7 +3,11 @@
 import asyncio
 import contextlib
 import errno
+import json
 import os
+import signal
+import subprocess
+import sys
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,12 +16,13 @@ import pytest
 from mcp.shared.exceptions import MCPError
 
 import lilbee.app.services as svc_mod
+from conftest import clean_env
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.discovery import ExclusionReason
-from lilbee.data.store import SearchChunk, Store
+from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX, SearchChunk, Store
 from lilbee.mcp_server import (
     add,
     catalog_browse,
@@ -56,6 +61,7 @@ from lilbee.mcp_server import (
 from lilbee.runtime.progress import EmbedEvent, EventType, FileStartEvent, noop_callback
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
 from tests._mcp_client import mcp_client
+from tests.conftest import summary_of
 
 
 @pytest.fixture(autouse=True)
@@ -266,14 +272,16 @@ class TestStatus:
         assert result["total_chunks"] == 0
 
     def test_with_sources(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {
-                "filename": "test.pdf",
-                "file_hash": "abc123",
-                "chunk_count": 10,
-                "ingested_at": "2026-01-01T00:00:00",
-            }
-        ]
+        mock_svc.store.source_summary.return_value = summary_of(
+            [
+                {
+                    "filename": "test.pdf",
+                    "file_hash": "abc123",
+                    "chunk_count": 10,
+                    "ingested_at": "2026-01-01T00:00:00",
+                }
+            ]
+        )
         result = status()
         assert len(result["sources"]) == 1
         assert result["sources"][0]["filename"] == "test.pdf"
@@ -574,14 +582,58 @@ class TestRemove:
 class TestListDocuments:
     def test_returns_documents(self, mock_svc):
         mock_svc.store.get_sources.return_value = [{"filename": "a.md", "chunk_count": 3}]
+        mock_svc.store.count_sources.return_value = 1
         result = list_documents()
         assert result["total"] == 1
         assert result["documents"][0]["filename"] == "a.md"
+        assert result["has_more"] is False
 
     def test_empty(self, mock_svc):
         mock_svc.store.get_sources.return_value = []
+        mock_svc.store.count_sources.return_value = 0
         result = list_documents()
         assert result["total"] == 0
+
+    def test_pages_through_the_store_listing_the_http_route_uses(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [{"filename": "b.md"}]
+        mock_svc.store.count_sources.return_value = 5
+
+        result = list_documents(limit=2, offset=1)
+
+        mock_svc.store.get_sources.assert_called_once_with(limit=2, offset=1)
+        mock_svc.store.count_sources.assert_called_once_with()
+        assert result["documents"] == [{"filename": "b.md", "chunk_count": 0}]
+        assert result["total"] == 5
+        assert result["has_more"] is True
+
+    def test_defaults_match_the_http_route(self, mock_svc):
+        mock_svc.store.get_sources.return_value = []
+        mock_svc.store.count_sources.return_value = 0
+
+        list_documents()
+
+        mock_svc.store.get_sources.assert_called_once_with(limit=DOCUMENTS_PAGE_DEFAULT, offset=0)
+
+    @pytest.mark.parametrize("limit", [0, -1, DOCUMENTS_PAGE_MAX + 1])
+    def test_a_limit_outside_the_http_bounds_is_refused(self, mock_svc, limit):
+        result = list_documents(limit=limit)
+
+        assert result == {"error": "limit must be from 1 to 1000"}
+        mock_svc.store.get_sources.assert_not_called()
+
+    async def test_the_registered_tool_offers_limit_and_offset(self):
+        from lilbee.mcp_server import build_mcp_server
+
+        tools = await build_mcp_server().list_tools()
+
+        (tool,) = [t for t in tools if t.name == "list_documents"]
+        assert set(tool.input_schema["properties"]) == {"limit", "offset"}
+
+    def test_a_negative_offset_is_refused(self, mock_svc):
+        result = list_documents(offset=-1)
+
+        assert result == {"error": "offset must be 0 or more"}
+        mock_svc.store.get_sources.assert_not_called()
 
 
 class TestReset:
@@ -1158,16 +1210,89 @@ class TestAdd:
 
 class TestMain:
     @mock.patch("lilbee.mcp_server.build_mcp_server")
-    def test_main_calls_run(self, mock_build):
+    def test_main_serves_stdio(self, mock_build):
+        mock_build.return_value.run_stdio_async = AsyncMock()
         main()
-        mock_build.return_value.run.assert_called_once()
+        mock_build.return_value.run_stdio_async.assert_awaited_once()
 
     @mock.patch("lilbee.mcp_server.build_mcp_server")
     @mock.patch("lilbee.mcp_server.get_services", side_effect=RuntimeError("boom"))
     def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_build):
-        """A crash in the pre-warm path falls through to run() instead of aborting."""
+        """A crash in the pre-warm path falls through to serving instead of aborting."""
+        mock_build.return_value.run_stdio_async = AsyncMock()
         main()
-        mock_build.return_value.run.assert_called_once()
+        mock_build.return_value.run_stdio_async.assert_awaited_once()
+
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    @mock.patch("lilbee.mcp_server.exit_on_signals_in_loop")
+    def test_main_routes_signals_through_the_running_loop(self, mock_route, mock_build):
+        """The signal hook is given the loop that serves stdio, not a loop made later."""
+        seen: list[asyncio.AbstractEventLoop] = []
+        mock_route.side_effect = seen.append
+        loops: list[asyncio.AbstractEventLoop] = []
+
+        async def serve() -> None:
+            loops.append(asyncio.get_running_loop())
+
+        mock_build.return_value.run_stdio_async = serve
+        main()
+        assert len(seen) == 1
+        assert seen == loops
+
+
+_STOP_TIMEOUT_S = 60.0
+
+
+def _initialize_request() -> bytes:
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0"},
+        },
+    }
+    return (json.dumps(request) + "\n").encode()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+class TestMcpProcessSignals:
+    """A real ``lilbee mcp`` with stdin held open ends on Ctrl-C and on terminate."""
+
+    @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM], ids=["sigint", "sigterm"])
+    def test_a_signal_ends_the_server_with_the_signal_status(self, tmp_path, sig):
+        env = {
+            **clean_env(tmp_path),
+            "LILBEE_CONFIG_DIR": str(tmp_path / "config"),
+            "LILBEE_ENGINE_DIR": str(tmp_path / "engine"),
+            "LILBEE_NO_SPLASH": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        server = subprocess.Popen(
+            [sys.executable, "-m", "lilbee", "mcp"],
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert server.stdin is not None
+            assert server.stdout is not None
+            server.stdin.write(_initialize_request())
+            server.stdin.flush()
+            assert b'"result"' in server.stdout.readline()
+            server.send_signal(sig)
+            status = server.wait(timeout=_STOP_TIMEOUT_S)
+        finally:
+            if server.poll() is None:
+                server.kill()
+                server.wait()
+            for stream in (server.stdin, server.stdout):
+                if stream is not None:
+                    stream.close()
+        assert status == 128 + sig
 
 
 class TestAddWithUrls:
@@ -3148,3 +3273,32 @@ class TestACallCancelledBeforeItAsksForTheRecordsLock:
 
         assert isinstance(raised, SkipRecordsWaitCancelledError)
         mock_svc.store.remove_documents.assert_not_called()
+
+
+class TestMcpCommandExit:
+    """A signal ends the server through SystemExit; the command finishes the exit."""
+
+    def test_the_signal_status_goes_to_the_exit_after_teardown(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with (
+            mock.patch("lilbee.mcp_server.main", side_effect=SystemExit(143)),
+            mock.patch("lilbee.cli.commands.servers.exit_after_signal") as mock_exit,
+        ):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        mock_exit.assert_called_once_with(143)
+        assert result.exit_code == 143
+
+    def test_a_non_numeric_exit_code_reports_failure(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with (
+            mock.patch("lilbee.mcp_server.main", side_effect=SystemExit("stop")),
+            mock.patch("lilbee.cli.commands.servers.exit_after_signal") as mock_exit,
+        ):
+            CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        mock_exit.assert_called_once_with(1)

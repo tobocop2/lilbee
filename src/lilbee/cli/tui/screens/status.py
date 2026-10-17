@@ -29,17 +29,20 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
-from lilbee.data.store import SourceRecord
+from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, SourceRecord
 from lilbee.data.types import SkippedSource
 from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 
 log = logging.getLogger(__name__)
 
-# Rows appended to the Documents table per refresh tick. Each ``add_row`` runs
-# on the UI thread, so dumping a whole ingested wiki in one loop froze the
-# screen for seconds; rendering a bounded batch per ``call_after_refresh`` lets
-# the user scroll and interact while the rest streams in.
-_DOC_RENDER_BATCH = 100
+# Rows per page of the Documents table. Must exceed the table's visible height
+# (``max-height`` in status.tcss) or the table never scrolls and never asks for more.
+_DOCS_PAGE_SIZE = DOCUMENTS_PAGE_DEFAULT
+# Load the next page when the table is scrolled this far down. Moving the cursor
+# scrolls the table, so the cursor reaches the same trigger.
+_DOCS_SCROLL_PREFETCH_RATIO = 0.85
+_WORKER_FETCH_SOURCES = "status_fetch_sources"
+_WORKER_FETCH_DOCS_PAGE = "status_fetch_docs_page"
 
 
 @dataclass
@@ -52,8 +55,17 @@ class _DocsResult:
 
     sources: list[SourceRecord]
     load_failed: bool
+    document_count: int = 0
     held_out: list[SkippedSource] = field(default_factory=list)
     held_out_total: int = 0
+
+
+@dataclass
+class _DocsPage:
+    """One further page of sources, or the fact that reading it failed."""
+
+    sources: list[SourceRecord]
+    load_failed: bool = False
 
 
 def _model_pill(name: str) -> Content:
@@ -169,11 +181,12 @@ class StatusScreen(Screen[None]):
         self._sections_mounted: bool = False
         self._pending_docs: _DocsResult | None = None
         self._pending_arch: ModelArchInfo | None = None
-        # Sources still waiting to be appended to the table by the batched
-        # renderer. Bumped each time a new docs result arrives so a stale
-        # render chain (from a previous load) stops itself.
-        self._docs_render_queue: list[SourceRecord] = []
-        self._docs_render_gen: int = 0
+        self._docs_loaded: int = 0
+        self._docs_total: int = 0
+        self._docs_has_more: bool = False
+        self._docs_loading: bool = False
+        self._docs_page_failed: bool = False
+        self._docs_scroll_watched: bool = False
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -224,6 +237,7 @@ class StatusScreen(Screen[None]):
             [
                 Collapsible(
                     DataTable(id="docs-table"),
+                    Static(id="docs-more"),
                     title=msg.STATUS_DOCS_TITLE,
                     id="docs-section",
                     collapsed=False,
@@ -286,26 +300,38 @@ class StatusScreen(Screen[None]):
         with contextlib.suppress(NoMatches):
             self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
 
-    @work(thread=True, name="status_fetch_sources", exit_on_error=False)
+    @work(thread=True, name=_WORKER_FETCH_SOURCES, exit_on_error=False)
     def _fetch_sources_worker(self) -> _DocsResult:
-        """Read the full source list off the UI thread.
+        """Read the source count and the first page off the UI thread.
 
         ``load_failed`` is True only when the store read actually raised;
         an empty store with zero documents is the routine first-run state.
-        Rendering the (potentially large) list happens back on the UI thread
-        in bounded batches via :meth:`_render_doc_batch`.
+        The read is one count and one page, so a library of millions of sources
+        costs the same screen as a library of ten.
         """
         try:
             held_out, held_out_total = held_out_sources()
+            store = get_services().store
             return _DocsResult(
-                sources=get_services().store.get_sources(),
+                sources=store.get_sources(limit=_DOCS_PAGE_SIZE, offset=0),
                 load_failed=False,
+                document_count=store.count_sources(),
                 held_out=held_out,
                 held_out_total=held_out_total,
             )
         except Exception:
             log.debug("Failed to read store for status screen", exc_info=True)
             return _DocsResult(sources=[], load_failed=True)
+
+    @work(thread=True, name=_WORKER_FETCH_DOCS_PAGE, exit_on_error=False)
+    def _fetch_docs_page_worker(self, offset: int) -> _DocsPage:
+        """Read one further page of sources off the UI thread."""
+        try:
+            page = get_services().store.get_sources(limit=_DOCS_PAGE_SIZE, offset=offset)
+            return _DocsPage(sources=page)
+        except Exception:
+            log.debug("Failed to read a page of sources for status screen", exc_info=True)
+            return _DocsPage(sources=[], load_failed=True)
 
     @work(thread=True, name="status_fetch_arch", exit_on_error=False)
     def _fetch_arch_worker(self) -> ModelArchInfo:
@@ -318,7 +344,10 @@ class StatusScreen(Screen[None]):
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state != WorkerState.SUCCESS:
             return
-        if event.worker.name == "status_fetch_sources":
+        if event.worker.name == _WORKER_FETCH_DOCS_PAGE:
+            page = event.worker.result
+            self._append_docs_page(page if isinstance(page, _DocsPage) else _DocsPage([], True))
+        elif event.worker.name == _WORKER_FETCH_SOURCES:
             result = event.worker.result
             docs = result if isinstance(result, _DocsResult) else _DocsResult([], True)
             if self._sections_mounted:
@@ -334,10 +363,10 @@ class StatusScreen(Screen[None]):
                     self._pending_arch = arch
 
     def _apply_docs(self, docs: _DocsResult) -> None:
-        """Render *docs* into the Documents table (batched) + storage section."""
+        """Render *docs* into the Documents table + storage section."""
         self._load_documents(docs)
         self._load_held_out(docs)
-        self._load_storage(len(docs.sources))
+        self._load_storage(docs.document_count)
 
     def _load_held_out(self, docs: _DocsResult) -> None:
         """Fill the held-out table; the section opens only when something is held out."""
@@ -369,46 +398,67 @@ class StatusScreen(Screen[None]):
         self.query_one("#config-info", Static).update(_build_config_content())
 
     def _load_documents(self, docs: _DocsResult) -> None:
-        """Clear the table, then stream rows in batches over successive refreshes.
-
-        Streaming via ``call_after_refresh`` keeps the screen responsive even
-        with a whole ingested wiki in the store: each batch is small, and the
-        user can scroll/interact between batches. Suppresses NoMatches because
-        the deferred Collapsible composes its inner DataTable a refresh tick
-        after ``mount_all`` returns.
-        """
+        """Fill the table with the first page of sources and arm the paging."""
         from textual.css.query import NoMatches
 
         with contextlib.suppress(NoMatches):
             table = self.query_one("#docs-table", DataTable)
             table.clear()
+            self._docs_loaded = len(docs.sources)
+            self._docs_total = docs.document_count
+            self._docs_has_more = self._docs_loaded < self._docs_total
+            self._docs_loading = False
+            self._docs_page_failed = False
+            if not self._docs_scroll_watched:
+                self.watch(table, "scroll_y", self._on_docs_scrolled, init=False)
+                self._docs_scroll_watched = True
+            self._show_docs_hint()
             if not docs.sources:
                 placeholder = (
                     msg.STATUS_DOCS_LOAD_FAILED if docs.load_failed else msg.STATUS_DOCS_EMPTY
                 )
                 table.add_row(placeholder, "")
-                self._docs_render_queue = []
                 return
-        # Bump the generation so any in-flight render chain from a previous
-        # load stops itself, then kick off a fresh one.
-        self._docs_render_gen += 1
-        self._docs_render_queue = list(docs.sources)
-        self._render_doc_batch(self._docs_render_gen)
+            for src in docs.sources:
+                table.add_row(Text(src["filename"]), str(src["chunk_count"]))
 
-    def _render_doc_batch(self, generation: int) -> None:
-        """Append up to ``_DOC_RENDER_BATCH`` rows; reschedule itself if more remain."""
-        if generation != self._docs_render_gen or not self._docs_render_queue:
-            return
+    def _append_docs_page(self, page: _DocsPage) -> None:
+        """Add a further page of sources under the rows already shown."""
         from textual.css.query import NoMatches
 
+        self._docs_loading = False
         with contextlib.suppress(NoMatches):
             table = self.query_one("#docs-table", DataTable)
-            batch = self._docs_render_queue[:_DOC_RENDER_BATCH]
-            del self._docs_render_queue[:_DOC_RENDER_BATCH]
-            for src in batch:
-                table.add_row(Text(src.get("filename", "?")), str(src.get("chunk_count", 0)))
-        if self._docs_render_queue:
-            self.call_after_refresh(self._render_doc_batch, generation)
+            for src in page.sources:
+                table.add_row(Text(src["filename"]), str(src["chunk_count"]))
+            self._docs_loaded += len(page.sources)
+            self._docs_page_failed = page.load_failed
+            # An empty page means the library shrank under the count; stop asking.
+            self._docs_has_more = bool(page.sources) and self._docs_loaded < self._docs_total
+            self._show_docs_hint()
+
+    def _show_docs_hint(self) -> None:
+        """Say how many sources are loaded while more remain, and that a read failed."""
+        hint = self.query_one("#docs-more", Static)
+        if self._docs_page_failed:
+            hint.update(msg.STATUS_DOCS_LOAD_FAILED)
+        elif self._docs_has_more:
+            hint.update(msg.STATUS_DOCS_MORE.format(count=self._docs_loaded))
+        hint.display = self._docs_page_failed or self._docs_has_more
+
+    def _load_more_docs(self) -> None:
+        """Start the next page unless one is already loading or none is left."""
+        if self._docs_loading or not self._docs_has_more:
+            return
+        self._docs_loading = True
+        self._fetch_docs_page_worker(self._docs_loaded)
+
+    def _on_docs_scrolled(self, _scroll_y: float) -> None:
+        """Load the next page when the user scrolls near the bottom of the table."""
+        table = self.query_one("#docs-table", DataTable)
+        max_y = table.max_scroll_y
+        if max_y > 0 and table.scroll_y / max_y >= _DOCS_SCROLL_PREFETCH_RATIO:
+            self._load_more_docs()
 
     def _load_storage(self, doc_count: int) -> None:
         """Populate the storage section."""

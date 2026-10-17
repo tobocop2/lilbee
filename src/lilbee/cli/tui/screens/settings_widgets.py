@@ -289,6 +289,7 @@ def make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
         return Select(
             choices,
             value=value,
+            allow_blank=defn.nullable,
             name=key,
             classes="setting-editor",
             id=f"{EDITOR_ID_PREFIX}{key}",

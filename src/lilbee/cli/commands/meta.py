@@ -18,13 +18,18 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.helpers import json_output, print_prefixed, render_status
+from lilbee.cli.helpers import json_output, print_prefixed, print_source_listing, render_status
 from lilbee.core.config import cfg
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
 from lilbee.data.ingest.ignore import IGNORE_FILENAME, IGNORE_TEMPLATE
 from lilbee.runtime.lock import ResetRefusedError
 
 _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.")
+_list_sources_option = typer.Option(
+    False,
+    "--list-sources",
+    help="Print every indexed document, one per line (one JSON object per line with --json).",
+)
 
 
 def version() -> None:
@@ -39,11 +44,15 @@ def version() -> None:
 def status(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
+    list_sources: bool = _list_sources_option,
 ) -> None:
-    """Show indexed documents, paths, and chunk counts."""
+    """Show counts, paths, and the newest indexed documents."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     # Status only reads the store; don't warm the inference fleet for a read.
     cfg.worker_pool_eager_start = False
+    if list_sources:
+        print_source_listing()
+        return
     if cfg.json_mode:
         json_output(gather_status().model_dump(exclude_none=True))
         return

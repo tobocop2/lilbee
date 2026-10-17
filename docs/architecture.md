@@ -1487,7 +1487,10 @@ from lilbee import Lilbee
 bee = Lilbee("./docs")
 bee.sync()
 results = bee.search("authentication")
+page = bee.documents(limit=50, offset=0)  # one page of indexed documents
 ```
+`bee.status()` returns the real `document_count` and the newest 10 source names. `bee.documents()` pages the listing that `GET /api/documents` pages, with the same default and bounds (limit 1 to 1000, default 50).
+
 `Lilbee` composes the same `Store`, `Embedder`, `Searcher`, `Reranker`, and `ConceptGraph` the CLI and server use.
 
 ---

@@ -48,7 +48,7 @@ from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.core.config import cfg
 from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
-from lilbee.data.store import CitationRecord
+from lilbee.data.store import CitationRecord, SourceSummary
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.fleet.binary import EngineTool
 from lilbee.providers.litellm_sdk import litellm_available as _real_litellm_available
@@ -694,6 +694,11 @@ def _default_provider_mock():
     return provider
 
 
+def summary_of(heads: list[dict]) -> SourceSummary:
+    """A source summary over *heads*, as the store reports it."""
+    return SourceSummary(len(heads), sum(h["chunk_count"] for h in heads), {}, heads)
+
+
 def _default_store_mock():
     store = MagicMock()
     store.has_chunks.return_value = True
@@ -702,6 +707,7 @@ def _default_store_mock():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
+    store.source_summary.return_value = SourceSummary(0, 0, {}, [])
     store.count_sources.return_value = 0
     store.get_page_texts.return_value = []
     store.add_chunks.side_effect = len

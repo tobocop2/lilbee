@@ -81,6 +81,16 @@ def _sync_progress_printer(con: PlainConsole) -> DetailedProgressCallback:
     return _callback
 
 
+def file_start_printer(con: PlainConsole) -> DetailedProgressCallback:
+    """Return a callback that prints one line as each file starts, for output with no live bar."""
+
+    def _callback(event_type: EventType, data: ProgressEvent) -> None:
+        if event_type == EventType.FILE_START:
+            _print_file_start(con, data)
+
+    return _callback
+
+
 _bg_executor: ThreadPoolExecutor | None = None
 
 

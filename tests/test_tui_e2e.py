@@ -2363,11 +2363,12 @@ class TestStatusInteractions:
         from lilbee.cli.tui.app import LilbeeApp
 
         mock_sources = [
-            {"filename": "doc1.md", "chunk_count": 5},
-            {"filename": "doc2.pdf", "chunk_count": 12},
+            {"filename": "doc1.md", "file_hash": "h1", "chunk_count": 5, "ingested_at": "2026"},
+            {"filename": "doc2.pdf", "file_hash": "h2", "chunk_count": 12, "ingested_at": "2026"},
         ]
         services = mock.MagicMock()
         services.store.get_sources.return_value = mock_sources
+        services.store.count_sources.return_value = 2
         with (
             _mock_status_deps(),
             mock.patch(
