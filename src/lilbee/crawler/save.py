@@ -275,7 +275,8 @@ def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Save
         return None
     markdown = normalize_crawled_markdown(result.markdown)
     address = canonical_address(result.url)
-    filename = page_name(address)
+    prev = meta.get(address)
+    filename = prev.file if prev is not None else page_name(address)
     root = web_dir()
     file_path = root / filename
     try:
@@ -284,7 +285,6 @@ def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Save
         log.warning("Path traversal blocked: %s -> %s", result.url, file_path)
         return None
     new_hash = content_hash(markdown)
-    prev = meta.get(address)
     if prev is not None and prev.content_hash == new_hash and file_path.exists():
         log.info("Content unchanged, skipping save: %s", result.url)
         return None

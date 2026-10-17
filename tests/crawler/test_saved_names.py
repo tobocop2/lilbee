@@ -29,6 +29,7 @@ as ``/``. Dot segments are left out because the parser resolves them.
 
 from __future__ import annotations
 
+import logging
 import re
 import string
 import unicodedata
@@ -682,6 +683,103 @@ async def test_a_page_written_after_its_last_sync_is_indexed_again_after_the_mov
     indexed = " ".join(chunk.chunk for chunk in chunks)
     assert f"Body of {path} in version 2." in indexed
     assert f"Body of {path} in version 1." not in indexed
+
+
+# A page of an earlier library whose address spells the saved name of a sibling page: main saved
+# it as written, so it holds the name the move gives /s/x.
+_HOSTILE = "http://hostile.test/s/"
+_CRAFTED = url_to_filename(_HOSTILE + "x").rpartition("/")[2]
+_X_EARLIER = "hostile.test/s/x/index.md"
+_HOSTILE_FOLDER = [("x", _X_EARLIER), (f"{_CRAFTED}/y", f"hostile.test/s/{_CRAFTED}/y/index.md")]
+_HOSTILE_FILE = [("x", _X_EARLIER), (_CRAFTED, f"hostile.test/s/{_CRAFTED}")]
+_OTHER_LIBRARY = [("guide", "other.test/guide/index.md"), ("intro", "other.test/intro/index.md")]
+
+
+def _at_their_names() -> dict[str, str]:
+    """Each crawl entry whose file is not the name its address gives it."""
+    return {
+        address: entry.file
+        for address, entry in load_crawl_metadata().items()
+        if entry.file != url_to_filename(address)
+    }
+
+
+@pytest.mark.timeout(300)
+async def test_a_folder_at_a_page_name_moves_out_before_the_page_moves_in(
+    library: Store, monkeypatch: pytest.MonkeyPatch
+):
+    _write_earlier_library(_HOSTILE, _HOSTILE_FOLDER)
+    _write_earlier_library(_OTHER_SITE, _OTHER_LIBRARY)
+    await sync(quiet=True)
+    for _ in range(2):
+        await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "2")
+    await _crawl(monkeypatch, _HOSTILE, [path for path, _ in _HOSTILE_FOLDER], "2")
+    await sync(quiet=True)
+    versions = {path: "2" for path, _ in _HOSTILE_FOLDER} | {path: "2" for path in _OTHER_PAGES}
+    assert _library_state(library, versions) == _clean(len(versions))
+    assert _at_their_names() == {}
+
+
+@pytest.mark.timeout(300)
+async def test_a_page_whose_name_holds_a_folder_the_record_does_not_know_stays_put(
+    library: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    _write_earlier_library(_HOSTILE, _HOSTILE_FOLDER)
+    _write_earlier_library(_OTHER_SITE, _OTHER_LIBRARY)
+    meta = load_crawl_metadata()
+    del meta[_HOSTILE + f"{_CRAFTED}/y"]
+    save_crawl_metadata(meta)
+    await sync(quiet=True)
+    with caplog.at_level(logging.WARNING, logger="lilbee.crawler.migrate"):
+        for _ in range(2):
+            await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "2")
+    await _crawl(monkeypatch, _HOSTILE, ["x"], "2")
+    await sync(quiet=True)
+    name = url_to_filename(_HOSTILE + "x")
+    skipped = [r for r in caplog.records if _X_EARLIER in r.message and name in r.message]
+    assert len(skipped) == 3
+    assert _at_their_names() == {_HOSTILE + "x": _X_EARLIER}
+    state = _library_state(library, {"x": "2"} | {path: "2" for path in _OTHER_PAGES})
+    assert state["pages not in exactly one file"] == []
+    assert state["sources without a file"] == []
+    assert state["files without a crawl entry"] == [f"_web/hostile.test/s/{_CRAFTED}/y/index.md"]
+
+
+@pytest.mark.timeout(300)
+async def test_a_page_never_moves_over_the_file_of_another_page(
+    library: Store, monkeypatch: pytest.MonkeyPatch
+):
+    _write_earlier_library(_HOSTILE, _HOSTILE_FILE)
+    await sync(quiet=True)
+    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "1")
+    await sync(quiet=True)
+    versions = {path: "1" for path, _ in _HOSTILE_FILE} | {path: "1" for path in _OTHER_PAGES}
+    assert _library_state(library, versions) == _clean(len(versions))
+    assert _at_their_names() == {}
+    await _crawl(monkeypatch, _HOSTILE, [path for path, _ in _HOSTILE_FILE], "1")
+    await sync(quiet=True)
+    assert _library_state(library, versions) == _clean(len(versions))
+
+
+_NEWER_SITE = "http://newer.test/"
+_NEWER_LIBRARY = [("p", "newer.test/p/index.md"), ("q", "newer.test/q/index.md")]
+
+
+@pytest.mark.timeout(300)
+async def test_a_page_kept_at_an_older_copy_takes_its_newer_text_on_the_next_crawl(
+    library: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    paths = [path for path, _ in _NEWER_LIBRARY]
+    await _crawl(monkeypatch, _NEWER_SITE, paths, "1")
+    await sync(quiet=True)
+    _write_earlier_library(_NEWER_SITE, _NEWER_LIBRARY, "2", datetime.now(UTC).isoformat())
+    await sync(quiet=True)
+    (cfg.documents_dir / "_web" / "newer.test/p/index.md").replace(tmp_path / "aside.md")
+    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "1")
+    await _crawl(monkeypatch, _NEWER_SITE, paths, "2")
+    await sync(quiet=True)
+    versions = {path: "2" for path in paths} | {path: "1" for path in _OTHER_PAGES}
+    assert _library_state(library, versions) == _clean(len(versions))
 
 
 class _CountingMeta(dict):
