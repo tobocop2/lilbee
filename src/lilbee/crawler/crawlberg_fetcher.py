@@ -116,6 +116,18 @@ _REFUSED_SETTING_MESSAGES = {
     "invalid_config: invalid exclude_path regex": EXCLUDE_PATTERN_REFUSED_MESSAGE,
 }
 _NO_CONTENT = "No content extracted"
+# How crawlberg 1.11.1 starts the error of a page the site's robots.txt disallows, and of a
+# page it refuses because the site's robots.txt could not be read.
+_ROBOTS_DISALLOWED_START = "robots.txt disallows "
+_ROBOTS_UNREACHABLE_START = "robots_unreachable: "
+ROBOTS_REFUSED_MESSAGE = (
+    "The site's robots.txt does not allow crawlers to fetch this page. "
+    "Set crawl_respect_robots_txt to false to crawl it."
+)
+ROBOTS_UNREACHABLE_MESSAGE = (
+    "The site's robots.txt could not be read ({reason}), so no page of the site is crawled. "
+    "Set crawl_respect_robots_txt to false to crawl it."
+)
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
 # The headers a browser sends with a page request, which crawlberg's HTTP client does not send.
 # Browser mode sends none: crawlberg adds custom headers to Chrome's requests too.
@@ -295,7 +307,11 @@ def _browser_config(
 
 
 def _crawl_config(
-    render_mode: CrawlRenderMode, spec: _CrawlSpec, chrome_args: Sequence[str], user_agent: str
+    render_mode: CrawlRenderMode,
+    spec: _CrawlSpec,
+    chrome_args: Sequence[str],
+    user_agent: str,
+    respect_robots_txt: bool,
 ) -> crawlberg.CrawlConfig:
     """The crawlberg config for one crawl, with every default lilbee depends on set.
 
@@ -330,7 +346,7 @@ def _crawl_config(
             (concurrency.retry_base_delay_min + concurrency.retry_base_delay_max) / 2
         ),
         retry_max_delay_ms=_ms(concurrency.retry_max_backoff),
-        respect_robots_txt=False,
+        respect_robots_txt=respect_robots_txt,
         soft_http_errors=False,
         download_documents=False,
         content=_content_config(),
@@ -367,6 +383,23 @@ def _create_engine(config: crawlberg.CrawlConfig) -> crawlberg.CrawlEngineHandle
         raise CrawlEngineRefusedError(_refusal_message(str(exc))) from exc
 
 
+def _error_text(error: str) -> str:
+    """crawlberg's *error* for a page, in lilbee's words when robots.txt refused the page.
+
+    A robots.txt that could not be read because the SSRF policy refuses its address is
+    that SSRF refusal.
+    """
+    # crawlberg's error event has no code for a robots.txt refusal; only its text tells it.
+    if error.startswith(_ROBOTS_DISALLOWED_START):
+        return ROBOTS_REFUSED_MESSAGE
+    if not error.startswith(_ROBOTS_UNREACHABLE_START):
+        return error
+    reason = error.removeprefix(_ROBOTS_UNREACHABLE_START)
+    if reason.startswith(_SSRF_ERROR_CODE):
+        return reason
+    return ROBOTS_UNREACHABLE_MESSAGE.format(reason=reason)
+
+
 def _parse_event(raw: object) -> _Event | None:
     """Read a crawlberg event, whose payload is only reachable as JSON; None for other kinds."""
     payload: dict[str, Any] = json.loads(str(raw))
@@ -374,7 +407,7 @@ def _parse_event(raw: object) -> _Event | None:
     if kind is None:
         return None
     if kind is _EventKind.ERROR:
-        return _Event(kind, payload["url"], error=payload["error"])
+        return _Event(kind, payload["url"], error=_error_text(payload["error"]))
     result: dict[str, Any] = payload["result"]
     markdown: dict[str, Any] = result.get("markdown") or {}
     return _Event(
@@ -512,11 +545,17 @@ class CrawlbergFetcher:
     """:class:`WebFetcher` implementation backed by crawlberg."""
 
     def __init__(
-        self, *, render_mode: CrawlRenderMode, chrome_args: Sequence[str] = (), user_agent: str = ""
+        self,
+        *,
+        render_mode: CrawlRenderMode,
+        chrome_args: Sequence[str] = (),
+        user_agent: str = "",
+        respect_robots_txt: bool = True,
     ) -> None:
         self._render_mode = render_mode
         self._chrome_args = tuple(chrome_args)
         self._user_agent = user_agent
+        self._respect_robots_txt = respect_robots_txt
 
     async def __aenter__(self) -> CrawlbergFetcher:
         return self
@@ -533,7 +572,9 @@ class CrawlbergFetcher:
         self, spec: _CrawlSpec, seed_url: str, cancel: CancelToken | None
     ) -> AsyncGenerator[_Event, None]:
         """This crawl's events; browser mode finds the headless shell before any engine starts."""
-        config = _crawl_config(self._render_mode, spec, self._chrome_args, self._user_agent)
+        config = _crawl_config(
+            self._render_mode, spec, self._chrome_args, self._user_agent, self._respect_robots_txt
+        )
         return _events(config, seed_url, cancel)
 
     async def fetch_single(self, url: str, *, timeout: float) -> FetchedPage:

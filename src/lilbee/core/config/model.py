@@ -703,6 +703,10 @@ class Config(BaseSettings):
     # sends Chrome's own, an HTTP crawl crawlberg's, the sitemap lookup httpx's.
     crawl_user_agent: str = ConfigField(default="", writable=True)
 
+    # Whether crawls skip the pages a site's robots.txt disallows, and every page of a
+    # site whose robots.txt cannot be read.
+    crawl_respect_robots_txt: bool = ConfigField(default=True, writable=True)
+
     # Optional global ceilings. None = no ceiling.
     crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
     crawl_max_pages: int | None = ConfigField(default=None, ge=1, writable=True)

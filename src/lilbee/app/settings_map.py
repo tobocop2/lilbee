@@ -794,6 +794,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "client hints in browser mode."
         ),
     ),
+    "crawl_respect_robots_txt": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Skip the pages a site's robots.txt disallows, and every page of a site "
+            "whose robots.txt cannot be read (a server error, a rate limit or no answer). Turn off "
+            "to crawl a site you own or have permission to crawl in full."
+        ),
+    ),
     "crawl_max_pages": SettingDef(
         int,
         nullable=True,

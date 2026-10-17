@@ -16,6 +16,8 @@ from lilbee.crawler.bootstrap import ChromiumMissingError, CrawlEngineRefusedErr
 from lilbee.crawler.crawlberg_fetcher import (
     _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
+    ROBOTS_REFUSED_MESSAGE,
+    ROBOTS_UNREACHABLE_MESSAGE,
     CrawlbergFetcher,
     _queued_url,
     admitted_networks,
@@ -109,7 +111,7 @@ class TestCrawlConfig:
         assert config["max_pages"] == 7
         assert config["max_concurrent"] == 4
         assert config["max_redirects"] == 10
-        assert config["respect_robots_txt"] is False
+        assert config["respect_robots_txt"] is True
         assert config["soft_http_errors"] is False
         assert config["download_documents"] is False
         assert config["request_timeout"] == 12500
@@ -148,6 +150,15 @@ class TestCrawlConfig:
             await _browser().fetch_single(SEED, timeout=5)
         assert [config.kwargs["user_agent"] for config in stub.configs] == [None, None]
         assert [config.kwargs["custom_headers"] for config in stub.configs] == [{}, {}]
+
+    @pytest.mark.parametrize("respect", [True, False])
+    async def test_the_robots_choice_reaches_crawlberg_in_each_crawl_shape(self, respect: bool):
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP, respect_robots_txt=respect)
+        with stub.installed():
+            await _recursive(fetcher)
+            await fetcher.fetch_single(SEED, timeout=5)
+        assert [config.kwargs["respect_robots_txt"] for config in stub.configs] == [respect] * 2
 
     async def test_http_mode_sends_the_browser_accept_headers(self):
         stub = StubCrawlberg([page(SEED, depth=0)])
@@ -605,6 +616,30 @@ class TestFetchSingle:
         assert fetched.success is False
         assert fetched.error == "not_found: not_found: " + SEED
 
+    async def test_a_seed_robots_txt_disallows_says_why_and_names_the_setting(self):
+        script = [error(SEED, "robots.txt disallows /"), complete(0)]
+        with StubCrawlberg(script).installed():
+            fetched = await _http().fetch_single(SEED, timeout=3)
+        assert fetched == FetchedPage(url=SEED, success=False, error=ROBOTS_REFUSED_MESSAGE)
+        assert "robots.txt" in ROBOTS_REFUSED_MESSAGE
+        assert "crawl_respect_robots_txt" in ROBOTS_REFUSED_MESSAGE
+
+    async def test_a_seed_whose_robots_txt_cannot_be_read_says_why_with_crawlbergs_reason(self):
+        script = [error(SEED, "robots_unreachable: robots.txt returned 503"), complete(0)]
+        with StubCrawlberg(script).installed():
+            fetched = await _http().fetch_single(SEED, timeout=3)
+        expected = ROBOTS_UNREACHABLE_MESSAGE.format(reason="robots.txt returned 503")
+        assert fetched == FetchedPage(url=SEED, success=False, error=expected)
+        assert "(robots.txt returned 503)" in expected
+        assert "crawl_respect_robots_txt" in expected
+
+    async def test_a_seed_whose_robots_txt_address_ssrf_refuses_is_that_refusal(self):
+        refusal = f"{_SSRF_ERROR_CODE}: {SEED}robots.txt - denied by SSRF policy: loopback"
+        script = [error(SEED, f"robots_unreachable: {refusal}"), complete(0)]
+        with StubCrawlberg(script).installed():
+            fetched = await _http().fetch_single(SEED, timeout=3)
+        assert fetched == FetchedPage(url=SEED, success=False, error=refusal)
+
     @pytest.mark.parametrize(
         "script",
         [[page(SEED, "   ", depth=0)], [page(SEED, None, depth=0)], [complete(0)]],
@@ -642,6 +677,21 @@ class TestFetchRecursive:
             FetchedPage(url="https://example.com/a", markdown="# A"),
             FetchedPage(url="https://example.com/gone", success=False, error="not_found: gone"),
         ]
+
+    async def test_a_seed_robots_txt_disallows_is_a_failed_page_that_says_why(self):
+        with StubCrawlberg([error(SEED, "robots.txt disallows /")]).installed():
+            fetched = await _recursive(_http())
+        assert fetched == [FetchedPage(url=SEED, success=False, error=ROBOTS_REFUSED_MESSAGE)]
+
+    async def test_link_whose_robots_txt_address_ssrf_refuses_is_dropped(self):
+        refusal = f"{_SSRF_ERROR_CODE}: http://10.0.0.5/robots.txt - denied"
+        script = [
+            page(SEED, "# Home", depth=0),
+            error("http://10.0.0.5/", f"robots_unreachable: {refusal}"),
+        ]
+        with StubCrawlberg(script).installed():
+            fetched = await _recursive(_http())
+        assert [f.url for f in fetched] == [SEED]
 
     async def test_link_refused_by_crawlberg_ssrf_is_dropped(self):
         script = [

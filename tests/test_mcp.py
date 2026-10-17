@@ -2166,6 +2166,13 @@ class TestSettingsMcp:
         assert result["updated"] == ["crawl_user_agent"]
         assert cfg.crawl_user_agent == "Probe/1.0"
 
+    def test_settings_set_turns_off_robots_txt(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.crawl_respect_robots_txt = True
+        result = settings_set({"crawl_respect_robots_txt": False})
+        assert result["updated"] == ["crawl_respect_robots_txt"]
+        assert cfg.crawl_respect_robots_txt is False
+
     def test_settings_set_refuses_a_crawl_user_agent_with_a_control_character(self, isolated_env):
         cfg.data_root = isolated_env
         before = cfg.crawl_user_agent
