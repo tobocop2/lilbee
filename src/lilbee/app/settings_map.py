@@ -790,6 +790,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Defaults trim shared-memory and GPU use."
         ),
     ),
+    "crawl_browser_extra_wait_ms": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Browser mode: milliseconds to wait after a page loads before reading it, "
+            "for sites that draw their text late. Raise it when a page's text is missing; "
+            "0 = no extra wait. http mode ignores it."
+        ),
+    ),
     "crawl_user_agent": SettingDef(
         str,
         nullable=False,

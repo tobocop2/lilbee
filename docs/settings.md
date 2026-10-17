@@ -216,6 +216,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Description |
 |---|---|---|---|---|---|---|---|---|
 | `crawl_browser_extra_args` | `LILBEE_CRAWL_BROWSER_EXTRA_ARGS` | `list` | `--disable-dev-shm-usage, --disable-gpu` | yes | yes | yes | no | Browser mode: extra Chromium launch flags, one per line. Defaults trim shared-memory and GPU use. |
+| `crawl_browser_extra_wait_ms` | `LILBEE_CRAWL_BROWSER_EXTRA_WAIT_MS` | `int` | `1000` | yes | yes | yes | no | Browser mode: milliseconds to wait after a page loads before reading it, for sites that draw their text late. Raise it when a page's text is missing; 0 = no extra wait. http mode ignores it. |
 | `crawl_concurrent_requests` | `LILBEE_CRAWL_CONCURRENT_REQUESTS` | `int` | `3` | yes | yes | yes | no | Concurrent in-flight URLs within one crawl. |
 | `crawl_exclude_patterns` | `LILBEE_CRAWL_EXCLUDE_PATTERNS` | `list` | *(built-in list)* | yes | yes | yes | no | Regex patterns that skip URLs at link-discovery time during recursive crawls. One per line. |
 | `crawl_max_delay_range` | `LILBEE_CRAWL_MAX_DELAY_RANGE` | `float` | `0.5` | yes | yes | yes | no | Random jitter (seconds) added on top of mean delay. |
