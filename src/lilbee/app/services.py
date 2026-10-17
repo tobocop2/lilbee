@@ -533,8 +533,8 @@ def wait_for_hard_exit_teardown() -> None:
 
     An interrupt while waiting force-quits the process: waiting is the only
     thing left, the interpreter would otherwise still join the non-daemon
-    teardown thread, and every platform's child guard reaps the engine when
-    the process dies (kill-on-close job object, pdeathsig, death pipe).
+    teardown thread, and the engine reaper (or, without kernel file locks, the
+    child guard) stops the engine once this was its last user.
     """
     try:
         for thread in _all_threads():

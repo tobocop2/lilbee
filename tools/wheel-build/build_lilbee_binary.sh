@@ -112,10 +112,12 @@ fi
 # runner is never statically imported at all; the Vulkan probe is imported for
 # its JSON decoder but is entered as a module, and a probe that cannot start
 # reads as "the loader has no opinion", which would degrade GPU classification
-# silently on exactly the builds users install.
+# silently on exactly the builds users install. The engine reaper is never
+# statically imported; without it a shared engine dies with its builder.
 CHILD_MODULE_FLAGS=(
     --include-module=lilbee.runtime._splash_runner
     --include-module=lilbee.providers.fleet.vulkan_probe
+    --include-module=lilbee.providers.fleet.engine_reaper
 )
 
 # One cache directory per build: two builds of one version sharing {VERSION}

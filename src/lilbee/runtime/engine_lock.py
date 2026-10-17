@@ -42,6 +42,8 @@ _BUILD_LOCK_TIMEOUT_S = 90.0
 # to stop alive and holding VRAM.
 _BEST_EFFORT_LOCK_TIMEOUT_S = 5.0
 _USERS_DIRNAME = "engine-users"
+# Held for its whole life by the one reaper process watching a dir's engine.
+_REAPER_LOCK_NAME = "engine-reaper.lock"
 _USER_LOCK_SUFFIX = ".lock"
 # One opt-in file per installation, keyed by config root (not pid, which changes
 # every run). Plain files, not locks: an opt-in outlives its process. Per-install
@@ -259,4 +261,24 @@ def live_users_exist(engine_dir: Path) -> bool:
             return True
         probe.release()
         path.unlink(missing_ok=True)
+    return False
+
+
+def try_hold_reaper_lock(engine_dir: Path) -> FileLock | None:
+    """Hold *engine_dir*'s reaper lock, or return None when another reaper holds it."""
+    engine_dir.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(engine_dir / _REAPER_LOCK_NAME, thread_local=False)
+    try:
+        lock.acquire(timeout=_PROBE_TIMEOUT_S)
+    except FileLockTimeout:
+        return None
+    return lock
+
+
+def reaper_running(engine_dir: Path) -> bool:
+    """Whether a live reaper process watches *engine_dir*'s engine."""
+    lock = try_hold_reaper_lock(engine_dir)
+    if lock is None:
+        return True
+    lock.release()
     return False

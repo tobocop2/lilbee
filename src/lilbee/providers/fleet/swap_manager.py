@@ -19,6 +19,7 @@ import threading
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
@@ -40,7 +41,7 @@ from lilbee.providers.fleet.readback import (
     report_missing_log,
 )
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
-from lilbee.runtime.engine_lock import clear_keep_warm
+from lilbee.runtime.engine_lock import clear_keep_warm, reaper_running
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.launch import InstanceLaunch
@@ -118,6 +119,8 @@ _PROBE_TIMEOUT_S = 5.0
 # for tens of seconds. A local proxy that cannot answer /running this fast is
 # not usable for inference either.
 _LIVENESS_TIMEOUT = httpx.Timeout(connect=0.5, read=2.0, write=2.0, pool=2.0)
+# Run as `python -m`; the frozen build dispatches `-m lilbee.*` to the module's main().
+_REAPER_MODULE = "lilbee.providers.fleet.engine_reaper"
 
 
 @lru_cache(maxsize=1)
@@ -149,6 +152,7 @@ def _platform_const(module: object, name: str, default: int) -> int:
 
 
 _CREATE_NEW_PROCESS_GROUP: int = _platform_const(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+_DETACHED_PROCESS: int = _platform_const(subprocess, "DETACHED_PROCESS", 0)
 _SIGKILL: int = _platform_const(signal, "SIGKILL", signal.SIGTERM)
 
 
@@ -173,6 +177,14 @@ def _atomic_write(path: Path, text: str) -> None:
 def _state_filename(owner_pid: int, group: str) -> str:
     """The per-owner, per-group state filename for the lilbee process *owner_pid*."""
     return f"{_STATE_FILENAME_PREFIX}{group}.{owner_pid}{_STATE_FILENAME_SUFFIX}"
+
+
+class EngineLifetime(StrEnum):
+    """What ends a spawned engine."""
+
+    BUILDER = "builder"  # the process that spawned it exits or dies
+    USERS = "users"  # the dir's reaper, once no user lock and no keep-warm opt-in is left
+    DETACHED = "detached"  # nothing; the next launch's reap is the only cleanup
 
 
 @dataclass(frozen=True)
@@ -234,7 +246,11 @@ class SwapManager:
         self._bound = False
 
     def start(
-        self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0, bind_lifetime: bool = True
+        self,
+        launches: list[InstanceLaunch],
+        *,
+        ttl_seconds: int = 0,
+        lifetime: EngineLifetime = EngineLifetime.BUILDER,
     ) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
 
@@ -252,8 +268,9 @@ class SwapManager:
         spawn-time probe to close that window; warming the roles up front
         shortens it for the roles that are warmed.
 
-        ``bind_lifetime`` binds the engine to this process so a crash cannot orphan
-        it; it is False for a keep-warm fleet that is meant to outlive lilbee.
+        *lifetime* says what ends the engine. ``USERS`` needs the caller to hold
+        the dir's build lock, and falls back to ``BUILDER`` when the dir's reaper
+        cannot start, so an engine nothing would stop is never spawned.
         """
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
@@ -291,6 +308,8 @@ class SwapManager:
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_file = self._log_path.open("ab")
         self._log_offset = self._log_path.stat().st_size
+        if lifetime is EngineLifetime.USERS and not _ensure_engine_reaper(self._data_dir):
+            lifetime = EngineLifetime.BUILDER
         self._proc = spawn_bound_child(
             [
                 str(resolve_llama_swap()),
@@ -299,7 +318,7 @@ class SwapManager:
                 _LISTEN_FLAG,
                 f"{_HOST}:{self._port}",
             ],
-            bind_lifetime=bind_lifetime,
+            bind_lifetime=lifetime is EngineLifetime.BUILDER,
             stdout=self._log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -883,6 +902,28 @@ def stop_engine(data_dir: Path) -> list[str]:
                 stopped.append(group)
         state_path.unlink(missing_ok=True)
     return stopped
+
+
+def _ensure_engine_reaper(data_dir: Path) -> bool:
+    """Make sure a reaper watches *data_dir*; False when none could start."""
+    if reaper_running(data_dir):
+        return True
+    try:
+        subprocess.Popen(  # noqa: S603 - argv is this interpreter and a fixed module
+            [sys.executable, "-m", _REAPER_MODULE, str(data_dir)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS,
+        )
+    except OSError:
+        log.warning(
+            "Could not start the engine reaper for %s; the engine stops with this process.",
+            data_dir,
+        )
+        return False
+    return True
 
 
 def reap_stale(data_dir: Path) -> None:

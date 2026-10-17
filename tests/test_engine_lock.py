@@ -14,6 +14,8 @@ from lilbee.runtime.engine_lock import (
     live_users_exist,
     machine_engine_dir,
     private_engine_dir,
+    reaper_running,
+    try_hold_reaper_lock,
 )
 
 
@@ -368,3 +370,24 @@ def test_withdrawing_an_absent_keep_warm_is_a_noop(tmp_path: Path) -> None:
     engine = tmp_path / "engine"
     withdraw_keep_warm(engine, tmp_path / "cfgroot")
     assert keep_warm_requested(engine) is False
+
+
+class TestReaperLock:
+    def test_the_first_reaper_holds_and_a_second_is_refused(self, tmp_path: Path):
+        first = try_hold_reaper_lock(tmp_path / "engine")
+        try:
+            assert first is not None
+            assert try_hold_reaper_lock(tmp_path / "engine") is None
+        finally:
+            assert first is not None
+            first.release()
+
+    def test_a_released_lock_reads_as_no_reaper(self, tmp_path: Path):
+        assert reaper_running(tmp_path) is False
+        held = try_hold_reaper_lock(tmp_path)
+        assert held is not None
+        try:
+            assert reaper_running(tmp_path) is True
+        finally:
+            held.release()
+        assert reaper_running(tmp_path) is False
