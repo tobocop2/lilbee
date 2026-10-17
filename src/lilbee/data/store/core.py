@@ -2089,6 +2089,16 @@ class Store:
             if row[_SOURCE_ID] in cited and _at_or_below(cited[row[_SOURCE_ID]], roots)
         }
 
+    def wiki_citations_by_page(self) -> dict[str, list[CitationRecord]]:
+        """Every citation, naming its source by path, under the wiki page that holds it."""
+        table = self.open_table(CITATIONS_TABLE)
+        if table is None:
+            return {}
+        by_page: dict[str, list[CitationRecord]] = {}
+        for record in self._shown_citations(table.search().limit(None).to_list()):
+            by_page.setdefault(record["wiki_source"], []).append(record)
+        return by_page
+
     def wiki_citation_sources(self) -> set[str]:
         """Return the distinct wiki_source values present in the citations table."""
         table = self.open_table(CITATIONS_TABLE)

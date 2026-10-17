@@ -1179,12 +1179,12 @@ def _forget_in_wiki(removed: list[str]) -> None:
     forget_removed_from_wiki_index(removed)
 
 
-def _show_moves_in_wiki(moved: list[str]) -> None:
-    """Show the new paths of *moved* sources in the wiki pages that cite them."""
+def _show_current_paths_in_wiki() -> None:
+    """Render again each wiki page that shows a path its cited source no longer has."""
     # circular: lilbee.app.ingest imports this module for sync
-    from lilbee.app.ingest import show_moves_in_wiki
+    from lilbee.app.ingest import show_current_paths_in_wiki
 
-    show_moves_in_wiki(moved)
+    show_current_paths_in_wiki()
 
 
 def _forget_missing_in_wiki() -> None:
@@ -1227,15 +1227,15 @@ async def _run_post_ingest_passes(
     cluster_updated: Collection[str],
     cluster_removed: Collection[str],
     touched: set[str],
-    moved: Collection[str],
     cancel: CancelSignal | None,
 ) -> None:
     """Index maintenance, concept clusters, the wiki hook, and the entity lifecycle.
 
     The index pass only runs when this sync indexed something. The concept
     clusters are recomputed only when a source was added, updated or removed: a
-    relocation changes no co-occurrence. The wiki pages that cite a *moved*
-    source are rendered with its new path. The wiki hook and the entity lifecycle
+    relocation changes no co-occurrence. Every sync renders again each wiki
+    page that shows a path its cited source no longer has, so the next sync
+    repairs a page a stopped one left. The wiki hook and the entity lifecycle
     run every sync (a cheap no-op when off or already current): the wiki index
     takes what any sync wrote and no refresh read, and turning the entity
     setting on takes effect without a separate operation.
@@ -1247,8 +1247,7 @@ async def _run_post_ingest_passes(
         store.optimize_sources()
     if cluster_added or cluster_updated or cluster_removed:
         await _rebuild_concept_clusters(cluster_added, cluster_updated, cluster_removed)
-    if moved:
-        await to_ingest_thread(_show_moves_in_wiki, list(moved))
+    await to_ingest_thread(_show_current_paths_in_wiki)
     await _update_wiki(touched, active_config())
 
     from lilbee.retrieval.entities.lifecycle import ensure_entities
@@ -1345,7 +1344,6 @@ async def _sync_across_workers(
         cluster_updated=result.updated,
         cluster_removed=result.removed,
         touched=touched,
-        moved=result.relocated,
         cancel=cancel,
     )
     on_progress(
@@ -1539,7 +1537,6 @@ async def sync(
             cluster_updated=updated,
             cluster_removed=[*ignored, *refused],
             touched=set(added) | set(updated) | set(relocated),
-            moved=relocated,
             cancel=cancel,
         )
 

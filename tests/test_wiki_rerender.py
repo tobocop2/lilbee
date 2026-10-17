@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -10,7 +11,12 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.store import CitationRecord
-from lilbee.wiki.rerender import renamed_page, rerender_pages, rerendered_page
+from lilbee.wiki.rerender import (
+    renamed_page,
+    rerender_pages,
+    rerender_stale_pages,
+    rerendered_page,
+)
 
 _PAGE = (
     "---\n"
@@ -232,6 +238,64 @@ class TestRerenderPages:
         assert written == []
         assert page.read_bytes() == b"\xff\xfe not utf-8"
         assert "cannot be read" in caplog.text
+
+    def test_a_page_written_again_keeps_its_time(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(cfg, "data_root", tmp_path)
+        page = tmp_path / "wiki" / "entities" / "a.md"
+        page.parent.mkdir(parents=True)
+        page.write_text(_PAGE, encoding="utf-8")
+        os.utime(page, ns=(1_000_000_000_000_000_000, 1_500_000_000_000_000_000))
+
+        written = rerender_pages(self._store(_records()), cfg, ["wiki/entities/a.md"])
+
+        assert written == [page]
+        assert '"notes/work/a.md"' in page.read_text(encoding="utf-8")
+        assert page.stat().st_mtime_ns == 1_500_000_000_000_000_000
+
+
+class TestRerenderStalePages:
+    def _pages(self, tmp_path: Path) -> tuple[Path, Path]:
+        stale = tmp_path / "wiki" / "entities" / "a.md"
+        kept = tmp_path / "wiki" / "concepts" / "b.md"
+        for page in (stale, kept):
+            page.parent.mkdir(parents=True)
+            page.write_text(_PAGE, encoding="utf-8")
+        return stale, kept
+
+    def test_only_a_page_that_shows_another_path_is_written(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(cfg, "data_root", tmp_path)
+        stale, kept = self._pages(tmp_path)
+        stamp = kept.stat().st_mtime_ns
+        records = {
+            "wiki/entities/a.md": _records(),
+            "wiki/concepts/b.md": [
+                {**r, "wiki_source": "wiki/concepts/b.md"} for r in _records(work="work/a.md")
+            ],
+        }
+        store = MagicMock()
+        store.get_citations_for_wiki.side_effect = lambda wiki_source: records[wiki_source]
+
+        written = rerender_stale_pages(store, cfg, records)  # type: ignore[arg-type]
+
+        assert written == [stale]
+        assert '"notes/work/a.md"' in stale.read_text(encoding="utf-8")
+        assert kept.read_text(encoding="utf-8") == _PAGE
+        assert kept.stat().st_mtime_ns == stamp
+        store.get_citations_for_wiki.assert_called_once_with("wiki/entities/a.md")
+
+    def test_a_page_that_is_gone_or_cannot_be_read_is_not_written(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(cfg, "data_root", tmp_path)
+        unreadable = tmp_path / "wiki" / "entities" / "a.md"
+        unreadable.parent.mkdir(parents=True)
+        unreadable.write_bytes(b"\xff\xfe not utf-8")
+        store = MagicMock()
+        citations = {"wiki/entities/a.md": _records(), "wiki/entities/gone.md": _records()}
+
+        assert rerender_stale_pages(store, cfg, citations) == []  # type: ignore[arg-type]
+        assert unreadable.read_bytes() == b"\xff\xfe not utf-8"
+        store.get_citations_for_wiki.assert_not_called()
 
 
 class TestRenamedPage:

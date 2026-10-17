@@ -938,13 +938,13 @@ def _shown_subjects() -> dict[str, tuple[str, ...]]:
     }
 
 
-def _cited_page(source: str) -> Path:
+def _cited_page(source: str, page_name: str = "entities/renaming.md") -> Path:
     """A wiki page whose one citation names *source*, its row in the store and its file."""
     from lilbee.wiki.citations import render_citation_block
     from lilbee.wiki.page import assemble_content, build_frontmatter
 
     record = CitationRecord(
-        wiki_source=f"{cfg.wiki_dir}/entities/renaming.md",
+        wiki_source=f"{cfg.wiki_dir}/{page_name}",
         wiki_chunk_index=0,
         citation_key="src1",
         claim_type="fact",
@@ -959,7 +959,7 @@ def _cited_page(source: str) -> Path:
     )
     Store(cfg).add_citations([record])
     page = cfg.data_root / record["wiki_source"]
-    page.parent.mkdir(parents=True)
+    page.parent.mkdir(parents=True, exist_ok=True)
     frontmatter = build_frontmatter(cfg, [source], 0.9)
     block = render_citation_block([record])
     page.write_text(assemble_content(frontmatter, "It renames.[^src1]\n", block), encoding="utf-8")
@@ -1013,6 +1013,71 @@ class TestAMovedFileInTheWiki:
         assert "old.txt" not in published
         cited = store.get_citations_for_source("renamed.txt")
         assert [row["wiki_source"] for row in cited] == ["wiki/concepts/spring-release.md"]
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_a_draft_beside_its_published_page_is_accepted_after_the_move(
+        self, tmp_path, processes
+    ):
+        from lilbee.wiki.drafts import accept_draft
+        from tests.test_absorb import _pending_draft
+
+        excerpt = "The one file that is renamed."
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        library.write("old.txt", excerpt)
+        await library.sync()
+        library.use()
+        published = _cited_page("old.txt", "concepts/spring-release.md")
+        an_hour_ago = time.time() - 3600
+        os.utime(published, (an_hour_ago, an_hour_ago))
+        _pending_draft(get_services().store, "old.txt", excerpt)
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+
+        await library.sync()
+
+        library.use()
+        assert "renamed.txt" in published.read_text(encoding="utf-8"), "no re-render: no proof"
+        assert published.stat().st_mtime == pytest.approx(an_hour_ago)
+        with mock.patch("lilbee.wiki.drafts.rewrite_links_across_wiki"):
+            accepted = accept_draft(
+                "spring-release", cfg.data_root / cfg.wiki_dir, get_services().store, cfg
+            )
+        assert accepted.moved_to == published
+        shown = published.read_text(encoding="utf-8")
+        assert f'[^src1]: renamed.txt, excerpt: "{excerpt}"' in shown
+        assert "old.txt" not in shown
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_a_sync_stopped_after_the_move_is_repaired_by_the_next(
+        self, tmp_path, monkeypatch, processes
+    ):
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        library.write("old.txt", "The one file that is renamed.")
+        await library.sync()
+        library.use()
+        page = _cited_page("old.txt")
+        before = page.read_text(encoding="utf-8")
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+        library.write("new.txt", "A new file whose write stops the sync.")
+        cancel = threading.Event()
+        real_write = Store.write_chunks_batch
+
+        def _write(store, items):
+            cancel.set()
+            return real_write(store, items)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Store, "write_chunks_batch", _write)
+            with pytest.raises(asyncio.CancelledError):
+                await library.sync(cancel=cancel)
+        assert "renamed.txt" in library.sources(), "the move did not land: nothing proven"
+        assert page.read_text(encoding="utf-8") == before, "the stopped sync rendered the page"
+
+        await library.sync()
+
+        assert before.count("old.txt") == 2
+        assert page.read_text(encoding="utf-8") == before.replace("old.txt", "renamed.txt")
 
 
 class TestARemovedFileInTheWiki:

@@ -356,8 +356,9 @@ class TestSync:
         mock_batch.assert_called()
         mock_extract_file.assert_not_called()
 
-    async def test_a_move_gives_the_wiki_pages_the_new_name(
-        self, mock_extract_file, isolated_env, monkeypatch
+    @pytest.mark.parametrize("move", [False, True], ids=["no-move", "move"])
+    async def test_every_sync_renders_the_current_paths_in_the_wiki(
+        self, mock_extract_file, isolated_env, monkeypatch, move
     ):
         import shutil
 
@@ -366,26 +367,14 @@ class TestSync:
         (isolated_env / "a.txt").write_text("Hello world. This document will move.")
         await sync()
         shown = mock.MagicMock()
-        monkeypatch.setattr("lilbee.app.ingest.show_moves_in_wiki", shown)
-        (isolated_env / "sub").mkdir()
-        shutil.move(str(isolated_env / "a.txt"), str(isolated_env / "sub" / "a.txt"))
+        monkeypatch.setattr("lilbee.app.ingest.show_current_paths_in_wiki", shown)
+        if move:
+            (isolated_env / "sub").mkdir()
+            shutil.move(str(isolated_env / "a.txt"), str(isolated_env / "sub" / "a.txt"))
 
         await sync()
 
-        shown.assert_called_once_with(["sub/a.txt"])
-
-    async def test_a_sync_with_no_move_renders_no_wiki_page(
-        self, mock_extract_file, isolated_env, monkeypatch
-    ):
-        from lilbee.data.ingest import sync
-
-        (isolated_env / "a.txt").write_text("Hello world.", encoding="utf-8")
-        shown = mock.MagicMock()
-        monkeypatch.setattr("lilbee.app.ingest.show_moves_in_wiki", shown)
-
-        await sync()
-
-        shown.assert_not_called()
+        shown.assert_called_once_with()
 
     async def test_moved_file_relocates_without_reingest(self, mock_extract_file, isolated_env):
         import shutil
@@ -5810,30 +5799,55 @@ def _stub_of(source_id: str):
     )
 
 
-class TestShowMovesInWiki:
-    def test_with_no_page_citing_a_moved_source_no_page_is_read(self, isolated_env, mock_svc):
+class TestShowCurrentPathsInWiki:
+    def test_with_no_citation_no_page_is_read(self, isolated_env, mock_svc):
         from lilbee.app import ingest as ingest_mod
 
-        mock_svc.store.wiki_pages_citing.return_value = set()
-        with mock.patch("lilbee.wiki.rerender.rerender_pages") as rendered:
-            ingest_mod.show_moves_in_wiki(["sub/a.txt"])
-        mock_svc.store.wiki_pages_citing.assert_called_once_with(["sub/a.txt"])
+        mock_svc.store.wiki_citations_by_page.return_value = {}
+        with mock.patch("lilbee.wiki.rerender.rerender_stale_pages") as rendered:
+            ingest_mod.show_current_paths_in_wiki()
+        mock_svc.store.wiki_citations_by_page.assert_called_once_with()
         rendered.assert_not_called()
+
+    def test_the_citations_read_once_are_the_ones_rendered(self, isolated_env, mock_svc):
+        from lilbee.app import ingest as ingest_mod
+
+        citations = {"wiki/entities/a.md": [{"citation_key": "src1"}]}
+        mock_svc.store.wiki_citations_by_page.return_value = citations
+        with mock.patch("lilbee.wiki.rerender.rerender_stale_pages") as rendered:
+            ingest_mod.show_current_paths_in_wiki()
+        mock_svc.store.wiki_citations_by_page.assert_called_once_with()
+        assert rendered.call_args.args[0] is mock_svc.store
+        assert rendered.call_args.args[2] is citations
 
     def test_a_failure_to_write_a_page_is_logged_and_does_not_raise(
         self, isolated_env, mock_svc, caplog
     ):
         from lilbee.app import ingest as ingest_mod
 
-        mock_svc.store.wiki_pages_citing.return_value = {"wiki/entities/a.md"}
+        mock_svc.store.wiki_citations_by_page.return_value = {"wiki/entities/a.md": []}
         failing = mock.MagicMock(side_effect=OSError("disk full"))
         with (
-            mock.patch("lilbee.wiki.rerender.rerender_pages", failing),
+            mock.patch("lilbee.wiki.rerender.rerender_stale_pages", failing),
             caplog.at_level("WARNING", logger=ingest_mod.log.name),
         ):
-            ingest_mod.show_moves_in_wiki(["sub/a.txt"])
-        assert failing.call_args.args[2] == {"wiki/entities/a.md"}
-        assert "Failed to show moved documents in the wiki pages" in caplog.text
+            ingest_mod.show_current_paths_in_wiki()
+        failing.assert_called_once()
+        assert "Failed to show the current document paths in the wiki pages" in caplog.text
+
+    def test_a_failure_to_read_the_citations_is_logged_and_does_not_raise(
+        self, isolated_env, mock_svc, caplog
+    ):
+        from lilbee.app import ingest as ingest_mod
+
+        mock_svc.store.wiki_citations_by_page.side_effect = OSError("table unreadable")
+        with (
+            mock.patch("lilbee.wiki.rerender.rerender_stale_pages") as rendered,
+            caplog.at_level("WARNING", logger=ingest_mod.log.name),
+        ):
+            ingest_mod.show_current_paths_in_wiki()
+        rendered.assert_not_called()
+        assert "Failed to show the current document paths in the wiki pages" in caplog.text
 
 
 class TestForgetMissingFromWikiIndex:

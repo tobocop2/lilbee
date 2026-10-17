@@ -719,22 +719,22 @@ def forget_missing_from_wiki_index() -> None:
         log.warning("Failed to drop missing documents from the wiki index", exc_info=True)
 
 
-def show_moves_in_wiki(moved: Iterable[str]) -> None:
-    """Show the new paths of the *moved* sources in the wiki pages that cite them.
+def show_current_paths_in_wiki() -> None:
+    """Render again each wiki page that shows a path its cited source no longer has.
 
-    Best effort, as the move itself already succeeded.
+    Best effort, as the sync itself already succeeded.
     """
     store = get_services().store
-    pages = store.wiki_pages_citing(moved)
-    if not pages:
-        return
-    # heavy: the wiki package loads spaCy
-    from lilbee.wiki.rerender import rerender_pages
-
     try:
-        rerender_pages(store, active_config(), pages)
+        citations = store.wiki_citations_by_page()
+        if not citations:
+            return
+        # heavy: the wiki package loads spaCy
+        from lilbee.wiki.rerender import rerender_stale_pages
+
+        rerender_stale_pages(store, active_config(), citations)
     except Exception:
-        log.warning("Failed to show moved documents in the wiki pages", exc_info=True)
+        log.warning("Failed to show the current document paths in the wiki pages", exc_info=True)
 
 
 @contextmanager

@@ -1746,6 +1746,58 @@ class TestAPendingDraft:
         assert [row["wiki_source"] for row in rows] == ["wiki/concepts/spring-release.md"]
         assert store.get_citations_for_source("work/plan.md") == []
 
+    async def test_a_draft_beside_its_published_page_is_accepted_after_an_absorb(
+        self, library, notes
+    ):
+        import os
+        import time
+
+        from lilbee.data.store import CitationRecord
+        from lilbee.wiki.citations import render_citation_block
+        from lilbee.wiki.drafts import accept_draft
+        from lilbee.wiki.page import assemble_content, build_frontmatter
+
+        await _add(notes / "work")
+        store = library.store
+        record = CitationRecord(
+            wiki_source=f"{cfg.wiki_dir}/concepts/spring-release.md",
+            wiki_chunk_index=0,
+            citation_key="src1",
+            claim_type="fact",
+            source_filename="work/plan.md",
+            source_hash="h",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            excerpt=self._EXCERPT,
+            created_at="",
+        )
+        store.add_citations([record])
+        published = cfg.data_root / record["wiki_source"]
+        published.parent.mkdir(parents=True, exist_ok=True)
+        published.write_text(
+            assemble_content(
+                build_frontmatter(cfg, ["work/plan.md"], 0.9),
+                "The published body.[^src1]\n",
+                render_citation_block([record]),
+            ),
+            encoding="utf-8",
+        )
+        an_hour_ago = time.time() - 3600
+        os.utime(published, (an_hour_ago, an_hour_ago))
+        _pending_draft(store, "work/plan.md", self._EXCERPT)
+
+        register_sources([notes])
+
+        assert "notes/work/plan.md" in published.read_text(encoding="utf-8"), "no re-render"
+        assert published.stat().st_mtime == pytest.approx(an_hour_ago)
+        with mock.patch("lilbee.wiki.drafts.rewrite_links_across_wiki"):
+            accepted = accept_draft("spring-release", cfg.data_root / cfg.wiki_dir, store, cfg)
+        shown = accepted.moved_to.read_text(encoding="utf-8")
+        assert "The release has a plan." in shown
+        assert f'[^src1]: notes/work/plan.md, excerpt: "{self._EXCERPT}"' in shown
+
     async def test_the_diff_of_a_pending_draft_shows_the_new_path(self, library, notes):
         from lilbee.wiki.drafts import diff_draft
 

@@ -393,6 +393,36 @@ class TestWikiPagesCiting:
         assert store.wiki_pages_citing(["work"]) == set()
 
 
+class TestWikiCitationsByPage:
+    def test_each_page_holds_its_citations_with_the_path_its_source_has_now(self, store):
+        from tests.conftest import make_citation
+
+        store.add_citations(
+            [
+                make_citation(wiki_source="wiki/entities/a.md", source_filename="work/a.md"),
+                make_citation(
+                    wiki_source="wiki/entities/a.md", source_filename="plan.md", citation_key="src2"
+                ),
+                make_citation(wiki_source="wiki/concepts/b.md", source_filename="work/a.md"),
+            ]
+        )
+        store.rekey_sources_under("work", "notes/work")
+
+        by_page = store.wiki_citations_by_page()
+
+        shown = {
+            page: sorted((r["citation_key"], r["source_filename"]) for r in records)
+            for page, records in by_page.items()
+        }
+        assert shown == {
+            "wiki/entities/a.md": [("src1", "notes/work/a.md"), ("src2", "plan.md")],
+            "wiki/concepts/b.md": [("src1", "notes/work/a.md")],
+        }
+
+    def test_a_store_with_no_citation_table_holds_none(self, store):
+        assert store.wiki_citations_by_page() == {}
+
+
 class TestWikiMentions:
     def test_a_row_names_its_source_by_id_and_by_path(self, store):
         store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])

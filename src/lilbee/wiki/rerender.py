@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -164,7 +165,10 @@ def _rerender(store: Store, page: Path, wiki_source: str) -> Path | None:
     rendered = rerendered_page(text, store.get_citations_for_wiki(wiki_source))
     if rendered == text:
         return None
+    # The page keeps its time: the stale check of a pending draft compares the two.
+    written = page.stat()
     atomic_write_text(page, rendered)
+    os.utime(page, ns=(written.st_atime_ns, written.st_mtime_ns))
     return page
 
 
@@ -176,3 +180,24 @@ def rerender_pages(store: Store, config: Config, wiki_sources: Iterable[str]) ->
             for wiki_source in sorted(wiki_sources)
         ]
     return [page for page in written if page is not None]
+
+
+def _shows_other_paths(page: Path, records: Iterable[CitationRecord]) -> bool:
+    """Whether *page* shows a path other than the one its citation *records* name now."""
+    try:
+        text = page.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False  # a page that is gone or cannot be read is left as it is
+    return rerendered_page(text, records) != text
+
+
+def rerender_stale_pages(
+    store: Store, config: Config, citations: Mapping[str, Iterable[CitationRecord]]
+) -> list[Path]:
+    """Render again each page of *citations* that shows a path its cited source no longer has."""
+    stale = [
+        wiki_source
+        for wiki_source, records in citations.items()
+        if _shows_other_paths(config.data_root / wiki_source, records)
+    ]
+    return rerender_pages(store, config, stale) if stale else []
