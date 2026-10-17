@@ -115,7 +115,7 @@ class ResetRefusedError(RuntimeError):
 
 
 class LibraryUnlockableError(RuntimeError):
-    """Raised when a sync or a change that keeps syncs off cannot lock the data root."""
+    """Raised when a sync, an add or a wiki write cannot lock the data root."""
 
 
 class _NoHardLinksError(OSError):

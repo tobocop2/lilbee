@@ -494,6 +494,17 @@ with the full-text, vector and bitmap indexes kept. An older lilbee then fails o
 (`KeyError: 'filename'`) in every command that reads the index, and changes nothing.
 `lilbee rebuild` of the older version works and starts the library again.
 
+**Stored locations, computed names.** The `path` of a source under an added folder is
+the folder's path from the registry plus the path below it, in POSIX spelling. The name
+a person sees is computed when the store reads the row: the label of the deepest added
+folder that holds the path, then the rest. Every other path (an owned file, a crawled
+page, a wiki page, an imported source) shows itself. The listing search builds one SQL
+arm per folder from the same ordered list. The store reads the registry again when
+`config.toml` changes, and a sync holds the registry it started with. The first open
+stores the location of each row a registered label still names, one commit per label,
+deepest folder first; a row an outer folder kept for a file of an inner folder folds
+into the inner folder's row.
+
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.
 
