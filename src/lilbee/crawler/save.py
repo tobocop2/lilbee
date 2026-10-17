@@ -384,13 +384,17 @@ def _retire_earlier(
     """Delete each earlier copy of the page at *address* that holds its text and no other's.
 
     The copy's index source goes first: the sync never removes the source of a vanished file.
+    Each copy is checked and deleted under the record lock, so two crawls never delete one copy.
     """
     for entry in record.earlier.pop(address, []):
-        if entry.file in record.claimed or not _holds_only(address, entry, record):
+        if entry.file in record.claimed:
             continue
-        remove_sources([PurePosixPath(WEB_DIR, _disk_name(entry.file)).as_posix()])
-        (web_dir() / entry.file).unlink()
-        _remove_empty_folders((web_dir() / entry.file).parent)
+        with file_lock_or_warn(_pages_path(), _RECORD_LOCK_TIMEOUT_S):
+            if not _holds_only(address, entry, record):
+                continue
+            remove_sources([PurePosixPath(WEB_DIR, _disk_name(entry.file)).as_posix()])
+            (web_dir() / entry.file).unlink()
+            _remove_empty_folders((web_dir() / entry.file).parent)
 
 
 def _blocking_file(path: Path) -> Path | None:
