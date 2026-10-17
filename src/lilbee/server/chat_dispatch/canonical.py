@@ -117,9 +117,6 @@ IMAGES_ONLY_MESSAGE = (
     "The request holds only image content, and lilbee cannot pass images to the model. "
     "Send text with the request."
 )
-IMAGES_UNSUPPORTED_MESSAGE = (
-    "This model reads images, but lilbee cannot pass them to it yet. Send a text-only request."
-)
 
 
 # Tells the client how many image parts the server dropped from its request.

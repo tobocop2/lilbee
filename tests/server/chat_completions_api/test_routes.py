@@ -25,7 +25,6 @@ from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.chat_dispatch.canonical import (
     IMAGES_DROPPED_HEADER,
     IMAGES_ONLY_MESSAGE,
-    IMAGES_UNSUPPORTED_MESSAGE,
 )
 from lilbee.server.chat_dispatch.concurrency import ChatSlotGuard, chat_gate
 
@@ -170,12 +169,12 @@ def _sse_to_chunks(body: bytes) -> list[Any]:
 
 class TestListModelsEndpoint:
     async def test_returns_installed_chat_models(self, services_with_chat_model, _auth_token):
-        services_with_chat_model.registry.list_installed = MagicMock(
-            return_value=[
-                _installed_chat_model("a/Model/a.gguf"),
-                _installed_chat_model("b/Model/b.gguf"),
-            ]
-        )
+        installed = [
+            _installed_chat_model("a/Model/a.gguf"),
+            _installed_chat_model("b/Model/b.gguf"),
+        ]
+        services_with_chat_model.registry.list_installed = MagicMock(return_value=installed)
+        _populate_known_models(services_with_chat_model, installed)
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.get("/v1/models", headers=_h())
         body = resp.json()
@@ -190,6 +189,7 @@ class TestListModelsEndpoint:
         embed = _installed_chat_model("b/Embed/e.gguf")
         embed.task = "embedding"
         services_with_chat_model.registry.list_installed = MagicMock(return_value=[chat, embed])
+        _populate_known_models(services_with_chat_model, [chat, embed])
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.get("/v1/models", headers=_h())
         assert [m["id"] for m in resp.json()["data"]] == ["a/Model/a.gguf"]
@@ -599,7 +599,7 @@ class TestNonStreamingCompletion:
         assert resp.status_code == 400
         assert resp.json()["error"]["message"] == IMAGES_ONLY_MESSAGE
 
-    async def test_image_to_a_model_that_reads_images_is_400(
+    async def test_image_to_a_vision_tagged_model_is_dropped_and_reported(
         self, services_with_chat_model, _auth_token
     ):
         services_with_chat_model.provider.get_capabilities.return_value = ["completion", "vision"]
@@ -609,8 +609,10 @@ class TestNonStreamingCompletion:
                 headers=_h(),
                 json={"model": INSTALLED_REF, "messages": [_IMAGE_AND_TEXT_MESSAGE]},
             )
-        assert resp.status_code == 400
-        assert resp.json()["error"]["message"] == IMAGES_UNSUPPORTED_MESSAGE
+        assert resp.status_code == 200
+        assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        sent = services_with_chat_model.provider.chat.call_args.kwargs["messages"]
+        assert [m["content"] for m in sent] == ["describe"]
 
     async def test_unknown_role_payload_returns_400(self, services_with_chat_model, _auth_token):
         # ``role`` is a Literal of four OpenAI roles; ``developer`` is rejected.
@@ -2174,6 +2176,15 @@ class TestModelNamedByPath:
                 "/v1/chat/completions", json=_path_body(str(other)), headers=_h()
             )
         assert resp.status_code == 400
+
+    async def test_models_list_includes_the_configured_path(self, loose_model, _auth_token):
+        gguf, other = loose_model
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.get("/v1/models", headers=_h())
+        ids = [m["id"] for m in resp.json()["data"]]
+        assert resp.status_code == 200
+        assert ids == [str(gguf)]
+        assert str(other) not in ids
 
     async def test_a_missing_file_is_404(self, loose_model, _auth_token):
         gguf, _ = loose_model

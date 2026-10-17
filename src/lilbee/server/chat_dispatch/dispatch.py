@@ -25,7 +25,6 @@ from lilbee.providers.base import (
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import WorkerRole, configured_model_message
 from lilbee.server.chat_dispatch.canonical import (
-    IMAGES_UNSUPPORTED_MESSAGE,
     CanonicalChatRequest,
     CanonicalMessage,
     CanonicalResponse,
@@ -402,33 +401,27 @@ def resolve_served_model(req: CanonicalChatRequest) -> str:
     return canonical
 
 
-def _ensure_images_droppable(req: CanonicalChatRequest, model: str) -> None:
-    """Log the images dropped from *req*, or refuse them when the model reads images."""
-    if not req.dropped_images:
-        return
-    try:
-        reads_images = "vision" in get_services().provider.get_capabilities(model)
-    except ProviderError:
-        reads_images = False
-    if reads_images:
-        raise ProviderError(IMAGES_UNSUPPORTED_MESSAGE, kind=ProviderErrorKind.BAD_REQUEST)
-    log.warning(
-        "Dropped %d image part(s) from a chat request: %s cannot read images",
-        req.dropped_images,
-        model,
-    )
+def _log_dropped_images(req: CanonicalChatRequest, model: str) -> None:
+    """Log once when the translator dropped image parts from *req*."""
+    if req.dropped_images:
+        log.warning(
+            "Dropped %d image part(s) from a chat request: lilbee cannot pass images to %s",
+            req.dropped_images,
+            model,
+        )
 
 
 def preflight_chat_request(req: CanonicalChatRequest) -> str:
     """Synchronously validate *req* before any streaming response starts.
 
-    Adds the tool-capability and image checks to :func:`resolve_served_model`, so
-    a model whose template cannot render tool calls fails with a 4xx instead of
-    burying the failure in an SSE error frame after headers flush.
+    Adds the tool-capability check to :func:`resolve_served_model`, so a model
+    whose template cannot render tool calls fails with a 4xx instead of burying
+    the failure in an SSE error frame after headers flush. It also logs any
+    image parts the translator dropped.
     """
     canonical = resolve_served_model(req)
     _ensure_tool_capability(req, canonical)
-    _ensure_images_droppable(req, canonical)
+    _log_dropped_images(req, canonical)
     return canonical
 
 
