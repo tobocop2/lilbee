@@ -86,14 +86,15 @@ def isolated_env(tmp_path, monkeypatch, request):
         monkeypatch.setattr("lilbee.crawler.bootstrap.headless_shell_executable", lambda: shell)
     # Stub crawler_available so crawl_and_save's pre-flight backend check passes
     # in CI envs where the [crawler] extra isn't installed. Tests that exercise
-    # the missing-extra path opt out by re-patching to ``False``. Both the SDK
-    # façade (used by callers) and the impl (used by tests that import directly)
-    # are patched so the value is consistent across import paths. The
+    # the missing-extra path opt out by re-patching to ``False``. The SDK façade
+    # (used by callers), the impl (used by tests that import directly) and the
+    # MCP server's own name are patched so the value is consistent. The
     # ``TestCrawlerAvailable`` class drives the real function directly via
     # ``sys.modules`` patching, so it opts out of the auto-stub.
     if cls != "TestCrawlerAvailable":
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: True)
         monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: True)
+        monkeypatch.setattr("lilbee.mcp_server.crawler_available", lambda: True)
     # Default the sitemap bound to "unknown" so tests don't hit the network.
     # Tests that exercise the sitemap hook directly (TestSitemapCounting)
     # opt out of this autopatch.
