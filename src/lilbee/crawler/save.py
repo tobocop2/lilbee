@@ -103,13 +103,20 @@ def _sorted_query(address: str) -> str:
     return f"{before}{_QUERY_MARK}{_QUERY_SEPARATOR.join(parameters)}"
 
 
-def canonical_address(url: str) -> str:
-    """The key crawlberg 1.11.1's ``normalize_url`` gives the page at *url*, or *url* unparsed."""
+def parsed_address(url: str) -> str | None:
+    """*url* without its fragment as crawlberg 1.11.1's URL parser writes it; None if it fails."""
     parsed = _parsed(_ANY_CARET_ESCAPE.sub(_CARET_ESCAPE_LOWER, url))
     if parsed is None:
-        return url
+        return None
     parsed.hash = ""
-    address = parsed.href.replace(_CARET_ESCAPE, _CARET)
+    return parsed.href.replace(_CARET_ESCAPE, _CARET)
+
+
+def canonical_address(url: str) -> str:
+    """The key crawlberg 1.11.1's ``normalize_url`` gives the page at *url*, or *url* unparsed."""
+    address = parsed_address(url)
+    if address is None:
+        return url
     return _sorted_query(_PERCENT_ESCAPE.sub(_normalized_escape, address))
 
 

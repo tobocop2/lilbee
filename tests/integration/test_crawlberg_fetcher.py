@@ -90,6 +90,7 @@ RETRY_STATUSES = {
 RATE_LIMITED_ONCE = "/retry/once"
 # A page a default crawl_exclude_patterns entry matches.
 EXCLUDED_SEED = "/wiki/Special:Random"
+ROOT_PATTERN = r":\d+/$"
 ONE_PAGE_LIMITS = {"depth-0": {"depth": 0}, "one-page": {"depth": 1, "max_pages": 1}}
 SITE_CRAWL_LIMITS = {
     "two-pages": {"depth": 1, "max_pages": 2},
@@ -743,6 +744,23 @@ class TestCrawlAndSave:
         assert site.paths_since(0, EXCLUDED_SEED) == []
         assert paths == []
         assert warnings == [LEFT_OUT.format(url=seed, pattern=pattern)]
+
+    @pytest.mark.parametrize("limit", SITE_CRAWL_LIMITS.values(), ids=list(SITE_CRAWL_LIMITS))
+    async def test_a_seed_typed_without_a_path_is_named_when_a_root_pattern_excludes_it(
+        self, site, caplog, limit
+    ):
+        seed = site.url("")
+        cfg.crawl_exclude_patterns = [ROOT_PATTERN]
+        assert re.search(ROOT_PATTERN, seed) is None
+        paths = await crawl_and_save(seed, render_mode=HTTP, **limit)
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == FETCHER_LOGGER and record.levelname == "WARNING"
+        ]
+        assert site.paths_since(0, "/") == ["/sitemap.xml"]
+        assert paths == []
+        assert warnings == [LEFT_OUT.format(url=site.url("/"), pattern=ROOT_PATTERN)]
 
     async def test_default_exclude_patterns_all_apply(self, site):
         """``/wiki/Special:`` is a default pattern that is not a regex anchor or digit class."""
