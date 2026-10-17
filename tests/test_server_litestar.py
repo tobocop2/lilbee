@@ -15,6 +15,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.config.model import _TAKES_DEFAULT_WHEN_REFUSED, _refusals
+from lilbee.data.store import SourceType
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.runtime.progress import EmbedEvent, EventType
 from tests.server.conftest import parse_sse_events
@@ -2405,7 +2406,7 @@ class TestExportRoute:
 class TestImportRoute:
     def test_round_trip_streams_progress_and_done(self, dataset_store, client):
         data = client.get("/api/export", params={"format": "jsonl"}).content
-        dataset_store.delete_by_source("doc.pdf")
+        dataset_store.delete_by_source("doc.pdf", SourceType.DOCUMENT)
 
         resp = client.post("/api/import", params={"format": "jsonl"}, content=data)
         assert resp.status_code == 201

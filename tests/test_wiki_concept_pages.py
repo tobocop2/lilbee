@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import SearchChunk, SourceType
 from lilbee.wiki.batch import hash_existing_sources
 from lilbee.wiki.entity_extractor import (
     ChunkRef,
@@ -104,8 +104,8 @@ class TestPersistAndFinalize:
             store=store,
             config=cfg,
         )
-        store.delete_by_source.assert_any_call("a.txt")
-        store.delete_by_source.assert_any_call("b.txt")
+        store.delete_by_source.assert_any_call("a.txt", SourceType.DOCUMENT)
+        store.delete_by_source.assert_any_call("b.txt", SourceType.DOCUMENT)
 
     def test_prune_raw_continues_past_a_failed_delete(self, tmp_path: Path) -> None:
         """One failed source delete is logged; the rest of the loop still prunes."""
@@ -135,7 +135,7 @@ class TestPersistAndFinalize:
             config=cfg,
         )
         assert page_path.exists()  # the generated page still landed
-        store.delete_by_source.assert_any_call("b.txt")
+        store.delete_by_source.assert_any_call("b.txt", SourceType.DOCUMENT)
 
 
 class TestGeneratePageProgress:

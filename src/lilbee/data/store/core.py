@@ -511,6 +511,10 @@ def _source_type_of(chunk_type: str) -> SourceType:
     return SourceType.WIKI if chunk_type == ChunkType.WIKI else SourceType.DOCUMENT
 
 
+# The order a lookup by a name with no type tries the types in.
+_READ_ORDER = (SourceType.WIKI, SourceType.IMPORTED, SourceType.DOCUMENT)
+
+
 def _is_wiki(source_type: str) -> bool:
     """Whether *source_type* is a wiki page's, the one type no other source shares a row with."""
     return source_type == SourceType.WIKI
@@ -2421,10 +2425,10 @@ class Store:
             if table is not None:
                 table.delete(f"{_SOURCE_ID} IN ({quoted})")
 
-    def delete_by_source(self, source: str) -> None:
-        """Delete a source's chunks and page texts."""
+    def delete_by_source(self, source: str, source_type: SourceType) -> None:
+        """Delete the chunks and page texts of *source* of *source_type*."""
         with self._write_lock():
-            self._delete_rows_of_unlocked(self.source_ids([source]).values())
+            self._delete_rows_of_unlocked(self.source_ids([source], source_type).values())
         self._invalidate_source_cache()
 
     def add_page_texts(self, records: list[dict]) -> int:
@@ -2451,7 +2455,9 @@ class Store:
         """
 
         table = self.open_table(PAGE_TEXTS_TABLE)
-        source_id = None if source is None else self.source_ids([source]).get(source, "")
+        source_id = None
+        if source is not None:
+            source_id = self.source_ids([source], SourceType.DOCUMENT).get(source, "")
         if table is None:
             arrow = _page_texts_schema().empty_table()
         else:
@@ -2787,22 +2793,30 @@ class Store:
             query = table.search().where(f"{column} IN ({batch})").select([column, *others])
             yield from query.limit(None).to_list()
 
-    def source_ids(self, paths: Iterable[str]) -> dict[str, str]:
-        """The id of each of the names *paths* that a source row holds.
+    def source_ids(
+        self, paths: Iterable[str], source_type: SourceType | None = None
+    ) -> dict[str, str]:
+        """The id of each of the names *paths* that a source row of *source_type* holds.
 
-        A name finds a source that is not a document at its key, else a document at
-        its location: the key of each type.
+        A name finds its source at the key of each type of the class of *source_type*
+        (a wiki page, or not), the class a write keeps one row per name in. A reader
+        that does not know the type finds a wiki page first.
         """
         names = list(paths)
-        location = self._locations().location
-        rows = self._rows_where(_PATH, {*names, *map(location, names)}, ["source_type", _SOURCE_ID])
-        held = {
-            (row[_PATH], row["source_type"] == SourceType.DOCUMENT): row[_SOURCE_ID] for row in rows
-        }
-        found = {
-            name: held.get((name, False)) or held.get((location(name), True)) for name in names
-        }
-        return {name: source_id for name, source_id in found.items() if source_id is not None}
+        types = [
+            kind
+            for kind in _READ_ORDER
+            if source_type is None or _is_wiki(kind) == _is_wiki(source_type)
+        ]
+        key = self._locations().key
+        wanted = [((key(name, kind), kind), name) for kind in types for name in names]
+        rows = self._rows_where(_PATH, {at[0] for at, _ in wanted}, ["source_type", _SOURCE_ID])
+        held = {(row[_PATH], row["source_type"]): row[_SOURCE_ID] for row in rows}
+        found: dict[str, str] = {}
+        for at, name in wanted:
+            if at in held:
+                found.setdefault(name, held[at])
+        return found
 
     def source_paths(self, source_ids: Iterable[str]) -> dict[str, str]:
         """The shown name of each of *source_ids* that a source row holds."""
@@ -2985,7 +2999,8 @@ class Store:
     def delete_source(self, filename: str) -> None:
         """Remove a source file tracking record."""
         with self._write_lock():
-            self._drop_source_rows_unlocked(list(self.source_ids([filename]).values()))
+            ids = self.source_ids([filename], SourceType.DOCUMENT)
+            self._drop_source_rows_unlocked(list(ids.values()))
         self._invalidate_source_cache()
 
     def _remove_many_unlocked(
@@ -2998,7 +3013,7 @@ class Store:
         ``IN`` delete per table covers the whole set.
         """
         held = held or {}
-        ids = self.source_ids(names)
+        ids = self.source_ids(names, SourceType.DOCUMENT)
         self._delete_rows_of_unlocked(list(ids.values()))
         self._drop_source_rows_unlocked([ids[name] for name in ids if name not in held])
         self._hold_out_unlocked(held)
@@ -3037,7 +3052,8 @@ class Store:
 
     def release_held(self, paths: Iterable[str]) -> None:
         """Hold none of *paths* out of a sync any more."""
-        wanted = sorted({self._locations().location(path) for path in paths})
+        key = self._locations().key
+        wanted = sorted({key(path, SourceType.DOCUMENT) for path in paths})
         if not wanted:
             return
         with self._write_lock():
@@ -3287,7 +3303,7 @@ class Store:
     def get_citations_for_source(self, source_filename: str) -> list[CitationRecord]:
         """Get all citations that reference a source document (reverse lookup)."""
         table = self.open_table(CITATIONS_TABLE)
-        source_id = self.source_ids([source_filename]).get(source_filename)
+        source_id = self.source_ids([source_filename], SourceType.DOCUMENT).get(source_filename)
         if table is None or source_id is None:
             return []
         rows = table.search().where(f"{_SOURCE_ID} = '{source_id}'").to_list()
@@ -3335,7 +3351,7 @@ class Store:
         with self._write_lock():
             ids = self._ensure_ids_unlocked(_documents(row["source"] for row in rows))
             table = ensure_table(self.get_db(), WIKI_MENTIONS_TABLE, _wiki_mentions_schema())
-            for source_id in self.source_ids([source]).values():
+            for source_id in self.source_ids([source], SourceType.DOCUMENT).values():
                 table.delete(f"{_SOURCE_ID} = '{source_id}'")
             if rows:
                 table.add(_keyed(rows, "source", ids))

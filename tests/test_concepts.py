@@ -11,7 +11,7 @@ import pytest
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import CHUNK_CONCEPTS_TABLE, cfg
-from lilbee.data.store import ConceptRecords, SearchChunk
+from lilbee.data.store import ConceptRecords, SearchChunk, SourceType
 from lilbee.retrieval.concepts import ConceptGraph
 from tests._sys_modules import inject_modules
 
@@ -1198,7 +1198,7 @@ class TestRebuildIncremental:
         store, graph = self._seeded_graph()
         graph.rebuild_clusters()
         before = self._node_map(store)
-        store.delete_by_source("a.md")
+        store.delete_by_source("a.md", SourceType.DOCUMENT)
         mock_leiden.reset_mock()
 
         graph.rebuild_clusters(updated=["a.md"])

@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from lilbee.core.config import Config
-from lilbee.data.store import CitationRecord, Store
+from lilbee.data.store import CitationRecord, SourceType, Store
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.shared import (
     PENDING_COLLISION_MARKER_PREFIX,
@@ -275,7 +275,7 @@ def persist_and_finalize(
     if config.wiki_prune_raw and target.supersedes_sources:
         for name in source_names:
             try:
-                store.delete_by_source(name)
+                store.delete_by_source(name, SourceType.DOCUMENT)
             except Exception:
                 # Best-effort pruning of raw sources the new page supersedes; one
                 # failed delete must not abort the loop or fail the generated page.

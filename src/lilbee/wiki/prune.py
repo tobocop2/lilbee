@@ -19,7 +19,7 @@ from enum import Enum
 from pathlib import Path
 
 from lilbee.core.config import Config, cfg
-from lilbee.data.store import Store
+from lilbee.data.store import SourceType, Store
 from lilbee.data.store.types import CitationRecord
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import IssueType, lint_wiki_page
@@ -84,7 +84,7 @@ class PruneReport:
 def _delete_wiki_rows(wiki_source: str, store: Store) -> bool:
     """Delete a wiki page's chunk and citation rows. Returns whether it succeeded."""
     try:
-        store.delete_by_source(wiki_source)
+        store.delete_by_source(wiki_source, SourceType.WIKI)
         if not store.delete_citations_for_wiki(wiki_source):
             log.warning(
                 "Citation delete failed for %s; the next prune pass retries it", wiki_source

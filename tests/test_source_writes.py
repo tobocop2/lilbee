@@ -21,7 +21,7 @@ from lilbee.data.store import (
     SourceType,
     Store,
 )
-from tests.test_store import _axis_record, _citation, _early_source, _md5
+from tests.test_store import _axis_record, _citation, _early_source, _md5, _mention
 
 _OLD_REMOVED = "removed via remove (re-add the source or run retry-skipped to restore)"
 _FAILED = HeldRecord(HeldOut.FAILED, "hf", "no text extracted (0 chunks)")
@@ -340,3 +340,119 @@ class TestARootThatLeavesOntoAHeldKey:
             cited["citation_key"] for cited in store.get_citations_for_source("notes/x.md")
         )
         assert keys == ["held", "live"]
+
+
+_SHARED = "wiki/summaries/a.md"
+
+
+@pytest.fixture()
+def shared(config, tmp_path) -> Store:
+    """A store with a document under a folder labelled ``wiki`` and a wiki page of its name."""
+    config.linked_roots = {"wiki": str(tmp_path / "home" / "wiki")}
+    store = Store(config)
+    _batch(store, _SHARED, SourceType.DOCUMENT)
+    _replace(store, _SHARED, SourceType.WIKI)
+    return store
+
+
+def _ids(store: Store) -> dict[str, str]:
+    """The id of each source row, by its type."""
+    return {row["source_type"]: row["source_id"] for row in _rows(store)}
+
+
+def _chunk_types(store: Store) -> list[str]:
+    """The chunk type of every chunk row, sorted."""
+    rows = store.open_table(CHUNKS_TABLE).search().limit(None).to_list()
+    return sorted(row["chunk_type"] for row in rows)
+
+
+class TestANameOfADocumentAndAWikiPage:
+    def test_removing_the_document_keeps_the_page(self, shared):
+        page = _ids(shared)["wiki"]
+
+        shared.remove_documents(
+            [_SHARED], {_SHARED: HeldRecord(HeldOut.REMOVED, "h", REMOVED_REASON)}
+        )
+
+        assert _chunk_types(shared) == ["wiki"]
+        found = shared.search([0.1] * cfg.embedding_dim, max_distance=0)
+        assert [(chunk.source, chunk.chunk_type) for chunk in found] == [(_SHARED, "wiki")]
+        assert shared.get_sources() == []
+        assert shared.source_ids([_SHARED]) == {_SHARED: page}
+        assert shared.held_records() == {_SHARED: HeldRecord(HeldOut.REMOVED, "h", REMOVED_REASON)}
+
+    def test_deleting_the_document_record_keeps_the_page_record(self, shared):
+        page = _ids(shared)["wiki"]
+
+        shared.delete_source(_SHARED)
+
+        assert _ids(shared) == {"wiki": page}
+
+    def test_deleting_the_page_keeps_the_document(self, shared):
+        shared.delete_by_source(_SHARED, SourceType.WIKI)
+
+        assert _chunk_types(shared) == ["raw"]
+
+    def test_deleting_the_document_chunks_keeps_the_page(self, shared):
+        shared.delete_by_source(_SHARED, SourceType.DOCUMENT)
+
+        assert _chunk_types(shared) == ["wiki"]
+
+    def test_deleting_a_page_with_no_row_keeps_a_document_of_its_name(self, config, tmp_path):
+        config.linked_roots = {"wiki": str(tmp_path / "home" / "wiki")}
+        store = Store(config)
+        _batch(store, _SHARED, SourceType.DOCUMENT)
+
+        store.delete_by_source(_SHARED, SourceType.WIKI)
+
+        assert _chunk_types(store) == ["raw"]
+
+    def test_replacing_the_document_mentions_drops_its_old_ones(self, shared):
+        shared.replace_wiki_mentions_for_source(_SHARED, [_mention("boeing", _SHARED, 1, [0])])
+
+        shared.replace_wiki_mentions_for_source(_SHARED, [_mention("airbus", _SHARED, 1, [0])])
+
+        assert [row["slug"] for row in shared.wiki_mention_rows()] == ["airbus"]
+
+    def test_the_citations_of_the_document_are_found(self, shared):
+        shared.add_citations([_citation(_SHARED)])
+
+        assert len(shared.get_citations_for_source(_SHARED)) == 1
+
+    def test_the_page_texts_of_the_document_are_found(self, shared):
+        _page_text(shared, _SHARED, SourceType.DOCUMENT)
+
+        assert [row["text"] for row in shared.get_page_texts(_SHARED)] == ["t"]
+
+    def test_releasing_the_document_keeps_the_page(self, shared):
+        shared.hold_failed({_SHARED: _FAILED})
+
+        shared.release_held([_SHARED])
+
+        assert shared.held_records() == {}
+        assert sorted(_ids(shared)) == ["document", "wiki"]
+
+
+class TestAWriteOntoAFoundRow:
+    def test_a_failure_record_of_an_indexed_file_is_imported(self, config, tmp_path):
+        root = tmp_path / "src" / "notes"
+        config.linked_roots = {"notes": str(root)}
+        Store(config).write_chunks_batch(
+            [ChunkWrite("notes/a.md", "h", _records("notes/a.md"), needs_cleanup=False)]
+        )
+        _write_legacy(tmp_path, {"notes/a.md": "hf"}, {"notes/a.md": _FAILED.reason})
+
+        store = Store(config)
+
+        assert store.held_records() == {"notes/a.md": _FAILED}
+        assert [row["filename"] for row in store.get_sources()] == ["notes/a.md"]
+
+    def test_an_id_request_for_a_source_with_a_row_writes_nothing(self, config, tmp_path):
+        config.linked_roots = {"notes": str(tmp_path / "src" / "notes")}
+        store = Store(config)
+        _batch(store, "notes/a.md", SourceType.DOCUMENT)
+        version = store.open_table(SOURCES_TABLE).version
+
+        _cite(store, "notes/a.md", SourceType.DOCUMENT)
+
+        assert store.open_table(SOURCES_TABLE).version == version

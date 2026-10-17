@@ -14,7 +14,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.text import make_slug
-from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, Store
+from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, SourceType, Store
 from lilbee.data.store.core import _check_vector_dims
 from lilbee.wiki.batch import (
     _unwrap_archived_links,
@@ -1984,7 +1984,7 @@ class TestLegacyConceptsMigration:
         assert (data_dir / ".phase-d-migrated").exists()
         # An archived page must stop serving its content from the index.
         wiki_source = f"{cfg.wiki_dir}/concepts/foo.md"
-        store.delete_by_source.assert_called_once_with(wiki_source)
+        store.delete_by_source.assert_called_once_with(wiki_source, SourceType.WIKI)
         store.delete_citations_for_wiki.assert_called_once_with(wiki_source)
 
     def test_a_failed_citation_delete_leaves_the_page_and_retries(self, tmp_path: Path):

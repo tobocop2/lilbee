@@ -490,7 +490,7 @@ class TestWikiMentions:
         store.add_chunks(_records_for("doc.md", 1))
         store.replace_wiki_mentions_for_source("doc.md", [_mention("boeing", "doc.md", 2, [0])])
         store.replace_wiki_mentions_for_source("keep.md", [_mention("airbus", "keep.md", 2, [0])])
-        store.delete_by_source("doc.md")
+        store.delete_by_source("doc.md", SourceType.DOCUMENT)
         assert {r["source"] for r in store.wiki_mention_rows()} == {"keep.md"}
 
 
@@ -639,7 +639,7 @@ class TestEnsureFtsIndex:
         There is nothing to degrade, so the warning must not fire."""
         store.add_chunks(_make_records())
         for record in _make_records():
-            store.delete_by_source(record["source"])
+            store.delete_by_source(record["source"], SourceType.DOCUMENT)
         with mock.patch.object(type(store), "ensure_fts_index"):
             store.search([0.5] * cfg.embedding_dim, top_k=1, query_text="anything")
 
@@ -2750,7 +2750,7 @@ class TestEscapeSqlString:
         plain[0]["chunk_index"] = 1
         store.add_chunks(backslash + plain)
 
-        store.delete_by_source(backslash_src)
+        store.delete_by_source(backslash_src, SourceType.DOCUMENT)
 
         sources = set(_sources_of(store))
         assert backslash_src not in sources
@@ -2927,7 +2927,7 @@ class TestPageTexts:
     def test_delete_by_source_removes_page_texts(self, store):
         store.add_chunks(_make_records(n=1))
         store.add_page_texts(_page_rows("doc0.md", (1,)))
-        store.delete_by_source("doc0.md")
+        store.delete_by_source("doc0.md", SourceType.DOCUMENT)
         assert store.get_page_texts("doc0.md") == []
 
 
@@ -3875,7 +3875,7 @@ class TestDeleteBySourceConceptRows:
             ]
         )
 
-        store.delete_by_source("doc.md")
+        store.delete_by_source("doc.md", SourceType.DOCUMENT)
         cc_table.checkout_latest()  # bypass the read-consistency interval
         remaining = cc_table.search().limit(None).to_list()
         assert [r["source_id"] for r in remaining] == ["other"]

@@ -21,7 +21,7 @@ from pathlib import Path
 from lilbee.core.config import Config
 from lilbee.core.text import make_slug
 from lilbee.data.ingest import file_hash
-from lilbee.data.store import CitationRecord, SearchChunk, Store
+from lilbee.data.store import CitationRecord, SearchChunk, SourceType, Store
 from lilbee.wiki.citations import (
     ParsedCitation,
     footnote_marker_keys,
@@ -146,7 +146,7 @@ def archive_legacy_concept_pages(
             dest.parent.mkdir(parents=True, exist_ok=True)
             slug = str(rel.with_suffix("")).replace("\\", "/")
             wiki_source = f"{config.wiki_dir}/{WikiSubdir.CONCEPTS}/{slug}.md"
-            store.delete_by_source(wiki_source)
+            store.delete_by_source(wiki_source, SourceType.WIKI)
             if not store.delete_citations_for_wiki(wiki_source):
                 # Sentinel unwritten: the next build retries the migration. Pages
                 # already moved this pass still need their inbound links unwrapped,
