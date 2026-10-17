@@ -48,7 +48,14 @@ from hypothesis import strategies as st
 
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
-from lilbee.crawler import CrawlMeta, CrawlResult, content_hash, crawl_and_save, url_to_filename
+from lilbee.crawler import (
+    CrawlMeta,
+    CrawlResult,
+    content_hash,
+    crawl_and_save,
+    save,
+    url_to_filename,
+)
 from lilbee.data.ingest import sync
 from lilbee.data.store import Store
 from lilbee.retrieval.query.formatting import source_label
@@ -1112,15 +1119,15 @@ class TestEarlierLibraries:
         pages = _plant_site(_NEWER, _NEWER_ROWS)
         await sync(quiet=True)
         cut = cfg.documents_dir / "_web" / url_to_filename(_NEWER + "p")
-        write_text = Path.write_text
+        replace = save._replace_atomically
 
-        def write_or_cut(path: Path, data: str, encoding: str) -> int:
+        def write_or_cut(path: Path, text: str) -> None:
             if path == cut:
                 raise OSError(28, "No space left on device")
-            return write_text(path, data, encoding=encoding)
+            replace(path, text)
 
         with monkeypatch.context() as patched:
-            patched.setattr(Path, "write_text", write_or_cut)
+            patched.setattr(save, "_replace_atomically", write_or_cut)
             await _crawl_pages(monkeypatch, _NEWER, _addresses(_NEWER, _NEWER_ROWS), "2")
         assert not cut.exists()
         assert _pages_on_disk(pages) == dict.fromkeys(pages, 1)
