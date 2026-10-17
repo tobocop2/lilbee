@@ -200,9 +200,11 @@ class TestMovesCarryFailures:
     def test_sources_by_hash_offers_a_failure_at_the_hash_it_failed_at(self, store):
         _index(store, "a.md", file_hash="old")
         store.hold_failed({"a.md": _failed("new"), "b.pdf": _failed("hb")})
+        store.remove_documents([], {"gone.md": _removed("hg")})
         version = store.sources_version()
         assert version is not None
-        found = store.sources_by_hash(["old", "new", "hb"], version=version)
+        found = store.sources_by_hash(["old", "new", "hb", "hg"], version=version)
+        # A removal is never offered: a sync move carries listed and failed files only.
         assert found == {"old": ["a.md"], "new": ["a.md"], "hb": ["b.pdf"]}
 
 
