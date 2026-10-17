@@ -483,9 +483,12 @@ again from the mention rows the first time it is read, with no extraction.
 **The first open of an older library** keys it in place under the write lock. Each table
 gains `source_id` as the md5 of its path, takes the BTREE index of the path column when
 it had one, and loses the path column; `_sources.filename` becomes `path`. Each step reads
-the table's columns, so an open that stops part way is finished by the next. Measured at
-200,000 chunks of 768 dimensions and 20,000 sources: 0.39 s and 4.5 MB, with the full-text,
-vector and bitmap indexes kept. An older lilbee then fails on the renamed column
+the table's columns, so an open that stops part way is finished by the next. LanceDB adds
+a column one fragment at a time, so each table gains its id column on a thread of its own
+from the start of the open. A path column goes only after every path in it has a source
+row, and the key comparison runs in Arrow. Measured on a library of 8.8 million chunks of
+4096 dimensions, 4,425 fragments per table, on an 8-core host: 34 s and 2.4 GiB at most,
+with the full-text, vector and bitmap indexes kept. An older lilbee then fails on the renamed column
 (`KeyError: 'filename'`) in every command that reads the index, and changes nothing.
 `lilbee rebuild` of the older version works and starts the library again.
 
