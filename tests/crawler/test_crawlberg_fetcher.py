@@ -43,6 +43,7 @@ BROWSER_ACCEPT_HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 LOOPBACK = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"))
+NO_PACING = ConcurrencySpec()
 
 
 @pytest.fixture(autouse=True)
@@ -137,7 +138,7 @@ class TestCrawlConfig:
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
             await _recursive(_http())
-            await _http().fetch_single(SEED, timeout=5)
+            await _http().fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert [config.kwargs["user_agent"] for config in stub.configs] == [None, None]
 
     async def test_no_override_leaves_the_user_agent_to_chrome_in_browser_mode(
@@ -148,7 +149,7 @@ class TestCrawlConfig:
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
             await _recursive(_browser())
-            await _browser().fetch_single(SEED, timeout=5)
+            await _browser().fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert [config.kwargs["user_agent"] for config in stub.configs] == [None, None]
         assert [config.kwargs["custom_headers"] for config in stub.configs] == [{}, {}]
 
@@ -158,14 +159,14 @@ class TestCrawlConfig:
         fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP, respect_robots_txt=respect)
         with stub.installed():
             await _recursive(fetcher)
-            await fetcher.fetch_single(SEED, timeout=5)
+            await fetcher.fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert [config.kwargs["respect_robots_txt"] for config in stub.configs] == [respect] * 2
 
     async def test_http_mode_sends_the_browser_accept_headers(self):
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
             await _recursive(_http())
-            await _http().fetch_single(SEED, timeout=5)
+            await _http().fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         sent = [config.kwargs["custom_headers"] for config in stub.configs]
         assert sent == [BROWSER_ACCEPT_HEADERS] * 2
 
@@ -179,7 +180,7 @@ class TestCrawlConfig:
         with stub.installed():
             await _recursive(CrawlbergFetcher(render_mode=mode, user_agent=OVERRIDE))
             await CrawlbergFetcher(render_mode=mode, user_agent=OVERRIDE).fetch_single(
-                SEED, timeout=5
+                SEED, timeout=5, concurrency=NO_PACING
             )
         assert [config.kwargs["user_agent"] for config in stub.configs] == [OVERRIDE] * 2
 
@@ -267,6 +268,15 @@ class TestCrawlConfig:
         assert stub.config["retry_initial_delay_ms"] == 2000
         assert stub.config["retry_max_delay_ms"] == 30000
 
+    async def test_a_single_page_fetch_sends_the_pacing_and_retries_it_is_given(self):
+        pacing = ConcurrencySpec(mean_delay=0.75, retry_on_rate_limit=True, retry_max_attempts=5)
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await _http().fetch_single(SEED, timeout=5, concurrency=pacing)
+        assert stub.config["rate_limit_ms"] == 750
+        assert stub.config["retry_count"] == 5
+        assert stub.config["retry_codes"] == [429, 503]
+
     async def test_rate_limit_retries_off_disables_retries(self):
         pacing = ConcurrencySpec(retry_on_rate_limit=False, retry_max_attempts=5)
         stub = StubCrawlberg()
@@ -323,7 +333,7 @@ class TestBrowserMode:
         monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
-            await _browser(FLAGS).fetch_single(SEED, timeout=5)
+            await _browser(FLAGS).fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert stub.config["browser"].kwargs == {
             "mode": "always",
             "timeout": 5000,
@@ -353,7 +363,7 @@ class TestBrowserMode:
         flags.append("--mute-audio")
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
-            await fetcher.fetch_single(SEED, timeout=5)
+            await fetcher.fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert stub.config["browser"].kwargs["chrome_args"] == FLAGS
 
     @pytest.mark.parametrize("before", [None, SYSTEM_CHROME], ids=["unset", "set"])
@@ -367,7 +377,7 @@ class TestBrowserMode:
             monkeypatch.setenv(CHROME_ENV, before)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
-            await _browser().fetch_single(SEED, timeout=5)
+            await _browser().fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert stub.config["browser"].kwargs["chrome_path"] == str(shell)
         assert os.environ.get(CHROME_ENV) == before
 
@@ -377,7 +387,7 @@ class TestBrowserMode:
         fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP, chrome_args=FLAGS)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
-            await fetcher.fetch_single(SEED, timeout=5)
+            await fetcher.fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert stub.config["browser"].kwargs["mode"] == "never"
         assert stub.config["browser"].kwargs["chrome_path"] is None
         assert stub.config["browser"].kwargs["chrome_args"] == []
@@ -389,7 +399,7 @@ class TestBrowserMode:
         )
         stub = StubCrawlberg([page(SEED, "# Page", depth=0)])
         with stub.installed():
-            fetched = await _http().fetch_single(SEED, timeout=5)
+            fetched = await _http().fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert fetched.markdown == "# Page"
         assert looked == []
 
@@ -397,7 +407,7 @@ class TestBrowserMode:
         monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: None)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed(), pytest.raises(ChromiumMissingError, match="lilbee setup crawler"):
-            await _browser().fetch_single(SEED, timeout=5)
+            await _browser().fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert stub.configs == []
 
 
@@ -462,7 +472,9 @@ class TestRefusedEngine:
     async def test_a_single_fetch_names_the_setting_and_gives_crawlbergs_reason(self):
         stub = StubCrawlberg([page(SEED, depth=0)], refuse=_refuses_headless)
         with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
-            await _browser(["--lang=fr", "--headless=new"]).fetch_single(SEED, timeout=5)
+            await _browser(["--lang=fr", "--headless=new"]).fetch_single(
+                SEED, timeout=5, concurrency=NO_PACING
+            )
         message = str(refused.value)
         assert message.startswith("The crawl_browser_extra_args setting")
         assert message.endswith(HEADLESS_REASON)
@@ -501,7 +513,7 @@ class TestRefusedEngine:
     async def test_a_refusal_keeps_crawlbergs_error_as_its_cause(self):
         stub = StubCrawlberg([page(SEED, depth=0)], refuse=_refuses_headless)
         with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
-            await _browser(["--headless=new"]).fetch_single(SEED, timeout=5)
+            await _browser(["--headless=new"]).fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         cause = refused.value.__cause__
         assert type(cause) is RuntimeError
         assert str(cause) == HEADLESS_REASON
@@ -587,7 +599,7 @@ class TestRefusedEngine:
         fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP, chrome_args=["--headless=new"])
         stub = StubCrawlberg([page(SEED, "# Page", depth=0)], refuse=_refuses_headless)
         with stub.installed():
-            fetched = await fetcher.fetch_single(SEED, timeout=5)
+            fetched = await fetcher.fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert fetched.markdown == "# Page"
 
 
@@ -595,7 +607,7 @@ class TestFetchSingle:
     async def test_single_page_crawl_is_the_seed_alone(self):
         stub = StubCrawlberg([page(SEED, "  # Hello  \n", depth=0), complete(1)])
         with stub.installed():
-            fetched = await _http().fetch_single(SEED, timeout=3)
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
         assert fetched == FetchedPage(url=SEED, markdown="# Hello")
         assert stub.config["max_depth"] == 0
         assert stub.config["max_pages"] == 1
@@ -605,21 +617,21 @@ class TestFetchSingle:
     async def test_redirected_seed_keeps_the_requested_url(self):
         stub = StubCrawlberg([page("https://example.com/final", "# Final", depth=0)])
         with stub.installed():
-            fetched = await _http().fetch_single(SEED, timeout=3)
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
         assert fetched.url == SEED
         assert fetched.markdown == "# Final"
 
     async def test_error_event_is_a_failed_page(self):
         stub = StubCrawlberg([error(SEED, "not_found: not_found: " + SEED), complete(0)])
         with stub.installed():
-            fetched = await _http().fetch_single(SEED, timeout=3)
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
         assert fetched.success is False
         assert fetched.error == "not_found: not_found: " + SEED
 
     async def test_a_seed_robots_txt_disallows_says_why_and_names_the_setting(self):
         script = [error(SEED, "robots.txt disallows /"), complete(0)]
         with StubCrawlberg(script).installed():
-            fetched = await _http().fetch_single(SEED, timeout=3)
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
         assert fetched == FetchedPage(url=SEED, success=False, error=ROBOTS_REFUSED_MESSAGE)
         assert "robots.txt" in ROBOTS_REFUSED_MESSAGE
         assert "crawl_respect_robots_txt" in ROBOTS_REFUSED_MESSAGE
@@ -627,7 +639,7 @@ class TestFetchSingle:
     async def test_a_seed_whose_robots_txt_cannot_be_read_says_why_with_crawlbergs_reason(self):
         script = [error(SEED, "robots_unreachable: robots.txt returned 503"), complete(0)]
         with StubCrawlberg(script).installed():
-            fetched = await _http().fetch_single(SEED, timeout=3)
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
         expected = ROBOTS_UNREACHABLE_MESSAGE.format(reason="robots.txt returned 503")
         assert fetched == FetchedPage(url=SEED, success=False, error=expected)
         assert "(robots.txt returned 503)" in expected
@@ -637,7 +649,7 @@ class TestFetchSingle:
         refusal = f"{_SSRF_ERROR_CODE}: {SEED}robots.txt - denied by SSRF policy: loopback"
         script = [error(SEED, f"robots_unreachable: {refusal}"), complete(0)]
         with StubCrawlberg(script).installed():
-            fetched = await _http().fetch_single(SEED, timeout=3)
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
         assert fetched == FetchedPage(url=SEED, success=False, error=refusal)
 
     @pytest.mark.parametrize(
@@ -647,7 +659,7 @@ class TestFetchSingle:
     )
     async def test_page_without_text_is_a_failure(self, script: list[Payload]):
         with StubCrawlberg(script).installed():
-            fetched = await _http().fetch_single(SEED, timeout=3)
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
         assert fetched == FetchedPage(url=SEED, success=False, error="No content extracted")
 
     async def test_page_on_an_address_lilbee_refuses_is_not_returned(self, monkeypatch):
@@ -656,7 +668,7 @@ class TestFetchSingle:
 
         monkeypatch.setattr(fetcher_mod.url_filter, "validate_crawl_url", refuse)
         with StubCrawlberg([page(SEED, "# Secret", depth=0)]).installed():
-            fetched = await _http().fetch_single(SEED, timeout=3)
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
         assert fetched.success is False
         assert "Secret" not in fetched.markdown
 
@@ -1034,7 +1046,7 @@ class TestExcludedLinks:
 
     async def test_a_single_page_fetch_names_no_address(self, caplog):
         with StubCrawlberg([page(SEED, depth=0, links=[FEED])]).installed():
-            await _http().fetch_single(SEED, timeout=3)
+            await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
         assert _named(caplog) == []
 
 
