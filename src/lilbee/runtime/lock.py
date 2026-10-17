@@ -100,6 +100,8 @@ _PROBE_LEFT = "Could not delete the lock probe %s (%s); it is safe to delete by 
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
 _MUTEX_MIN_WAIT = 0.1
+# The timeout threading reads as "wait until the lock is free".
+_NO_DEADLINE = -1
 
 
 class LockTimeoutError(TimeoutError):
@@ -627,7 +629,7 @@ def library_held_for_reset(config: Config) -> AbstractContextManager[LibraryHold
 
 @contextmanager
 def write_lock(
-    lancedb_dir: Path | None = None, timeout: float = LOCK_TIMEOUT
+    lancedb_dir: Path | None = None, timeout: float | None = LOCK_TIMEOUT
 ) -> Generator[None, None, None]:
     """Acquire the cross-process file lock then the in-process mutex.
 
@@ -638,9 +640,10 @@ def write_lock(
 
     The two stages share one budget: the time spent waiting on the file lock is
     deducted before waiting on the mutex (plus a small ``_MUTEX_MIN_WAIT`` floor),
-    so a 30s request cannot stall for roughly twice that.
+    so a 30s request cannot stall for roughly twice that. A *timeout* of None
+    waits for both without a deadline.
     """
-    deadline = time.monotonic() + timeout
+    deadline = None if timeout is None else time.monotonic() + timeout
     lock_path = _lock_path(lancedb_dir)
     # The first write to a per-instance store can run before its data dir exists;
     # the file lock cannot be created in a missing directory.
@@ -648,6 +651,7 @@ def write_lock(
     flock = FileLock(lock_path)
     try:
         with _enolck_as_unsupported(lock_path.parent):
+            # None takes the lock's own timeout, which waits without a deadline.
             flock.acquire(timeout=timeout)
     except FileLockTimeout:
         raise LockTimeoutError("Timed out waiting for exclusive file lock") from None
@@ -655,7 +659,9 @@ def write_lock(
         # Floor the mutex budget so a file lock that wins right at the deadline
         # still gets a brief blocking attempt instead of a zero-timeout poll that
         # spuriously fails when another thread holds the mutex for an instant.
-        remaining = max(_MUTEX_MIN_WAIT, deadline - time.monotonic())
+        remaining = (
+            _NO_DEADLINE if deadline is None else max(_MUTEX_MIN_WAIT, deadline - time.monotonic())
+        )
         acquired = _write_mutex.acquire(timeout=remaining)
         if not acquired:
             raise LockTimeoutError("Timed out waiting for write lock")

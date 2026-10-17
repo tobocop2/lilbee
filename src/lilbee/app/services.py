@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
+    from lilbee.runtime.progress import DetailedProgressCallback, EventType, ProgressEvent
     from lilbee.sessions import SessionStore
 
 
@@ -167,6 +168,13 @@ class _ServicesState:
         # for the session. Build-time intent only; the state that matters after
         # that lives on the provider itself.
         self.interactive: bool = False
+        # Where this process shows a library upgrade; each surface sets its own.
+        self.on_upgrade: DetailedProgressCallback | None = None
+
+    def report_upgrade(self, event_type: EventType, event: ProgressEvent) -> None:
+        """Pass a library upgrade event to the reporter the surface set last, if any."""
+        if self.on_upgrade is not None:
+            self.on_upgrade(event_type, event)
 
 
 _state = _ServicesState()
@@ -216,7 +224,7 @@ def build_services(
     registry = registry or ModelRegistry(config.models_dir)
     # The first point that sees env vars, --model and config.toml together.
     warn_unregistered_role_refs(config, registry)
-    store = Store(config)
+    store = Store(config, on_upgrade=_state.report_upgrade)
     embedder = Embedder(config, provider)
     reranker = Reranker(config)
     concepts = ConceptGraph(config, store)
@@ -325,6 +333,11 @@ def mark_interactive_session() -> None:
     _state.interactive = True
 
 
+def report_library_upgrade(callback: DetailedProgressCallback | None) -> None:
+    """Show this process's library upgrades through *callback* (None: nowhere), for every store."""
+    _state.on_upgrade = callback
+
+
 def set_services(services: Services | None) -> None:
     """Replace the cached Services singleton (for testing)."""
     _state.singleton = services
@@ -384,7 +397,7 @@ def reset_store() -> None:
     # Build the replacement, swap the reference, then close the old store last so
     # a new caller never observes a closed handle mid-swap.
     old_store = svc.store
-    store = Store(cfg)
+    store = Store(cfg, on_upgrade=_state.report_upgrade)
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
     searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)

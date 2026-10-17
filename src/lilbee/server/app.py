@@ -13,6 +13,7 @@ from litestar import Litestar, MediaType, Request, Response
 from litestar.config.cors import CORSConfig
 from litestar.exceptions import HTTPException
 from litestar.exceptions.responses import create_exception_response
+from litestar.middleware import ASGIMiddleware
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 
@@ -120,6 +121,8 @@ from lilbee.server.wiki import (
 )
 
 if TYPE_CHECKING:
+    from litestar.types import ASGIApp, Receive, Scope, Send
+
     from lilbee.retrieval.embedder import Embedder
 
 log = logging.getLogger(__name__)
@@ -215,6 +218,21 @@ def _log_embedding_model_state(embedder: Embedder) -> None:
     # Unconfigured: validate_model already logged the one INFO line.
 
 
+class _LibraryOpenWait(ASGIMiddleware):
+    """Hold a request until the library is open, off the loop, so an upgrade never blocks it.
+
+    Health, the warm stream and shutdown pass at once: health reports the upgrade.
+    """
+
+    exclude_path_pattern = ("^/api/health$", "^/api/warm/stream$", "^/api/shutdown$")
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
+        store = get_services().store
+        if not store.is_open:
+            await asyncio.to_thread(store.wait_for_open)
+        await next_app(scope, receive, send)
+
+
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
@@ -230,6 +248,7 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         log.warning("Failed to pre-load LLM provider", exc_info=True)
     else:
         _log_embedding_model_state(services.embedder)
+        services.store.open_in_background()
     try:
         yield
     finally:
@@ -274,7 +293,7 @@ def create_app() -> Litestar:
     mcp_route, mcp_session_lifespan = build_mcp_mount()
     return Litestar(
         lifespan=[_lifespan, mcp_session_lifespan],
-        middleware=[DefineMiddleware(AuthMiddleware)],
+        middleware=[DefineMiddleware(AuthMiddleware), _LibraryOpenWait()],
         exception_handlers={
             HTTPException: _json_error_response,
             Exception: _unhandled_error_response,

@@ -31,6 +31,7 @@ class EventType(StrEnum):
     SETUP_DONE = "setup_done"
     WIKI_PHASE = "wiki_phase"
     WIKI_PAGE = "wiki_page"
+    LIBRARY_UPGRADE = "library_upgrade"
 
 
 class SseEvent(StrEnum):
@@ -261,3 +262,41 @@ class WikiPageEvent(BaseModel):
     pages: int
     current: int
     total: int
+
+
+class UpgradePhase(StrEnum):
+    """Stage of a first open that upgrades the library's format."""
+
+    WAITING = "waiting"
+    TABLE = "table"
+    DONE = "done"
+
+
+_UPGRADE_TEXT: dict[UpgradePhase, str] = {
+    UpgradePhase.WAITING: "Waiting for another lilbee process to finish with the library...",
+    UpgradePhase.TABLE: (
+        "Upgrading your library to the new format (one time): {table} "
+        "{step}/{total_steps}, {rows:,} rows..."
+    ),
+    UpgradePhase.DONE: "The library upgrade finished in {elapsed_s:.1f} s.",
+}
+
+
+class LibraryUpgradeEvent(BaseModel):
+    """Emitted while an open upgrades the library: the wait, each table, then the end.
+
+    ``table`` and ``rows`` name the table a TABLE event upgrades, ``step`` of
+    ``total_steps``; ``elapsed_s`` is the time a DONE event took, wait included.
+    """
+
+    phase: UpgradePhase
+    table: str = ""
+    step: int = 0
+    total_steps: int = 0
+    rows: int = 0
+    elapsed_s: float = 0.0
+
+    @property
+    def text(self) -> str:
+        """The line every surface shows for this event."""
+        return _UPGRADE_TEXT[self.phase].format(**self.model_dump())

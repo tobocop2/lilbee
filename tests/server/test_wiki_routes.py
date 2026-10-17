@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -888,7 +887,7 @@ class TestWikiEnabled:
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
-        set_services(dataclasses.replace(make_mock_services(), store=None))
+        set_services(make_mock_services())
         monkeypatch.setattr(lint_mod, "lint_all", lambda *a, **kw: lint_mod.LintReport())
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/status", headers=_h())
@@ -906,7 +905,7 @@ class TestWikiEnabled:
         _make_wiki_page(wiki_root, "summaries", "beta")
         _make_wiki_page(wiki_root, "drafts", "gamma")
 
-        set_services(dataclasses.replace(make_mock_services(), store=None))
+        set_services(make_mock_services())
         monkeypatch.setattr(lint_mod, "lint_all", lambda *a, **kw: lint_mod.LintReport())
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/status", headers=_h())

@@ -191,16 +191,19 @@ def _download_without_a_child_process(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _restore_interactive_intent():
-    """Snapshot the interactive-session flag around every test.
+    """Snapshot the interactive-session flag and the upgrade reporter around every test.
 
     mark_interactive_session flips process state; a leak arms the TUI's
-    straggler exit inside a test worker, which then exits the worker.
+    straggler exit inside a test worker, which then exits the worker. The CLI
+    callback installs its stderr reporter, which must not reach a later test.
     """
     from lilbee.app import services as services_mod
 
     before = services_mod._state.interactive
+    reporter = services_mod._state.on_upgrade
     yield
     services_mod._state.interactive = before
+    services_mod._state.on_upgrade = reporter
 
 
 @pytest.fixture(autouse=True)

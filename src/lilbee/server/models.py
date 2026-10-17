@@ -277,7 +277,7 @@ class HealthResponse(BaseModel):
     budget to this, so it is the largest chunk that reaches the index whole. None
     when no managed embedder is configured."""
     warnings: list[HealthWarning] = []
-    """Degradations that answer correctly but worse, so a client can say so.
+    """Degradations that answer correctly but worse, and a library upgrade that runs.
 
     Retrieval falling back to vector-only, or an index whose documents predate
     the embedder's prefixes, both return results and look healthy."""

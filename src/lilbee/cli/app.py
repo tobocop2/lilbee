@@ -10,13 +10,14 @@ import typer
 from typer._click import Context
 from typer.core import TyperCommand
 
-from lilbee.app.services import install_engine_lifecycle_hooks
+from lilbee.app.services import install_engine_lifecycle_hooks, report_library_upgrade
 from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.core.config import RefusedVariableError, cfg, refuse_environment
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.onefile_cache import cleanup_stale_onefile_caches
+from lilbee.runtime.progress import EventType, LibraryUpgradeEvent, ProgressEvent
 
 app = typer.Typer(help="lilbee: Local RAG knowledge base", invoke_without_command=True)
 console = PlainConsole()
@@ -181,6 +182,14 @@ def refuse_environment_in(typer_app: typer.Typer) -> None:
             refuse_environment_in(group.typer_instance)
 
 
+def _print_upgrade(_event_type: EventType, event: ProgressEvent) -> None:
+    """Write a library upgrade event's line on stderr, so stdout stays the command's output."""
+    # The reporter takes the whole progress union; the store passes it upgrade events only.
+    if isinstance(event, LibraryUpgradeEvent):
+        sys.stderr.write(f"{event.text}\n")
+        sys.stderr.flush()
+
+
 @app.callback()
 def _default(
     ctx: typer.Context,
@@ -232,6 +241,7 @@ def _default(
     # A terminal close or `kill` otherwise leaves the engine fleet running and its
     # VRAM pinned, because the default disposition skips the atexit teardown.
     install_engine_lifecycle_hooks()
+    report_library_upgrade(_print_upgrade)
 
     cfg.json_mode = json_output
     # Typer binds options placed before the subcommand name to this callback;

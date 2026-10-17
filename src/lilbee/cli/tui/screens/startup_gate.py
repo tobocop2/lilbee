@@ -1,4 +1,4 @@
-"""Startup splash: the lilbee wordmark while the services container builds."""
+"""Startup splash: the lilbee wordmark while the services build and the library opens."""
 
 from __future__ import annotations
 
@@ -12,10 +12,11 @@ from textual.screen import Screen
 from textual.widgets import ProgressBar, Static
 from textual.worker import get_current_worker
 
-from lilbee.app.services import peek_services
+from lilbee.app.services import get_services, peek_services, report_library_upgrade
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.runtime.bee_logo import BEE_LINES
+from lilbee.runtime.progress import EventType, LibraryUpgradeEvent, ProgressEvent
 
 log = logging.getLogger(__name__)
 
@@ -91,13 +92,16 @@ class StartupGate(Screen[None]):
         the handover cannot read a readiness flag that has yet to be written.
 
         Building the container spawns the role servers, so it belongs on this
-        thread, behind the loading bar.
+        thread, behind the loading bar, and so does opening the library: an open
+        that upgrades it shows each step in the status line.
         """
+        report_library_upgrade(self._show_upgrade)
         try:
             if peek_services() is None:
                 self._ui_app.canonicalize_persisted_models()
             self._ui_app.settle_landing()
             self._ui_app.adopt_services()
+            get_services().store.get_db()
         except Exception as exc:
             # Any failure to prepare the app leaves the user with no engine.
             # Show it and hand them the rest of the TUI rather than a dead screen.
@@ -105,6 +109,17 @@ class StartupGate(Screen[None]):
             self._marshal(self._fail, str(exc))
             return
         self._marshal(self._release)
+
+    def _show_upgrade(self, _event_type: EventType, event: ProgressEvent) -> None:
+        """Show a library upgrade event's line in the status line, from the opening thread."""
+        # The reporter takes the whole progress union; the store passes it upgrade events only.
+        if isinstance(event, LibraryUpgradeEvent) and self.is_mounted:
+            self._ui_app.call_from_thread(self._set_status, event.text)
+
+    def _set_status(self, text: str) -> None:
+        """Put *text* in the status line under the bar."""
+        for status in self.query("#gate-status").results(Static):
+            status.update(text)
 
     def _stopping(self) -> bool:
         """True once the worker was cancelled or the gate left the screen."""

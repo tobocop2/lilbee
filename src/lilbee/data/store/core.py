@@ -6,9 +6,11 @@ import hashlib
 import json
 import logging
 import math
+import threading
+import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, suppress
+from contextlib import AbstractContextManager, ExitStack, suppress
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -37,6 +39,13 @@ from lilbee.runtime.lock import (
     LockingUnsupportedError,
     LockTimeoutError,
     write_lock,
+)
+from lilbee.runtime.progress import (
+    DetailedProgressCallback,
+    EventType,
+    LibraryUpgradeEvent,
+    UpgradePhase,
+    noop_callback,
 )
 
 from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
@@ -230,6 +239,9 @@ _PATH_KEY_COLUMNS = (
     (CITATIONS_TABLE, "source_filename"),
     (WIKI_MENTIONS_TABLE, "source"),
 )
+_PATH_KEY_BY_TABLE = dict(_PATH_KEY_COLUMNS)
+# The tables an upgrade visits, in its order: ``_sources`` first.
+_UPGRADE_ORDER = (SOURCES_TABLE, *_PATH_KEY_BY_TABLE)
 # The path column of ``_sources`` before it was renamed.
 _OLD_PATH = "filename"
 
@@ -528,6 +540,16 @@ def _keyed_by_path(db: LanceDBConnection) -> bool:
     return False
 
 
+def _upgrade_steps(db: LanceDBConnection, names: list[str]) -> list[tuple[str, LanceTable]]:
+    """The tables of *db* an upgrade visits: ``_sources``, then each still keyed by path."""
+    tables = [(name, db.open_table(name)) for name in _UPGRADE_ORDER if name in names]
+    return [
+        (name, table)
+        for name, table in tables
+        if name == SOURCES_TABLE or _PATH_KEY_BY_TABLE[name] in table.schema.names
+    ]
+
+
 def _index_names(table: LanceTable) -> dict[str, list[str]]:
     """The columns of each index of *table*, by index name; none when the listing fails."""
     return {index.name: index.columns for index in _index_registry(table) or []}
@@ -602,8 +624,15 @@ def _count_within_threshold(sorted_results: list[SearchChunk], threshold: float)
 class Store:
     """LanceDB vector store: wraps all DB operations with config-driven defaults."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self, config: Config, on_upgrade: DetailedProgressCallback = noop_callback
+    ) -> None:
         self._config = config
+        self._on_upgrade = on_upgrade
+        # The latest event of an upgrade that runs; None when none does.
+        self._upgrade: LibraryUpgradeEvent | None = None
+        # One open at a time: a caller that finds an open running waits for it.
+        self._open_lock = threading.Lock()
         self._fts_ready: bool = False
         self._title_fts_ready: bool = False
         self._doc_prefix_warned: bool = False
@@ -860,6 +889,16 @@ class Store:
             self._config.embedding_model,
         )
 
+    def _upgrade_warnings(self) -> list[HealthWarning]:
+        """The warning of an upgrade that runs, or none."""
+        upgrade = self._upgrade
+        if upgrade is None:
+            return []
+        remedy = "Requests that need the library wait until it finishes."
+        return [
+            HealthWarning(code=WarningCode.LIBRARY_UPGRADING, message=upgrade.text, remedy=remedy)
+        ]
+
     def _index_mismatch_warning(self) -> HealthWarning | None:
         """The stale-index degradation, from the same verdict search refuses on."""
         mismatch = self.index_mismatch()
@@ -879,7 +918,13 @@ class Store:
         )
 
     def health_warnings(self) -> list[HealthWarning]:
-        """Retrieval degradations a client should know about before it searches."""
+        """Retrieval degradations a client should know about before it searches.
+
+        A library that is not open reports only an upgrade that runs: opening it here
+        would wait for that upgrade.
+        """
+        if self._db is None:
+            return self._upgrade_warnings()
         warnings: list[HealthWarning] = []
         if (stale := self._index_mismatch_warning()) is not None:
             warnings.append(stale)
@@ -978,19 +1023,76 @@ class Store:
             return True
 
     def get_db(self) -> LanceDBConnection:
-        if self._db is None:
-            from lancedb.db import LanceDBConnection
+        """The open library; the first call opens it, and upgrades it when it is older."""
+        db = self._db
+        if db is None:
+            with self._open_lock:
+                db = self._open_held()
+        return db
 
-            self._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
-            db = LanceDBConnection(
-                str(self._config.lancedb_dir),
-                read_consistency_interval=READ_CONSISTENCY_INTERVAL,
-            )
-            if _keyed_by_path(db):
-                with write_lock(self._config.lancedb_dir):
+    @property
+    def is_open(self) -> bool:
+        """Whether the library is open, so a call needs no open or upgrade first."""
+        return self._db is not None
+
+    def open_in_background(self) -> None:
+        """Open the library on a daemon thread; ``wait_for_open`` waits from this call on.
+
+        An open that already runs is left to finish: its waiters wait for it.
+        """
+        if not self._open_lock.acquire(blocking=False):
+            return
+        threading.Thread(target=self._open_then_release, name="library-open", daemon=True).start()
+
+    def wait_for_open(self) -> None:
+        """Block while another thread opens the library."""
+        with self._open_lock:
+            pass
+
+    def _open_then_release(self) -> None:
+        """Open the library, then free the open lock ``open_in_background`` took."""
+        try:
+            self._open_held()
+        finally:
+            self._open_lock.release()
+
+    def _open_held(self) -> LanceDBConnection:
+        """The library, opened unless it is open. Caller holds the open lock."""
+        if self._db is not None:
+            return self._db
+        from lancedb.db import LanceDBConnection
+
+        self._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
+        db = LanceDBConnection(
+            str(self._config.lancedb_dir), read_consistency_interval=READ_CONSISTENCY_INTERVAL
+        )
+        if _keyed_by_path(db):
+            self._upgrade_library(db)
+        self._db = db
+        return db
+
+    def _upgrade_library(self, db: LanceDBConnection) -> None:
+        """Upgrade *db* under the write lock, waiting for it without a deadline, and report it."""
+        started = time.monotonic()
+        try:
+            with ExitStack() as held:
+                try:
+                    held.enter_context(write_lock(self._config.lancedb_dir, timeout=0.0))
+                except LockTimeoutError:
+                    self._report_upgrade(LibraryUpgradeEvent(phase=UpgradePhase.WAITING))
+                    held.enter_context(write_lock(self._config.lancedb_dir, timeout=None))
+                # Another process can have upgraded it during the wait.
+                if _keyed_by_path(db):
                     self._migrate_unlocked(db)
-            self._db = db
-        return self._db
+            elapsed = time.monotonic() - started
+            self._report_upgrade(LibraryUpgradeEvent(phase=UpgradePhase.DONE, elapsed_s=elapsed))
+        finally:
+            self._upgrade = None
+
+    def _report_upgrade(self, event: LibraryUpgradeEvent) -> None:
+        """Record *event* as the upgrade's state, then pass it to the reporter."""
+        self._upgrade = event
+        self._on_upgrade(EventType.LIBRARY_UPGRADE, event)
 
     def _migrate_unlocked(self, db: LanceDBConnection) -> None:
         """Key every table by ``source_id``. Caller holds the write lock.
@@ -1001,11 +1103,22 @@ class Store:
         the document prefix, and keeps 1 so that the stale-prefix warning still names it.
         """
         names = table_names(db)
-        if SOURCES_TABLE in names:
-            _migrate_sources_table(db.open_table(SOURCES_TABLE))
-        for name, column in _PATH_KEY_COLUMNS:
-            if name in names:
-                self._migrate_keyed_table(db, db.open_table(name), column)
+        steps = _upgrade_steps(db, names)
+        for step, (name, table) in enumerate(steps, start=1):
+            shown = name.strip("_").replace("_", " ")
+            self._report_upgrade(
+                LibraryUpgradeEvent(
+                    phase=UpgradePhase.TABLE,
+                    table=shown,
+                    step=step,
+                    total_steps=len(steps),
+                    rows=table.count_rows(),
+                )
+            )
+            if name == SOURCES_TABLE:
+                _migrate_sources_table(table)
+            else:
+                self._migrate_keyed_table(db, table, _PATH_KEY_BY_TABLE[name])
         if META_TABLE in names:
             db.open_table(META_TABLE).update(
                 where="schema_version >= 2", values={"schema_version": META_SCHEMA_VERSION}
@@ -1020,8 +1133,6 @@ class Store:
         """
         from lancedb.index import BTree
 
-        if column not in table.schema.names:
-            return
         keys = {row[column] for row in table.search().select([column]).limit(None).to_list()}
         sources = ensure_table(db, SOURCES_TABLE, _sources_schema())
         query = sources.search().select([_PATH]).limit(None)
