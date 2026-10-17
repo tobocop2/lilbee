@@ -1121,6 +1121,44 @@ class TestChat:
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("history") == history
         assert len(captured) == 1
 
+    async def _engine_options_for_chat(self, mock_svc, monkeypatch, options):
+        """Run handlers.chat and return the options the provider would receive."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+        from lilbee.server.chat_dispatch.dispatch import _provider_options
+
+        captured = []
+
+        def _fake_dispatch(req):
+            captured.append(req)
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        monkeypatch.setattr(cfg, "max_tokens", None)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        await handlers.chat("q", [], options=options)
+        assert len(captured) == 1
+        return _provider_options(captured[0]) or {}
+
+    async def test_http_chat_without_max_tokens_sends_no_answer_cap(self, mock_svc, monkeypatch):
+        sent = await self._engine_options_for_chat(mock_svc, monkeypatch, None)
+        assert "num_predict" not in sent
+
+    async def test_http_chat_explicit_max_tokens_reaches_the_engine(self, mock_svc, monkeypatch):
+        sent = await self._engine_options_for_chat(mock_svc, monkeypatch, {"num_predict": 700})
+        assert sent["num_predict"] == 700
+
     async def test_rewritten_retrieval_query_reaches_the_response(self, mock_svc, monkeypatch):
         """A grounded chat turn reports the rewrite retrieval ran on."""
         from lilbee.server.chat_dispatch.canonical import (
