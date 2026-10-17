@@ -64,6 +64,8 @@ scripts/*
 !scripts/assert_required_binaries.sh
 !scripts/release_required_assets.sh
 !scripts/release_dropped_cells.sh
+!scripts/resolve_rc_run.sh
+!scripts/channel_asset_blockers.sh
 !scripts/ci_retry.sh
 !scripts/install_engine.sh
 !scripts/qa/

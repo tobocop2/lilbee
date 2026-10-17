@@ -7,7 +7,10 @@
 # all continue-on-error) reruns alone and re-attaches its asset; a hard cell
 # takes the run red and strands the dispatch cascade, which a per-job rerun
 # would leave skipped forever.
-# scripts/release_dropped_cells.sh decides which cells dropped out.
+# scripts/release_dropped_cells.sh decides which cells dropped out, and heals
+# nothing when a person cancelled the run. A run is also left alone when its tag
+# has moved to another commit: that run is superseded, and a rerun would put a
+# stale build back among the candidates.
 #
 # Run it by hand against a finished candidate:
 #   RUN_ID=1234567 bash scripts/release_selfheal.sh
@@ -33,6 +36,17 @@ conclusion=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" -q .conclusion)
   echo "Run [${RUN_ID}](https://github.com/${REPO}/actions/runs/${RUN_ID}), attempt ${attempt}, concluded ${conclusion}."
   echo
 } >> "${SUMMARY}"
+
+built=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" -q '.head_branch + " " + .head_sha') || exit 1
+read -r head_branch head_sha <<< "${built}"
+if ! tag_sha=$(gh api "repos/${REPO}/commits/${head_branch}" -q .sha); then
+  echo "cannot tell which commit ${head_branch} points at; not healing this run" | tee -a "${SUMMARY}"
+  exit 1
+fi
+if [ "${tag_sha}" != "${head_sha}" ]; then
+  echo "run ${RUN_ID} built ${head_sha}, but ${head_branch} points at ${tag_sha} now; not healing a superseded run" | tee -a "${SUMMARY}"
+  exit 0
+fi
 
 if ! failed=$(RUN_ID="${RUN_ID}" REPO="${REPO}" bash "$(dirname "$0")/release_dropped_cells.sh"); then
   echo "cannot tell which cells dropped out; not healing this run" | tee -a "${SUMMARY}"

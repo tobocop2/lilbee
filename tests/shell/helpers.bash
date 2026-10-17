@@ -3,7 +3,7 @@
 
 # Write the release-candidate job list the stubbed `gh api .../jobs` serves,
 # plus the check-run annotations each of those jobs carries.
-rc_jobs() {  # name:conclusion[:timeout|:user] ...
+rc_jobs() {  # name:conclusion[:timeout|:user|:force] ...
   local jobs="" entry name rest conclusion kind id=1000
   mkdir -p "${FIXTURE}/annotations"
   rm -f "${FIXTURE}/annotations"/*
@@ -21,6 +21,7 @@ rc_jobs() {  # name:conclusion[:timeout|:user] ...
           > "${FIXTURE}/annotations/${id}"
         ;;
       user) printf 'The run was canceled by @someone.\n' > "${FIXTURE}/annotations/${id}" ;;
+      force) printf 'The run was canceled forcefully by @someone.\n' > "${FIXTURE}/annotations/${id}" ;;
       stopped) printf 'The operation was canceled.\n' > "${FIXTURE}/annotations/${id}" ;;
       *) : > "${FIXTURE}/annotations/${id}" ;;
     esac

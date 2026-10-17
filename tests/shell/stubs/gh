@@ -40,9 +40,13 @@ case "${sub}" in
         jq -R -s 'split("\n") | map(select(length > 0) | {annotation_level: "failure", message: .})' \
           < "${f}" | jq -r "${jqexpr}"
         ;;
+      */commits/*)
+        cat "${FIXTURE}/commits/${target##*/}"
+        ;;
       */actions/runs/*)
         run_id="${target##*/}"
         case "${jqexpr}" in
+          *head_sha*) cat "${FIXTURE}/heads/${run_id}" ;;
           *run_attempt*conclusion*)
             echo "$(cat "${FIXTURE}/attempts/${run_id}") $(cat "${FIXTURE}/conclusions/${run_id}")"
             ;;
@@ -74,6 +78,12 @@ case "${sub}" in
         # its exit status to tell an API error from an empty result.
         if [ -n "${jqexpr}" ]; then jq -c "${jqexpr}" < "${f}"; else cat "${f}"; fi
         ;;
+      view)
+        # gh run view <id> --json ...: the fixture holds the JSON the call selects.
+        f="${FIXTURE}/views/$2.json"
+        [ -f "${f}" ] || { echo "stub gh: no run view fixture for $2" >&2; exit 1; }
+        cat "${f}"
+        ;;
       rerun)
         run_id="$2"
         log "rerun ${run_id}"
@@ -101,7 +111,11 @@ case "${sub}" in
     ;;
 
   release)
-    cat "${FIXTURE}/prerelease"
+    # gh release view <tag> --json assets --jq '.assets[].name': one name per line.
+    case " $* " in
+      *" assets "*) cat "${FIXTURE}/release_assets" ;;
+      *) cat "${FIXTURE}/prerelease" ;;
+    esac
     ;;
 
   *) echo "stub gh: unhandled ${sub}" >&2; exit 1 ;;

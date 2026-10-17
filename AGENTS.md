@@ -481,8 +481,11 @@ closure. These rules exist because each one shipped a broken artifact once.
   `scripts/release_dropped_cells.sh` reads it and is the one definition of a
   dropped cell, called by both `release_selfheal.sh` and `release_watch.sh` so
   they cannot disagree. A cancelled cell with no such annotation triggers no
-  heal, which is what a person cancelling a release expects; the rerun itself is
-  per run, so one timed-out cell reruns every cancelled cell beside it. An
+  heal, which is what a person cancelling a release expects. The rerun itself is
+  per run, so one timed-out cell reruns every cancelled cell beside it. For that
+  reason a run with any cell that carries the runner's "The run was canceled
+  by @user" or "canceled forcefully by @user" annotation heals nothing, and
+  `release_selfheal.sh` also skips a run whose tag now points at another commit. An
   annotation list that cannot be read is unknown, not clean. The script names
   the job id and exits non-zero, so `release_selfheal.sh` stops instead of
   reporting a clean run: a clean report there is the failure this gate removes.
