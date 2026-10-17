@@ -6814,6 +6814,36 @@ def _dummy_border_style() -> str:
 class TestModelGridCardRendering:
     """``_render_card_strip`` covers both row dataclasses and selection state."""
 
+    async def test_card_text_carries_the_themes_foreground(self) -> None:
+        """No card text falls through to the terminal's default colour.
+
+        A terminal whose default text colour is dark would draw such text black
+        on the dark panel, whatever the theme.
+        """
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        grid = ModelGrid([_vgrid_row(f"model-{i}") for i in range(3)], id="mg-foreground")
+
+        class _GridApp(LilbeeAppHost):
+            CSS = "ModelGrid { height: 12; width: 80; }"
+
+            def compose(self) -> ComposeResult:
+                yield VerticalScroll(grid)
+
+        async with _GridApp().run_test(size=(80, 20)) as pilot:
+            await pilot.pause()
+            text = [
+                segment
+                for y in range(8)
+                for segment in grid.render_line(y)
+                if segment.text.strip(" ─│╭╮╰╯")
+            ]
+            assert any("model-0" in segment.text for segment in text)
+            bare = [segment.text for segment in text if segment.style.color is None]
+            assert bare == []
+
     def test_local_row_unselected_renders_full_height(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import _CARD_HEIGHT, _render_card_strip
 
