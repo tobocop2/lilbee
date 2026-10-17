@@ -1859,6 +1859,29 @@ def test_chat_result_recovers_bare_json_call_as_tool_calls_finish() -> None:
     assert result.tool_calls[0].name == "get_weather"
 
 
+_BARE_CALL = '{"name":"get_weather","arguments":{"city":"SF"}}'
+# JSON a user asked for, which has a "name" key and so parses as a call.
+_ASKED_FOR_JSON = '{"name": "Ada", "age": 36}'
+
+
+@pytest.mark.parametrize("tools", [None, []], ids=["omitted", "empty"])
+@pytest.mark.parametrize("content", [_BARE_CALL, f"[{_BARE_CALL}]", _ASKED_FOR_JSON])
+def test_chat_result_without_tools_returns_json_as_text(tools, content: str) -> None:
+    # With no tools offered there is no call to recover: a JSON answer is the answer.
+    from lilbee.providers.base import FinishReason
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}, "finish_reason": "stop"}]},
+        )
+
+    result = _client(handler).chat_result([{"role": "user", "content": "x"}], tools=tools)
+    assert result.text == content
+    assert result.tool_calls == ()
+    assert result.finish_reason is FinishReason.STOP
+
+
 def test_chat_result_unknown_finish_reason_falls_back_to_stop() -> None:
     from lilbee.providers.base import FinishReason
 
@@ -2027,6 +2050,25 @@ def test_chat_stream_items_text_starting_with_brace_is_not_recovered() -> None:
 
     assert not any(isinstance(i, ToolCallDelta) for i in items)
     assert "".join(i for i in items if isinstance(i, str)) == "{not really a call}"
+
+
+@pytest.mark.parametrize("tools", [None, []], ids=["omitted", "empty"])
+def test_chat_stream_items_without_tools_streams_json_as_text_at_once(tools) -> None:
+    # With no tools offered a JSON answer is text: no delta, and the first token
+    # reaches the caller before the stream ends instead of being held back.
+    from lilbee.providers.base import ToolCallDelta
+
+    head = '{"name": "lilbee_search", '
+    tail = '"arguments": {"query": "cats"}}'
+    body = _content_sse(head) + _content_sse(tail) + "data: [DONE]\n\n"
+    stream = _client(_stream_handler(body)).chat_stream_items(
+        [{"role": "user", "content": "x"}], tools=tools
+    )
+    first = next(stream)
+    rest = list(stream)
+    assert first == head
+    assert not any(isinstance(i, ToolCallDelta) for i in rest)
+    assert first + "".join(i for i in rest if isinstance(i, str)) == head + tail
 
 
 def test_chat_stream_items_native_tool_calls_pass_through_untouched() -> None:

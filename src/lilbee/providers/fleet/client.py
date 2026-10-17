@@ -831,9 +831,10 @@ class LlamaServerClient:
         """Non-streaming chat returning text, tool calls, and a finish reason.
 
         The server is launched with ``--jinja`` so it parses the model's native
-        tool-call syntax into structured ``message.tool_calls``. When a model
-        instead emits a bare-JSON call as content (a native miss), recover it
-        and report ``tool_calls`` as the finish reason. Messages are reshaped to
+        tool-call syntax into structured ``message.tool_calls``. When a request
+        that offered tools gets a bare-JSON call as content (a native miss),
+        recover it and report ``tool_calls`` as the finish reason; without tools
+        a JSON answer is the answer. Messages are reshaped to
         strict alternation up front when this server's template needs it (see
         :meth:`_prepare_chat_messages`).
         """
@@ -857,8 +858,8 @@ class LlamaServerClient:
                 finish_reason=finish_reason,
                 usage=usage,
             )
-        recovered = _recover_bare_json_tool_calls(content)
-        if recovered.tool_calls:
+        recovered = _recover_bare_json_tool_calls(content) if tools else None
+        if recovered is not None and recovered.tool_calls:
             return ChatResult(
                 text=recovered.content,
                 tool_calls=tuple(recovered.tool_calls),
@@ -888,14 +889,15 @@ class LlamaServerClient:
         Not a generator: the up-front probe runs when this is called, not deferred
         to the first iteration, matching the eager non-stream paths.
 
-        A model that emits a tool call as bare-JSON text instead of native
-        ``tool_calls`` (a native miss, as on the non-stream paths) is recovered by
-        wrapping the raw frames; see :func:`_recover_bare_json_stream`.
+        When the request offered tools, a model that emits a tool call as
+        bare-JSON text instead of native ``tool_calls`` (a native miss, as on the
+        non-stream paths) is recovered by wrapping the raw frames; see
+        :func:`_recover_bare_json_stream`. Without tools the frames pass through
+        as they arrive.
         """
         prepared = self._prepare_chat_messages(messages)
-        return _recover_bare_json_stream(
-            self._open_chat_stream(prepared, tools, tool_choice, options)
-        )
+        stream = self._open_chat_stream(prepared, tools, tool_choice, options)
+        return _recover_bare_json_stream(stream) if tools else stream
 
     def _open_chat_stream(
         self,
@@ -903,7 +905,7 @@ class LlamaServerClient:
         tools: list[dict[str, Any]] | None,
         tool_choice: str | dict[str, Any] | None,
         options: dict[str, Any] | None,
-    ) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
+    ) -> Generator[str | ToolCallDelta | TokenUsage | StreamFinish]:
         """Open one SSE chat stream and yield its frames; raises before the first frame."""
         payload = self._chat_payload(messages, tools, tool_choice, options, stream=True)
         inliner = _ThinkInliner(enabled=self._inline_reasoning)
