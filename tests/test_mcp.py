@@ -3,7 +3,11 @@
 import asyncio
 import contextlib
 import errno
+import json
 import os
+import signal
+import subprocess
+import sys
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,6 +16,7 @@ import pytest
 from mcp.shared.exceptions import MCPError
 
 import lilbee.app.services as svc_mod
+from conftest import clean_env
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.crawler.task import clear_tasks, get_task
@@ -1158,16 +1163,89 @@ class TestAdd:
 
 class TestMain:
     @mock.patch("lilbee.mcp_server.build_mcp_server")
-    def test_main_calls_run(self, mock_build):
+    def test_main_serves_stdio(self, mock_build):
+        mock_build.return_value.run_stdio_async = AsyncMock()
         main()
-        mock_build.return_value.run.assert_called_once()
+        mock_build.return_value.run_stdio_async.assert_awaited_once()
 
     @mock.patch("lilbee.mcp_server.build_mcp_server")
     @mock.patch("lilbee.mcp_server.get_services", side_effect=RuntimeError("boom"))
     def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_build):
-        """A crash in the pre-warm path falls through to run() instead of aborting."""
+        """A crash in the pre-warm path falls through to serving instead of aborting."""
+        mock_build.return_value.run_stdio_async = AsyncMock()
         main()
-        mock_build.return_value.run.assert_called_once()
+        mock_build.return_value.run_stdio_async.assert_awaited_once()
+
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    @mock.patch("lilbee.mcp_server.exit_on_signals_in_loop")
+    def test_main_routes_signals_through_the_running_loop(self, mock_route, mock_build):
+        """The signal hook is given the loop that serves stdio, not a loop made later."""
+        seen: list[asyncio.AbstractEventLoop] = []
+        mock_route.side_effect = seen.append
+        loops: list[asyncio.AbstractEventLoop] = []
+
+        async def serve() -> None:
+            loops.append(asyncio.get_running_loop())
+
+        mock_build.return_value.run_stdio_async = serve
+        main()
+        assert len(seen) == 1
+        assert seen == loops
+
+
+_STOP_TIMEOUT_S = 60.0
+
+
+def _initialize_request() -> bytes:
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0"},
+        },
+    }
+    return (json.dumps(request) + "\n").encode()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+class TestMcpProcessSignals:
+    """A real ``lilbee mcp`` with stdin held open ends on Ctrl-C and on terminate."""
+
+    @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM], ids=["sigint", "sigterm"])
+    def test_a_signal_ends_the_server_with_the_signal_status(self, tmp_path, sig):
+        env = {
+            **clean_env(tmp_path),
+            "LILBEE_CONFIG_DIR": str(tmp_path / "config"),
+            "LILBEE_ENGINE_DIR": str(tmp_path / "engine"),
+            "LILBEE_NO_SPLASH": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        server = subprocess.Popen(
+            [sys.executable, "-m", "lilbee", "mcp"],
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert server.stdin is not None
+            assert server.stdout is not None
+            server.stdin.write(_initialize_request())
+            server.stdin.flush()
+            assert b'"result"' in server.stdout.readline()
+            server.send_signal(sig)
+            status = server.wait(timeout=_STOP_TIMEOUT_S)
+        finally:
+            if server.poll() is None:
+                server.kill()
+                server.wait()
+            for stream in (server.stdin, server.stdout):
+                if stream is not None:
+                    stream.close()
+        assert status == 128 + sig
 
 
 class TestAddWithUrls:
@@ -3148,3 +3226,32 @@ class TestACallCancelledBeforeItAsksForTheRecordsLock:
 
         assert isinstance(raised, SkipRecordsWaitCancelledError)
         mock_svc.store.remove_documents.assert_not_called()
+
+
+class TestMcpCommandExit:
+    """A signal ends the server through SystemExit; the command finishes the exit."""
+
+    def test_the_signal_status_goes_to_the_exit_after_teardown(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with (
+            mock.patch("lilbee.mcp_server.main", side_effect=SystemExit(143)),
+            mock.patch("lilbee.cli.commands.servers.exit_after_signal") as mock_exit,
+        ):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        mock_exit.assert_called_once_with(143)
+        assert result.exit_code == 143
+
+    def test_a_non_numeric_exit_code_reports_failure(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with (
+            mock.patch("lilbee.mcp_server.main", side_effect=SystemExit("stop")),
+            mock.patch("lilbee.cli.commands.servers.exit_after_signal") as mock_exit,
+        ):
+            CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        mock_exit.assert_called_once_with(1)

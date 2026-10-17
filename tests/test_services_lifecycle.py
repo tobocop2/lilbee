@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import signal
+import sys
 import threading
 import time
 from unittest.mock import MagicMock
@@ -380,3 +383,47 @@ class TestStragglerExit:
         del threads[1:]
 
         assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
+@pytest.mark.parametrize("sig", [signal.SIGINT, *_HARD_EXIT_SIGNALS], ids=lambda s: s.name.lower())
+def test_a_signal_in_a_running_loop_stops_the_fleet_and_exits_with_its_status(sig):
+    """A loop blocked in select sees the signal through its wakeup descriptor."""
+    provider = _install_stub_services()
+
+    async def serve() -> None:
+        services_mod.exit_on_signals_in_loop(asyncio.get_running_loop())
+        os.kill(os.getpid(), sig)
+        await asyncio.sleep(30)
+
+    with pytest.raises(SystemExit) as raised:
+        asyncio.run(serve())
+    _join_teardown()
+
+    assert raised.value.code == 128 + sig
+    provider.shutdown.assert_called_once()
+
+
+class TestExitAfterSignal:
+    def test_a_wedged_thread_cannot_hold_the_exit_status_back(self, monkeypatch) -> None:
+        provider = _install_stub_services()
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.0)
+        threads = [threading.main_thread(), _Wedged()]
+        monkeypatch.setattr(services_mod, "_all_threads", lambda: list(threads))
+
+        services_mod.exit_after_signal(143)
+        del threads[1:]
+
+        assert exits == [143]
+        provider.shutdown.assert_called_once()
+
+    def test_a_clean_unwind_returns_to_the_caller(self, monkeypatch) -> None:
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        monkeypatch.setattr(services_mod, "_all_threads", lambda: [threading.main_thread()])
+
+        services_mod.exit_after_signal(130)
+
+        assert exits == []

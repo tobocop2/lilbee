@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
-from lilbee.app.services import set_server_exit_hook, wait_for_hard_exit_teardown
+from lilbee.app.services import (
+    exit_after_signal,
+    set_server_exit_hook,
+    wait_for_hard_exit_teardown,
+)
 from lilbee.cli.app import (
     apply_overrides,
     console,
@@ -229,4 +233,8 @@ def mcp_cmd(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     from lilbee.mcp_server import main
 
-    main()
+    try:
+        main()
+    except SystemExit as exc:
+        exit_after_signal(exc.code if isinstance(exc.code, int) else 1)
+        raise
