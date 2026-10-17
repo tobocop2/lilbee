@@ -3951,6 +3951,22 @@ class TestAddWithUrls:
         assert data["crawled"] == 1
         assert [entry["url"] for entry in data["failed"]] == ["http://127.0.0.1:9/"]
 
+    @pytest.mark.parametrize("pages", [0, 1])
+    def test_a_url_only_add_syncs_only_when_a_page_was_saved(self, tmp_path, pages):
+        async def crawl(url, **_kwargs):
+            return [tmp_path / "page.md"] * pages
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=crawl),
+            mock.patch(
+                "lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP
+            ) as sync,
+        ):
+            result = runner.invoke(app, ["add", "https://example.com/"])
+        assert result.exit_code == 0, result.output
+        assert sync.await_count == pages
+
     def test_a_crawl_that_saves_and_fails_nothing_exits_0(self):
         async def left_out(url, *, on_progress, **_kwargs):
             on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=0, files_written=0))
