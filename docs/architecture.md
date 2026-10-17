@@ -503,7 +503,22 @@ arm per folder from the same ordered list. The store reads the registry again wh
 `config.toml` changes, and a sync holds the registry it started with. The first open
 stores the location of each row a registered label still names, one commit per label,
 deepest folder first; a row an outer folder kept for a file of an inner folder folds
-into the inner folder's row.
+into the inner folder's row. Only a document is stored at its location; a wiki page and
+an imported source keep their own names. When a folder leaves the registry, the rows it
+keeps for citations are stored by their names again, as a label with no folder keeps them.
+
+Three limits of stored locations remain:
+
+- **A file added under another label.** The add labels a file by its file name. If you
+  give it another label by an edit of `config.toml` and then add a parent folder, the
+  document keeps the title it had under the old label.
+- **A folder named like the wiki folder.** Its documents and the wiki pages share names
+  that start with `wiki/`. A document and a wiki page with the same name share one entry
+  in the index, as they did before the index stored locations.
+- **An add that stops before the move.** A folder added again at a new place, or a
+  label forced onto another folder, moves its rows after the registry write. If the
+  add stops between the two, the next sync pairs the documents with their files by
+  content hash, but a file you removed from that folder is indexed again.
 
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.
