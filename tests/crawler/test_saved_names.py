@@ -29,13 +29,15 @@ as ``/``. Dot segments are left out because the parser resolves them.
 
 from __future__ import annotations
 
-import logging
+import json as _json
+import logging as _logging
 import re
 import string
+import threading as _threading
+import time as _time
 import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -46,16 +48,7 @@ from hypothesis import strategies as st
 
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
-from lilbee.crawler import (
-    CrawlMeta,
-    CrawlResult,
-    content_hash,
-    crawl_and_save,
-    load_crawl_metadata,
-    save_crawl_metadata,
-    url_to_filename,
-)
-from lilbee.crawler.migrate import move_saved_pages
+from lilbee.crawler import CrawlMeta, CrawlResult, content_hash, crawl_and_save, url_to_filename
 from lilbee.data.ingest import sync
 from lilbee.data.store import Store
 from lilbee.retrieval.query.formatting import source_label
@@ -501,28 +494,25 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Store]:
         setattr(cfg, name, getattr(snapshot, name))
 
 
-def _write_earlier_library(
-    site: str = _SITE,
-    pages: list[tuple[str, str]] = _EARLIER_LIBRARY,
-    version: str = "1",
-    crawled_at: str = "2026-01-01T00:00:00+00:00",
-) -> None:
-    """Save each of *pages* of *site* under its earlier name, as main does, with its entry."""
+def _write_earlier_library() -> None:
+    """Save every page of the earlier library under its earlier name, with its metadata."""
+    from lilbee.crawler import save_crawl_metadata
+
     web = cfg.documents_dir / "_web"
-    meta = load_crawl_metadata()
-    for path, earlier in pages:
-        text = _text(path, version)
+    meta = {}
+    for path, earlier in _EARLIER_LIBRARY:
+        text = _text(path, "1")
         (web / earlier).parent.mkdir(parents=True, exist_ok=True)
         (web / earlier).write_text(text, encoding="utf-8")
-        meta[site + path] = CrawlMeta(earlier, content_hash(text), crawled_at)
+        meta[_SITE + path] = CrawlMeta(earlier, content_hash(text), "2026-01-01T00:00:00+00:00")
     save_crawl_metadata(meta)
 
 
-async def _crawl(
-    monkeypatch: pytest.MonkeyPatch, site: str, paths: list[str], version: str
-) -> None:
-    """Crawl *site*, the crawler reporting each of *paths* with the text of *version*."""
-    results = [CrawlResult(url=site + path, markdown=_text(path, version)) for path in paths]
+async def _recrawl(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
+    """Crawl the site again, the crawler reporting every page with the text of *version*."""
+    results = [
+        CrawlResult(url=_SITE + path, markdown=_text(path, version)) for path, _ in _EARLIER_LIBRARY
+    ]
 
     async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
         for result in results:
@@ -530,257 +520,49 @@ async def _crawl(
         return results
 
     monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
-    await crawl_and_save(site, depth=1)
-
-
-async def _recrawl(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
-    """Crawl the site again, the crawler reporting every page with the text of *version*."""
-    await _crawl(monkeypatch, _SITE, [path for path, _ in _EARLIER_LIBRARY], version)
-
-
-def _library_state(store: Store, versions: dict[str, str]) -> dict[str, object]:
-    """Files, index entries and crawl metadata, against pages *versions* (path -> text version)."""
-    web = cfg.documents_dir / "_web"
-    files = sorted(
-        p.relative_to(cfg.documents_dir).as_posix() for p in web.rglob("*.md") if p.is_file()
-    )
-    sources = sorted(s["filename"] for s in store.get_sources())
-    texts = {f: (cfg.documents_dir / f).read_text(encoding="utf-8") for f in files}
-    lost = [
-        path
-        for path, version in versions.items()
-        if sum(f"Body of {path} in version {version}." in t for t in texts.values()) != 1
-    ]
-    empty = sorted(
-        d.relative_to(web).as_posix() for d in web.rglob("*") if d.is_dir() and not any(d.iterdir())
-    )
-    recorded = {f"_web/{entry.file}" for entry in load_crawl_metadata().values()}
-    return {
-        "files": len(files),
-        "index entries": len(sources),
-        "sources without a file": sorted(set(sources) - set(files)),
-        "files without a source": sorted(set(files) - set(sources)),
-        "files without a crawl entry": sorted(set(files) - recorded),
-        "pages not in exactly one file": lost,
-        "empty folders": empty,
-    }
-
-
-def _clean(pages: int) -> dict[str, object]:
-    """The library state of *pages* pages, each in one file with one index and one crawl entry."""
-    return {
-        "files": pages,
-        "index entries": pages,
-        "sources without a file": [],
-        "files without a source": [],
-        "files without a crawl entry": [],
-        "pages not in exactly one file": [],
-        "empty folders": [],
-    }
+    await crawl_and_save(_SITE, depth=1)
 
 
 class TestRecrawledLibrary:
     @pytest.mark.timeout(300)
     @pytest.mark.parametrize("version", ["1", "2"], ids=["same-text", "changed-text"])
+    @pytest.mark.parametrize("earlier", ["main", "ac2dcae13"])
     async def test_every_page_keeps_one_file_and_one_index_entry(
-        self, library: Store, monkeypatch: pytest.MonkeyPatch, version: str
+        self, library: Store, monkeypatch: pytest.MonkeyPatch, earlier: str, version: str
     ):
         _write_earlier_library()
         await sync(quiet=True)
         await _recrawl(monkeypatch, version)
         await sync(quiet=True)
-        versions = {path: version for path, _ in _EARLIER_LIBRARY}
-        assert _library_state(library, versions) == _clean(len(_EARLIER_LIBRARY))
-
-
-# main saved /s/a.html as the file a.md, and /s/a.md%3F/z under the folder a.md%3F, whose slug
-# is a.md: a folder of the new rule with the name of a file of the old one.
-_CLASH_SITE = "http://clash.test/s/"
-_CLASH_LIBRARY = [
-    ("a.md%3F/z", "clash.test/s/a.md%3F/z/index.md"),
-    ("a.html", "clash.test/s/a.md"),
-    ("b", "clash.test/s/b/index.md"),
-]
-
-
-@pytest.mark.timeout(300)
-async def test_a_folder_never_takes_the_name_of_an_earlier_saved_file(
-    library: Store, monkeypatch: pytest.MonkeyPatch
-):
-    _write_earlier_library(_CLASH_SITE, _CLASH_LIBRARY)
-    await sync(quiet=True)
-    for _ in range(2):
-        await _crawl(monkeypatch, _CLASH_SITE, [path for path, _ in _CLASH_LIBRARY], "1")
-        await sync(quiet=True)
-    versions = {path: "1" for path, _ in _CLASH_LIBRARY}
-    assert _library_state(library, versions) == _clean(len(_CLASH_LIBRARY))
-
-
-# Pages main gives a file of its own, with the address main keys them by. %7Euser keys
-# another spelling of its canonical address.
-_MAIN_PAGES = [
-    ("plain", "site.test/s/plain/index.md"),
-    ("caf%C3%A9", "site.test/s/caf%C3%A9/index.md"),
-    ("dir.d/page", "site.test/s/dir.d/page/index.md"),
-    ("Special:Random", "site.test/s/Special_Random/index.md"),
-    ("%7Euser", "site.test/s/%7Euser/index.md"),
-]
-_OTHER_SITE = "https://other.test/"
-_OTHER_PAGES = ["guide", "intro"]
-
-
-@pytest.mark.timeout(300)
-@pytest.mark.parametrize("next_site", ["same-site", "other-site"])
-async def test_a_page_main_saved_after_the_move_keeps_its_newer_text(
-    library: Store, monkeypatch: pytest.MonkeyPatch, next_site: str
-):
-    main_paths = [path for path, _ in _MAIN_PAGES]
-    await _crawl(monkeypatch, _SITE, main_paths, "1")
-    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "1")
-    await sync(quiet=True)
-    _write_earlier_library(_SITE, _MAIN_PAGES, "2", datetime.now(UTC).isoformat())
-    await sync(quiet=True)
-    if next_site == "same-site":
-        await _crawl(monkeypatch, _SITE, main_paths, "2")
-    else:
-        await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "1")
-    await sync(quiet=True)
-    versions = {path: "2" for path in main_paths} | {path: "1" for path in _OTHER_PAGES}
-    assert _library_state(library, versions) == _clean(len(versions))
-
-
-@pytest.mark.timeout(300)
-async def test_a_move_cut_short_before_its_record_keeps_every_entry(
-    library: Store, monkeypatch: pytest.MonkeyPatch
-):
-    _write_earlier_library(_SITE, _MAIN_PAGES)
-    await sync(quiet=True)
-
-    def cut(meta: dict[str, CrawlMeta]) -> None:
-        raise OSError(28, "No space left on device")
-
-    with monkeypatch.context() as patched:
-        patched.setattr("lilbee.crawler.save.save_crawl_metadata", cut)
-        with pytest.raises(OSError, match="No space left"):
-            move_saved_pages(library)
-    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "1")
-    await sync(quiet=True)
-    versions = {path: "1" for path, _ in _MAIN_PAGES} | {path: "1" for path in _OTHER_PAGES}
-    assert _library_state(library, versions) == _clean(len(versions))
-
-
-@pytest.mark.timeout(300)
-async def test_a_page_written_after_its_last_sync_is_indexed_again_after_the_move(
-    library: Store,
-):
-    _write_earlier_library(_SITE, _MAIN_PAGES)
-    await sync(quiet=True)
-    path, earlier = _MAIN_PAGES[0]
-    (cfg.documents_dir / "_web" / earlier).write_text(_text(path, "2"), encoding="utf-8")
-    move_saved_pages(library)
-    await sync(quiet=True)
-    chunks = library.get_chunks_by_source(f"_web/{url_to_filename(_SITE + path)}")
-    indexed = " ".join(chunk.chunk for chunk in chunks)
-    assert f"Body of {path} in version 2." in indexed
-    assert f"Body of {path} in version 1." not in indexed
-
-
-# A page of an earlier library whose address spells the saved name of a sibling page: main saved
-# it as written, so it holds the name the move gives /s/x.
-_HOSTILE = "http://hostile.test/s/"
-_CRAFTED = url_to_filename(_HOSTILE + "x").rpartition("/")[2]
-_X_EARLIER = "hostile.test/s/x/index.md"
-_HOSTILE_FOLDER = [("x", _X_EARLIER), (f"{_CRAFTED}/y", f"hostile.test/s/{_CRAFTED}/y/index.md")]
-_HOSTILE_FILE = [("x", _X_EARLIER), (_CRAFTED, f"hostile.test/s/{_CRAFTED}")]
-_OTHER_LIBRARY = [("guide", "other.test/guide/index.md"), ("intro", "other.test/intro/index.md")]
-
-
-def _at_their_names() -> dict[str, str]:
-    """Each crawl entry whose file is not the name its address gives it."""
-    return {
-        address: entry.file
-        for address, entry in load_crawl_metadata().items()
-        if entry.file != url_to_filename(address)
-    }
-
-
-@pytest.mark.timeout(300)
-async def test_a_folder_at_a_page_name_moves_out_before_the_page_moves_in(
-    library: Store, monkeypatch: pytest.MonkeyPatch
-):
-    _write_earlier_library(_HOSTILE, _HOSTILE_FOLDER)
-    _write_earlier_library(_OTHER_SITE, _OTHER_LIBRARY)
-    await sync(quiet=True)
-    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "2")
-    assert _at_their_names() == {}
-    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "2")
-    await _crawl(monkeypatch, _HOSTILE, [path for path, _ in _HOSTILE_FOLDER], "2")
-    await sync(quiet=True)
-    versions = {path: "2" for path, _ in _HOSTILE_FOLDER} | {path: "2" for path in _OTHER_PAGES}
-    assert _library_state(library, versions) == _clean(len(versions))
-    assert _at_their_names() == {}
-
-
-@pytest.mark.timeout(300)
-async def test_a_page_whose_name_holds_a_folder_the_record_does_not_know_stays_put(
-    library: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-):
-    _write_earlier_library(_HOSTILE, _HOSTILE_FOLDER)
-    _write_earlier_library(_OTHER_SITE, _OTHER_LIBRARY)
-    meta = load_crawl_metadata()
-    del meta[_HOSTILE + f"{_CRAFTED}/y"]
-    save_crawl_metadata(meta)
-    await sync(quiet=True)
-    with caplog.at_level(logging.WARNING, logger="lilbee.crawler.migrate"):
-        for _ in range(2):
-            await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "2")
-    await _crawl(monkeypatch, _HOSTILE, ["x"], "2")
-    await sync(quiet=True)
-    name = url_to_filename(_HOSTILE + "x")
-    skipped = [r for r in caplog.records if _X_EARLIER in r.message and name in r.message]
-    assert len(skipped) == 3
-    assert _at_their_names() == {_HOSTILE + "x": _X_EARLIER}
-    state = _library_state(library, {"x": "2"} | {path: "2" for path in _OTHER_PAGES})
-    assert state["pages not in exactly one file"] == []
-    assert state["sources without a file"] == []
-    assert state["files without a crawl entry"] == [f"_web/hostile.test/s/{_CRAFTED}/y/index.md"]
-
-
-@pytest.mark.timeout(300)
-async def test_a_page_never_moves_over_the_file_of_another_page(
-    library: Store, monkeypatch: pytest.MonkeyPatch
-):
-    _write_earlier_library(_HOSTILE, _HOSTILE_FILE)
-    await sync(quiet=True)
-    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "1")
-    await sync(quiet=True)
-    versions = {path: "1" for path, _ in _HOSTILE_FILE} | {path: "1" for path in _OTHER_PAGES}
-    assert _library_state(library, versions) == _clean(len(versions))
-    assert _at_their_names() == {}
-    await _crawl(monkeypatch, _HOSTILE, [path for path, _ in _HOSTILE_FILE], "1")
-    await sync(quiet=True)
-    assert _library_state(library, versions) == _clean(len(versions))
-
-
-_NEWER_SITE = "http://newer.test/"
-_NEWER_LIBRARY = [("p", "newer.test/p/index.md"), ("q", "newer.test/q/index.md")]
-
-
-@pytest.mark.timeout(300)
-async def test_a_page_kept_at_an_older_copy_takes_its_newer_text_on_the_next_crawl(
-    library: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    paths = [path for path, _ in _NEWER_LIBRARY]
-    await _crawl(monkeypatch, _NEWER_SITE, paths, "1")
-    await sync(quiet=True)
-    _write_earlier_library(_NEWER_SITE, _NEWER_LIBRARY, "2", datetime.now(UTC).isoformat())
-    await sync(quiet=True)
-    (cfg.documents_dir / "_web" / "newer.test/p/index.md").replace(tmp_path / "aside.md")
-    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "1")
-    await _crawl(monkeypatch, _NEWER_SITE, paths, "2")
-    await sync(quiet=True)
-    versions = {path: "2" for path in paths} | {path: "1" for path in _OTHER_PAGES}
-    assert _library_state(library, versions) == _clean(len(versions))
+        web = cfg.documents_dir / "_web"
+        files = sorted(p.relative_to(cfg.documents_dir).as_posix() for p in web.rglob("*.md"))
+        sources = sorted(s["filename"] for s in library.get_sources())
+        texts = {f: (cfg.documents_dir / f).read_text(encoding="utf-8") for f in files}
+        lost = [
+            path
+            for path, _ in _EARLIER_LIBRARY
+            if sum(f"Body of {path} in version {version}." in t for t in texts.values()) != 1
+        ]
+        empty = sorted(
+            d.relative_to(web).as_posix()
+            for d in web.rglob("*")
+            if d.is_dir() and not any(d.iterdir())
+        )
+        assert {
+            "files": len(files),
+            "index entries": len(sources),
+            "sources without a file": sorted(set(sources) - set(files)),
+            "files without a source": sorted(set(files) - set(sources)),
+            "pages not in exactly one file": lost,
+            "empty folders": empty,
+        } == {
+            "files": len(_EARLIER_LIBRARY),
+            "index entries": len(_EARLIER_LIBRARY),
+            "sources without a file": [],
+            "files without a source": [],
+            "pages not in exactly one file": [],
+            "empty folders": [],
+        }
 
 
 class _CountingMeta(dict):
@@ -827,3 +609,523 @@ async def test_saving_a_page_does_not_read_the_whole_metadata(
     await crawl_and_save(_SITE, depth=1)
     passes = _CountingMeta.passes
     assert passes <= 3, f"{passes} passes over the metadata for {pages} pages"
+
+
+# Each library below is written as main (90573e72c) leaves it: every file under the name main's
+# url_to_filename gives it, and crawl_meta.json keyed by the address as crawled. Each page's body
+# line names its page, so which file holds which page needs no code under test.
+_KEY_SITE = "http://key.test/s/"
+_OTHER = "https://other.test/"
+_OTHER_PATHS = ["", "guide/", "guide/intro"]
+_CYCLE = "http://cycle.test/"
+# The saved name of http://cycle.test/a under the hash rule (url_to_filename at 775ae2a5b).
+_CYCLE_A_NAME = "cycle.test/a~3d679b74f832d4ff.md"
+_NOTE = "MY OWN NOTE: keep this text.\n"
+
+
+def _body(site: str, path: str, version: str) -> str:
+    """The markdown of *path* of *site* in *version*: a line naming the page, then filler."""
+    return f"# Page\n\nBody of {site}{path} in version {version}.\n\n{_FILLER}\n"
+
+
+def _plant(pages: list[tuple[str, str, str, bool]]) -> None:
+    """Write (address, file, text, recorded) as main does: the file, and an entry if recorded."""
+    web = cfg.documents_dir / "_web"
+    meta_path = cfg.data_dir / "crawl_meta.json"
+    meta = _json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    for address, rel, text, recorded in pages:
+        (web / rel).parent.mkdir(parents=True, exist_ok=True)
+        (web / rel).write_text(text, encoding="utf-8")
+        if recorded:
+            meta[address] = {
+                "file": rel,
+                "content_hash": content_hash(text),
+                "crawled_at": "2026-01-01T00:00:00+00:00",
+            }
+    meta_path.write_text(_json.dumps(meta, indent=2), encoding="utf-8")
+
+
+async def _crawl_pages(
+    monkeypatch: pytest.MonkeyPatch, site: str, paths: list[str], version: str
+) -> None:
+    """Crawl *site*, the crawler reporting each of *paths* with the text of *version*."""
+    results = [CrawlResult(url=site + p, markdown=_body(site, p, version)) for p in paths]
+
+    async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+        for result in results:
+            try:  # as the crawler's page stream does around each save (crawler/events.py)
+                await kwargs["on_result"](result)  # type: ignore[operator]
+            except OSError:
+                _logging.getLogger("lilbee.crawler.events").exception(
+                    "Flush failed: %s", result.url
+                )
+        return results
+
+    monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
+    await crawl_and_save(site, depth=1)
+
+
+@pytest.fixture
+def rev_library(library: Store) -> Store:
+    """The library, with its sync lock under the test's own data root."""
+    cfg.data_root = cfg.data_dir.parent
+    return library
+
+
+def _texts() -> dict[str, str]:
+    """Every file under ``_web`` and its text."""
+    web = cfg.documents_dir / "_web"
+    return {
+        p.relative_to(web).as_posix(): p.read_text(encoding="utf-8", errors="replace")
+        for p in web.rglob("*")
+        if p.is_file()
+    }
+
+
+def _pages_on_disk(pages: list[str]) -> dict[str, int]:
+    """How many files hold the text of each page of *pages* (full addresses), any version."""
+    texts = _texts().values()
+    return {page: sum(f"Body of {page} in version " in t for t in texts) for page in pages}
+
+
+def _recorded_files() -> dict[str, str]:
+    """Every file a crawl record names, with the key that names it, from every record file."""
+    named: dict[str, str] = {}
+    meta_path = cfg.data_dir / "crawl_meta.json"
+    if meta_path.exists():
+        for key, entry in _json.loads(meta_path.read_text(encoding="utf-8")).items():
+            named[f"{key} (meta)"] = entry["file"]
+    for record in sorted(cfg.data_dir.glob("crawl_pages*")):
+        for line in record.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                entry = _json.loads(line)
+                named[f"{entry['url']} (pages)"] = entry["file"]
+    return named
+
+
+def _misattributed(pages: list[str]) -> list[str]:
+    """Record entries naming a file whose text is a page of *pages* other than the entry's."""
+    from lilbee.crawler.save import canonical_address
+
+    texts = _texts()
+    owner = {
+        rel: page
+        for rel, t in texts.items()
+        for page in pages
+        if f"Body of {page} in version " in t
+    }
+    wrong = []
+    for key, rel in _recorded_files().items():
+        address = key.rsplit(" (", 1)[0]
+        holder = owner.get(rel)
+        if (
+            holder is not None
+            and holder not in (address, canonical_address(address))
+            and (canonical_address(holder) != canonical_address(address))
+        ):
+            wrong.append(f"{key} -> {rel} holds {holder}")
+    return sorted(wrong)
+
+
+_K1 = [
+    ("%%341", "key.test/s/%%341/index.md", True),
+    ("A~d880129e569e6bf6.md/y", "key.test/s/A~d880129e569e6bf6.md/y/index.md", False),
+    ("A", "key.test/s/A/index.md", True),
+]
+_K2R = [
+    ("A~d880129e569e6bf6.md", "key.test/s/A~d880129e569e6bf6.md", True),
+    ("%%341", "key.test/s/%%341/index.md", True),
+    (
+        "A-d880129e569e6bf6.md~37d283bbdbe5039a.md/z",
+        "key.test/s/A-d880129e569e6bf6.md~37d283bbdbe5039a.md/z/index.md",
+        False,
+    ),
+    ("A", "key.test/s/A/index.md", True),
+]
+
+
+def _plant_site(site: str, rows: list[tuple[str, str, bool]]) -> list[str]:
+    """Plant *rows* of *site* at version 1; the full address of each page."""
+    _plant([(site + p, rel, _body(site, p, "1"), kept) for p, rel, kept in rows])
+    return [site + p for p, _, _ in rows]
+
+
+class TestRev912eRows:
+    @pytest.mark.timeout(300)
+    async def test_k1_a_blocked_page_never_raises_on_save(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        pages = _plant_site(_KEY_SITE, _K1)
+        await sync(quiet=True)
+        with caplog.at_level(_logging.WARNING):
+            await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "2")
+            for version in ("2", "3"):
+                await _crawl_pages(monkeypatch, _KEY_SITE, [p for p, _, _ in _K1], version)
+        await sync(quiet=True)
+        raised = [r.getMessage() for r in caplog.records if r.exc_info is not None]
+        on_disk = _pages_on_disk(pages)
+        assert {"raised": raised, "lost": [p for p, n in on_disk.items() if n == 0]} == {
+            "raised": [],
+            "lost": [],
+        }
+        assert _misattributed(pages) == []
+
+    @pytest.mark.timeout(300)
+    async def test_k2r_no_page_is_saved_over_another(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        pages = _plant_site(_KEY_SITE, _K2R)
+        await sync(quiet=True)
+        await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "2")
+        for version in ("2", "3"):
+            await _crawl_pages(monkeypatch, _KEY_SITE, [p for p, _, _ in _K2R], version)
+        await sync(quiet=True)
+        on_disk = _pages_on_disk(pages)
+        assert [p for p, n in on_disk.items() if n == 0] == []
+        assert _misattributed(pages) == []
+
+    @pytest.mark.timeout(300)
+    async def test_dev_lost_entry_a_crawl_of_another_site_keeps_every_page(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        hostile = "http://hostile.test/s/"
+        crafted = "x~a5cb6498dcda4b96.md"
+        rows = [
+            ("x", "hostile.test/s/x/index.md", True),
+            (crafted, f"hostile.test/s/{crafted}", False),
+        ]
+        pages = _plant_site(hostile, rows)
+        await sync(quiet=True)
+        await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "2")
+        await sync(quiet=True)
+        assert _pages_on_disk(pages) == {page: 1 for page in pages}
+
+    @pytest.mark.timeout(300)
+    async def test_plant_note_a_user_file_at_a_page_name_is_never_written_over(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        _plant_site(
+            _CYCLE, [("a", "cycle.test/old/a.md", True), ("b", "cycle.test/old/b.md", True)]
+        )
+        note = cfg.documents_dir / "_web" / _CYCLE_A_NAME
+        note.write_text(_NOTE, encoding="utf-8")
+        await sync(quiet=True)
+        await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "1")
+        await _crawl_pages(monkeypatch, _CYCLE, ["a", "b"], "2")
+        await sync(quiet=True)
+        assert note.read_text(encoding="utf-8") == _NOTE
+        assert _pages_on_disk([_CYCLE + "a", _CYCLE + "b"]) == {_CYCLE + "a": 1, _CYCLE + "b": 1}
+
+    @pytest.mark.timeout(300)
+    async def test_plant_note_nofile_a_user_file_is_never_claimed_by_a_page(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        _plant_site(
+            _CYCLE, [("a", "cycle.test/old/a.md", True), ("b", "cycle.test/old/b.md", True)]
+        )
+        (cfg.documents_dir / "_web" / "cycle.test/old/a.md").unlink()
+        note = cfg.documents_dir / "_web" / _CYCLE_A_NAME
+        note.write_text(_NOTE, encoding="utf-8")
+        await sync(quiet=True)
+        await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "1")
+        claimed_after_other = sorted(k for k, f in _recorded_files().items() if f == _CYCLE_A_NAME)
+        await _crawl_pages(monkeypatch, _CYCLE, ["a", "b"], "2")
+        await sync(quiet=True)
+        assert {
+            "note": note.read_text(encoding="utf-8"),
+            "claimed after a crawl of another site": claimed_after_other,
+        } == {"note": _NOTE, "claimed after a crawl of another site": []}
+
+    @pytest.mark.timeout(300)
+    async def test_hold_stuck_a_crawl_never_waits_on_a_sync(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        from lilbee.runtime.lock import source_keys_in_use
+
+        _plant_site(
+            _CYCLE, [("a", "cycle.test/old/a.md", True), ("b", "cycle.test/old/b.md", True)]
+        )
+        stuck = cfg.documents_dir / "_web" / _CYCLE_A_NAME / "note.txt"
+        stuck.parent.mkdir(parents=True)
+        stuck.write_text("A user's own note inside a folder.\n", encoding="utf-8")
+        await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "1")
+        await sync(quiet=True)
+        taken, release = _threading.Event(), _threading.Event()
+
+        def hold() -> None:
+            with source_keys_in_use(cfg.data_root):
+                taken.set()
+                release.wait(45)
+
+        holder = _threading.Thread(target=hold, daemon=True)
+        holder.start()
+        assert taken.wait(10)
+        started = _time.monotonic()
+        try:
+            error = None
+            try:
+                await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "2")
+            except Exception as exc:  # the row reports any failure of the crawl
+                error = f"{type(exc).__name__}: {exc}"
+            took = _time.monotonic() - started
+        finally:
+            release.set()
+            holder.join(50)
+        assert {"error": error, "waited over 10 s": took > 10} == {
+            "error": None,
+            "waited over 10 s": False,
+        }
+        assert stuck.read_text(encoding="utf-8").startswith("A user's own note")
+
+    @pytest.mark.timeout(300)
+    async def test_a_page_crawled_again_takes_its_new_text(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Positive control for the rows above: a design that saves nothing passes them.
+        pages = [_OTHER + p for p in _OTHER_PATHS]
+        for version in ("1", "2", "3"):
+            await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, version)
+        await sync(quiet=True)
+        texts = _texts().values()
+        newest = {page: sum(f"Body of {page} in version 3." in t for t in texts) for page in pages}
+        assert newest == {page: 1 for page in pages}
+        assert _pages_on_disk(pages) == {page: 1 for page in pages}
+
+    @pytest.mark.timeout(300)
+    async def test_mixed_a_newer_copy_main_saved_leaves_no_entry_behind(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A library crawled by this rule, then by main with newer text, then by this rule again.
+        await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "1")
+        await sync(quiet=True)
+        main_names = [
+            "other.test/index.md",
+            "other.test/guide/index.md",
+            "other.test/guide/intro/index.md",
+        ]
+        _plant(
+            [
+                (_OTHER + p, rel, _body(_OTHER, p, "2"), True)
+                for p, rel in zip(_OTHER_PATHS, main_names, strict=True)
+            ]
+        )
+        await sync(quiet=True)
+        await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "2")
+        await sync(quiet=True)
+        files = {f"_web/{rel}" for rel in _texts()}
+        sources = {s["filename"] for s in rev_library.get_sources()}
+        pages = [_OTHER + p for p in _OTHER_PATHS]
+        assert {"files": sorted(files), "sources": sorted(sources)} == {
+            "files": sorted(files),
+            "sources": sorted(files),
+        }
+        assert _pages_on_disk(pages) == {page: 1 for page in pages}
+
+    @pytest.mark.timeout(300)
+    async def test_a_crawl_of_one_page_keeps_the_page_that_shares_its_earlier_file(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        # main saved each pair below in one file, which holds the text of the second page.
+        _write_earlier_library()
+        await sync(quiet=True)
+        first = ["a:b", "x..y", "doc;v=1"]
+        second = ["a_b", "x_y", "doc;v=2"]
+        results = [CrawlResult(url=_SITE + p, markdown=_text(p, "2")) for p in first]
+
+        async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+            for result in results:
+                await kwargs["on_result"](result)  # type: ignore[operator]
+            return results
+
+        monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
+        await crawl_and_save(_SITE, depth=1)
+        await sync(quiet=True)
+        texts = _texts().values()
+        kept = {p: sum(f"Body of {p} in version 1." in t for t in texts) for p in second}
+        assert kept == {p: 1 for p in second}
+
+
+def _library_state(store: Store, versions: dict[str, str]) -> dict[str, object]:
+    """Files, index entries and page record, against pages *versions* (address -> version)."""
+    from lilbee.crawler.save import load_crawl_record
+
+    files = sorted(f"_web/{rel}" for rel in _texts())
+    sources = sorted(s["filename"] for s in store.get_sources())
+    texts = _texts().values()
+    recorded = {f"_web/{entry.file}" for entry in load_crawl_record().pages.values()}
+    web = cfg.documents_dir / "_web"
+    return {
+        "files": len(files),
+        "sources without a file": sorted(set(sources) - set(files)),
+        "files without a source": sorted(set(files) - set(sources)),
+        "files the page record does not name": sorted(set(files) - recorded),
+        "pages not in exactly one file": [
+            page
+            for page, version in versions.items()
+            if sum(f"Body of {page} in version {version}." in t for t in texts) != 1
+        ],
+        "empty folders": sorted(
+            d.relative_to(web).as_posix()
+            for d in web.rglob("*")
+            if d.is_dir() and not any(d.iterdir())
+        ),
+    }
+
+
+def _clean(pages: int) -> dict[str, object]:
+    """The library state of *pages* pages, each in one file with one index entry and one line."""
+    return {
+        "files": pages,
+        "sources without a file": [],
+        "files without a source": [],
+        "files the page record does not name": [],
+        "pages not in exactly one file": [],
+        "empty folders": [],
+    }
+
+
+def _addresses(site: str, rows: list[tuple[str, str, bool]]) -> list[str]:
+    """The path of each of *rows*, the part of the address after *site*."""
+    return [path for path, _, _ in rows]
+
+
+# main saved /s/a.html as the file a.md, and /s/a.md%3F/z under the folder a.md%3F, whose slug
+# is a.md: a folder of this rule with the name of a file of the earlier one.
+_CLASH = "http://clash.test/s/"
+_CLASH_ROWS = [
+    ("a.md%3F/z", "clash.test/s/a.md%3F/z/index.md", True),
+    ("a.html", "clash.test/s/a.md", True),
+    ("b", "clash.test/s/b/index.md", True),
+]
+_HOSTILE = "http://hostile.test/s/"
+_CRAFTED = url_to_filename(_HOSTILE + "x").rpartition("/")[2]
+_X_EARLIER = "hostile.test/s/x/index.md"
+_Y_EARLIER = f"hostile.test/s/{_CRAFTED}/y/index.md"
+_NEWER = "http://newer.test/"
+_NEWER_ROWS = [("p", "newer.test/p/index.md", True), ("q", "newer.test/q/index.md", True)]
+
+
+class TestEarlierLibraries:
+    @pytest.mark.timeout(300)
+    async def test_a_folder_never_takes_the_name_of_an_earlier_saved_file(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        pages = _plant_site(_CLASH, _CLASH_ROWS)
+        await sync(quiet=True)
+        for _ in range(2):
+            await _crawl_pages(monkeypatch, _CLASH, _addresses(_CLASH, _CLASH_ROWS), "1")
+            await sync(quiet=True)
+        assert _library_state(rev_library, dict.fromkeys(pages, "1")) == _clean(len(pages))
+
+    @pytest.mark.timeout(300)
+    async def test_newer_copies_main_saved_stay_until_their_site_is_crawled_again(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        site = "http://site.test/s/"
+        rows = [
+            ("plain", "site.test/s/plain/index.md", True),
+            ("caf%C3%A9", "site.test/s/caf%C3%A9/index.md", True),
+        ]
+        await _crawl_pages(monkeypatch, site, _addresses(site, rows), "1")
+        await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "1")
+        await sync(quiet=True)
+        _plant([(site + p, rel, _body(site, p, "2"), kept) for p, rel, kept in rows])
+        await sync(quiet=True)
+        await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "1")
+        await sync(quiet=True)
+        versions = {site + p: "2" for p, _, _ in rows} | {_OTHER + p: "1" for p in _OTHER_PATHS}
+        assert _library_state(rev_library, versions)["pages not in exactly one file"] == []
+        await _crawl_pages(monkeypatch, site, _addresses(site, rows), "2")
+        await sync(quiet=True)
+        assert _library_state(rev_library, versions) == _clean(len(versions))
+
+    @pytest.mark.timeout(300)
+    async def test_a_page_takes_its_name_once_an_earlier_folder_there_empties(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        rows = [("x", _X_EARLIER, True), (f"{_CRAFTED}/y", _Y_EARLIER, True)]
+        pages = _plant_site(_HOSTILE, rows)
+        await sync(quiet=True)
+        before = _texts()
+        await _crawl_pages(monkeypatch, _OTHER, _OTHER_PATHS, "1")
+        assert {rel: before[rel] for rel in (_X_EARLIER, _Y_EARLIER)} == {
+            rel: _texts()[rel] for rel in (_X_EARLIER, _Y_EARLIER)
+        }
+        for _ in range(2):
+            await _crawl_pages(monkeypatch, _HOSTILE, _addresses(_HOSTILE, rows), "2")
+        await sync(quiet=True)
+        versions = dict.fromkeys(pages, "2") | {_OTHER + p: "1" for p in _OTHER_PATHS}
+        assert _library_state(rev_library, versions) == _clean(len(versions))
+
+    @pytest.mark.timeout(300)
+    async def test_a_page_whose_name_holds_a_folder_no_entry_names_stays_at_its_copy(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        rows = [("x", _X_EARLIER, True), (f"{_CRAFTED}/y", _Y_EARLIER, False)]
+        pages = _plant_site(_HOSTILE, rows)
+        await sync(quiet=True)
+        name = url_to_filename(_HOSTILE + "x")
+        with caplog.at_level(_logging.WARNING, logger="lilbee.crawler.save"):
+            for _ in range(2):
+                await _crawl_pages(monkeypatch, _HOSTILE, ["x"], "2")
+        await sync(quiet=True)
+        skipped = [r for r in caplog.records if name in r.getMessage()]
+        assert len(skipped) == 2
+        assert _pages_on_disk(pages) == dict.fromkeys(pages, 1)
+        assert _texts()[_X_EARLIER] == _body(_HOSTILE, "x", "1")
+        assert _misattributed(pages) == []
+
+    @pytest.mark.timeout(300)
+    async def test_a_page_takes_its_name_once_another_page_retires_its_copy_there(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        rows = [("x", _X_EARLIER, True), (_CRAFTED, f"hostile.test/s/{_CRAFTED}", True)]
+        pages = _plant_site(_HOSTILE, rows)
+        await sync(quiet=True)
+        await _crawl_pages(monkeypatch, _HOSTILE, _addresses(_HOSTILE, rows), "1")
+        assert _pages_on_disk(pages) == dict.fromkeys(pages, 1)
+        await _crawl_pages(monkeypatch, _HOSTILE, _addresses(_HOSTILE, rows), "1")
+        await sync(quiet=True)
+        assert _library_state(rev_library, dict.fromkeys(pages, "1")) == _clean(len(pages))
+
+    @pytest.mark.timeout(300)
+    async def test_a_page_whose_older_copy_went_aside_takes_its_newer_text(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        paths = _addresses(_NEWER, _NEWER_ROWS)
+        await _crawl_pages(monkeypatch, _NEWER, paths, "1")
+        await sync(quiet=True)
+        _plant([(_NEWER + p, rel, _body(_NEWER, p, "2"), kept) for p, rel, kept in _NEWER_ROWS])
+        await sync(quiet=True)
+        (cfg.documents_dir / "_web" / "newer.test/p/index.md").replace(tmp_path / "aside.md")
+        await _crawl_pages(monkeypatch, _NEWER, paths, "2")
+        await sync(quiet=True)
+        versions = {_NEWER + p: "2" for p in paths}
+        # The sync keeps the source of a file the user moved away, and its emptied folder.
+        assert _library_state(rev_library, versions) == _clean(len(versions)) | {
+            "sources without a file": ["_web/newer.test/p/index.md"],
+            "empty folders": ["newer.test/p"],
+        }
+
+    @pytest.mark.timeout(300)
+    async def test_a_save_cut_after_its_record_line_writes_the_page_on_the_next_crawl(
+        self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        pages = _plant_site(_NEWER, _NEWER_ROWS)
+        await sync(quiet=True)
+        cut = cfg.documents_dir / "_web" / url_to_filename(_NEWER + "p")
+        write_text = Path.write_text
+
+        def write_or_cut(path: Path, data: str, encoding: str) -> int:
+            if path == cut:
+                raise OSError(28, "No space left on device")
+            return write_text(path, data, encoding=encoding)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(Path, "write_text", write_or_cut)
+            await _crawl_pages(monkeypatch, _NEWER, _addresses(_NEWER, _NEWER_ROWS), "2")
+        assert not cut.exists()
+        assert _pages_on_disk(pages) == dict.fromkeys(pages, 1)
+        await _crawl_pages(monkeypatch, _NEWER, _addresses(_NEWER, _NEWER_ROWS), "2")
+        await sync(quiet=True)
+        assert _library_state(rev_library, dict.fromkeys(pages, "2")) == _clean(len(pages))

@@ -2,7 +2,7 @@
 
 Covers the contract that the runner exposes to lilbee callers without
 pulling in a fetch backend: progress events, cancel tokens, per-page flush,
-metadata batching, and auto-sync.
+and auto-sync.
 """
 
 from __future__ import annotations

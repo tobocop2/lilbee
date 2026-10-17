@@ -9,6 +9,7 @@ Skipped automatically when the crawler extra is not installed.
 
 import ipaddress
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,12 +17,17 @@ crawlberg = pytest.importorskip("crawlberg")
 
 from lilbee.core.config import cfg  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
+    content_hash,
     crawl_and_save,
-    load_crawl_metadata,
     validate_crawl_url,
 )
 from lilbee.crawler import url_filter as crawler_url_filter  # noqa: E402
-from lilbee.crawler.save import _save_single_result  # noqa: E402
+from lilbee.crawler.save import (  # noqa: E402
+    CrawlRecord,
+    canonical_address,
+    load_crawl_record,
+    save_page,
+)
 from lilbee.runtime.progress import EventType  # noqa: E402
 
 HOME_HTML = """\
@@ -139,15 +145,14 @@ class TestSinglePageCrawl:
         content = paths[0].read_text(encoding="utf-8")
         assert "https://based.example/docs/guide" in content
 
-    async def test_crawl_saves_metadata(self, test_site, allow_localhost):
-        """Crawl metadata records the URL and content hash."""
+    async def test_crawl_records_the_page(self, test_site, allow_localhost):
+        """The page record names the saved file and the hash of its text."""
         url = str(test_site.url_for("/"))
         paths = await crawl_and_save(url, depth=0)
         assert len(paths) == 1
-        meta = load_crawl_metadata()
-        assert url in meta
-        assert meta[url].content_hash != ""
-        assert meta[url].file != ""
+        entry = load_crawl_record().pages[canonical_address(url)]
+        assert cfg.documents_dir / "_web" / entry.file == paths[0]
+        assert entry.content_hash == content_hash(paths[0].read_text(encoding="utf-8"))
 
     async def test_crawl_progress_events_fire(self, test_site, allow_localhost):
         """Progress callback receives events in correct order."""
@@ -211,9 +216,8 @@ class TestContentChangeDetection:
         new_content = paths2[0].read_text(encoding="utf-8")
         assert len(new_content) > 0
 
-        # Metadata updated
-        meta = load_crawl_metadata()
-        assert url in meta
+        entry = load_crawl_record().pages[canonical_address(url)]
+        assert entry.content_hash == content_hash(new_content)
 
 
 class TestSecurity:
@@ -247,18 +251,15 @@ class TestSecurity:
 
     def test_path_traversal_contained(self, isolated_env):
         """Path traversal in URL stays contained within _web/."""
-        from lilbee.crawler import CrawlMeta, CrawlResult
+        from lilbee.crawler import CrawlResult
 
         result = CrawlResult(url="https://evil.com/../../etc/passwd", markdown="# Malicious")
-        meta: dict[str, CrawlMeta] = {}
-        outcome = _save_single_result(result, meta)
+        path = save_page(result, CrawlRecord(), MagicMock())
         web_dir = cfg.documents_dir / "_web"
-        # The address parser resolves ".." segments, so the result MUST be a
-        # concrete path under _web/. A None return would indicate the helper
-        # started rejecting the request at the hash/exists short-circuit, which
-        # is the class of refactor we want to catch.
-        assert outcome is not None
-        assert outcome.path.resolve().is_relative_to(web_dir.resolve())
+        # The address parser resolves ".." segments, so the page MUST be saved
+        # at a concrete path under _web/, not rejected.
+        assert path is not None
+        assert path.resolve().is_relative_to(web_dir.resolve())
 
     async def test_max_pages_enforced(self, httpserver, allow_localhost):
         """Max pages config caps the crawl."""

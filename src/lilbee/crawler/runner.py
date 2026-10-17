@@ -11,15 +11,13 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.crawler import bootstrap, migrate, save, sitemap
+from lilbee.crawler import bootstrap, save, sitemap
 from lilbee.crawler.bootstrap import (
     CHROMIUM_MISSING_MESSAGE,
     ChromiumMissingError,
@@ -36,7 +34,7 @@ from lilbee.crawler.events import (
     _pages_cap,
 )
 from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED, CancelToken, CrawlResult
-from lilbee.crawler.save import METADATA_FLUSH_INTERVAL, CrawlMeta
+from lilbee.crawler.save import CrawlRecord
 from lilbee.crawler.url_filter import validate_crawl_url
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
@@ -273,30 +271,15 @@ async def _maybe_periodic_sync(tasks: set[asyncio.Task[None]], cancel: CancelTok
     task.add_done_callback(tasks.discard)
 
 
-@dataclass
-class _FlushCounter:
-    """Tracks metadata writes pending since the last sidecar flush."""
-
-    pending: int = 0
-
-
 def _make_flush_page(
-    meta: dict[str, CrawlMeta],
-    written_paths: list[Path],
-    counter: _FlushCounter,
+    record: CrawlRecord, written_paths: list[Path]
 ) -> Callable[[CrawlResult], Any]:
-    """A flush closure that saves a page and records it in *meta* under its canonical address."""
+    """A flush closure that saves a page at its name and records it in *record*."""
+    remove_sources = get_services().store.remove_documents
 
     def _sync_flush(result: CrawlResult) -> list[Path]:
-        outcome = save._save_single_result(result, meta)
-        if outcome is None:
-            return []
-        save._update_single_metadata(meta, outcome, datetime.now(UTC).isoformat())
-        counter.pending += 1
-        if counter.pending >= METADATA_FLUSH_INTERVAL:
-            save.save_crawl_metadata(meta)
-            counter.pending = 0
-        return [outcome.path]
+        path = save.save_page(result, record, remove_sources)
+        return [] if path is None else [path]
 
     async def flush_page(result: CrawlResult) -> list[Path]:
         paths = await asyncio.to_thread(_sync_flush, result)
@@ -383,7 +366,7 @@ async def crawl_and_save(
     include_subdomains: bool = False,
     render_mode: CrawlRenderMode | None = None,
 ) -> list[Path]:
-    """Crawl URL(s), save as markdown, update metadata. Returns paths written.
+    """Crawl URL(s), save as markdown, record each saved page. Returns paths written.
 
     ``depth``: ``None`` = whole-site unbounded recursion (default). ``0`` =
     single URL, no recursion. ``N > 0`` = max link-follow depth. ``max_pages``:
@@ -413,10 +396,9 @@ async def crawl_and_save(
             start_depth = depth if depth is not None else 0
             on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=start_depth))
 
-        meta = await asyncio.to_thread(migrate.move_saved_pages, get_services().store)
+        record = await asyncio.to_thread(save.load_crawl_record)
         written_paths: list[Path] = []
-        counter = _FlushCounter()
-        flush_page = _make_flush_page(meta, written_paths, counter)
+        flush_page = _make_flush_page(record, written_paths)
 
         pages_seen = await _run_crawl(
             url,
@@ -428,12 +410,6 @@ async def crawl_and_save(
             flush_page=flush_page,
             render_mode=mode,
         )
-
-        if counter.pending > 0:
-            try:
-                save.save_crawl_metadata(meta)
-            except OSError:
-                log.exception("Final metadata flush failed")
 
         cancelled = cancel is not None and cancel.is_set()
         if not cancelled:
