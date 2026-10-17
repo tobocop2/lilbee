@@ -5679,20 +5679,29 @@ class TestATableAnotherProcessIsCreating:
     def half_made(self, test_config):
         store = Store(test_config)
         store.get_db()
-        (test_config.lancedb_dir / "_sources.lance").mkdir()
-        assert "_sources" in table_names(store.get_db()), "the folder must be listed"
-        with pytest.raises(ValueError, match="was not found"):
-            store.get_db().open_table("_sources")
-        return store
+
+        def make(name):
+            (test_config.lancedb_dir / f"{name}.lance").mkdir()
+            assert name in table_names(store.get_db()), "the folder must be listed"
+            with pytest.raises(ValueError, match="was not found"):
+                store.get_db().open_table(name)
+            return store
+
+        return make
 
     def test_a_second_process_opens_the_library(self, half_made, test_config):
-        reopened = Store(test_config)
+        half_made("_sources")
 
-        assert reopened.get_db() is not None
+        assert Store(test_config).get_db() is not None
 
     def test_the_table_reads_as_absent(self, half_made):
-        assert half_made.open_table("_sources") is None
-        assert half_made.source_ids(["a.md"]) == {}
+        store = half_made("_sources")
+
+        assert store.open_table("_sources") is None
+        assert store.source_ids(["a.md"]) == {}
+
+    def test_the_store_identity_reads_as_unset(self, half_made):
+        assert half_made(META_TABLE).get_meta() is None
 
 
 class TestATableThatCannotBeRead:
