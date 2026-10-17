@@ -307,6 +307,20 @@ _CITED_ONLY_SQL = {
     _HELD_REASON: _NULL_TEXT_SQL,
 }
 
+# Rows a location fill reads and writes back in one batch: bounds its memory at any row count.
+_FILL_BATCH_ROWS = 8192
+# The address LanceDB gives a row in one version of its table.
+_ROW_ID = "_rowid"
+# The scratch table a fill pairs each row already at a new place with the row moving onto it in.
+_FILL_PAIRS_TABLE = "_fill_pairs"
+_LANDING_ID = "landing_id"
+_MOVED_ID = "moved_id"
+_FILL_PAIRS_SCHEMA = pa.schema(
+    [pa.field(_PATH, pa.utf8()), pa.field(_LANDING_ID, pa.utf8()), pa.field(_MOVED_ID, pa.utf8())]
+)
+# Ids one citation update re-points: its lookup list is built again for every row it reads.
+_CITATION_LOOKUP_IDS = 128
+
 # Beside the tables: the checkpoint up to which the wiki's page index covers the source rows.
 _WIKI_REFRESHED_NAME = ".wiki_refreshed"
 _WIKI_REFRESHED_UNREADABLE = "Cannot read %s (%s): the wiki index reads every source again"
@@ -771,61 +785,135 @@ def _holds_label_keys(db: LanceDBConnection, locations: SourceLocations) -> bool
     return bool(sources.count_rows(_label_keyed(locations)))
 
 
+def _pinned(db: LanceDBConnection, table: LanceTable) -> LanceTable:
+    """*table* held at its version now, read while later commits go to *table*."""
+    pinned = db.open_table(table.name)
+    pinned.checkout(table.version)
+    return pinned
+
+
 def _rekey_prefix(
     db: LanceDBConnection, sources: LanceTable, where: str, old: str, new: str
 ) -> None:
     """Put each source row *where* selects at the place below *new* it has below *old*. Lock held.
 
     A row whose new place a row it does not move holds folds into that row. A
-    selection of no row writes nothing.
+    selection of no row writes nothing. Rows stream in batches of
+    ``_FILL_BATCH_ROWS``, so memory does not follow the row count.
     """
-    moving = sources.search().where(where).select([_PATH, _SOURCE_ID]).limit(None).to_list()
-    if not moving:
+    if not sources.count_rows(where):
         return
-    _fold_landings(db, sources, moving, old, new)
-    sources.update(where=where, values_sql={_PATH: _swap_head_sql(_PATH, old, new)})
+    _fold_landings(db, sources, where, old, new)
+    _rewrite_prefix(db, sources, where, old, new)
+
+
+def _rewrite_prefix(
+    db: LanceDBConnection, sources: LanceTable, where: str, old: str, new: str
+) -> None:
+    """Give each row *where* selects *new* in place of its head *old*: one update a batch.
+
+    Each update names its rows by their address in the version read, which a row
+    keeps until it is rewritten, so no update reads past its own rows.
+    """
+    query = _pinned(db, sources).search().where(where).select([_SOURCE_ID]).with_row_id(True)
+    values = {_PATH: _swap_head_sql(_PATH, old, new)}
+    for batch in query.limit(None).to_batches(_FILL_BATCH_ROWS):
+        rows = ", ".join(map(str, batch.column(_ROW_ID).to_pylist()))
+        sources.update(where=f"{_ROW_ID} IN ({rows})", values_sql=values)
 
 
 def _fold_landings(
-    db: LanceDBConnection, sources: LanceTable, moving: list[dict[str, Any]], old: str, new: str
+    db: LanceDBConnection, sources: LanceTable, where: str, old: str, new: str
 ) -> None:
-    """Fold each of *moving* whose place below *new* a non-wiki row not moving holds into it.
+    """Fold each row *where* selects into the non-wiki row not moving at its place below *new*.
 
     The citations of the folded row cite the row it lands on; its own rows go.
     """
-    landing = {new + row[_PATH][len(old) :]: row[_SOURCE_ID] for row in moving}
-    ids = {row[_SOURCE_ID] for row in moving}
-    where = f"{_PATH} IN ({_in_list(landing)}) AND NOT ({_WIKI})"
-    query = sources.search().where(where).select([_PATH, _SOURCE_ID])
-    held = {
-        row[_SOURCE_ID]: landing[row[_PATH]]
-        for row in query.limit(None).to_list()
-        if row[_SOURCE_ID] not in ids
-    }
-    if not held:
+    landed = f"NOT ({_WIKI}) AND {_under_sql(_PATH, new)} AND NOT ({where})"
+    if not sources.count_rows(landed):
         return
+    pairs = _fill_pairs(db, sources, where, landed, (old, new))
+    found = pairs.search().where(f"{_MOVED_ID} IS NOT NULL").select([_MOVED_ID, _LANDING_ID])
+    for batch in found.limit(None).to_batches(_FILL_BATCH_ROWS):
+        moved, landing = batch.column(_MOVED_ID), batch.column(_LANDING_ID)
+        _fold_batch(db, sources, moved.to_pylist(), landing.to_pylist())
+    db.drop_table(_FILL_PAIRS_TABLE)
+
+
+def _fill_pairs(
+    db: LanceDBConnection, sources: LanceTable, where: str, landed: str, heads: tuple[str, str]
+) -> LanceTable:
+    """A scratch table of each *landed* row under its *old* path, with the row moving onto it."""
+    from lancedb.index import BTree
+
+    old, new = heads
+    pairs = db.create_table(_FILL_PAIRS_TABLE, schema=_FILL_PAIRS_SCHEMA, mode="overwrite")
+    labelled = {_PATH: _swap_head_sql(_PATH, new, old), _LANDING_ID: _SOURCE_ID}
+    for batch in (
+        sources.search().where(landed).select(labelled).limit(None).to_batches(_FILL_BATCH_ROWS)
+    ):
+        empty = pa.nulls(batch.num_rows, pa.utf8())
+        pairs.add(
+            pa.table(
+                [batch.column(_PATH), batch.column(_LANDING_ID), empty], schema=_FILL_PAIRS_SCHEMA
+            )
+        )
+    pairs.create_index(_PATH, config=BTree())
+    moving = (
+        _pinned(db, sources).search().where(where).select({_PATH: _PATH, _MOVED_ID: _SOURCE_ID})
+    )
+    for batch in moving.limit(None).to_batches(_FILL_BATCH_ROWS):
+        pairs.merge_insert(_PATH).when_matched_update_all().execute(pa.Table.from_batches([batch]))
+    return pairs
+
+
+def _fold_batch(
+    db: LanceDBConnection, sources: LanceTable, moved: list[str], landing: list[str]
+) -> None:
+    """Fold each of the ids *moved* into the id *landing* holds beside it. Lock held."""
+    folded = f"{_SOURCE_ID} IN ({_in_list(moved)})"
     citations = open_committed(db, CITATIONS_TABLE)
-    for target, folded in held.items():
-        if citations is not None:
-            citations.update(where=f"{_SOURCE_ID} = '{folded}'", values={_SOURCE_ID: target})
-    folded_ids = f"{_SOURCE_ID} IN ({_in_list(held.values())})"
+    if citations is not None:
+        _repoint_citations(citations, moved, landing)
     for name in _PER_SOURCE_TABLES:
         table = open_committed(db, name)
         if table is not None:
-            table.delete(folded_ids)
-    _safe_delete_unlocked(sources, folded_ids)
+            table.delete(folded)
+    _safe_delete_unlocked(sources, folded)
+
+
+def _repoint_citations(citations: LanceTable, moved: list[str], landing: list[str]) -> None:
+    """Make each citation of an id of *moved* cite the id of *landing* beside it. Lock held."""
+    for start in range(0, len(moved), _CITATION_LOOKUP_IDS):
+        keys = moved[start : start + _CITATION_LOOKUP_IDS]
+        values = landing[start : start + _CITATION_LOOKUP_IDS]
+        where = f"{_SOURCE_ID} IN ({_in_list(keys)})"
+        citations.update(where=where, values_sql={_SOURCE_ID: _looked_up_sql(keys, values)})
+
+
+def _looked_up_sql(keys: list[str], values: list[str]) -> str:
+    """The SQL value of the item of *values* at the place of ``source_id`` in *keys*."""
+    at = f"CAST(array_position(make_array({_in_list(keys)}), {_SOURCE_ID}) AS BIGINT)"
+    return f"array_element(make_array({_in_list(values)}), {at})"
+
+
+def _drop_fill_pairs(db: LanceDBConnection) -> None:
+    """Drop the scratch table of a fill that was killed before its end."""
+    if _FILL_PAIRS_TABLE in table_names(db):
+        db.drop_table(_FILL_PAIRS_TABLE)
 
 
 def _fill_locations(db: LanceDBConnection, locations: SourceLocations) -> None:
     """Give each source row a registered label names its location in place of that key. Lock held.
 
     A deeper root goes first, so a row an outer root keeps for a file of a root
-    inside it folds into the inner root's row. Each label is one commit, and a
+    inside it folds into the inner root's row. Each batch is one commit, and a
     filled row matches no label, so a killed run is finished by the next.
     """
     sources = open_committed(db, SOURCES_TABLE)
     if sources is None or not _holds_label_keys(db, locations):
         return
+    _drop_fill_pairs(db)
     for root, label in locations.deepest_first:
         _rekey_prefix(db, sources, f"{_DOCUMENT} AND ({_under_sql(_PATH, label)})", label, root)
     log.info("Stored where each source of the library at %s is", db.uri)

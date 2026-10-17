@@ -11,8 +11,9 @@ import pytest
 from lilbee.core import settings
 from lilbee.core.config import CITATIONS_TABLE, SOURCES_TABLE, cfg
 from lilbee.data.store import ChunkType, SourceType, Store
+from lilbee.data.store.lance_helpers import table_names
 from lilbee.data.store.locations import SourceLocations, root_location
-from tests.test_store import _citation, _holders, _seed_source
+from tests.test_store import _citation, _dump, _holders, _seed_source
 
 
 @pytest.fixture()
@@ -437,3 +438,130 @@ class TestTheMoveCarriesTheCitations:
 
         keys = sorted(row["citation_key"] for row in reopened.get_citations_for_source("deep/a.md"))
         assert keys == ["k", "k2"]
+
+
+def _folding_library(config, tmp_path) -> dict[str, str]:
+    """A label-keyed library where two rows of an outer label land on rows of an inner root.
+
+    Returns the registry its first open fills by.
+    """
+    old = Store(config)
+    for name in ("work/deep/a.md", "deep/a.md", "work/deep/b.md", "deep/b.md", "work/c.md"):
+        _seed_source(old, name)
+    old.add_citations([_citation("work/deep/a.md", key="k2"), _citation("work/c.md", key="k3")])
+    old.close()
+    return {"work": str(tmp_path / "w"), "deep": str(tmp_path / "w" / "deep")}
+
+
+def _copied(config, tmp_path, name: str, roots: dict[str, str]):
+    """*config* over a copy of its library at *tmp_path*/*name*, filled by *roots*."""
+    import shutil
+
+    shutil.copytree(config.lancedb_dir, tmp_path / name / "lancedb")
+    return config.model_copy(
+        update={
+            "data_root": tmp_path / name,
+            "lancedb_dir": tmp_path / name / "lancedb",
+            "linked_roots": roots,
+        }
+    )
+
+
+def _dies_on(nth: int, where_starts: str):
+    """A ``LanceTable.update`` that raises on its *nth* call whose filter starts *where_starts*."""
+    from lancedb.table import LanceTable
+
+    real = LanceTable.update
+    calls: list[str] = []
+
+    def _update(self, *args, **kwargs):
+        if str(kwargs.get("where", "")).startswith(where_starts):
+            calls.append(kwargs["where"])
+            if len(calls) == nth:
+                raise KeyboardInterrupt
+        return real(self, *args, **kwargs)
+
+    return mock.patch.object(LanceTable, "update", _update)
+
+
+@pytest.fixture()
+def small_batches():
+    """A fill that reads, writes and folds one row at a time."""
+    from lilbee.data.store import core
+
+    with (
+        mock.patch.object(core, "_FILL_BATCH_ROWS", 1),
+        mock.patch.object(core, "_CITATION_LOOKUP_IDS", 1),
+    ):
+        yield
+
+
+@pytest.mark.usefixtures("small_batches")
+class TestTheFillInBatches:
+    def test_each_write_of_the_fill_names_one_batch_of_rows(self, config, tmp_path):
+        root = _label_keyed_library(config, tmp_path).as_posix()
+        from lancedb.table import LanceTable
+
+        real = LanceTable.update
+        wheres: list[str] = []
+
+        def _update(self, *args, **kwargs):
+            wheres.append(str(kwargs.get("where")))
+            return real(self, *args, **kwargs)
+
+        with mock.patch.object(LanceTable, "update", _update):
+            store = Store(config)
+            assert _paths(store) == sorted([f"{root}/a.md", f"{root}/b/c.md", root, "loose.md"])
+
+        rewrites = [where for where in wheres if where.startswith("_rowid IN (")]
+        assert len(rewrites) == 3
+        assert all("," not in where for where in rewrites)
+
+    def test_rows_that_land_on_rows_of_an_inner_root_fold_into_them(self, config, tmp_path):
+        roots = _folding_library(config, tmp_path)
+        before = Store(config)
+        inner = before.source_ids(["deep/a.md", "deep/b.md"], SourceType.DOCUMENT)
+        outer = before.source_ids(["work/c.md"], SourceType.DOCUMENT)["work/c.md"]
+        config.linked_roots = roots
+
+        store = Store(config)
+
+        assert _names(store) == ["deep/a.md", "deep/b.md", "work/c.md"]
+        assert store.source_ids(["deep/a.md", "deep/b.md"], SourceType.DOCUMENT) == inner
+        cited = store.open_table(CITATIONS_TABLE).search().limit(None).to_list()
+        by_key = sorted((row["citation_key"], row["source_id"]) for row in cited)
+        assert by_key == sorted(
+            [
+                *[("k", inner["deep/a.md"])] * 2,
+                ("k", inner["deep/b.md"]),
+                ("k", inner["deep/b.md"]),
+                ("k", outer),
+                ("k2", inner["deep/a.md"]),
+                ("k3", outer),
+            ]
+        )
+        assert len(store.get_chunks_by_source("deep/a.md")) == 1
+        assert "_fill_pairs" not in table_names(store.get_db())
+
+    @pytest.mark.parametrize(
+        ("nth", "where_starts"),
+        [(1, "source_id IN ("), (2, "source_id IN ("), (1, "_rowid IN ("), (2, "_rowid IN (")],
+        ids=["first-citation", "second-citation", "first-rewrite", "second-rewrite"],
+    )
+    def test_a_fill_killed_partway_is_finished_by_the_next_open(
+        self, config, tmp_path, nth, where_starts
+    ):
+        roots = _folding_library(config, tmp_path)
+        whole = Store(_copied(config, tmp_path, "whole", roots))
+        killed = _copied(config, tmp_path, "killed", roots)
+        with _dies_on(nth, where_starts), pytest.raises(KeyboardInterrupt):
+            Store(killed).get_db()
+        half = Store(killed.model_copy(update={"linked_roots": {}}))
+        assert any(path.startswith("work/") for path in _paths(half))
+        folding = where_starts.startswith("source_id")
+        assert ("_fill_pairs" in table_names(half.get_db())) == folding
+
+        reopened = Store(killed)
+
+        assert _dump(reopened) == _dump(whole)
+        assert "_fill_pairs" not in table_names(reopened.get_db())
