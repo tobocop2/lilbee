@@ -34,6 +34,7 @@ import string
 import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -53,6 +54,7 @@ from lilbee.crawler import (
     save_crawl_metadata,
     url_to_filename,
 )
+from lilbee.crawler.migrate import move_saved_pages
 from lilbee.data.ingest import sync
 from lilbee.data.store import Store
 from lilbee.retrieval.query.formatting import source_label
@@ -611,6 +613,75 @@ async def test_a_folder_never_takes_the_name_of_an_earlier_saved_file(
         await sync(quiet=True)
     versions = {path: "1" for path, _ in _CLASH_LIBRARY}
     assert _library_state(library, versions) == _clean(len(_CLASH_LIBRARY))
+
+
+# Pages main gives a file of its own, with the address main keys them by. %7Euser keys
+# another spelling of its canonical address.
+_MAIN_PAGES = [
+    ("plain", "site.test/s/plain/index.md"),
+    ("caf%C3%A9", "site.test/s/caf%C3%A9/index.md"),
+    ("dir.d/page", "site.test/s/dir.d/page/index.md"),
+    ("Special:Random", "site.test/s/Special_Random/index.md"),
+    ("%7Euser", "site.test/s/%7Euser/index.md"),
+]
+_OTHER_SITE = "https://other.test/"
+_OTHER_PAGES = ["guide", "intro"]
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("next_site", ["same-site", "other-site"])
+async def test_a_page_main_saved_after_the_move_keeps_its_newer_text(
+    library: Store, monkeypatch: pytest.MonkeyPatch, next_site: str
+):
+    main_paths = [path for path, _ in _MAIN_PAGES]
+    await _crawl(monkeypatch, _SITE, main_paths, "1")
+    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "1")
+    await sync(quiet=True)
+    _write_earlier_library(_SITE, _MAIN_PAGES, "2", datetime.now(UTC).isoformat())
+    await sync(quiet=True)
+    if next_site == "same-site":
+        await _crawl(monkeypatch, _SITE, main_paths, "2")
+    else:
+        await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "1")
+    await sync(quiet=True)
+    versions = {path: "2" for path in main_paths} | {path: "1" for path in _OTHER_PAGES}
+    assert _library_state(library, versions) == _clean(len(versions))
+
+
+@pytest.mark.timeout(300)
+async def test_a_move_cut_short_before_its_record_keeps_every_entry(
+    library: Store, monkeypatch: pytest.MonkeyPatch
+):
+    _write_earlier_library(_SITE, _MAIN_PAGES)
+    await sync(quiet=True)
+
+    def cut(meta: dict[str, CrawlMeta]) -> None:
+        raise OSError(28, "No space left on device")
+
+    with monkeypatch.context() as patched:
+        patched.setattr("lilbee.crawler.save.save_crawl_metadata", cut)
+        with pytest.raises(OSError, match="No space left"):
+            move_saved_pages(library)
+    await _crawl(monkeypatch, _OTHER_SITE, _OTHER_PAGES, "1")
+    await sync(quiet=True)
+    versions = {path: "1" for path, _ in _MAIN_PAGES} | {path: "1" for path in _OTHER_PAGES}
+    assert _library_state(library, versions) == _clean(len(versions))
+
+
+@pytest.mark.timeout(300)
+async def test_a_page_written_after_its_last_sync_is_indexed_again_after_the_move(
+    library: Store,
+):
+    _write_earlier_library(_SITE, _MAIN_PAGES)
+    await sync(quiet=True)
+    path, earlier = _MAIN_PAGES[0]
+    (cfg.documents_dir / "_web" / earlier).write_text(_text(path, "2"), encoding="utf-8")
+    move_saved_pages(library)
+    await sync(quiet=True)
+    chunks = library.get_chunks_by_source(f"_web/{url_to_filename(_SITE + path)}")
+    indexed = " ".join(chunk.chunk for chunk in chunks)
+    assert f"Body of {path} in version 2." in indexed
+    assert f"Body of {path} in version 1." not in indexed
 
 
 class _CountingMeta(dict):
