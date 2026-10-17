@@ -167,8 +167,8 @@ class Lilbee:
     def remove(self, name: str) -> None:
         """Remove a document from the index by source name (source bytes are kept).
 
-        Raises ``SkipRecordsLockError`` with nothing removed when another lilbee
-        process holds the library.
+        Raises ``LockTimeoutError`` with nothing removed when another lilbee
+        process holds the index write lock past its timeout.
         """
         with config_scope(self._config), services_scope(self._services):
             remove_documents_durably([name])

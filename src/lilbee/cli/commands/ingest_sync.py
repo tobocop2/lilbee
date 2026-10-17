@@ -46,10 +46,8 @@ from lilbee.cli.helpers import (
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.crawler import is_url
-from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
-_REMOVE_CANCELLED_MESSAGE = "Remove cancelled. Nothing was removed."
 # The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
 _EXIT_INTERRUPTED = 130
 
@@ -472,13 +470,10 @@ def rebuild(
             {
                 "command": "rebuild",
                 "ingested": len(result.added),
-                "skip_records_error": result.skip_records_error,
             }
         )
         return
     console.print(f"Rebuilt: {len(result.added)} documents ingested")
-    if result.skip_records_error is not None:
-        print_prefixed(console, "Error: ", result.skip_records_error, style=theme.ERROR)
 
 
 def index(
@@ -732,14 +727,10 @@ _remove_yes_option = typer.Option(
 )
 
 
-def _remove_under_ctrl_c(names: list[str], targets: list[str]) -> RemoveResult:
-    """Remove *targets*; Ctrl+C during the wait for the records lock exits 130, nothing removed."""
-    cancel_event = threading.Event()
+def _remove_or_exit(names: list[str], targets: list[str]) -> RemoveResult:
+    """Remove *targets*; a library that refuses the removal exits 1, nothing removed."""
     try:
-        with _ctrl_c_sets(cancel_event):
-            return remove_documents_durably(names, targets=targets, cancel=cancel_event)
-    except SkipRecordsWaitCancelledError:
-        _exit_cancelled(AddRollback(), _REMOVE_CANCELLED_MESSAGE)
+        return remove_documents_durably(names, targets=targets)
     except LIBRARY_REFUSALS as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -773,7 +764,7 @@ def remove(
         removable = sum(1 for t in targets if t in set(known))
         typer.confirm(f"Remove {removable} document(s)? Source files on disk are kept.", abort=True)
 
-    result = _remove_under_ctrl_c(names, targets)
+    result = _remove_or_exit(names, targets)
 
     if cfg.json_mode:
         payload: dict = {"command": "remove", "removed": result.removed}

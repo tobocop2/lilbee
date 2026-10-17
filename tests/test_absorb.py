@@ -9,7 +9,6 @@ import logging
 import shutil
 import sqlite3
 import zlib
-from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -34,20 +33,10 @@ from lilbee.app.reset import perform_reset
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
-from lilbee.data.ingest.skip_marker import (
-    REMOVED_SKIP_REASON,
-    SKIP_KIND_FILENAME,
-    SKIP_MARKER_FILENAME,
-    SKIP_REASON_FILENAME,
-    SkipKind,
-    clear_failed_markers,
-    load_skip_kinds,
-    load_skip_markers,
-    load_skip_reasons,
-)
-from lilbee.data.store import Store
+from lilbee.data.store import REMOVED_REASON, HeldOut, Store
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
+    LibraryWaitCancelledError,
     LockingUnsupportedError,
     ResetRefusedError,
     SyncRunningError,
@@ -56,6 +45,7 @@ from lilbee.runtime.lock import (
     source_keys_in_use,
     sync_running,
 )
+from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
 from tests.conftest import (
     cancel_set_when_the_sync_lock_is_granted,
     filesystem_without_locking,
@@ -67,12 +57,6 @@ from tests.test_lock import (
     _reset_held_in_another_process,
     _sync_take_that_ends_busy,
     _sync_write_takes,
-)
-from tests.test_skip_marker import (
-    _records_lock_is_free,
-    _SetAsTheLockFrees,
-    _SetOnSecondPoll,
-    record_file_reads,
 )
 from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
 
@@ -218,20 +202,12 @@ def _save_stub_index(store: Store) -> None:
     save_stub_index(stubs, cfg)
 
 
-def _hold_out(key: str, kind: SkipKind) -> None:
-    """Record *key* as held out, by the writer a sync or a remove uses."""
-    from lilbee.data.ingest.skip_marker import SkipRecords, mark_removed, update_skip_records
-
-    if kind is SkipKind.REMOVED:
-        mark_removed(cfg.data_root, {key: f"hash of {key}"})
-        return
-
-    def _fail(records: SkipRecords) -> None:
-        records.markers[key] = f"hash of {key}"
-        records.reasons[key] = "no text"
-        records.kinds[key] = SkipKind.FAILED
-
-    update_skip_records(cfg.data_root, _fail)
+def _hold_out(key: str, kind: HeldOut) -> None:
+    """Record *key* as held out, by the store writer a sync or a remove uses."""
+    if kind is HeldOut.REMOVED:
+        hold_removed({key: f"hash of {key}"})
+    else:
+        hold_failed({key: f"hash of {key}"}, reason="no text")
 
 
 def _shown_index(store: Store) -> str:
@@ -269,9 +245,10 @@ def _everything(store: Store) -> dict[str, object]:
     }
     return {
         "tables": tables,
-        "markers": load_skip_markers(cfg.data_root),
-        "reasons": load_skip_reasons(cfg.data_root),
-        "kinds": load_skip_kinds(cfg.data_root),
+        "held": {
+            path: (record.kind, record.file_hash, record.reason)
+            for path, record in sorted(store.held_records().items())
+        },
         "wiki": {
             path.relative_to(wiki_root).as_posix(): _wiki_file(store, path)
             for path in sorted(wiki_root.rglob("*"))
@@ -288,8 +265,8 @@ def _seeded_child(store: Store, parent: Path, child: str = "work") -> Path:
     for name in ("plan.md", "budget.md"):
         _seed(store, f"{child}/{name}")
     _seed(store, "workshop/x.md")
-    _hold_out(f"{child}/gone.md", SkipKind.REMOVED)
-    _hold_out(f"{child}/broken.md", SkipKind.FAILED)
+    _hold_out(f"{child}/gone.md", HeldOut.REMOVED)
+    _hold_out(f"{child}/broken.md", HeldOut.FAILED)
     _write_wiki_page(store, [f"{child}/budget.md", f"{child}/plan.md"])
     _save_stub_index(store)
     return child_path
@@ -308,8 +285,8 @@ def _seeded_renamed_child(store: Store, parent: Path) -> Path:
     for name in ("plan.md", "budget.md"):
         _seed(store, f"renamed/{name}")
     _seed(store, "workshop/x.md")
-    _hold_out("renamed/gone.md", SkipKind.REMOVED)
-    _hold_out("renamed/broken.md", SkipKind.FAILED)
+    _hold_out("renamed/gone.md", HeldOut.REMOVED)
+    _hold_out("renamed/broken.md", HeldOut.FAILED)
     _write_wiki_page(store, ["renamed/budget.md", "renamed/plan.md"])
     _save_stub_index(store)
     return parent
@@ -325,9 +302,9 @@ def _seeded_nested_children(store: Store, parent: Path) -> Path:
     outer_copy = dict(store.get_citations_for_source("deep/a.md")[0])
     store.add_citations([{**outer_copy, "source_filename": "work/deep/a.md", "created_at": "t"}])
     _seed(store, "workshop/x.md")
-    _hold_out("deep/gone.md", SkipKind.REMOVED)
-    _hold_out("work/deep/kept.md", SkipKind.REMOVED)
-    _hold_out("work/broken.md", SkipKind.FAILED)
+    _hold_out("deep/gone.md", HeldOut.REMOVED)
+    _hold_out("work/deep/kept.md", HeldOut.REMOVED)
+    _hold_out("work/broken.md", HeldOut.FAILED)
     _write_wiki_page(store, ["deep/a.md", "work/deep/a.md", "work/plan.md"])
     _save_stub_index(store)
     return parent
@@ -445,24 +422,34 @@ class TestTheParentTakesTheChild:
 
     def test_a_removed_file_stays_removed_and_a_failed_file_keeps_its_record(self, library, notes):
         _seeded_child(library.store, notes)
-        _hold_out("workshop/kept.md", SkipKind.FAILED)
+        _hold_out("workshop/kept.md", HeldOut.FAILED)
 
         register_sources([notes])
 
-        assert load_skip_markers(cfg.data_root) == {
+        assert held_hashes() == {
             "notes/work/gone.md": "hash of work/gone.md",
             "notes/work/broken.md": "hash of work/broken.md",
             "workshop/kept.md": "hash of workshop/kept.md",
         }
-        assert load_skip_kinds(cfg.data_root) == {
-            "notes/work/gone.md": SkipKind.REMOVED,
-            "notes/work/broken.md": SkipKind.FAILED,
-            "workshop/kept.md": SkipKind.FAILED,
+        assert held_kinds() == {
+            "notes/work/gone.md": HeldOut.REMOVED,
+            "notes/work/broken.md": HeldOut.FAILED,
+            "workshop/kept.md": HeldOut.FAILED,
         }
-        reasons = load_skip_reasons(cfg.data_root)
-        assert reasons["notes/work/broken.md"] == "no text"
-        stored = json.loads((cfg.data_root / SKIP_KIND_FILENAME).read_text(encoding="utf-8"))
-        assert sorted(stored) == sorted(reasons) == sorted(load_skip_markers(cfg.data_root))
+        assert held_reasons() == {
+            "notes/work/gone.md": REMOVED_REASON,
+            "notes/work/broken.md": "no text",
+            "workshop/kept.md": "no text",
+        }
+
+    def test_a_retry_after_the_absorb_releases_the_failure_and_keeps_the_removal(
+        self, library, notes
+    ):
+        _seeded_child(library.store, notes)
+        register_sources([notes])
+
+        assert library.store.release_failed() == ["notes/work/broken.md"]
+        assert held_kinds() == {"notes/work/gone.md": HeldOut.REMOVED}
 
     async def test_a_file_removed_from_the_child_does_not_return(self, library, notes):
         await _add(notes / "work")
@@ -474,15 +461,15 @@ class TestTheParentTakesTheChild:
         assert _keys(library) == ["notes/loose.md", "notes/work/budget.md"]
         assert synced.added == ["notes/loose.md"]
 
-    async def test_naming_the_parent_outranks_a_marker_on_its_own_file(self, library, notes):
+    async def test_naming_the_parent_outranks_a_removal_on_its_own_file(self, library, notes):
         """The rule every add applies to the path it names, kept for the parent's own files."""
         await _add(notes / "work")
-        _hold_out("notes/loose.md", SkipKind.REMOVED)
-        _hold_out("work/gone.md", SkipKind.REMOVED)
+        _hold_out("notes/loose.md", HeldOut.REMOVED)
+        _hold_out("work/gone.md", HeldOut.REMOVED)
 
         register_sources([notes])
 
-        assert sorted(load_skip_markers(cfg.data_root)) == ["notes/work/gone.md"]
+        assert sorted(held_hashes()) == ["notes/work/gone.md"]
 
     async def test_several_children_are_absorbed_in_one_operation(self, library, notes):
         _write(notes / "home" / "list.md", "# List\n\nThe list for the market.\n")
@@ -634,9 +621,9 @@ class TestTheParentTakesTheChild:
         assert rows["notes/work/deep/a.md"] == "hash of deep/a.md"
         assert _holders(store, "notes/work/deep/a.md") == _KEY_COLUMNS
         assert len(store.get_chunks_by_source("notes/work/deep/a.md")) == 1
-        markers = load_skip_markers(cfg.data_root)
+        markers = held_hashes()
         assert sorted(markers) == ["notes/work/broken.md", "notes/work/deep/gone.md"]
-        assert load_skip_kinds(cfg.data_root)["notes/work/broken.md"] is SkipKind.FAILED
+        assert held_kinds()["notes/work/broken.md"] is HeldOut.FAILED
         page = cfg.data_root / cfg.wiki_dir / "entities" / "boeing.md"
         from lilbee.wiki.shared import parse_frontmatter
 
@@ -743,11 +730,11 @@ class TestAMovedFolderWithASourceInside:
     async def test_a_removal_of_the_outer_entry_does_not_hold_the_file_out(self, library, tmp_path):
         after = await _moved_folder_with_a_source_inside(tmp_path)
         remove_documents_durably(["work/deep/a.md"])
-        assert sorted(load_skip_markers(cfg.data_root)) == ["work/deep/a.md"]
+        assert sorted(held_hashes()) == ["work/deep/a.md"]
 
         await _add(after.parent)
 
-        assert load_skip_markers(cfg.data_root) == {}
+        assert held_hashes() == {}
         assert _keys(library) == ["after/work/deep/a.md", "after/work/plan.md"]
 
 
@@ -785,13 +772,13 @@ class TestWhatIsNotAbsorbed:
         _write(notes / ".hidden" / "other" / "x.md", "# X\n\nA page about the tide tables.\n")
         await _add(notes / ".hidden" / "other")
         await _add(notes / "work")
-        _hold_out("other/gone.md", SkipKind.REMOVED)
-        _hold_out("work/gone.md", SkipKind.REMOVED)
+        _hold_out("other/gone.md", HeldOut.REMOVED)
+        _hold_out("work/gone.md", HeldOut.REMOVED)
 
         result = register_sources([notes])
 
         assert result.absorbed == ["work"]
-        assert sorted(load_skip_markers(cfg.data_root)) == ["notes/work/gone.md", "other/gone.md"]
+        assert sorted(held_hashes()) == ["notes/work/gone.md", "other/gone.md"]
 
     async def test_a_child_below_an_ignored_folder_is_indexed_once_when_the_pattern_goes(
         self, library, tmp_path
@@ -930,37 +917,6 @@ class TestTheCommonAddPaysNothing:
             pass
         assert library.store.get_sources() == []
 
-    async def test_an_add_without_records_reads_no_record_file(self, library, notes, tmp_path):
-        with record_file_reads() as reads:
-            await _add(notes)
-
-        assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
-        assert reads == []
-
-    async def test_an_add_reads_each_record_file_once_per_step(self, library, notes, tmp_path):
-        """The control for the test above: with records on disk the same add reads them."""
-        await _add(notes)
-        remove_documents_durably(["notes/loose.md"])
-        other = _write(tmp_path / "src" / "other.md", "# Other\n\nA page about tide tables.\n")
-
-        with record_file_reads() as register_reads:
-            register_sources([other])
-        with record_file_reads() as sync_reads:
-            await sync(quiet=True)
-
-        assert Counter(register_reads) == {
-            SKIP_MARKER_FILENAME: 1,
-            SKIP_REASON_FILENAME: 1,
-            SKIP_KIND_FILENAME: 1,
-        }
-        # The plan reads the markers; the merge of the verdicts and the result read all three.
-        assert Counter(sync_reads) == {
-            SKIP_MARKER_FILENAME: 3,
-            SKIP_REASON_FILENAME: 2,
-            SKIP_KIND_FILENAME: 2,
-        }
-        assert load_skip_kinds(cfg.data_root) == {"notes/loose.md": SkipKind.REMOVED}
-
     async def test_an_absorb_does_take_the_lock(self, library, notes):
         """The control for the test above: the same probes fire when a child is there."""
         await _add(notes / "work")
@@ -1022,19 +978,19 @@ class TestASyncIsRunning:
             with source_keys_in_use(cfg.data_root):
                 states.append(sorted(_registry()))
 
-        real_prune = absorb_mod._prune_records
+        real_write = absorb_mod._write_registry
 
-        def _prune_while_a_sync_waits(config, moves):
+        def _write_while_a_sync_waits(config, plan):
             thread = threading.Thread(target=_second_sync)
             thread.start()
             assert waiting.wait(5)
             thread.join(0.3)
             assert thread.is_alive(), "the sync started in the middle of the absorb"
-            real_prune(config, moves)
+            real_write(config, plan)
             threads.append(thread)
 
         threads: list[threading.Thread] = []
-        with mock.patch.object(absorb_mod, "_prune_records", _prune_while_a_sync_waits):
+        with mock.patch.object(absorb_mod, "_write_registry", _write_while_a_sync_waits):
             register_sources([notes])
         threads[0].join(5)
 
@@ -1045,13 +1001,11 @@ class TestInterruptedAbsorb:
     """A kill at any step of an add, then the add again, gives what one whole add gives."""
 
     _KILL_POINTS = (
-        "copy-records",
         "shadows",
         "rekey",
         "source-update",
         "wiki-pages",
         "wiki-index",
-        "prune-records",
         "registry",
     )
 
@@ -1076,14 +1030,12 @@ class TestInterruptedAbsorb:
         import lilbee.wiki.stubs as wiki_stubs_mod
 
         target, attribute = {
-            "copy-records": (absorb_mod, "_copy_records"),
             "shadows": (absorb_mod, "_drop_shadows"),
             "rekey": (Store, "rekey_sources_under"),
             "source-update": (LanceTable, "update"),
             "table": (LanceTable, "update"),
             "wiki-pages": (wiki_rerender_mod, "rerender_pages"),
             "wiki-index": (wiki_stubs_mod, "drop_removed_sources"),
-            "prune-records": (absorb_mod, "_prune_records"),
             "registry": (absorb_mod, "_write_registry"),
             "clear": (Store, "remove_documents"),
             "citations": (Store, "drop_citations_repeated_under"),
@@ -1144,11 +1096,7 @@ class TestInterruptedAbsorb:
         *(("nested", "table", nth) for nth in (1, 2)),
         ("nested", "clear", 1),
         ("nested", "citations", 1),
-        *(
-            (shape, step, 1)
-            for shape in _SHAPES
-            for step in ("copy-records", "wiki-index", "prune-records", "registry")
-        ),
+        *((shape, step, 1) for shape in _SHAPES for step in ("shadows", "wiki-index", "registry")),
     )
 
     @pytest.mark.parametrize(("shape", "step", "nth"), _SHAPE_POINTS)
@@ -1216,16 +1164,16 @@ class TestInterruptedAbsorb:
         handler = signal.getsignal(signal.SIGINT)
         store = library.store
         _seeded_child(store, notes)
-        real = absorb_mod._copy_records
+        real = absorb_mod._drop_shadows
         reached: list[str] = []
 
-        def _ctrl_c_then_copy(config, moves):
+        def _ctrl_c_then_drop(store_, moves):
             signal.raise_signal(signal.SIGINT)
             reached.append("after the signal")
-            real(config, moves)
+            real(store_, moves)
 
         with (
-            mock.patch.object(absorb_mod, "_copy_records", _ctrl_c_then_copy),
+            mock.patch.object(absorb_mod, "_drop_shadows", _ctrl_c_then_drop),
             pytest.raises(KeyboardInterrupt),
         ):
             register_sources([notes])
@@ -1811,17 +1759,6 @@ class TestAPendingDraft:
         assert '+sources: ["notes/work/plan.md"]' in diff
 
 
-class TestSkipRecordFiles:
-    def test_all_three_files_move(self, library, notes):
-        _seeded_child(library.store, notes)
-
-        register_sources([notes])
-
-        for filename in (SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME):
-            stored = json.loads((cfg.data_root / filename).read_text(encoding="utf-8"))
-            assert sorted(stored) == ["notes/work/broken.md", "notes/work/gone.md"], filename
-
-
 class TestKeysDiscoveryWrites:
     @pytest.mark.skipif(__import__("sys").platform == "win32", reason="not file names on Windows")
     def test_a_backslash_a_newline_and_a_tab_are_in_keys_discovery_writes(self, library, tmp_path):
@@ -2040,88 +1977,6 @@ class TestSourceKeysInUse:
         assert ran == []
         assert str(refused.value) == _cannot_change(tmp_path)
         assert caplog.text == ""
-
-
-def _record_of(key: str) -> tuple[str | None, SkipKind | None, str | None]:
-    """The hash, kind and reason the skip record files hold for *key*."""
-    return (
-        load_skip_markers(cfg.data_root).get(key),
-        load_skip_kinds(cfg.data_root).get(key),
-        load_skip_reasons(cfg.data_root).get(key),
-    )
-
-
-class TestRecordsChangeTogether:
-    """A kill between the skip record files never splits the record of a file."""
-
-    _REMOVED = ("hash of work/gone.md", SkipKind.REMOVED, REMOVED_SKIP_REASON)
-
-    @staticmethod
-    def _dies_replacing(filename: str):
-        """Die before the first replace of *filename*, as a killed process does."""
-        import os
-
-        real = os.replace
-
-        def _replace(src, dst, *args, **kwargs):
-            if Path(dst).name == filename:
-                raise _Killed
-            return real(src, dst, *args, **kwargs)
-
-        return mock.patch.object(os, "replace", _replace)
-
-    @pytest.mark.parametrize(
-        "filename", [SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME]
-    )
-    def test_a_kill_before_each_record_file_leaves_the_removal_a_removal(
-        self, library, notes, filename
-    ):
-        _seeded_child(library.store, notes)
-        assert _record_of("work/gone.md") == self._REMOVED
-
-        with self._dies_replacing(filename), pytest.raises(_Killed):
-            register_sources([notes])
-        register_sources([notes])
-
-        assert _record_of("notes/work/gone.md") == self._REMOVED
-        assert _record_of("notes/work/broken.md") == (
-            "hash of work/broken.md",
-            SkipKind.FAILED,
-            "no text",
-        )
-        assert sorted(load_skip_markers(cfg.data_root)) == [
-            "notes/work/broken.md",
-            "notes/work/gone.md",
-        ]
-        for name in (SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME):
-            stored = json.loads((cfg.data_root / name).read_text(encoding="utf-8"))
-            assert sorted(stored) == ["notes/work/broken.md", "notes/work/gone.md"], name
-        assert clear_failed_markers(cfg.data_root) == ["notes/work/broken.md"]
-        assert _record_of("notes/work/gone.md") == self._REMOVED
-
-    def test_a_marker_with_no_reason_moves_as_a_failure_without_one(self, library, notes):
-        from lilbee.data.ingest.skip_marker import write_skip_markers
-
-        _seeded_child(library.store, notes)
-        write_skip_markers(cfg.data_root, {**load_skip_markers(cfg.data_root), "work/bare.md": "h"})
-
-        register_sources([notes])
-
-        assert _record_of("notes/work/bare.md") == ("h", SkipKind.FAILED, None)
-
-    def test_the_records_stay_at_the_old_keys_until_the_keys_have_moved(self, library, notes):
-        """The copies at the new keys come first; the records at the old keys go last."""
-        _seeded_child(library.store, notes)
-
-        with (
-            mock.patch.object(absorb_mod, "_prune_records", side_effect=_Killed),
-            pytest.raises(_Killed),
-        ):
-            register_sources([notes])
-
-        assert _record_of("work/gone.md") == self._REMOVED
-        assert _record_of("notes/work/gone.md") == self._REMOVED
-        assert "notes/work/plan.md" in _keys(library)
 
 
 @contextlib.contextmanager
@@ -2570,13 +2425,13 @@ class TestAResetAndAnAbsorb:
     async def test_a_reset_during_an_absorb_is_refused_and_the_absorb_ends(self, library, notes):
         await _add(notes / "work")
         refused: list[str] = []
-        real_prune = absorb_mod._prune_records
+        real_write = absorb_mod._write_registry
 
-        def _reset_then_prune(*args, **kwargs):
+        def _reset_then_write(*args, **kwargs):
             refused.append(_refusal_of_a_reset_from_another_thread())
-            return real_prune(*args, **kwargs)
+            return real_write(*args, **kwargs)
 
-        with mock.patch.object(absorb_mod, "_prune_records", side_effect=_reset_then_prune):
+        with mock.patch.object(absorb_mod, "_write_registry", side_effect=_reset_then_write):
             register_sources([notes])
 
         assert refused == [_RESET_REFUSED]
@@ -2593,7 +2448,7 @@ class TestAResetAndAnAbsorb:
         await _add(notes / "work")
         remove_documents_durably(["work/plan.md"])
         with (
-            mock.patch.object(absorb_mod, "_prune_records", side_effect=_Killed),
+            mock.patch.object(absorb_mod, "_write_registry", side_effect=_Killed),
             pytest.raises(_Killed),
         ):
             register_sources([notes])
@@ -2605,169 +2460,7 @@ class TestAResetAndAnAbsorb:
         assert result.added == []
         assert _registry() == {}
         assert _keys(svc_mod.get_services()) == []
-        assert load_skip_markers(cfg.data_root) == {}
-
-
-@contextlib.contextmanager
-def _records_lock_held_elsewhere():
-    """Hold the records lock of the library the way another process does."""
-    from filelock import FileLock
-
-    holder = FileLock(str(cfg.data_root / SKIP_MARKER_FILENAME) + ".lock")
-    holder.acquire()
-    try:
-        yield
-    finally:
-        holder.release()
-
-
-class _SetOnceArmed:
-    """A cancel that reads unset until it is armed, and set from then on."""
-
-    def __init__(self) -> None:
-        self.armed = False
-
-    def is_set(self) -> bool:
-        return self.armed
-
-
-class TestACancelAtTheRecordsLock:
-    """A cancel set while a call waits for the records lock ends the call with nothing changed."""
-
-    def test_an_add_stops_before_it_registers(self, library, notes):
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _seeded_child(library.store, notes)
-        before = _everything(library.store)
-        cancel = _SetOnSecondPoll()
-
-        with _records_lock_held_elsewhere(), pytest.raises(SkipRecordsWaitCancelledError) as raised:
-            register_sources([notes], cancel=cancel)
-
-        assert cancel.polls >= 2
-        assert raised.value.__cause__ is None
-        assert _everything(library.store) == before
-        assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
-
-    def test_a_remove_stops_before_it_removes(self, library, notes):
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _seeded_child(library.store, notes)
-        before = _everything(library.store)
-        cancel = _SetOnSecondPoll()
-
-        with _records_lock_held_elsewhere(), pytest.raises(SkipRecordsWaitCancelledError) as raised:
-            remove_documents_durably(["work/plan.md", "work"], cancel=cancel)
-
-        assert cancel.polls >= 2
-        assert raised.value.__cause__ is None
-        assert _everything(library.store) == before
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            pytest.param(lambda notes, cancel: register_sources([notes], cancel=cancel), id="add"),
-            pytest.param(
-                lambda notes, cancel: remove_documents_durably(
-                    ["work/plan.md", "work"], cancel=cancel
-                ),
-                id="remove",
-            ),
-        ],
-    )
-    def test_a_cancel_set_as_the_lock_frees_changes_nothing(self, library, notes, command):
-        """The lock is granted after a wait with the cancel set: the command ends as a cancel."""
-        from filelock import FileLock
-
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _seeded_child(library.store, notes)
-        before = _everything(library.store)
-        holder = FileLock(str(cfg.data_root / SKIP_MARKER_FILENAME) + ".lock")
-        holder.acquire()
-        cancel = _SetAsTheLockFrees(holder)
-
-        with pytest.raises(SkipRecordsWaitCancelledError):
-            command(notes, cancel)
-
-        # The holder let go before the cancel was set, so the take was granted.
-        assert not holder.is_locked
-        assert _everything(library.store) == before
-        assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
-        assert _records_lock_is_free(cfg.data_root)
-
-    async def test_a_retry_stops_before_it_clears_a_failure(self, library, notes):
-        import asyncio
-
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _seeded_child(library.store, notes)
-        before = _everything(library.store)
-        cancel = _SetOnSecondPoll()
-
-        with _records_lock_held_elsewhere(), pytest.raises(asyncio.CancelledError) as raised:
-            await sync(quiet=True, cancel=cancel, retry_skipped=True)
-
-        assert cancel.polls >= 2
-        assert isinstance(raised.value.__cause__, SkipRecordsWaitCancelledError)
-        assert _everything(library.store) == before
-        assert before["kinds"]["work/broken.md"] is SkipKind.FAILED
-
-    async def test_a_rebuild_stops_before_it_clears_the_records(self, library, notes):
-        import asyncio
-
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _seeded_child(library.store, notes)
-        before = _everything(library.store)
-        cancel = _SetOnSecondPoll()
-
-        with _records_lock_held_elsewhere(), pytest.raises(asyncio.CancelledError) as raised:
-            await sync(force_rebuild=True, quiet=True, cancel=cancel)
-
-        assert cancel.polls >= 2
-        assert isinstance(raised.value.__cause__, SkipRecordsWaitCancelledError)
-        after = _everything(library.store)
-        assert before["markers"] and after["markers"] == before["markers"]
-        assert after["kinds"] == before["kinds"] and after["reasons"] == before["reasons"]
-
-    async def test_a_sync_stops_before_it_writes_its_verdicts(self, library, notes):
-        """The lock is taken by another holder once the sync reaches its write of the records."""
-        import asyncio
-
-        from lilbee.data.ingest import pipeline
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        register_sources([notes])
-        _hold_out("notes/loose.md", SkipKind.FAILED)
-        records = (
-            load_skip_markers(cfg.data_root),
-            load_skip_reasons(cfg.data_root),
-            load_skip_kinds(cfg.data_root),
-        )
-        cancel = _SetOnceArmed()
-        real_update = pipeline.update_skip_records
-
-        def _update_with_the_lock_held(*args):
-            holding.enter_context(_records_lock_held_elsewhere())
-            cancel.armed = True
-            real_update(*args)
-
-        with (
-            contextlib.ExitStack() as holding,
-            mock.patch.object(pipeline, "update_skip_records", _update_with_the_lock_held),
-            pytest.raises(asyncio.CancelledError) as raised,
-        ):
-            await sync(quiet=True, cancel=cancel)
-
-        assert isinstance(raised.value.__cause__, SkipRecordsWaitCancelledError)
-        assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
-        assert records[0] == {"notes/loose.md": "hash of notes/loose.md"}
-        assert records == (
-            load_skip_markers(cfg.data_root),
-            load_skip_reasons(cfg.data_root),
-            load_skip_kinds(cfg.data_root),
-        )
+        assert held_hashes() == {}
 
 
 class TestACancelAtTheWaitForARunningSync:
@@ -2776,22 +2469,19 @@ class TestACancelAtTheWaitForARunningSync:
     def test_an_add_granted_the_lock_with_the_cancel_set_moves_no_key(self, library, notes):
         import threading
 
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
         _seeded_child(library.store, notes)
         before = _everything(library.store)
         cancel = threading.Event()
 
         with (
             _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
-            pytest.raises(SkipRecordsWaitCancelledError),
+            pytest.raises(LibraryWaitCancelledError),
         ):
             register_sources([notes], cancel=cancel)
 
         assert takes == ["granted"]
         assert _everything(library.store) == before
         assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
-        assert _records_lock_is_free(cfg.data_root)
         with _no_sync_running(cfg.data_root):
             pass
 

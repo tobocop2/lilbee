@@ -33,7 +33,7 @@ from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import Config, cfg
-from lilbee.runtime.cancellation import CancelSignal
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 log = logging.getLogger(__name__)
 
@@ -130,6 +130,10 @@ class _NoHardLinksError(OSError):
 
 class SyncMarkWaitCancelledError(Exception):
     """Raised when a cancel ends a wait for the sync lock; the block did not run."""
+
+
+class LibraryWaitCancelledError(TaskCancelledError):
+    """Raised when a cancel ends the wait of a library hold; nothing was changed."""
 
 
 # How each error that refuses a writer tells the user to run the command again.
@@ -562,7 +566,7 @@ class _HoldKind(StrEnum):
 
 @dataclass(frozen=True)
 class LibraryHold:
-    """What a hold of a library yields: its block has syncs off and the records lock of *config*.
+    """What a hold of a library yields: its block has syncs off on the data root of *config*.
 
     Only ``_library_hold`` makes one. Every path a function uses under the hold
     comes from its *config*.
@@ -580,17 +584,12 @@ def _library_hold(
     wait: float = 0.0,
     cancel: CancelSignal | None = None,
 ) -> Generator[LibraryHold, None, None]:
-    """Keep syncs off *config*'s data root as *kind* does, then hold its records lock.
+    """Keep syncs off *config*'s data root as *kind* does, for the block.
 
-    The one take of both locks, the sync lock first. A reset takes the sync lock
-    with no wait and reads no *running*, *wait* or *cancel*. A records lock that
-    stays held raises ``SkipRecordsLockError``. A *cancel* that ends the wait for
-    the sync lock, or that is set when the records lock is taken, raises
-    ``SkipRecordsWaitCancelledError``: the block does not run and both locks are free.
+    A reset takes the sync lock with no wait and reads no *running*, *wait* or
+    *cancel*. A *cancel* that ends the wait for the sync lock raises
+    ``LibraryWaitCancelledError``: the block does not run and the lock is free.
     """
-    # circular: data.ingest -> data.ingest.pipeline -> runtime.lock
-    from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError, skip_records_lock
-
     if kind is _HoldKind.RESET:
         syncs_off = _no_sync_running(config.data_root)
     else:
@@ -600,29 +599,26 @@ def _library_hold(
             held.enter_context(syncs_off)
         except SyncMarkWaitCancelledError:
             # No cause: a cancel that carries an error is reported as that error.
-            raise SkipRecordsWaitCancelledError from None
-        held.enter_context(skip_records_lock(config.data_root, cancel))
+            raise LibraryWaitCancelledError from None
         yield LibraryHold(config)
 
 
 def library_held(
     config: Config, running: str, wait: float = 0.0, cancel: CancelSignal | None = None
 ) -> AbstractContextManager[LibraryHold]:
-    """Keep syncs off the data root of *config*, then hold its records lock, for the block.
+    """Keep syncs off the data root of *config* for the block.
 
     A sync that outlasts *wait* raises ``SyncRunningError`` with the text *running*.
-    A records lock that stays held raises ``SkipRecordsLockError``. A *cancel* that
-    is set during a wait, or when a lock is taken, raises
-    ``SkipRecordsWaitCancelledError``: the block does not run and both locks are free.
+    A *cancel* that is set during the wait, or when the lock is taken, raises
+    ``LibraryWaitCancelledError``: the block does not run and the lock is free.
     """
     return _library_hold(config, _HoldKind.CHANGE, running=running, wait=wait, cancel=cancel)
 
 
 def library_held_for_reset(config: Config) -> AbstractContextManager[LibraryHold]:
-    """Hold both locks of *config*'s data root for the block of a reset, with no wait.
+    """Keep syncs off *config*'s data root for the block of a reset, with no wait.
 
-    A sync that runs, or a sync lock that cannot be taken, raises
-    ``ResetRefusedError``. A records lock that stays held raises ``SkipRecordsLockError``.
+    A sync that runs, or a sync lock that cannot be taken, raises ``ResetRefusedError``.
     """
     return _library_hold(config, _HoldKind.RESET)
 

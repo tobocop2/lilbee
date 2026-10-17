@@ -8,6 +8,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.store import ChunkType, SearchScope
+from tests._held import held_kinds, hold_failed
 
 
 def _fake_embed(text):
@@ -259,19 +260,15 @@ class TestAdd:
 class TestRemove:
     def test_remove_holds_a_failed_file_out_as_a_removal(self, tmp_path):
         from lilbee import Lilbee
-        from lilbee.data.ingest.skip_marker import (
-            SkipKind,
-            load_skip_kinds,
-            write_skip_markers,
-        )
+        from lilbee.data.store import HeldOut
 
         bee = Lilbee(tmp_path / "proj")
         _write_doc(bee.config.documents_dir, "scan.md", "# Scan\nHeld out by a failure.")
-        write_skip_markers(bee.config.data_root, {"scan.md": "h1"})
+        hold_failed({"scan.md": "h1"}, store=bee.store)
 
         bee.remove("scan.md")
 
-        assert load_skip_kinds(bee.config.data_root) == {"scan.md": SkipKind.REMOVED}
+        assert held_kinds(bee.store) == {"scan.md": HeldOut.REMOVED}
 
     def test_remove_deletes_from_index(self, tmp_path):
         from lilbee import Lilbee

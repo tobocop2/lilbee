@@ -2582,7 +2582,7 @@ class TestRemoveDocuments:
             result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
             assert result.not_found == []
-            mock_del.assert_called_once_with(["a.md"])
+            mock_del.assert_called_once_with(["a.md"], None)
 
     def test_removes_an_archive_with_its_members(self, store):
         rows = [{"filename": n} for n in ("docs.zip", "docs.zip/a.pdf", "docs.zip.bak", "other.md")]
@@ -2593,7 +2593,7 @@ class TestRemoveDocuments:
             result = store.remove_documents(["docs.zip"])
             assert result.removed == ["docs.zip", "docs.zip/a.pdf"]
             assert result.not_found == []
-            mock_del.assert_called_once_with(["docs.zip", "docs.zip/a.pdf"])
+            mock_del.assert_called_once_with(["docs.zip", "docs.zip/a.pdf"], None)
 
     def test_removing_many_names_reads_the_source_table_once(self, store):
         names = [f"n{index}.md" for index in range(500)]
@@ -2605,7 +2605,7 @@ class TestRemoveDocuments:
             result = store.remove_documents([*names, "a/b.zip"])
         assert reads.call_count == 1
         assert result.removed == [*names, "a/b.zip", "n7.md/inside.txt", "a/b.zip/c/d.txt"]
-        mock_del.assert_called_once_with(result.removed)
+        mock_del.assert_called_once_with(result.removed, None)
 
     def test_not_found(self, store):
         with mock.patch.object(store, "get_sources", return_value=[]):

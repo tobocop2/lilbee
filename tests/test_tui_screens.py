@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import sys
 import tempfile
@@ -48,11 +49,14 @@ from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.data.store import Store
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
+from tests._async_wait import wait_until
+from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
@@ -102,6 +106,13 @@ def mock_svc():
     set_services(services)
     yield services
     set_services(None)
+
+
+def _with_real_store(services):
+    """A copy of *services* whose store is a real one at the test's index, bound as current."""
+    real = dataclasses.replace(services, store=Store(cfg))
+    set_services(real)
+    return real
 
 
 @pytest.fixture(autouse=True)
@@ -2863,26 +2874,8 @@ async def test_chat_slash_delete_with_match(mock_svc):
         set_services(mock_svc)
         app.screen._cmd_delete("notes.md")
         await app.screen.workers.wait_for_complete()
-        await _pilot.pause()
-        mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
-
-
-async def test_chat_slash_delete_reports_a_held_records_lock(mock_svc, held_records_lock):
-    """A /delete refused by the records lock shows the error and leaves the index alone."""
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "notes.md", "source": "notes.md"},
-    ]
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        set_services(mock_svc)
-        with patch.object(app.screen, "notify") as mock_notify:
-            app.screen._cmd_delete("notes.md")
-            await app.screen.workers.wait_for_complete()
-            await _pilot.pause()
-        message, kwargs = mock_notify.call_args[0][0], mock_notify.call_args[1]
-        assert "Could not lock" in message
-        assert kwargs == {"severity": "error"}
-        mock_svc.store.remove_documents.assert_not_called()
+        await wait_until(_pilot, lambda: mock_svc.store.remove_documents.called)
+        mock_svc.store.remove_documents.assert_called_once_with(["notes.md"], {})
 
 
 async def test_chat_slash_delete_not_found(mock_svc):
@@ -2974,9 +2967,8 @@ async def _tab_complete(app, pilot, typed: str) -> str:
 
 async def test_chat_tab_completes_a_held_out_source_for_delete(mock_svc):
     """``/delete <Tab>`` offers a file ingestion held out when nothing is indexed."""
-    from lilbee.data.ingest.skip_marker import write_skip_markers
-
-    write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
+    mock_svc = _with_real_store(mock_svc)
+    hold_failed({"scan.pdf": "h1"}, store=mock_svc.store)
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         set_services(mock_svc)
@@ -2997,34 +2989,25 @@ async def test_chat_tab_delete_completion_follows_the_store(mock_svc):
 async def test_chat_slash_delete_forgets_a_held_out_single_file_root(mock_svc, tmp_path):
     """Deleting a held-out single-file root drops its record, its reason and the root."""
     from lilbee.app.ingest import register_sources
-    from lilbee.data.ingest.skip_marker import (
-        load_skip_markers,
-        load_skip_reasons,
-        write_skip_markers,
-        write_skip_reasons,
-    )
-    from lilbee.data.store import RemoveResult
 
+    mock_svc = _with_real_store(mock_svc)
+    store = mock_svc.store
     scan = tmp_path / "scan.pdf"
     scan.write_bytes(b"%PDF-1.4")
     keep = tmp_path / "keep.pdf"
     keep.write_bytes(b"%PDF-1.4")
     register_sources([scan, keep])
-    write_skip_markers(cfg.data_root, {"scan.pdf": "h1", "keep.pdf": "h2"})
-    write_skip_reasons(cfg.data_root, {"scan.pdf": "no text", "keep.pdf": "no text"})
-    mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
-        removed=[], not_found=list(names)
-    )
+    hold_failed({"scan.pdf": "h1", "keep.pdf": "h2"}, reason="no text", store=store)
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         set_services(mock_svc)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/delete scan.pdf")
             await app.screen.workers.wait_for_complete()
-            await pilot.pause()
+            await wait_until(pilot, lambda: mock_notify.called)
         assert mock_notify.call_args[0][0] == "Deleted scan.pdf"
-    assert load_skip_markers(cfg.data_root) == {"keep.pdf": "h2"}
-    assert load_skip_reasons(cfg.data_root) == {"keep.pdf": "no text"}
+    assert held_hashes(store) == {"keep.pdf": "h2"}
+    assert held_reasons(store) == {"keep.pdf": "no text"}
     assert set(cfg.linked_roots) == {"keep.pdf"}
     assert scan.exists()
 
@@ -3033,44 +3016,35 @@ async def test_chat_slash_delete_turns_a_failure_under_a_directory_root_into_a_r
     mock_svc, tmp_path
 ):
     """A held-out file under a folder stays out as a removal; the folder stays registered."""
-    from lilbee.app.ingest import register_sources
+    from lilbee.app.ingest import held_failures, register_sources
     from lilbee.data.ingest.discovery import file_hash
-    from lilbee.data.ingest.skip_marker import (
-        SkipKind,
-        held_out_names,
-        load_skip_kinds,
-        load_skip_markers,
-        write_skip_markers,
-    )
-    from lilbee.data.store import RemoveResult
+    from lilbee.data.store import HeldOut
 
+    mock_svc = _with_real_store(mock_svc)
+    store = mock_svc.store
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     bad = corpus / "bad.pdf"
     bad.write_bytes(b"%PDF-1.4")
     register_sources([corpus])
-    write_skip_markers(cfg.data_root, {"corpus/bad.pdf": "h1", "corpus/other.pdf": "h2"})
-    mock_svc.store.get_sources.return_value = [{"filename": "corpus/good.md"}]
-    mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
-        removed=[], not_found=list(names)
-    )
+    hold_failed({"corpus/bad.pdf": "h1", "corpus/other.pdf": "h2"}, store=store)
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         set_services(mock_svc)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/delete corpus/bad.pdf")
             await app.screen.workers.wait_for_complete()
-            await pilot.pause()
+            await wait_until(pilot, lambda: mock_notify.called)
         assert mock_notify.call_args[0][0] == "Deleted corpus/bad.pdf"
-    assert load_skip_markers(cfg.data_root) == {
+    assert held_hashes(store) == {
         "corpus/bad.pdf": file_hash(bad),
         "corpus/other.pdf": "h2",
     }
-    assert load_skip_kinds(cfg.data_root) == {
-        "corpus/bad.pdf": SkipKind.REMOVED,
-        "corpus/other.pdf": SkipKind.FAILED,
+    assert held_kinds(store) == {
+        "corpus/bad.pdf": HeldOut.REMOVED,
+        "corpus/other.pdf": HeldOut.FAILED,
     }
-    assert held_out_names(cfg.data_root) == ["corpus/other.pdf"]
+    assert list(held_failures()) == ["corpus/other.pdf"]
     assert set(cfg.linked_roots) == {"corpus"}
 
 
@@ -3375,24 +3349,6 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
         mock_clear.assert_not_called()
         mock_notify.assert_any_call(_RESET_REFUSED_MID_SYNC, severity="warning")
     set_services(None)
-
-
-async def test_chat_slash_reset_refused_by_a_held_records_lock(held_records_lock):
-    """A reset refused by the records lock warns and deletes nothing."""
-    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
-    (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "notify") as mock_notify:
-            app.screen._handle_slash("/reset")
-            await _pilot.pause()
-            await _pilot.press("y")
-            await _pilot.pause()
-        warnings = [
-            c.args[0] for c in mock_notify.call_args_list if c.kwargs == {"severity": "warning"}
-        ]
-        assert any("Could not lock" in text for text in warnings)
-        assert (cfg.documents_dir / "doc.txt").exists()
 
 
 async def test_chat_slash_reset_cancel_does_nothing():
@@ -5045,67 +5001,55 @@ async def test_command_provider_wipe_wiki_action_with_wiki_off(tmp_path):
             confirm.assert_called_once_with(app)
 
 
-async def test_command_provider_retry_skipped_action(tmp_path):
-    """Palette 'Retry skipped documents' clears the failed markers only and starts a sync."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.messages import retry_skipped_message
-    from lilbee.data.ingest.skip_marker import (
-        SkipKind,
-        SkipRecords,
-        load_skip_markers,
-        write_skip_records,
-    )
+async def test_command_provider_retry_skipped_action(mock_svc):
+    """Palette 'Retry skipped documents' releases the failed records only and starts a sync."""
+    import threading
 
-    cfg.data_root = tmp_path
-    write_skip_records(
-        tmp_path,
-        SkipRecords(
-            markers={"stuck.pdf": "deadbeef", "gone.txt": "cafef00d"},
-            kinds={"stuck.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED},
-        ),
-    )
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await await_chat(app, _pilot)
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-        import threading
-
-        from lilbee.cli.tui import commands
-
-        cleared_on: list[threading.Thread] = []
-        real_clear = commands.clear_failed_markers
-
-        def _spy(root, cancel):
-            cleared_on.append(threading.current_thread())
-            return real_clear(root, cancel)
-
-        with (
-            patch.object(app, "action_run_sync") as mock_sync,
-            patch.object(app, "notify") as notify,
-            patch.object(commands, "clear_failed_markers", _spy),
-        ):
-            provider._action_retry_skipped()
-            await app.workers.wait_for_complete()
-            await _pilot.pause()
-            mock_sync.assert_called_once()
-        notify.assert_called_once_with(retry_skipped_message(1))
-        assert load_skip_markers(tmp_path) == {"gone.txt": "cafef00d"}
-        assert cleared_on and cleared_on[0] is not threading.main_thread()
-
-
-async def test_command_provider_retry_skipped_reports_a_held_records_lock(
-    tmp_path, held_records_lock
-):
-    """A retry refused by the records lock shows the error and starts no sync."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.commands import LilbeeCommandProvider
+    from lilbee.cli.tui.messages import retry_skipped_message
+
+    mock_svc = _with_real_store(mock_svc)
+    store = mock_svc.store
+    hold_failed({"stuck.pdf": "deadbeef"}, store=store)
+    hold_removed({"gone.txt": "cafef00d"}, store=store)
+    released_on: list[threading.Thread] = []
+    real_release = store.release_failed
+
+    def _spy():
+        released_on.append(threading.current_thread())
+        return real_release()
 
     app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await await_chat(app, _pilot)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        set_services(mock_svc)
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        with (
+            patch.object(app, "action_run_sync") as mock_sync,
+            patch.object(app, "notify") as notify,
+            patch.object(store, "release_failed", _spy),
+        ):
+            provider._action_retry_skipped()
+            await app.workers.wait_for_complete()
+            await wait_until(pilot, lambda: mock_sync.called)
+            mock_sync.assert_called_once()
+        notify.assert_called_once_with(retry_skipped_message(1))
+    assert held_hashes(store) == {"gone.txt": "cafef00d"}
+    assert released_on and released_on[0] is not threading.main_thread()
+
+
+async def test_command_provider_retry_skipped_reports_a_lock_timeout(mock_svc):
+    """A retry whose index write lock times out shows the error and starts no sync."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.commands import LilbeeCommandProvider
+    from lilbee.runtime.lock import LockTimeoutError
+
+    mock_svc.store.release_failed.side_effect = LockTimeoutError("the index is locked")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        set_services(mock_svc)
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         with (
             patch.object(app, "action_run_sync") as mock_sync,
@@ -5113,153 +5057,9 @@ async def test_command_provider_retry_skipped_reports_a_held_records_lock(
         ):
             provider._action_retry_skipped()
             await app.workers.wait_for_complete()
-            await _pilot.pause()
+            await wait_until(pilot, lambda: notify.called)
         mock_sync.assert_not_called()
-        assert "Could not lock" in notify.call_args[0][0]
-        assert notify.call_args[1] == {"severity": "error"}
-
-
-async def test_add_rollback_unregisters_the_roots_when_the_records_lock_is_held(
-    tmp_path, held_records_lock
-):
-    """A cancelled add drops the roots it registered even when their records cannot change."""
-    from lilbee.cli.tui.screens.chat_helpers import unregister_added_roots
-    from lilbee.core import settings
-    from lilbee.data.ingest.skip_marker import SkipRecordsLockError
-
-    source = tmp_path / "corpus"
-    source.mkdir()
-    settings.set_value(cfg.data_root, "linked_roots", {"corpus": str(source)})
-    cfg.linked_roots = {"corpus": str(source)}
-
-    with pytest.raises(SkipRecordsLockError):
-        unregister_added_roots(["corpus"])
-
-    assert cfg.linked_roots == {}
-    assert not settings.load(cfg.data_root).get("linked_roots")
-
-
-_RECORDS_WAIT_SETTLE_S = 30.0
-"""A guard against a hang while a worker thread reaches or leaves the wait; no test measures it."""
-
-
-class TestATuiCancelAtTheRecordsLock:
-    """A TUI cancel sent while a command waits for the records lock ends the wait."""
-
-    async def test_a_cancelled_add_task_stops_at_the_wait(self, mock_svc, tmp_path_factory):
-        import threading
-
-        from lilbee.app import ingest
-        from lilbee.cli.tui.task_queue import CancelOrigin
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-        from tests._async_wait import wait_until
-        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
-
-        scan = tmp_path_factory.mktemp("source") / "scan.txt"
-        scan.write_text("hello world", encoding="utf-8")
-        stopped = "Add cancelled. scan.txt was not added."
-        waiting = threading.Event()
-        call, outcome = recorded(ingest.register_sources)
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            set_services(mock_svc)
-            with (
-                records_lock_held_elsewhere(cfg.data_root, waiting.set),
-                patch.object(ingest, "register_sources", call),
-            ):
-                before = files_under(cfg.data_root)
-                app.screen._cmd_add(str(scan))
-                assert await wait_until(pilot, waiting.is_set, timeout=_RECORDS_WAIT_SETTLE_S)
-                (task,) = [
-                    t for t in app.task_bar.queue.active_tasks if t.task_type == TaskType.ADD.value
-                ]
-                app.task_bar.cancel_task(task.task_id)
-                assert await wait_until(
-                    pilot, lambda: task.detail == stopped, timeout=_RECORDS_WAIT_SETTLE_S
-                )
-                assert files_under(cfg.data_root) == before
-        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
-        assert task.status is TaskStatus.CANCELLED
-        assert task.cancel_origin is CancelOrigin.USER
-        assert cfg.linked_roots == {}
-
-    async def test_a_cancelled_delete_stops_at_the_wait(self, mock_svc):
-        import threading
-
-        from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.screens import chat
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-        from tests._async_wait import wait_until
-        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
-
-        mock_svc.store.get_sources.return_value = [{"filename": "notes.md", "source": "notes.md"}]
-        waiting = threading.Event()
-        call, outcome = recorded(chat.remove_documents_durably)
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            set_services(mock_svc)
-            with (
-                records_lock_held_elsewhere(cfg.data_root, waiting.set),
-                patch.object(chat, "remove_documents_durably", call),
-                patch.object(app.screen, "notify") as notify,
-            ):
-                before = files_under(cfg.data_root)
-                app.screen._cmd_delete("notes.md")
-                assert await wait_until(pilot, waiting.is_set, timeout=_RECORDS_WAIT_SETTLE_S)
-                app.screen._cmd_cancel("")
-                assert await wait_until(
-                    pilot, lambda: notify.call_count == 2, timeout=_RECORDS_WAIT_SETTLE_S
-                )
-                assert files_under(cfg.data_root) == before
-        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
-        assert [sent.args for sent in notify.call_args_list] == [
-            (msg.CMD_CANCEL,),
-            (msg.CMD_DELETE_CANCELLED,),
-        ]
-        mock_svc.store.remove_documents.assert_not_called()
-
-    async def test_a_cancelled_retry_stops_at_the_wait(self):
-        import threading
-
-        from lilbee.cli.tui import commands
-        from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.data.ingest.skip_marker import (
-            SkipKind,
-            SkipRecords,
-            SkipRecordsWaitCancelledError,
-            load_skip_markers,
-            write_skip_records,
-        )
-        from tests._async_wait import wait_until
-        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
-
-        write_skip_records(
-            cfg.data_root,
-            SkipRecords(markers={"stuck.pdf": "deadbeef"}, kinds={"stuck.pdf": SkipKind.FAILED}),
-        )
-        waiting = threading.Event()
-        call, outcome = recorded(commands.clear_failed_markers)
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await await_chat(app, pilot)
-            provider = commands.LilbeeCommandProvider(app.screen, match_style=None)
-            with (
-                records_lock_held_elsewhere(cfg.data_root, waiting.set),
-                patch.object(commands, "clear_failed_markers", call),
-                patch.object(app, "action_run_sync") as mock_sync,
-                patch.object(app, "notify") as notify,
-            ):
-                before = files_under(cfg.data_root)
-                provider._action_retry_skipped()
-                assert await wait_until(pilot, waiting.is_set, timeout=_RECORDS_WAIT_SETTLE_S)
-                app.screen._cmd_cancel("")
-                assert await wait_until(pilot, outcome.ended.is_set, timeout=_RECORDS_WAIT_SETTLE_S)
-                assert files_under(cfg.data_root) == before
-        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
-        assert [sent.args for sent in notify.call_args_list] == [(msg.CMD_CANCEL,)]
-        mock_sync.assert_not_called()
-        assert load_skip_markers(cfg.data_root) == {"stuck.pdf": "deadbeef"}
+        notify.assert_called_once_with("the index is locked", severity="error")
 
 
 async def test_command_provider_prune_ignored_dispatches_the_command(mock_svc):
@@ -8920,71 +8720,6 @@ async def test_do_sync_reports_held_out_files():
 
         messages = [c.args[0] for c in app.screen.notify.call_args_list]
         assert msg.SYNC_HELD_OUT.format(count=1) in messages
-
-
-async def test_do_sync_reports_unsaved_skip_records():
-    """A sync that could not save its held-out record shows the error."""
-    import threading
-    from unittest.mock import MagicMock
-
-    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-    from lilbee.data.ingest import SyncResult
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-
-        async def fake_sync(**_kw):
-            return SyncResult(unchanged=1, skip_records_error="records.lock could not be locked")
-
-        app.screen.notify = MagicMock()
-        with patch("lilbee.data.ingest.sync", new=fake_sync):
-            thread = threading.Thread(
-                target=lambda: app.screen._do_sync(MagicMock(spec=ProgressReporter))
-            )
-            thread.start()
-            thread.join(timeout=5)
-            await _pilot.pause()
-
-        calls = [(c.args[0], c.kwargs.get("severity")) for c in app.screen.notify.call_args_list]
-        assert ("records.lock could not be locked", "error") in calls
-
-
-async def test_do_add_reports_unsaved_skip_records(tmp_path):
-    """An add whose sync could not save its held-out record shows the error."""
-    import threading
-    from unittest.mock import MagicMock
-
-    from lilbee.app.ingest import RegisterResult
-    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-    from lilbee.data.ingest import SyncResult
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        test_file = tmp_path / "doc.txt"
-        test_file.write_text("hello", encoding="utf-8")
-
-        async def fake_sync(**_kw):
-            return SyncResult(
-                added=[test_file.name], skip_records_error="records.lock could not be locked"
-            )
-
-        app.screen.notify = MagicMock()
-        with (
-            patch("lilbee.app.ingest.register_sources") as mock_register,
-            patch("lilbee.data.ingest.sync", new=fake_sync),
-        ):
-            mock_register.return_value = RegisterResult(registered=[test_file.name])
-            thread = threading.Thread(
-                target=lambda: app.screen._do_add(
-                    [test_file], ProgressReporter(app.task_bar, "fake-id")
-                )
-            )
-            thread.start()
-            thread.join(timeout=5)
-            await _pilot.pause()
-
-        calls = [(c.args[0], c.kwargs.get("severity")) for c in app.screen.notify.call_args_list]
-        assert ("records.lock could not be locked", "error") in calls
 
 
 async def test_do_add_raises_on_sync_failed(tmp_path):

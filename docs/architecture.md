@@ -124,7 +124,7 @@ flowchart TD
     ST -->|no| H["SHA-256 the bytes"]
     H --> HC{"hash matches<br/>the stored row?"}
     HC -->|yes| BF["unchanged —<br/>backfill the fresh stat"]
-    HC -->|no| SK{"hash matches a skip marker<br/>(a failure or a removal)?"}
+    HC -->|no| SK{"hash matches a held-out record<br/>(a failure or a removal)?"}
     SK -->|yes| SKIP["held out: a failure is counted<br/>apart from unchanged and reported<br/>with its reason; a removal is not reported"]
     SK -->|no| PR["process:<br/>extract → chunk → embed,<br/>store chunks keyed by this hash"]
 ```
@@ -151,7 +151,7 @@ flowchart LR
     P3 --> I3["…"]
 ```
 
-Correctness is unchanged because shards are contiguous slices of one sorted list consumed in order: the streamed plan is byte-for-byte the single-pass plan, only delivered in pieces. Cross-shard bookkeeping (added/updated sets, one-to-one move detection for relocated files, skip markers) accumulates across shards to the same result. The planner runs on its own thread rather than the shared ingest pool, which extraction saturates once ingest is under way.
+Correctness is unchanged because shards are contiguous slices of one sorted list consumed in order: the streamed plan is byte-for-byte the single-pass plan, only delivered in pieces. Cross-shard bookkeeping (added/updated sets, one-to-one move detection for relocated files, held-out records) accumulates across shards to the same result. The planner runs on its own thread rather than the shared ingest pool, which extraction saturates once ingest is under way.
 
 **Why the list is sorted.** `os.walk` yields files in arbitrary filesystem order, so the corpus is sorted by key first. That fixed order is what makes the plan deterministic: classification fans out across a thread pool and completes out of order, but the plan is reassembled in sorted order, so it matches what a single serial pass would produce regardless of thread scheduling (a test asserts `parallel == serial`). It also makes move detection deterministic — when several deleted sources share a content hash, a reappeared file pairs with exactly one old key — and makes the shard boundaries stable, so a killed-and-restarted run re-shards the same corpus the same way.
 
@@ -396,8 +396,9 @@ off by default and measured 1.00x. Per-card workers remove the drain instead of 
 it: eight pinned workers on the same 8xH100 box measured 415 docs/sec at a GPU busy
 fraction of 0.93.
 
-**One record of what is indexed.** The index's source table and the skip records are
-the only durable statement of what is indexed. A worker reads the source rows of its own
+**One record of what is indexed.** The index's source table is the only durable
+statement of what is indexed and of what a sync holds out: a failed or removed file is
+a column of its source row, so a move or a removal changes one row. A worker reads the source rows of its own
 slice once to decide what is unchanged, and it writes each batch under the store's write lock:
 the old rows of its documents go first and their source rows land last, as in a
 one-process sync. So `lilbee remove`, a rename, an archive, a stop and a change of the

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
-import threading
 
 from litestar.exceptions import ClientException
 from litestar.status_codes import HTTP_409_CONFLICT
@@ -75,14 +74,8 @@ async def delete_documents(names: list[str]) -> DocumentRemoveResponse:
     # Deletes store rows and takes the wiki build mutex to drop the removed
     # documents from the browse index, so it cannot run on the event loop: a
     # build in flight holds that mutex for the length of the whole run.
-    # A cancelled request ends the wait for the records lock; a thread cannot be
-    # interrupted, so the remove polls this token there.
-    cancel = threading.Event()
     try:
-        result = await asyncio.to_thread(remove_documents_durably, names, cancel=cancel)
-    except asyncio.CancelledError:
-        cancel.set()
-        raise
+        result = await asyncio.to_thread(remove_documents_durably, names)
     except LIBRARY_REFUSALS as exc:
         raise ClientException(detail=str(exc), status_code=HTTP_409_CONFLICT) from exc
     return DocumentRemoveResponse(removed=result.removed, not_found=result.not_found)

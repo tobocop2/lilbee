@@ -115,7 +115,7 @@ def fake_context(monkeypatch):
 
 def _spec(index: int, count: int = 2, device: int = 0) -> fanout.ShardSpec:
     return fanout.ShardSpec(
-        shard=ShardId(index=index, count=count, records_root=cfg.data_root),
+        shard=ShardId(index=index, count=count, corpus_root=cfg.data_root),
         device=device,
         config=cfg.model_copy(),
         engine_dir=cfg.data_root / "engine",
@@ -141,14 +141,14 @@ class TestShardId:
     def test_every_key_belongs_to_exactly_one_shard(self):
         """The slices partition the corpus: no key is dropped and none is duplicated."""
         keys = [f"bucket/{i:05d}.txt" for i in range(500)]
-        shards = [ShardId(index=i, count=4, records_root=cfg.data_root) for i in range(4)]
+        shards = [ShardId(index=i, count=4, corpus_root=cfg.data_root) for i in range(4)]
         owners = [[shard for shard in shards if shard.owns(key)] for key in keys]
         assert all(len(owner) == 1 for owner in owners)
 
     def test_the_deal_is_roughly_even(self):
         """A hashed deal has to spread the corpus, or one card does all the work."""
         keys = [f"bucket/{i:05d}.txt" for i in range(4000)]
-        shards = [ShardId(index=i, count=4, records_root=cfg.data_root) for i in range(4)]
+        shards = [ShardId(index=i, count=4, corpus_root=cfg.data_root) for i in range(4)]
         counts = [sum(1 for key in keys if shard.owns(key)) for shard in shards]
         assert all(800 < count < 1200 for count in counts)
 
@@ -156,7 +156,7 @@ class TestShardId:
         """A resume must re-deal identically, so the hash cannot be salted per process."""
         program = (
             "from pathlib import Path; from lilbee.data.types import ShardId;"
-            "shard = ShardId(index=1, count=4, records_root=Path());"
+            "shard = ShardId(index=1, count=4, corpus_root=Path());"
             "print([i for i in range(50) if shard.owns(f'f{i}.txt')])"
         )
         runs = [
@@ -235,7 +235,7 @@ class TestShardSpecs:
         # The corpus is read in place: no worker gets its own copy of it.
         assert {spec.config.documents_dir for spec in specs} == {cfg.documents_dir}
         # So are its skip records.
-        assert {spec.shard.records_root for spec in specs} == {cfg.data_root}
+        assert {spec.shard.corpus_root for spec in specs} == {cfg.data_root}
 
     def test_the_engine_slot_is_keyed_by_card_not_by_worker(self):
         """Workers on one card share its fleet; a private slot each would double-book VRAM."""

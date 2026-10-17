@@ -48,9 +48,27 @@ class SourceType(StrEnum):
 
 
 class HeldOut(StrEnum):
-    """Why a ``_sources`` row is kept out of every listing: ``REMOVED`` keeps a cited path."""
+    """Why a ``_sources`` row holds its path out of later syncs.
 
+    ``REMOVED``: the user removed it; the row also keeps the path a citation names.
+    ``FAILED``: ingestion produced nothing at that content; a row that holds a
+    document keeps it listed.
+    """
+
+    FAILED = "failed"
     REMOVED = "removed"
+
+
+class HeldRecord(NamedTuple):
+    """Why a sync holds a path out, and the content hash it holds it out at."""
+
+    kind: HeldOut
+    file_hash: str
+    reason: str
+
+
+# The reason a removal records, shown with the held-out file.
+REMOVED_REASON = "removed via remove (add the source again to restore)"
 
 
 class SourceMeta(NamedTuple):

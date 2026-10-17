@@ -76,17 +76,6 @@ from lilbee.data.ingest.fanout import (
     run_workers,
 )
 from lilbee.data.ingest.ignore import IgnoreRules
-from lilbee.data.ingest.skip_marker import (
-    SkipKind,
-    SkipRecords,
-    SkipRecordsLockError,
-    SkipRecordsWaitCancelledError,
-    clear_failed_markers,
-    clear_skip_markers,
-    describe_failures,
-    load_skip_markers,
-    update_skip_records,
-)
 from lilbee.data.offload import (
     embed_inflight_target,
     ingest_thread_future,
@@ -99,6 +88,8 @@ from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
     ChunkWrite,
     ConceptRecords,
+    HeldOut,
+    HeldRecord,
     IndexMismatch,
     PageTextRecord,
     SourceMeta,
@@ -119,9 +110,11 @@ from lilbee.data.types import (
     MemberRecords,
     OcrReport,
     ShardId,
+    SkippedSource,
     SyncResult,
     _IngestResult,
 )
+from lilbee.providers.base import ProviderError
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
@@ -345,7 +338,7 @@ def _stat_unchanged(stored: SourceStat, current: SourceStat) -> bool:
 
 @dataclass(frozen=True)
 class _FileChangeVerdict:
-    """One file's sync verdict: process it, hold it out on its skip marker, or unchanged.
+    """One file's sync verdict: process it, hold it out on its record, or unchanged.
 
     A held file is not in the index, so it is never counted as unchanged.
     """
@@ -360,9 +353,9 @@ def _classify_file_change(
     name: str,
     path: Path,
     record: SourceRecord | None,
-    skip_markers: dict[str, str],
+    held_hashes: dict[str, str],
 ) -> _FileChangeVerdict:
-    """Decide one file's verdict: stat-unchanged, hash-unchanged, skip-marked, or process."""
+    """Decide one file's verdict: stat-unchanged, hash-unchanged, held out, or process."""
     content_type = classify_file(path)
     if content_type is None:
         raise ValueError(f"Unsupported file slipped through discovery: {name}")
@@ -386,7 +379,7 @@ def _classify_file_change(
             else None
         )
         return _FileChangeVerdict(backfill=backfill)
-    if skip_markers.get(name) == current_hash:
+    if held_hashes.get(name) == current_hash:
         # Failed last sync at this exact hash; skip the retry.
         return _FileChangeVerdict(held=True)
     # needs_cleanup=True unconditionally: delete_by_source is idempotent,
@@ -498,7 +491,7 @@ def _classify_pooled(
 def _classify_changes(
     items: list[tuple[str, Path]],
     existing_sources: dict[str, SourceRecord],
-    skip_markers: dict[str, str],
+    held_hashes: dict[str, str],
     cancel: CancelSignal | None,
     *,
     progress: _PlanProgress | None = None,
@@ -516,7 +509,7 @@ def _classify_changes(
     """
 
     def _classify(name: str, path: Path) -> _FileChangeVerdict:
-        return _classify_file_change(name, path, existing_sources.get(name), skip_markers)
+        return _classify_file_change(name, path, existing_sources.get(name), held_hashes)
 
     total = len(items)
     progress = progress or _PlanProgress(total)
@@ -539,17 +532,17 @@ def _plan_file_changes(
     disk_files: dict[str, Path],
     existing_sources: dict[str, SourceRecord],
     cancel: CancelSignal | None,
-    skip_markers: dict[str, str] | None = None,
+    held_hashes: dict[str, str] | None = None,
 ) -> FileChangePlan:
     """Diff every disk file against the store in one pass (see :func:`_plan_items`)."""
-    return _plan_items(sorted(disk_files.items()), existing_sources, cancel, skip_markers or {})
+    return _plan_items(sorted(disk_files.items()), existing_sources, cancel, held_hashes or {})
 
 
 def _plan_items(
     items: list[tuple[str, Path]],
     existing_sources: dict[str, SourceRecord],
     cancel: CancelSignal | None,
-    skip_markers: dict[str, str],
+    held_hashes: dict[str, str],
     *,
     progress: _PlanProgress | None = None,
     pool: ThreadPoolExecutor | None = None,
@@ -559,10 +552,10 @@ def _plan_items(
     A tracked file whose stored (size, mtime) matches the disk stat, and whose
     mtime predates the stat capture (see :func:`_stat_unchanged`), is unchanged
     without reading its bytes; everything else is SHA-256 hashed. A file whose
-    current hash matches a marker in ``skip_markers`` (set by a prior failed
+    current hash matches its record in ``held_hashes`` (set by a prior failed
     attempt) is held out rather than retried every sync, and is reported as held
     out rather than counted unchanged. Edit the file or run
-    ``/sync --force-rebuild`` to clear the marker and try again.
+    ``/sync --retry-skipped`` to release the record and try again.
 
     Classification fans across a thread pool (see :func:`_classify_changes`); the
     plan is assembled from the results in the original sorted order, so a partial
@@ -570,7 +563,7 @@ def _plan_items(
     shorter one when cancelled mid-pass.
     """
     verdicts = _classify_changes(
-        items, existing_sources, skip_markers, cancel, progress=progress, pool=pool
+        items, existing_sources, held_hashes, cancel, progress=progress, pool=pool
     )
 
     files_to_process: list[FileToProcess] = []
@@ -610,12 +603,20 @@ class _MovePool:
     is sharded and whichever writer asks first.
     """
 
-    def __init__(self, absent: list[str], existing_sources: dict[str, SourceRecord]) -> None:
+    def __init__(
+        self,
+        absent: list[str],
+        existing_sources: dict[str, SourceRecord],
+        failed: Mapping[str, str] | None = None,
+    ) -> None:
         by_hash: dict[str, list[str]] = {}
         for name in absent:
             record = existing_sources.get(name)
             if record is not None:
                 by_hash.setdefault(record["file_hash"], []).append(name)
+        # An absent failed file is offered at the hash it failed at.
+        for name, digest in (failed or {}).items():
+            by_hash.setdefault(digest, []).append(name)
         # One tuple for each content: every new file of that content is offered the same one.
         self._by_hash = {digest: tuple(sorted(names)) for digest, names in by_hash.items()}
 
@@ -653,6 +654,12 @@ class _IndexMovePool(_MovePool):
             absent = tuple(sorted(name for name in names if self._is_absent(name)))
             if absent:
                 self._by_hash[digest] = absent
+
+
+def _moved_failures(store: Store, relocated: list[str]) -> set[str]:
+    """The *relocated* files a failure holds out: they moved with their record and stay out."""
+    held = store.held_records()
+    return {name for name in relocated if name in held and held[name].kind is HeldOut.FAILED}
 
 
 def _detect_moves(
@@ -762,11 +769,22 @@ def _move_pool(
     gone: Collection[str],
     rules: IgnoreRules,
 ) -> _MovePool:
-    """The absent sources a brand-new file of this sync can be paired with as a move."""
+    """The absent sources a brand-new file of this sync can be paired with as a move.
+
+    A failed file moves with its folder, so it stays held out at its new path.
+    """
     if shard is not None:
         return _worker_move_pool(store, shard, disk_files, gone, rules)
     absent = [name for name in _absent_sources(sources, disk_files) if name not in gone]
-    return _MovePool(absent, {source["filename"]: source for source in sources})
+    failed = {
+        name: record.file_hash
+        for name, record in store.held_records().items()
+        if record.kind is HeldOut.FAILED
+        and name not in disk_files
+        and name not in gone
+        and not _in_archive(name, disk_files.__contains__)
+    }
+    return _MovePool(absent, {source["filename"]: source for source in sources}, failed)
 
 
 # A plan batch is only done when its slowest hash is, so the first one is small (work
@@ -799,11 +817,11 @@ class _StreamedPlan:
 
     added: dict[str, None] = field(default_factory=dict)
     updated: dict[str, None] = field(default_factory=dict)
-    # Processed files' content hashes, for the skip markers written after the run.
+    # Processed files' content hashes, for the held-out records written after the run.
     pending_hashes: dict[str, str] = field(default_factory=dict)
     relocated: list[str] = field(default_factory=list)
     unchanged: int = 0
-    # Files a skip marker held out of this run, in plan order (ordered set).
+    # Files a held-out record held out of this run, in plan order (ordered set).
     held_out: dict[str, None] = field(default_factory=dict)
     planned: int = 0
     # Files this pass's slice holds, from the discovery walk. Fixed before the
@@ -816,7 +834,7 @@ class _StreamedPlan:
     def resolved(self) -> int:
         """Files the plan disposed of without ingest, as it disposes of them.
 
-        Unchanged files, skip-marker held-out files and repointed moves are done
+        Unchanged files, held-out held-out files and repointed moves are done
         as far as the corpus is concerned, and nothing downstream ingests them,
         so an incremental sync would otherwise show a handful of changed files
         against the whole corpus. Files a cancelled plan never classified are
@@ -849,7 +867,9 @@ async def _absorb_plan_batch(
         entries, relocated = _apply_moves(taken.keys(), entries, plan.added)
         for name in relocated:
             state.added.pop(name, None)
-        state.relocated.extend(relocated)
+        failures = await to_ingest_thread(_moved_failures, store, relocated)
+        state.held_out.update(dict.fromkeys(failures))
+        state.relocated.extend(name for name in relocated if name not in failures)
     if plan.stat_backfills:
         backfills = plan.stat_backfills
         await to_ingest_thread(
@@ -864,7 +884,7 @@ async def _absorb_plan_batch(
 async def _plan_batches(
     disk_files: dict[str, Path],
     existing_sources: dict[str, SourceRecord],
-    skip_markers: dict[str, str],
+    held_hashes: dict[str, str],
     moves: _MovePool,
     state: _StreamedPlan,
     cancel: CancelSignal | None,
@@ -889,7 +909,7 @@ async def _plan_batches(
             items[lo:hi],
             existing_sources,
             stop,
-            skip_markers,
+            held_hashes,
             progress=progress,
             pool=hashers if workers > 1 else None,
         )
@@ -931,22 +951,24 @@ def detect_pending() -> int:
     would be ingested (added + updated), which is what the TaskBar hint surfaces.
     A vanished file is not pending work: sync leaves it indexed, so it is not
     counted. Reuses ``_plan_file_changes`` so the diff logic stays single-sourced.
-    Honors skip markers: a file that failed last time at this hash does
+    Honors the held-out records: a file that failed last time at this hash does
     not show up as pending. Blocking: callers on the event loop run it via
     ``asyncio.to_thread``.
     """
-    config = active_config()
     disk_files = discover_files()
     if not disk_files:
         return 0
-    existing_sources = {s["filename"]: s for s in get_services().store.get_sources()}
-    skip_markers = load_skip_markers(config.data_root)
-    plan = _plan_file_changes(disk_files, existing_sources, cancel=None, skip_markers=skip_markers)
+    store = get_services().store
+    existing_sources = {s["filename"]: s for s in store.get_sources()}
+    held_hashes = _held_hashes(store)
+    plan = _plan_file_changes(disk_files, existing_sources, cancel=None, held_hashes=held_hashes)
     return len(plan.files_to_process)
 
 
 # Refused files named in the log line before it falls back to a count.
 _EXCLUDED_LOG_SAMPLE = 5
+# The reason held out with a failed file whose failure named none.
+_NO_REASON = "ingestion produced nothing"
 
 
 def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
@@ -960,95 +982,50 @@ def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
         log.warning("Skipped %d file(s), %s: %s%s", len(names), why.value, ", ".join(shown), more)
 
 
-@contextlib.contextmanager
-def _records_wait_ends_the_sync() -> Iterator[None]:
-    """Turn a cancelled wait for the records lock into the cancel a sync raises."""
-    try:
-        yield
-    except SkipRecordsWaitCancelledError as error:
-        raise asyncio.CancelledError from error
+def _describe_failures(store: Store, names: Iterable[str]) -> list[SkippedSource]:
+    """Each of *names* a failure holds out, with its reason, in order."""
+    held = store.held_records()
+    return [
+        SkippedSource(filename=name, reason=record.reason)
+        for name in names
+        if (record := held.get(name)) is not None and record.kind is HeldOut.FAILED
+    ]
 
 
-def _clear_skip_records(
-    records_root: Path,
-    *,
-    force_rebuild: bool,
-    retry_skipped: bool,
-    cancel: CancelSignal | None = None,
-) -> None:
-    """Clear every skip record for a rebuild, or only the failed ones for a retry.
-
-    Entries are otherwise kept whether or not a pass discovers the file. A
-    marker is what holds a removed or unextractable file out of the next sync,
-    so a pass that cannot see the file -- its root is unmounted or moved, or a
-    worker owns only a shard of the corpus -- must not erase the record and
-    re-offer the file the moment it comes back. A marker is dropped when the
-    file ingests cleanly, by ``rebuild``, or for a failure by ``retry-skipped``.
-    """
-    with _records_wait_ends_the_sync():
-        if force_rebuild:
-            clear_skip_markers(records_root, cancel)
-        elif retry_skipped:
-            clear_failed_markers(records_root, cancel)
+def _held_hashes(store: Store) -> dict[str, str]:
+    """The content hash each held-out path is held out at, by path."""
+    return {path: record.file_hash for path, record in store.held_records().items()}
 
 
-def _prepare_skip_records(
-    shard: ShardId | None,
-    *,
-    force_rebuild: bool,
-    retry_skipped: bool,
-    cancel: CancelSignal | None = None,
-) -> Path:
-    """The data root whose skip records and ``.lilbeeignore`` this sync uses.
+async def _corpus_root(store: Store, shard: ShardId | None, *, retry_skipped: bool) -> Path:
+    """The data root whose ``.lilbeeignore`` this sync uses, after a retry released the failures.
 
-    Only a sync that is not a worker clears them, so a fan-out clears once: a
-    worker clearing the shared records would erase a sibling's verdicts.
+    Only a sync that is not a worker releases them, so a fan-out releases them once.
     """
     if shard is not None:
-        return shard.records_root
-    records_root = active_config().data_root
-    _clear_skip_records(
-        records_root, force_rebuild=force_rebuild, retry_skipped=retry_skipped, cancel=cancel
-    )
-    return records_root
+        return shard.corpus_root
+    if retry_skipped:
+        await to_ingest_thread(store.release_failed)
+    return active_config().data_root
 
 
-def _persist_skip_records(
-    records_root: Path,
-    pending_hashes: dict[str, str],
-    reasons: dict[str, str],
-    *,
-    succeeded: Iterable[str],
-    failed: Iterable[str],
-    cancel: CancelSignal | None = None,
-) -> str | None:
-    """Merge this sync's verdicts into the skip records as they are on disk now.
+def _persist_failures(
+    store: Store, pending_hashes: dict[str, str], reasons: dict[str, str], failed: Iterable[str]
+) -> None:
+    """Hold each of *failed* out of later syncs at the hash this sync planned it at.
 
-    Only the files this sync decided on change: a clean ingest drops its
-    record, a file that produced no chunks gains one with its reason and the
-    FAILED kind. Records written or cleared since the sync started (a reset, a
-    removal, a rolled back add) keep their reason and kind. Returns the error
-    when the records lock cannot be taken, in which case nothing is written.
-    Setting *cancel* ends the wait for that lock with ``asyncio.CancelledError``.
+    A file that ingests cleanly needs no step: its new source row holds nothing out.
+    A write that cannot take the lock is logged, and those files are tried again next sync.
     """
-    dropped = list(succeeded)
-    held = list(failed)
-    marked = {name: fhash for name in held if (fhash := pending_hashes.get(name))}
-
-    def _merge(records: SkipRecords) -> None:
-        for name in dropped:
-            records.markers.pop(name, None)
-        records.markers.update(marked)
-        records.reasons.update({name: reasons[name] for name in held if name in reasons})
-        records.kinds.update(dict.fromkeys(marked, SkipKind.FAILED))
-
+    held = {
+        name: HeldRecord(HeldOut.FAILED, fhash, reasons.get(name, _NO_REASON))
+        for name in failed
+        if (fhash := pending_hashes.get(name))
+    }
     try:
-        with _records_wait_ends_the_sync():
-            update_skip_records(records_root, _merge, cancel)
-    except SkipRecordsLockError as error:
-        log.error("%s", error)
-        return str(error)
-    return None
+        _retry_after_lock_timeout(lambda: store.hold_failed(held))
+    except LockTimeoutError as error:
+        log.error("Could not hold %d failed file(s) out of the next sync: %s", len(held), error)
 
 
 def _report_index_mismatch(store: Store) -> IndexMismatch | None:
@@ -1092,9 +1069,9 @@ def _reconcile_missing(
     data-loss case (a scanned PDF that never made it into the index yet reported no
     error). Everything legitimately not indexed is excluded: a failed extraction is in
     ``failed``, a zero-text file this run attempted is in ``skipped``, a file this run
-    held out on its skip marker is in ``held``, and an unsupported type was never
+    held out on its record is in ``held``, and an unsupported type was never
     returned by discovery in the first place. ``held`` is the run's held-out set, not
-    the marker file: a stale marker (file edited since it failed) must not hide a drop.
+    every record: a stale record (file edited since it failed) must not hide a drop.
     """
     accounted = {s["filename"] for s in sources} | set(failed) | set(skipped) | set(held)
     return sorted(name for name in disk_files if name not in accounted)
@@ -1142,8 +1119,8 @@ def _forget_ignored(sources: list[SourceRecord], rules: IgnoreRules) -> list[str
     """Drop sources the patterns now exclude from the index. Returns what went.
 
     A corpus-wide pass: it reads every source, so one worker of a fan-out must
-    not run it. No skip marker is written either, because the ignore file is
-    itself the durable statement -- a marker could only outlive it and hold a
+    not run it. No held-out record is written either, because the ignore file is
+    itself the durable statement -- a record could only outlive it and hold a
     source out after its pattern was deleted. Deleting the pattern brings the
     source back on the next sync.
     """
@@ -1406,7 +1383,7 @@ async def sync(
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
     When *cancel* is set, planning and processing stop between files without
     data loss (completed work is flushed) and CancelledError is raised.
-    When *retry_skipped* is set, the failed-file skip markers are cleared so this
+    When *retry_skipped* is set, the records of failed files are released so this
     sync attempts those files again; *force_rebuild* clears removals too.
     When *prune_ignored* is set, sources a ``.lilbeeignore`` now excludes are
     dropped from the index. Off by default: the patterns govern what sync takes
@@ -1424,9 +1401,7 @@ async def sync(
 
     config.documents_dir.mkdir(parents=True, exist_ok=True)
     index_mismatch = _report_index_mismatch(_store)
-    records_root = _prepare_skip_records(
-        shard, force_rebuild=force_rebuild, retry_skipped=retry_skipped, cancel=cancel
-    )
+    corpus_root = await _corpus_root(_store, shard, retry_skipped=retry_skipped)
     if shard is None and (specs := plan_fanout()):
         merged = await _sync_across_workers(
             specs,
@@ -1439,19 +1414,19 @@ async def sync(
         )
         return merged.model_copy(update={"index_mismatch": index_mismatch})
 
-    rules = IgnoreRules.for_corpus(records_root)
+    rules = IgnoreRules.for_corpus(corpus_root)
     scan = discover_corpus(shard, rules)
     disk_files = scan.files
     sources = _sources_in_scope(_store, shard)
     existing_sources = {s["filename"]: s for s in sources}
-    skip_markers = load_skip_markers(records_root)
+    held_hashes = await to_ingest_thread(_held_hashes, _store)
 
     failed: dict[str, None] = {}
-    # Refused formats start the run skipped; they get no skip marker (no planned hash).
+    # Refused formats start the run skipped; they get no held-out record (no planned hash).
     skipped: dict[str, OcrReport | None] = dict.fromkeys(scan.excluded)
     # filename → why it was skipped/failed (for reporting)
     reasons: dict[str, str] = {name: why.value for name, why in scan.excluded.items()}
-    flush_failed: set[str] = set()
+    retry_next: set[str] = set()
     _log_excluded(scan.excluded)
 
     # Opt-in, and corpus-wide: a worker reads one slice of the sources, so it
@@ -1474,7 +1449,7 @@ async def sync(
     # add: repointed in place so its chunks and embeddings are reused, not rebuilt.
     state = _StreamedPlan(corpus_total=len(disk_files))
     added, updated, pending_hashes = state.added, state.updated, state.pending_hashes
-    plan_batches = _plan_batches(disk_files, existing_sources, skip_markers, moves, state, cancel)
+    plan_batches = _plan_batches(disk_files, existing_sources, held_hashes, moves, state, cancel)
 
     # Snapshot the cumulative truncation counter so the delta over this sync can
     # surface "N chunks truncated" instead of being lost in per-chunk debug logs.
@@ -1503,30 +1478,22 @@ async def sync(
                     quiet=quiet,
                     on_progress=on_progress,
                     cancel=cancel,
-                    flush_failed=flush_failed,
+                    retry_next=retry_next,
                     reasons=reasons,
                 )
         if cancel is not None and cancel.is_set():
             # The stream stops feeding on cancel, so ingest can drain its
             # admitted files and return without raising. A cancelled run must
-            # not go on to write skip markers or reconcile an unplanned corpus.
+            # not go on to write held-out records or reconcile an unplanned corpus.
             raise asyncio.CancelledError
     finally:
         # Idempotent, and the only close when the stream is never consumed.
         await plan_batches.aclose()
     relocated = state.relocated
 
-    # A flush failure is a transient store-side problem, not a verdict on the
-    # file: leaving it unmarked re-plans it next sync instead of skipping it.
-    marker_failed = [name for name in (*failed, *skipped) if name not in flush_failed]
-    skip_records_error = _persist_skip_records(
-        records_root,
-        pending_hashes,
-        reasons,
-        succeeded=[*added, *updated],
-        failed=marker_failed,
-        cancel=cancel,
-    )
+    # A flush or engine failure is not a verdict on the file: it is planned again next sync.
+    held = [name for name in (*failed, *skipped) if name not in retry_next]
+    await to_ingest_thread(_persist_failures, _store, pending_hashes, reasons, held)
 
     if shard is None:
         # The passes are corpus-wide, so a fan-out runs them once, in the parent.
@@ -1560,10 +1527,9 @@ async def sync(
         failed=list(failed),
         skipped=list(skipped),
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
-        held_out=describe_failures(records_root, state.held_out),
+        held_out=_describe_failures(_store, state.held_out),
         truncated=get_services().embedder.truncated_total - truncated_before,
         index_mismatch=index_mismatch,
-        skip_records_error=skip_records_error,
     )
     on_progress(
         EventType.SYNC_DONE,
@@ -1729,7 +1695,7 @@ def _over_limit_result(
     pages_done: list[int],
     on_progress: DetailedProgressCallback,
 ) -> _IngestResult:
-    """A file over the per-file chunk limit, recorded as skipped and skip-marked at its hash."""
+    """A file over the per-file chunk limit, recorded as skipped and held out at its hash."""
     log.warning("Skipped %s: %s", entry.name, exc)
     with contextlib.suppress(TaskCancelledError):
         on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="skipped", chunks=0))
@@ -1775,7 +1741,7 @@ async def ingest_stream(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: CancelSignal | None = None,
-    flush_failed: set[str] | None = None,
+    retry_next: set[str] | None = None,
     reasons: dict[str, str] | None = None,
 ) -> None:
     """Ingest a stream of planned file batches, optionally showing a Rich progress bar.
@@ -1897,7 +1863,7 @@ async def ingest_stream(
                     on_progress=on_progress,
                     progress=progress,
                     ptask=ptask,
-                    flush_failed=flush_failed,
+                    retry_next=retry_next,
                     reasons=reasons,
                     cancel=cancel,
                 )
@@ -2040,7 +2006,7 @@ async def _collect_results(
     on_progress: DetailedProgressCallback = noop_callback,
     progress: Progress | None = None,
     ptask: Any = None,
-    flush_failed: set[str] | None = None,
+    retry_next: set[str] | None = None,
     reasons: dict[str, str] | None = None,
     cancel: CancelSignal | None = None,
 ) -> None:
@@ -2083,6 +2049,9 @@ async def _collect_results(
                     continue
                 completed_count += 1
                 status = _classify_result(result, added, updated, failed, skipped, reasons)
+                if retry_next is not None and isinstance(result.error, ProviderError):
+                    # The model engine failed, not the file: a later sync tries it again.
+                    retry_next.add(result.name)
                 if status is BatchStatus.INGESTED:
                     buffered_chunks = await _buffer_and_maybe_flush(
                         result,
@@ -2092,7 +2061,7 @@ async def _collect_results(
                         updated,
                         failed,
                         skipped,
-                        flush_failed,
+                        retry_next,
                         cancel,
                     )
                 elif status is BatchStatus.SKIPPED and result.needs_cleanup:
@@ -2117,7 +2086,7 @@ async def _collect_results(
         # The inner finally guarantees the sibling cancel even if the flush
         # itself raises (e.g. a cancellation landing on the to_thread await).
         try:
-            await _flush_to_end(buffer, added, updated, failed, skipped, flush_failed, cancel)
+            await _flush_to_end(buffer, added, updated, failed, skipped, retry_next, cancel)
             await to_ingest_thread(_purge_emptied_sources, to_purge)
         finally:
             try:
@@ -2149,7 +2118,7 @@ async def _buffer_and_maybe_flush(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    flush_failed: set[str] | None,
+    retry_next: set[str] | None,
     cancel: CancelSignal | None = None,
 ) -> int:
     """Buffer one ingested file, flushing at the chunk threshold; returns the new count."""
@@ -2157,7 +2126,7 @@ async def _buffer_and_maybe_flush(
     # Zero-chunk files count one unit so the buffer stays bounded.
     buffered_chunks += max(result.chunk_count, 1)
     if buffered_chunks >= _WRITE_FLUSH_CHUNKS:
-        await _flush_to_end(buffer, added, updated, failed, skipped, flush_failed, cancel)
+        await _flush_to_end(buffer, added, updated, failed, skipped, retry_next, cancel)
         buffered_chunks = 0
     return buffered_chunks
 
@@ -2168,7 +2137,7 @@ async def _flush_to_end(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    flush_failed: set[str] | None,
+    retry_next: set[str] | None,
     cancel: CancelSignal | None = None,
 ) -> None:
     """Run :func:`_flush_writes` on the ingest pool; a cancel waits for it, then propagates.
@@ -2179,9 +2148,7 @@ async def _flush_to_end(
     A write that fails under a cancel, of this caller or a set *cancel*, leaves as
     the cause of the cancel; one that escaped :func:`_flush_writes` is logged here.
     """
-    flush = ingest_thread_future(
-        _flush_writes, buffer, added, updated, failed, skipped, flush_failed
-    )
+    flush = ingest_thread_future(_flush_writes, buffer, added, updated, failed, skipped, retry_next)
     cancelled = False
     while not flush.done():
         try:
@@ -2425,16 +2392,16 @@ def _flush_writes(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    flush_failed: set[str] | None = None,
+    retry_next: set[str] | None = None,
 ) -> Exception | None:
     """Flush the buffered documents to the store; track and return a write failure.
 
     Each buffered file's page texts, chunks, cleanup delete, and source upsert
     are written by :func:`_flush_batch`. If that fails, every file in the batch
     is moved to ``failed`` since its source row did not land, and recorded in
-    *flush_failed* so the caller replans them next sync instead of skip-marking
+    *retry_next* so the caller replans them next sync instead of holding out
     them; the exception never escapes, so the caller's sibling-cancel and
-    skip-marker path always runs. The buffer is cleared either way.
+    held-out path always runs. The buffer is cleared either way.
     """
     if not buffer:
         return None
@@ -2449,8 +2416,8 @@ def _flush_writes(
             # flush failure it belongs in failed only, never both.
             skipped.pop(r.name, None)
             failed[r.name] = None
-            if flush_failed is not None:
-                flush_failed.add(r.name)
+            if retry_next is not None:
+                retry_next.add(r.name)
         return exc
     finally:
         buffer.clear()

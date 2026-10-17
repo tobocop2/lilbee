@@ -223,7 +223,7 @@ class StatusResponse(BaseModel):
     with ``config.embedding_model`` to tell a stale index before a search refuses it."""
     entities: StatusEntityInfo | None = None
     skipped: list[SkippedSource] = []
-    """Files a skip marker holds out of the index, capped; ``skipped_total`` is the real count."""
+    """Failed files held out of the index, capped; ``skipped_total`` is the real count."""
     skipped_total: int = 0
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
@@ -498,7 +498,6 @@ class SyncSummary(BaseModel):
     held_out: list[SkippedSource] = []
     truncated: int = 0
     index_mismatch: IndexMismatch | None = None
-    skip_records_error: str | None = None
 
 
 class AddSummary(BaseModel):

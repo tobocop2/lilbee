@@ -77,7 +77,7 @@ def slice_of(name: str, count: int) -> int:
     return next(
         index
         for index in range(count)
-        if ShardId(index=index, count=count, records_root=cfg.data_root).owns(name)
+        if ShardId(index=index, count=count, corpus_root=cfg.data_root).owns(name)
     )
 
 
@@ -674,7 +674,7 @@ class TestAStoppedSync:
             await library.sync()
 
         fanned, single = await _play(tmp_path, history)
-        slice_zero = ShardId(index=0, count=2, records_root=cfg.data_root)
+        slice_zero = ShardId(index=0, count=2, corpus_root=cfg.data_root)
         reports = [f"report{index}.txt" for index in range(8)]
         assert [name for name in reports if slice_zero.owns(name)] == [
             name for name in kept[0] if name.startswith("report")
@@ -771,7 +771,7 @@ class TestWorkerMovePool:
     def _pool(self, library, *, disk_files=(), gone=()):
         from lilbee.data.ingest.ignore import IgnoreRules
 
-        shard = ShardId(index=0, count=2, records_root=cfg.data_root)
+        shard = ShardId(index=0, count=2, corpus_root=cfg.data_root)
         rules = IgnoreRules.for_corpus(cfg.data_root)
         files = {name: library.documents / name for name in disk_files}
         return pipeline_mod._worker_move_pool(Store(cfg), shard, files, set(gone), rules)

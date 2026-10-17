@@ -6,32 +6,25 @@ import asyncio
 import re
 import threading
 from collections.abc import Callable
-from contextlib import closing
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 import pytest
-from filelock import BaseFileLock, ReadWriteLock
+from filelock import ReadWriteLock
 
 import lilbee.app.services as svc_mod
 from lilbee.app import dataset as dataset_mod
 from lilbee.app.ingest import register_sources, remove_documents_durably
-from lilbee.app.reset import perform_reset
 from lilbee.app.settings import apply_settings_update
 from lilbee.cli.tui.widgets import model_bar as model_bar_mod
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest.pipeline import sync as pipeline_sync
-from lilbee.data.ingest.skip_marker import (
-    SKIP_MARKER_FILENAME,
-    SkipRecordsWaitCancelledError,
-    load_skip_kinds,
-    skip_records_lock,
-)
 from lilbee.data.store import Store
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
+    LibraryWaitCancelledError,
     ResetRefusedError,
     SyncRunningError,
     _HoldKind,
@@ -47,13 +40,10 @@ from lilbee.wiki.generation import run_full_build, run_full_synthesize
 from lilbee.wiki.lazy import generate_stub_page
 from tests.conftest import make_mock_services
 
-_RECORDS_LOCK = "records"
 _SYNC_LOCK = "sync"
 _SYNC_LOCK_FILE = "sync.lock"
-_RECORDS_LOCK_FILE = SKIP_MARKER_FILENAME + ".lock"
 # Only a hang guard: no assertion reads a duration.
 _HANG_GUARD_S = 30.0
-_GONE_HASH = "0" * 64
 
 
 @pytest.fixture(autouse=True)
@@ -87,30 +77,7 @@ class _Takes:
         self.sync_write_takes = 0
         self.sync_write_waits: list[float | None] = []
         self.sync_read_takes = 0
-        self.records_takes = 0
-        self._watch_records_lock(monkeypatch)
         self._watch_sync_lock(monkeypatch)
-
-    def _watch_records_lock(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        real_acquire = BaseFileLock.acquire
-        real_release = BaseFileLock.release
-        takes = self
-
-        def acquire(lock, *args, **kwargs):
-            proxy = real_acquire(lock, *args, **kwargs)
-            if Path(lock.lock_file).name == _RECORDS_LOCK_FILE:
-                takes.records_takes += 1
-                takes._change(_RECORDS_LOCK, 1)
-            return proxy
-
-        def release(lock, *args, **kwargs):
-            # filelock releases a lock again when it deletes the object; that one is no hold.
-            if Path(lock.lock_file).name == _RECORDS_LOCK_FILE and lock.lock_counter:
-                takes._change(_RECORDS_LOCK, -1)
-            return real_release(lock, *args, **kwargs)
-
-        monkeypatch.setattr(BaseFileLock, "acquire", acquire)
-        monkeypatch.setattr(BaseFileLock, "release", release)
 
     def _watch_sync_lock(self, monkeypatch: pytest.MonkeyPatch) -> None:
         real_write = ReadWriteLock.acquire_write
@@ -245,33 +212,25 @@ class TestTheServicesAreBuiltUnderNoLibraryLock:
         _PATHS_THAT_BUILD[path](notes)
 
         assert builds.held_at_build == [[]]
-        assert takes.records_takes > 0
 
-    def test_a_plain_add_builds_no_services(self, notes, takes, builds):
+    def test_a_plain_add_builds_under_no_library_lock(self, notes, takes, builds):
         register_sources([notes])
 
-        assert builds.held_at_build == []
-        assert takes.records_takes > 0
+        assert builds.held_at_build == [[]]
         assert takes.sync_write_takes == 0
         assert _registry() == {"notes": str(notes.resolve())}
 
-    def test_an_add_that_needs_the_owner_builds_between_its_two_passes(self, notes, takes, builds):
-        released_first: list[tuple[bool, int]] = []
-        builds.on_build.append(
-            lambda: released_first.append((takes.records_takes > 0, takes.sync_write_takes))
-        )
+    def test_an_add_that_needs_the_owner_builds_before_it_takes_the_owner(
+        self, notes, takes, builds
+    ):
+        sync_takes_at_build: list[int] = []
+        builds.on_build.append(lambda: sync_takes_at_build.append(takes.sync_write_takes))
 
         _add_that_takes_a_source_in(notes)
 
-        assert released_first == [(True, 0)]
+        assert sync_takes_at_build == [0]
+        assert takes.sync_write_takes == 1
         assert builds.held_at_build == [[]]
-
-    def test_the_recorder_sees_a_build_under_the_records_lock(self, notes, takes, builds):
-        """Control: the recorder names the records lock when a build runs under it."""
-        with skip_records_lock(cfg.data_root):
-            svc_mod.build_services(cfg)
-
-        assert builds.held_at_build == [[_RECORDS_LOCK]]
 
 
 def _full_wiki_build(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -366,7 +325,6 @@ class TestARebuildAfterAReset:
 
         assert summary["count"] == 0
         assert builds.held_at_build == [[], [_SYNC_LOCK]]
-        assert takes.records_takes == 0
         assert caplog.records == []
 
     def test_a_rebuild_under_the_sync_lock_raises_nothing(self, takes, builds):
@@ -379,42 +337,20 @@ class TestARebuildAfterAReset:
         assert builds.held_at_build == [[], [_SYNC_LOCK]]
 
 
-def _cancelled_add(notes: Path, cancel: threading.Event) -> None:
-    register_sources([notes], cancel=cancel)
-
-
-def _cancelled_remove(notes: Path, cancel: threading.Event) -> None:
-    remove_documents_durably(["work/plan.md"], cancel=cancel)
-
-
-_PATHS_THAT_TAKE_A_CANCEL = {"add": _cancelled_add, "remove": _cancelled_remove}
-
-
 class TestACancelSetAtTheFirstBuild:
-    @pytest.mark.parametrize("path", list(_PATHS_THAT_TAKE_A_CANCEL))
-    def test_the_cancel_is_reported_with_nothing_changed(self, path, notes, takes, builds):
+    def test_the_add_is_cancelled_with_nothing_changed(self, notes, takes, builds):
         _register_work(notes)
         cancel = threading.Event()
         builds.on_build.append(cancel.set)
 
-        with pytest.raises(SkipRecordsWaitCancelledError):
-            _PATHS_THAT_TAKE_A_CANCEL[path](notes, cancel)
+        with pytest.raises(LibraryWaitCancelledError):
+            register_sources([notes], cancel=cancel)
 
         assert builds.held_at_build == [[]]
         assert _registry() == {"work": str((notes / "work").resolve())}
-        assert load_skip_kinds(cfg.data_root) == {}
         assert takes.held() == []
 
 
-def _reset(notes: Path) -> None:
-    _register_work(notes)
-    perform_reset()
-
-
-_PATHS_THAT_TAKE_BOTH_LOCKS = {
-    "add that takes a source in": _add_that_takes_a_source_in,
-    "reset": _reset,
-}
 _A_SYNC_RUNS = "A sync is running."
 _FORMS_OF_THE_OWNER = {
     "a change": lambda: library_held(cfg, _A_SYNC_RUNS),
@@ -422,59 +358,33 @@ _FORMS_OF_THE_OWNER = {
 }
 
 
-class TestTheSyncLockIsTakenBeforeTheRecordsLock:
-    @pytest.mark.parametrize("path", list(_PATHS_THAT_TAKE_BOTH_LOCKS))
-    def test_no_records_lock_is_open_when_a_take_of_the_sync_lock_starts(
-        self, path, notes, takes, builds
-    ):
-        held_at_take: list[list[str]] = []
-        takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
-
-        _PATHS_THAT_TAKE_BOTH_LOCKS[path](notes)
-
-        assert held_at_take
-        assert [held for held in held_at_take if _RECORDS_LOCK in held] == []
-        assert takes.records_takes > 0
-        assert takes.held() == []
-
-    def test_the_recorder_sees_a_take_of_the_sync_lock_under_the_records_lock(self, takes):
-        """Control: the recorder names the records lock when the sync lock is taken under it."""
-        held_at_take: list[list[str]] = []
-        takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
-
-        with (
-            skip_records_lock(cfg.data_root),
-            closing(
-                ReadWriteLock(str(cfg.data_root / _SYNC_LOCK_FILE), is_singleton=False)
-            ) as lock,
-        ):
-            lock.acquire_write(blocking=False)
-
-        assert held_at_take == [[_RECORDS_LOCK]]
-
+class TestTheOwnerHoldsTheSyncLock:
     @pytest.mark.parametrize("form", list(_FORMS_OF_THE_OWNER))
-    def test_the_owner_holds_both_locks_for_its_block_and_frees_both(self, form, takes):
+    def test_the_owner_holds_the_sync_lock_for_its_block_and_frees_it(self, form, takes):
         held_at_take: list[list[str]] = []
         takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
 
         with _FORMS_OF_THE_OWNER[form]() as hold:
             assert hold.config is cfg
-            assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
+            assert takes.held() == [_SYNC_LOCK]
 
         assert held_at_take == [[]]
-        assert (takes.sync_write_takes, takes.records_takes) == (1, 1)
+        assert takes.sync_write_takes == 1
         assert takes.held() == []
 
     @pytest.mark.parametrize(
         ("form", "refusal"),
         [("a change", SyncRunningError), ("a reset", ResetRefusedError)],
     )
-    def test_a_held_sync_lock_refuses_the_owner_before_the_records_lock(self, form, refusal, takes):
-        with _syncs_held_off(cfg.data_root, _A_SYNC_RUNS):
-            with pytest.raises(refusal), _FORMS_OF_THE_OWNER[form]():
-                pytest.fail("the block ran under a held sync lock")
+    def test_a_held_sync_lock_refuses_the_owner(self, form, refusal, takes):
+        with (
+            _syncs_held_off(cfg.data_root, _A_SYNC_RUNS),
+            pytest.raises(refusal),
+            _FORMS_OF_THE_OWNER[form](),
+        ):
+            pytest.fail("the block ran under a held sync lock")
 
-            assert takes.records_takes == 0
+        assert takes.held() == []
 
     @pytest.mark.parametrize(
         ("kind", "refusal"),
@@ -482,7 +392,7 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
     )
     def test_each_kind_of_the_owner_takes_the_sync_lock_itself(self, kind, refusal, takes):
         with _library_hold(cfg, kind):
-            assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
+            assert takes.held() == [_SYNC_LOCK]
 
         with (
             _syncs_held_off(cfg.data_root, _A_SYNC_RUNS),
@@ -491,7 +401,7 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
         ):
             pytest.fail("the block ran under a held sync lock")
 
-        assert (takes.sync_write_takes, takes.records_takes) == (3, 1)
+        assert takes.sync_write_takes == 3
 
     def test_the_form_of_a_reset_takes_no_wait(self, takes):
         with library_held_for_reset(cfg):

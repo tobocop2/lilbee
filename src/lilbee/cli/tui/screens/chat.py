@@ -64,7 +64,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     remember_from_input,
     unregister_added_roots,
 )
-from lilbee.cli.tui.thread_safe import WorkerCancel, call_from_thread, post_from_thread
+from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
     PATH_ARG_COMMANDS,
@@ -90,14 +90,12 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
-from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
 from lilbee.data.store import (
     ChunkType,
     EmbeddingModelMismatchError,
     SearchScope,
     scope_to_chunk_type,
 )
-from lilbee.data.types import SyncResult
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
@@ -932,7 +930,6 @@ class ChatScreen(Screen[None]):
             if registered and not add_indexed_anything(registered, sync_result):
                 raise RuntimeError(skipped_msg)
             call_from_thread(self, self.notify, skipped_msg, severity="warning")
-        self._report_unsaved_skip_records(sync_result)
         if sync_result.relocated:
             call_from_thread(
                 self,
@@ -1218,10 +1215,7 @@ class ChatScreen(Screen[None]):
             return
 
         try:
-            remove_documents_durably([name], cancel=WorkerCancel())
-        except SkipRecordsWaitCancelledError:
-            call_from_thread(self, self.notify, msg.CMD_DELETE_CANCELLED)
-            return
+            remove_documents_durably([name])
         except LIBRARY_REFUSALS as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
             return
@@ -2498,12 +2492,6 @@ class ChatScreen(Screen[None]):
                 msg.SYNC_HELD_OUT.format(count=len(result.held_out)),
                 severity="warning",
             )
-        self._report_unsaved_skip_records(result)
-
-    def _report_unsaved_skip_records(self, result: SyncResult) -> None:
-        """Show the error when a sync could not save which files it held out."""
-        if result.skip_records_error is not None:
-            call_from_thread(self, self.notify, result.skip_records_error, severity="error")
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""

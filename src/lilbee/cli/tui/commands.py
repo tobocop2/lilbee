@@ -7,12 +7,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 from textual.command import Hit, Hits, Provider
 
+from lilbee.app.services import get_services
 from lilbee.catalog import display_label_for_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand, get_command
-from lilbee.cli.tui.thread_safe import WorkerCancel, call_from_thread
-from lilbee.core.config import cfg
-from lilbee.data.ingest.skip_marker import SkipRecordsLockError, clear_failed_markers
+from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.runtime.lock import LockTimeoutError
 
 log = logging.getLogger(__name__)
 
@@ -148,15 +148,15 @@ class LilbeeCommandProvider(Provider):
         self._app.action_run_sync()
 
     def _action_retry_skipped(self) -> None:
-        """Clear the failed-file markers and start a sync, like ``lilbee sync --retry-skipped``."""
+        """Release the failed files and start a sync, like ``lilbee sync --retry-skipped``."""
         self._app.run_worker(self._retry_skipped, thread=True, exit_on_error=False)
 
     def _retry_skipped(self) -> None:
-        """Clear the markers off the UI thread, since the records lock can wait."""
+        """Release the failed files off the UI thread, since the index write lock can wait."""
         app = self._app
         try:
-            cleared = clear_failed_markers(cfg.data_root, WorkerCancel())
-        except SkipRecordsLockError as exc:
+            cleared = get_services().store.release_failed()
+        except LockTimeoutError as exc:
             call_from_thread(app, app.notify, str(exc), severity="error")
             return
         call_from_thread(app, app.notify, msg.retry_skipped_message(len(cleared)))

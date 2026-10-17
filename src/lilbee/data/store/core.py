@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack, suppress
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import pyarrow as pa
@@ -51,6 +51,7 @@ from lilbee.runtime.progress import (
 )
 
 from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
+from .held_import import legacy_files, read_legacy_records, remove_legacy_files
 from .lance_helpers import (
     _CHUNK_COLUMN,
     _chunk_type_predicate,
@@ -89,6 +90,7 @@ from .types import (
     EmbeddingModelMismatchError,
     EntitySchemaState,
     HeldOut,
+    HeldRecord,
     MemoryKind,
     MemoryRow,
     PageTextRecord,
@@ -221,8 +223,12 @@ _SOURCE_ID = "source_id"
 _UPGRADE_THREAD_PREFIX = "library-upgrade"
 # The ``_sources`` column that holds a source's path.
 _PATH = "path"
-# The ``_sources`` column that keeps a row out of every listing.
+# The ``_sources`` column that names why a sync holds a row's path out (``HeldOut``).
 _HELD_OUT = "held_out"
+# The content hash a sync holds the path out at, and the reason shown for it.
+_HELD_HASH = "held_hash"
+_HELD_REASON = "held_reason"
+_HELD_COLUMNS = (_HELD_OUT, _HELD_HASH, _HELD_REASON)
 
 # Tables that hold a source's rows, deleted with the source. The concept
 # nodes/edges tables carry no source column (corpus-level aggregates).
@@ -251,8 +257,16 @@ _OLD_PATH = "filename"
 # The ``_meta`` rows an upgrade has yet to stamp; a store stamped 1 keeps 1.
 _UNSTAMPED = f"schema_version >= 2 AND schema_version < {META_SCHEMA_VERSION}"
 
-# The source rows a listing shows: neither held out nor a wiki page.
-_LISTED = f"{_HELD_OUT} IS NULL AND source_type != '{SourceType.WIKI}'"
+# The source rows a listing shows: each that holds a document, failed at a later edit or not.
+_LISTED = (
+    f"source_type != '{SourceType.WIKI}' AND ({_HELD_OUT} IS NULL"
+    f" OR {_HELD_OUT} = '{HeldOut.FAILED}' AND file_hash IS NOT NULL)"
+)
+# The source rows a move found by a sync carries: the listed ones and every failure.
+_MOVABLE = (
+    f"source_type != '{SourceType.WIKI}'"
+    f" AND ({_HELD_OUT} IS NULL OR {_HELD_OUT} = '{HeldOut.FAILED}')"
+)
 
 # The columns two citation rows share when they are one citation of two sources.
 _CITATION_SAME_COLUMNS = (
@@ -298,6 +312,14 @@ _SOURCE_STAT_BATCH_ROWS = 2000
 _RELOCATE_HOLD_MOVES = 2000
 
 _NULL_TEXT_SQL = "CAST(NULL AS STRING)"
+
+# What a dropped source row a citation names keeps: its path, and no record a sync reads.
+_CITED_ONLY_SQL = {
+    _HELD_OUT: f"'{HeldOut.REMOVED}'",
+    "chunk_count": "0",
+    _HELD_HASH: _NULL_TEXT_SQL,
+    _HELD_REASON: _NULL_TEXT_SQL,
+}
 
 # Beside the tables: the checkpoint up to which the wiki's page index covers the source rows.
 _WIKI_REFRESHED_NAME = ".wiki_refreshed"
@@ -466,7 +488,7 @@ def _id_chunks(rows: list[dict[str, Any]]) -> list[SearchChunk]:
 
 def _source_record(row: Mapping[str, Any]) -> SourceRecord:
     """The ``SourceRecord`` a ``_sources`` row shows: its path as ``filename``, no id."""
-    shown = {name: value for name, value in row.items() if name not in (_SOURCE_ID, _HELD_OUT)}
+    shown = {name: value for name, value in row.items() if name not in (_SOURCE_ID, *_HELD_COLUMNS)}
     shown[_OLD_PATH] = shown.pop(_PATH)
     return cast("SourceRecord", shown)
 
@@ -474,7 +496,7 @@ def _source_record(row: Mapping[str, Any]) -> SourceRecord:
 def _stored_row(record: Mapping[str, Any], source_id: str) -> dict[str, Any]:
     """The ``_sources`` row of a ``SourceRecord`` that *source_id* names."""
     row = {name: value for name, value in record.items() if name != _OLD_PATH}
-    return {_SOURCE_ID: source_id, _PATH: record[_OLD_PATH], **row, _HELD_OUT: None}
+    return {_SOURCE_ID: source_id, _PATH: record[_OLD_PATH], **row, **dict.fromkeys(_HELD_COLUMNS)}
 
 
 def _at_or_below(path: str, roots: set[str]) -> bool:
@@ -503,21 +525,21 @@ def _members_by_archive(names: Iterable[str], filenames: Iterable[str]) -> dict[
 
 
 def _held_sources(sources: LanceTable, names: Iterable[str]) -> set[str]:
-    """The *names* that hold a listed row in the source table."""
+    """The *names* that hold a row a move carries in the source table."""
     wanted = sorted(names)
     held: set[str] = set()
     for start in range(0, len(wanted), _SOURCE_STAT_BATCH_ROWS):
         quoted = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
-        query = sources.search().where(f"{_PATH} IN ({quoted}) AND {_LISTED}").select([_PATH])
+        query = sources.search().where(f"{_PATH} IN ({quoted}) AND {_MOVABLE}").select([_PATH])
         held.update(row[_PATH] for row in query.limit(None).to_list())
     return held
 
 
 def _source_rows(sources: LanceTable, names: list[str]) -> dict[str, dict[str, Any]]:
-    """The listed row the source table holds for each of *names*, by path."""
+    """The row a move carries that the source table holds for each of *names*, by path."""
     if not names:
         return {}
-    query = sources.search().where(f"{_PATH} IN ({_in_list(names)}) AND {_LISTED}")
+    query = sources.search().where(f"{_PATH} IN ({_in_list(names)}) AND {_MOVABLE}")
     return {row[_PATH]: row for row in query.limit(None).to_list()}
 
 
@@ -530,6 +552,47 @@ def _listed_matching(search: str | None) -> str:
 def _md5(text: str) -> str:
     """The id the migration gives the source at *text*, as LanceDB's ``md5`` computes it."""
     return hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _holds_document(row: Mapping[str, Any]) -> bool:
+    """Whether a document source *row* holds an indexed document, as ``_LISTED`` reads it."""
+    kind = row[_HELD_OUT]
+    return kind is None or (kind == HeldOut.FAILED and row["file_hash"] is not None)
+
+
+def _held_row(row: dict[str, Any], record: HeldRecord, *, holds_document: bool) -> dict[str, Any]:
+    """*row* with *record*; a failure keeps the document the row holds, a removal holds none."""
+    held = {
+        **row,
+        _HELD_OUT: record.kind.value,
+        _HELD_HASH: record.file_hash,
+        _HELD_REASON: record.reason,
+    }
+    if record.kind is HeldOut.FAILED and holds_document:
+        return held
+    return {**held, "file_hash": None, "chunk_count": 0}
+
+
+def _hold_rows(
+    sources: LanceTable, held: Mapping[str, HeldRecord], new_row: Callable[[str], dict[str, Any]]
+) -> None:
+    """Give each path of *held* its record in one commit; *new_row* makes a missing row."""
+    rows: dict[str, dict[str, Any]] = {}
+    paths = sorted(held)
+    for start in range(0, len(paths), _SOURCE_STAT_BATCH_ROWS):
+        where = f"{_PATH} IN ({_in_list(paths[start : start + _SOURCE_STAT_BATCH_ROWS])})"
+        found = sources.search().where(where).limit(None).to_list()
+        rows.update((row[_PATH], row) for row in found)
+    written = [
+        _held_row(
+            rows[path] if path in rows else new_row(path),
+            record,
+            holds_document=path in rows and _holds_document(rows[path]),
+        )
+        for path, record in held.items()
+    ]
+    merge = sources.merge_insert(_SOURCE_ID).when_matched_update_all().when_not_matched_insert_all()
+    merge.execute(pa.Table.from_pylist(written, schema=sources.schema))
 
 
 def _keyed_by_path(db: LanceDBConnection) -> bool:
@@ -562,6 +625,24 @@ def _upgrade_steps(db: LanceDBConnection, names: list[str]) -> list[tuple[str, L
         for name, table in tables
         if name == SOURCES_TABLE or _PATH_KEY_BY_TABLE[name] in table.schema.names
     ]
+
+
+def _held_unmigrated(db: LanceDBConnection, data_root: Path) -> bool:
+    """Whether ``_sources`` lacks a held-out record column, or a record file is at *data_root*."""
+    if legacy_files(data_root):
+        return True
+    sources = open_committed(db, SOURCES_TABLE)
+    return sources is not None and not {_HELD_HASH, _HELD_REASON} <= set(sources.schema.names)
+
+
+def _add_held_columns(db: LanceDBConnection) -> None:
+    """Give an existing ``_sources`` the held-out record columns it lacks. Lock held."""
+    sources = open_committed(db, SOURCES_TABLE)
+    if sources is None:
+        return
+    missing = [name for name in (_HELD_HASH, _HELD_REASON) if name not in sources.schema.names]
+    if missing:
+        sources.add_columns(dict.fromkeys(missing, _NULL_TEXT_SQL))
 
 
 def _index_names(table: LanceTable) -> dict[str, list[str]]:
@@ -1113,10 +1194,14 @@ class Store:
         db = LanceDBConnection(
             str(self._config.lancedb_dir), read_consistency_interval=READ_CONSISTENCY_INTERVAL
         )
-        if _upgrade_pending(db):
+        if self._upgrade_needed(db):
             self._upgrade_library(db)
         self._db = db
         return db
+
+    def _upgrade_needed(self, db: LanceDBConnection) -> bool:
+        """Whether *db* is keyed by path or holds the older held-out record files."""
+        return _upgrade_pending(db) or _held_unmigrated(db, self._config.data_root)
 
     def _upgrade_library(self, db: LanceDBConnection) -> None:
         """Upgrade *db* under the write lock, waiting for it without a deadline, and report it."""
@@ -1129,12 +1214,22 @@ class Store:
                     self._report_upgrade(LibraryUpgradeEvent(phase=UpgradePhase.WAITING))
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=None))
                 # Another process can have upgraded it during the wait.
-                if _upgrade_pending(db):
-                    self._migrate_unlocked(db)
+                if self._upgrade_needed(db):
+                    self._upgrade_unlocked(db)
             elapsed = time.monotonic() - started
             self._report_upgrade(LibraryUpgradeEvent(phase=UpgradePhase.DONE, elapsed_s=elapsed))
         finally:
             self._upgrade = None
+
+    def _upgrade_unlocked(self, db: LanceDBConnection) -> None:
+        """Run each step of the upgrade that *db* still needs. Caller holds the write lock."""
+        held = _held_unmigrated(db, self._config.data_root)
+        if held:
+            _add_held_columns(db)
+        if _upgrade_pending(db):
+            self._migrate_unlocked(db)
+        if held:
+            self._import_held_unlocked(db)
 
     def _report_upgrade(self, event: LibraryUpgradeEvent) -> None:
         """Record *event* as the upgrade's state, then pass it to the reporter."""
@@ -1180,6 +1275,28 @@ class Store:
                 where="schema_version >= 2", values={"schema_version": META_SCHEMA_VERSION}
             )
         log.info("Keyed the library at %s by source id", self._config.lancedb_dir)
+
+    def _import_held_unlocked(self, db: LanceDBConnection) -> None:
+        """Move the held-out records of the older files into ``_sources``, then delete them.
+
+        Gives each recorded path its record in one commit; a path that holds an
+        indexed document takes no removal. Lock held. The files go last, so an
+        open killed before then imports the same records again.
+        """
+        sources = ensure_table(db, SOURCES_TABLE, _sources_schema())
+        root = self._config.data_root
+        records = read_legacy_records(root)
+        if records:
+            listed = sources.search().where(_LISTED).select([_PATH]).limit(None).to_list()
+            indexed = {row[_PATH] for row in listed}
+            kept = {
+                path: record
+                for path, record in records.items()
+                if record.kind is HeldOut.FAILED or path not in indexed
+            }
+            _hold_rows(sources, kept, self._held_out_row)
+        remove_legacy_files(root)
+        log.info("Moved the held-out file records of %s into the index", root)
 
     def _hold_missing_paths(self, db: LanceDBConnection, table: LanceTable, column: str) -> None:
         """Give each path in *column* of *table* that no source row holds a row. Lock held.
@@ -2313,21 +2430,23 @@ class Store:
         return None if table is None else int(table.version)
 
     def sources_by_hash(self, hashes: Sequence[str], *, version: int) -> dict[str, list[str]]:
-        """Document sources at *version* of the source table, by content hash, for *hashes*."""
+        """Document sources at *version* of the source table, by content hash, for *hashes*.
+
+        A failed file counts at the hash it failed at.
+        """
         found: dict[str, list[str]] = {}
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return found
         table.checkout(version)
         documents = f"source_type != '{SourceType.IMPORTED}' AND {_LISTED}"
+        failed = f"{_HELD_OUT} = '{HeldOut.FAILED}'"
         for start in range(0, len(hashes), _SOURCE_STAT_BATCH_ROWS):
-            quoted = ", ".join(
-                f"'{escape_sql_string(digest)}'"
-                for digest in hashes[start : start + _SOURCE_STAT_BATCH_ROWS]
-            )
-            query = table.search().where(f"file_hash IN ({quoted}) AND {documents}")
-            for row in query.select([_PATH, "file_hash"]).limit(None).to_list():
-                found.setdefault(row["file_hash"], []).append(row[_PATH])
+            quoted = _in_list(hashes[start : start + _SOURCE_STAT_BATCH_ROWS])
+            for column, where in (("file_hash", documents), (_HELD_HASH, failed)):
+                query = table.search().where(f"{column} IN ({quoted}) AND {where}")
+                for row in query.select([_PATH, column]).limit(None).to_list():
+                    found.setdefault(row[column], []).append(row[_PATH])
         return found
 
     def sources_checkpoint(self) -> SourcesCheckpoint:
@@ -2418,7 +2537,7 @@ class Store:
             "title": meta.title or None,
             "authors": meta.authors or None,
             "created_at": meta.created_at or None,
-            _HELD_OUT: None,
+            **dict.fromkeys(_HELD_COLUMNS),
         }
 
     def _placeholder_row(self, path: str, source_id: str) -> dict:
@@ -2653,7 +2772,8 @@ class Store:
     def _drop_source_rows_unlocked(self, source_ids: list[str]) -> None:
         """Delete the source rows of *source_ids*, holding out each that a citation names.
 
-        A held-out row keeps the path of a removed source for the citations of it.
+        A held-out row keeps the path of a removed source for the citations of it,
+        and holds nothing out of a sync.
         """
         if not source_ids:
             return
@@ -2661,7 +2781,7 @@ class Store:
         cited = self._cited_ids(source_ids)
         if cited:
             where = f"{_SOURCE_ID} IN ({_in_list(cited)})"
-            table.update(where=where, values={_HELD_OUT: HeldOut.REMOVED.value, "chunk_count": 0})
+            table.update(where=where, values_sql=_CITED_ONLY_SQL)
         dropped = [source_id for source_id in source_ids if source_id not in cited]
         if dropped:
             _safe_delete_unlocked(table, f"{_SOURCE_ID} IN ({_in_list(dropped)})")
@@ -2680,16 +2800,89 @@ class Store:
             self._drop_source_rows_unlocked(list(self.source_ids([filename]).values()))
         self._invalidate_source_cache()
 
-    def _remove_many_unlocked(self, names: list[str]) -> None:
-        """Delete the documents' rows and source records together.
+    def _remove_many_unlocked(
+        self, names: list[str], held: Mapping[str, HeldRecord] | None = None
+    ) -> None:
+        """Delete the documents' rows and source records together; hold out each path in *held*.
 
         All deletes run under the caller's single ``write_lock()`` so no
         reader can observe chunks whose source record is already gone; one
         ``IN`` delete per table covers the whole set.
         """
-        source_ids = list(self.source_ids(names).values())
-        self._delete_rows_of_unlocked(source_ids)
-        self._drop_source_rows_unlocked(source_ids)
+        held = held or {}
+        ids = self.source_ids(names)
+        self._delete_rows_of_unlocked(list(ids.values()))
+        self._drop_source_rows_unlocked([ids[name] for name in ids if name not in held])
+        self._hold_out_unlocked(held)
+
+    def held_records(self) -> dict[str, HeldRecord]:
+        """The record of every path a sync holds out, by path."""
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return {}
+        query = table.search().where(f"{_HELD_HASH} IS NOT NULL")
+        rows = query.select([_PATH, *_HELD_COLUMNS]).limit(None).to_list()
+        return {
+            row[_PATH]: HeldRecord(HeldOut(row[_HELD_OUT]), row[_HELD_HASH], row[_HELD_REASON])
+            for row in rows
+        }
+
+    def hold_failed(self, failed: Mapping[str, HeldRecord]) -> None:
+        """Hold each path of *failed* out of later syncs at its hash; a row keeps its document."""
+        if not failed:
+            return
+        with self._write_lock():
+            self._hold_out_unlocked(failed)
+        self._invalidate_source_cache()
+
+    def _hold_out_unlocked(self, held: Mapping[str, HeldRecord]) -> None:
+        """Give each path of *held* its record in one commit. Caller holds ``write_lock()``."""
+        if not held:
+            return
+        _hold_rows(self._sources_table(), held, self._held_out_row)
+
+    def _held_out_row(self, path: str) -> dict[str, Any]:
+        """A row for *path*, which no row holds yet: it holds no document."""
+        return self._source_row(_new_source_id(), path, "", 0, SourceType.DOCUMENT, None)
+
+    def release_held(self, paths: Iterable[str]) -> None:
+        """Hold none of *paths* out of a sync any more."""
+        wanted = sorted(set(paths))
+        if not wanted:
+            return
+        with self._write_lock():
+            for start in range(0, len(wanted), _SOURCE_STAT_BATCH_ROWS):
+                batch = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
+                self._release_unlocked(f"{_PATH} IN ({batch})")
+        self._invalidate_source_cache()
+
+    def release_failed(self) -> list[str]:
+        """Hold no failed file out of a sync any more; returns their paths, sorted."""
+        with self._write_lock():
+            released = self._release_unlocked(f"{_HELD_OUT} = '{HeldOut.FAILED}'")
+        self._invalidate_source_cache()
+        return released
+
+    def _release_unlocked(self, where: str) -> list[str]:
+        """Release the held rows *where* selects; a row that holds no document goes.
+
+        Caller holds ``write_lock()``. Returns the released paths, sorted.
+        """
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return []
+        query = table.search().where(f"({where}) AND {_HELD_HASH} IS NOT NULL")
+        rows = query.select([_SOURCE_ID, _PATH, _HELD_OUT, "file_hash"]).limit(None).to_list()
+        kept = [row[_SOURCE_ID] for row in rows if _holds_document(row)]
+        if kept:
+            table.update(
+                where=f"{_SOURCE_ID} IN ({_in_list(kept)})",
+                values_sql=dict.fromkeys(_HELD_COLUMNS, _NULL_TEXT_SQL),
+            )
+        self._drop_source_rows_unlocked(
+            [row[_SOURCE_ID] for row in rows if not _holds_document(row)]
+        )
+        return sorted(row[_PATH] for row in rows)
 
     def relocate_sources(self, moves: Sequence[SourceMove]) -> SourceRelocation:
         """Move the first of *moves* to their new names in one hold of the write lock.
@@ -2735,8 +2928,8 @@ class Store:
             if old
         ]
         if moved:
-            listed = sources.search().where(_LISTED).limit(None).to_list()
-            moved += _member_rows(listed, {old: new for new, old in taken.items()})
+            movable = sources.search().where(_MOVABLE).limit(None).to_list()
+            moved += _member_rows(movable, {old: new for new, old in taken.items()})
             self._delete_rows_of_unlocked(self._displaced_ids(moved))
             merge = sources.merge_insert(_SOURCE_ID).when_matched_update_all()
             displaced = f"{_PATH} IN ({_in_list(row[_PATH] for row in moved)})"
@@ -2911,13 +3104,16 @@ class Store:
         rows = table.search().where(under).select([_PATH]).limit(None).to_list()
         return [row[_PATH] for row in rows]
 
-    def remove_documents(self, names: list[str]) -> RemoveResult:
+    def remove_documents(
+        self, names: list[str], held: Mapping[str, HeldRecord] | None = None
+    ) -> RemoveResult:
         """Remove documents from the knowledge base by source name.
 
         Looks up known sources and deletes their chunks and source records. Never
         touches files on disk: source bytes are the user's, and a linked-in corpus
-        must never be deleted. Durable, file-aware removal (skip-markers, unlinking
-        a top-level link) lives in :func:`lilbee.app.ingest.remove_documents_durably`.
+        must never be deleted. Each path of *held* takes its record in the same
+        write, so a later sync holds it out. Durable, file-aware removal lives in
+        :func:`lilbee.app.ingest.remove_documents_durably`.
 
         Returns a RemoveResult with removed and not_found lists.
         """
@@ -2928,12 +3124,12 @@ class Store:
         removed = [name for name in targets if name in known]
         not_found = [name for name in names if name not in known]
 
-        if removed:
+        if removed or held:
             # One lock acquisition and one IN-delete per table for the whole
             # set, mirroring the batched flush path, instead of a LanceDB
             # version commit per document.
             with self._write_lock():
-                self._remove_many_unlocked(removed)
+                self._remove_many_unlocked(removed, held)
             self._invalidate_source_cache()
 
         return RemoveResult(removed=removed, not_found=not_found)

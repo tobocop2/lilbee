@@ -1437,38 +1437,9 @@ class TestDocumentsRemoveRoute:
         assert resp.status_code == 201
         assert resp.json()["removed"] == ["a.md"]
 
-    def test_a_held_records_lock_is_a_conflict(self, client, held_records_lock):
-        """A busy records lock refuses the removal with the store, markers and files untouched."""
-        from lilbee.app.services import set_services
-        from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
-        from tests.conftest import make_mock_services
-
-        (cfg.documents_dir / "a.md").write_text("kept", encoding="utf-8")
-        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
-        services = make_mock_services()
-        set_services(services)
-        try:
-            resp = client.post("/api/documents/remove", json={"names": ["a.md"]})
-        finally:
-            set_services(None)
-
-        assert resp.status_code == 409
-        assert "Could not lock" in resp.json()["detail"]
-        services.store.remove_documents.assert_not_called()
-        assert load_skip_markers(cfg.data_root) == {"scan.pdf": "h1"}
-        assert (cfg.documents_dir / "a.md").read_text(encoding="utf-8") == "kept"
-
-    async def test_a_client_that_disconnects_ends_the_wait_at_the_records_lock(
-        self, client, caplog
-    ):
-        """The server reports the disconnect on the receive channel: nothing is removed."""
-        import lilbee.app.ingest as app_ingest
-        from lilbee.app.services import set_services
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
-        from tests.conftest import make_mock_services
-
-        loop, waiting, gone = asyncio.get_running_loop(), asyncio.Event(), asyncio.Event()
+    async def test_a_client_that_disconnects_stops_the_removal_with_499(self, client, caplog):
+        """The server reports the disconnect on the receive channel: the request ends at once."""
+        waiting, gone = asyncio.Event(), asyncio.Event()
         asked_again = asyncio.Event()
         body = json.dumps({"names": ["a.md"]}).encode()
         asked: list[str] = []
@@ -1509,34 +1480,27 @@ class TestDocumentsRemoveRoute:
             "extensions": {},
             "state": {},
         }
-        (cfg.documents_dir / "a.md").write_text("kept", encoding="utf-8")
-        services = make_mock_services()
-        set_services(services)
-        call, outcome = recorded(app_ingest.remove_documents_durably)
-        try:
-            with (
-                records_lock_held_elsewhere(
-                    cfg.data_root, lambda: loop.call_soon_threadsafe(waiting.set)
-                ),
-                mock.patch.object(app_ingest, "remove_documents_durably", call),
-            ):
-                before = files_under(cfg.data_root)
-                caplog.set_level(logging.INFO, logger="lilbee.server.routes.documents")
-                request = asyncio.ensure_future(client.app(scope, receive, send))
-                listening = asyncio.ensure_future(asked_again.wait())
-                await asyncio.wait({request, listening}, return_when=asyncio.FIRST_COMPLETED)
-                listening.cancel()
-                # A message that is not a disconnect leaves the request at the lock.
-                assert not request.done() and sent == [] and not outcome.ended.is_set()
-                gone.set()
-                await request
-                await asyncio.to_thread(outcome.ended.wait)
-                assert files_under(cfg.data_root) == before
-        finally:
-            set_services(None)
+        stopped = asyncio.Event()
 
-        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
-        services.store.remove_documents.assert_not_called()
+        async def _remove_until_stopped(names):
+            waiting.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        with mock.patch("lilbee.server.handlers.delete_documents", _remove_until_stopped):
+            caplog.set_level(logging.INFO, logger="lilbee.server.routes.documents")
+            request = asyncio.ensure_future(client.app(scope, receive, send))
+            listening = asyncio.ensure_future(asked_again.wait())
+            await asyncio.wait({request, listening}, return_when=asyncio.FIRST_COMPLETED)
+            listening.cancel()
+            # A message that is not a disconnect leaves the removal running.
+            assert not request.done() and sent == [] and not stopped.is_set()
+            gone.set()
+            await request
+
+        assert stopped.is_set()
         assert [m["status"] for m in sent if m["type"] == "http.response.start"] == [499]
         assert "the client disconnected" in caplog.text
 

@@ -12,7 +12,7 @@ from lilbee.app.settings import scanned_pages_state
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, OcrMode
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
-from lilbee.data.ingest.skip_marker import describe_skips, held_out_names
+from lilbee.data.store import HeldOut
 from lilbee.data.types import SkippedSource
 
 LILBEE_LABEL_MAX_LEN = 40
@@ -140,7 +140,7 @@ class StatusResult(BaseModel):
     """The embedder that built the index; None before the first sync."""
     entities: EntityStatus | None = None
     skipped: list[SkippedSource] = []
-    """Files a skip marker holds out of the index, capped at ``STATUS_SKIPPED_LIMIT``."""
+    """Files a held-out record holds out of the index, capped at ``STATUS_SKIPPED_LIMIT``."""
     skipped_total: int = 0
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
@@ -201,8 +201,10 @@ def gather_status() -> StatusResult:
 
 def held_out_sources() -> tuple[list[SkippedSource], int]:
     """Failed files with reasons, capped at ``STATUS_SKIPPED_LIMIT``, and the real count."""
-    held_out = held_out_names(cfg.data_root)
-    return describe_skips(cfg.data_root, held_out[:STATUS_SKIPPED_LIMIT]), len(held_out)
+    held = get_services().store.held_records()
+    failed = sorted(name for name, record in held.items() if record.kind is HeldOut.FAILED)
+    shown = [SkippedSource(filename=name, reason=held[name].reason) for name in failed]
+    return shown[:STATUS_SKIPPED_LIMIT], len(failed)
 
 
 def entity_status() -> EntityStatus | None:

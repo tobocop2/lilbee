@@ -7,9 +7,8 @@ from typing import TYPE_CHECKING
 
 from lilbee.core import settings
 from lilbee.core.config import Config
-from lilbee.data.ingest.skip_marker import SkipRecords, update_skip_records
 from lilbee.data.store import Store
-from lilbee.data.types import is_under, rekeyed_source
+from lilbee.data.types import is_under
 
 if TYPE_CHECKING:
     from lilbee.runtime.lock import LibraryHold
@@ -44,30 +43,8 @@ def _shadows(moves: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _copy_records(config: Config, moves: dict[str, str]) -> None:
-    """Give each skip record of a moving source a copy at the key it takes.
-
-    A source inside another absorbed source decides for its own files, so the
-    outer source's records of them are not copied.
-    """
-    shadows = _shadows(moves)
-
-    def _copy(records: SkipRecords) -> None:
-        for old, new in moves.items():
-            for name in list(records.markers):
-                key = rekeyed_source(name, old, new)
-                if key is None or any(is_under(name, shadow) for shadow in shadows):
-                    continue
-                records.markers[key] = records.markers[name]
-                records.kinds[key] = records.kinds[name]
-                if name in records.reasons:
-                    records.reasons[key] = records.reasons[name]
-
-    update_skip_records(config.data_root, _copy)
-
-
 def _drop_shadows(store: Store, moves: dict[str, str]) -> None:
-    """Remove what an outer source indexed for the files of a source inside it.
+    """Remove what an outer source indexed or holds out for the files of a source inside it.
 
     A citation of the outer copy cites the same file and moves to the inner
     source, unless the inner source holds the same citation.
@@ -78,19 +55,9 @@ def _drop_shadows(store: Store, moves: dict[str, str]) -> None:
         ]
         if occupied:
             store.remove_documents(occupied)
+        store.release_held(name for name in store.held_records() if is_under(name, shadow))
         store.drop_citations_repeated_under(shadow, inner_old)
         store.rekey_sources_under(shadow, inner_old)
-
-
-def _prune_records(config: Config, moves: dict[str, str]) -> None:
-    """Delete the skip records at the keys the moved sources left."""
-
-    def _prune(records: SkipRecords) -> None:
-        for name in list(records.markers):
-            if any(is_under(name, old) for old in moves):
-                records.markers.pop(name)
-
-    update_skip_records(config.data_root, _prune)
 
 
 def _write_registry(config: Config, plan: AbsorbPlan) -> None:
@@ -118,7 +85,6 @@ def absorb(store: Store, plan: AbsorbPlan, hold: LibraryHold) -> None:
     from lilbee.wiki.stubs import drop_removed_sources
 
     config = hold.config
-    _copy_records(config, plan.moves)
     _drop_shadows(store, plan.moves)
     for old, new in plan.moves.items():
         store.clear_rekey_target(old, new)
@@ -128,5 +94,4 @@ def absorb(store: Store, plan: AbsorbPlan, hold: LibraryHold) -> None:
         rerender_pages(store, config, store.wiki_pages_citing([new]))
     # A source that landed on a row outside its old path left the store.
     drop_removed_sources(store, config)
-    _prune_records(config, plan.moves)
     _write_registry(config, plan)

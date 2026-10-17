@@ -10,11 +10,7 @@ from pydantic import BaseModel
 
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.data.ingest.skip_marker import (
-    SkipRecordsLockError,
-    clear_skip_markers,
-)
-from lilbee.runtime.lock import ResetRefusedError, library_held_for_reset
+from lilbee.runtime.lock import library_held_for_reset
 
 
 class ResetResult(BaseModel):
@@ -61,25 +57,20 @@ def perform_reset() -> ResetResult:
     Raises ``ResetRefusedError`` while a sync, an import, a wiki build or an add that
     moves source keys, in this process or another, runs against the same data root,
     or when the lock that shows one cannot be taken: any of them would write back
-    what the reset removed. Also raised, before anything is deleted, when the
-    held-out file list cannot be locked.
+    what the reset removed.
     """
     skipped: list[str] = []
-    try:
-        with library_held_for_reset(cfg):
-            deleted_docs = _clear_dir(cfg.documents_dir, skipped)
-            deleted_data = _clear_dir(cfg.data_dir, skipped)
+    with library_held_for_reset(cfg):
+        deleted_docs = _clear_dir(cfg.documents_dir, skipped)
+        deleted_data = _clear_dir(cfg.data_dir, skipped)
 
-            # config.toml and the skip sidecars live at data_root, next to (not inside)
-            # the two cleared dirs. Without un-registering the roots here, in the file
-            # AND in this process, the next sync walks every linked root and re-indexes
-            # it, so content reappears after a "factory reset". Other settings survive:
-            # reset deletes data, not configuration.
-            settings.delete_value(cfg.data_root, "linked_roots")
-            cfg.linked_roots = {}
-            clear_skip_markers(cfg.data_root)
-    except SkipRecordsLockError as error:
-        raise ResetRefusedError(str(error)) from error
+        # config.toml lives at data_root, next to (not inside) the two cleared
+        # dirs. Without un-registering the roots here, in the file AND in this
+        # process, the next sync walks every linked root and re-indexes it, so
+        # content reappears after a "factory reset". Other settings survive:
+        # reset deletes data, not configuration.
+        settings.delete_value(cfg.data_root, "linked_roots")
+        cfg.linked_roots = {}
 
     return ResetResult(
         deleted_docs=deleted_docs,

@@ -30,6 +30,7 @@ from lilbee.server.handlers import (
 from lilbee.server.handlers import (
     sse as _sse_h,
 )
+from tests._held import held_kinds, hold_failed
 from tests.conftest import install_fake_model
 
 _SAMPLE_CHUNK = SearchChunk(
@@ -1869,19 +1870,6 @@ class TestAddFiles:
         assert done["sync"]["held_out"] == [
             {"filename": "scan.pdf", "reason": "OCR timed out after 300s"}
         ]
-
-    async def test_done_frame_carries_the_skip_records_error(self, isolated_env):
-        test_file = isolated_env / "documents" / "test.txt"
-        test_file.write_text("test content", encoding="utf-8")
-
-        async def fake_sync(**kwargs):
-            return SyncResult(skip_records_error="records.lock could not be locked")
-
-        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
-            events = [e async for e in handlers.add_files_stream([str(test_file)])]
-
-        done = json.loads([e for e in events if e.startswith("event: done")][-1].split("data: ")[1])
-        assert done["sync"]["skip_records_error"] == "records.lock could not be locked"
 
     async def test_stream_emits_sentinel_on_sync_failure(self, isolated_env):
         """Sync failure emits one error frame and closes the stream without a done frame."""
@@ -4086,27 +4074,20 @@ class TestModelsShow:
 
 
 class TestDeleteDocuments:
-    async def test_holds_a_failed_file_out_as_a_removal(self, mock_svc):
-        from lilbee.data.ingest.skip_marker import (
-            SkipKind,
-            load_skip_kinds,
-            write_skip_markers,
-        )
-        from lilbee.data.store import RemoveResult
+    async def test_holds_a_failed_file_out_as_a_removal(self):
+        from lilbee.data.store import HeldOut, Store
+        from tests.conftest import make_mock_services
 
+        svc_mod.set_services(make_mock_services(store=Store(cfg)))
         cfg.documents_dir.mkdir(parents=True, exist_ok=True)
         (cfg.documents_dir / "scan.pdf").write_bytes(b"%PDF-1.4")
-        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
-        mock_svc.store.get_sources.return_value = []
-        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
-            removed=[], not_found=list(names)
-        )
+        hold_failed({"scan.pdf": "h1"})
 
         result = await handlers.delete_documents(["scan.pdf"])
 
         assert result.removed == ["scan.pdf"]
         assert result.not_found == []
-        assert load_skip_kinds(cfg.data_root) == {"scan.pdf": SkipKind.REMOVED}
+        assert held_kinds() == {"scan.pdf": HeldOut.REMOVED}
 
     async def test_removes_known_documents(self, mock_svc):
         from lilbee.data.store import RemoveResult
@@ -4134,7 +4115,7 @@ class TestDeleteDocuments:
         f.write_text("content")
 
         mock_svc.store.get_sources.return_value = [{"filename": "a.md"}]
-        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+        mock_svc.store.remove_documents.side_effect = lambda names, held=None: RemoveResult(
             removed=list(names), not_found=[]
         )
         result = await handlers.delete_documents(["a.md"])
@@ -6348,84 +6329,3 @@ class TestASyncLockThatCannotBeOpened:
         assert [e for e in events if e.startswith("event: done")] == []
         assert _data_root_tree() == before
         assert not (cfg.documents_dir / "note.md").exists()
-
-
-class TestACancelledRequestAtTheRecordsLock:
-    """A request that stops while it waits for the records lock ends the wait, nothing changed."""
-
-    @staticmethod
-    async def _stop_at_the_wait(request, module, target: str) -> tuple[asyncio.Future, object]:
-        """Start *request* against a held records lock and cancel it once it waits.
-
-        Returns the cancelled request and the outcome of *target*, which has ended.
-        """
-        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
-
-        loop, waiting = asyncio.get_running_loop(), asyncio.Event()
-        call, outcome = recorded(getattr(module, target))
-
-        with (
-            records_lock_held_elsewhere(
-                cfg.data_root, lambda: loop.call_soon_threadsafe(waiting.set)
-            ),
-            patch.object(module, target, call),
-        ):
-            before = files_under(cfg.data_root)
-            pending = asyncio.ensure_future(request())
-            await waiting.wait()
-            pending.cancel()
-            await asyncio.wait([pending])
-            await asyncio.to_thread(outcome.ended.wait)
-            assert files_under(cfg.data_root) == before
-        return pending, outcome
-
-    async def test_a_cancelled_delete_ends_the_wait(self, mock_svc):
-        import lilbee.app.ingest as app_ingest
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        pending, outcome = await self._stop_at_the_wait(
-            lambda: handlers.delete_documents(["a.md"]), app_ingest, "remove_documents_durably"
-        )
-
-        assert pending.cancelled()
-        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
-        mock_svc.store.remove_documents.assert_not_called()
-
-
-class TestAnAddStreamThatStopsAtTheRecordsLock:
-    """A stopped add stream is not a cancel by the user: the registration waits and lands."""
-
-    async def test_the_source_is_registered_when_the_lock_frees(self, tmp_path):
-        from tests._records_wait import recorded, records_lock_held_elsewhere
-
-        src = tmp_path / "source" / "scan.txt"
-        src.parent.mkdir()
-        src.write_text("hello world", encoding="utf-8")
-        loop, waiting = asyncio.get_running_loop(), asyncio.Event()
-        call, outcome = recorded(_ingest_h.register_sources)
-        streams: list[handlers.SseStream] = []
-
-        def _stream() -> handlers.SseStream:
-            streams.append(handlers.SseStream())
-            return streams[-1]
-
-        with (
-            patch.object(_ingest_h, "register_sources", call),
-            patch.object(_ingest_h, "SseStream", _stream),
-            records_lock_held_elsewhere(
-                cfg.data_root, lambda: loop.call_soon_threadsafe(waiting.set)
-            ) as free,
-        ):
-            pending = asyncio.ensure_future(handlers.add_files_stream([str(src)]).__anext__())
-            await waiting.wait()
-            pending.cancel()
-            async with asyncio.timeout(30):
-                while not streams[0].cancel.is_set():
-                    await asyncio.sleep(0)
-            assert not outcome.ended.is_set()
-            free()
-            await asyncio.wait([pending])
-
-        assert isinstance(pending.exception(), StopAsyncIteration)
-        assert outcome.ended.is_set() and outcome.raised is None
-        assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
