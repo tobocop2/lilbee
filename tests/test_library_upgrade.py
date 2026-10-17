@@ -633,6 +633,61 @@ class TestServerShowsTheUpgrade:
         assert health.status_code == 200
         assert after.status_code == 200
 
+    @pytest.mark.parametrize(
+        ("method", "path", "status", "marker"),
+        [
+            ("GET", "/api/health", 200, "library_upgrading"),
+            ("GET", "/api/warm/stream", 200, "event:done"),
+            ("POST", "/api/shutdown", 202, "shutting_down"),
+            ("POST", "/mcp", 200, '"jsonrpc":"2.0"'),
+        ],
+        ids=["health", "warm-stream", "shutdown", "mcp"],
+    )
+    async def test_these_routes_are_not_held_while_a_normal_route_answers_503(
+        self, library, monkeypatch, method, path, status, marker
+    ):
+        from lilbee.server import app as app_mod
+        from lilbee.server.app import create_app
+        from lilbee.server.routes import general
+        from tests.conftest import make_mock_services
+
+        monkeypatch.setattr(app_mod, "_UPGRADE_WAIT_SECONDS", 0.2)
+        monkeypatch.setattr(general, "_stop_server", mock.AsyncMock())
+        provider = mock.MagicMock()
+        provider.warm_progress.return_value = None
+        provider.role_ready.return_value = True
+        store = Store(library)
+        services_mod.set_services(make_mock_services(store=store, provider=provider))
+        mcp_initialize = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"},
+            },
+        }
+        release = threading.Event()
+        with _upgrade_held(release):
+            # The MCP transport accepts only the loopback host.
+            async with AsyncTestClient(create_app(), base_url="http://127.0.0.1:8000") as client:
+                headers = {**_headers(), "Accept": "application/json, text/event-stream"}
+                for _ in range(200):
+                    if (await client.get("/api/health", headers=headers)).json()["warnings"]:
+                        break
+                    await asyncio.sleep(0.05)
+                held = await client.get("/api/status", headers=headers)
+                response = await client.request(
+                    method, path, headers=headers, json=mcp_initialize if path == "/mcp" else None
+                )
+                release.set()
+                store.wait_for_open(30)
+
+        assert held.status_code == 503
+        assert response.status_code == status
+        assert marker in response.text.replace(" ", "")
+
     async def test_an_open_library_passes_a_request_straight_on(self):
         from lilbee.server.app import _LibraryOpenWait
         from tests.conftest import make_mock_services
