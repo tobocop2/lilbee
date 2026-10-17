@@ -342,7 +342,7 @@ def _same_file(one: str, other: str) -> bool:
 
 
 def _holds_only(address: str, entry: CrawlMeta, record: CrawlRecord) -> bool:
-    """Whether *entry*'s file holds its page's text, and is the earlier copy of no other page."""
+    """Whether *entry*'s file holds its page's text, and no page without its own name needs it."""
     path = web_dir() / entry.file
     try:
         validate_path_within(path, web_dir().resolve())
@@ -353,7 +353,10 @@ def _holds_only(address: str, entry: CrawlMeta, record: CrawlRecord) -> bool:
     if content_hash(path.read_text(encoding="utf-8", errors="replace")) != entry.content_hash:
         return False
     twins = record.earlier_by_text.get(entry.content_hash, [])
-    return not any(other != address and _same_file(twin.file, entry.file) for other, twin in twins)
+    return not any(
+        other != address and other not in record.pages and _same_file(twin.file, entry.file)
+        for other, twin in twins
+    )
 
 
 def _remove_empty_folders(folder: Path) -> None:
