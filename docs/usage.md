@@ -1167,6 +1167,15 @@ pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/  
 pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/      # no GPU
 ```
 
+Use the `uv` form that matches how you installed lilbee. The error message picks it for you.
+Swap the index the same way as above.
+
+```bash
+uv tool install --force --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/   # uv tool install
+uv pip install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/             # a uv venv or a source checkout
+pipx install --force --pip-args='--pre --extra-index-url https://lilbee.sh/cpu/' 'lilbee[engine]'     # pipx
+```
+
 </details>
 
 <details>

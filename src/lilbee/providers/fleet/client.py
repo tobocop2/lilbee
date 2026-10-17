@@ -218,23 +218,37 @@ def _raise_for_status(resp: httpx.Response) -> None:
             provider=_PROVIDER_NAME,
             kind=ProviderErrorKind.RATE_LIMIT,
         )
-    detail = f": {body[:600]}" if body else ""
     kind = _classify_error(resp.status_code, body)
-    # llama-swap masks a dead server as "exited prematurely"; surface the server's
-    # own captured output (a missing CUDA runtime, a model load failure, a bind
-    # error) so the real exit reason reaches the caller, not only the log.
+    # llama-swap masks a dead server as "exited prematurely". The server's own
+    # captured output goes to the log (in _upstream_failure_tail) and decides the
+    # kind; the message the user sees stays one plain line.
     if _UPSTREAM_DIED_MARKER in body:
-        tail = _upstream_failure_tail(resp)
-        if tail:
-            detail = f"{detail}\nupstream server output:\n{tail}"
-        classified = classify_upstream_death(tail)
+        classified = classify_upstream_death(_upstream_failure_tail(resp))
         if classified is not None:
             kind = classified
+        raise ProviderError(
+            _upstream_death_message(kind, resp.status_code),
+            provider=_PROVIDER_NAME,
+            kind=kind,
+        )
+    detail = f": {body[:600]}" if body else ""
     raise ProviderError(
         f"llama-server returned HTTP {resp.status_code}{detail}",
         provider=_PROVIDER_NAME,
         kind=kind,
     )
+
+
+_UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
+    ProviderErrorKind.CAPACITY: "The engine ran out of memory while loading the model",
+    ProviderErrorKind.PORT_CONFLICT: "The engine could not start because its port was taken",
+}
+
+
+def _upstream_death_message(kind: ProviderErrorKind, status_code: int) -> str:
+    """One plain line for a model server that exited, built from what lilbee knows."""
+    cause = _UPSTREAM_DEATH_MESSAGES.get(kind, "The engine stopped before it could answer")
+    return f"{cause} (HTTP {status_code})."
 
 
 # What the engine prints when a device allocation fails during load. Every

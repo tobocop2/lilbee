@@ -381,6 +381,13 @@ def _retry_on_other_replica(
         retry.release()
 
 
+def _with_engine_log(message: str, engine_log: Path | None) -> str:
+    """*message*, followed by where the full engine output is kept when that is known."""
+    if engine_log is None:
+        return message
+    return f"{message} The full engine output is in {engine_log}."
+
+
 def _no_healthy_replica_error(failed: LlamaServerClient, cause: Exception) -> ProviderError:
     """User-facing error for a call with no healthy replica left to retry on.
 
@@ -2278,7 +2285,7 @@ class FleetProvider:
                 # carries its own cool-down, so a device that recovers rejoins
                 # without anything having to remember it was bad.
                 client.mark_unhealthy()
-                self._warm_errors[role] = str(exc)
+                self._warm_errors[role] = _with_engine_log(str(exc), client.engine_log)
                 log.warning(
                     "The %s model failed to load: %s",
                     role.value,
@@ -2355,7 +2362,7 @@ class FleetProvider:
         reason = self._warm_errors.get(WorkerRole.CHAT)
         if not reason:
             return "The chat model did not finish loading."
-        return f"The chat model did not load: {reason}"
+        return f"The chat model {cfg.chat_model} did not load: {reason}"
 
     def _prewarm_chat_weights(self) -> None:
         """Page the chat model's GGUF shards into the OS cache, reporting byte progress.

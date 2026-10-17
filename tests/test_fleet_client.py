@@ -1104,10 +1104,9 @@ def test_raise_for_status_surfaces_upstream_tail_on_premature_exit(monkeypatch, 
     with caplog.at_level("WARNING"), pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
     assert seen["url"] == "http://127.0.0.1:9100/logs/stream/embed-0"
-    # The captured server output is both logged and surfaced in the error message.
+    # The captured server output goes to the log; the error stays one plain line.
     assert "couldn't bind HTTP server socket" in caplog.text
-    assert "couldn't bind HTTP server socket" in str(excinfo.value)
-    assert "exited prematurely" in str(excinfo.value)
+    assert str(excinfo.value) == "The engine could not start because its port was taken (HTTP 500)."
 
 
 def test_raise_for_status_bind_race_death_is_a_port_conflict(monkeypatch) -> None:
@@ -1129,7 +1128,7 @@ def test_raise_for_status_bind_race_death_is_a_port_conflict(monkeypatch) -> Non
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
     assert excinfo.value.kind is ProviderErrorKind.PORT_CONFLICT
-    assert "couldn't bind HTTP server socket" in str(excinfo.value)
+    assert "couldn't bind" not in str(excinfo.value)
 
 
 def test_raise_for_status_non_bind_death_stays_connection(monkeypatch) -> None:
@@ -1150,6 +1149,54 @@ def test_raise_for_status_non_bind_death_stays_connection(monkeypatch) -> None:
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
 
 
+_LOAD_FAILURE_TAIL = "\n".join(
+    [f"llama_model_loader: - kv {i:3d}: general.key{i} str = v{i}" for i in range(11)]
+    + ["llama_model_load: error loading model: unknown model architecture: 'gemma4-assistant'"]
+)
+
+
+def test_raise_for_status_load_failure_message_is_plain_and_the_log_keeps_the_dump(
+    monkeypatch, caplog
+) -> None:
+    # An unfamiliar death shows two facts lilbee knows (the engine stopped, the HTTP
+    # status) and none of the engine's own text; the full output goes to the log.
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    class _Stream:
+        def __enter__(self) -> _Stream:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def iter_text(self):
+            yield _LOAD_FAILURE_TAIL
+
+    monkeypatch.setattr(client_mod.httpx, "stream", lambda method, url, timeout: _Stream())
+    with caplog.at_level("WARNING"), pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert str(excinfo.value) == "The engine stopped before it could answer (HTTP 500)."
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+    assert "llama_model_loader" in caplog.text
+    assert "unknown model architecture" in caplog.text
+
+
+def test_raise_for_status_out_of_memory_death_says_so_in_one_line(monkeypatch) -> None:
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    monkeypatch.setattr(
+        client_mod, "_upstream_failure_tail", lambda resp: "cudaMalloc failed: out of memory"
+    )
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.CAPACITY
+    assert str(excinfo.value) == "The engine ran out of memory while loading the model (HTTP 500)."
+
+
 def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch) -> None:
     # A dead log stream must not mask the original ProviderError.
     import lilbee.providers.fleet.client as client_mod
@@ -1161,9 +1208,8 @@ def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch)
     monkeypatch.setattr(client_mod.httpx, "stream", _refuse)
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
-    # An unreadable tail appends nothing; the original error still propagates.
-    assert "exited prematurely" in str(excinfo.value)
-    assert "upstream server output:" not in str(excinfo.value)
+    # An unreadable tail changes nothing; the plain error still propagates.
+    assert str(excinfo.value) == "The engine stopped before it could answer (HTTP 500)."
 
 
 def test_chat_stream_surfaces_server_error_body() -> None:
