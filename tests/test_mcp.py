@@ -8,6 +8,8 @@ import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
+from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
@@ -58,7 +60,13 @@ from lilbee.mcp_server import (
     wiki_update,
     wiki_wipe,
 )
-from lilbee.runtime.progress import EmbedEvent, EventType, FileStartEvent, noop_callback
+from lilbee.runtime.progress import (
+    CrawlPageFailedEvent,
+    EmbedEvent,
+    EventType,
+    FileStartEvent,
+    noop_callback,
+)
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
 from tests._held import held_kinds, hold_failed
 from tests._mcp_client import mcp_client
@@ -1303,6 +1311,30 @@ class TestAddWithUrls:
         mock_crawl.return_value = []
         await add(paths=["https://example.com"])
         assert mock_crawl.call_args.kwargs["depth"] == 0
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_a_page_the_crawl_refuses_answers_with_the_crawls_reason(
+        self, mock_crawl, mock_sync, _mock_avail, isolated_env
+    ):
+        """A page the crawl saves nothing for gives the reason the crawl reported for it."""
+        from lilbee.crawler.crawlberg_fetcher import ROBOTS_REFUSED_MESSAGE
+
+        async def refused(url: str, **kwargs: Any) -> list[Path]:
+            kwargs["on_progress"](
+                EventType.CRAWL_PAGE_FAILED,
+                CrawlPageFailedEvent(url=url, reason=ROBOTS_REFUSED_MESSAGE),
+            )
+            return []
+
+        mock_crawl.side_effect = refused
+        result = await add(paths=["https://example.com/private"])
+        assert result["error"] == (
+            f"add indexed nothing. https://example.com/private: {ROBOTS_REFUSED_MESSAGE}"
+        )
+        assert "crawl_respect_robots_txt" in result["error"]
+        mock_sync.assert_not_awaited()
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
