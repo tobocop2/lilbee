@@ -1,7 +1,9 @@
 """Tests for the web crawling module."""
 
 import asyncio
+import contextlib
 import hashlib
+import json
 import os
 import sys
 import threading
@@ -11,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lilbee.app.services import get_services, reset_services
+from lilbee.app.services import get_services, reset_services, set_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import (
@@ -24,6 +26,7 @@ from lilbee.crawler import (
     is_url,
     load_crawl_metadata,
     require_valid_crawl_url,
+    save,
     save_crawl_metadata,
     url_to_filename,
     validate_crawl_url,
@@ -35,16 +38,19 @@ from lilbee.crawler.runner import (
     _maybe_periodic_sync,
 )
 from lilbee.crawler.save import (
-    _save_single_result,
-    _update_single_metadata,
+    CrawlRecord,
+    _claim,
     canonical_address,
+    load_crawl_record,
     normalize_crawled_markdown,
+    save_page,
 )
 from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl
 from lilbee.runtime.progress import EventType
 from tests import _crawlberg_stub as cb
 from tests._mock_effects import repeat_last
 from tests._private_mode import posix_only
+from tests.conftest import make_mock_services
 
 
 @pytest.fixture(autouse=True)
@@ -288,23 +294,67 @@ class TestCrawlMetadata:
         tmp_path = cfg.data_dir / "crawl_meta.tmp"
         assert not tmp_path.exists()
 
+    def test_save_error_before_the_temporary_file_exists_is_raised(self, isolated_env):
+        """A failure to make the temporary file leaves the sidecar untouched and re-raises."""
+        meta = {"https://example.com": CrawlMeta("example.com/index.md", "abc", "t")}
+        with (
+            patch("lilbee.crawler.save.tempfile.NamedTemporaryFile", side_effect=OSError("full")),
+            pytest.raises(OSError, match="full"),
+        ):
+            save_crawl_metadata(meta)
+        assert list(cfg.data_dir.iterdir()) == []
+
+
+STORED_TEXT = "# Stored"
+
 
 def _stored(*urls: str) -> dict[str, CrawlMeta]:
-    """Crawl metadata that holds *urls*, each with a hash no page has."""
+    """Earlier crawl metadata of *urls*, each under its own earlier name, with the stored text."""
     return {
         url: CrawlMeta(
-            file=url_to_filename(url), content_hash="old", crawled_at="2026-01-01T00:00:00+00:00"
+            file=f"earlier/{hashlib.sha256(url.encode()).hexdigest()[:8]}/index.md",
+            content_hash=content_hash(STORED_TEXT),
+            crawled_at="2026-01-01T00:00:00+00:00",
         )
         for url in urls
     }
 
 
-def _save_files(meta: dict[str, CrawlMeta], text: bytes = b"# Stored") -> None:
+def _save_files(meta: dict[str, CrawlMeta], text: bytes = STORED_TEXT.encode()) -> None:
     """Write a file under ``_web`` for each entry of *meta*."""
     for entry in meta.values():
         path = cfg.documents_dir / "_web" / entry.file
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(text)
+
+
+def _write_web(name: str, text: str) -> Path:
+    """Write *text* at *name* under ``_web``; the path."""
+    path = cfg.documents_dir / "_web" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _record_lines(*entries: tuple[str, CrawlMeta]) -> str:
+    """Page record text with one line per (address, entry)."""
+    return "".join(
+        json.dumps({"url": address, **vars(entry)}, ensure_ascii=False) + "\n"
+        for address, entry in entries
+    )
+
+
+def _pages_file() -> Path:
+    """The page record file."""
+    return cfg.data_dir / "crawl_pages.jsonl"
+
+
+@pytest.fixture
+def mock_services():
+    """A mock Services container whose store records removed index sources."""
+    services = make_mock_services()
+    set_services(services)
+    return services
 
 
 class TestContentHash:
@@ -1505,7 +1555,7 @@ class TestSitemapCounting:
 class TestCrawlAndSave:
     @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_a_page_is_saved_and_recorded_under_its_canonical_address(
-        self, mock_crawl_recursive, isolated_env
+        self, mock_crawl_recursive, isolated_env, mock_services
     ):
         stored = "https://example.com/t/a-b"
         same = "https://example.com/t/caf%C3%A9"
@@ -1513,6 +1563,7 @@ class TestCrawlAndSave:
         before = _stored(stored, same)
         save_crawl_metadata(before)
         _save_files(before)
+        web = cfg.documents_dir / "_web"
         reported = [
             CrawlResult(url="https://example.com/t/a%2Db", markdown="# Hyphen"),
             CrawlResult(url="https://example.com/t/café", markdown="# Cafe"),
@@ -1526,17 +1577,17 @@ class TestCrawlAndSave:
 
         mock_crawl_recursive.side_effect = crawl
         paths = await crawl_and_save("https://example.com/", depth=1)
-        web = cfg.documents_dir / "_web"
         assert paths == [web / url_to_filename(url) for url in (stored, same, new)]
         assert paths[0].read_text(encoding="utf-8") == "# Hyphen"
-        meta = load_crawl_metadata()
-        assert set(meta) == {stored, same, new}
-        assert meta[stored].content_hash == content_hash("# Hyphen")
-        assert meta[stored].file == url_to_filename(stored)
+        pages = load_crawl_record().pages
+        assert set(pages) == {stored, same, new}
+        assert pages[stored].content_hash == content_hash("# Hyphen")
+        assert pages[stored].file == url_to_filename(stored)
+        assert not any((web / entry.file).exists() for entry in before.values())
 
     @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_a_page_stored_under_several_spellings_keeps_one_entry_and_one_file(
-        self, mock_crawl_recursive, isolated_env
+        self, mock_crawl_recursive, isolated_env, mock_services
     ):
         reported = "https://example.com/t/tri%2db"
         spellings = ["https://example.com/t/tri-b", "https://example.com/t/tri%2Db", reported]
@@ -1555,10 +1606,11 @@ class TestCrawlAndSave:
         web = cfg.documents_dir / "_web"
         assert paths == [web / url_to_filename(reported)]
         assert paths[0].read_text(encoding="utf-8") == "# Tri"
-        meta = load_crawl_metadata()
-        assert set(meta) == {"https://example.com/t/tri-b", other}
-        assert meta["https://example.com/t/tri-b"].content_hash == content_hash("# Tri")
-        assert meta[other] == before[other]
+        pages = load_crawl_record().pages
+        assert set(pages) == {"https://example.com/t/tri-b"}
+        assert pages["https://example.com/t/tri-b"].content_hash == content_hash("# Tri")
+        assert not any((web / before[spelling].file).exists() for spelling in spellings)
+        assert (web / before[other].file).read_text(encoding="utf-8") == STORED_TEXT
 
     @pytest.mark.parametrize("fetched", [0, 1], ids=["first-fetched", "second-fetched"])
     @pytest.mark.parametrize(("one", "other"), DIFFERENT_PAGES)
@@ -1581,27 +1633,27 @@ class TestCrawlAndSave:
         paths = await crawl_and_save("https://example.com/", depth=1)
         web = cfg.documents_dir / "_web"
         assert paths == [web / url_to_filename(reported)]
-        meta = load_crawl_metadata()
-        assert meta[canonical_address(reported)].content_hash == content_hash("# Fetched")
-        assert meta[canonical_address(kept)] == before[canonical_address(kept)]
+        pages = load_crawl_record().pages
+        assert set(pages) == {canonical_address(reported)}
+        assert pages[canonical_address(reported)].content_hash == content_hash("# Fetched")
         assert (web / url_to_filename(kept)).read_bytes() == b"# Stored"
 
     @patch("lilbee.crawler.runner.crawl_single")
-    async def test_a_page_saved_under_an_earlier_name_moves_to_its_name(
-        self, mock_crawl_single, isolated_env
+    async def test_a_page_saved_under_an_earlier_name_is_saved_at_its_name_and_the_copy_retired(
+        self, mock_crawl_single, isolated_env, mock_services
     ):
         url = "https://example.com/t/Special:Random"
         earlier = "example.com/t/Special_Random/index.md"
         web = cfg.documents_dir / "_web"
-        (web / earlier).parent.mkdir(parents=True)
-        (web / earlier).write_text("# Old", encoding="utf-8")
+        _write_web(earlier, "# Old")
         save_crawl_metadata({url: CrawlMeta(earlier, content_hash("# Old"), "x")})
         mock_crawl_single.return_value = CrawlResult(url=url, markdown="# New")
         paths = await crawl_and_save(url, depth=0)
         assert paths == [web / url_to_filename(url)]
         assert paths[0].read_text(encoding="utf-8") == "# New"
         assert not (web / "example.com/t/Special_Random").exists()
-        assert load_crawl_metadata()[url].file == url_to_filename(url)
+        assert load_crawl_record().pages[url].file == url_to_filename(url)
+        mock_services.store.remove_documents.assert_called_once_with([f"_web/{earlier}"])
 
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_an_earlier_name_outside_the_web_folder_is_left_alone(
@@ -1611,7 +1663,7 @@ class TestCrawlAndSave:
         outside = cfg.documents_dir / "outside.md"
         outside.parent.mkdir(parents=True, exist_ok=True)
         outside.write_text("# Mine", encoding="utf-8")
-        meta = CrawlMeta(file="../outside.md", content_hash="old", crawled_at="x")
+        meta = CrawlMeta(file="../outside.md", content_hash=content_hash("# Mine"), crawled_at="x")
         save_crawl_metadata({url: meta})
         mock_crawl_single.return_value = CrawlResult(url=url, markdown="# New")
         paths = await crawl_and_save(url, depth=0)
@@ -1799,13 +1851,15 @@ class TestCrawlAndSave:
         assert [(e.url, e.reason) for e in failed] == [("https://example.com", "403 Forbidden")]
 
     @patch("lilbee.crawler.runner.crawl_single")
-    async def test_updates_metadata(self, mock_crawl_single, isolated_env):
+    async def test_records_the_saved_page(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/page", markdown="# Test"
         )
         await crawl_and_save("https://example.com/page", depth=0)
-        meta = load_crawl_metadata()
-        assert "https://example.com/page" in meta
+        entry = load_crawl_record().pages["https://example.com/page"]
+        assert entry.file == url_to_filename("https://example.com/page")
+        assert (cfg.documents_dir / "_web" / entry.file).read_text(encoding="utf-8") == "# Test"
+        assert not (cfg.data_dir / "crawl_meta.json").exists()
 
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_unchanged_content_skips_save(self, mock_crawl_single, isolated_env):
@@ -2417,21 +2471,20 @@ class TestCrawlAndSaveSemaphore:
         reset_services()
 
 
-class TestSaveSingleResult:
-    """Unit tests for _save_single_result (per-page flush helper)."""
+class TestSavePage:
+    """Unit tests for save_page, the per-page save at the page's name."""
 
-    def test_writes_new_content(self, isolated_env):
-        from lilbee.crawler.save import _save_single_result
-
-        meta: dict = {}
+    def test_writes_new_content_and_records_it(self, isolated_env):
+        record = load_crawl_record()
         result = CrawlResult(url="https://example.com/new", markdown="# New")
-        outcome = _save_single_result(result, meta)
-        assert outcome is not None
-        assert outcome.path.exists()
-        assert outcome.path.read_text(encoding="utf-8") == "# New"
-        assert outcome.filename == url_to_filename("https://example.com/new")
-        assert outcome.address == "https://example.com/new"
-        assert outcome.content_hash == content_hash("# New")
+        path = save_page(result, record, MagicMock())
+        name = url_to_filename("https://example.com/new")
+        assert path == cfg.documents_dir / "_web" / name
+        assert path.read_text(encoding="utf-8") == "# New"
+        entry = record.pages["https://example.com/new"]
+        assert (entry.file, entry.content_hash) == (name, content_hash("# New"))
+        assert name in record.claimed
+        assert load_crawl_record().pages == {"https://example.com/new": entry}
 
     def test_normalize_crawled_markdown_collapses_reference_links(self):
         ref = "[[2]](https://en.wikipedia.org/wiki/Foo#cite_note-2)"
@@ -2446,104 +2499,284 @@ class TestSaveSingleResult:
         assert normalize_crawled_markdown(keep) == keep
 
     def test_writes_normalized_markdown(self, isolated_env):
-        from lilbee.crawler.save import _save_single_result
-
         raw = "9C1[[1]](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
         expected = "9C1[1](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
-        outcome = _save_single_result(CrawlResult(url="https://example.com/ref", markdown=raw), {})
-        assert outcome is not None
-        assert outcome.path.read_text(encoding="utf-8") == expected
-        assert outcome.content_hash == content_hash(expected)
+        record = CrawlRecord()
+        result = CrawlResult(url="https://example.com/ref", markdown=raw)
+        path = save_page(result, record, MagicMock())
+        assert path is not None
+        assert path.read_text(encoding="utf-8") == expected
+        assert record.pages["https://example.com/ref"].content_hash == content_hash(expected)
 
     def test_returns_none_on_failure(self, isolated_env):
-        from lilbee.crawler.save import _save_single_result
-
         result = CrawlResult(url="https://example.com/fail", success=False, error="oops")
-        assert _save_single_result(result, {}) is None
+        assert save_page(result, CrawlRecord(), MagicMock()) is None
+        assert not _pages_file().exists()
 
     def test_returns_none_on_empty_markdown(self, isolated_env):
-        from lilbee.crawler.save import _save_single_result
-
         result = CrawlResult(url="https://example.com/empty", markdown="   ")
-        assert _save_single_result(result, {}) is None
+        assert save_page(result, CrawlRecord(), MagicMock()) is None
+        assert not _pages_file().exists()
 
-    def test_hash_match_with_file_present_skips(self, isolated_env):
-        """Prev metadata hash matches AND file exists -> skip."""
-        from lilbee.crawler.save import _save_single_result
-
+    def test_unchanged_page_is_not_rewritten(self, isolated_env, caplog):
+        record = load_crawl_record()
         url = "https://example.com/dup"
-        markdown = "# Dup"
-        # Write the file and seed metadata
-        initial = CrawlResult(url=url, markdown=markdown)
-        meta: dict = {}
-        first = _save_single_result(initial, meta)
+        first = save_page(CrawlResult(url=url, markdown="# Dup"), record, MagicMock())
         assert first is not None
-        meta[url] = CrawlMeta(
-            file=str(first.path.relative_to(cfg.documents_dir / "_web")),
-            content_hash=content_hash(markdown),
-            crawled_at="2026-01-01T00:00:00+00:00",
-        )
-        # Identical content on re-save returns None
-        again = CrawlResult(url=url, markdown=markdown)
-        assert _save_single_result(again, meta) is None
+        lines_after_first = _pages_file().read_text(encoding="utf-8")
+        with caplog.at_level("INFO", logger="lilbee.crawler.save"):
+            again = save_page(CrawlResult(url=url, markdown="# Dup"), record, MagicMock())
+        assert again is None
+        assert _pages_file().read_text(encoding="utf-8") == lines_after_first
+        assert any("Content unchanged" in r.message for r in caplog.records)
 
     def test_unchanged_text_under_another_spelling_of_the_address_skips(self, isolated_env):
-        from lilbee.crawler.save import _save_single_result
-
         address = "https://example.com/t/page"
         name = url_to_filename(address)
-        path = cfg.documents_dir / "_web" / name
-        path.parent.mkdir(parents=True)
-        path.write_text("# Page", encoding="utf-8")
-        meta = {address: CrawlMeta(file=name, content_hash=content_hash("# Page"), crawled_at="t")}
+        _write_web(name, "# Page")
+        record = CrawlRecord(pages={address: CrawlMeta(name, content_hash("# Page"), "t")})
         again = CrawlResult(url="https://EXAMPLE.com/t/pag%65#top", markdown="# Page")
-        assert _save_single_result(again, meta) is None
+        assert save_page(again, record, MagicMock()) is None
 
-    def test_hash_match_with_missing_file_rewrites(self, isolated_env):
-        """Prev metadata hash matches but file was deleted -> re-write."""
-        from lilbee.crawler.save import _save_single_result
-
+    def test_recorded_page_with_a_missing_file_is_rewritten(self, isolated_env):
         url = "https://example.com/gone"
-        markdown = "# Gone"
-        meta: dict = {
-            url: CrawlMeta(
-                file="example.com/gone/index.md",
-                content_hash=content_hash(markdown),
-                crawled_at="2026-01-01T00:00:00+00:00",
-            )
-        }
-        # File does not exist yet
-        result = CrawlResult(url=url, markdown=markdown)
-        outcome = _save_single_result(result, meta)
-        assert outcome is not None
-        assert outcome.path.exists()
+        name = url_to_filename(url)
+        record = CrawlRecord(pages={url: CrawlMeta(name, content_hash("# Gone"), "t")})
+        path = save_page(CrawlResult(url=url, markdown="# Gone"), record, MagicMock())
+        assert path == cfg.documents_dir / "_web" / name
+        assert path.read_text(encoding="utf-8") == "# Gone"
 
-    def test_path_traversal_blocked(self, isolated_env):
-        """A crafted filename escaping _web/ is skipped with a warning."""
-        from lilbee.crawler.save import _save_single_result
-
+    def test_path_traversal_blocked(self, isolated_env, caplog):
         result = CrawlResult(url="https://evil.com/ok", markdown="# Evil")
-        with patch("lilbee.crawler.save.page_name", return_value="../../etc/passwd"):
-            outcome = _save_single_result(result, {})
-        assert outcome is None
+        with (
+            caplog.at_level("WARNING", logger="lilbee.crawler.save"),
+            patch("lilbee.crawler.save.page_name", return_value="../../etc/passwd"),
+        ):
+            assert save_page(result, CrawlRecord(), MagicMock()) is None
+        assert any("Path traversal blocked" in r.message for r in caplog.records)
+        assert not _pages_file().exists()
+
+    def test_the_record_line_is_written_before_the_file(self, isolated_env):
+        url = "https://example.com/p"
+        with (
+            patch("lilbee.crawler.save.Path.write_text", side_effect=OSError("disk full")),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            save_page(CrawlResult(url=url, markdown="# P"), CrawlRecord(), MagicMock())
+        assert load_crawl_record().pages[url].content_hash == content_hash("# P")
+
+    def test_a_cut_record_line_does_not_join_the_next_line(self, isolated_env, caplog):
+        _pages_file().write_text('{"url": "https://example.com/cut", "fi', encoding="utf-8")
+        url = "https://example.com/p"
+        save_page(CrawlResult(url=url, markdown="# P"), load_crawl_record(), MagicMock())
+        with caplog.at_level("WARNING", logger="lilbee.crawler.save"):
+            pages = load_crawl_record().pages
+        assert set(pages) == {url}
+        assert any("malformed crawl record line" in r.message for r in caplog.records)
+
+    def test_a_name_held_by_a_file_the_record_does_not_give_the_page_is_not_written(
+        self, isolated_env, caplog
+    ):
+        url = "https://example.com/mine"
+        mine = _write_web(url_to_filename(url), "# My notes")
+        with caplog.at_level("WARNING", logger="lilbee.crawler.save"):
+            result = save_page(CrawlResult(url=url, markdown="# Page"), CrawlRecord(), MagicMock())
+        assert result is None
+        assert mine.read_text(encoding="utf-8") == "# My notes"
+        assert [r.message for r in caplog.records if "is not saved" in r.message] != []
+        assert not _pages_file().exists()
+
+    def test_a_recorded_page_whose_name_holds_a_folder_is_not_written(self, isolated_env):
+        url = "https://example.com/p"
+        name = url_to_filename(url)
+        (cfg.documents_dir / "_web" / name).mkdir(parents=True)
+        record = CrawlRecord(pages={url: CrawlMeta(name, "old", "t")})
+        assert save_page(CrawlResult(url=url, markdown="# P"), record, MagicMock()) is None
+        assert (cfg.documents_dir / "_web" / name).is_dir()
+        assert record.pages[url].content_hash == "old"
 
 
-class TestUpdateSingleMetadata:
-    def test_updates_in_place(self, isolated_env):
-        """Helper mutates the dict in place with the expected shape."""
-        from lilbee.crawler.save import _save_single_result, _update_single_metadata
+class TestCrawlRecord:
+    """The append-only page record and the earlier crawl metadata it carries."""
 
-        meta: dict = {}
-        result = CrawlResult(url="https://Example.com/p#top", markdown="# P")
-        outcome = _save_single_result(result, meta)
-        assert outcome is not None
-        now = "2026-04-20T00:00:00+00:00"
-        _update_single_metadata(meta, outcome, now)
-        assert list(meta) == ["https://example.com/p"]
-        entry = meta["https://example.com/p"]
-        assert entry.crawled_at == now
-        assert entry.content_hash == content_hash("# P")
-        assert entry.file == url_to_filename("https://example.com/p")
+    def test_a_missing_record_has_no_pages(self, isolated_env):
+        record = load_crawl_record()
+        assert (record.pages, record.claimed, record.earlier) == ({}, set(), {})
+        assert not _pages_file().exists()
+
+    def test_a_malformed_line_is_skipped_with_a_warning(self, isolated_env, caplog):
+        good = CrawlMeta("example.com/a~1.md", "h", "t")
+        _pages_file().write_text(
+            "not json\n" + _record_lines(("https://example.com/a", good)) + '{"file": "x"}\n',
+            encoding="utf-8",
+        )
+        with caplog.at_level("WARNING", logger="lilbee.crawler.save"):
+            pages = load_crawl_record().pages
+        assert pages == {"https://example.com/a": good}
+        warned = [r for r in caplog.records if "malformed crawl record line" in r.message]
+        assert len(warned) == 2
+
+    def test_duplicate_lines_are_compacted_to_one_per_address(self, isolated_env):
+        old_a = CrawlMeta("example.com/a~1.md", "old", "t1")
+        b = CrawlMeta("example.com/b~2.md", "b", "t2")
+        new_a = CrawlMeta("example.com/a~1.md", "new", "t3")
+        a_url, b_url = "https://example.com/a", "https://example.com/b"
+        _pages_file().write_text(
+            "\n" + _record_lines((a_url, old_a), (b_url, b), (a_url, new_a)), encoding="utf-8"
+        )
+        pages = load_crawl_record().pages
+        assert pages == {a_url: new_a, b_url: b}
+        assert _pages_file().read_text(encoding="utf-8") == _record_lines(
+            (a_url, new_a), (b_url, b)
+        )
+
+    def test_the_append_and_the_compaction_each_write_under_the_record_lock(
+        self, isolated_env, monkeypatch
+    ):
+        held: list[tuple[str, str, str]] = []
+
+        @contextlib.contextmanager
+        def lock(path, timeout_s):
+            before = path.read_text(encoding="utf-8") if path.exists() else ""
+            yield
+            held.append((path.name, before, path.read_text(encoding="utf-8")))
+
+        monkeypatch.setattr("lilbee.crawler.save.file_lock_or_warn", lock)
+        page = CrawlMeta("example.com/a~1.md", "h", "t")
+        url = "https://example.com/a"
+        _pages_file().write_text("\n" + _record_lines((url, page), (url, page)), encoding="utf-8")
+        record = load_crawl_record()
+        _claim(url, CrawlMeta("example.com/a~1.md", "h2", "t2"), record)
+        compacted, appended = held
+        assert compacted[0] == appended[0] == "crawl_pages.jsonl"
+        assert compacted[2] == _record_lines((url, page))
+        assert appended[1] == compacted[2]
+        assert appended[2].count("\n{") == 1 + compacted[2].count("\n{")
+
+    def test_a_record_with_one_line_per_page_is_not_rewritten(self, isolated_env):
+        text = "\n" + _record_lines(("https://example.com/a", CrawlMeta("a.md", "h", "t")))
+        _pages_file().write_text(text, encoding="utf-8")
+        load_crawl_record()
+        assert _pages_file().read_text(encoding="utf-8") == text
+
+    def test_earlier_metadata_is_carried_as_copies_by_canonical_address(self, isolated_env):
+        earlier = CrawlMeta("example.com/t/page/index.md", "h", "t")
+        save_crawl_metadata({"https://EXAMPLE.com/t/pag%65#top": earlier})
+        page = CrawlMeta("example.com/x~1.md", "x", "t")
+        _pages_file().write_text(_record_lines(("https://example.com/x", page)), encoding="utf-8")
+        record = load_crawl_record()
+        assert record.earlier == {"https://example.com/t/page": [earlier]}
+        assert record.earlier_by_text == {"h": [("https://example.com/t/page", earlier)]}
+        assert record.claimed == {"example.com/x~1.md"}
+
+
+class TestRetireEarlier:
+    """Earlier crawl metadata copies are deleted once the page is saved at its name."""
+
+    URL = "https://example.com/t/page"
+    EARLIER = "example.com/t/page/index.md"
+
+    def _record_with_copy(self, text: str, entry_text: str | None = None) -> CrawlRecord:
+        """A record whose earlier copy of URL holds *text*, its entry the hash of *entry_text*."""
+        _write_web(self.EARLIER, text)
+        entry_hash = content_hash(text if entry_text is None else entry_text)
+        save_crawl_metadata({self.URL: CrawlMeta(self.EARLIER, entry_hash, "t")})
+        return load_crawl_record()
+
+    def test_a_first_save_with_the_same_text_removes_the_index_source(self, isolated_env):
+        record = self._record_with_copy("# Page")
+        remove_sources = MagicMock()
+        path = save_page(CrawlResult(url=self.URL, markdown="# Page"), record, remove_sources)
+        assert path is not None
+        assert not (cfg.documents_dir / "_web" / self.EARLIER).exists()
+        remove_sources.assert_called_once_with([f"_web/{self.EARLIER}"])
+
+    def test_the_index_source_is_removed_before_the_copy_is_deleted(self, isolated_env):
+        record = self._record_with_copy("# Old")
+        copy = cfg.documents_dir / "_web" / self.EARLIER
+        present_at_removal: list[bool] = []
+        remove_sources = MagicMock(side_effect=lambda _: present_at_removal.append(copy.exists()))
+        save_page(CrawlResult(url=self.URL, markdown="# New"), record, remove_sources)
+        assert not copy.exists()
+        assert present_at_removal == [True]
+        remove_sources.assert_called_once_with([f"_web/{self.EARLIER}"])
+
+    def test_an_unchanged_page_is_not_rewritten_but_its_earlier_copy_is_retired(self, isolated_env):
+        page = _write_web(url_to_filename(self.URL), "# Page")
+        before = page.stat().st_mtime_ns
+        record = self._record_with_copy("# Page")
+        record.pages[self.URL] = CrawlMeta(url_to_filename(self.URL), content_hash("# Page"), "t")
+        remove_sources = MagicMock()
+        path = save_page(CrawlResult(url=self.URL, markdown="# Page"), record, remove_sources)
+        assert path is None
+        assert page.stat().st_mtime_ns == before
+        assert not (cfg.documents_dir / "_web" / self.EARLIER).exists()
+        remove_sources.assert_called_once_with([f"_web/{self.EARLIER}"])
+
+    def test_an_earlier_copy_whose_text_differs_from_its_entry_is_kept(self, isolated_env):
+        record = self._record_with_copy("# Edited by the user", entry_text="# Crawled")
+        remove_sources = MagicMock()
+        save_page(CrawlResult(url=self.URL, markdown="# New"), record, remove_sources)
+        copy = cfg.documents_dir / "_web" / self.EARLIER
+        assert copy.read_text(encoding="utf-8") == "# Edited by the user"
+        remove_sources.assert_not_called()
+
+    def test_an_earlier_copy_named_by_a_page_line_is_kept(self, isolated_env):
+        record = self._record_with_copy("# Old")
+        other = CrawlMeta(self.EARLIER, content_hash("# Old"), "t")
+        record.pages["https://example.com/other"] = other
+        record.claimed.add(self.EARLIER)
+        remove_sources = MagicMock()
+        save_page(CrawlResult(url=self.URL, markdown="# New"), record, remove_sources)
+        assert (cfg.documents_dir / "_web" / self.EARLIER).read_text(encoding="utf-8") == "# Old"
+        remove_sources.assert_not_called()
+
+    def test_an_earlier_copy_shared_with_another_pages_same_text_entry_is_kept(self, isolated_env):
+        _write_web(self.EARLIER, "# Shared")
+        entry = CrawlMeta(self.EARLIER, content_hash("# Shared"), "t")
+        save_crawl_metadata({self.URL: entry, "https://example.com/t/other": entry})
+        record = load_crawl_record()
+        remove_sources = MagicMock()
+        save_page(CrawlResult(url=self.URL, markdown="# New"), record, remove_sources)
+        copy = cfg.documents_dir / "_web" / self.EARLIER
+        assert copy.read_text(encoding="utf-8") == "# Shared"
+        remove_sources.assert_not_called()
+
+    def test_a_missing_earlier_copy_is_skipped(self, isolated_env):
+        save_crawl_metadata({self.URL: CrawlMeta(self.EARLIER, content_hash("# Old"), "t")})
+        remove_sources = MagicMock()
+        path = save_page(
+            CrawlResult(url=self.URL, markdown="# New"), load_crawl_record(), remove_sources
+        )
+        assert path is not None
+        remove_sources.assert_not_called()
+
+    def test_same_file_is_false_when_a_name_does_not_exist(self, isolated_env):
+        _write_web("a.md", "# A")
+        assert save._same_file("a.md", "a.md") is True
+        assert save._same_file("a.md", "missing/b.md") is False
+
+    def test_empty_folders_are_removed_up_to_the_web_folder(self, isolated_env):
+        web = cfg.documents_dir / "_web"
+        (web / "a" / "b").mkdir(parents=True)
+        save._remove_empty_folders(web / "a" / "b")
+        assert not (web / "a").exists()
+        assert web.is_dir()
+
+    def test_a_folder_that_still_holds_a_file_is_kept(self, isolated_env):
+        web = cfg.documents_dir / "_web"
+        kept = _write_web("a/kept.md", "# Kept")
+        (web / "a" / "b").mkdir()
+        save._remove_empty_folders(web / "a" / "b")
+        assert not (web / "a" / "b").exists()
+        assert kept.is_file()
+
+    def test_disk_name_returns_the_name_as_the_disk_spells_it(self, isolated_env):
+        _write_web("Host/Page.md", "# Page")
+        assert save._disk_name("Host/Page.md") == "Host/Page.md"
+        if not (cfg.documents_dir / "_web" / "host" / "page.md").exists():
+            pytest.skip("the disk keeps letter case apart")
+        assert save._disk_name("host/page.md") == "Host/Page.md"
 
 
 class TestStreamingFlush:
@@ -2576,18 +2809,12 @@ class TestStreamingFlush:
         assert len(paths) >= 2
         for p in paths:
             assert p.exists()
-        # Metadata reflects what's on disk.
-        meta = load_crawl_metadata()
-        written_urls = {
-            f"https://example.com/p{i}"
-            for i in range(1, 5)
-            if (cfg.documents_dir / "_web" / f"example.com/p{i}/index.md").exists()
-        }
-        for url in written_urls:
-            assert url in meta
+        # The page record names exactly the pages on disk.
+        recorded = {cfg.documents_dir / "_web" / e.file for e in load_crawl_record().pages.values()}
+        assert recorded == set(paths)
 
     async def test_flushes_per_page_not_batched(self, isolated_env):
-        """_save_single_result is invoked once per streamed page inside the loop."""
+        """save_page is invoked once per streamed page inside the loop."""
         import asyncio as _asyncio
 
         call_order: list[str] = []
@@ -2600,15 +2827,15 @@ class TestStreamingFlush:
 
         stub = cb.StubCrawlberg(_gen)
 
-        real_save = _save_single_result
+        real_save = save_page
 
-        def _wrapped(result, meta):
+        def _wrapped(result, record, remove_sources):
             call_order.append(f"flush-{result.url.rsplit('/', 1)[-1]}")
-            return real_save(result, meta)
+            return real_save(result, record, remove_sources)
 
         with (
             stub.installed(),
-            patch("lilbee.crawler.save._save_single_result", side_effect=_wrapped),
+            patch("lilbee.crawler.save.save_page", side_effect=_wrapped),
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10)
 
@@ -2623,19 +2850,12 @@ class TestStreamingFlush:
         ]
 
     async def test_skips_unchanged_per_page(self, isolated_env):
-        """Per-page flush skips URLs whose hash matches prior metadata."""
+        """Per-page flush skips URLs whose hash matches the page record."""
         import asyncio as _asyncio
 
         # Pre-seed: p1 was crawled last time with this exact content.
-        from datetime import UTC as _UTC
-        from datetime import datetime as _datetime
-
         seed = CrawlResult(url="https://example.com/p1", markdown="# Same")
-        seed_meta: dict[str, CrawlMeta] = {}
-        outcome = _save_single_result(seed, seed_meta)
-        assert outcome is not None
-        _update_single_metadata(seed_meta, outcome, _datetime.now(_UTC).isoformat())
-        save_crawl_metadata(seed_meta)
+        assert save_page(seed, load_crawl_record(), MagicMock()) is not None
 
         async def _gen():
             yield cb.page("https://example.com/p1", "# Same")
@@ -2658,13 +2878,11 @@ class TestStreamingFlush:
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/only", markdown="# Only"
         )
-        with patch("lilbee.crawler.save._save_single_result", wraps=_save_single_result) as spy:
+        with patch("lilbee.crawler.save.save_page", wraps=save_page) as spy:
             paths = await crawl_and_save("https://example.com/only", depth=0)
         assert len(paths) == 1
         spy.assert_called_once()
-        # Metadata written by the per-page path
-        meta = load_crawl_metadata()
-        assert "https://example.com/only" in meta
+        assert "https://example.com/only" in load_crawl_record().pages
 
     async def test_full_success_matches_prior_behavior(self, isolated_env):
         """With no cancel, a full successful crawl produces the same on-disk result."""
@@ -2690,10 +2908,10 @@ class TestStreamingFlush:
         contents = {p.read_text(encoding="utf-8") for p in paths}
         assert contents == {"# A", "# B", "# C"}
 
-        meta = load_crawl_metadata()
+        pages = load_crawl_record().pages
         for url, md in urls_and_content:
-            assert url in meta
-            assert meta[url].content_hash == content_hash(md)
+            assert pages[url].content_hash == content_hash(md)
+            assert pages[url].file == url_to_filename(url)
 
     async def test_cancel_does_not_trigger_auto_sync(self, isolated_env):
         """On cancel, _maybe_periodic_sync is NOT awaited."""
@@ -2848,16 +3066,12 @@ class TestStreamingFlush:
         leaked = {t for t in asyncio.all_tasks() if t not in before and not t.done()}
         assert not leaked
 
-    async def test_metadata_flush_is_batched(self, isolated_env):
-        """_flush_metadata fires every METADATA_FLUSH_INTERVAL pages, not every page."""
+    async def test_the_record_is_read_once_per_crawl(self, isolated_env):
+        """The page record is loaded once, and every page is saved against it."""
         import asyncio as _asyncio
 
-        from lilbee.crawler import METADATA_FLUSH_INTERVAL
-
-        total_pages = METADATA_FLUSH_INTERVAL + 3
-
         async def _gen():
-            for i in range(1, total_pages + 1):
+            for i in range(1, 4):
                 await _asyncio.sleep(0)
                 yield cb.page(f"https://example.com/p{i}", f"# P{i}")
 
@@ -2865,35 +3079,53 @@ class TestStreamingFlush:
 
         with (
             stub.installed(),
-            patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
+            patch("lilbee.crawler.save.load_crawl_record", wraps=load_crawl_record) as load_spy,
+            patch("lilbee.crawler.save.save_page", wraps=save_page) as save_spy,
         ):
-            await crawl_and_save("https://example.com", depth=2, max_pages=total_pages)
+            await crawl_and_save("https://example.com", depth=2, max_pages=10)
 
-        # One flush at the interval boundary + one final flush after the loop.
-        assert mock_flush.call_count == 2
+        load_spy.assert_called_once()
+        records = {id(c.args[1]) for c in save_spy.call_args_list}
+        assert save_spy.call_count == 3
+        assert len(records) == 1
 
-    async def test_exact_interval_boundary_does_not_double_flush(self, isolated_env):
-        """Ending on an exact METADATA_FLUSH_INTERVAL boundary runs one flush, not two."""
+    async def test_each_saved_page_is_recorded_before_the_crawl_ends(self, isolated_env):
+        """A page's record line is on disk as soon as the page is saved."""
         import asyncio as _asyncio
 
-        from lilbee.crawler import METADATA_FLUSH_INTERVAL
+        recorded_mid_crawl: list[set[str]] = []
 
         async def _gen():
-            for i in range(1, METADATA_FLUSH_INTERVAL + 1):
-                await _asyncio.sleep(0)
-                yield cb.page(f"https://example.com/p{i}", f"# P{i}")
+            yield cb.page("https://example.com/p1", "# P1")
+            await _asyncio.sleep(0)
+            recorded_mid_crawl.append(set(load_crawl_record().pages))
+            yield cb.page("https://example.com/p2", "# P2")
 
         stub = cb.StubCrawlberg(_gen)
 
-        with (
-            stub.installed(),
-            patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
-        ):
-            await crawl_and_save("https://example.com", depth=2, max_pages=METADATA_FLUSH_INTERVAL)
+        with stub.installed():
+            await crawl_and_save("https://example.com", depth=2, max_pages=10)
 
-        # Interval boundary triggers the only flush; post-loop skipped because
-        # no entries remain pending after the counter reset.
-        assert mock_flush.call_count == 1
+        assert recorded_mid_crawl == [{"https://example.com/p1"}]
+
+    async def test_the_runner_passes_the_store_to_retire_earlier_copies(
+        self, isolated_env, mock_services
+    ):
+        """The crawl removes an earlier copy's index source through the store."""
+        earlier = "example.com/old/p1.md"
+        _write_web(earlier, "# Old")
+        save_crawl_metadata(
+            {"https://example.com/p1": CrawlMeta(earlier, content_hash("# Old"), "t")}
+        )
+
+        async def _gen():
+            yield cb.page("https://example.com/p1", "# P1")
+
+        with cb.StubCrawlberg(_gen).installed():
+            await crawl_and_save("https://example.com", depth=2, max_pages=10)
+
+        mock_services.store.remove_documents.assert_called_once_with([f"_web/{earlier}"])
+        assert not (cfg.documents_dir / "_web" / "example.com" / "old").exists()
 
     async def test_flush_callback_failure_does_not_fail_the_crawl(self, isolated_env):
         """An OSError from the flush callback is logged, not reraised as a crawl error."""
@@ -2908,7 +3140,7 @@ class TestStreamingFlush:
 
         call_count = {"n": 0}
 
-        def failing_save(result, meta):
+        def failing_save(result, record, remove_sources):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise OSError("disk full")
@@ -2916,7 +3148,7 @@ class TestStreamingFlush:
 
         with (
             stub.installed(),
-            patch("lilbee.crawler.save._save_single_result", side_effect=failing_save),
+            patch("lilbee.crawler.save.save_page", side_effect=failing_save),
         ):
             # Must not raise even though the first page write fails.
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
@@ -2930,43 +3162,13 @@ class TestStreamingFlush:
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/only", markdown="# Only"
         )
-        with patch("lilbee.crawler.save._save_single_result", side_effect=OSError("disk full")):
+        with patch("lilbee.crawler.save.save_page", side_effect=OSError("disk full")):
             # Must not raise even though the depth=0 flush fails.
             paths = await crawl_and_save("https://example.com/only", depth=0)
         assert paths == []
 
-    async def test_final_flush_failure_does_not_fail_the_crawl(self, isolated_env):
-        """OSError from the post-loop metadata flush is logged, not reraised."""
-        import asyncio as _asyncio
-
-        async def _gen():
-            yield cb.page("https://example.com/p1", "# P1")
-            await _asyncio.sleep(0)
-
-        stub = cb.StubCrawlberg(_gen)
-
-        real_flush = save_crawl_metadata
-        call_count = {"n": 0}
-
-        def flush_or_fail(meta):
-            call_count["n"] += 1
-            # Let interval-boundary flushes succeed; fail only the post-loop flush.
-            if call_count["n"] == 1 and len(meta) >= 1:
-                raise OSError("disk full")
-            real_flush(meta)
-
-        with (
-            stub.installed(),
-            patch("lilbee.crawler.save.save_crawl_metadata", side_effect=flush_or_fail),
-        ):
-            # Markdown was already written durably; the final flush must not
-            # reraise since the caller has already consumed the stream.
-            paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
-        assert len(paths) == 1
-        assert paths[0].exists()
-
-    async def test_final_metadata_flush_fires_on_cancel(self, isolated_env):
-        """Cancel still produces a final metadata flush so on-disk state stays consistent."""
+    async def test_cancel_keeps_the_record_of_saved_pages(self, isolated_env):
+        """A cancelled crawl leaves the record of each page it saved."""
         import asyncio as _asyncio
         import threading
 
@@ -2980,37 +3182,30 @@ class TestStreamingFlush:
 
         stub = cb.StubCrawlberg(_gen)
 
-        with (
-            stub.installed(),
-            patch(
-                "lilbee.crawler.save.save_crawl_metadata", wraps=save_crawl_metadata
-            ) as spy_flush,
-        ):
-            await crawl_and_save("https://example.com", depth=2, max_pages=10, cancel=cancel)
+        with stub.installed():
+            paths = await crawl_and_save(
+                "https://example.com", depth=2, max_pages=10, cancel=cancel
+            )
 
-        # One page written, below the interval, so the only flush is the final one.
-        assert spy_flush.call_count == 1
-        meta = load_crawl_metadata()
-        assert "https://example.com/p1" in meta
+        pages = load_crawl_record().pages
+        assert "https://example.com/p1" in pages
+        assert {cfg.documents_dir / "_web" / e.file for e in pages.values()} == set(paths)
 
-    async def test_no_final_flush_when_nothing_written(self, isolated_env):
-        """If zero pages were flushed, the post-loop metadata write is skipped."""
+    async def test_no_record_line_when_nothing_written(self, isolated_env):
+        """A page with empty markdown is not saved and writes no record line."""
         import asyncio as _asyncio
 
         async def _gen():
             await _asyncio.sleep(0)
-            # Empty markdown is skipped by _save_single_result
             yield cb.page("https://example.com/empty", "")
 
         stub = cb.StubCrawlberg(_gen)
 
-        with (
-            stub.installed(),
-            patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
-        ):
+        with stub.installed():
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert paths == []
-        mock_flush.assert_not_called()
+        assert not _pages_file().exists()
+        assert not (cfg.data_dir / "crawl_meta.json").exists()
 
     async def test_done_event_reports_partial_counts_on_cancel(self, isolated_env):
         """CRAWL_DONE fires even on cancel and reports what was actually flushed."""

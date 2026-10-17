@@ -26,7 +26,6 @@ from lilbee.crawler.runner import (
     crawl_single,
 )
 from lilbee.crawler.save import (
-    METADATA_FLUSH_INTERVAL,
     CrawlMeta,
     content_hash,
     load_crawl_metadata,
@@ -41,7 +40,6 @@ from lilbee.crawler.url_filter import (
 )
 
 __all__ = [
-    "METADATA_FLUSH_INTERVAL",
     "CancelToken",
     "ConcurrencySpec",
     "CrawlMeta",
