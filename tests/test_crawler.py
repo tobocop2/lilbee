@@ -2486,6 +2486,18 @@ class TestSaveSingleResult:
         again = CrawlResult(url=url, markdown=markdown)
         assert _save_single_result(again, meta) is None
 
+    def test_unchanged_text_under_another_spelling_of_the_address_skips(self, isolated_env):
+        from lilbee.crawler.save import _save_single_result
+
+        address = "https://example.com/t/page"
+        name = url_to_filename(address)
+        path = cfg.documents_dir / "_web" / name
+        path.parent.mkdir(parents=True)
+        path.write_text("# Page", encoding="utf-8")
+        meta = {address: CrawlMeta(file=name, content_hash=content_hash("# Page"), crawled_at="t")}
+        again = CrawlResult(url="https://EXAMPLE.com/t/pag%65#top", markdown="# Page")
+        assert _save_single_result(again, meta) is None
+
     def test_hash_match_with_missing_file_rewrites(self, isolated_env):
         """Prev metadata hash matches but file was deleted -> re-write."""
         from lilbee.crawler.save import _save_single_result
