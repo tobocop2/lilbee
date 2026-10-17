@@ -1770,14 +1770,36 @@ class TestCrawlAndSave:
 
     @patch("lilbee.crawler.runner.crawl_recursive")
     @patch("lilbee.crawler.runner.crawl_single")
-    async def test_max_pages_one_is_a_one_page_recursive_crawl(
+    async def test_max_pages_one_takes_the_single_page_path(
         self, mock_crawl_single, mock_crawl_recursive, isolated_env
     ):
-        """max_pages=1 runs the recursive crawl capped at one page."""
-        mock_crawl_recursive.return_value = [CrawlResult(url="https://example.com")]
-        await crawl_and_save("https://example.com", max_pages=1)
+        """max_pages=1 fetches the seed alone, like depth 0."""
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
+        paths = await crawl_and_save("https://example.com", max_pages=1)
+        assert len(paths) == 1
+        mock_crawl_single.assert_awaited_once()
+        mock_crawl_recursive.assert_not_called()
+
+    @patch("lilbee.crawler.runner.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_single")
+    async def test_a_configured_page_limit_of_one_takes_the_single_page_path(
+        self, mock_crawl_single, mock_crawl_recursive, isolated_env
+    ):
+        cfg.crawl_max_pages = 1
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
+        await crawl_and_save("https://example.com")
+        mock_crawl_single.assert_awaited_once()
+        mock_crawl_recursive.assert_not_called()
+
+    @patch("lilbee.crawler.runner.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_single")
+    async def test_max_pages_two_runs_the_recursive_crawl(
+        self, mock_crawl_single, mock_crawl_recursive, isolated_env
+    ):
+        mock_crawl_recursive.return_value = []
+        await crawl_and_save("https://example.com", max_pages=2)
         mock_crawl_single.assert_not_called()
-        assert mock_crawl_recursive.await_args.kwargs["max_pages"] == 1
+        assert mock_crawl_recursive.await_args.kwargs["max_pages"] == 2
 
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_triggers_bootstrap_when_chromium_missing(
