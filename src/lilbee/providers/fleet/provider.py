@@ -927,6 +927,10 @@ def _warm_ttl_seconds(lifetime: EngineLifetime, *, hold_warm_for_session: bool =
     keep the weights loaded after the session or ingest ended, for as long as any
     other user or the machine stays up. Its weights follow the idle window like
     every other mode, and only the user's explicit 0 keeps them loaded.
+
+    The hold follows the *lifetime* the caller asks for. If a ``USERS`` build finds
+    no reaper running, the manager binds the engine to its builder after this ran,
+    and that engine keeps the configured TTL, not the hold.
     """
     if lifetime is EngineLifetime.BUILDER and (hold_warm_for_session or ingest_keep_warm()):
         return 0
@@ -1643,11 +1647,15 @@ class FleetProvider:
                 last = hold.release_and_check_last()
                 # A flip after binding never re-acquires, so reconcile our own mark
                 # here. Skipped on a config change, which stops and clears regardless.
+                # A withdrawn opt-in turns a detached engine into one its remaining
+                # users share, so a reaper must watch it as after a bind.
                 if not config_changed:
                     if cfg.keep_engine_warm:
                         request_keep_warm(engine_dir, cfg.data_root)
                     else:
                         withdraw_keep_warm(engine_dir, cfg.data_root)
+                        if not last:
+                            _watch_bound_engine(engine_dir)
                 # Any remaining opt-in keeps the engine, including a peer's.
                 keep = not config_changed and keep_warm_requested(engine_dir)
                 if last and not keep:
