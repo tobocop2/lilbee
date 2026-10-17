@@ -251,6 +251,38 @@ class TestSitemapFetch:
         )
         assert sent == [headers]
 
+    @pytest.mark.parametrize(
+        ("seed", "sent_url", "auth"),
+        [
+            (
+                "https://alice:s3%3Acr%40t@example.com/start",
+                "https://example.com/sitemap.xml",
+                ("alice", "s3:cr@t"),
+            ),
+            ("https://alice@example.com/start", "https://example.com/sitemap.xml", ("alice", "")),
+            ("http://example.com:8080/start", "http://example.com:8080/sitemap.xml", None),
+        ],
+        ids=["username-and-password", "username-only", "no-userinfo"],
+    )
+    def test_the_seed_credentials_go_as_basic_auth_never_in_the_url(
+        self, monkeypatch, seed, sent_url, auth
+    ):
+        sent: list[tuple[str, object]] = []
+
+        def _get(url: str, **kwargs: object) -> MagicMock:
+            sent.append((url, kwargs["auth"]))
+            return MagicMock(status_code=200, text="<urlset></urlset>")
+
+        monkeypatch.setattr("httpx.get", _get)
+        assert _fetch_sitemap_text(seed) == "<urlset></urlset>"
+        assert sent == [(sent_url, auth)]
+
+    def test_a_seed_that_does_not_parse_makes_no_request(self, monkeypatch):
+        called: list[int] = []
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: called.append(1))
+        assert _fetch_sitemap_text("http://alice:se/cret@example.com/start") is None
+        assert called == []
+
     def test_does_not_follow_redirects(self, monkeypatch):
         """A 30x is not followed; an unfollowed redirect yields no sitemap (SSRF-safe)."""
         fake = MagicMock(status_code=301, text="<urlset></urlset>")
