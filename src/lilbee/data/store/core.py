@@ -573,16 +573,16 @@ def _paths_missing_from(sources: LanceTable, table: LanceTable, column: str) -> 
     return sorted(pc.unique(missing).to_pylist())
 
 
-def _key_by_source_id(table: LanceTable, column: str) -> None:
-    """Key *table* by ``source_id`` in place of the path in *column*. Lock held."""
+def _add_source_id(db: LanceDBConnection, name: str, column: str) -> None:
+    """Give table *name* its ``source_id`` from the path in *column*, indexed as the path is."""
     from lancedb.index import BTree
 
+    table = db.open_table(name)
     if _SOURCE_ID not in table.schema.names:
         table.add_columns({_SOURCE_ID: f"md5({column})"})
     indexes = _index_names(table)
     if [column] in indexes.values() and [_SOURCE_ID] not in indexes.values():
         table.create_index(_SOURCE_ID, config=BTree())
-    table.drop_columns([column])
 
 
 def _migrate_sources_table(table: LanceTable) -> None:
@@ -1141,9 +1141,11 @@ class Store:
 
         names = table_names(db)
         steps = _upgrade_steps(db, names)
-        # LanceDB adds a column one fragment at a time, so each table's runs on its own thread.
+        keyed = [(name, _PATH_KEY_BY_TABLE[name]) for name, _ in steps if name != SOURCES_TABLE]
+        # LanceDB adds a column one fragment at a time: each table's runs on its own thread
+        # from the start, and its path column goes once its every path has a source row.
         with ThreadPoolExecutor(max_workers=len(_PATH_KEY_COLUMNS)) as pool:
-            keyed = []
+            added = [pool.submit(_add_source_id, db, name, column) for name, column in keyed]
             for step, (name, table) in enumerate(steps, start=1):
                 shown = name.strip("_").replace("_", " ")
                 self._report_upgrade(
@@ -1158,11 +1160,10 @@ class Store:
                 if name == SOURCES_TABLE:
                     _migrate_sources_table(table)
                 else:
-                    column = _PATH_KEY_BY_TABLE[name]
-                    self._hold_missing_paths(db, table, column)
-                    keyed.append(pool.submit(_key_by_source_id, table, column))
-            for done in keyed:
+                    self._hold_missing_paths(db, table, _PATH_KEY_BY_TABLE[name])
+            for (name, column), done in zip(keyed, added, strict=True):
                 done.result()
+                db.open_table(name).drop_columns([column])
         if META_TABLE in names:
             db.open_table(META_TABLE).update(
                 where="schema_version >= 2", values={"schema_version": META_SCHEMA_VERSION}

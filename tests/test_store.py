@@ -5377,6 +5377,36 @@ class TestOpenTimeMigration:
         assert overlapped == [True]
         assert "source_id" in store.open_table(CHUNKS_TABLE).schema.names
 
+    def test_the_id_columns_are_added_while_the_source_table_is_upgraded(
+        self, test_config, monkeypatch
+    ):
+        from lancedb.table import LanceTable
+
+        import lilbee.data.store.core as core_mod
+
+        store = _path_keyed_library(test_config)
+        adding, overlapped = threading.Event(), []
+        real_add, real_sources = LanceTable.add_columns, core_mod._migrate_sources_table
+
+        def _add(self, *args, **kwargs):
+            if self.name == CHUNKS_TABLE:
+                adding.set()
+            return real_add(self, *args, **kwargs)
+
+        def _sources(table):
+            overlapped.append(adding.wait(timeout=5))
+            real_sources(table)
+
+        monkeypatch.setattr(LanceTable, "add_columns", _add)
+        monkeypatch.setattr(core_mod, "_migrate_sources_table", _sources)
+
+        store.get_db()
+
+        assert overlapped == [True]
+        names = store.open_table(CHUNKS_TABLE).schema.names
+        assert "source_id" in names and "source" not in names
+        assert _sources_of(store) == ["a.md", "b.md", "wiki/concepts/x.md"]
+
     @pytest.mark.parametrize("key_type", [pa.string(), pa.large_string()])
     def test_the_missing_paths_are_the_keys_no_source_row_holds(self, tmp_path, key_type):
         import lancedb
