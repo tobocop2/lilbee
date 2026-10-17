@@ -172,6 +172,22 @@ def test_a_shared_file_goes_to_one_page_and_the_others_are_saved_afresh(
     assert _moved_sources(store) == [((f"_web/{_SHARED}",), f"_web/{name}")]
 
 
+def test_a_page_that_lost_a_shared_file_keeps_its_copy_at_its_own_name(store: MagicMock):
+    _write(_SHARED, "# Second")
+    own = url_to_filename(_COLON)
+    _write(own, "# Own")
+    meta = {
+        _COLON: CrawlMeta(_SHARED, "old", "2"),
+        _UNDERSCORE: CrawlMeta(_SHARED, content_hash("# Second"), "1"),
+    }
+    assert _moved(store, meta) == {
+        _UNDERSCORE: CrawlMeta(url_to_filename(_UNDERSCORE), content_hash("# Second"), "1"),
+        _COLON: CrawlMeta(own, content_hash("# Own"), "2"),
+    }
+    assert (_web() / own).read_text(encoding="utf-8") == "# Own"
+    assert _moved_sources(store) == [((f"_web/{_SHARED}",), f"_web/{url_to_filename(_UNDERSCORE)}")]
+
+
 def test_a_file_that_is_not_utf_8_goes_to_the_latest_page(store: MagicMock):
     (_web() / "example.com/t/a_b").mkdir(parents=True)
     (_web() / _SHARED).write_bytes(b"\xff\xfe")
