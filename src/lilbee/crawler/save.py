@@ -297,7 +297,7 @@ def _load_pages() -> dict[str, CrawlMeta]:
     if not path.exists():
         return {}
     with file_lock_or_warn(path, _RECORD_LOCK_TIMEOUT_S):
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         pages = _read_pages(lines)
         if len(pages) < len(list(filter(None, lines))):
             text = "".join(f"{_record_line(a, e)}\n" for a, e in pages.items())
@@ -339,7 +339,9 @@ def _holds_only(address: str, entry: CrawlMeta, record: CrawlRecord) -> bool:
         validate_path_within(path, web_dir().resolve())
     except ValueError:
         return False
-    if not path.is_file() or content_hash(path.read_text(encoding="utf-8")) != entry.content_hash:
+    if not path.is_file():
+        return False
+    if content_hash(path.read_text(encoding="utf-8", errors="replace")) != entry.content_hash:
         return False
     twins = record.earlier_by_text.get(entry.content_hash, [])
     return not any(other != address and _same_file(twin.file, entry.file) for other, twin in twins)
