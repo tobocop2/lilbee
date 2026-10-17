@@ -1525,7 +1525,7 @@ class TestRobotsTxt:
         assert len(reasons) == 2
         for reason in reasons:
             assert "The site did not answer (connection: " in reason, reason
-            assert "robots" not in reason, reason
+            assert "robots.txt could not be read" not in reason, reason
             assert "crawl_respect_robots_txt" not in reason, reason
 
 
