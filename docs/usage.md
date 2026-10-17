@@ -661,8 +661,11 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
   {"source": "manual.pdf", "chunk": "Change oil every 5,000 miles...", "distance": 0.23, "chunk_type": "raw"}
 ]}
 
-// lilbee --json status
-{"config": {...}, "sources": [{"filename": "manual.pdf", "chunk_count": 42}], "document_count": 1, "total_chunks": 42, "index": {"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "embedding_dim": 768}, "skipped": [], "skipped_total": 0}
+// lilbee --json status  (sources: the newest 10; document_count: the real count)
+{"command": "status", "config": {...}, "sources": [{"filename": "manual.pdf", "file_hash": "3f9a1c0b7d2e", "chunk_count": 42, "ingested_at": "2026-10-16T09:30:12"}], "source_kinds": {"pdf": 1}, "document_count": 1, "total_chunks": 42, "index": {"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "embedding_dim": 768}, "entities": null, "skipped": [], "skipped_total": 0, "ocr_note": "..."}
+
+// lilbee --json status --list-sources  (every document, one object per line)
+{"filename": "manual.pdf", "file_hash": "3f9a1c0b7d2e...", "chunk_count": 42, "ingested_at": "2026-10-16T09:30:12.481000+00:00"}
 
 // lilbee --json model pull <ref>  (streams events, then a final "done" line)
 {"event": "progress", "model": "...", "bytes": 12345678, "total": 999999999}
