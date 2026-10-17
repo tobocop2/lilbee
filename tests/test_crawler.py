@@ -132,7 +132,8 @@ SAVED_NAMES = [
     pytest.param("https://evil.com/../../etc/passwd", "evil.com/etc/passwd", id="dot-segments"),
     pytest.param("https://bücher.example/t", "bücher.example/t", id="unicode-host"),
     pytest.param("https://xn--bcher-kva.example/t", "bücher.example/t", id="punycode-host"),
-    pytest.param("https://[0:0::1]:8443/t", "1-8443/t", id="ipv6-and-port"),
+    pytest.param("https://[0:0::1]:8443/t", "0-0-0-0-0-0-0-1-8443/t", id="ipv6-and-port"),
+    pytest.param("http://[2001:DB8::a]/t", "2001-db8-0-0-0-0-0-a/t", id="ipv6"),
     pytest.param("not a url", "unknown/index", id="not-a-url"),
 ]
 
