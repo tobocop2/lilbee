@@ -62,30 +62,41 @@ def _watch_is_over(
             idle.reset()
             return False
         recorded = engine_record_exists(engine_dir)
-        if recorded and keep_warm_requested(engine_dir):
-            _unload_when_idle(engine_dir, idle, clock())
+        kept_warm = recorded and keep_warm_requested(engine_dir)
+        if kept_warm and not _unload_when_idle(engine_dir, idle, clock()):
             return False
         if recorded:
             stop_engine(engine_dir)
-            log.info("Engine stopped at %s (every user is gone)", engine_dir)
+            log.info(
+                "Engine stopped at %s (%s)",
+                engine_dir,
+                "it stopped answering" if kept_warm else "every user is gone",
+            )
         reaper_lock.release()
         return True
 
 
-def _unload_when_idle(engine_dir: Path, idle: _IdleCount, now: float) -> None:
-    """Unload a kept-warm engine's weights once, after its idle time with no user."""
+def _unload_when_idle(engine_dir: Path, idle: _IdleCount, now: float) -> bool:
+    """Unload a kept-warm engine's weights after its idle time with no user.
+
+    A refused unload starts a new idle window, so the next try waits one window.
+    Returns True when no recorded engine answers: it is gone and nothing is left to watch.
+    """
     # Loaded with the heavy swap_manager import above, once no user is left.
     from lilbee.core.config.defaults import ENGINE_IDLE_TTL_MINUTES_DEFAULT
-    from lilbee.providers.fleet.swap_manager import unload_engine_models
+    from lilbee.providers.fleet.swap_manager import engine_answers, unload_engine_models
 
     if idle.since is None:
         idle.since = now
     idle_s = keep_warm_idle_s(engine_dir, unset_minutes=ENGINE_IDLE_TTL_MINUTES_DEFAULT)
     if idle.unloaded or now - idle.since < idle_s:
-        return
+        return False
     if unload_engine_models(engine_dir):
         idle.unloaded = True
         log.info("Engine weights unloaded at %s (idle with no user)", engine_dir)
+        return False
+    idle.since = now
+    return not engine_answers(engine_dir)
 
 
 def watch(

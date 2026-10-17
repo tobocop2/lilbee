@@ -14,6 +14,7 @@ import pytest
 from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 from pytest_httpserver import HTTPServer
+from werkzeug.wrappers import Response
 
 from lilbee.core.config.defaults import ENGINE_IDLE_TTL_MINUTES_DEFAULT
 from lilbee.providers.fleet import engine_reaper as reaper_mod
@@ -300,11 +301,14 @@ def test_an_empty_marker_reads_as_the_default_idle_time(
     assert seen == [0, 0, 1]
 
 
-def test_a_failed_unload_is_tried_again_on_the_next_poll(
+def test_a_refused_unload_is_tried_once_per_idle_window(
     tmp_path: Path, stops, monkeypatch: pytest.MonkeyPatch, httpserver: HTTPServer
 ) -> None:
-    httpserver.expect_ordered_request(_UNLOAD_PATH, method="POST").respond_with_data(status=500)
-    httpserver.expect_ordered_request(_UNLOAD_PATH, method="POST").respond_with_json({})
+    httpserver.expect_request("/running", method="GET").respond_with_json({"running": []})
+    answers = iter([500, 200])
+    httpserver.expect_request(_UNLOAD_PATH, method="POST").respond_with_handler(
+        lambda _request: Response("{}", status=next(answers))
+    )
     state = {"pid": 1, "proxy_port": httpserver.port}
     (tmp_path / "llama-swap.state.chat.1.json").write_text(json.dumps(state), encoding="utf-8")
     (tmp_path / "llama-swap.state.embed.1.json").write_text("{}", encoding="utf-8")  # unreadable
@@ -314,13 +318,38 @@ def test_a_failed_unload_is_tried_again_on_the_next_poll(
         tmp_path,
         monkeypatch,
         httpserver,
-        _wait(60),
-        _wait(1),
-        _wait(1),
+        _wait(60),  # the first try, refused
+        _wait(1),  # the next polls wait out a whole idle window
+        _wait(58),
+        _wait(1),  # the second try, accepted
+        _wait(600),
         lambda _c: _engine_gone(tmp_path)(),
     )
 
-    assert seen == [0, 1, 2, 2]
+    assert seen == [0, 1, 1, 1, 2, 2]
+    assert stops == []
+
+
+def test_a_gone_engine_is_stopped_once_and_the_reaper_exits(
+    tmp_path: Path, stops, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+    state = {"pid": 1, "proxy_port": closed_port}
+    (tmp_path / "llama-swap.state.chat.1.json").write_text(json.dumps(state), encoding="utf-8")
+    request_keep_warm(tmp_path, tmp_path / "install", 1)
+    clock = _Clock()
+    lock = _held(tmp_path)
+    _sleep_runs(monkeypatch, clock.advance(60))
+
+    with caplog.at_level(logging.WARNING):
+        reaper_mod.watch(tmp_path, lock, poll_s=0, clock=clock)
+
+    assert stops == [tmp_path]
+    assert list(tmp_path.glob("llama-swap.state.*")) == []
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    assert not reaper_running(tmp_path)  # the reaper lock is released on exit
 
 
 def test_an_unreachable_proxy_reads_as_a_failed_unload(tmp_path: Path) -> None:

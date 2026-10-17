@@ -921,6 +921,12 @@ def unload_engine_models(data_dir: Path) -> bool:
     return all([_unload_models(port) for port in ports])
 
 
+def engine_answers(data_dir: Path) -> bool:
+    """Whether any engine *data_dir* records answers on its proxy port."""
+    states = (_load_state(path) for path in sorted(data_dir.glob(_STATE_FILE_GLOB)))
+    return any(state_is_healthy(state) for state in states if state)
+
+
 def _unload_models(proxy_port: int) -> bool:
     url = f"http://{_HOST}:{proxy_port}{_UNLOAD_PATH}"
     try:
