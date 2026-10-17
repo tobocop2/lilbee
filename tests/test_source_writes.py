@@ -171,6 +171,27 @@ class TestTheWriterStatesTheType:
         assert rows["document"]["path"] == (root / "summaries" / "a.md").as_posix()
         assert rows["wiki"]["path"] == "wiki/summaries/a.md"
         assert rows["document"]["source_id"] != rows["wiki"]["source_id"]
+        assert store.source_ids(["wiki/summaries/a.md"]) == {
+            "wiki/summaries/a.md": rows["wiki"]["source_id"]
+        }
+
+    def test_a_folder_labelled_wiki_that_leaves_folds_no_document_into_a_page(
+        self, config, tmp_path
+    ):
+        config.linked_roots = {"wiki": str(tmp_path / "home" / "wiki")}
+        store = Store(config)
+        _batch(store, "wiki/summaries/a.md", SourceType.DOCUMENT)
+        _replace(store, "wiki/summaries/a.md", SourceType.WIKI)
+        page = store.source_ids(["wiki/summaries/a.md"])["wiki/summaries/a.md"]
+
+        store.name_by_label(["wiki"])
+
+        assert sorted((row["path"], row["source_type"]) for row in _rows(store)) == [
+            ("wiki/summaries/a.md", "document"),
+            ("wiki/summaries/a.md", "wiki"),
+        ]
+        assert len(store.get_chunks_by_source("wiki/summaries/a.md")) == 1
+        assert store.source_ids(["wiki/summaries/a.md"]) == {"wiki/summaries/a.md": page}
 
 
 class TestAWriteFindsTheLabelKeyedRow:
