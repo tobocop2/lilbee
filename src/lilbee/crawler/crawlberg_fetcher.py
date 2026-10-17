@@ -129,8 +129,9 @@ ROBOTS_UNREACHABLE_MESSAGE = (
     "The site's robots.txt could not be read ({reason}), so no page of the site is crawled. "
     "Set crawl_respect_robots_txt to false to crawl it."
 )
-# The crawlberg 1.11.1 error codes of a request that never reached the site.
-_NO_ANSWER_CODES = ("timeout: ", "connection: ", "dns: ", "ssl: ")
+# The crawlberg 1.11.1 error codes of a request the site's server never answered. A TLS
+# failure is not one: the server answered the handshake.
+_NO_ANSWER_STARTS = ("timeout: ", "connection: ", "dns: ")
 SITE_NO_ANSWER_MESSAGE = "The site did not answer ({reason})."
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
 # The headers a browser sends with a page request, which crawlberg's HTTP client does not send.
@@ -402,7 +403,7 @@ def _error_text(error: str) -> str:
     reason = error.removeprefix(_ROBOTS_UNREACHABLE_START)
     if reason.startswith(_SSRF_ERROR_CODE):
         return reason
-    if reason.startswith(_NO_ANSWER_CODES):
+    if reason.startswith(_NO_ANSWER_STARTS):
         return SITE_NO_ANSWER_MESSAGE.format(reason=reason)
     return ROBOTS_UNREACHABLE_MESSAGE.format(reason=reason)
 

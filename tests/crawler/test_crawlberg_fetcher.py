@@ -652,9 +652,8 @@ class TestFetchSingle:
             "connection: [network:connection] error sending request for url (http://h:9/robots.txt)",
             "timeout: request timed out",
             "dns: failed to lookup address information",
-            "ssl: invalid peer certificate",
         ],
-        ids=["connection", "timeout", "dns", "ssl"],
+        ids=["connection", "timeout", "dns"],
     )
     async def test_a_site_that_never_answered_is_named_and_robots_txt_is_not_blamed(
         self, reason: str
@@ -670,10 +669,14 @@ class TestFetchSingle:
 
     @pytest.mark.parametrize(
         "reason",
-        ["rate_limited: HTTP 429", "forbidden: waf/blocked: challenge page"],
-        ids=["rate-limited", "waf"],
+        [
+            "rate_limited: HTTP 429",
+            "forbidden: waf/blocked: challenge page",
+            "ssl: [network:ssl] error sending request for url (https://h/robots.txt)",
+        ],
+        ids=["rate-limited", "waf", "ssl"],
     )
-    async def test_a_robots_txt_the_site_refused_keeps_naming_the_setting(self, reason: str):
+    async def test_a_robots_txt_the_site_answered_keeps_naming_the_setting(self, reason: str):
         script = [error(SEED, f"robots_unreachable: {reason}"), complete(0)]
         with StubCrawlberg(script).installed():
             fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
