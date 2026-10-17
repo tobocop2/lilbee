@@ -132,6 +132,7 @@ class TestCrawlConfig:
             "shutdown_timeout": 5000,
             "chrome_path": None,
             "chrome_args": [],
+            "extra_wait": None,
         }
 
     async def test_no_override_leaves_the_user_agent_to_crawlberg_in_http_mode(self):
@@ -341,7 +342,35 @@ class TestBrowserMode:
             "shutdown_timeout": 5000,
             "chrome_path": str(shell),
             "chrome_args": FLAGS,
+            "extra_wait": 0,
         }
+
+    @pytest.mark.parametrize("wait_ms", [0, 2500])
+    async def test_each_crawl_shape_passes_the_extra_wait_to_crawlberg(
+        self, monkeypatch, tmp_path, wait_ms: int
+    ):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.BROWSER, extra_wait_ms=wait_ms)
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await _recursive(fetcher)
+            await fetcher.fetch_single(SEED, timeout=5, concurrency=NO_PACING)
+        assert [config.kwargs["browser"].kwargs["extra_wait"] for config in stub.configs] == [
+            wait_ms
+        ] * 2
+
+    @pytest.mark.parametrize(("wait_ms", "overall_ms"), [(0, 10000), (2500, 12500)])
+    async def test_the_deadline_of_a_whole_fetch_adds_the_extra_wait(
+        self, monkeypatch, tmp_path, wait_ms: int, overall_ms: int
+    ):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.BROWSER, extra_wait_ms=wait_ms)
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await fetcher.fetch_single(SEED, timeout=5, concurrency=NO_PACING)
+        assert stub.config["browser"].kwargs["overall_timeout"] == overall_ms
 
     async def test_a_recursive_crawl_names_the_same_shell_and_flags(self, monkeypatch, tmp_path):
         shell = tmp_path / "chrome-headless-shell"
@@ -381,16 +410,22 @@ class TestBrowserMode:
         assert stub.config["browser"].kwargs["chrome_path"] == str(shell)
         assert os.environ.get(CHROME_ENV) == before
 
-    async def test_http_mode_names_no_chrome_and_no_flags(self, monkeypatch, tmp_path):
+    async def test_http_mode_names_no_chrome_no_flags_and_no_extra_wait(
+        self, monkeypatch, tmp_path
+    ):
         shell = tmp_path / "chrome-headless-shell"
         monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
-        fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP, chrome_args=FLAGS)
+        fetcher = CrawlbergFetcher(
+            render_mode=CrawlRenderMode.HTTP, chrome_args=FLAGS, extra_wait_ms=2500
+        )
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
             await fetcher.fetch_single(SEED, timeout=5, concurrency=NO_PACING)
         assert stub.config["browser"].kwargs["mode"] == "never"
         assert stub.config["browser"].kwargs["chrome_path"] is None
         assert stub.config["browser"].kwargs["chrome_args"] == []
+        assert stub.config["browser"].kwargs["extra_wait"] is None
+        assert stub.config["browser"].kwargs["overall_timeout"] == 10000
 
     async def test_http_mode_does_not_look_for_the_shell(self, monkeypatch):
         looked: list[bool] = []

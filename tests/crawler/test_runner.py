@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import crawlberg_fetcher as crawlberg_fetcher_mod
 from lilbee.crawler import discovery as discovery_mod
 from lilbee.crawler import events as events_mod
@@ -564,6 +565,43 @@ class TestRobotsSetting:
         with stub.installed():
             await crawl_and_save("https://example.com/", depth=depth, max_pages=5)
         assert [config.kwargs["respect_robots_txt"] for config in stub.configs] == [respect]
+
+
+class TestExtraWaitSetting:
+    """``crawl_browser_extra_wait_ms`` reaches crawlberg from every browser crawl shape."""
+
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single", "site"])
+    @pytest.mark.parametrize("wait_ms", [0, 2500])
+    async def test_the_setting_reaches_crawlberg_in_browser_mode(
+        self, monkeypatch, tmp_path, depth: int, wait_ms: int
+    ):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(
+            crawlberg_fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell
+        )
+        cfg.crawl_browser_extra_wait_ms = wait_ms
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save(
+                "https://example.com/",
+                depth=depth,
+                max_pages=5,
+                render_mode=CrawlRenderMode.BROWSER,
+            )
+        assert [config.kwargs["browser"].kwargs["extra_wait"] for config in stub.configs] == [
+            wait_ms
+        ]
+
+    async def test_http_mode_sends_no_extra_wait(self):
+        cfg.crawl_browser_extra_wait_ms = 2500
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save(
+                "https://example.com/", depth=1, max_pages=5, render_mode=CrawlRenderMode.HTTP
+            )
+        assert [config.kwargs["browser"].kwargs["extra_wait"] for config in stub.configs] == [None]
 
 
 class TestFetcherModuleNotDirectlyImported:
