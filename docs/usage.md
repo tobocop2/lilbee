@@ -977,7 +977,8 @@ lilbee --json sessions export 3f2a     # {"id", "markdown"}; with -o, {"id", "pa
 
 ```bash
 lilbee init                            # create .lilbee/ in cwd
-lilbee status                          # show active data dir, models, document count
+lilbee status                          # show active data dir, models, counts, newest documents
+lilbee status --list-sources           # print every indexed document, one per line
 lilbee --global status                 # skip any .lilbee/ and use the platform default
 lilbee --data-dir ~/kb status          # use an explicit data dir
 ```

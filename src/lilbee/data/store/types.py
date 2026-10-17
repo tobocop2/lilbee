@@ -227,6 +227,25 @@ class SourceRecord(TypedDict):
     created_at: NotRequired[str | None]
 
 
+class SourceHead(TypedDict):
+    """The columns of a tracked source that a listing shows."""
+
+    filename: str
+    file_hash: str
+    chunk_count: int
+    ingested_at: str
+
+
+@dataclass(frozen=True)
+class SourceSummary:
+    """Totals over the tracked sources and the most recently ingested few."""
+
+    document_count: int
+    total_chunks: int
+    kinds: dict[str, int]
+    newest: list[SourceHead]
+
+
 # Sentinel for the stat columns on rows written before they existed (or for
 # detached imports with no backing file). Planning treats it as "unknown: re-hash".
 SOURCE_STAT_UNKNOWN = -1

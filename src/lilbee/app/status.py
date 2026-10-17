@@ -22,6 +22,9 @@ ellipsis when even the leaf alone would breach the cap."""
 STATUS_SKIPPED_LIMIT = 50
 """Cap on held-out files in one status response; ``skipped_total`` carries the real count."""
 
+STATUS_RECENT_LIMIT = 10
+"""Cap on the newest sources in one status response; ``document_count`` carries the real count."""
+
 _ELLIPSIS = "…"
 
 
@@ -134,6 +137,9 @@ class StatusResult(BaseModel):
     command: str = "status"
     config: StatusConfig
     sources: list[SourceInfo]
+    """The newest sources, at most ``STATUS_RECENT_LIMIT``; ``document_count`` is the real count."""
+    source_kinds: dict[str, int] = {}
+    """How many sources each kind holds, over the whole library."""
     document_count: int
     total_chunks: int
     index: IndexStatus | None = None
@@ -156,9 +162,7 @@ def _index_status() -> IndexStatus | None:
 
 def gather_status() -> StatusResult:
     """Collect status data as a typed model (shared by human + JSON output)."""
-    sources = get_services().store.get_sources()
-    sorted_sources = sorted(sources, key=lambda x: x["filename"])
-    total_chunks = sum(s["chunk_count"] for s in sources)
+    summary = get_services().store.source_summary(STATUS_RECENT_LIMIT)
     skipped, skipped_total = held_out_sources()
     return StatusResult(
         index=_index_status(),
@@ -183,15 +187,16 @@ def gather_status() -> StatusResult:
         ),
         sources=[
             SourceInfo(
-                filename=s["filename"],
-                file_hash=s["file_hash"][:12],
-                chunk_count=s["chunk_count"],
-                ingested_at=s["ingested_at"][:19],
+                filename=head["filename"],
+                file_hash=head["file_hash"][:12],
+                chunk_count=head["chunk_count"],
+                ingested_at=head["ingested_at"][:19],
             )
-            for s in sorted_sources
+            for head in summary.newest
         ],
-        document_count=len(sources),
-        total_chunks=total_chunks,
+        source_kinds=summary.kinds,
+        document_count=summary.document_count,
+        total_chunks=summary.total_chunks,
         entities=entity_status(),
         skipped=skipped,
         skipped_total=skipped_total,

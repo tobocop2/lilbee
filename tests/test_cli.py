@@ -30,7 +30,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import SearchChunk, SourceSummary
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
 from lilbee.runtime.absorb_journal import absorb_pending
@@ -48,7 +48,12 @@ from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
 from tests._mock_effects import repeat_last
 from tests._windows_loop import windows_proactor_loop
-from tests.conftest import UnfinishedAdd, leave_unfinished_add, reset_held_on_a_thread
+from tests.conftest import (
+    UnfinishedAdd,
+    leave_unfinished_add,
+    reset_held_on_a_thread,
+    summary_of,
+)
 from tests.test_lock import _mark_held_on_a_thread, _sync_write_takes
 
 runner = CliRunner()
@@ -88,6 +93,7 @@ def mock_svc():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
+    store.source_summary.return_value = SourceSummary(0, 0, {}, [])
     store.add_chunks.return_value = 0
     # No entity schema induced unless a test persists one.
     store.entity_schema_state.return_value = None
@@ -175,22 +181,24 @@ class TestStatus:
         assert "OCR engine" not in output
 
     def test_status_with_indexed_docs(self, isolated_env, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {
-                "filename": "test.pdf",
-                "file_hash": "abc123",
-                "chunk_count": 10,
-                "ingested_at": "2026-01-01T00:00:00",
-            }
-        ]
+        mock_svc.store.source_summary.return_value = summary_of(
+            [
+                {
+                    "filename": "test.pdf",
+                    "file_hash": "abc123",
+                    "chunk_count": 10,
+                    "ingested_at": "2026-01-01T00:00:00",
+                }
+            ]
+        )
         result = runner.invoke(app, ["status"])
         assert "test.pdf" in result.output
         assert "10" in result.output
 
     def test_status_prints_a_bracketed_filename_as_written(self, isolated_env, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "a[red]b.pdf", "file_hash": "h", "chunk_count": 1, "ingested_at": "t"}
-        ]
+        mock_svc.store.source_summary.return_value = summary_of(
+            [{"filename": "a[red]b.pdf", "file_hash": "h", "chunk_count": 1, "ingested_at": "t"}]
+        )
         result = runner.invoke(app, ["status"])
         assert "a[red]b.pdf" in result.output
 
@@ -2839,14 +2847,16 @@ class TestStatusJson:
         assert data["total_chunks"] == 0
 
     def test_status_json_with_sources(self, isolated_env, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {
-                "filename": "test.pdf",
-                "file_hash": "abc123hash",
-                "chunk_count": 10,
-                "ingested_at": "2026-01-01T00:00:00",
-            }
-        ]
+        mock_svc.store.source_summary.return_value = summary_of(
+            [
+                {
+                    "filename": "test.pdf",
+                    "file_hash": "abc123hash",
+                    "chunk_count": 10,
+                    "ingested_at": "2026-01-01T00:00:00",
+                }
+            ]
+        )
         result = runner.invoke(app, ["--json", "status"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
