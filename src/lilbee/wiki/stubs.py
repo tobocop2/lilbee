@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.data.store import SourceType
 
 from .entity_extractor import EntityKind, get_entity_extractor
 from .entity_extractor.factory import effective_entity_mode
@@ -375,7 +376,7 @@ def _rebuild(
         previous = load_stub_index(config)
         chunks = [c for name in sorted(sources) for c in store.get_chunks_by_source(name)]
         affected = _write_source_mentions(store, extractor, chunks, sources, cap)
-        listed = set(store.source_ids(sources).values()) | (gone or set())
+        listed = set(store.source_ids(sources, SourceType.DOCUMENT).values()) | (gone or set())
         affected |= {slug for slug, stub in previous.items() if set(stub.sources) & listed}
         recomputed = _stubs_from_mention_rows(store.wiki_mention_rows(slugs=affected), config, cap)
         stubs = {slug: stub for slug, stub in previous.items() if slug not in affected}

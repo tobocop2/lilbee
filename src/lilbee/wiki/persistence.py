@@ -237,7 +237,7 @@ def persist_and_finalize(
         config.wiki_drift_threshold,
         source_names,
         target.page_type,
-        source_ids=store.source_ids(source_names),
+        source_ids=store.source_ids(source_names, SourceType.DOCUMENT),
     )
     published_path = target.wiki_root / target.subdir / f"{target.slug}.md"
     if page_path != published_path:
