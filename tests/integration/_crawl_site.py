@@ -454,7 +454,7 @@ def require_chromium() -> None:
 
 def saved_pages(root: Path, host: str = LOOPBACK) -> dict[str, str]:
     """Saved markdown under the documents ``_web`` dir for *host* on any port, keyed by the
-    page's readable name under the host's folder (``a/b/index``, ``rel/child.html``)."""
+    page's readable name under the host's folder (``a/b``, ``rel/child``)."""
     web = root / "documents" / "_web"
     folders = [d for d in web.iterdir() if _is_host_folder(d.name, host)] if web.is_dir() else []
     return {
