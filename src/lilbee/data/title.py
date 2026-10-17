@@ -6,6 +6,7 @@ import re
 from pathlib import PurePath
 from typing import Protocol
 
+from lilbee.core.web_names import is_web_source, page_stem
 from lilbee.data.store import SourceMeta
 
 # Filename-stem separators flattened to spaces when no extracted title exists.
@@ -55,10 +56,12 @@ def derive_title(source_name: str, metadata_title: object = None) -> str:
     The stem cleanup flattens underscore/hyphen separators to spaces so BM25
     tokenizes ``survey_214.pdf`` into the same terms a query would use. Junk
     stems (``IMG 1234``, bare numbers, hex ids) yield "" so no title is stored.
+    A crawled page's stem is its readable name, without the hash of its address.
     """
     if isinstance(metadata_title, str) and metadata_title.strip():
         return metadata_title.strip()
-    stem = PurePath(source_name).stem
+    name = PurePath(source_name).name
+    stem = page_stem(name) if is_web_source(source_name) else PurePath(name).stem
     if is_junk_stem(stem):
         return ""
     return _STEM_SEPARATOR_RE.sub(" ", stem).strip()

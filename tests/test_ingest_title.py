@@ -29,6 +29,13 @@ class TestDeriveTitle:
     def test_mixed_separators_collapse(self):
         assert derive_title("a_b-c  d.txt") == "a b c d"
 
+    def test_crawled_page_source_drops_the_address_hash(self):
+        assert derive_title("_web/en.wikipedia.org/wiki/Cannabis~25c17501722158ba.md") == "Cannabis"
+        assert derive_title("_web/docs.python.org/3/tutorial/index~a17e5b24c217aa80.md") == "index"
+
+    def test_a_local_note_keeps_a_tilde_in_its_stem(self):
+        assert derive_title("notes/plan~draft.md") == "plan~draft"
+
 
 class TestSourceMetaFromExtraction:
     def test_full_metadata(self):
