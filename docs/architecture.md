@@ -525,9 +525,9 @@ Three limits of stored locations remain:
   document keeps the title it had under the old label.
 - **A folder named like the wiki folder.** Its documents and the wiki pages share names
   that start with `wiki/`. A document and a wiki page with the same name are two sources
-  with two ids. A citation lookup, a page text lookup and a removal by name find the
-  document. A name that a reader gives with no type, such as the source of a chunk
-  lookup, finds the wiki page.
+  with two ids. A citation lookup, a page text lookup, a removal by name, the concept
+  rows and the concept boost of a search find the document. A name that a reader gives
+  with no type, such as the source of a chunk lookup, finds the wiki page.
 - **An add that stops before the move.** A folder added again at a new place, or a
   label forced onto another folder, moves its rows after the registry write. If the
   add stops between the two, the next sync pairs the documents with their files by

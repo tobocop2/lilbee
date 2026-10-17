@@ -23,6 +23,7 @@ from lilbee.data.store import (
     ChunkWrite,
     HeldOut,
     HeldRecord,
+    SearchChunk,
     SourceStat,
     SourceStatBackfill,
     SourceType,
@@ -486,6 +487,17 @@ class TestTheConceptsOfADocumentNamedLikeAPage:
 
         edges = leiden.call_args.args[0]
         assert {c for row in edges for c in (row["source"], row["target"])} == {"alpha", "beta"}
+
+    def test_a_search_boosts_the_document_chunk_and_not_the_page_chunk(self, config, shared):
+        graph = self._graph(config, shared)
+        results = [
+            SearchChunk(**{**_records(_SHARED, chunk_type)[0], "score": 0.5})
+            for chunk_type in (ChunkType.RAW, ChunkType.WIKI)
+        ]
+
+        boosted = graph.boost_results(results, ["alpha"])
+
+        assert [(r.chunk_type, r.score > 0.5) for r in boosted] == [("raw", True), ("wiki", False)]
 
 
 class TestAWriteOntoAFoundRow:

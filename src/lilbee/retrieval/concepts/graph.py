@@ -21,7 +21,7 @@ from lilbee.core.config import (
     Config,
 )
 from lilbee.data import store as data_store
-from lilbee.data.store import ConceptRecords, SourceType, Store, escape_sql_string
+from lilbee.data.store import ChunkType, ConceptRecords, SourceType, Store, escape_sql_string
 from lilbee.retrieval.concepts.community import Community, _compute_pmi, _leiden_partition
 from lilbee.retrieval.concepts.nlp import _ensure_spacy_model, _filter_noun_chunks
 from lilbee.retrieval.concepts.schema import (
@@ -215,7 +215,7 @@ class ConceptGraph:
 
         One batched chunk_concepts query serves the whole result set, grouped
         back per chunk in Python, so the boost costs one query rather than one
-        per result.
+        per result. Concept rows are a document's, so a wiki chunk gets no boost.
         """
         if not query_concepts or not results:
             return results
@@ -223,13 +223,15 @@ class ConceptGraph:
         if table is None:
             return results
         query_set = set(query_concepts)
-        ids = self._store.source_ids({r.source for r in results}, None)
-        concepts_by_chunk = self._chunk_concepts_batch(
-            table, {(ids[r.source], r.chunk_index) for r in results if r.source in ids}
-        )
+        documents = {r.source for r in results if r.chunk_type != ChunkType.WIKI}
+        ids = self._store.source_ids(documents, SourceType.DOCUMENT)
+        keys = [
+            (ids.get(r.source, "") if r.chunk_type != ChunkType.WIKI else "", r.chunk_index)
+            for r in results
+        ]
+        concepts_by_chunk = self._chunk_concepts_batch(table, {key for key in keys if key[0]})
         boosted: list[Any] = []
-        for r in results:
-            key = (ids.get(r.source, ""), r.chunk_index)
+        for r, key in zip(results, keys, strict=True):
             chunk_concepts = concepts_by_chunk.get(key, set())
             overlap = len(query_set & chunk_concepts)
             if overlap > 0:
