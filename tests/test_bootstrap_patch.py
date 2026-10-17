@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import pathlib
-import pty
 import re
+import select
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -136,6 +137,8 @@ def test_bootstrap_centres_on_the_python_wordmark_width(added_lines):
 
 _CURSOR_CODE = re.compile(r"\x1b\[\?25([lh])")
 _WORDMARK_MARK = "@@@"
+_PTY_WAIT_SECONDS = 30.0
+_PTY_POLL_SECONDS = 0.05
 
 
 def _run_progress_on_a_pty(tmp_path: pathlib.Path, added_lines: list[str], steps: str) -> str:
@@ -153,20 +156,26 @@ def _run_progress_on_a_pty(tmp_path: pathlib.Path, added_lines: list[str], steps
     )
     binary = tmp_path / "driver"
     subprocess.run(["cc", "-o", str(binary), str(source)], check=True)
+    import pty  # POSIX only; the only caller is skipped on Windows
+
     master, slave = pty.openpty()
     proc = subprocess.Popen([str(binary)], stderr=slave, stdout=slave, close_fds=True)
-    os.close(slave)
     chunks: list[bytes] = []
-    while True:
-        try:
-            chunk = os.read(master, 65536)
-        except OSError:
-            break
-        if not chunk:
-            break
-        chunks.append(chunk)
-    os.close(master)
-    proc.wait()
+    try:
+        deadline = time.monotonic() + _PTY_WAIT_SECONDS
+        while True:
+            exited = proc.poll() is not None
+            timeout = 0 if exited else min(max(deadline - time.monotonic(), 0), _PTY_POLL_SECONDS)
+            if not select.select([master], [], [], timeout)[0]:
+                if exited or time.monotonic() >= deadline:
+                    break
+                continue
+            chunks.append(os.read(master, 65536))
+    finally:
+        os.close(slave)
+        os.close(master)
+        proc.kill()
+        proc.wait()
     return b"".join(chunks).decode("utf-8", "replace")
 
 
