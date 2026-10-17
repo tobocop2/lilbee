@@ -865,7 +865,7 @@ def _fold_landings(
 
     The citations of the folded row cite the row it lands on; its own rows go.
     """
-    landed = f"NOT ({_WIKI}) AND {_under_sql(_PATH, new)} AND NOT ({where})"
+    landed = f"NOT ({_WIKI}) AND ({_under_sql(_PATH, new)}) AND NOT ({where})"
     if not sources.count_rows(landed):
         return
     pairs = _fill_pairs(db, sources, where, landed, (old, new))
