@@ -2668,6 +2668,17 @@ class TestCrawlRecord:
         warned = [r for r in caplog.records if "malformed crawl record line" in r.message]
         assert len(warned) == 2
 
+    def test_a_line_cut_inside_a_character_is_skipped(self, isolated_env, caplog):
+        good = CrawlMeta("example.com/a~1.md", "h", "t")
+        cut = '{"url": "https://example.com/café'.encode()[:-1]
+        with pytest.raises(UnicodeDecodeError):
+            cut.decode("utf-8")
+        _pages_file().write_bytes(_record_lines(("https://example.com/a", good)).encode() + cut)
+        with caplog.at_level("WARNING", logger="lilbee.crawler.save"):
+            pages = load_crawl_record().pages
+        assert pages == {"https://example.com/a": good}
+        assert any("malformed crawl record line" in r.message for r in caplog.records)
+
     def test_duplicate_lines_are_compacted_to_one_per_address(self, isolated_env):
         old_a = CrawlMeta("example.com/a~1.md", "old", "t1")
         b = CrawlMeta("example.com/b~2.md", "b", "t2")
@@ -2792,6 +2803,21 @@ class TestRetireEarlier:
         save_page(CrawlResult(url=self.URL, markdown="# New"), record, remove_sources)
         copy = cfg.documents_dir / "_web" / self.EARLIER
         assert copy.read_text(encoding="utf-8") == "# Shared"
+        remove_sources.assert_not_called()
+
+    def test_an_earlier_copy_that_is_not_utf_8_is_kept(self, isolated_env):
+        copy = cfg.documents_dir / "_web" / self.EARLIER
+        copy.parent.mkdir(parents=True)
+        copy.write_bytes(b"# Old\xff\xfe")
+        with pytest.raises(UnicodeDecodeError):
+            copy.read_bytes().decode("utf-8")
+        write_crawl_metadata({self.URL: CrawlMeta(self.EARLIER, content_hash("# Old"), "t")})
+        remove_sources = MagicMock()
+        path = save_page(
+            CrawlResult(url=self.URL, markdown="# New"), load_crawl_record(), remove_sources
+        )
+        assert path is not None
+        assert copy.read_bytes() == b"# Old\xff\xfe"
         remove_sources.assert_not_called()
 
     def test_a_missing_earlier_copy_is_skipped(self, isolated_env):
