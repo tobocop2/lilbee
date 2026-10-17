@@ -1647,7 +1647,10 @@ class TestSeedPasswordInTheServerLog:
     def test_a_rest_site_crawl_logs_no_password(self, site, server_log):
         auth_mod.session_manager.disable()
         try:
-            response = TestClient(create_app()).post(
+            server = create_app()
+            # Building the app replaces the root handlers; serve installs the file log after it.
+            assert setup_server_log_file() == server_log
+            response = TestClient(server).post(
                 "/api/crawl",
                 json={
                     "url": _credentialed(site, "/wide/"),
