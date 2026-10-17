@@ -1091,16 +1091,24 @@ class TestBuildFleetWiring:
         assert launch.argv[launch.argv.index("--n-gpu-layers") + 1] == "-1"
         assert calls == []
 
+    def test_launch_for_chat_alone_on_its_card_gets_the_engine_default_fit_target(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # No other role on the card: the engine's own 1024 MiB margin and nothing on top.
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert launch.argv[launch.argv.index("--fit-target") + 1] == "1024"
+
     def test_launch_for_chat_fit_target_holds_back_its_own_card_only(
         self, tmp_path, monkeypatch
     ) -> None:
-        # 10% of 24 GiB is 2457.6 MiB, plus the 1 GiB embed held back on this card,
-        # rounded up. The 5 GiB held on card 1 is another card's and is not charged.
+        # The engine's 1024 MiB margin plus the 1 GiB embed held back on this card.
+        # The 5 GiB held on card 1 is another card's and is not charged.
         monkeypatch.setattr(cfg, "n_gpu_layers", None)
         launch, _calls = self._chat_launch(
             tmp_path, monkeypatch, num_ctx=None, reserved={0: _GB, 1: 5 * _GB}
         )
-        assert launch.argv[launch.argv.index("--fit-target") + 1] == "3482"
+        assert launch.argv[launch.argv.index("--fit-target") + 1] == "2048"
 
     def test_launch_for_chat_shares_one_kv_pool_capped_at_its_window(
         self, tmp_path, monkeypatch
