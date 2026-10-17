@@ -294,7 +294,7 @@ class TestCrawlAndSync:
 
     async def test_crawl_becomes_searchable(self, rag_pipeline, monkeypatch) -> None:
         """Crawl a local HTTP page, verify its content is indexed."""
-        pytest.importorskip("crawl4ai")
+        pytest.importorskip("crawlberg")
         pytest.importorskip("pytest_httpserver")
 
         import ipaddress
@@ -319,6 +319,8 @@ class TestCrawlAndSync:
 
         server = HTTPServer()
         server.expect_request("/jellyfish").respond_with_data(html, content_type="text/html")
+        # The server answers an unexpected request with 500, a robots.txt a crawl cannot read.
+        server.expect_request("/robots.txt").respond_with_data("Not Found", status=404)
         server.start()
         try:
             url = str(server.url_for("/jellyfish"))

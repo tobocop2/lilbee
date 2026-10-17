@@ -1342,6 +1342,50 @@ class TestConfigUpdateRoute:
         resp = client.patch("/api/config", json={"top_k": "many"})
         assert (resp.status_code, cfg.top_k) == (400, before)
 
+    def test_crawl_browser_extra_args_stores_a_flag_crawlberg_refuses(self, client):
+        resp = client.patch("/api/config", json={"crawl_browser_extra_args": ["--headless=new"]})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--headless=new"]
+
+    def test_crawl_user_agent_is_stored(self, client):
+        resp = client.patch("/api/config", json={"crawl_user_agent": "Probe/1.0"})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_user_agent"]
+        assert cfg.crawl_user_agent == "Probe/1.0"
+
+    def test_crawl_respect_robots_txt_is_stored(self, client):
+        cfg.crawl_respect_robots_txt = True
+        resp = client.patch("/api/config", json={"crawl_respect_robots_txt": False})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_respect_robots_txt"]
+        assert cfg.crawl_respect_robots_txt is False
+
+    def test_crawl_browser_extra_wait_ms_is_stored(self, client):
+        cfg.crawl_browser_extra_wait_ms = 1000
+        resp = client.patch("/api/config", json={"crawl_browser_extra_wait_ms": 0})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_browser_extra_wait_ms"]
+        assert cfg.crawl_browser_extra_wait_ms == 0
+
+    def test_a_negative_crawl_browser_extra_wait_ms_is_refused(self, client):
+        cfg.crawl_browser_extra_wait_ms = 1000
+        resp = client.patch("/api/config", json={"crawl_browser_extra_wait_ms": -1})
+        assert (resp.status_code, cfg.crawl_browser_extra_wait_ms) == (400, 1000)
+        assert "crawl_browser_extra_wait_ms" in resp.text
+
+    def test_crawl_user_agent_with_a_control_character_is_refused(self, client):
+        before = cfg.crawl_user_agent
+        resp = client.patch("/api/config", json={"crawl_user_agent": "Probe\n1.0"})
+        assert (resp.status_code, cfg.crawl_user_agent) == (400, before)
+        assert "crawl_user_agent" in resp.text
+
+    def test_crawl_browser_extra_args_accepts_launch_flags(self, client):
+        resp = client.patch("/api/config", json={"crawl_browser_extra_args": ["--lang=fr"]})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--lang=fr"]
+
     def test_crawl_exclude_patterns_accepts_valid_regex(self, client):
         resp = client.patch(
             "/api/config", json={"crawl_exclude_patterns": [r"/page/\d+/?$", r"/tag/"]}

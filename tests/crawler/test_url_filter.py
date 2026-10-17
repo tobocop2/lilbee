@@ -160,6 +160,13 @@ class TestBlockedNetworks:
         networks = get_blocked_networks()
         assert any(_ip.ip_address("10.1.2.3") in n for n in networks)
 
+    @pytest.mark.parametrize("addr", ["240.0.0.1", "255.255.255.255"])
+    def test_contains_ipv4_reserved_range(self, addr):
+        import ipaddress as _ip
+
+        networks = get_blocked_networks()
+        assert any(_ip.ip_address(addr) in n for n in networks)
+
     @pytest.mark.parametrize(
         "addr",
         [
@@ -225,6 +232,56 @@ class TestSitemapFetch:
         fake.url = "https://example.com/sitemap.xml"
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         assert _fetch_sitemap_text("https://example.com/start") == "<urlset></urlset>"
+
+    @pytest.mark.parametrize(
+        ("user_agent", "headers"),
+        [("Probe/1.0", {"User-Agent": "Probe/1.0"}), ("", None)],
+        ids=["override", "blank"],
+    )
+    def test_the_request_names_the_crawl_user_agent(self, monkeypatch, user_agent, headers):
+        sent: list[object] = []
+
+        def _get(url: str, **kwargs: object) -> MagicMock:
+            sent.append(kwargs["headers"])
+            return MagicMock(status_code=404, text="")
+
+        monkeypatch.setattr("httpx.get", _get)
+        _count_sitemap_urls(
+            "https://example.com/start", include_subdomains=False, user_agent=user_agent
+        )
+        assert sent == [headers]
+
+    @pytest.mark.parametrize(
+        ("seed", "sent_url", "auth"),
+        [
+            (
+                "https://alice:s3%3Acr%40t@example.com/start",
+                "https://example.com/sitemap.xml",
+                ("alice", "s3:cr@t"),
+            ),
+            ("https://alice@example.com/start", "https://example.com/sitemap.xml", ("alice", "")),
+            ("http://example.com:8080/start", "http://example.com:8080/sitemap.xml", None),
+        ],
+        ids=["username-and-password", "username-only", "no-userinfo"],
+    )
+    def test_the_seed_credentials_go_as_basic_auth_never_in_the_url(
+        self, monkeypatch, seed, sent_url, auth
+    ):
+        sent: list[tuple[str, object]] = []
+
+        def _get(url: str, **kwargs: object) -> MagicMock:
+            sent.append((url, kwargs["auth"]))
+            return MagicMock(status_code=200, text="<urlset></urlset>")
+
+        monkeypatch.setattr("httpx.get", _get)
+        assert _fetch_sitemap_text(seed) == "<urlset></urlset>"
+        assert sent == [(sent_url, auth)]
+
+    def test_a_seed_that_does_not_parse_makes_no_request(self, monkeypatch):
+        called: list[int] = []
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: called.append(1))
+        assert _fetch_sitemap_text("http://alice:se/cret@example.com/start") is None
+        assert called == []
 
     def test_does_not_follow_redirects(self, monkeypatch):
         """A 30x is not followed; an unfollowed redirect yields no sitemap (SSRF-safe)."""

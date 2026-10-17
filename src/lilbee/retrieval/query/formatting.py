@@ -11,6 +11,7 @@ from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
 from lilbee.core.text import collapse_whitespace
+from lilbee.core.web_names import INDEX_STEM, WEB_PREFIX, is_web_source, page_stem
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, is_memory_source
 
 CONTEXT_TEMPLATE = """Context:
@@ -82,22 +83,22 @@ def display_source_path(source: str) -> str:
         return str(resolved)
 
 
-_WEB_PREFIX = "_web"
 _SOURCE_SEP = " · "
 
 
 def source_label(source: str) -> str:
     """Readable name for a source. Web-ingested docs collapse to ``host · slug``;
     local files keep their documents-dir-relative path."""
-    prefix = f"{_WEB_PREFIX}/"
-    if not source.startswith(prefix):
+    if not is_web_source(source):
         return source
-    segments = [p for p in source.removeprefix(prefix).split("/") if p != "index.md"]
+    *folders, file_name = source.removeprefix(WEB_PREFIX).split("/")
+    stem = page_stem(file_name)
+    segments = folders if stem == INDEX_STEM else [*folders, stem]
     if not segments:
         return source
     host = segments[0].removeprefix("www.")
-    slug = segments[-1].removesuffix(".md")
-    return host if slug == host else f"{host}{_SOURCE_SEP}{slug}"
+    slug = segments[-1]
+    return host if slug == segments[0] else f"{host}{_SOURCE_SEP}{slug}"
 
 
 def _source_file_url(source: str) -> str | None:

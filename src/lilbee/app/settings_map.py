@@ -180,15 +180,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             " one daemon serves before retrieval calls queue"
         ),
     ),
-    "crawl_convert_workers": SettingDef(
-        int,
-        nullable=False,
-        group=SettingGroup.CRAWLING,
-        help_text=(
-            "Crawled pages converted to markdown on worker threads at once, so a crawl"
-            " does not block request handling; 0 converts on the event loop"
-        ),
-    ),
     "auto_sync": SettingDef(
         bool,
         nullable=False,
@@ -790,15 +781,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "JavaScript enabled for client-rendered sites, at much higher memory cost."
         ),
     ),
-    "crawl_browser_recycle_pages": SettingDef(
-        int,
-        nullable=False,
-        group=SettingGroup.CRAWLING,
-        help_text=(
-            "Browser mode: recycle the Chromium process every N pages to cap memory "
-            "growth on long crawls (0 = never recycle)."
-        ),
-    ),
     "crawl_browser_extra_args": SettingDef(
         list,
         nullable=False,
@@ -806,6 +788,38 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Browser mode: extra Chromium launch flags, one per line. "
             "Defaults trim shared-memory and GPU use."
+        ),
+    ),
+    "crawl_browser_extra_wait_ms": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Browser mode: milliseconds to wait after a page loads before reading it, "
+            "for sites that draw their text late. Raise it when a page's text is missing; "
+            "0 = no extra wait. http mode ignores it."
+        ),
+    ),
+    "crawl_user_agent": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "User agent of every crawl request, for a site that answers some clients "
+            "differently. Blank = no override: browser mode sends Chrome's own, "
+            "http mode sends crawlberg's, and the sitemap lookup sends its HTTP "
+            "client's. A Chrome user agent also sets the matching "
+            "client hints in browser mode."
+        ),
+    ),
+    "crawl_respect_robots_txt": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Skip the pages a site's robots.txt disallows, and every page of a site "
+            "whose robots.txt cannot be read (a server error, a rate limit or no answer). Turn off "
+            "to crawl a site you own or have permission to crawl in full."
         ),
     ),
     "crawl_max_pages": SettingDef(
@@ -856,19 +870,25 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Enable per-domain backoff and retries on HTTP 429/503",
+        help_text="Retry a page that answers HTTP 429 or 503. Off: no retries",
     ),
     "crawl_retry_base_delay_min": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Minimum base-delay (seconds) on rate-limit responses",
+        help_text=(
+            "Base delay range, low end (seconds). The first retry waits halfway between"
+            " the low and high end, and each later retry waits twice as long"
+        ),
     ),
     "crawl_retry_base_delay_max": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Maximum base-delay (seconds) on rate-limit responses",
+        help_text=(
+            "Base delay range, high end (seconds). The first retry waits halfway between"
+            " the low and high end, and each later retry waits twice as long"
+        ),
     ),
     "crawl_retry_max_backoff": SettingDef(
         float,
@@ -880,7 +900,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Retry count per URL when a rate-limit code comes back",
+        help_text="Retries per page. A crawl makes at most 20, whatever the value",
     ),
     "crawl_exclude_patterns": SettingDef(
         list,

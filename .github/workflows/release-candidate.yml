@@ -265,8 +265,8 @@ jobs:
           # Install the engine wheel first, then the lilbee wheel straight off
           # the built file; the extras' own deps resolve from PyPI. The extra
           # set matches the `release` extra the executables bundle, because
-          # leg 0 of the smoke (self-check-extras) asserts litellm, crawl4ai,
-          # spacy and graspologic_native. Spelled out rather than [release],
+          # leg 0 of the smoke (self-check-extras) asserts litellm, crawlberg,
+          # ada_url, spacy and graspologic_native. Spelled out rather than [release],
           # which self-references `lilbee` and makes pip resolve the name from
           # PyPI instead of the wheel under test.
           "${bin}/pip" install "${engine_whl}"

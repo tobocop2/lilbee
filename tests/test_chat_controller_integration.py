@@ -263,7 +263,7 @@ def test_do_crawl_reports_setup_progress() -> None:
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.runtime.progress import EventType, SetupProgressEvent
+    from lilbee.runtime.progress import EventType, SetupProgressEvent, SetupStartEvent
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
@@ -279,7 +279,7 @@ def test_do_crawl_reports_setup_progress() -> None:
         include_subdomains=False,
         render_mode=None,
     ):
-        on_progress(EventType.SETUP_START, object())
+        on_progress(EventType.SETUP_START, SetupStartEvent(component="chromium"))
         on_progress(
             EventType.SETUP_PROGRESS,
             SetupProgressEvent(
@@ -312,6 +312,33 @@ def test_do_crawl_reports_setup_progress() -> None:
     t.join(timeout=5)
     assert not exc, f"worker raised: {exc[0]}"
     assert reporter.update.call_count >= 3
+
+
+@pytest.mark.parametrize(
+    ("component", "label"),
+    [("browser", "SETUP_BROWSER_WARM_UP"), ("chromium", "SETUP_CHROMIUM_NAME")],
+)
+def test_do_crawl_labels_each_setup_by_what_it_does(component: str, label: str) -> None:
+    """A browser warm-up and a Chromium install each show their own label."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.runtime.progress import EventType, SetupStartEvent
+
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+
+    async def fake_crawl(url, *, on_progress, **_kwargs):
+        on_progress(EventType.SETUP_START, SetupStartEvent(component=component))
+        return []
+
+    with (
+        patch("lilbee.cli.tui.screens.chat.call_from_thread"),
+        patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl),
+    ):
+        screen._do_crawl("https://x", 0, 2, reporter)
+    shown = [c.args[1] for c in reporter.update.call_args_list]
+    assert getattr(msg, label) in shown
+    assert msg.SETUP_BROWSER_WARM_UP != msg.SETUP_CHROMIUM_NAME
 
 
 def test_do_crawl_reports_page_progress() -> None:
@@ -477,6 +504,43 @@ def test_start_crawl_none_uses_config_without_persisting(monkeypatch) -> None:
     mock_apply.assert_not_called()
     bar.ensure_chromium.assert_not_called()
     bar.start_task.assert_called_once()
+
+
+def test_start_crawl_names_a_credentialed_seed_without_its_password(monkeypatch) -> None:
+    """The task name and the notice show the seed without its username and password."""
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import CrawlRenderMode
+
+    monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.HTTP)
+    notified: list[str] = []
+    with _chat_screen_with_task_bar() as (screen, bar):
+        screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
+        screen._start_crawl("https://alice:hunter2@example.com/", 0, 5)
+    shown = [bar.start_task.call_args.args[0], *notified]
+    assert all("https://example.com/" in text for text in shown)
+    assert not any("hunter2" in text for text in shown)
+
+
+def test_do_crawl_names_a_credentialed_seed_without_its_password() -> None:
+    """The start and success messages of a crawl show the seed without its password."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    url = "https://alice:hunter2@example.com/"
+
+    async def fake_crawl(seed, **_kwargs):
+        assert seed == url
+        return []
+
+    with (
+        patch("lilbee.cli.tui.screens.chat.call_from_thread") as on_ui,
+        patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl),
+    ):
+        screen._do_crawl(url, 0, 2, reporter)
+    shown = [str(c.args) for c in reporter.update.call_args_list + on_ui.call_args_list]
+    assert any("https://example.com/" in text for text in shown)
+    assert not any("hunter2" in text for text in shown)
 
 
 def test_persist_crawl_render_mode_swallows_write_errors() -> None:

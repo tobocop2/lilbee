@@ -89,7 +89,14 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
-from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.crawler import (
+    CRAWLER_MISSING_MESSAGE,
+    crawler_available,
+    is_url,
+    require_valid_crawl_url,
+)
+from lilbee.crawler.events import BROWSER_SETUP_COMPONENT
+from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
 from lilbee.data.store import (
     ChunkType,
@@ -118,6 +125,7 @@ from lilbee.runtime.lock import ResetRefusedError, SyncRunningError
 from lilbee.runtime.progress import (
     EventType,
     ProgressEvent,
+    SetupStartEvent,
 )
 from lilbee.sessions import (
     MessageRole,
@@ -971,7 +979,7 @@ class ChatScreen(Screen[None]):
 
     def _cmd_crawl(self, args: str) -> None:
         if not crawler_available():
-            self.notify(msg.CMD_CRAWL_UNAVAILABLE, severity="error")
+            self.notify(CRAWLER_MISSING_MESSAGE, severity="error")
             return
         if not args:
             self._open_crawl_dialog()
@@ -1029,9 +1037,11 @@ class ChatScreen(Screen[None]):
         if render_mode is not None and render_mode is not cfg.crawl_render_mode:
             self._persist_crawl_render_mode(render_mode)
 
+        shown = without_userinfo(url)
+
         def _kick_off_crawl() -> None:
             self._task_bar.start_task(
-                msg.TASK_NAME_CRAWL.format(url=url),
+                msg.TASK_NAME_CRAWL.format(url=shown),
                 TaskType.CRAWL,
                 lambda reporter: self._do_crawl(
                     url,
@@ -1044,7 +1054,7 @@ class ChatScreen(Screen[None]):
                 on_success=lambda: call_from_thread(self, self._run_sync),
             )
 
-        self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
+        self.notify(msg.CMD_CRAWL_STARTED.format(url=shown))
         if mode is CrawlRenderMode.BROWSER:
             self._task_bar.ensure_chromium(_kick_off_crawl)
         else:
@@ -1109,12 +1119,14 @@ class ChatScreen(Screen[None]):
         from lilbee.crawler import crawl_and_save
         from lilbee.runtime.progress import CrawlPageEvent, CrawlPageFailedEvent, SetupProgressEvent
 
-        reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=url))
+        shown = without_userinfo(url)
+        reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=shown))
         failures: list[str] = []
+        setup_labels = {BROWSER_SETUP_COMPONENT: msg.SETUP_BROWSER_WARM_UP}
 
         def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-            if event_type == EventType.SETUP_START:
-                reporter.update(0, msg.SETUP_CHROMIUM_NAME)
+            if event_type == EventType.SETUP_START and isinstance(data, SetupStartEvent):
+                reporter.update(0, setup_labels.get(data.component, msg.SETUP_CHROMIUM_NAME))
             elif event_type == EventType.SETUP_PROGRESS and isinstance(data, SetupProgressEvent):
                 if data.total_bytes:
                     pct = int(data.downloaded_bytes * 100 / data.total_bytes)
@@ -1160,13 +1172,14 @@ class ChatScreen(Screen[None]):
                 max_pages=max_pages,
                 on_progress=on_progress,
                 cancel=reporter,
-                quiet=True,
                 include_subdomains=include_subdomains,
                 render_mode=render_mode,
             )
         )
         reporter.check_cancelled()
-        call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
+        call_from_thread(
+            self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=shown)
+        )
         if failures:
             call_from_thread(
                 self,

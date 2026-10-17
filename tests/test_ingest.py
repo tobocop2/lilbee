@@ -5420,6 +5420,16 @@ class TestIngestMarkdownEdgeCases:
             result, _ = await ingest_markdown(md, "blank.md")
         assert result == []
 
+    async def test_crawled_page_without_heading_is_titled_by_its_readable_name(self, isolated_env):
+        from lilbee.data.ingest import ingest_markdown
+
+        md = isolated_env / "Cannabis~25c17501722158ba.md"
+        md.write_text(
+            "[Home](/) [About](/about)\n\n# Heading after the nav\n\nBody.\n", encoding="utf-8"
+        )
+        _, meta = await ingest_markdown(md, "_web/en.wikipedia.org/wiki/" + md.name)
+        assert meta.title == "Cannabis"
+
     async def test_frontmatter_only_produces_chunks(self, isolated_env):
         from lilbee.data.ingest import ingest_markdown
 

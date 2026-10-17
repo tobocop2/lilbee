@@ -105,13 +105,33 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **PDF.** xberg text extraction with an OCR fallback chain (text extraction → Tesseract OCR → GGUF vision model on `llama-server`). PDF page rasterization is delegated to xberg's `PdfPageIterator`.
 - **Vision OCR.** When `LILBEE_VISION_MODEL` is set, scanned PDFs and images are transcribed by a GGUF vision model served by `llama-server` with an `--mmproj` projector. The pipeline streams an SSE heartbeat during long scans and preserves tables, headings, and multi-column layout as structured markdown. Falls back to Tesseract when no vision model is configured.
 - **Structured files.** xberg handles XML, JSON, JSONL, YAML, and CSV natively. Language detection for code-shaped content is delegated to tree-sitter-language-pack's `detect_language()`.
-- **Web pages.** crawl4ai fetches HTML with JavaScript rendering via Playwright, converts to markdown, and saves to `documents/_web/` for indexing. Recursive crawls emit live progress, respect per-domain rate limits, and retry on HTTP 429/503 with jitter. SSRF protection blocks internal networks by default.
+- **Web pages.** crawlberg fetches HTML over plain HTTP, or through a headless Chromium in browser render mode, converts it to markdown, and saves it to `documents/_web/` for indexing. Recursive crawls emit live progress, respect a per-domain rate limit, and retry on HTTP 429/503. SSRF protection blocks internal networks by default.
 - **Chunking strategy.** Fixed-size chunking (default, token-aware) for reliability on procedural and reference docs. Opt-in semantic chunking (`LILBEE_SEMANTIC_CHUNKING=true`) splits at topic boundaries via xberg's ONNX embedding model; better on prose-heavy corpora at the cost of roughly 9x more downstream embedding calls.
 - **Embedding.** Provider-agnostic: native GGUF on the local `llama-server` engine by default, or any backend reachable via the SDK protocol when `pip install lilbee[litellm]` is available.
 - **Asymmetric query/document embedding.** Instruction-tuned embedders (Qwen3-Embedding, e5/gte `*-instruct`) only reach their retrieval scores when the query carries a task instruction (`Instruct: ...\nQuery: <q>`) embedded differently from documents; base e5 uses `query:`/`passage:` prefixes. lilbee detects the family from the configured embedder ref and applies the right prefixes automatically (`retrieval/embedding_profiles.py`): the query path uses `embed_query`/`embed_query_batch`, the document path keeps `embed`/`embed_batch`. Symmetric models (bge-m3, nomic) and unrecognized models get no prefix, so behavior is unchanged for them. There is no instruction config: a wrong template silently underperforms, so support for a new family is a curated map entry, not a user knob.
 - **Concept extraction (opt-in).** With `pip install lilbee[graph]`, spaCy noun phrases are extracted per chunk, a co-occurrence graph is built with PPMI weights, and Leiden clustering assigns concepts to communities.
 - **Wiki generation.** Wikification is explicit: `lilbee wiki build` (or the TUI Wikify action, or the HTTP/MCP build endpoints) issues one LLM call per source; `lilbee sync` only runs the capped `lilbee.wiki.ingest.incremental_update` hook when `wiki_auto_update` is enabled. Each call jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
 - **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
+
+### Saved names of web pages
+
+A crawled page is saved as `_web/<host>/<folders>/<name>~<hash>.md`. Three separate mechanisms give the name its three properties:
+
+- **Identity.** The canonical address is the key crawlberg gives the page: the WHATWG URL parse (ada-url), no fragment, the percent-escape forms of RFC 3986 section 6.2.2, and query parameters sorted by name. The page record in `crawl_pages.jsonl` is keyed by this address.
+- **Uniqueness.** `<hash>` is the first 16 hex digits of the SHA-256 of the canonical address. Lower-case hex survives every case fold and Unicode normalization, so no two pages share a file on any disk.
+- **Legality and readability.** Each folder and `<name>` is a slug of one part of the address: decoded, NFC, letters, digits and `-_.` kept, other runs written as `-`, at most 80 bytes, and a `_` before a Windows device name. The `<name>` comes from the last non-empty segment of the path, less its last suffix (`json.html` gives `json`, `file.tar.gz` gives `file.tar`, `.htaccess` keeps its text). It takes at most 99 bytes, so the host folder always fits, and a longer name is cut at the last `-`, `_` or `.` so no word breaks. A folder slug that ends in `.md` ends in `-md` instead, so no folder has the name of a saved file of this rule or an earlier one. An IPv6 host is written as its eight groups joined by `-`. A path with no non-empty segment gives the name `index`. The deepest folders are dropped until the path fits 200 bytes. A slug is lossy on purpose, because the hash carries the identity. A citation label shows the slug without the hash.
+
+A name never escapes anything, so no escaping rule has to be both legal and one-to-one.
+
+### The page record and earlier copies
+
+A crawl writes each page only at its name. Nothing moves a saved file in place: a page takes its name when its site is crawled again.
+
+- **Page record.** `crawl_pages.jsonl` in the data folder holds one JSON line per save, and the last line for an address counts. The save appends the line and syncs it to disk before it writes the file, so a file at a page's name always has a line, after a power loss too. The line also holds the hash of the text the file held before the save (`replaces`), so a save cut between its line and its file is finished by the next crawl. The page file is written to a temporary file, synced, and put in place, so it never holds part of a text. A file lock holds each append, because an append is not atomic across processes on Windows. A cut line is a malformed line of its own and is skipped. At the start of a crawl the record is rewritten with one line per page when it holds more lines than pages.
+- **A file the record does not give the page.** A file at a page's name is written over only when it holds the text of the page's last line or the text that line replaced. When it holds the page's new text, the crawl records it and writes nothing, so a page whose line was lost is taken back. Before a refusal the save reads the record from disk again, so a text that another crawl recorded meanwhile counts. Any other file, folder or symbolic link at the name is left alone, and the page is not saved. One warning names the path and the remedy (move or delete it), and the crawl goes on. A file where a folder of the page belongs gets one warning per crawl. A user's note is never written over.
+- **Earlier copies.** `crawl_meta.json` is the metadata of earlier releases, and a crawl only reads it. Each entry is keyed by the canonical address of its key, read once. After a page saves, or is found unchanged, each earlier entry of the same address loses its file only when the file holds that entry's text, no page line names the file, and no other page with the same text that still has no line of its own names the same file. The file is deleted before its index source is removed, so a sync that runs between the two finds no file to index again. Folders left empty are removed. A file that no entry names is never touched.
+- **A page saved under an earlier name.** When the last line of a page names another file than the name the page has now, the save writes the page at its name and appends a new line. The file of the old line is then retired as an earlier copy: deleted only when it holds the text of that line, no other page line names it, and its index source goes after it.
+- **Identity is read once.** crawlberg reports `/s/%%341` (key `/s/%41`) and `/s/%41` (key `/s/A`) as two pages, so a key is never canonicalized a second time.
 
 ### Planning: which files to ingest
 
@@ -1540,16 +1560,17 @@ All settings are configurable in `config.toml`. All except `linked_roots` are al
 | `LILBEE_CONCEPT_MAX_PER_CHUNK` | `10` | Max concepts extracted per chunk | Caps extraction to reduce noise from long chunks |
 | `LILBEE_CRAWL_MAX_DEPTH` | unset | Optional global ceiling on recursion depth | Set to a positive int to cap calls that pass no explicit depth. Explicit `--depth N` always wins. |
 | `LILBEE_CRAWL_MAX_PAGES` | unset | Optional global ceiling on total pages per crawl | Same shape as above. Unset / null = no ceiling. |
-| `LILBEE_CRAWL_TIMEOUT` | `30` | Per-page fetch timeout in seconds | Passed to crawl4ai as page_timeout |
+| `LILBEE_CRAWL_USER_AGENT` | blank | User agent of every crawl request | Blank = no override: browser mode sends Chrome's own, http mode sends crawlberg's, and the sitemap lookup sends its HTTP client's. |
+| `LILBEE_CRAWL_TIMEOUT` | `30` | Per-page fetch timeout in seconds | Applies to the HTTP request and to browser page loads |
 | `LILBEE_CRAWL_MAX_CONCURRENT` | CPU count | Max simultaneous crawl operations (top-level) | Limits parallel `crawl_and_save` invocations. Per-crawl concurrency is `crawl_concurrent_requests`. |
 | `LILBEE_CRAWL_SYNC_INTERVAL` | `30` | Seconds between periodic syncs during crawl | 0 = sync only after crawl completes. Lower = documents searchable sooner |
-| `LILBEE_CRAWL_MEAN_DELAY` | `0.5` | Seconds between in-flight requests within a single crawl | Uniform jitter applied by crawl4ai. Tune up for rate-sensitive sites. |
-| `LILBEE_CRAWL_MAX_DELAY_RANGE` | `0.5` | Random additional delay on top of mean_delay | Total per-request delay = mean_delay + random(0, max_delay_range) |
-| `LILBEE_CRAWL_CONCURRENT_REQUESTS` | `3` | Concurrent in-flight URLs within one crawl | Gentler default than crawl4ai's own `5`. |
-| `LILBEE_CRAWL_RETRY_ON_RATE_LIMIT` | `true` | Enable per-domain RateLimiter + SemaphoreDispatcher | Backs off on HTTP 429/503 with jitter and retries. Set to `false` to disable. |
-| `LILBEE_CRAWL_RETRY_BASE_DELAY_MIN` / `MAX` | `1.0` / `3.0` | Randomized base-delay range on rate-limit responses (seconds) | Passed as `(min, max)` to crawl4ai's `RateLimiter(base_delay=...)`. |
+| `LILBEE_CRAWL_MEAN_DELAY` | `0.5` | Seconds between requests to the same domain within a single crawl | Tune up for rate-sensitive sites. |
+| `LILBEE_CRAWL_MAX_DELAY_RANGE` | `0.5` | Random additional delay on top of mean_delay | Each wait falls between mean_delay and mean_delay + max_delay_range. |
+| `LILBEE_CRAWL_CONCURRENT_REQUESTS` | `3` | Concurrent in-flight URLs within one crawl |  |
+| `LILBEE_CRAWL_RETRY_ON_RATE_LIMIT` | `true` | Retry pages that answer HTTP 429 or 503 | Other server errors and timeouts are not retried. Set to `false` to disable. |
+| `LILBEE_CRAWL_RETRY_BASE_DELAY_MIN` / `MAX` | `1.0` / `3.0` | Base delay range for retries (seconds) | The first retry waits the middle of the range, and each later retry doubles the wait. |
 | `LILBEE_CRAWL_RETRY_MAX_BACKOFF` | `30.0` | Upper bound on any single backoff wait (seconds) |  |
-| `LILBEE_CRAWL_RETRY_MAX_ATTEMPTS` | `3` | Retry count per URL on rate-limit codes |  |
+| `LILBEE_CRAWL_RETRY_MAX_ATTEMPTS` | `3` | Retries per page | A crawl makes at most 20, whatever the value. |
 
 ### Provider Settings
 

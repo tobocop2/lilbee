@@ -56,6 +56,9 @@ _UNSET_PATH = Path()
 # (eng, en, chi_sim, jpn_vert). xberg rejects anything else before extracting.
 _TESSERACT_LANGUAGE_CODE = re.compile(r"[a-z]{2,3}(?:_[a-z]+)*")
 
+# A control character, which the crawl user agent setting refuses.
+_CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
+
 # Model roles that can be off. An empty LILBEE_<FIELD> or config.toml value
 # clears one of these; on every other field an empty value counts as unset.
 CLEARABLE_MODEL_FIELDS = frozenset({"vision_model", "reranker_model"})
@@ -354,10 +357,6 @@ class Config(BaseSettings):
     # that may run off the event loop at once. The ceiling on agents one daemon
     # serves before their calls queue.
     mcp_tool_threads: int = ConfigField(default=40, ge=1, writable=True)
-    # Crawled pages converted to markdown on anyio's thread pool at once. The
-    # conversion is synchronous, so this keeps it off the event loop that serves
-    # requests. 0 converts inline on the loop.
-    crawl_convert_workers: int = ConfigField(default=2, ge=0, writable=True)
     server_host: str = Field(
         default="127.0.0.1",
         description=(
@@ -677,18 +676,24 @@ class Config(BaseSettings):
     # that render content client-side, at a much higher memory cost.
     crawl_render_mode: CrawlRenderMode = ConfigField(default=CrawlRenderMode.HTTP, writable=True)
 
-    # Browser-mode memory levers (only used when crawl_render_mode is browser).
-    # Recycle the Chromium process every N fetched pages to cap RSS growth on a
-    # long recursive crawl; 0 disables recycling. Raise on a roomy machine for
-    # fewer restarts, lower it if memory is tight.
-    crawl_browser_recycle_pages: int = ConfigField(default=50, ge=0, writable=True)
-
     # Extra Chromium launch flags for browser-mode crawls. Defaults trim shared
     # memory and GPU use; override to pass site- or environment-specific flags.
     crawl_browser_extra_args: list[str] = ConfigField(
         default_factory=lambda: ["--disable-dev-shm-usage", "--disable-gpu"],
         writable=True,
     )
+
+    # Milliseconds a browser-mode crawl waits after a page loads before reading it, for
+    # text a script writes late. 0 = no extra wait. HTTP mode ignores it.
+    crawl_browser_extra_wait_ms: int = ConfigField(default=1000, ge=0, writable=True)
+
+    # The user agent of every crawl request. Blank = no override: a browser crawl
+    # sends Chrome's own, an HTTP crawl crawlberg's, the sitemap lookup httpx's.
+    crawl_user_agent: str = ConfigField(default="", writable=True)
+
+    # Whether crawls skip the pages a site's robots.txt disallows, and every page of a
+    # site whose robots.txt cannot be read.
+    crawl_respect_robots_txt: bool = ConfigField(default=True, writable=True)
 
     # Optional global ceilings. None = no ceiling.
     crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
@@ -712,7 +717,7 @@ class Config(BaseSettings):
     # Seconds between periodic syncs during crawl. 0 = sync only at end.
     crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
 
-    # Per-request delay + jitter (defaults chosen to be gentler than crawl4ai's).
+    # Per-request delay + jitter.
     crawl_mean_delay: float = ConfigField(default=0.5, ge=0.0, writable=True)
     crawl_max_delay_range: float = ConfigField(default=0.5, ge=0.0, writable=True)
 
@@ -727,7 +732,7 @@ class Config(BaseSettings):
     crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, writable=True)
 
     # Regex patterns dropped at link-discovery time. Defaults block CMS
-    # scaffolding (WordPress admin, archives, tracking params, etc.).
+    # scaffolding (WordPress admin, archives, feeds, etc.).
     crawl_exclude_patterns: list[str] = ConfigField(
         default_factory=lambda: list(DEFAULT_CRAWL_EXCLUDE_PATTERNS),
         writable=True,
@@ -1336,6 +1341,15 @@ class Config(BaseSettings):
         if isinstance(v, str):
             return [a.strip() for a in v.splitlines() if a.strip()]
         return v
+
+    @field_validator("crawl_user_agent", mode="after")
+    @classmethod
+    def _validate_crawl_user_agent(cls, v: str) -> str:
+        """The user agent without surrounding whitespace; a control character is refused."""
+        user_agent = v.strip()
+        if _CONTROL_CHARACTER.search(user_agent):
+            raise ValueError("crawl_user_agent holds a control character")
+        return user_agent
 
     @field_validator("crawl_exclude_patterns", mode="before")
     @classmethod

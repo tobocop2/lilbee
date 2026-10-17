@@ -48,6 +48,7 @@ from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.crawler import CRAWLER_MISSING_MESSAGE
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
@@ -132,7 +133,7 @@ def _settings_gates_open():
             return_value=True,
         ),
         patch(
-            "lilbee.crawler.crawler_available",
+            "lilbee.cli.tui.screens.settings_widgets.crawler_available",
             return_value=True,
         ),
     ):
@@ -1271,6 +1272,91 @@ async def test_settings_list_editor_invalid_regex_blocks_save():
         assert err.has_class("-visible")
         assert "line 1" in str(err.render())
         assert cfg.crawl_exclude_patterns == ["keep"]
+
+
+async def test_settings_browser_flags_editor_saves_on_blur():
+    """The launch-flag list editor stores each line as one flag."""
+    from textual.widgets import Collapsible
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("--lang=fr\n--mute-audio\n--disable-gpu")
+        ta.blur()
+        flags = ["--lang=fr", "--mute-audio", "--disable-gpu"]
+        await pump_until(pilot, lambda: cfg.crawl_browser_extra_args == flags)
+        assert cfg.crawl_browser_extra_args == flags
+        title = app.screen.query_one("#collapsible-crawl_browser_extra_args", Collapsible).title
+        assert "(3 lines)" in title
+
+
+async def test_settings_browser_flags_editor_stores_a_flag_crawlberg_refuses():
+    """The editor stores every line and counts it; crawlberg checks the flags at crawl time."""
+    from textual.widgets import Collapsible
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_browser_extra_args = ["--lang=fr"]
+        ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("--lang=fr\n--headless=new\nmute-audio")
+        ta.blur()
+        flags = ["--lang=fr", "--headless=new", "mute-audio"]
+        await pump_until(pilot, lambda: cfg.crawl_browser_extra_args == flags)
+        assert cfg.crawl_browser_extra_args == flags
+        title = app.screen.query_one("#collapsible-crawl_browser_extra_args", Collapsible).title
+        assert "(3 lines)" in title
+
+
+async def test_settings_crawl_user_agent_editor_saves_the_override():
+    """The crawl user agent editor stores the text it holds."""
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_user_agent = ""
+        editor = app.screen.query_one("#ed-crawl_user_agent", Input)
+        editor.focus()
+        editor.value = "Probe/1.0"
+        await pilot.press("enter")
+        await pump_until(pilot, lambda: cfg.crawl_user_agent == "Probe/1.0")
+        assert cfg.crawl_user_agent == "Probe/1.0"
+
+
+async def test_settings_extra_browser_wait_editor_saves_the_wait():
+    """The extra browser wait editor stores the milliseconds it holds."""
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_browser_extra_wait_ms = 1000
+        editor = app.screen.query_one("#ed-crawl_browser_extra_wait_ms", Input)
+        editor.focus()
+        editor.value = "2500"
+        await pilot.press("enter")
+        await pump_until(pilot, lambda: cfg.crawl_browser_extra_wait_ms == 2500)
+        assert cfg.crawl_browser_extra_wait_ms == 2500
+
+
+async def test_settings_robots_txt_checkbox_turns_the_setting_off():
+    """The robots.txt checkbox starts ticked and unticking it stores off."""
+    from textual.widgets import Checkbox
+
+    cfg.crawl_respect_robots_txt = True
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        checkbox = app.screen.query_one("#ed-crawl_respect_robots_txt", Checkbox)
+        assert checkbox.value is True
+        checkbox.toggle()
+        await pump_until(pilot, lambda: cfg.crawl_respect_robots_txt is False)
+        assert cfg.crawl_respect_robots_txt is False
 
 
 async def test_settings_list_editor_restore_defaults():
@@ -7972,9 +8058,13 @@ async def test_chat_slash_crawl_unavailable():
     """_cmd_crawl notifies when crawler is not installed."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=False):
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=False),
+            patch.object(app.screen, "notify") as notify,
+        ):
             app.screen._cmd_crawl("https://example.com")
             assert app.screen.is_current
+        notify.assert_called_once_with(CRAWLER_MISSING_MESSAGE, severity="error")
 
 
 async def test_chat_slash_crawl_no_args():
