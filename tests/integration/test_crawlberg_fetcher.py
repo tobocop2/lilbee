@@ -1138,7 +1138,7 @@ class TestStoredSpellingOfAnAddress:
         leaf = cfg.documents_dir / "_web" / leaf_entry.file
         assert f"{FRESH_TEXT} /twice/na%C3%AFve." in leaf.read_text(encoding="utf-8")
         saved = sorted(page_stem(path.name) for path in leaf.parent.rglob("*.md"))
-        assert saved == ["again", "index", "naïve"]
+        assert saved == ["again", "naïve"]
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
