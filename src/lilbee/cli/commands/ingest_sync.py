@@ -161,29 +161,29 @@ def _crawl_urls_blocking(
     cancel_event: threading.Event,
     include_subdomains: bool = False,
 ) -> list[Path]:
-    """Crawl each URL in turn and return the pages saved; a set *cancel_event* raises a cancel."""
+    """Crawl each URL in turn and return the pages saved; a set *cancel_event* raises a cancel.
+
+    When no page is saved and a page failed, ValueError carries each failed page's reason.
+    """
     from rich.progress import Progress, SpinnerColumn, TaskID
 
     from lilbee.crawler import crawl_and_save
     from lilbee.runtime.progress import (
         CrawlDoneEvent,
         CrawlPageEvent,
+        CrawlPageFailedEvent,
         EventType,
         ProgressEvent,
     )
     from lilbee.runtime.progress.columns import literal_text_column
 
-    if crawl:
-        effective_depth = depth
-        effective_pages = max_pages
-    else:
-        effective_depth = 0
-        effective_pages = None
+    effective_depth, effective_pages = (depth, max_pages) if crawl else (0, None)
 
     from lilbee.runtime.console import PlainConsole
 
     err_console = PlainConsole(stderr=True)
     all_paths: list[Path] = []
+    failures: list[str] = []
     with Progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
@@ -209,6 +209,10 @@ def _crawl_urls_blocking(
                         )
                     elif event_type == EventType.CRAWL_DONE and isinstance(data, CrawlDoneEvent):
                         _crawled["n"] = data.pages_crawled
+                    elif event_type == EventType.CRAWL_PAGE_FAILED and isinstance(
+                        data, CrawlPageFailedEvent
+                    ):
+                        failures.append(f"{data.url}: {data.reason}")
 
                 return on_progress
 
@@ -231,6 +235,8 @@ def _crawl_urls_blocking(
                     f"Stopped at the default {default_cap}-page limit; "
                     f"pass --max-pages 0 to crawl unlimited (or --max-pages N for a higher cap).",
                 )
+    if failures and not all_paths:
+        raise ValueError("\n".join(failures))
     return all_paths
 
 
