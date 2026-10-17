@@ -16,6 +16,7 @@ from lilbee.catalog.query import (
     VISION_NAME_PATTERNS,
 )
 from lilbee.catalog.types import KeyStatus, ModelTask
+from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.model_manager.types import ApiModelGroup, RemoteModel
 from lilbee.providers.backend_names import BackendName
 from lilbee.providers.base import LLMProvider
@@ -285,12 +286,15 @@ class KnownModelCache:
 
         Accepts the canonical ref, an Ollama ``name:tag`` shorthand, and the clean
         agent-facing id (:func:`agent_model_id`) an agent config pins in place of
-        the full GGUF path. The clean id resolves only when exactly one known ref
+        the full GGUF path, and an absolute path to a GGUF file on disk, which the
+        fleet loads without a manifest. The clean id resolves only when exactly one known ref
         produces it, so two same-labelled quants stay unresolved rather than
         routing to the wrong file.
         """
         refs = self.refs()
         if model in refs:
+            return model
+        if install_state(model, get_services().registry) is InstallState.LOOSE_FILE:
             return model
         if "/" not in model and ":" in model:
             prefixed = OLLAMA.qualify(model)

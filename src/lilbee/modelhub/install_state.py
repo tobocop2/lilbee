@@ -19,8 +19,8 @@ class InstallState(StrEnum):
 def install_state(ref: str, registry: ModelRegistry) -> InstallState:
     """Where *ref* loads from: a registry manifest, a loose GGUF file, or nowhere.
 
-    A loose file loads in the TUI, the CLI and the fleet, but no model listing
-    shows it and the HTTP chat route cannot resolve it.
+    A loose file loads in the TUI, the CLI, the fleet and the HTTP chat routes,
+    but no model listing shows it.
     """
     if registry.is_installed(ref):
         return InstallState.REGISTERED

@@ -56,11 +56,9 @@ from lilbee.server.chat_dispatch.canonical import (
     TextDelta,
     ToolResultBlock,
     ToolUseBlock,
+    require_content_beside_images,
 )
 
-_IMAGE_CONTENT_UNSUPPORTED = (
-    "Image content is not supported by /v1/messages yet. Send a text-only request."
-)
 _TOOL_CHOICE_NAME_REQUIRED = 'tool_choice type "tool" requires a name.'
 
 
@@ -128,9 +126,10 @@ def _canonical_prompt(request: _PromptBody, *, mode: ReasoningMode) -> Canonical
     Both request bodies carry these fields and both routes translate them here,
     so a field added to the prompt reaches the chat call and the count together.
     """
-    return CanonicalChatRequest(
+    req = CanonicalChatRequest(
         model=request.model,
         messages=_canonical_messages(request.messages),
+        dropped_images=_count_images(request.messages),
         system=_system_text(request.system),
         tools=_tools_from_request(request.tools),
         tool_choice=_tool_choice_from_request(request.tool_choice),
@@ -138,6 +137,21 @@ def _canonical_prompt(request: _PromptBody, *, mode: ReasoningMode) -> Canonical
         # presentation, so the template default stands.
         think=False if mode is ReasoningMode.OFF else None,
     )
+    return require_content_beside_images(req)
+
+
+def _count_images(messages: list[AnthropicMessage]) -> int:
+    """Image blocks in *messages*, top level and inside tool results."""
+    total = 0
+    for msg in messages:
+        if isinstance(msg.content, str):
+            continue
+        for block in msg.content:
+            if isinstance(block, ImageBlockParam):
+                total += 1
+            elif isinstance(block, ToolResultBlockParam) and isinstance(block.content, list):
+                total += sum(isinstance(part, ImageBlockParam) for part in block.content)
+    return total
 
 
 def _canonical_messages(messages: list[AnthropicMessage]) -> list[CanonicalMessage]:
@@ -196,9 +210,7 @@ def _block_messages(
             blocks.append(ToolUseBlock(id=block.id, name=block.name, input=block.input))
         elif isinstance(block, ToolResultBlockParam):
             tool_messages.append(_tool_result_message(block))
-        elif isinstance(block, ImageBlockParam):
-            raise ValueError(_IMAGE_CONTENT_UNSUPPORTED)
-        elif isinstance(block, UnknownBlockParam):
+        elif isinstance(block, ImageBlockParam | UnknownBlockParam):
             continue
 
     out = tool_messages
@@ -236,9 +248,7 @@ def _tool_result_content(block: ToolResultBlockParam) -> list[ContentBlock]:
     for part in block.content:
         if isinstance(part, TextBlockParam):
             parts.append(TextBlock(text=part.text))
-        elif isinstance(part, ImageBlockParam):
-            raise ValueError(_IMAGE_CONTENT_UNSUPPORTED)
-        # UnknownBlockParam: dropped
+        # ImageBlockParam and UnknownBlockParam: dropped
     return parts
 
 
