@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 from filelock import ReadWriteLock
 from filelock import Timeout as FileLockTimeout
+from rich.progress import Progress
 from rich.text import Text
 from typer.testing import CliRunner
 
@@ -4091,6 +4092,39 @@ class TestAddWithUrls:
         if json_mode:
             data = json.loads(result.stdout)
             assert data["failed"] == [{"url": shown, "reason": f"{shown}: {reason}"}]
+
+    def test_the_add_progress_lines_name_no_password(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+        descriptions: list[str] = []
+        real_add_task, real_update = Progress.add_task, Progress.update
+
+        def add_task(progress: Progress, description: str, *args, **kwargs):
+            descriptions.append(description)
+            return real_add_task(progress, description, *args, **kwargs)
+
+        def update(progress: Progress, task_id, *args, **kwargs):
+            descriptions.append(kwargs.get("description") or "")
+            return real_update(progress, task_id, *args, **kwargs)
+
+        async def crawl(url, *, on_progress, **_kwargs):
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=1, files_written=1))
+            return [tmp_path / "page.md"]
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=crawl),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+            mock.patch.object(Progress, "add_task", add_task),
+            mock.patch.object(Progress, "update", update),
+        ):
+            result = runner.invoke(app, ["add", "https://alice:s3cr%3At!@example.com/page"])
+        assert result.exit_code == 0, result.output
+        assert "Crawling https://example.com/page..." in descriptions
+        assert "Done: https://example.com/page (1 pages)" in descriptions
+        assert not [line for line in descriptions if "s3cr" in line or "alice" in line]
 
     def test_two_dead_urls_each_carry_only_their_own_reasons(self):
         first = "https://one.example/"

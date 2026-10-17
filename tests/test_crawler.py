@@ -449,6 +449,19 @@ class TestNoUserinfoReachesWhatTheCrawlKeeps:
         assert [single.url, *(result.url for result in site)] == [SHOWN_SEED, SHOWN_SEED]
         assert "timeout" in single.error
 
+    async def test_the_failed_fetch_log_names_the_seed_without_the_password(
+        self, monkeypatch, caplog
+    ):
+        _public_dns(monkeypatch)
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.crawler.runner"),
+            cb.StubCrawlberg(_failing_stream("timeout")).installed(),
+        ):
+            await crawl_single(CREDENTIALED_SEED)
+        assert f"Failed to crawl {SHOWN_SEED}: " in caplog.text
+        assert SEED_PASSWORD not in caplog.text
+        assert "alice" not in caplog.text
+
     async def test_the_chromium_retry_log_names_the_seed_without_the_password(
         self, monkeypatch, tmp_path, caplog
     ):
