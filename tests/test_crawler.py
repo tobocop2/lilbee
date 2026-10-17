@@ -287,6 +287,23 @@ class TestCrawlMetadata:
             _replace_atomically(cfg.data_dir / "crawl_pages.jsonl", "{}\n")
         assert list(cfg.data_dir.iterdir()) == []
 
+    def test_atomic_write_reaches_the_disk_before_it_takes_the_place_of_the_file(
+        self, isolated_env, monkeypatch
+    ):
+        target = cfg.data_dir / "crawl_pages.jsonl"
+        target.write_text("old\n", encoding="utf-8")
+        seen: list[str] = []
+        real_fsync = os.fsync
+
+        def fsync(fd: int) -> None:
+            seen.append(target.read_text(encoding="utf-8"))
+            real_fsync(fd)
+
+        monkeypatch.setattr("lilbee.crawler.save.os.fsync", fsync)
+        _replace_atomically(target, "new\n")
+        assert seen == ["old\n"]
+        assert target.read_text(encoding="utf-8") == "new\n"
+
     def test_atomic_write_error_before_the_temporary_file_exists_is_raised(self, isolated_env):
         """A failure to make the temporary file leaves the target untouched and re-raises."""
         with (
@@ -2611,11 +2628,32 @@ class TestSavePage:
     def test_the_record_line_is_written_before_the_file(self, isolated_env):
         url = "https://example.com/p"
         with (
-            patch("lilbee.crawler.save.Path.write_text", side_effect=OSError("disk full")),
+            patch("lilbee.crawler.save._replace_atomically", side_effect=OSError("disk full")),
             pytest.raises(OSError, match="disk full"),
         ):
             save_page(CrawlResult(url=url, markdown="# P"), CrawlRecord(), MagicMock())
         assert load_crawl_record().pages[url].content_hash == content_hash("# P")
+
+    def test_the_record_line_reaches_the_disk_before_the_file_is_written(
+        self, isolated_env, monkeypatch
+    ):
+        url = "https://example.com/p"
+        page = cfg.documents_dir / "_web" / url_to_filename(url)
+        synced: list[tuple[str, bool]] = []
+        real_fsync = os.fsync
+
+        def fsync(fd: int) -> None:
+            text = _pages_file().read_text(encoding="utf-8") if _pages_file().exists() else ""
+            on_record = (
+                _pages_file().exists() and os.fstat(fd).st_ino == _pages_file().stat().st_ino
+            )
+            synced.append(("record" if on_record else "other", page.exists() or url not in text))
+            real_fsync(fd)
+
+        monkeypatch.setattr("lilbee.crawler.save.os.fsync", fsync)
+        save_page(CrawlResult(url=url, markdown="# P"), CrawlRecord(), MagicMock())
+        assert synced[0] == ("record", False)
+        assert page.read_text(encoding="utf-8") == "# P"
 
     def test_a_cut_record_line_does_not_join_the_next_line(self, isolated_env, caplog):
         _pages_file().write_text('{"url": "https://example.com/cut", "fi', encoding="utf-8")
@@ -2626,6 +2664,31 @@ class TestSavePage:
         assert set(pages) == {url}
         assert any("malformed crawl record line" in r.message for r in caplog.records)
 
+    @pytest.mark.parametrize("damage", ["zero-tail", "garbage"])
+    def test_a_page_whose_record_line_was_lost_is_adopted_and_updated_later(
+        self, isolated_env, damage
+    ):
+        urls = ["https://example.com/a", "https://example.com/b"]
+        record = load_crawl_record()
+        for url in urls:
+            save_page(CrawlResult(url=url, markdown=f"# {url} v1"), record, MagicMock())
+        raw = _pages_file().read_bytes()
+        if damage == "zero-tail":
+            _pages_file().write_bytes(raw[:-60] + b"\0" * 60)
+        else:
+            _pages_file().write_bytes(b"\xff\xfe" * (len(raw) // 2))
+        assert urls[-1] not in load_crawl_record().pages
+        record = load_crawl_record()
+        again = [
+            save_page(CrawlResult(url=u, markdown=f"# {u} v1"), record, MagicMock()) for u in urls
+        ]
+        assert again == [None, None]
+        assert set(load_crawl_record().pages) >= set(urls)
+        record = load_crawl_record()
+        changed = save_page(CrawlResult(url=urls[-1], markdown="# v2"), record, MagicMock())
+        assert changed is not None
+        assert changed.read_text(encoding="utf-8") == "# v2"
+
     def test_a_name_held_by_a_file_the_record_does_not_give_the_page_is_not_written(
         self, isolated_env, caplog
     ):
@@ -2635,7 +2698,84 @@ class TestSavePage:
             result = save_page(CrawlResult(url=url, markdown="# Page"), CrawlRecord(), MagicMock())
         assert result is None
         assert mine.read_text(encoding="utf-8") == "# My notes"
-        assert [r.message for r in caplog.records if "is not saved" in r.message] != []
+        warned = [r.getMessage() for r in caplog.records if "is not saved" in r.getMessage()]
+        assert len(warned) == 1
+        assert "move or delete it" in warned[0]
+        assert not _pages_file().exists()
+
+    def test_a_user_note_at_a_recorded_name_is_not_written_over_when_the_page_changes(
+        self, isolated_env, caplog
+    ):
+        url = "https://example.com/p"
+        record = load_crawl_record()
+        path = save_page(CrawlResult(url=url, markdown="# v1"), record, MagicMock())
+        assert path is not None
+        path.write_text("# My notes", encoding="utf-8")
+        with caplog.at_level("WARNING", logger="lilbee.crawler.save"):
+            again = save_page(CrawlResult(url=url, markdown="# v2"), record, MagicMock())
+        assert again is None
+        assert path.read_text(encoding="utf-8") == "# My notes"
+        assert any("is not saved" in r.getMessage() for r in caplog.records)
+        assert load_crawl_record().pages[url].content_hash == content_hash("# v1")
+
+    def test_a_save_cut_between_its_record_line_and_its_file_is_saved_by_the_next_crawl(
+        self, isolated_env
+    ):
+        url = "https://example.com/p"
+        record = load_crawl_record()
+        path = save_page(CrawlResult(url=url, markdown="# v1"), record, MagicMock())
+        assert path is not None
+        with (
+            patch("lilbee.crawler.save._replace_atomically", side_effect=OSError("killed")),
+            pytest.raises(OSError, match="killed"),
+        ):
+            save_page(CrawlResult(url=url, markdown="# v2"), record, MagicMock())
+        assert path.read_text(encoding="utf-8") == "# v1"
+        record = load_crawl_record()
+        assert save_page(CrawlResult(url=url, markdown="# v3"), record, MagicMock()) == path
+        assert path.read_text(encoding="utf-8") == "# v3"
+
+    def test_a_crawl_with_a_stale_record_writes_over_a_text_another_crawl_recorded(
+        self, isolated_env
+    ):
+        url = "https://example.com/p"
+        path = save_page(CrawlResult(url=url, markdown="# v1"), load_crawl_record(), MagicMock())
+        assert path is not None
+        stale, current = load_crawl_record(), load_crawl_record()
+        assert save_page(CrawlResult(url=url, markdown="# v2"), current, MagicMock()) == path
+        assert save_page(CrawlResult(url=url, markdown="# v3"), stale, MagicMock()) == path
+        assert path.read_text(encoding="utf-8") == "# v3"
+        assert load_crawl_record().pages[url].content_hash == content_hash("# v3")
+
+    def test_a_recorded_page_whose_file_lost_its_text_is_written_again(self, isolated_env):
+        url = "https://example.com/p"
+        record = load_crawl_record()
+        path = save_page(CrawlResult(url=url, markdown="# v1"), record, MagicMock())
+        assert path is not None
+        with (
+            patch("lilbee.crawler.save._replace_atomically", side_effect=OSError("killed")),
+            pytest.raises(OSError, match="killed"),
+        ):
+            save_page(CrawlResult(url=url, markdown="# v2"), record, MagicMock())
+        again = save_page(CrawlResult(url=url, markdown="# v2"), load_crawl_record(), MagicMock())
+        assert again == path
+        assert path.read_text(encoding="utf-8") == "# v2"
+
+    def test_a_link_at_a_page_name_is_not_adopted(self, isolated_env, caplog):
+        url = "https://example.com/p"
+        target = _write_web("elsewhere.md", "# P")
+        link = cfg.documents_dir / "_web" / url_to_filename(url)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            link.symlink_to(target)
+        except OSError:
+            pytest.skip("this system makes no symbolic links")
+        with caplog.at_level("WARNING", logger="lilbee.crawler.save"):
+            assert (
+                save_page(CrawlResult(url=url, markdown="# P"), CrawlRecord(), MagicMock()) is None
+            )
+        assert link.is_symlink()
+        assert any("is not saved" in r.getMessage() for r in caplog.records)
         assert not _pages_file().exists()
 
     def test_a_recorded_page_whose_name_holds_a_folder_is_not_written(self, isolated_env):
