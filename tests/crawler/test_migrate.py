@@ -212,14 +212,63 @@ def test_a_disk_with_no_inodes_groups_names_by_their_resolved_path(store: MagicM
     assert sorted(_moved(store, meta)) == ["https://example.com/t/a", "https://example.com/t/b"]
 
 
-def test_an_earlier_copy_beside_a_page_already_at_its_name_is_removed(store: MagicMock):
+def test_the_recorded_copy_moves_over_an_older_copy_at_its_name(store: MagicMock):
     name = url_to_filename(_PAGE)
-    _write(name, "# Newer")
-    _write(_EARLIER, "# Older")
+    _write(name, "# Older")
+    _write(_EARLIER, "# Recorded")
     _write("example.com/t/page/keep.md", "# Mine")
-    assert _moved(store, {_PAGE: CrawlMeta(_EARLIER, "h", "t")}) == {}
+    recorded = CrawlMeta(_EARLIER, content_hash("# Recorded"), "t")
+    assert _moved(store, {_PAGE: recorded}) == {_PAGE: CrawlMeta(name, recorded.content_hash, "t")}
     assert not (_web() / _EARLIER).exists()
-    assert (_web() / name).read_text(encoding="utf-8") == "# Newer"
+    assert (_web() / name).read_text(encoding="utf-8") == "# Recorded"
     assert (_web() / "example.com/t/page/keep.md").exists()
+    store.remove_documents.assert_called_once_with([f"_web/{_EARLIER}"])
+    assert _moved_sources(store) == []
+
+
+def test_a_moved_source_keeps_the_stat_it_was_indexed_with(store: MagicMock):
+    _write(_EARLIER, "# Page")
+    _moved(store, {_PAGE: CrawlMeta(_EARLIER, content_hash("# Page"), "t")})
+    assert [
+        move.stat for call in store.relocate_sources.call_args_list for move in call.args[0]
+    ] == [None]
+
+
+def test_a_file_that_cannot_move_leaves_the_index_and_the_record_alone(
+    store: MagicMock, monkeypatch: pytest.MonkeyPatch
+):
+    _write(_EARLIER, "# Page")
+    stored = {_PAGE: CrawlMeta(_EARLIER, content_hash("# Page"), "t")}
+    save_crawl_metadata(stored)
+
+    def refused(source: object, target: object) -> None:
+        raise PermissionError(13, "Permission denied", str(target))
+
+    monkeypatch.setattr("lilbee.crawler.migrate.os.replace", refused)
+    with pytest.raises(PermissionError, match="Permission denied"):
+        move_saved_pages(store)
+    store.relocate_sources.assert_not_called()
+    store.remove_documents.assert_not_called()
+    assert load_crawl_metadata() == stored
+    assert (_web() / _EARLIER).read_text(encoding="utf-8") == "# Page"
+
+
+def test_a_move_cut_short_before_its_record_keeps_every_entry(
+    store: MagicMock, monkeypatch: pytest.MonkeyPatch
+):
+    _write(_EARLIER, "# Page")
+    save_crawl_metadata({_PAGE: CrawlMeta(_EARLIER, content_hash("# Page"), "t")})
+
+    def cut(meta: dict[str, CrawlMeta]) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("lilbee.crawler.save.save_crawl_metadata", cut)
+    with pytest.raises(OSError, match="No space left"):
+        move_saved_pages(store)
+    monkeypatch.undo()
+    store.reset_mock()
+    name = url_to_filename(_PAGE)
+    assert move_saved_pages(store) == {_PAGE: CrawlMeta(name, content_hash("# Page"), "t")}
+    assert load_crawl_metadata() == {_PAGE: CrawlMeta(name, content_hash("# Page"), "t")}
     store.remove_documents.assert_called_once_with([f"_web/{_EARLIER}"])
     assert _moved_sources(store) == []
