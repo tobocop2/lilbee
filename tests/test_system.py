@@ -15,7 +15,6 @@ from lilbee.core.system import (
     _Folder,
     _mount_fstype,
     chat_ctx_target_for_total_bytes,
-    default_cache_dir,
     default_data_dir,
     default_state_dir,
     disk_path,
@@ -27,6 +26,10 @@ from lilbee.core.system import (
     scaled_chat_ctx_target_default,
     stderr_suppressed,
 )
+
+# The run patches the module's default_cache_dir, so the platform original
+# these formula tests check is stashed in the suite module.
+from tests._suite_data_root import platform_default_cache_dir as default_cache_dir
 
 _MOUNTS = (
     "proc /proc proc rw 0 0\n"

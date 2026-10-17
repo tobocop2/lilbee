@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 import pytest
+from huggingface_hub import constants as hf_constants
 
 from lilbee.catalog import CatalogModel
 from lilbee.core.config import cfg
@@ -79,6 +80,19 @@ def pytest_collection_modifyitems(items):
         # marker and silently overrides every per-test opt-in.
         if item.get_closest_marker("timeout") is None:
             item.add_marker(pytest.mark.timeout(_INTEGRATION_TIMEOUT_SECONDS))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _hub_online():
+    """Switch the hub back on: the suite module sets it offline for unit runs.
+
+    A fixture, not an import-time write: pytest imports this conftest while it
+    collects a unit run too, and a write there turns the hub on for that run.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.delenv("HF_HUB_OFFLINE", raising=False)
+        patch.setattr(hf_constants, "HF_HUB_OFFLINE", False)
+        yield
 
 
 @pytest.fixture(autouse=True)
