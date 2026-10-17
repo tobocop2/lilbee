@@ -52,6 +52,7 @@ from lilbee.crawler import CrawlMeta, CrawlResult, content_hash, crawl_and_save,
 from lilbee.data.ingest import sync
 from lilbee.data.store import Store
 from lilbee.retrieval.query.formatting import source_label
+from tests._crawl_meta import write_crawl_metadata
 from tests.conftest import make_mock_services
 
 _LAST_SEGMENT = "page"
@@ -496,8 +497,6 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Store]:
 
 def _write_earlier_library() -> None:
     """Save every page of the earlier library under its earlier name, with its metadata."""
-    from lilbee.crawler import save_crawl_metadata
-
     web = cfg.documents_dir / "_web"
     meta = {}
     for path, earlier in _EARLIER_LIBRARY:
@@ -505,7 +504,7 @@ def _write_earlier_library() -> None:
         (web / earlier).parent.mkdir(parents=True, exist_ok=True)
         (web / earlier).write_text(text, encoding="utf-8")
         meta[_SITE + path] = CrawlMeta(earlier, content_hash(text), "2026-01-01T00:00:00+00:00")
-    save_crawl_metadata(meta)
+    write_crawl_metadata(meta)
 
 
 async def _recrawl(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
@@ -597,7 +596,6 @@ async def test_saving_a_page_does_not_read_the_whole_metadata(
     monkeypatch.setattr(
         "lilbee.crawler.save.load_crawl_metadata", lambda: _CountingMeta(others | stored)
     )
-    monkeypatch.setattr("lilbee.crawler.save.save_crawl_metadata", lambda meta: None)
     results = [CrawlResult(url=_SITE + p, markdown=_text(p, "2")) for p in paths]
 
     async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
