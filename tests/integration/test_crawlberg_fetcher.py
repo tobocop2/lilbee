@@ -231,6 +231,15 @@ INLINE_IMAGE_PAYLOAD = (
 )
 # A page that links to a second page, each with text hidden three ways beside visible text.
 HIDDEN_PAGE = "/hidden/"
+LATE_PAGE = "/late/"
+LATE_NEXT_PAGE = "/late/next"
+LATE_HEADING = "Harbor timetable"
+LATE_TEXT = "The ferry leaves at noon"
+# Later than crawlberg's own wait after the load (500 ms), well under the default extra wait.
+LATE_DELAY_MS = 600
+# A page timeout and a wait that, with crawlberg's own 500 ms, outlast two page timeouts.
+LONG_WAIT_TIMEOUT_S = 3
+LONG_WAIT_MS = 5800
 HIDDEN_NEXT_PAGE = "/hidden/next"
 COOKIE_START = "/cookie/"
 COOKIE_NEED = "/cookie/need"
@@ -337,6 +346,19 @@ def _hidden_page(link: str) -> str:
     return f"<html><body><p>{VISIBLE_TEXT}</p>{hidden}{link}</body></html>"
 
 
+def _late_page(link: str) -> str:
+    """A page whose script writes its main text :data:`LATE_DELAY_MS` after the load, and *link*."""
+    write = (
+        'window.addEventListener("load", () => setTimeout(() => {'
+        f'document.getElementById("late").textContent = "{LATE_TEXT}";'
+        f"}}, {LATE_DELAY_MS}));"
+    )
+    return (
+        f'<html><body><h1>{LATE_HEADING}</h1><p id="late"></p>{link}'
+        f"<script>{write}</script></body></html>"
+    )
+
+
 def _fixed_pages(filler: str, robots_status: int) -> dict[str, tuple[int, str]]:
     """The status and body, or redirect target, of each page served at one exact path."""
     image = f"data:image/png;base64,{INLINE_IMAGE_PAYLOAD}"
@@ -359,6 +381,8 @@ def _fixed_pages(filler: str, robots_status: int) -> dict[str, tuple[int, str]]:
         ROBOTS_ALLOWED: (HTTPStatus.OK, f"<html><body><h1>Open</h1>{filler}</body></html>"),
         HIDDEN_PAGE: (HTTPStatus.OK, _hidden_page(f'<a href="{HIDDEN_NEXT_PAGE}">next</a>')),
         HIDDEN_NEXT_PAGE: (HTTPStatus.OK, _hidden_page("")),
+        LATE_PAGE: (HTTPStatus.OK, _late_page(f'<a href="{LATE_NEXT_PAGE}">next</a>')),
+        LATE_NEXT_PAGE: (HTTPStatus.OK, _late_page("")),
         COOKIE_START: (
             HTTPStatus.OK,
             f'<html><body><h1>Start</h1><a href="{COOKIE_NEED}">need</a>{filler}</body></html>',
@@ -838,6 +862,15 @@ def _assert_hidden_text_kept(paths: list[Path], pages: int) -> None:
         assert VISIBLE_TEXT in text, text
         for way, hidden in HIDDEN_TEXTS.items():
             assert hidden in text, f"{way}: {text}"
+
+
+def _assert_late_text(paths: list[Path], pages: int, *, kept: bool) -> None:
+    """Each saved page holds its heading, and holds its late text exactly when *kept*."""
+    assert len(paths) == pages
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert LATE_HEADING in text, text
+        assert (LATE_TEXT in text) is kept, text
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
@@ -1477,6 +1510,23 @@ class TestBrowserLaunch:
 
     def test_a_recursive_browser_crawl_keeps_hidden_text(self, site):
         _assert_hidden_text_kept(self._crawl(site.url(HIDDEN_PAGE), depth=1), 2)
+
+    def test_a_single_page_browser_crawl_keeps_text_written_after_the_load(self, site):
+        cfg.crawl_browser_extra_wait_ms = Config().crawl_browser_extra_wait_ms
+        _assert_late_text(self._crawl(site.url(LATE_PAGE)), 1, kept=True)
+
+    def test_a_recursive_browser_crawl_keeps_text_written_after_the_load(self, site):
+        cfg.crawl_browser_extra_wait_ms = Config().crawl_browser_extra_wait_ms
+        _assert_late_text(self._crawl(site.url(LATE_PAGE), depth=1), 2, kept=True)
+
+    def test_a_wait_near_the_fetch_deadline_still_saves_the_page(self, site):
+        cfg.crawl_timeout = LONG_WAIT_TIMEOUT_S
+        cfg.crawl_browser_extra_wait_ms = LONG_WAIT_MS
+        _assert_late_text(self._crawl(site.url(LATE_PAGE)), 1, kept=True)
+
+    def test_with_no_extra_wait_text_written_after_the_load_is_missing(self, site):
+        cfg.crawl_browser_extra_wait_ms = 0
+        _assert_late_text(self._crawl(site.url(LATE_PAGE)), 1, kept=False)
 
     def test_with_no_override_chrome_names_itself_and_its_hints_agree(self, site):
         paths = self._crawl(site.url("/hints/"), depth=1)

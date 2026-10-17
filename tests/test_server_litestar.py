@@ -1361,6 +1361,19 @@ class TestConfigUpdateRoute:
         assert resp.json()["updated"] == ["crawl_respect_robots_txt"]
         assert cfg.crawl_respect_robots_txt is False
 
+    def test_crawl_browser_extra_wait_ms_is_stored(self, client):
+        cfg.crawl_browser_extra_wait_ms = 1000
+        resp = client.patch("/api/config", json={"crawl_browser_extra_wait_ms": 0})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_browser_extra_wait_ms"]
+        assert cfg.crawl_browser_extra_wait_ms == 0
+
+    def test_a_negative_crawl_browser_extra_wait_ms_is_refused(self, client):
+        cfg.crawl_browser_extra_wait_ms = 1000
+        resp = client.patch("/api/config", json={"crawl_browser_extra_wait_ms": -1})
+        assert (resp.status_code, cfg.crawl_browser_extra_wait_ms) == (400, 1000)
+        assert "crawl_browser_extra_wait_ms" in resp.text
+
     def test_crawl_user_agent_with_a_control_character_is_refused(self, client):
         before = cfg.crawl_user_agent
         resp = client.patch("/api/config", json={"crawl_user_agent": "Probe\n1.0"})

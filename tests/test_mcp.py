@@ -2261,6 +2261,20 @@ class TestSettingsMcp:
         assert result["updated"] == ["crawl_respect_robots_txt"]
         assert cfg.crawl_respect_robots_txt is False
 
+    def test_settings_set_stores_the_extra_browser_wait(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.crawl_browser_extra_wait_ms = 1000
+        result = settings_set({"crawl_browser_extra_wait_ms": 0})
+        assert result["updated"] == ["crawl_browser_extra_wait_ms"]
+        assert cfg.crawl_browser_extra_wait_ms == 0
+
+    def test_settings_set_refuses_a_negative_extra_browser_wait(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.crawl_browser_extra_wait_ms = 1000
+        result = settings_set({"crawl_browser_extra_wait_ms": -1})
+        assert "crawl_browser_extra_wait_ms" in result["error"]
+        assert cfg.crawl_browser_extra_wait_ms == 1000
+
     def test_settings_set_refuses_a_crawl_user_agent_with_a_control_character(self, isolated_env):
         cfg.data_root = isolated_env
         before = cfg.crawl_user_agent
