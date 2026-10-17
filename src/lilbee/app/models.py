@@ -12,6 +12,7 @@ from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.providers.model_ref import parse_model_ref
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -223,6 +224,24 @@ def installed_chat_model_refs() -> list[str]:
     """Return sorted refs for every chat-task model in the registry."""
     registry = get_services().registry
     return sorted(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
+
+
+def with_configured_chat(refs: list[str], configured: str) -> list[str]:
+    """Return *refs* with *configured* first when this server serves it but *refs* omit it.
+
+    A remote-configured model (``ollama/...``, ``openai/...``) and a model set by
+    the path of a GGUF file have no registry entry. The chat routes serve both
+    through the known-model lookup, so the lookup decides, and every listing
+    that advertises models to a client agrees with the routes. An empty
+    *configured* means the role is unconfigured.
+    """
+    if not configured or configured in refs:
+        return list(refs)
+    if parse_model_ref(configured).is_remote or (
+        get_services().known_models.resolve(configured) is not None
+    ):
+        return [configured, *refs]
+    return list(refs)
 
 
 def _native_manifest_index() -> dict[str, ModelManifest]:

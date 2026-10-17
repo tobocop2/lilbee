@@ -8,7 +8,7 @@ from typing import Protocol
 import typer
 
 from lilbee.app.agent_configs.window import AGENT_CHAT_CTX_FLOOR, agent_chat_ctx_target
-from lilbee.app.models import installed_chat_model_refs
+from lilbee.app.models import installed_chat_model_refs, with_configured_chat
 from lilbee.cli.launchers.server import (
     ensure_server_running,
     served_chat_ctx,
@@ -16,7 +16,6 @@ from lilbee.cli.launchers.server import (
     wait_for_chat_warm,
 )
 from lilbee.core.config import cfg
-from lilbee.providers.model_ref import with_configured_remote_chat
 
 # The env var each launcher sets to the live session token; the written config
 # references it (opencode `{env:...}`, hermes `${...}`) so no literal lands on disk.
@@ -124,7 +123,7 @@ def run_launcher(launcher: Launcher) -> None:
     # spawned `lilbee serve` process.
     try:
         native_refs = installed_chat_model_refs()
-        model_refs = with_configured_remote_chat(native_refs, cfg.chat_model)
+        model_refs = with_configured_chat(native_refs, cfg.chat_model)
         _warn_on_model_pin_gaps(model_refs)
         # Wait out the cold model load before handing off, so the client opens onto a
         # warm engine instead of an apparently-dead stream. Only meaningful when a

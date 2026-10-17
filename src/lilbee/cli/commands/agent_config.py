@@ -16,7 +16,7 @@ from lilbee.app.agent_configs.document import (
 )
 from lilbee.app.agent_configs.litellm import litellm_config
 from lilbee.app.agent_configs.window import AGENT_CHAT_CTX_FLOOR
-from lilbee.app.models import installed_chat_model_refs
+from lilbee.app.models import installed_chat_model_refs, with_configured_chat
 from lilbee.cli.app import apply_overrides, data_dir_option, global_option
 from lilbee.cli.launchers.hermes_mcp import MCP_EXTRA_HINT
 from lilbee.cli.launchers.server import (
@@ -25,7 +25,6 @@ from lilbee.cli.launchers.server import (
     running_server_session,
 )
 from lilbee.core.config import cfg
-from lilbee.providers.model_ref import with_configured_remote_chat
 
 agent_config_app = typer.Typer(help="Print a paste-ready config block for an AI client.")
 
@@ -47,8 +46,8 @@ def _session_or_exit() -> tuple[str, int]:
 
 
 def _served_chat_models() -> list[str]:
-    """Chat refs to advertise: the installed ones plus a remote-configured model."""
-    return with_configured_remote_chat(installed_chat_model_refs(), cfg.chat_model)
+    """Chat refs to advertise: the installed ones plus the configured model the server serves."""
+    return with_configured_chat(installed_chat_model_refs(), cfg.chat_model)
 
 
 def _warn_on_small_agent_window(chat_ctx: int | None) -> None:
