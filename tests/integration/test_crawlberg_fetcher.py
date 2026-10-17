@@ -38,6 +38,7 @@ from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
 )
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402
 from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl  # noqa: E402
+from lilbee.mcp_server import add as mcp_add  # noqa: E402
 from lilbee.runtime.progress import CrawlPageFailedEvent, EventType  # noqa: E402
 from tests._crawl_meta import write_crawl_metadata  # noqa: E402
 from tests._private_mode import posix_only  # noqa: E402
@@ -1431,6 +1432,14 @@ class TestRobotsTxt:
         assert len(reasons) == 1
         assert reasons[0].startswith("The site's robots.txt could not be read ("), reasons
         assert "crawl_respect_robots_txt" in reasons[0]
+
+    async def test_mcp_add_of_a_site_whose_robots_txt_cannot_be_read_names_the_setting(self, site):
+        site.robots_status = HTTPStatus.SERVICE_UNAVAILABLE
+        result = await mcp_add(paths=[site.url(ROBOTS_ALLOWED)], render_mode=HTTP)
+        assert site.paths_since(0, "/robots.txt")
+        assert site.paths_since(0, ROBOTS_ALLOWED) == []
+        assert "The site's robots.txt could not be read (" in result["error"], result
+        assert "crawl_respect_robots_txt" in result["error"], result
 
 
 @full_crawl_only
