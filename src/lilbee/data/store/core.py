@@ -276,7 +276,7 @@ _MOVABLE = (
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
 
-# The key column a batched flush deletes by in each table it appends to.
+# The key columns a batched flush deletes, looks up or merges by in each table it writes.
 _FLUSH_KEY_COLUMNS = (
     (CHUNKS_TABLE, _SOURCE_ID),
     (PAGE_TEXTS_TABLE, _SOURCE_ID),
