@@ -11,8 +11,8 @@ from __future__ import annotations
 # The ref is a build-time source coordinate, not a dependency: llama-server is
 # compiled from the llama.cpp commit below, cloned from ENGINE_LLAMA_CPP_REPO at
 # this ref. lilbee ships no llama.cpp package.
-ENGINE_LLAMA_CPP_REF = "memory-20260928-164319"
-LLAMA_CPP_COMMIT = "162102aafd493b01e5ef60327481f628237437b3"
+ENGINE_LLAMA_CPP_REF = "memory-20261017-193536"
+LLAMA_CPP_COMMIT = "a958b76c2bee84d84c725f46b96d5d82ce188df3"
 
 SUPPORTED_ARCHS: frozenset[str] = frozenset(
     {
@@ -25,11 +25,13 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "bailingmoe",
         "bailingmoe2",
         "bailingmoe3",
+        "beam",
         "bert",
         "bitnet",
         "bloom",
         "chameleon",
         "chatglm",
+        "clef",
         "clip",
         "codeshell",
         "cogvlm",
@@ -58,6 +60,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "falcon-h1",
         "gemma",
         "gemma-embedding",
+        "gemma-embedding2",
         "gemma2",
         "gemma3",
         "gemma3n",
@@ -66,6 +69,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "glm-dsa",
         "glm4",
         "glm4moe",
+        "glm5-next",
         "gpt-oss",
         "gpt2",
         "gptj",
@@ -89,8 +93,10 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "jamba",
         "jina-bert-v2",
         "jina-bert-v3",
+        "k2-horizon",
         "kimi-k3",
         "kimi-linear",
+        "kolibri1",
         "laguna",
         "lfm2",
         "lfm2moe",
@@ -100,6 +106,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "llama-embed",
         "llama4",
         "maincoder",
+        "maion-coder",
         "mamba",
         "mamba2",
         "maple",
@@ -115,6 +122,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "modern-bert",
         "mpt",
         "muse-glimmer",
+        "muse-spark",
         "nanbeige",
         "nemotron",
         "nemotron_h",
@@ -166,6 +174,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "t5",
         "t5encoder",
         "talkie",
+        "vllm-decision2",
         "wavtokenizer-dec",
         "xverse",
     }

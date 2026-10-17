@@ -99,11 +99,18 @@ runs:
           echo "needs-build=true" >> "$GITHUB_OUTPUT"
         fi
 
+    - name: Read the pinned Go toolchain
+      if: steps.engine.outputs.needs-build == 'true'
+      shell: bash
+      run: |
+        source engine-versions.env
+        echo "ENGINE_GO_VERSION=${ENGINE_GO_VERSION}" >> "${GITHUB_ENV}"
     - name: Set up Go (for llama-swap + gguf-parser)
       if: steps.engine.outputs.needs-build == 'true'
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
-        go-version: "1.26"
+        go-version: ${{ env.ENGINE_GO_VERSION }}
+        cache-dependency-path: engine-versions.env
     - name: Build the self-contained engine
       if: steps.engine.outputs.needs-build == 'true'
       shell: bash
