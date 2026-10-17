@@ -621,6 +621,14 @@ class TestListDocuments:
         assert result == {"error": "limit must be from 1 to 1000"}
         mock_svc.store.get_sources.assert_not_called()
 
+    async def test_the_registered_tool_offers_limit_and_offset(self):
+        from lilbee.mcp_server import build_mcp_server
+
+        tools = await build_mcp_server().list_tools()
+
+        (tool,) = [t for t in tools if t.name == "list_documents"]
+        assert set(tool.input_schema["properties"]) == {"limit", "offset"}
+
     def test_a_negative_offset_is_refused(self, mock_svc):
         result = list_documents(offset=-1)
 
