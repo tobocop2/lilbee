@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 
 _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("0.0.0.0/8"),  # "this host" range; 0.0.0.0 routes to localhost
@@ -58,6 +58,14 @@ def is_url(value: str) -> bool:
     return value.startswith(("http://", "https://"))
 
 
+def _checked_port(parsed: ParseResult) -> int | None:
+    """The port of *parsed*; ValueError naming the host part when the port is not a number."""
+    try:
+        return parsed.port
+    except ValueError as exc:
+        raise ValueError(f"URL has an invalid port: {parsed.netloc}") from exc
+
+
 def validate_crawl_url(url: str) -> None:
     """Validate a URL for crawling. Raises ValueError for unsafe URLs.
     Rejects private IPs, loopback, link-local, and non-HTTP schemes.
@@ -70,6 +78,7 @@ def validate_crawl_url(url: str) -> None:
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("URL has no hostname")
+    _checked_port(parsed)
 
     try:
         addr_infos = socket.getaddrinfo(hostname, None)
