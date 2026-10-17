@@ -1781,6 +1781,7 @@ release = [
 dev = [
     { name = "ada-url" },
     { name = "chardet" },
+    { name = "cryptography" },
     { name = "httpx" },
     { name = "hypothesis" },
     { name = "lilbee-engine" },
@@ -1845,6 +1846,7 @@ provides-extras = ["engine", "litellm", "graph", "crawler", "cuda12", "release"]
 dev = [
     { name = "ada-url", specifier = ">=4.0.0" },
     { name = "chardet", specifier = ">=7" },
+    { name = "cryptography", specifier = ">=44" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "lilbee-engine", directory = "packaging/engine-wheel" },
