@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
 import re
@@ -55,6 +56,10 @@ _EMPTY_SLUG = "_"
 _DEVICE_MARK = "_"
 _EXTENSION_MARK = "."
 _PORT_MARK = ":"
+# An IPv6 host is written in brackets, its groups apart by colons.
+_IPV6_OPEN = "["
+_IPV6_CLOSE = "]"
+_IPV6_GROUP_MARK = ":"
 _UNKNOWN_HOST = "unknown"
 # Names Windows gives to devices, with or without an extension, in any letter case.
 _DEVICE_NAMES = frozenset(
@@ -128,14 +133,23 @@ def _folder_slug(part: str) -> str:
     return f"{slug[:mark]}{_SLUG_FILL}{slug[mark + 1 :]}"
 
 
-def _address_parts(address: str) -> tuple[str, list[str]]:
-    """The host, in Unicode and with any port, and the path segments of *address*."""
+def _readable_host(hostname: str) -> str:
+    """*hostname* in Unicode, or an IPv6 address as its eight groups joined by ``-``."""
     import ada_url
 
+    if not hostname.startswith(_IPV6_OPEN):
+        return ada_url.idna_to_unicode(hostname)
+    address = ipaddress.IPv6Address(hostname.removeprefix(_IPV6_OPEN).removesuffix(_IPV6_CLOSE))
+    groups = address.exploded.split(_IPV6_GROUP_MARK)
+    return _SLUG_FILL.join(f"{int(group, _HEX):x}" for group in groups)
+
+
+def _address_parts(address: str) -> tuple[str, list[str]]:
+    """The host, readable and with any port, and the path segments of *address*."""
     parsed = _parsed(address)
     if parsed is None:
         return _UNKNOWN_HOST, [""]
-    host = ada_url.idna_to_unicode(parsed.hostname)
+    host = _readable_host(parsed.hostname)
     if parsed.port:
         host = f"{host}{_PORT_MARK}{parsed.port}"
     return host, parsed.pathname.removeprefix("/").split("/")
