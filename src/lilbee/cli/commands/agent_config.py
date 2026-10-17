@@ -36,6 +36,17 @@ _STDIO_HINT = (
 )
 
 
+def _apply_overrides(*, data_dir: Path | None, use_global: bool) -> None:
+    """Apply CLI overrides for a command that only writes config, with the fleet left cold.
+
+    The command lists installed models and reads the served window from the
+    running server. It runs no inference, so the services it builds must not
+    start the engine warm-up.
+    """
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    cfg.worker_pool_eager_start = False
+
+
 def _session_or_exit() -> tuple[str, int]:
     """The running server's ``(token, port)``; exits non-zero when none is up."""
     session = running_server_session()
@@ -117,7 +128,7 @@ def _claude_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Print a Claude Code mcpServers block registering lilbee's MCP tools."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_overrides(data_dir=data_dir, use_global=use_global)
     _emit(_build(AgentClient.CLAUDE))
 
 
@@ -127,7 +138,7 @@ def _opencode_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Print an opencode.json block (OpenAI-compatible provider + MCP server)."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_overrides(data_dir=data_dir, use_global=use_global)
     _emit(_build(AgentClient.OPENCODE))
 
 
@@ -137,7 +148,7 @@ def _hermes_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Print a hermes config.yaml block (OpenAI-compatible provider + MCP server)."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_overrides(data_dir=data_dir, use_global=use_global)
     _emit(_build(AgentClient.HERMES))
 
 
@@ -147,7 +158,7 @@ def _litellm_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Print a LiteLLM `config.yaml` snippet routing model names to lilbee."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_overrides(data_dir=data_dir, use_global=use_global)
     token, port = _session_or_exit()
     snippet = litellm_config(
         base_url=f"http://{LOOPBACK}:{port}",
