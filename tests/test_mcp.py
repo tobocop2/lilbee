@@ -485,6 +485,16 @@ class TestRemove:
         assert result["not_found"] == []
         assert held_kinds() == {"scan.pdf": HeldOut.REMOVED}
 
+    async def test_a_library_that_cannot_lock_files_refuses_the_remove(self, mock_svc):
+        from lilbee.runtime.lock import LockingUnsupportedError
+
+        refused = "/data is on a filesystem that does not support file locking."
+        mock_svc.store.remove_documents.side_effect = LockingUnsupportedError(refused)
+
+        result = await remove(["a.md"])
+
+        assert result == {"error": refused}
+
     async def test_removes_known_file(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
