@@ -716,7 +716,7 @@ CHAT_REASONING_FINISHED = "reasoning · {tokens} tokens"
 STATUS_DOCS_LOAD_FAILED = "(unable to read store)"
 STATUS_DOCS_EMPTY = "(no documents yet)"
 STATUS_DOCS_TITLE = "Documents"
-STATUS_DOCS_MORE = "({count} older not shown; run 'lilbee status --list-sources')"
+STATUS_DOCS_MORE = "{count} loaded · keep scrolling for more"
 TASKBAR_STARTING_WORKER = "Starting {labels} worker..."
 TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
 # Cold-start chat warm line: a spinner, the model being loaded, and the phase

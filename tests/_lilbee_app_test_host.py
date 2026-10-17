@@ -85,6 +85,8 @@ def ready_services():
     services.provider.role_ready.return_value = True
     services.store = create_autospec(Store, instance=True)
     services.store.source_summary.return_value = SourceSummary(0, 0, {}, [])
+    services.store.get_sources.return_value = []
+    services.store.count_sources.return_value = 0
     set_services(services)
     try:
         with (

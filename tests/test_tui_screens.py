@@ -2121,7 +2121,7 @@ class StatusTestApp(LilbeeAppHost):
 
 async def test_status_screen_renders_info(mock_svc):
     mock_svc.store.get_sources.return_value = [
-        {"source": "test.pdf", "chunk_count": 10, "content_type": "application/pdf"},
+        {"filename": "test.pdf", "chunk_count": 10},
     ]
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2199,18 +2199,17 @@ async def test_status_screen_config_pills_render(mock_svc):
         assert "loaded" in rendered or "not set" in rendered
 
 
-def _summary(*names: str, total: int | None = None):
-    from lilbee.data.store import SourceSummary
-
-    heads = [
+def _serve_sources(mock_svc, *names: str, total: int | None = None) -> None:
+    """Make the store's paged listing return *names* and report *total* sources."""
+    mock_svc.store.get_sources.return_value = [
         {"filename": n, "file_hash": "h", "chunk_count": 5, "ingested_at": "2026-01-01"}
         for n in names
     ]
-    return SourceSummary(len(heads) if total is None else total, 5 * len(heads), {}, heads)
+    mock_svc.store.count_sources.return_value = len(names) if total is None else total
 
 
 async def test_status_screen_shows_documents(mock_svc):
-    mock_svc.store.source_summary.return_value = _summary("notes.md")
+    _serve_sources(mock_svc, "notes.md")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import DataTable
@@ -2220,7 +2219,7 @@ async def test_status_screen_shows_documents(mock_svc):
 
 
 async def test_status_screen_store_error(mock_svc):
-    mock_svc.store.source_summary.side_effect = Exception("no table")
+    mock_svc.store.count_sources.side_effect = Exception("no table")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         table = app.screen.query_one("#docs-table", DataTable)
@@ -2236,24 +2235,26 @@ async def _wait_for_row_count(pilot, table, expected: int, *, tries: int = 200) 
     assert table.row_count == expected
 
 
-async def test_status_screen_shows_the_newest_sources_and_the_count_not_shown(mock_svc):
-    """A library of millions shows a few rows and says how many are left out."""
+async def test_status_screen_first_load_is_one_page_of_a_huge_library(mock_svc):
+    """A library of millions loads one page, says how many are loaded, and counts them all."""
     from textual.widgets import DataTable
 
-    from lilbee.app.status import STATUS_RECENT_LIMIT
+    from lilbee.cli.tui import messages as msg
+    from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT
 
-    names = [f"doc_{i}.md" for i in range(STATUS_RECENT_LIMIT)]
-    mock_svc.store.source_summary.return_value = _summary(*names, total=8_800_000)
+    names = [f"doc_{i}.md" for i in range(DOCUMENTS_PAGE_DEFAULT)]
+    _serve_sources(mock_svc, *names, total=8_800_000)
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         table = app.screen.query_one("#docs-table", DataTable)
-        await _wait_for_row_count(pilot, table, STATUS_RECENT_LIMIT + 1)
-        last = " ".join(str(cell) for cell in table.get_row_at(STATUS_RECENT_LIMIT))
+        await _wait_for_row_count(pilot, table, DOCUMENTS_PAGE_DEFAULT)
+        hint = str(app.screen.query_one("#docs-more", Static).render())
         storage = str(app.screen.query_one("#storage-info", Static).render())
-    assert "8799990 older not shown" in last
-    assert "lilbee status --list-sources" in last
+    assert hint == msg.STATUS_DOCS_MORE.format(count=DOCUMENTS_PAGE_DEFAULT)
+    assert "lilbee status" not in hint
     assert "8800000" in storage.replace(",", "")
-    mock_svc.store.get_sources.assert_not_called()
+    mock_svc.store.get_sources.assert_called_once_with(limit=DOCUMENTS_PAGE_DEFAULT, offset=0)
+    mock_svc.store.source_summary.assert_not_called()
 
 
 async def test_status_screen_lists_held_out_files(mock_svc, monkeypatch):
@@ -2283,7 +2284,7 @@ async def test_status_screen_renders_bracketed_held_out_and_doc_names_as_written
     from lilbee.cli.tui.screens import status as status_screen
     from lilbee.data.types import SkippedSource
 
-    mock_svc.store.source_summary.return_value = _summary("doc[/x].md")
+    _serve_sources(mock_svc, "doc[/x].md")
     held = [SkippedSource(filename="scan[red].pdf", reason="bad [/x] header")]
     monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held, 1))
     app = StatusTestApp()
@@ -2313,7 +2314,7 @@ async def test_status_screen_keeps_the_held_out_section_closed_when_empty(mock_s
 
 
 async def test_status_screen_storage_section(mock_svc):
-    mock_svc.store.source_summary.return_value = _summary("a.md")
+    _serve_sources(mock_svc, "a.md")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         info = app.screen.query_one("#storage-info", Static)
@@ -2353,7 +2354,7 @@ async def test_status_screen_arch_with_vision(mock_svc):
 
 
 async def test_status_screen_vim_keys(mock_svc):
-    mock_svc.store.source_summary.return_value = _summary("a.md", "b.md")
+    _serve_sources(mock_svc, "a.md", "b.md")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import DataTable
@@ -8141,9 +8142,9 @@ async def test_settings_key_g_G():
 async def test_status_key_g_G(mock_svc):
     """g/G scroll the status page to top/bottom."""
     mock_svc.store.get_sources.return_value = [
-        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
-        {"source": "b.md", "chunk_count": 2, "content_type": "text/markdown"},
-        {"source": "c.md", "chunk_count": 3, "content_type": "text/markdown"},
+        {"filename": "a.md", "chunk_count": 1},
+        {"filename": "b.md", "chunk_count": 2},
+        {"filename": "c.md", "chunk_count": 3},
     ]
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
