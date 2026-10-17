@@ -349,6 +349,21 @@ def mock_services():
     return services
 
 
+class TestCrawlEventStream:
+    """The SSE crawl stream carries the browser warm-up bracket before the first page."""
+
+    async def test_browser_warm_up_reaches_the_stream(self, mock_services):
+        from lilbee.server.handlers.crawl import crawl_stream
+
+        with cb.StubCrawlberg([cb.page(SEED, "# Home", depth=0)]).installed():
+            stream = crawl_stream(SEED, depth=1, render_mode=CrawlRenderMode.BROWSER)
+            frames = [frame async for frame in stream]
+        events = [frame.partition("\n")[0] for frame in frames]
+        assert events[:3] == ["event: crawl_start", "event: setup_start", "event: setup_done"]
+        assert "event: crawl_page" in events[3:]
+        assert '"component": "browser"' in frames[1]
+
+
 class TestContentHash:
     def test_consistent(self):
         assert content_hash("hello") == content_hash("hello")
@@ -563,6 +578,25 @@ class TestCrawlSingle:
             result = await crawl_single(SEED)
         assert not result.success
         assert result.error == "Connection refused"
+
+    async def test_browser_warm_up_is_bracketed_by_setup_events(self):
+        events: list[tuple[EventType, object]] = []
+        with cb.StubCrawlberg([cb.page(SEED, "# Test", depth=0)]).installed():
+            result = await crawl_single(SEED, on_progress=lambda e, d: events.append((e, d)))
+        assert result.markdown == "# Test"
+        assert [e for e, _ in events] == [EventType.SETUP_START, EventType.SETUP_DONE]
+        assert {d.component for _, d in events} == {"browser"}  # type: ignore[attr-defined]
+
+    async def test_an_http_fetch_emits_no_setup_events(self):
+        events: list[tuple[EventType, object]] = []
+        with cb.StubCrawlberg([cb.page(SEED, "# Test", depth=0)]).installed():
+            result = await crawl_single(
+                SEED,
+                render_mode=CrawlRenderMode.HTTP,
+                on_progress=lambda e, d: events.append((e, d)),
+            )
+        assert result.markdown == "# Test"
+        assert events == []
 
     async def test_exception(self):
         with cb.StubCrawlberg(_failing_stream("timeout")).installed():
@@ -1258,11 +1292,33 @@ class TestCrawlRecursive:
         page_events = [c for c in progress_calls if c[0] == EventType.CRAWL_PAGE]
         assert [c[1].current for c in page_events] == [1, 2]
         assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in page_events)
-        # Setup events mean a Chromium install; with the shell present there is none.
-        setup_types = [
-            e for e, _ in progress_calls if e in (EventType.SETUP_START, EventType.SETUP_DONE)
-        ]
-        assert setup_types == []
+        # The browser warm-up is bracketed by setup events before the first page.
+        types = [e for e, _ in progress_calls]
+        first_page = types.index(EventType.CRAWL_PAGE)
+        assert types[:first_page] == [EventType.SETUP_START, EventType.SETUP_DONE]
+        assert {d.component for _, d in progress_calls[:first_page]} == {"browser"}
+
+    async def test_an_http_crawl_emits_no_setup_events(self):
+        progress_calls = []
+        with cb.StubCrawlberg([cb.page(SEED, "# Home", depth=0)]).installed():
+            results = await crawl_recursive(
+                SEED,
+                max_depth=1,
+                max_pages=10,
+                on_progress=lambda e, d: progress_calls.append((e, d)),
+                render_mode=CrawlRenderMode.HTTP,
+            )
+        assert [r.markdown for r in results] == ["# Home"]
+        assert [e for e, _ in progress_calls] == [EventType.CRAWL_PAGE]
+
+    async def test_a_browser_crawl_with_no_page_closes_its_warm_up(self):
+        progress_calls = []
+        with cb.StubCrawlberg([cb.complete(0)]).installed():
+            results = await crawl_recursive(
+                SEED, max_depth=1, on_progress=lambda e, d: progress_calls.append((e, d))
+            )
+        assert results == []
+        assert [e for e, _ in progress_calls] == [EventType.SETUP_START, EventType.SETUP_DONE]
 
     async def test_emits_events_before_stream_exhausted(self):
         """CRAWL_PAGE fires per page as it arrives, not only after the full list."""
@@ -1920,7 +1976,9 @@ class TestCrawlAndSave:
         """A single-URL crawl cancelled while its page is fetched keeps that page."""
         cancel = threading.Event()
 
-        async def fetch_then_cancel(url: str, *, render_mode: CrawlRenderMode) -> CrawlResult:
+        async def fetch_then_cancel(
+            url: str, *, render_mode: CrawlRenderMode, on_progress: object
+        ) -> CrawlResult:
             cancel.set()
             return CrawlResult(url=url, markdown="# Hello")
 
@@ -2117,7 +2175,8 @@ class TestRefusedEngine:
                 on_progress=lambda kind, data: events.append(kind),
             )
         assert str(refused.value) == message
-        assert events == [EventType.CRAWL_START]
+        warm_up = [EventType.SETUP_START] if render_mode is BROWSER else []
+        assert events == [EventType.CRAWL_START, *warm_up]
         assert stub.seeds == []
         assert _saved_pages(isolated_env) == []
 
@@ -2307,7 +2366,8 @@ class TestRefusedEngineOnEachEntryPoint:
                 async for frame in handlers.crawl_stream(SEED, depth=depth, render_mode=render_mode)
             ]
         names = [frame.split("\n", 1)[0] for frame in frames]
-        assert names == ["event: crawl_start", "event: error"]
+        warm_up = ["event: setup_start"] if render_mode is BROWSER else []
+        assert names == ["event: crawl_start", *warm_up, "event: error"]
         payload = frames[-1].split("data: ", 1)[1]
         assert json.loads(payload)["message"] == message
 
@@ -3145,6 +3205,7 @@ class TestStreamingFlush:
             # Must not raise even though the first page write fails.
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert paths == []
+        assert call_count["n"] == 2, "the crawl went on to the second page"
 
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_depth_zero_flush_failure_does_not_fail_the_crawl(
