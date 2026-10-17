@@ -1,6 +1,6 @@
 --- a/nuitka/build/static_src/OnefileBootstrap.c	2026-07-11 00:33:34
 +++ b/nuitka/build/static_src/OnefileBootstrap.c	2026-07-11 00:33:34
-@@ -447,7 +447,298 @@
+@@ -447,7 +447,312 @@
  #if _NUITKA_ONEFILE_TEMP_BOOL
  static bool payload_created = false;
  #endif
@@ -45,6 +45,7 @@
 +};
 +
 +static bool lilbee_progress_on = false;
++static bool lilbee_cursor_handed_off = false;
 +static int lilbee_last_percent = -1;
 +static int lilbee_pad = 0;
  
@@ -224,11 +225,23 @@
 +// lets the splash repaint over this frame in place instead of below it.
 +#define LILBEE_FRAME_ROWS_ABOVE_BAR 13
 +
++// Runs on any exit that is not the hand-off to the interactive child, such as a
++// fatal extraction error, so the shell never inherits a hidden cursor.
++static void lilbee_cursor_restore(void) {
++    if (lilbee_progress_on && !lilbee_cursor_handed_off) {
++        fputs("\033[?25h", stderr);
++        fflush(stderr);
++    }
++}
++
 +static void lilbee_progress_begin(void) {
 +    lilbee_progress_on = isatty(STDERR_FILENO) != 0;
 +    if (!lilbee_progress_on) {
 +        return;
 +    }
++    // Hide the cursor for the whole extraction; it would otherwise sit on the wordmark.
++    fputs("\033[?25l", stderr);
++    atexit(lilbee_cursor_restore);
 +    struct winsize lilbee_ws;
 +    if (ioctl(STDERR_FILENO, TIOCGWINSZ, &lilbee_ws) == 0 && lilbee_ws.ws_col > LILBEE_LOGO_WIDTH) {
 +        lilbee_pad = (lilbee_ws.ws_col - LILBEE_LOGO_WIDTH) / 2;
@@ -288,9 +301,10 @@
 +        fputs(keep_logo ? "\033[A" : "\033[A\033[2K", stderr);
 +    }
 +    fputc('\r', stderr);
-+    // Hide the parked cursor so it does not sit blinking on the wordmark between
-+    // this frame and the Python splash, which keeps it hidden until Textual takes
-+    // over. A launch with arguments returns to the shell, so show it there.
++    // An interactive launch hands the hidden cursor to the Python splash, which keeps
++    // it hidden until Textual takes over. A launch with arguments returns to the
++    // shell, so show it there.
++    lilbee_cursor_handed_off = keep_logo;
 +    fputs(keep_logo ? "\033[?25l" : "\033[?25h", stderr);
 +    fflush(stderr);
 +}
@@ -299,7 +313,7 @@
  #define MAX_CREATED_DIRS 1024
  static filename_char_t *created_dir_paths[MAX_CREATED_DIRS];
  int created_dir_count = 0;
-@@ -1151,6 +1442,13 @@
+@@ -1151,6 +1456,13 @@
      wprintf(L"payload path: '" FILENAME_FORMAT_STR "'\n", payload_path);
  #endif
  
@@ -313,7 +327,7 @@
      if (process_role == NULL) {
  #if defined(_WIN32)
          bool_res = SetConsoleCtrlHandler(ourConsoleCtrlHandler, true);
-@@ -1169,6 +1467,7 @@
+@@ -1169,6 +1481,7 @@
  #endif
  
  #if _NUITKA_ONEFILE_HAS_PAYLOAD_BOOL == 1
@@ -321,7 +335,7 @@
      NUITKA_PRINT_TIMING("ONEFILE: Checking header for compression.");
  
      char header[3];
-@@ -1202,6 +1501,12 @@
+@@ -1202,6 +1515,12 @@
  
      NUITKA_PRINT_TIMING("ONEFILE: Entering decompression.");
  
@@ -334,7 +348,7 @@
  #if _NUITKA_ONEFILE_TEMP_BOOL
      payload_created = true;
  #endif
-@@ -1252,6 +1557,8 @@
+@@ -1252,6 +1571,8 @@
                  fatalErrorTempFileCreate(target_path);
              }
  
@@ -343,7 +357,7 @@
              continue;
          }
  #endif
-@@ -1336,10 +1643,26 @@
+@@ -1336,10 +1657,26 @@
                  fatalErrorTempFiles();
              }
          }
