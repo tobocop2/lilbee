@@ -707,8 +707,6 @@ class TestStatusScreenAsync:
         tmp_path: Path,
     ) -> None:
         """The Documents table shows one stored page, then the rest once scrolled to the end."""
-        import pyarrow as pa
-
         from lilbee.app.services import set_services
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.app import LilbeeApp
@@ -719,26 +717,8 @@ class TestStatusScreenAsync:
         mock_catalog.return_value = _EMPTY_CATALOG
         total = DOCUMENTS_PAGE_DEFAULT + 2
         store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "status_lancedb"}))
-        table = store._sources_table()
-        ids = range(total)
-        table.add(
-            pa.table(
-                {
-                    "filename": [f"doc-{i:03d}.txt" for i in ids],
-                    "file_hash": [f"{i:064x}" for i in ids],
-                    "ingested_at": [f"2026-01-01T00:00:{i:02d}+00:00" for i in ids],
-                    "chunk_count": pa.array([i + 1 for i in ids], pa.int32()),
-                    "source_type": ["text" if i % 2 else "pdf" for i in ids],
-                    "size_bytes": pa.array(list(ids), pa.int64()),
-                    "mtime_ns": pa.array(list(ids), pa.int64()),
-                    "stat_captured_ns": pa.array(list(ids), pa.int64()),
-                    "title": pa.array([None for _ in ids], pa.utf8()),
-                    "authors": pa.array([None for _ in ids], pa.utf8()),
-                    "created_at": pa.array([None for _ in ids], pa.utf8()),
-                },
-                schema=table.schema,
-            )
-        )
+        for i in range(total):
+            store.upsert_source(f"doc-{i:03d}.txt", f"{i:064x}", chunk_count=i + 1)
         mock_svc = mock.MagicMock()
         mock_svc.store = store
         set_services(mock_svc)
