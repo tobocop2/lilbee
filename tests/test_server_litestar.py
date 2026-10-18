@@ -1867,6 +1867,21 @@ class TestCrawlRoute:
         resp = client.post("/api/crawl", json={"url": "https://example.com", "max_pages": -1})
         assert resp.status_code == 400
 
+    @pytest.mark.parametrize(
+        "body",
+        [{"depth": 101}, {"depth": 2**64}, {"max_pages": 10_000_001}, {"max_pages": 2**64}],
+    )
+    def test_post_crawl_rejects_a_depth_or_page_count_the_engine_cannot_hold(self, client, body):
+        resp = client.post("/api/crawl", json={"url": "https://example.com", **body})
+        assert resp.status_code == 400
+        assert next(iter(body)) in resp.text
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_accepts_the_largest_depth_and_page_count(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        body = {"url": "https://example.com", "depth": 100, "max_pages": 10_000_000}
+        assert client.post("/api/crawl", json=body).status_code == 201
+
 
 class TestSetupCrawlerRoutes:
     """bb-wq8g: GET /setup/crawler/status + POST /setup/crawler."""

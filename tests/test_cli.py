@@ -3772,6 +3772,46 @@ class TestAddWithUrls:
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["max_pages"] == 10
 
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [
+            ("--depth", "101"),
+            ("--depth", str(2**64)),
+            ("--max-pages", "10000001"),
+            ("--max-pages", str(2**64)),
+        ],
+    )
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    def test_add_url_refuses_a_depth_or_page_count_the_engine_cannot_hold(
+        self, mock_crawl, mock_avail, flag, value
+    ):
+        result = runner.invoke(app, ["add", "--crawl", flag, value, "https://example.com"])
+        assert result.exit_code != 0
+        assert flag.removeprefix("--") in result.output
+        mock_crawl.assert_not_called()
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_accepts_the_largest_depth_and_page_count(
+        self, mock_sync, mock_crawl, mock_avail
+    ):
+        args = [
+            "add",
+            "--crawl",
+            "--depth",
+            "100",
+            "--max-pages",
+            "10000000",
+            "https://example.com",
+        ]
+        assert runner.invoke(app, args).exit_code == 0
+
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch(
         "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()

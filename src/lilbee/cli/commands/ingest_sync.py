@@ -46,6 +46,7 @@ from lilbee.cli.helpers import (
     sync_result_to_json,
 )
 from lilbee.core.config import cfg
+from lilbee.core.config.defaults import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
 from lilbee.core.config.enums import OcrMode
 from lilbee.crawler import is_url
 from lilbee.crawler.url_filter import without_userinfo
@@ -123,12 +124,20 @@ _crawl_option = typer.Option(
 _depth_option = typer.Option(
     None,
     "--depth",
-    help="Cap link-follow depth for --crawl. Unset = unbounded; 0 = single URL only.",
+    max=MAX_CRAWL_DEPTH,
+    help=(
+        "Cap link-follow depth for --crawl. Unset = unbounded; 0 = single URL only; "
+        f"at most {MAX_CRAWL_DEPTH}."
+    ),
 )
 _max_pages_option = typer.Option(
     None,
     "--max-pages",
-    help="Cap pages for --crawl. Unset = protective default; 0 = unlimited; N = hard cap.",
+    max=MAX_CRAWL_PAGES,
+    help=(
+        "Cap pages for --crawl. Unset = protective default; 0 = unlimited; "
+        f"N = hard cap, at most {MAX_CRAWL_PAGES}."
+    ),
 )
 _include_subdomains_option = typer.Option(
     False,
