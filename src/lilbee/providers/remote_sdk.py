@@ -1,9 +1,6 @@
 """liter-llm implementation of the ``LlmSdkBackend`` Protocol.
 
-This is the ONLY file in lilbee that imports ``liter_llm``. All knowledge of
-its wire conventions (the ``provider/`` model prefix, OpenAI content parts for
-images, async-only calls) lives here. The semantic layer in
-``sdk_llm_provider`` never touches SDK-specific conventions.
+The only module that imports ``liter_llm``; the SDK's wire conventions live here.
 """
 
 from __future__ import annotations

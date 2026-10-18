@@ -124,6 +124,7 @@ class FakeSdk:
 
     chat_result: Any = None
     chat_error: BaseException | None = None
+    require_key: bool = False
     stream_chunks: list[Any] = field(default_factory=list)
     stream_error: BaseException | None = None
     stream_open_error: BaseException | None = None
@@ -159,7 +160,14 @@ class FakeSdk:
         self.clients.append(options.fields)
         return _ns(options=options.fields)
 
+    def _check_key(self, client: Any) -> None:
+        """Refuse a hosted call with an empty key, like the real client with no env key."""
+        options = client.options
+        if self.require_key and not options["api_key"] and options["base_url"] is None:
+            raise self.error("AuthenticationError", "no API key provided")
+
     async def _chat(self, client: Any, req: Any) -> Any:
+        self._check_key(client)
         self.calls.append(("chat", req.fields))
         if self.chat_error is not None:
             raise self.chat_error

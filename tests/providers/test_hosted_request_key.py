@@ -54,7 +54,7 @@ def _isolated(tmp_path, monkeypatch) -> Iterator[None]:
 
 @pytest.fixture
 def wire() -> Iterator[_Wire]:
-    with fakes.installed(fakes.FakeSdk()) as fake:
+    with fakes.installed(fakes.FakeSdk(require_key=True)) as fake:
         yield _Wire(fake)
 
 
