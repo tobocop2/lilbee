@@ -124,6 +124,7 @@ _crawl_option = typer.Option(
 _depth_option = typer.Option(
     None,
     "--depth",
+    min=0,
     max=MAX_CRAWL_DEPTH,
     help=(
         "Cap link-follow depth for --crawl. Unset = unbounded; 0 = single URL only; "
@@ -133,6 +134,7 @@ _depth_option = typer.Option(
 _max_pages_option = typer.Option(
     None,
     "--max-pages",
+    min=0,
     max=MAX_CRAWL_PAGES,
     help=(
         "Cap pages for --crawl. Unset = protective default; 0 = unlimited; "
