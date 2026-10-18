@@ -5761,7 +5761,15 @@ async def test_crawl_dialog_submit_valid():
 
 @pytest.mark.parametrize(
     ("depth", "pages", "name"),
-    [("101", "10", "depth"), ("2", "10000001", "max_pages"), ("2", str(2**64), "max_pages")],
+    [
+        ("-1", "10", "Depth cap"),
+        ("-5", "10", "Depth cap"),
+        ("2", "-1", "Max pages"),
+        ("2", "-5", "Max pages"),
+        ("101", "10", "depth"),
+        ("2", "10000001", "max_pages"),
+        ("2", str(2**64), "max_pages"),
+    ],
 )
 async def test_crawl_dialog_refuses_a_depth_or_page_count_the_engine_cannot_hold(
     depth, pages, name
@@ -5777,6 +5785,22 @@ async def test_crawl_dialog_refuses_a_depth_or_page_count_the_engine_cannot_hold
             result = app.screen._validate()
         assert isinstance(result, str)
         assert name in result
+
+
+async def test_crawl_dialog_accepts_the_lowest_depth_and_page_count():
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#crawl-url-input").value = "https://example.com"
+        app.screen.query_one("#crawl-depth-input").value = "0"
+        app.screen.query_one("#crawl-max-pages-input").value = "1"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            params = app.screen._validate()
+    assert isinstance(params, CrawlParams)
+    assert (params.depth, params.max_pages) == (0, 1)
 
 
 async def test_crawl_dialog_accepts_the_largest_depth_and_page_count():
