@@ -17,6 +17,8 @@ from pathlib import Path
 
 from packaging.requirements import Requirement
 
+from lilbee.providers.remote_sdk import SDK_DIST
+
 _PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 _QA_REQUIREMENTS = Path(__file__).parents[1] / "tools" / "qa" / "requirements.txt"
 
@@ -40,13 +42,13 @@ def _qa_requirement(name: str) -> Requirement:
 
 
 def test_providers_extra_stops_before_the_next_major() -> None:
-    req = _extra_requirement("providers", "liter-llm")
+    req = _extra_requirement("providers", SDK_DIST)
     assert not req.specifier.contains("3.0.0rc1", prereleases=True)
     assert not req.specifier.contains("3.0.0")
 
 
 def test_providers_extra_admits_locked_stable() -> None:
-    req = _extra_requirement("providers", "liter-llm")
+    req = _extra_requirement("providers", SDK_DIST)
     assert req.specifier.contains("2.2.4")
     assert not req.specifier.contains("2.2.3")
 
