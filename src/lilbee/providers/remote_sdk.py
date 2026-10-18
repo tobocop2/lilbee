@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
-from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.base import ProviderError, ProviderErrorKind, TokenUsage
 from lilbee.providers.local_servers import (
     OLLAMA,
     detect_local_server,
@@ -246,14 +246,10 @@ _REQUEST_FIELDS = frozenset(
         "tool_choice",
     }
 )
-# Options sent in the request body outside the typed fields. liter-llm's
-# ``reasoning_effort`` field only takes low/medium/high; lilbee sends ``none``
-# to turn thinking off.
-_BODY_FIELDS = frozenset({"reasoning_effort"})
-# GAP: the OpenAI-compatible route cannot carry these Ollama native options
-# (``options.num_ctx`` and friends), so they are dropped here and the server
-# keeps its own values.
-_UNSUPPORTED_OPTIONS = frozenset({"top_k", "num_ctx", "repeat_penalty"})
+# GAP: xberg-io/liter-llm#308 - the OpenAI-compatible route cannot carry these Ollama
+# native options (``options.num_ctx`` and friends), so Ollama refs drop them and the
+# server keeps its own values.
+_OLLAMA_DROPPED_OPTIONS = frozenset({"top_k", "num_ctx", "repeat_penalty"})
 
 
 def _chat_fields(request: CompletionRequest, *, stream: bool) -> dict[str, Any]:
@@ -265,6 +261,7 @@ def _chat_fields(request: CompletionRequest, *, stream: bool) -> dict[str, Any]:
         "stream": stream,
     }
     extra_body: dict[str, Any] = {}
+    is_ollama = local_server_for_key(fields["model"].partition("/")[0]) is OLLAMA
     for key, value in request.options.items():
         if key == "num_predict":
             fields["max_tokens"] = value
@@ -272,10 +269,11 @@ def _chat_fields(request: CompletionRequest, *, stream: bool) -> dict[str, Any]:
             fields["tools"] = [liter_llm.ChatCompletionTool.from_json(json.dumps(t)) for t in value]
         elif key in _REQUEST_FIELDS:
             fields[key] = value
-        elif key in _BODY_FIELDS:
-            extra_body[key] = value
-        elif key in _UNSUPPORTED_OPTIONS:
-            log.debug("liter-llm cannot send option %r to %s; dropped", key, fields["model"])
+        elif key == "reasoning_effort":
+            # GAP: xberg-io/liter-llm#301
+            fields[key] = liter_llm.ReasoningEffort(value)
+        elif is_ollama and key in _OLLAMA_DROPPED_OPTIONS:
+            log.debug("Option %r is not sent to %s; dropped", key, fields["model"])
         else:
             extra_body[key] = value
     if extra_body:
@@ -312,14 +310,38 @@ def _tool_call_delta(call: Any) -> SdkToolCallDelta:
 
 
 def _text(content: Any) -> str:
-    """Return message text as a plain ``str``; liter-llm hands it back as a typed object."""
-    return "" if content is None else str(content)
+    """Return a reply's text: ``text`` for a text reply, the text parts joined for a parts reply."""
+    if content is None:
+        return ""
+    # GAP: xberg-io/liter-llm#299
+    if content.text is not None:
+        return content.text
+    if content.parts is not None:
+        return "".join(part.text for part in content.parts if part.type == "text")
+    return ""
 
 
-def _finish_reason(choice: Any) -> str | None:
-    """Return a choice's ``finish_reason`` as its wire string, or ``None``."""
-    reason = choice.finish_reason
-    return str(reason) if reason is not None else None
+def _finish_reason(reason: Any) -> str | None:
+    """Return a ``FinishReason`` member as its wire string, or ``None``."""
+    if reason is None:
+        return None
+    finish = _require_sdk().FinishReason
+    wire = {
+        finish.STOP: "stop",
+        finish.LENGTH: "length",
+        finish.TOOL_CALLS: "tool_calls",
+        finish.CONTENT_FILTER: "content_filter",
+        finish.FUNCTION_CALL: "function_call",
+        finish.OTHER: "other",
+    }
+    return wire[reason]
+
+
+def _usage(usage: Any) -> TokenUsage:
+    """Return a ``Usage`` as lilbee's token counts; zero when the reply carries none."""
+    if usage is None:
+        return TokenUsage()
+    return TokenUsage(prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens)
 
 
 class RemoteSdkBackend:
@@ -366,7 +388,8 @@ class RemoteSdkBackend:
         message = choice.message if choice is not None else None
         return CompletionResult(
             content=_text(message.content if message is not None else None),
-            finish_reason=_finish_reason(choice) if choice is not None else None,
+            finish_reason=_finish_reason(choice.finish_reason) if choice is not None else None,
+            usage=_usage(response.usage),
             model=response.model or None,
             tool_calls=tuple(_tool_call(c) for c in (message.tool_calls or []))
             if message is not None
@@ -402,20 +425,22 @@ class RemoteSdkBackend:
         try:
             while chunk is not None:
                 choice = chunk.choices[0] if chunk.choices else None
+                content = ""
+                finish_reason = None
+                tool_call_deltas: tuple[SdkToolCallDelta, ...] = ()
                 if choice is not None:
                     delta = choice.delta
-                    content = _text(delta.content if delta is not None else None)
-                    finish_reason = _finish_reason(choice)
-                    tool_call_deltas = tuple(
-                        _tool_call_delta(c)
-                        for c in ((delta.tool_calls if delta is not None else None) or [])
+                    content = delta.content or ""
+                    finish_reason = _finish_reason(choice.finish_reason)
+                    tool_call_deltas = tuple(_tool_call_delta(c) for c in delta.tool_calls or [])
+                usage = _usage(chunk.usage) if chunk.usage is not None else None
+                if content or finish_reason or tool_call_deltas or usage is not None:
+                    yield StreamChunk(
+                        content=content,
+                        finish_reason=finish_reason,
+                        tool_call_deltas=tool_call_deltas,
+                        usage=usage,
                     )
-                    if content or finish_reason or tool_call_deltas:
-                        yield StreamChunk(
-                            content=content,
-                            finish_reason=finish_reason,
-                            tool_call_deltas=tool_call_deltas,
-                        )
                 chunk = asyncio_loop.run(_next_chunk(stream))
         except Exception as exc:
             raise _provider_error(_CHAT_FAILED, exc, model) from exc

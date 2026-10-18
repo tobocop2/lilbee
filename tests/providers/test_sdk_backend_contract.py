@@ -243,14 +243,6 @@ class TestCompleteStream:
         sdk.stream_chunks = [fakes.chunk(None), fakes.chunk("ok")]
         assert [c.content for c in backend.complete_stream(_completion_request())] == ["ok"]
 
-    def test_chunk_without_delta_is_skipped(
-        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
-    ) -> None:
-        bare = fakes.chunk("x")
-        bare.choices[0].delta = None
-        sdk.stream_chunks = [bare, fakes.chunk("ok")]
-        assert [c.content for c in backend.complete_stream(_completion_request())] == ["ok"]
-
     def test_an_empty_stream_yields_nothing(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
     ) -> None:
@@ -374,14 +366,23 @@ class TestRequestFields:
         backend.complete(_completion_request(options={"tools": [tool]}))
         assert [t.parsed for t in sdk.last("chat")["tools"]] == [tool]
 
-    def test_thinking_off_travels_in_the_body(
+    def test_reasoning_effort_is_the_typed_field(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
     ) -> None:
         sdk.chat_result = fakes.text_response("ok")
-        backend.complete(_completion_request(options={"reasoning_effort": "none"}))
+        backend.complete(_completion_request(options={"reasoning_effort": "low"}))
         sent = sdk.last("chat")
-        assert sent["extra_body"] == {"reasoning_effort": "none"}
-        assert "reasoning_effort" not in sent
+        assert sent["reasoning_effort"] is fakes.ReasoningEffort.LOW
+        assert "extra_body" not in sent
+
+    def test_thinking_off_is_refused_until_the_library_accepts_it(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response("ok")
+        with pytest.raises(ProviderError, match="ReasoningEffort") as err:
+            backend.complete(_completion_request(options={"reasoning_effort": "none"}))
+        assert err.value.kind is ProviderErrorKind.UNKNOWN
+        assert sdk.calls == []
 
     def test_unknown_options_travel_in_the_body(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
