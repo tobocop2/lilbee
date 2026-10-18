@@ -1941,6 +1941,20 @@ class TestCrawlBrowserExtraWait:
         with pytest.raises(ValidationError, match="crawl_browser_extra_wait_ms"):
             Config(crawl_browser_extra_wait_ms=-1)
 
+    def test_a_wait_that_overflows_the_engine_is_refused_with_the_setting_named(self):
+        with pytest.raises(ValidationError, match="crawl_browser_extra_wait_ms"):
+            Config(crawl_browser_extra_wait_ms=2**64)
+
+    def test_ten_minutes_is_the_longest_wait_accepted(self):
+        assert Config(crawl_browser_extra_wait_ms=600_000).crawl_browser_extra_wait_ms == 600_000
+        with pytest.raises(ValidationError, match="crawl_browser_extra_wait_ms"):
+            Config(crawl_browser_extra_wait_ms=600_001)
+
+    def test_an_hour_is_the_longest_crawl_timeout_accepted(self):
+        assert Config(crawl_timeout=3600).crawl_timeout == 3600
+        with pytest.raises(ValidationError, match="crawl_timeout"):
+            Config(crawl_timeout=3601)
+
 
 class TestPlainEnvSourceSkipsEmpty:
     def test_empty_chat_model_uses_default(self, tmp_path):

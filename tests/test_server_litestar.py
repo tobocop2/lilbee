@@ -1374,6 +1374,12 @@ class TestConfigUpdateRoute:
         assert (resp.status_code, cfg.crawl_browser_extra_wait_ms) == (400, 1000)
         assert "crawl_browser_extra_wait_ms" in resp.text
 
+    def test_a_crawl_browser_extra_wait_ms_the_engine_cannot_hold_is_refused(self, client):
+        cfg.crawl_browser_extra_wait_ms = 1000
+        resp = client.patch("/api/config", json={"crawl_browser_extra_wait_ms": 2**64})
+        assert (resp.status_code, cfg.crawl_browser_extra_wait_ms) == (400, 1000)
+        assert "crawl_browser_extra_wait_ms" in resp.text
+
     def test_crawl_user_agent_with_a_control_character_is_refused(self, client):
         before = cfg.crawl_user_agent
         resp = client.patch("/api/config", json={"crawl_user_agent": "Probe\n1.0"})

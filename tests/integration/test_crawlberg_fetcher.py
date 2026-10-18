@@ -198,6 +198,13 @@ NO_SETTING = "crawlberg refuses to start this crawl: "
 # A timeout in seconds whose milliseconds pass crawlberg's integer width, and what it raises.
 OVERSIZED_TIMEOUT = 10**17
 OVERSIZED_REASON = "int too big to convert"
+
+
+def _force_oversized_timeout() -> None:
+    """Set the timeout past its bound, which no entry point lets through, to reach the engine."""
+    object.__setattr__(cfg, "crawl_timeout", OVERSIZED_TIMEOUT)
+
+
 # How the user agent of crawlberg's own HTTP client starts.
 CRAWLBERG_USER_AGENT_START = "crawlberg/"
 # The request a recursive crawl makes for its progress total, and how its client names itself.
@@ -1365,7 +1372,7 @@ class TestRefusedEngineOnTheCli:
         assert site.paths_since(0, "/scope/") == []
 
     def test_a_number_too_large_for_crawlberg_exits_nonzero_with_crawlbergs_reason(self, site):
-        cfg.crawl_timeout = OVERSIZED_TIMEOUT
+        _force_oversized_timeout()
         cfg.crawl_render_mode = HTTP
         result = self._add("add", site.url("/scope/"))
         assert result.exit_code == 1
@@ -1382,7 +1389,10 @@ class TestRefusedEngineOnTheCli:
     async def test_a_task_cancelled_before_the_fetch_ends_cancelled_not_failed(
         self, site, timeout: int, depth: int
     ):
-        cfg.crawl_timeout = timeout
+        if timeout == OVERSIZED_TIMEOUT:
+            _force_oversized_timeout()
+        else:
+            cfg.crawl_timeout = timeout
         task = CrawlTask(
             task_id="t1", url=site.url("/scope/"), depth=depth, max_pages=5, render_mode=HTTP
         )
@@ -1401,7 +1411,10 @@ class TestRefusedEngineOnTheCli:
     async def test_the_same_task_without_the_cancel_fails_with_crawlbergs_reason(
         self, site, timeout: int, depth: int
     ):
-        cfg.crawl_timeout = timeout
+        if timeout == OVERSIZED_TIMEOUT:
+            _force_oversized_timeout()
+        else:
+            cfg.crawl_timeout = timeout
         task = CrawlTask(
             task_id="t1", url=site.url("/scope/"), depth=depth, max_pages=5, render_mode=HTTP
         )
@@ -1414,7 +1427,7 @@ class TestRefusedEngineOnTheCli:
     async def test_crawlberg_raises_no_runtime_error_for_the_number_and_the_crawl_still_fails(
         self, site, depth: int
     ):
-        cfg.crawl_timeout = OVERSIZED_TIMEOUT
+        _force_oversized_timeout()
         with pytest.raises(CrawlEngineRefusedError) as refused:
             await crawl_and_save(site.url("/wiki/Home"), depth=depth, render_mode=HTTP)
         assert str(refused.value) == NO_SETTING + OVERSIZED_REASON
