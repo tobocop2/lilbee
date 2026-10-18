@@ -2272,6 +2272,13 @@ class TestSettingsMcp:
         assert "crawl_browser_extra_wait_ms" in result["error"]
         assert cfg.crawl_browser_extra_wait_ms == 1000
 
+    def test_settings_set_refuses_an_extra_browser_wait_the_engine_cannot_hold(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.crawl_browser_extra_wait_ms = 1000
+        result = settings_set({"crawl_browser_extra_wait_ms": 2**64})
+        assert "crawl_browser_extra_wait_ms" in result["error"]
+        assert cfg.crawl_browser_extra_wait_ms == 1000
+
     def test_settings_set_refuses_a_crawl_user_agent_with_a_control_character(self, isolated_env):
         cfg.data_root = isolated_env
         before = cfg.crawl_user_agent
