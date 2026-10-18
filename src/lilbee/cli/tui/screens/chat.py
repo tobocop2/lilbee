@@ -988,7 +988,11 @@ class ChatScreen(Screen[None]):
         except ValueError as exc:
             self.notify(str(exc), severity="error")
             return
-        depth, max_pages, include_subdomains, render_mode = self._parse_crawl_flags(parts[1:])
+        try:
+            depth, max_pages, include_subdomains, render_mode = self._parse_crawl_flags(parts[1:])
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
         if (too_large := crawl_limit_error(depth, max_pages)) is not None:
             self.notify(too_large, severity="error")
             return
@@ -1074,7 +1078,8 @@ class ChatScreen(Screen[None]):
         """Extract --depth, --max-pages, --include-subdomains, --render from tokens.
 
         Numeric flags return None when absent so the caller inherits
-        crawl_and_save's unbounded-by-default semantics. The boolean
+        crawl_and_save's unbounded-by-default semantics. A numeric flag whose
+        value is not a whole number raises ValueError naming the flag. The boolean
         ``--include-subdomains`` flag defaults to False (exact-host scope).
         ``--render http|browser`` returns None when absent so the caller
         inherits ``cfg.crawl_render_mode``; an unrecognized value is ignored.
@@ -1096,8 +1101,11 @@ class ChatScreen(Screen[None]):
                 continue
             key = flag_map.get(tokens[i])
             if key and i + 1 < len(tokens):
-                with contextlib.suppress(ValueError):
+                try:
                     parsed[key] = int(tokens[i + 1])
+                except ValueError:
+                    message = msg.CMD_CRAWL_FLAG_NOT_A_NUMBER.format(flag=tokens[i])
+                    raise ValueError(message) from None
                 i += 2
             else:
                 i += 1
