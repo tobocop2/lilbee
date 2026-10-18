@@ -21,6 +21,8 @@ _COUNTER_STEM_RE = re.compile(
 )
 _NUMERIC_STEM_RE = re.compile(r"[\d\s.]+")
 _HEX_ID_RE = re.compile(r"[0-9a-f]{8,}", re.IGNORECASE)
+# A crawled page named by one number or one hex string is titled with that name.
+_BARE_ID_RE = re.compile(r"\d+|[0-9a-f]{8,}", re.IGNORECASE)
 
 # Below this many characters a stem cannot form a searchable word.
 _MIN_TITLE_CHARS = 3
@@ -56,14 +58,15 @@ def derive_title(source_name: str, metadata_title: object = None) -> str:
     The stem cleanup flattens underscore/hyphen separators to spaces so BM25
     tokenizes ``survey_214.pdf`` into the same terms a query would use. Junk
     stems (``IMG 1234``, bare numbers, hex ids) yield "" so no title is stored.
-    A crawled page's stem is its readable name, without the hash of its address.
+    A crawled page's stem is its readable name, without the hash of its address;
+    a page named by a bare number or hex id takes that name as its title.
     """
     if isinstance(metadata_title, str) and metadata_title.strip():
         return metadata_title.strip()
     name = PurePath(source_name).name
     stem = page_stem(name) if is_web_source(source_name) else PurePath(name).stem
     if is_junk_stem(stem):
-        return ""
+        return stem if is_web_source(source_name) and _BARE_ID_RE.fullmatch(stem) else ""
     return _STEM_SEPARATOR_RE.sub(" ", stem).strip()
 
 
