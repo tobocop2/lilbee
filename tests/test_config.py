@@ -1970,6 +1970,10 @@ CRAWL_NUMBER_BOUNDS = {
 }
 
 
+# The per-crawl depth and page limits with the lowest value each accepts.
+CRAWL_NUMBER_LOWEST = {"crawl_max_depth": 0, "crawl_max_pages": 1}
+
+
 class TestCrawlNumberBounds:
     @pytest.mark.parametrize("name", CRAWL_NUMBER_BOUNDS)
     def test_the_largest_value_is_accepted(self, name):
@@ -1980,6 +1984,16 @@ class TestCrawlNumberBounds:
     def test_one_more_than_the_largest_value_is_refused_with_the_setting_named(self, name):
         with pytest.raises(ValidationError, match=name):
             Config(**{name: CRAWL_NUMBER_BOUNDS[name] + 1})
+
+    @pytest.mark.parametrize(("name", "lowest"), CRAWL_NUMBER_LOWEST.items())
+    def test_the_lowest_value_is_accepted(self, name, lowest):
+        assert getattr(Config(**{name: lowest}), name) == lowest
+
+    @pytest.mark.parametrize("name", CRAWL_NUMBER_LOWEST)
+    @pytest.mark.parametrize("below", [-1, -5])
+    def test_a_negative_value_is_refused_with_the_setting_named(self, name, below):
+        with pytest.raises(ValidationError, match=name):
+            Config(**{name: below})
 
     @pytest.mark.parametrize("name", CRAWL_NUMBER_BOUNDS)
     def test_a_value_that_overflows_the_engine_is_refused_with_the_setting_named(self, name):

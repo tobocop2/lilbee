@@ -1386,6 +1386,20 @@ class TestConfigUpdateRoute:
         assert (resp.status_code, cfg.crawl_max_pages) == (400, None)
         assert "crawl_max_pages" in resp.text
 
+    @pytest.mark.parametrize("name", ["crawl_max_depth", "crawl_max_pages"])
+    @pytest.mark.parametrize("value", [-1, -5])
+    def test_a_negative_crawl_limit_is_refused(self, client, name, value):
+        setattr(cfg, name, None)
+        resp = client.patch("/api/config", json={name: value})
+        assert (resp.status_code, getattr(cfg, name)) == (400, None)
+        assert name in resp.text
+
+    @pytest.mark.parametrize(("name", "lowest"), [("crawl_max_depth", 0), ("crawl_max_pages", 1)])
+    def test_the_lowest_crawl_limit_is_accepted(self, client, name, lowest):
+        setattr(cfg, name, None)
+        assert client.patch("/api/config", json={name: lowest}).status_code == 200
+        assert getattr(cfg, name) == lowest
+
     def test_crawl_user_agent_with_a_control_character_is_refused(self, client):
         before = cfg.crawl_user_agent
         resp = client.patch("/api/config", json={"crawl_user_agent": "Probe\n1.0"})
@@ -1866,6 +1880,18 @@ class TestCrawlRoute:
         """A negative max_pages is still a validation error."""
         resp = client.post("/api/crawl", json={"url": "https://example.com", "max_pages": -1})
         assert resp.status_code == 400
+
+    @pytest.mark.parametrize("body", [{"depth": -1}, {"depth": -5}, {"max_pages": -5}])
+    def test_post_crawl_rejects_a_negative_depth_or_page_count_naming_it(self, client, body):
+        resp = client.post("/api/crawl", json={"url": "https://example.com", **body})
+        assert resp.status_code == 400
+        assert next(iter(body)) in resp.text
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_accepts_zero_depth(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        body = {"url": "https://example.com", "depth": 0, "max_pages": 0}
+        assert client.post("/api/crawl", json=body).status_code == 201
 
     @pytest.mark.parametrize(
         "body",
