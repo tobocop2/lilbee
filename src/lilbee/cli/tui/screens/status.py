@@ -38,8 +38,9 @@ log = logging.getLogger(__name__)
 # Rows per page of the Documents table. Must exceed the table's visible height
 # (``max-height`` in status.tcss) or the table never scrolls and never asks for more.
 _DOCS_PAGE_SIZE = DOCUMENTS_PAGE_DEFAULT
-# Load the next page when the table is scrolled this far down. Moving the cursor
-# scrolls the table, so the cursor reaches the same trigger.
+# Load the next page when the table is scrolled this far down, or when the cursor
+# reaches this far into the loaded rows. A cursor move scrolls the table only after
+# its layout settles, so the cursor carries its own trigger.
 _DOCS_SCROLL_PREFETCH_RATIO = 0.85
 _WORKER_FETCH_SOURCES = "status_fetch_sources"
 _WORKER_FETCH_DOCS_PAGE = "status_fetch_docs_page"
@@ -458,6 +459,12 @@ class StatusScreen(Screen[None]):
         table = self.query_one("#docs-table", DataTable)
         max_y = table.max_scroll_y
         if max_y > 0 and table.scroll_y / max_y >= _DOCS_SCROLL_PREFETCH_RATIO:
+            self._load_more_docs()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Load the next page when the cursor nears the last loaded source."""
+        near_end = event.cursor_row >= self._docs_loaded * _DOCS_SCROLL_PREFETCH_RATIO
+        if event.data_table.id == "docs-table" and near_end:
             self._load_more_docs()
 
     def _load_storage(self, doc_count: int) -> None:
