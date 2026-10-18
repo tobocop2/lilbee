@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from lilbee.providers.base import ProviderError
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.remote_sdk import SDK_MODULE, RemoteSdkBackend, _client
 from lilbee.providers.sdk_backend import CompletionRequest, EmbeddingRequest, RerankRequest
@@ -132,23 +133,91 @@ def _stream(monkeypatch: pytest.MonkeyPatch, bodies: list[dict[str, Any]]) -> No
     monkeypatch.setattr(liter_llm, "chat_stream", lambda *_args, **_kwargs: _chunks())
 
 
-def _completion() -> CompletionRequest:
+def _completion(options: dict[str, Any] | None = None) -> CompletionRequest:
     return CompletionRequest(
         ref=parse_model_ref("ollama/qwen2.5:1.5b"),
         messages=[{"role": "user", "content": "Say pong"}],
         api_base=_BASE,
+        options=options or {},
     )
 
 
+def _record_chat(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Answer chat with the recorded reply and keep each real request object."""
+    sent: list[Any] = []
+    reply = liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY))
+
+    async def _call(_client: Any, request: Any) -> Any:
+        sent.append(request)
+        return reply
+
+    monkeypatch.setattr(liter_llm, "chat", _call)
+    return sent
+
+
 class TestCompleteOnRealTypes:
-    def test_message_text_and_finish_reason_are_plain_strings(
+    @pytest.mark.xfail(
+        strict=True, raises=AssertionError, reason="xberg-io/liter-llm#299: text is None"
+    )
+    def test_a_text_reply_gives_its_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY)))
+        result = RemoteSdkBackend().complete(_completion())
+        assert result.content == "Pong."
+
+    @pytest.mark.xfail(
+        strict=True, raises=AssertionError, reason="xberg-io/liter-llm#299: parts is None"
+    )
+    def test_a_parts_reply_gives_its_text_parts_joined(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parts = [{"type": "text", "text": "Po"}, {"type": "text", "text": "ng."}]
+        choice = {"index": 0, "message": {"role": "assistant", "content": parts}}
+        body = {**_CHAT_BODY, "choices": [{**choice, "finish_reason": "stop"}]}
+        _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(body)))
+        assert RemoteSdkBackend().complete(_completion()).content == "Pong."
+
+    def test_finish_reason_and_model_are_plain_strings(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY)))
         result = RemoteSdkBackend().complete(_completion())
-        assert (type(result.content), result.content) == (str, "Pong.")
-        assert (type(result.finish_reason), result.finish_reason) == (str, "stop")
-        assert (type(result.model), result.model) == (str, "qwen2.5:1.5b")
+        assert (type(result.content), type(result.finish_reason)) == (str, str)
+        assert (result.finish_reason, result.model) == ("stop", "qwen2.5:1.5b")
+
+    def test_usage_is_the_reply_token_counts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY)))
+        usage = RemoteSdkBackend().complete(_completion()).usage
+        assert (usage.prompt_tokens, usage.completion_tokens) == (31, 4)
+        assert {type(usage.prompt_tokens), type(usage.completion_tokens)} == {int}
+
+    def test_every_finish_reason_member_gives_its_wire_string(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wires = ("stop", "length", "tool_calls", "content_filter", "function_call", "other")
+        got = []
+        for wire in wires:
+            choice = {**_CHAT_BODY["choices"][0], "finish_reason": wire}
+            body = {**_CHAT_BODY, "choices": [choice]}
+            _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(body)))
+            got.append(RemoteSdkBackend().complete(_completion()).finish_reason)
+        assert got == list(wires)
+
+    def test_reasoning_effort_low_is_the_typed_request_field(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = _record_chat(monkeypatch)
+        RemoteSdkBackend().complete(_completion(options={"reasoning_effort": "low"}))
+        assert sent[0].reasoning_effort == liter_llm.ReasoningEffort.LOW
+
+    @pytest.mark.xfail(
+        strict=True, raises=ProviderError, reason="xberg-io/liter-llm#301: none is refused"
+    )
+    def test_reasoning_effort_none_turns_thinking_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = _record_chat(monkeypatch)
+        RemoteSdkBackend().complete(_completion(options={"reasoning_effort": "none"}))
+        assert str(sent[0].reasoning_effort) == "none"
 
     def test_tool_call_fields_are_plain_strings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(_TOOL_BODY)))
@@ -177,9 +246,13 @@ class TestStreamOnRealTypes:
             ("Po", None),
             ("ng", None),
             ("", "length"),
+            ("", None),
         ]
         assert {type(c.content) for c in chunks} == {str}
-        assert type(chunks[-1].finish_reason) is str
+        assert type(chunks[2].finish_reason) is str
+        usage = chunks[-1].usage
+        assert usage is not None
+        assert (usage.prompt_tokens, usage.completion_tokens) == (12, 30)
 
     def test_tool_call_deltas_are_plain_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
         opener = {
@@ -241,27 +314,59 @@ class TestEmbedAndRerankOnRealTypes:
         assert {type(s) for s in result.scores} == {float}
 
 
+def _members(owner: Any) -> set[str]:
+    return {name for name in dir(owner) if name.isupper()}
+
+
+def _accepts(effort: Any, value: str) -> bool:
+    try:
+        effort(value)
+    except ValueError:
+        return False
+    return True
+
+
 class TestFakeMatchesTheLibrary:
-    """The stand-in's typed values behave like the library's."""
+    """The stand-in declares what the library declares, so a drifted fake fails here."""
 
-    def test_message_text_is_not_a_str_in_either(self) -> None:
-        real = liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY)).choices[0].message
-        fake = fakes.text_response("Pong.").choices[0].message
-        assert not isinstance(real.content, str)
-        assert not isinstance(fake.content, str)
-        assert str(real.content) == str(fake.content) == "Pong."
+    @staticmethod
+    def _real_content() -> Any:
+        return (
+            liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY)).choices[0].message.content
+        )
 
-    def test_finish_reason_is_not_a_str_in_either(self) -> None:
+    def test_reply_content_has_the_same_accessors_and_is_no_str(self) -> None:
+        real = self._real_content()
+        fake = fakes.text_response("Pong.").choices[0].message.content
+        for content in (real, fake):
+            assert {"text", "parts"} <= set(dir(content))
+            assert not isinstance(content, str)
+        assert type(fake).__str__ is object.__str__
+
+    def test_finish_reason_members_are_the_same_and_no_str(self) -> None:
         real = liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY)).choices[0]
         fake = fakes.text_response("Pong.").choices[0]
-        assert real.finish_reason != "stop"
-        assert fake.finish_reason != "stop"
-        assert str(real.finish_reason) == str(fake.finish_reason) == "stop"
+        assert _members(liter_llm.FinishReason)
+        assert _members(liter_llm.FinishReason) == _members(fakes.FinishReason)
+        assert not isinstance(real.finish_reason, str)
+        assert not isinstance(fake.finish_reason, str)
+
+    def test_reasoning_effort_members_and_refusals_are_the_same(self) -> None:
+        assert _members(liter_llm.ReasoningEffort)
+        assert _members(liter_llm.ReasoningEffort) == _members(fakes.ReasoningEffort)
+        for value in ("low", "none"):
+            assert _accepts(liter_llm.ReasoningEffort, value) == _accepts(
+                fakes.ReasoningEffort, value
+            )
 
     def test_streamed_text_is_a_str_in_both(self) -> None:
         real = liter_llm.ChatCompletionChunk.from_json(_json(_STREAM_BODIES[0])).choices[0]
         fake = fakes.chunk("Po").choices[0]
         assert type(real.delta.content) is str
         assert type(fake.delta.content) is str
-        assert not isinstance(real.finish_reason, str)
-        assert not isinstance(fakes.chunk("x", finish="stop").choices[0].finish_reason, str)
+
+    def test_usage_fields_are_the_same_ints(self) -> None:
+        real = liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY)).usage
+        fake = fakes.Usage(31, 4)
+        for usage in (real, fake):
+            assert (usage.prompt_tokens, usage.completion_tokens) == (31, 4)

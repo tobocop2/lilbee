@@ -7,7 +7,9 @@ real SDK call happens and the extra need not be installed.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import json
+import logging
+from collections.abc import Callable, Iterator
 from typing import Any
 from unittest import mock
 
@@ -391,16 +393,47 @@ class TestRequestFields:
         backend.complete(_completion_request(options={"min_p": 0.05}))
         assert sdk.last("chat")["extra_body"] == {"min_p": 0.05}
 
-    def test_options_the_route_cannot_carry_are_dropped(
-        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    @pytest.mark.parametrize(
+        ("option", "value"), [("top_k", 5), ("num_ctx", 4096), ("repeat_penalty", 1.1)]
+    )
+    def test_ollama_drops_the_option_and_names_it_in_the_log(
+        self,
+        backend: LlmSdkBackend,
+        sdk: fakes.FakeSdk,
+        caplog: pytest.LogCaptureFixture,
+        option: str,
+        value: float,
     ) -> None:
         sdk.chat_result = fakes.text_response("ok")
-        backend.complete(
-            _completion_request(options={"top_k": 5, "num_ctx": 4096, "repeat_penalty": 1.1})
-        )
+        with caplog.at_level(logging.DEBUG, logger="lilbee.providers.remote_sdk"):
+            backend.complete(_completion_request("ollama/m", options={option: value}))
         sent = sdk.last("chat")
+        assert option not in sent
         assert "extra_body" not in sent
-        assert not {"top_k", "num_ctx", "repeat_penalty"} & set(sent)
+        assert [r.getMessage() for r in caplog.records if option in r.getMessage()] == [
+            f"Option {option!r} is not sent to ollama/m:latest; dropped"
+        ]
+
+    @pytest.mark.parametrize(
+        ("option", "value"), [("top_k", 5), ("num_ctx", 4096), ("repeat_penalty", 1.1)]
+    )
+    def test_lm_studio_keeps_the_option_in_the_body(
+        self,
+        backend: LlmSdkBackend,
+        sdk: fakes.FakeSdk,
+        caplog: pytest.LogCaptureFixture,
+        option: str,
+        value: float,
+    ) -> None:
+        sdk.chat_result = fakes.text_response("ok")
+        with caplog.at_level(logging.DEBUG, logger="lilbee.providers.remote_sdk"):
+            backend.complete(
+                _completion_request(
+                    "lm_studio/m", api_base="http://localhost:1234", options={option: value}
+                )
+            )
+        assert sdk.last("chat")["extra_body"] == {option: value}
+        assert not [r for r in caplog.records if "dropped" in r.getMessage()]
 
 
 class TestEmbedReturnsEmbeddingResult:
@@ -426,7 +459,7 @@ class TestEmbedReturnsEmbeddingResult:
     ) -> None:
         """A gateway returning the batch out of order is corrected by the response's
         index, since the consumer zips vectors to inputs positionally."""
-        sdk.embed_result = fakes.embedding_response([(1, [1.0]), (0, [0.0])])
+        sdk.embed_result = fakes.embedding_response([(1, [1.0]), (0, [0.0])], as_given=True)
         result = backend.embed(_embedding_request(inputs=["x", "y"]))
         assert result.vectors == [[0.0], [1.0]]
 
@@ -595,3 +628,272 @@ class TestPullModel:
     def test_refused_for_an_unknown_server(self, backend: LlmSdkBackend) -> None:
         with pytest.raises(ProviderError, match="This server"):
             backend.pull_model("m", base_url="http://192.168.1.50:9000")
+
+
+class TestReplyText:
+    """A reply's content object is read through its accessors, never through ``str``."""
+
+    def test_a_text_reply_gives_its_exact_text(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response("Pong. \u00e9\n")
+        assert backend.complete(_completion_request()).content == "Pong. \u00e9\n"
+
+    def test_a_parts_reply_gives_its_text_parts_joined(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response(
+            None, parts=[("text", "Po"), ("refusal", "NO"), ("text", "ng")]
+        )
+        assert backend.complete(_completion_request()).content == "Pong"
+
+    def test_a_reply_with_neither_text_nor_parts_is_empty(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response("x")
+        sdk.chat_result.choices[0].message.content = fakes.AssistantContent(None, None)
+        assert backend.complete(_completion_request()).content == ""
+
+    def test_a_reply_with_no_content_is_empty(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response(None)
+        assert backend.complete(_completion_request()).content == ""
+
+    def test_an_empty_text_reply_is_empty(self, backend: LlmSdkBackend, sdk: fakes.FakeSdk) -> None:
+        sdk.chat_result = fakes.text_response("")
+        assert backend.complete(_completion_request()).content == ""
+
+
+class TestFinishReasons:
+    WIRE = ("stop", "length", "tool_calls", "content_filter", "function_call", "other")
+
+    @pytest.mark.parametrize("wire", WIRE)
+    def test_complete_gives_the_wire_string(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, wire: str
+    ) -> None:
+        sdk.chat_result = fakes.text_response("x", finish=wire)
+        assert backend.complete(_completion_request()).finish_reason == wire
+
+    @pytest.mark.parametrize("wire", WIRE)
+    def test_stream_gives_the_wire_string(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, wire: str
+    ) -> None:
+        sdk.stream_chunks = [fakes.chunk("x", finish=wire)]
+        (chunk,) = backend.complete_stream(_completion_request())
+        assert chunk.finish_reason == wire
+
+    def test_the_tests_cover_every_member_the_fake_lists(self) -> None:
+        assert set(self.WIRE) == set(fakes.FINISH_WIRE.values())
+
+
+class TestStreamText:
+    def test_a_missing_delta_text_between_texts_adds_nothing(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.stream_chunks = [
+            fakes.chunk("Po"),
+            fakes.chunk(None, tool_calls=[fakes.tool_call_delta(0, call_id="c")]),
+            fakes.chunk("ng"),
+            fakes.chunk(None, finish="stop"),
+        ]
+        chunks = list(backend.complete_stream(_completion_request()))
+        assert "".join(c.content for c in chunks) == "Pong"
+        assert [c.finish_reason for c in chunks] == [None, None, None, "stop"]
+        assert chunks[-1].content == ""
+
+
+class TestToolArguments:
+    ARGS = '{"city":  "Paris", "n": 1,\n "u": "\\u00e9"}'
+
+    def test_a_complete_call_keeps_the_arguments_byte_for_byte(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.tool_call_response("c1", "f", self.ARGS)
+        (call,) = backend.complete(_completion_request()).tool_calls
+        assert call.arguments == self.ARGS
+        assert json.loads(call.arguments)["city"] == "Paris"
+
+    def test_joined_stream_deltas_keep_the_arguments_byte_for_byte(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        cut = 7
+        sdk.stream_chunks = [
+            fakes.chunk(tool_calls=[fakes.tool_call_delta(0, call_id="c1", name="f")]),
+            fakes.chunk(tool_calls=[fakes.tool_call_delta(0, arguments=self.ARGS[:cut])]),
+            fakes.chunk(tool_calls=[fakes.tool_call_delta(0, arguments=self.ARGS[cut:])]),
+        ]
+        deltas = [
+            d for c in backend.complete_stream(_completion_request()) for d in c.tool_call_deltas
+        ]
+        assert "".join(d.arguments_delta or "" for d in deltas) == self.ARGS
+
+
+class TestImageParts:
+    def test_each_image_part_is_an_image_url_with_a_data_url(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response("ok")
+        backend.complete(
+            _completion_request(
+                messages=[{"role": "user", "content": "what?", "images": [b"\x89PNG", b"\x01"]}]
+            )
+        )
+        assert sdk.last("chat")["messages"] == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw=="}},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQ=="}},
+                ],
+            }
+        ]
+
+
+class TestMultiVectorEmbeddings:
+    def test_vectors_follow_the_input_order_when_the_reply_is_reversed(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        vectors = [(0, [0.0, 0.5]), (1, [1.0, 1.5]), (2, [2.0, 2.5])]
+        sdk.embed_result = fakes.embedding_response(vectors)
+        assert [item.index for item in sdk.embed_result.data] == [2, 1, 0]
+        result = backend.embed(_embedding_request(inputs=["a", "b", "c"]))
+        assert result.vectors == [vector for _, vector in vectors]
+
+    @pytest.mark.parametrize(
+        ("base", "wire"),
+        [
+            ("http://localhost:11434", "http://localhost:11434/v1"),
+            ("http://localhost:11434/v1", "http://localhost:11434/v1"),
+            ("http://localhost:11434/v1/", "http://localhost:11434/v1"),
+        ],
+    )
+    def test_an_ollama_embed_takes_the_v1_base_once(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, base: str, wire: str
+    ) -> None:
+        sdk.embed_result = fakes.embedding_response([(0, [0.1])])
+        backend.embed(_embedding_request("ollama/all-minilm", api_base=base))
+        assert sdk.clients[-1]["base_url"] == wire
+        assert sdk.last("embed")["model"] == "ollama/all-minilm:latest"
+
+
+class TestRerankOrder:
+    def test_scores_are_placed_by_index_not_by_rank(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.rerank_result = fakes.rerank_response([(0, 0.2), (1, 0.9), (2, 0.5)])
+        assert [r.index for r in sdk.rerank_result.results] == [1, 2, 0]
+        result = backend.rerank(
+            RerankRequest(
+                ref=parse_model_ref("openai/rerank-x"), query="q", candidates=["a", "b", "c"]
+            )
+        )
+        assert result.scores == [0.2, 0.9, 0.5]
+
+
+def _call_complete(backend: LlmSdkBackend) -> object:
+    return backend.complete(_completion_request())
+
+
+def _call_open_stream(backend: LlmSdkBackend) -> object:
+    return backend.complete_stream(_completion_request())
+
+
+def _call_mid_stream(backend: LlmSdkBackend) -> object:
+    stream = backend.complete_stream(_completion_request())
+    return list(stream)
+
+
+def _call_embed(backend: LlmSdkBackend) -> object:
+    return backend.embed(_embedding_request())
+
+
+def _call_rerank(backend: LlmSdkBackend) -> object:
+    request = RerankRequest(ref=parse_model_ref("openai/rerank-x"), query="q", candidates=["a"])
+    return backend.rerank(request)
+
+
+def _arm(attr: str) -> Callable[[fakes.FakeSdk, BaseException], None]:
+    def arm(sdk: fakes.FakeSdk, error: BaseException) -> None:
+        setattr(sdk, attr, error)
+        if attr == "stream_error":
+            sdk.stream_chunks = [fakes.chunk("ok")]
+
+    return arm
+
+
+class TestErrorKindsOnEveryCallKind:
+    """Every wrapped failure carries the kind of its error class, on all five paths."""
+
+    PATHS = (
+        ("chat_error", _call_complete),
+        ("stream_open_error", _call_open_stream),
+        ("stream_error", _call_mid_stream),
+        ("embed_error", _call_embed),
+        ("rerank_error", _call_rerank),
+    )
+    KINDS = (
+        ("AuthenticationError", ProviderErrorKind.AUTH),
+        ("NotFoundError", ProviderErrorKind.NOT_FOUND),
+        ("RateLimitedError", ProviderErrorKind.RATE_LIMIT),
+        ("ContextWindowExceededError", ProviderErrorKind.CONTEXT_OVERFLOW),
+        ("BadRequestError", ProviderErrorKind.BAD_REQUEST),
+        ("NetworkError", ProviderErrorKind.CONNECTION),
+        ("ServerError", ProviderErrorKind.SERVER),
+    )
+
+    @pytest.mark.parametrize(("attr", "call"), PATHS)
+    @pytest.mark.parametrize(("name", "kind"), KINDS)
+    def test_the_wrapper_has_the_kind_of_the_error_class(
+        self,
+        backend: LlmSdkBackend,
+        sdk: fakes.FakeSdk,
+        attr: str,
+        call: Callable[[LlmSdkBackend], object],
+        name: str,
+        kind: ProviderErrorKind,
+    ) -> None:
+        _arm(attr)(sdk, sdk.error(name))
+        with pytest.raises(ProviderError) as err:
+            call(backend)
+        assert err.value.kind is kind
+
+    @pytest.mark.parametrize(("attr", "call"), PATHS)
+    def test_a_foreign_error_is_unknown(
+        self,
+        backend: LlmSdkBackend,
+        sdk: fakes.FakeSdk,
+        attr: str,
+        call: Callable[[LlmSdkBackend], object],
+    ) -> None:
+        _arm(attr)(sdk, RuntimeError("odd"))
+        with pytest.raises(ProviderError, match="failed: odd") as err:
+            call(backend)
+        assert err.value.kind is ProviderErrorKind.UNKNOWN
+
+
+class TestUsage:
+    def test_complete_reports_prompt_then_completion_tokens(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response("x", usage=fakes.Usage(31, 4))
+        usage = backend.complete(_completion_request()).usage
+        assert (usage.prompt_tokens, usage.completion_tokens) == (31, 4)
+
+    def test_complete_without_usage_reports_zero(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response("x")
+        usage = backend.complete(_completion_request()).usage
+        assert (usage.prompt_tokens, usage.completion_tokens) == (0, 0)
+
+    def test_the_closing_stream_chunk_reports_prompt_then_completion_tokens(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.stream_chunks = [fakes.chunk("x"), fakes.usage_chunk(fakes.Usage(12, 30))]
+        chunks = list(backend.complete_stream(_completion_request()))
+        assert chunks[0].usage is None
+        usage = chunks[-1].usage
+        assert usage is not None
+        assert (usage.prompt_tokens, usage.completion_tokens) == (12, 30)

@@ -314,8 +314,9 @@ def _text(content: Any) -> str:
     if content is None:
         return ""
     # GAP: xberg-io/liter-llm#299
-    if content.text is not None:
-        return content.text
+    text: str | None = content.text
+    if text is not None:
+        return text
     if content.parts is not None:
         return "".join(part.text for part in content.parts if part.type == "text")
     return ""
