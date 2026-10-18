@@ -41,17 +41,46 @@ def _ns(**kwargs: Any) -> types.SimpleNamespace:
     return types.SimpleNamespace(**kwargs)
 
 
+class AssistantContent:
+    """Mirrors ``liter_llm.AssistantContent``: not a ``str``; ``str()`` gives the text."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def __str__(self) -> str:
+        return self._text
+
+    def __repr__(self) -> str:
+        return repr(self._text)
+
+
+class FinishReason:
+    """Mirrors ``liter_llm.FinishReason``: not a ``str``; ``str()`` gives the wire value."""
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def __str__(self) -> str:
+        return self._value
+
+    def __repr__(self) -> str:
+        return self._value
+
+
 def text_response(content: str, *, model: str = "fake-model", finish: str = "stop") -> Any:
-    """A chat response whose first choice carries *content*."""
-    message = _ns(content=content, tool_calls=None)
-    return _ns(model=model, choices=[_ns(message=message, finish_reason=finish)])
+    """A chat response whose first choice carries *content*, typed like the real client's."""
+    message = _ns(content=AssistantContent(content), tool_calls=None)
+    return _ns(model=model, choices=[_ns(message=message, finish_reason=FinishReason(finish))])
 
 
 def tool_call_response(call_id: str, name: str, arguments: str) -> Any:
     """A chat response whose first choice asks for one tool call."""
     call = _ns(id=call_id, function=_ns(name=name, arguments=arguments))
     message = _ns(content=None, tool_calls=[call])
-    return _ns(model="fake-model", choices=[_ns(message=message, finish_reason="tool_calls")])
+    return _ns(
+        model="fake-model",
+        choices=[_ns(message=message, finish_reason=FinishReason("tool_calls"))],
+    )
 
 
 def chunk(
@@ -62,7 +91,8 @@ def chunk(
 ) -> Any:
     """A streaming chunk with one choice."""
     delta = _ns(content=content, tool_calls=tool_calls)
-    return _ns(choices=[_ns(delta=delta, finish_reason=finish)])
+    reason = FinishReason(finish) if finish is not None else None
+    return _ns(choices=[_ns(delta=delta, finish_reason=reason)])
 
 
 def tool_call_delta(

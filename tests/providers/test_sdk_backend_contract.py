@@ -127,6 +127,7 @@ class TestCompleteReturnsCompletionResult:
             "m-1",
             "length",
         )
+        assert (type(result.content), type(result.finish_reason)) == (str, str)
 
     def test_tool_calls_are_extracted(self, backend: LlmSdkBackend, sdk: fakes.FakeSdk) -> None:
         sdk.chat_result = fakes.tool_call_response("c1", "lookup", '{"q": 1}')
@@ -191,6 +192,8 @@ class TestCompleteStream:
             ("b", None),
             ("c", "stop"),
         ]
+        assert {type(c.content) for c in chunks} == {str}
+        assert type(chunks[-1].finish_reason) is str
         assert sdk.last("chat_stream")["stream"] is True
 
     def test_tool_call_deltas_are_normalised(

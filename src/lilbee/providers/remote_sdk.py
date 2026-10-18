@@ -311,6 +311,11 @@ def _tool_call_delta(call: Any) -> SdkToolCallDelta:
     )
 
 
+def _text(content: Any) -> str:
+    """Return message text as a plain ``str``; liter-llm hands it back as a typed object."""
+    return "" if content is None else str(content)
+
+
 def _finish_reason(choice: Any) -> str | None:
     """Return a choice's ``finish_reason`` as its wire string, or ``None``."""
     reason = choice.finish_reason
@@ -360,7 +365,7 @@ class RemoteSdkBackend:
         choice = response.choices[0] if response.choices else None
         message = choice.message if choice is not None else None
         return CompletionResult(
-            content=(message.content if message is not None else None) or "",
+            content=_text(message.content if message is not None else None),
             finish_reason=_finish_reason(choice) if choice is not None else None,
             model=response.model or None,
             tool_calls=tuple(_tool_call(c) for c in (message.tool_calls or []))
@@ -399,7 +404,7 @@ class RemoteSdkBackend:
                 choice = chunk.choices[0] if chunk.choices else None
                 if choice is not None:
                     delta = choice.delta
-                    content = (delta.content if delta is not None else None) or ""
+                    content = _text(delta.content if delta is not None else None)
                     finish_reason = _finish_reason(choice)
                     tool_call_deltas = tuple(
                         _tool_call_delta(c)
