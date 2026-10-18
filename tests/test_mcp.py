@@ -1477,6 +1477,10 @@ class TestCrawl:
     @pytest.mark.parametrize(
         ("kwargs", "name"),
         [
+            ({"depth": -1}, "depth"),
+            ({"depth": -5}, "depth"),
+            ({"max_pages": -1}, "max_pages"),
+            ({"max_pages": -5}, "max_pages"),
             ({"depth": 101}, "depth"),
             ({"depth": 2**64}, "depth"),
             ({"max_pages": 10_000_001}, "max_pages"),
@@ -1491,6 +1495,16 @@ class TestCrawl:
         result = await crawl(url="https://example.com", **kwargs)
         assert name in result["error"]
         mock_start.assert_not_called()
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.require_valid_crawl_url")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="t1")
+    async def test_accepts_the_lowest_depth_and_page_count(
+        self, mock_start, _mock_valid, _mock_avail, isolated_env
+    ):
+        result = await crawl(url="https://example.com", depth=0, max_pages=0)
+        assert result["status"] == "started"
+        mock_start.assert_called_once()
 
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.mcp_server.require_valid_crawl_url")
