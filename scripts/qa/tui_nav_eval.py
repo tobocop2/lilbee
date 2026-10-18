@@ -54,6 +54,7 @@ class Result:
 def _isolated_env(tmp: Path):
     from lilbee.app.services import set_services
     from lilbee.core.config import cfg
+    from lilbee.data.store import Store
 
     snapshot = cfg.model_copy()
     cfg.data_dir = tmp / "data"
@@ -73,6 +74,7 @@ def _isolated_env(tmp: Path):
         d.mkdir(parents=True, exist_ok=True)
 
     mock_svc = mock.MagicMock()
+    mock_svc.store = Store(cfg.model_copy(update={"lancedb_dir": tmp / "status_lancedb"}))
     mock_svc.provider.list_models.return_value = []
     mock_svc.searcher._embedder.embedding_available.return_value = True
     set_services(mock_svc)

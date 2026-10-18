@@ -655,6 +655,8 @@ class TestCliShowsTheUpgrade:
 
         monkeypatch.setattr(servers, "setup_server_logging", mock.Mock(side_effect=SystemExit(3)))
         monkeypatch.setattr(mcp_server, "main", mock.Mock(side_effect=SystemExit(3)))
+        # The real exit ends the whole test process; the command re-raises the code after it.
+        monkeypatch.setattr(servers, "exit_after_signal", mock.Mock())
         monkeypatch.delenv("LILBEE_DATA", raising=False)
 
         result = CliRunner().invoke(app, [command])

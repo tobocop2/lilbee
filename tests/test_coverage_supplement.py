@@ -459,7 +459,7 @@ class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
 
         screen = StatusScreen.__new__(StatusScreen)
         services = mock.MagicMock()
-        services.store.get_sources.side_effect = RuntimeError("disk error")
+        services.store.count_sources.side_effect = RuntimeError("disk error")
         with mock.patch(
             "lilbee.cli.tui.screens.status.get_services",
             return_value=services,
@@ -474,6 +474,7 @@ class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
         screen = StatusScreen.__new__(StatusScreen)
         services = mock.MagicMock()
         services.store.get_sources.return_value = []
+        services.store.count_sources.return_value = 0
         with mock.patch(
             "lilbee.cli.tui.screens.status.get_services",
             return_value=services,

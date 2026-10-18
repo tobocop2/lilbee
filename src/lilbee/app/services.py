@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -469,6 +469,17 @@ class _EngineLifecycle:
             return
         self._installed = True
 
+    def route_in_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Deliver Ctrl-C and the hard-exit signals as loop callbacks.
+
+        A plain handler runs only when the main thread returns to bytecode, and the
+        kernel may hand the signal to another thread while the loop sits in select.
+        The loop's wakeup descriptor makes the delivery certain.
+        """
+        for sig in (signal.SIGINT, *self._hard_exit_signals()):
+            with suppress(NotImplementedError, RuntimeError):  # Windows, off main thread
+                loop.add_signal_handler(sig, self._on_hard_exit, sig, None)
+
     def reset(self) -> None:
         """Forget that handlers were installed."""
         self._installed = False
@@ -588,16 +599,37 @@ def exit_when_stragglers_would_hang() -> None:
     """
     if not _state.interactive:
         return
+    _exit_if_stragglers(0)
+
+
+def _exit_if_stragglers(status: int) -> None:
+    """Join leftover non-daemon threads within the budget, else exit with *status*."""
     try:
         deadline = time.monotonic() + _STRAGGLER_BUDGET_S
         for thread in _straggler_threads():
             thread.join(max(0.0, deadline - time.monotonic()))
         if _straggler_threads():
             _write_exit_note(_STRAGGLER_NOTE)
-            os._exit(0)
+            os._exit(status)
     except KeyboardInterrupt:
         _write_exit_note(_FORCE_QUIT_NOTE)
         os._exit(_FORCE_QUIT_EXIT_CODE)
+
+
+def exit_on_signals_in_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Make Ctrl-C and terminate signals end a process whose loop has no UI to catch them."""
+    _lifecycle.route_in_loop(loop)
+
+
+def exit_after_signal(status: int) -> None:
+    """Finish the signal-driven teardown, then exit with *status* even past a wedged thread.
+
+    The stdio MCP server reads stdin on a non-daemon thread that no signal
+    wakes, so the interpreter would wait on it forever after the main thread
+    unwound.
+    """
+    reset_services_on_exit()
+    _exit_if_stragglers(status)
 
 
 def _teardown_for_signal(signum: int) -> None:

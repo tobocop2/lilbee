@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -17,6 +18,7 @@ from lilbee.catalog import CatalogResult
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.core.config import cfg
+from lilbee.data.store import Store
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
@@ -676,14 +678,15 @@ class TestStatusScreenAsync:
     async def test_status_screen(
         self,
         mock_catalog: mock.MagicMock,
+        tmp_path: Path,
     ) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
-        mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = []
         from lilbee.app.services import set_services
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.status import StatusScreen
 
+        mock_svc = mock.MagicMock()
+        mock_svc.store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "status_lancedb"}))
         set_services(mock_svc)
         try:
             app = LilbeeApp()
@@ -696,6 +699,45 @@ class TestStatusScreenAsync:
                 assert info is not None
         finally:
             set_services(None)
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_status_screen_pages_through_a_real_store(
+        self,
+        mock_catalog: mock.MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """The Documents table shows one stored page, then the rest once scrolled to the end."""
+        from lilbee.app.services import set_services
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.status import StatusScreen
+        from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT
+        from tests._async_wait import wait_until
+
+        mock_catalog.return_value = _EMPTY_CATALOG
+        total = DOCUMENTS_PAGE_DEFAULT + 2
+        store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "status_lancedb"}))
+        for i in range(total):
+            store.upsert_source(f"doc-{i:03d}.txt", f"{i:064x}", chunk_count=i + 1)
+        mock_svc = mock.MagicMock()
+        mock_svc.store = store
+        set_services(mock_svc)
+        try:
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                await await_chat(app, pilot)
+                app.push_screen(StatusScreen())
+                await pump_until(pilot, lambda: isinstance(app.screen, StatusScreen))
+                docs = app.screen.query_one("#docs-table")
+                await wait_until(pilot, lambda: docs.row_count == DOCUMENTS_PAGE_DEFAULT)
+                first_hint = str(app.screen.query_one("#docs-more").render())
+                docs.scroll_end(animate=False)
+                await wait_until(pilot, lambda: docs.row_count == total)
+                rows = [[str(cell) for cell in docs.get_row_at(i)] for i in range(docs.row_count)]
+        finally:
+            set_services(None)
+        assert first_hint == msg.STATUS_DOCS_MORE.format(count=DOCUMENTS_PAGE_DEFAULT)
+        assert rows == [[f"doc-{n:03d}.txt", str(n + 1)] for n in range(total)]
 
 
 class TestCLIIntegration:

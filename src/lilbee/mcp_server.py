@@ -41,7 +41,12 @@ from lilbee.app.placement import (
     set_placement,
 )
 from lilbee.app.search import clean_result
-from lilbee.app.services import get_services, reset_services, reset_store
+from lilbee.app.services import (
+    exit_on_signals_in_loop,
+    get_services,
+    reset_services,
+    reset_store,
+)
 from lilbee.app.settings import (
     SettingInfo,
     apply_settings_update,
@@ -60,6 +65,8 @@ from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.data.store import (
+    DOCUMENTS_PAGE_DEFAULT,
+    DOCUMENTS_PAGE_MAX,
     EmbeddingModelMismatchError,
     MemoryKind,
     MemorySource,
@@ -407,9 +414,9 @@ async def add(
     render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base, then sync.
-    Paths are absolute and resolve on the machine running lilbee, which is not
-    the caller's machine when the server is remote. URLs are fetched as single
-    pages; use ``crawl`` for sites."""
+    Paths are absolute and resolve on the machine running lilbee, not the
+    caller's when the server is remote. URLs are fetched as single pages; use
+    ``crawl`` for sites."""
     from lilbee.app.ingest import LIBRARY_REFUSALS, register_sources
 
     try:
@@ -589,8 +596,8 @@ def init(path: str = "") -> dict[str, Any]:
 async def remove(names: list[str]) -> dict[str, Any]:
     """Remove documents from the index by source name, folder, or glob pattern.
 
-    Source files are never deleted. A folder name removes every document indexed
-    beneath it; a glob (``*``/``?``/``[]``) removes every matching source."""
+    Source files are never deleted. A folder removes everything indexed beneath
+    it; a glob (``*``/``?``/``[]``) removes every match."""
     from lilbee.app.ingest import LIBRARY_REFUSALS, remove_documents_durably
 
     try:
@@ -601,14 +608,21 @@ async def remove(names: list[str]) -> dict[str, Any]:
 
 
 @_tool
-def list_documents() -> dict[str, Any]:
-    """List all indexed documents with their chunk counts."""
-    sources = get_services().store.get_sources()
+def list_documents(limit: int = DOCUMENTS_PAGE_DEFAULT, offset: int = 0) -> dict[str, Any]:
+    """List documents and chunk counts, paged (limit 1-1000)."""
+    if not 1 <= limit <= DOCUMENTS_PAGE_MAX:
+        return _error(f"limit must be from 1 to {DOCUMENTS_PAGE_MAX}")
+    if offset < 0:
+        return _error("offset must be 0 or more")
+    store = get_services().store
+    page = store.get_sources(limit=limit, offset=offset)
+    total = store.count_sources()
     return {
         "documents": [
-            {"filename": s["filename"], "chunk_count": s.get("chunk_count", 0)} for s in sources
+            {"filename": s["filename"], "chunk_count": s.get("chunk_count", 0)} for s in page
         ],
-        "total": len(sources),
+        "total": total,
+        "has_more": len(page) > 0 and (offset + len(page)) < total,
     }
 
 
@@ -1256,7 +1270,7 @@ async def model_pull(
     """Download a model and stream progress.
 
     ``source`` is ``native`` (GGUF) or ``remote`` (SDK).
-    ``allow_unsupported`` overrides the supported-architecture refusal.
+    ``allow_unsupported`` overrides the architecture refusal.
     """
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
@@ -1650,10 +1664,10 @@ def preview_placement_tool(spec: dict[str, Any] | None = None) -> dict[str, Any]
 def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
     """Set and apply a manual multi-GPU placement spec (persists to config).
 
-    The spec maps a role ("chat"/"embed"/"rerank"/"vision") to a placement, e.g.
+    Maps a role ("chat"/"embed"/"rerank"/"vision") to a placement, e.g.
     ``{"chat": {"devices": [0, 1], "tensor_split": [1, 1]}}``. ``devices`` is the
     GPU indices (get_gpus lists them); ``tensor_split`` is optional per-device
-    weights (omit for an even split). Omit a role to leave it auto-placed.
+    weights (omit for an even split). A role left out is auto-placed.
     """
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
@@ -1708,6 +1722,12 @@ def _exit_on_parent_death() -> None:
     os._exit(0)
 
 
+async def _serve_stdio(server: LilbeeMCP) -> None:
+    """Serve over stdio until stdin closes or a signal ends the process."""
+    exit_on_signals_in_loop(asyncio.get_running_loop())
+    await server.run_stdio_async()
+
+
 def main() -> None:
     """Entry point for the stdio MCP server."""
     # Preload so the first tool call doesn't pay the cold-start cost
@@ -1725,4 +1745,4 @@ def main() -> None:
     if parent_pid is not None:
         watch_parent_thread(parent_pid, _exit_on_parent_death)
 
-    build_mcp_server().run()
+    asyncio.run(_serve_stdio(build_mcp_server()))

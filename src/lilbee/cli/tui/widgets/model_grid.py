@@ -18,7 +18,6 @@ from textual.geometry import Region, Size
 from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
-from textual.style import Style
 from textual.widget import Widget
 
 from lilbee.cli.tui.pill import pill
@@ -416,7 +415,7 @@ class ModelGrid(Widget, can_focus=True):
             card = self._card_lines(index, col_width, selected, border_style)
             segments.append(card.lines[line_within])
         joined = Content("").join(segments)
-        return Strip(joined.render_segments(Style.null())).simplify()
+        return Strip(joined.render_segments(self.visual_style)).simplify()
 
 
 def _render_card_strip(

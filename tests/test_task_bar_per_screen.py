@@ -8,7 +8,7 @@ pushed screen.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from textual.app import ComposeResult
@@ -37,14 +37,11 @@ def _isolated_cfg(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _mock_services():
+def _mock_services(tmp_path):
+    from lilbee.data.store import Store
     from tests.conftest import make_mock_services
 
-    store = MagicMock()
-    store.search.return_value = []
-    store.bm25_probe.return_value = []
-    store.get_sources.return_value = []
-    store.add_chunks.side_effect = len
+    store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "status_lancedb"}))
     set_services(make_mock_services(store=store))
     yield
     set_services(None)

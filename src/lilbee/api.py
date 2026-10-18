@@ -34,14 +34,23 @@ from typing import TYPE_CHECKING
 # transitively imports spaCy via the wiki package and adds ~3s on first touch.
 from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.services import build_services, services_scope
+from lilbee.app.status import STATUS_RECENT_LIMIT
 from lilbee.core.config import Config, cfg, config_scope, refuse_environment
 from lilbee.core.system import canonical_data_root
-from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow, SearchScope, scope_to_chunk_type
+from lilbee.data.store import (
+    DOCUMENTS_PAGE_DEFAULT,
+    DOCUMENTS_PAGE_MAX,
+    LOCAL_OWNER,
+    MemoryKind,
+    MemoryRow,
+    SearchScope,
+    scope_to_chunk_type,
+)
 
 if TYPE_CHECKING:
     from lilbee.app.services import Services
     from lilbee.data.ingest import SyncResult
-    from lilbee.data.store import SearchChunk, Store
+    from lilbee.data.store import SearchChunk, SourceRecord, Store
     from lilbee.providers.base import LLMProvider
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
@@ -173,15 +182,37 @@ class Lilbee:
             remove_documents_durably([name])
 
     def status(self) -> dict[str, object]:
-        """Return index stats (document count, data directory, etc.)."""
+        """Return index stats: the real document count and the newest source names.
+
+        ``sources`` holds at most ``STATUS_RECENT_LIMIT`` names; ``documents`` pages the rest.
+        """
         with config_scope(self._config), services_scope(self._services):
-            sources = self._services.store.get_sources()
+            summary = self._services.store.source_summary(STATUS_RECENT_LIMIT)
             return {
                 "documents_dir": str(self._config.documents_dir),
                 "data_dir": str(self._config.data_dir),
-                "document_count": len(sources),
-                "sources": [s["filename"] for s in sources],
+                "document_count": summary.document_count,
+                "sources": [head["filename"] for head in summary.newest],
             }
+
+    def documents(
+        self,
+        *,
+        search: str | None = None,
+        limit: int = DOCUMENTS_PAGE_DEFAULT,
+        offset: int = 0,
+    ) -> list[SourceRecord]:
+        """Return one page of indexed documents, filtered by a filename *search*.
+
+        Reads the same store listing as ``GET /api/documents``. Raises ``ValueError``
+        when *limit* is outside 1 to ``DOCUMENTS_PAGE_MAX`` or *offset* is negative.
+        """
+        if not 1 <= limit <= DOCUMENTS_PAGE_MAX:
+            raise ValueError(f"limit must be from 1 to {DOCUMENTS_PAGE_MAX}, got {limit}")
+        if offset < 0:
+            raise ValueError(f"offset must be 0 or more, got {offset}")
+        with config_scope(self._config), services_scope(self._services):
+            return self._services.store.get_sources(search=search, limit=limit, offset=offset)
 
     def rebuild(self) -> SyncResult:
         """Rebuild the entire index from scratch."""

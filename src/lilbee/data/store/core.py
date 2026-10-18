@@ -9,6 +9,7 @@ import math
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack, contextmanager, suppress
@@ -99,6 +100,7 @@ from .types import (
     PageTextRecord,
     RemoveResult,
     SearchChunk,
+    SourceHead,
     SourceMeta,
     SourceMove,
     SourceRecord,
@@ -106,6 +108,7 @@ from .types import (
     SourcesCheckpoint,
     SourceStat,
     SourceStatBackfill,
+    SourceSummary,
     SourceType,
     StoreMeta,
 )
@@ -352,6 +355,23 @@ _WIKI_REFRESHED_UNREADABLE = "Cannot read %s (%s): the wiki index reads every so
 
 # Rows per Arrow batch when a filtered read walks the whole source table.
 _SOURCE_SCAN_BATCH_ROWS = 20_000
+
+_HEAD_COLUMNS = [_OLD_PATH, "file_hash", "chunk_count", "ingested_at"]
+_SUMMARY_COLUMNS = [*_HEAD_COLUMNS, "source_type"]
+
+
+def _source_heads(rows: pa.RecordBatch | pa.Table) -> list[SourceHead]:
+    """The listing columns of *rows* as dicts."""
+    return [
+        SourceHead(
+            filename=row[_OLD_PATH],
+            file_hash=row["file_hash"],
+            chunk_count=row["chunk_count"],
+            ingested_at=row["ingested_at"],
+        )
+        for row in rows.select(_HEAD_COLUMNS).to_pylist()
+    ]
+
 
 # Rows per Arrow batch when the aggregate scan walks the whole chunks table;
 # bounds the decoded-text working set while the scan stays columnar.
@@ -2692,6 +2712,48 @@ class Store:
         if offset:
             query = query.offset(offset)
         return [_source_record(row, locations) for row in query.limit(limit).to_list()]
+
+    def source_summary(self, newest: int) -> SourceSummary:
+        """Totals over every listed source and the *newest* most recently ingested, in one pass.
+
+        Reads five columns in batches and keeps only running totals and the
+        current newest rows, so memory stays flat however many sources exist.
+        """
+        total_chunks = 0
+        documents = 0
+        kinds: Counter[str] = Counter()
+        latest: list[SourceHead] = []
+        sort_keys = [("ingested_at", "descending"), ("filename", "ascending")]
+        for table in self._iter_source_batches(_SUMMARY_COLUMNS):
+            documents += table.num_rows
+            total_chunks += pc.sum(table.column("chunk_count")).as_py() or 0
+            for entry in pc.value_counts(table.column("source_type")).to_pylist():
+                kinds[entry["values"]] += entry["counts"]
+            top = table.take(pc.select_k_unstable(table, newest, sort_keys))
+            latest.extend(_source_heads(top))
+            latest.sort(key=lambda head: head["filename"])
+            latest.sort(key=lambda head: head["ingested_at"], reverse=True)
+            del latest[newest:]
+        return SourceSummary(documents, total_chunks, dict(kinds), latest)
+
+    def iter_source_heads(self) -> Iterator[SourceHead]:
+        """Every listed source, streamed in batches so no more than one batch is held."""
+        for table in self._iter_source_batches(_HEAD_COLUMNS):
+            yield from _source_heads(table)
+
+    def _iter_source_batches(self, columns: list[str]) -> Iterator[pa.Table]:
+        """The listed source rows in batches, each row's shown name as ``filename``."""
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return
+        name = self._locations().name
+        read = [_PATH if column == _OLD_PATH else column for column in columns]
+        query = table.search().where(_LISTED).select(read).limit(None)
+        for batch in query.to_batches(_SOURCE_SCAN_BATCH_ROWS):
+            rows = pa.Table.from_batches([batch])
+            at = rows.schema.get_field_index(_PATH)
+            shown = pa.array([name(path) for path in rows.column(at).to_pylist()], pa.utf8())
+            yield rows.set_column(at, _OLD_PATH, shown)
 
     def get_sources_where(self, keep: Callable[[str], bool]) -> list[SourceRecord]:
         """Source records whose filename *keep* accepts, read in batches.

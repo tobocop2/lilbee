@@ -14,6 +14,8 @@ from .lance_helpers import (
 )
 from .ranking import cosine_sim, mmr_rerank
 from .types import (
+    DOCUMENTS_PAGE_DEFAULT,
+    DOCUMENTS_PAGE_MAX,
     LOCAL_OWNER,
     MEMORY_CONTENT_TYPE,
     MEMORY_SOURCE_PREFIX,
@@ -34,6 +36,7 @@ from .types import (
     RemoveResult,
     SearchChunk,
     SearchScope,
+    SourceHead,
     SourceMeta,
     SourceMove,
     SourceRecord,
@@ -41,6 +44,7 @@ from .types import (
     SourcesCheckpoint,
     SourceStat,
     SourceStatBackfill,
+    SourceSummary,
     SourceType,
     agent_owner,
     is_agent_owner,
@@ -51,6 +55,8 @@ from .types import (
 )
 
 __all__ = [
+    "DOCUMENTS_PAGE_DEFAULT",
+    "DOCUMENTS_PAGE_MAX",
     "LOCAL_OWNER",
     "MEMORY_CONTENT_TYPE",
     "MEMORY_SOURCE_PREFIX",
@@ -71,12 +77,14 @@ __all__ = [
     "RemoveResult",
     "SearchChunk",
     "SearchScope",
+    "SourceHead",
     "SourceMeta",
     "SourceMove",
     "SourceRecord",
     "SourceRelocation",
     "SourceStat",
     "SourceStatBackfill",
+    "SourceSummary",
     "SourceType",
     "SourcesCheckpoint",
     "Store",

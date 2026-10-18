@@ -346,7 +346,7 @@ class SettingsScreen(Screen[None]):
         defn = SETTINGS_MAP.get(name)
         if defn is None:
             return
-        value = str(event.value) if event.value != Select.BLANK else ""
+        value = str(event.value) if event.value is not Select.NULL else ""
         current = str(getattr(cfg, name, ""))
         if value == current:
             return
