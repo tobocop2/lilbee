@@ -157,7 +157,8 @@ def _cut_at_word(text: str, limit: int) -> str:
 
 def _page_slug(segment: str) -> str:
     """The readable name of the page whose last path segment is *segment*, without its suffix."""
-    return _legal(_cut_at_word(_without_suffix(_filled(segment)), _MAX_NAME_BYTES))
+    marked = _legal(_without_suffix(_filled(segment)))
+    return _legal(_cut_at_word(marked, _MAX_NAME_BYTES))
 
 
 def _folder_slug(part: str) -> str:
