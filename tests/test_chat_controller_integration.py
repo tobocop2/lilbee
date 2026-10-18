@@ -1682,6 +1682,48 @@ async def test_cmd_crawl_with_valid_url_routes_to_start_crawl() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("flags", "name"),
+    [
+        ("--depth 101", "depth"),
+        ("--depth 18446744073709551616", "depth"),
+        ("--max-pages 10000001", "max_pages"),
+        ("--max-pages 18446744073709551616", "max_pages"),
+    ],
+)
+async def test_cmd_crawl_refuses_a_depth_or_page_count_the_engine_cannot_hold(flags, name) -> None:
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch.object(screen, "_start_crawl") as mock_start,
+            patch.object(screen, "notify") as notify,
+        ):
+            screen._cmd_crawl(f"https://example.com {flags}")
+        mock_start.assert_not_called()
+        assert name in notify.call_args.args[0]
+        assert notify.call_args.kwargs["severity"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_cmd_crawl_accepts_the_largest_depth_and_page_count() -> None:
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch.object(screen, "_start_crawl") as mock_start,
+        ):
+            screen._cmd_crawl("https://example.com --depth 100 --max-pages 10000000")
+        mock_start.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_cancelling_a_tui_crawl_stops_its_sync(tmp_path, monkeypatch) -> None:
     """Cancelling a /crawl task stops the crawl's sync and skips the follow-up sync."""
     import asyncio

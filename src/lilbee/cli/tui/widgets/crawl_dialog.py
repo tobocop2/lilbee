@@ -14,6 +14,7 @@ from textual.widgets import Button, Checkbox, Input, Label, Static
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.crawler.models import crawl_limit_error
 
 
 @dataclass(frozen=True)
@@ -166,7 +167,9 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
         except ValueError:
             return msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_MAX_PAGES_LABEL)
 
-        return CrawlParams(url=url, depth=depth, max_pages=max_pages, render_mode=render_mode)
+        return crawl_limit_error(depth, max_pages) or CrawlParams(
+            url=url, depth=depth, max_pages=max_pages, render_mode=render_mode
+        )
 
     def _try_submit(self) -> None:
         """Validate inputs and dismiss with CrawlParams or show an error."""

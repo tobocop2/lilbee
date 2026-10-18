@@ -27,6 +27,8 @@ from .defaults import (
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
     ENGINE_IDLE_TTL_MINUTES_DEFAULT,
+    MAX_CRAWL_DEPTH,
+    MAX_CRAWL_PAGES,
 )
 from .enums import (
     ChatMode,
@@ -705,15 +707,17 @@ class Config(BaseSettings):
     # site whose robots.txt cannot be read.
     crawl_respect_robots_txt: bool = ConfigField(default=True, writable=True)
 
-    # Optional global ceilings. None = no ceiling. A depth is at most 100 links and a page
-    # count at most ten million, so the engine never gets a number it cannot hold.
-    crawl_max_depth: int | None = ConfigField(default=None, ge=0, le=100, writable=True)
-    crawl_max_pages: int | None = ConfigField(default=None, ge=1, le=10_000_000, writable=True)
+    # Optional global ceilings. None = no ceiling. The bounds keep the engine from getting
+    # a number it cannot hold.
+    crawl_max_depth: int | None = ConfigField(default=None, ge=0, le=MAX_CRAWL_DEPTH, writable=True)
+    crawl_max_pages: int | None = ConfigField(default=None, ge=1, le=MAX_CRAWL_PAGES, writable=True)
 
     # Default page bound for an unbounded crawl (no explicit max_pages /
     # crawl_max_pages), so a hostile site can't exhaust the disk by default.
     # An explicit limit overrides it; raise this to crawl larger sites unbounded.
-    crawl_safety_max_pages: int = ConfigField(default=5_000, ge=1, le=10_000_000, writable=True)
+    crawl_safety_max_pages: int = ConfigField(
+        default=5_000, ge=1, le=MAX_CRAWL_PAGES, writable=True
+    )
 
     # Per-URL fetch timeout, seconds.
     crawl_timeout: int = ConfigField(default=30, ge=1, le=3600, writable=True)

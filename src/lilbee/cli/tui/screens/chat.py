@@ -96,6 +96,7 @@ from lilbee.crawler import (
     require_valid_crawl_url,
 )
 from lilbee.crawler.events import BROWSER_SETUP_COMPONENT
+from lilbee.crawler.models import crawl_limit_error
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
     ChunkType,
@@ -988,6 +989,9 @@ class ChatScreen(Screen[None]):
             self.notify(str(exc), severity="error")
             return
         depth, max_pages, include_subdomains, render_mode = self._parse_crawl_flags(parts[1:])
+        if (too_large := crawl_limit_error(depth, max_pages)) is not None:
+            self.notify(too_large, severity="error")
+            return
         self._start_crawl(
             url,
             depth,
