@@ -1709,6 +1709,26 @@ async def test_cmd_crawl_refuses_a_depth_or_page_count_the_engine_cannot_hold(fl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("flag", ["--depth", "--max-pages"])
+@pytest.mark.parametrize("value", ["1e300", "inf", "nan", "-inf", "2.5", "abc"])
+async def test_cmd_crawl_refuses_a_flag_value_that_is_not_a_whole_number(flag, value) -> None:
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch.object(screen, "_start_crawl") as mock_start,
+            patch.object(screen, "notify") as notify,
+        ):
+            screen._cmd_crawl(f"https://example.com {flag} {value}")
+        mock_start.assert_not_called()
+        assert notify.call_args.args[0].startswith(flag)
+        assert notify.call_args.kwargs["severity"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_cmd_crawl_accepts_the_largest_depth_and_page_count() -> None:
     app = LilbeeApp()
     async with app.run_test() as pilot:

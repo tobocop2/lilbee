@@ -7921,10 +7921,12 @@ class TestParseCrawlFlags:
             None,
         )
 
-    def test_invalid_values(self):
+    @pytest.mark.parametrize("value", ["abc", "1e300", "inf", "nan"])
+    def test_invalid_values(self, value):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (None, None, False, None)
+        with pytest.raises(ValueError, match="--depth"):
+            ChatScreen._parse_crawl_flags(["--depth", value])
 
     def test_missing_value(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
