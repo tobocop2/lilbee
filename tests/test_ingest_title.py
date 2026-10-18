@@ -97,6 +97,35 @@ class TestJunkStems:
         ]:
             assert derive_title(name) == "", name
 
+    def test_a_crawled_page_named_by_a_bare_number_takes_it_as_title(self):
+        assert derive_title("_web/forum.example.com/thread/12345~25c17501722158ba.md") == "12345"
+        assert derive_title("_web/forum.example.com/thread/7~25c17501722158ba.md") == "7"
+
+    def test_a_crawled_page_named_by_a_hex_string_takes_it_as_title(self):
+        assert derive_title("_web/example.com/c/a1b2c3d4e5f6~25c17501722158ba.md") == "a1b2c3d4e5f6"
+        assert derive_title("_web/example.com/c/DEADBEEF~25c17501722158ba.md") == "DEADBEEF"
+
+    def test_other_junk_stems_of_a_crawled_page_stay_untitled(self):
+        for name in [
+            "IMG_1234",
+            "scan_001",
+            "2024-03-15",
+            "2024 03 15",
+            "doc42",
+            "x",
+            "ab",
+            "a1b2c3d4-e5f6-a7b8",
+            "1.5",
+        ]:
+            assert derive_title(f"_web/example.com/p/{name}~25c17501722158ba.md") == "", name
+
+    def test_a_local_file_named_by_a_number_stays_untitled(self):
+        assert derive_title("filings/12345.pdf") == ""
+
+    def test_extracted_title_beats_a_numeric_page_name(self):
+        name = "_web/forum.example.com/thread/12345~25c17501722158ba.md"
+        assert derive_title(name, "Help with setup") == "Help with setup"
+
     def test_real_stems_survive(self):
         assert derive_title("project_falcon_notes.pdf") == "project falcon notes"
         assert derive_title("survey_214.pdf") == "survey 214"
