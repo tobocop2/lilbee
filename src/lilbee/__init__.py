@@ -84,7 +84,7 @@ def _shrink_hf_download_chunk_size() -> None:
 _shrink_hf_download_chunk_size()
 
 
-# HF and LiteLLM log filters live next to their respective implementations
+# The HF log filter lives next to its implementation
 # (catalog/hf_client.py and providers/litellm_sdk.py). They install themselves
 # on module import; this package's __init__.py stays free of HF/LiteLLM
 # implementation detail.

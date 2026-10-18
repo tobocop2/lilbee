@@ -487,7 +487,7 @@ class SettingsScreen(Screen[None]):
         """Discover installed models off the UI thread, then push the picker.
 
         ``classify_installed_models_full`` probes the native registry,
-        Ollama (HTTP), and litellm provider lists. Running it on the
+        Ollama (HTTP), and SDK provider lists. Running it on the
         event loop blocks paint for hundreds of ms; the chat-bar uses
         the same worker pattern.
         """

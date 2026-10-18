@@ -2,7 +2,7 @@
 
 Every adapter must satisfy these invariants. The tests are the
 executable contract behind the Protocol. Today the only adapter is
-``LitellmSdkBackend``, which is exercised with ``sys.modules["litellm"]``
+``LiterLlmSdkBackend``, which is exercised with ``sys.modules["litellm"]``
 patched to a ``MagicMock`` so no real SDK call happens. When a second
 adapter lands (e.g. ``LiterLlmSdkBackend``), add it to the
 ``BACKEND_FACTORIES`` parametrization and make sure it keeps passing.
@@ -29,9 +29,9 @@ from lilbee.providers.sdk_backend import (
 
 def _make_litellm_backend() -> LlmSdkBackend:
     """Construct the litellm-backed adapter."""
-    from lilbee.providers.litellm_sdk import LitellmSdkBackend
+    from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
 
-    return LitellmSdkBackend()
+    return LiterLlmSdkBackend()
 
 
 BACKEND_FACTORIES: list[Callable[[], LlmSdkBackend]] = [_make_litellm_backend]
@@ -121,7 +121,7 @@ class TestAvailable:
         def not_installed(dist: str) -> str:
             raise PackageNotFoundError(dist)
 
-        with mock.patch("lilbee.providers.litellm_sdk._dist_version", not_installed):
+        with mock.patch("lilbee.providers.liter_llm_sdk._dist_version", not_installed):
             assert backend.available() is False
 
 

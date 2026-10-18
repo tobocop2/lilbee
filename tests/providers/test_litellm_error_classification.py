@@ -15,7 +15,7 @@ from unittest import mock
 import pytest
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.litellm_sdk import _KIND_MESSAGES, _classify_litellm_error, _provider_error
+from lilbee.providers.liter_llm_sdk import _KIND_MESSAGES, _classify_litellm_error, _provider_error
 
 # The kinds this backend can actually raise. Kinds that only a local engine can
 # produce are excluded: a message for one here is unreachable text that reads as
@@ -142,7 +142,7 @@ def test_complete_surfaces_classified_message_end_to_end(fake_litellm: types.Mod
     # The reported bug: a Gemini 429 wrapped in a mid-stream fallback, driven
     # all the way through backend.complete. The user must see the clean
     # rate-limit message, never the raw blob.
-    from lilbee.providers.litellm_sdk import LitellmSdkBackend
+    from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
     from lilbee.providers.model_ref import parse_model_ref
     from lilbee.providers.sdk_backend import CompletionRequest
 
@@ -151,7 +151,7 @@ def test_complete_surfaces_classified_message_end_to_end(fake_litellm: types.Mod
     outer.original_exception = inner  # type: ignore[attr-defined]
     fake_litellm.completion = mock.MagicMock(side_effect=outer)
 
-    backend = LitellmSdkBackend()
+    backend = LiterLlmSdkBackend()
     req = CompletionRequest(
         ref=parse_model_ref("gemini/gemini-3.1-pro"),
         messages=[{"role": "user", "content": "test"}],

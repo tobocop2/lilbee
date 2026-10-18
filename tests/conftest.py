@@ -50,7 +50,7 @@ from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SourceSummary
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.fleet.binary import EngineTool
-from lilbee.providers.litellm_sdk import litellm_available as _real_litellm_available
+from lilbee.providers.liter_llm_sdk import liter_llm_available as _real_liter_llm_available
 from lilbee.runtime.lock import _no_sync_running
 
 # Pristine extraction entry points, captured before any test can patch them.
@@ -227,21 +227,21 @@ def _suppress_model_scan(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _assume_litellm_available(request, monkeypatch):
+def _assume_liter_llm_available(request, monkeypatch):
     """Assume the SDK extra is installed for unit tests.
 
     Production code now gates remote-model discovery on
-    ``litellm_available()``. Dev environments without ``lilbee[litellm]``
+    ``liter_llm_available()``. Dev environments without ``lilbee[litellm]``
     would otherwise short-circuit every remote-discovery test. Tests
     that cover the missing-extra path skip this fixture with
     ``@pytest.mark.real_litellm_probe``.
     """
     if "real_litellm_probe" in {m.name for m in request.node.iter_markers()}:
         return
-    monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: True)
+    monkeypatch.setattr("lilbee.providers.liter_llm_sdk.liter_llm_available", lambda: True)
 
 
-def _only_real_litellm_installed(dist: str) -> str:
+def _only_real_liter_llm_installed(dist: str) -> str:
     if dist == "litellm":
         return "1.98.0"
     raise PackageNotFoundError(dist)
@@ -250,10 +250,12 @@ def _only_real_litellm_installed(dist: str) -> str:
 @pytest.fixture(autouse=True)
 def _seal_litellm_distributions(monkeypatch):
     """Report real litellm installed and no fork, instead of the host's packages."""
-    monkeypatch.setattr("lilbee.providers.litellm_sdk._dist_version", _only_real_litellm_installed)
-    _real_litellm_available.cache_clear()
+    monkeypatch.setattr(
+        "lilbee.providers.liter_llm_sdk._dist_version", _only_real_liter_llm_installed
+    )
+    _real_liter_llm_available.cache_clear()
     yield
-    _real_litellm_available.cache_clear()
+    _real_liter_llm_available.cache_clear()
 
 
 @pytest.fixture(autouse=True)

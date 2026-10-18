@@ -171,15 +171,14 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
 
     A local ref forced through the SDK keeps the raw filtered options; an API ref
     gets the shared per-call mapping (``num_predict`` -> ``max_tokens``, drop
-    ``num_ctx``) plus a ``top_k`` drop: litellm would forward ``top_k`` (into
-    ``extra_body`` for OpenAI-compatible) without erroring, but hosted APIs ignore
-    it, so dropping it keeps the wire request clean.
+    ``num_ctx``) plus a ``top_k`` drop: hosted APIs ignore ``top_k``, so dropping it
+    keeps the wire request clean.
     """
     if not ref.is_api:
         filtered = filter_options(options)
         think = filtered.pop("think", None)
         if think is False and ref.provider == ModelSource.OLLAMA:
-            # litellm maps reasoning_effort onto Ollama's think field; any value
+            # Ollama maps reasoning_effort onto its think field; any value
             # outside low/medium/high turns thinking off.
             filtered["reasoning_effort"] = OLLAMA_NO_THINKING
         return filtered

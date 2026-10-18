@@ -546,7 +546,7 @@ class TestModelManagerIsInstalled:
         mgr = ModelManager(models_dir)
         assert mgr.is_installed("missing.gguf", ModelSource.NATIVE) is False
 
-    def test_litellm_installed(self) -> None:
+    def test_liter_llm_installed(self) -> None:
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()

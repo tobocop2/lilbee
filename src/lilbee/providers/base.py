@@ -451,7 +451,7 @@ class LLMProvider(Protocol):
     def list_chat_models(self, provider: str) -> list[str]:
         """List frontier chat models the provider is aware of for *provider*.
 
-        Returns the unfiltered upstream catalog (whatever litellm
+        Returns the unfiltered upstream catalog (whatever the SDK
         exposes for API providers; an empty list for local backends
         like the llama-server fleet that have no notion of external
         catalogs).

@@ -291,14 +291,14 @@ class TestSettingsFeatureGating:
     def test_api_keys_group_hidden_without_litellm(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
-        with mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=False):
+        with mock.patch("lilbee.providers.liter_llm_sdk.liter_llm_available", return_value=False):
             groups = settings_mod.group_settings()
         assert "API-Keys" not in groups
 
     def test_api_keys_group_visible_with_litellm(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
-        with mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True):
+        with mock.patch("lilbee.providers.liter_llm_sdk.liter_llm_available", return_value=True):
             groups = settings_mod.group_settings()
         assert "API-Keys" in groups
 
@@ -612,14 +612,14 @@ class TestAppCanonicalizeFallbackNotice:
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.core.config import cfg
         from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
-        from lilbee.modelhub.model_manager.validation import REASON_LITELLM_MISSING
+        from lilbee.modelhub.model_manager.validation import REASON_LITER_LLM_MISSING
 
         app = LilbeeApp()
         embed_canon = CanonicalRef(
             original="ollama/nomic-embed-text:latest",
             effective="ollama/nomic-embed-text:latest",
             status=ValidationResult.UNKNOWN,
-            reason=REASON_LITELLM_MISSING,
+            reason=REASON_LITER_LLM_MISSING,
         )
         ok_canon = CanonicalRef(
             original="ok/model", effective="ok/model", status=ValidationResult.OK
@@ -1431,7 +1431,7 @@ class TestSyncSkippedMessageBranches:
 class TestChattyDependencyFilters:
     """Each lib's substring filter lives next to that lib's adapter module
     and installs on import (catalog/hf_client.py for HF,
-    providers/litellm_sdk.py for LiteLLM). Importing the adapter module is
+    providers/liter_llm_sdk.py for LiteLLM). Importing the adapter module is
     what attaches the filter to the upstream logger.
     """
 
@@ -1456,7 +1456,7 @@ class TestChattyDependencyFilters:
         assert all(f.filter(keep) is True for f in hf_logger.filters)
 
     def test_litellm_cost_map_warning_is_dropped(self) -> None:
-        import lilbee.providers.litellm_sdk  # noqa: F401  -- import for filter install
+        import lilbee.providers.liter_llm_sdk  # noqa: F401  -- import for filter install
 
         litellm_logger = logging.getLogger("LiteLLM")
         noisy = self._record(
@@ -1475,7 +1475,7 @@ class TestChattyDependencyFilters:
     )
     def test_litellm_aws_messages_are_dropped(self, aws_message: str) -> None:
         """AWS-related LiteLLM advisories are filtered: lilbee never supports AWS."""
-        import lilbee.providers.litellm_sdk  # noqa: F401  -- import for filter install
+        import lilbee.providers.liter_llm_sdk  # noqa: F401  -- import for filter install
 
         litellm_logger = logging.getLogger("LiteLLM")
         noisy = self._record(litellm_logger.name, aws_message)
@@ -1483,7 +1483,7 @@ class TestChattyDependencyFilters:
 
     def test_litellm_unrelated_message_passes_through(self) -> None:
         """Filter is targeted: a generic LiteLLM warning still surfaces."""
-        import lilbee.providers.litellm_sdk  # noqa: F401  -- import for filter install
+        import lilbee.providers.liter_llm_sdk  # noqa: F401  -- import for filter install
 
         litellm_logger = logging.getLogger("LiteLLM")
         keep = self._record(litellm_logger.name, "Rate limit hit, retrying in 5s")

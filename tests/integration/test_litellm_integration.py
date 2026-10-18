@@ -20,7 +20,7 @@ import pytest
 litellm = pytest.importorskip("litellm")
 
 from lilbee.core.config import cfg  # noqa: E402
-from lilbee.providers import litellm_sdk as _litellm_sdk_mod  # noqa: E402
+from lilbee.providers import liter_llm_sdk as _liter_llm_sdk_mod  # noqa: E402
 from lilbee.providers.base import (  # noqa: E402
     ChatResult,
     StreamFinish,
@@ -28,7 +28,7 @@ from lilbee.providers.base import (  # noqa: E402
     ToolCallDelta,
 )
 from lilbee.providers.fleet.swap_manager import _pick_free_ports  # noqa: E402
-from lilbee.providers.litellm_sdk import LitellmSdkBackend  # noqa: E402
+from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend  # noqa: E402
 from lilbee.providers.local_servers import OLLAMA  # noqa: E402
 from lilbee.providers.local_servers.spec import LocalServerSpec  # noqa: E402
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider  # noqa: E402
@@ -79,21 +79,21 @@ def _isolate_cfg(ollama_stub_base: str):
 @pytest.fixture(autouse=True)
 def _stub_detects_as_ollama(monkeypatch: pytest.MonkeyPatch, ollama_stub_base: str):
     """Map the stub URL to the Ollama spec; its random port matches no URL pattern."""
-    real_detect = _litellm_sdk_mod.detect_local_server
+    real_detect = _liter_llm_sdk_mod.detect_local_server
 
     def _detect(base_url: str) -> LocalServerSpec | None:
         if base_url.rstrip("/") == ollama_stub_base:
             return OLLAMA
         return real_detect(base_url)
 
-    monkeypatch.setattr(_litellm_sdk_mod, "detect_local_server", _detect)
+    monkeypatch.setattr(_liter_llm_sdk_mod, "detect_local_server", _detect)
 
 
 class TestSdkEmbed:
     def test_embed_returns_vectors(self) -> None:
         """Embedding via the stub returns float vectors."""
         cfg.embedding_model = OLLAMA_EMBED_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmSdkBackend())
         result = provider.embed(["hello world"])
 
         assert len(result) == 1
@@ -103,7 +103,7 @@ class TestSdkEmbed:
     def test_embed_batch(self) -> None:
         """Batch embedding returns one vector per input."""
         cfg.embedding_model = OLLAMA_EMBED_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmSdkBackend())
         texts = ["hello", "world", "test"]
         result = provider.embed(texts)
 
@@ -115,7 +115,7 @@ class TestSdkChat:
     def test_chat_returns_response(self) -> None:
         """Chat completion via the stub returns non-empty text."""
         cfg.chat_model = OLLAMA_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmSdkBackend())
         result = provider.chat(
             [{"role": "user", "content": "Say hello in exactly one word."}],
             options={"temperature": 0},
@@ -127,7 +127,7 @@ class TestSdkChat:
     def test_chat_stream_yields_tokens(self) -> None:
         """Streaming chat yields text, tool-call deltas, and a closing finish frame."""
         cfg.chat_model = OLLAMA_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmSdkBackend())
         result = provider.chat(
             [{"role": "user", "content": "Count from 1 to 3."}],
             stream=True,
@@ -144,7 +144,7 @@ class TestSdkChat:
     def test_chat_with_model_override(self) -> None:
         """Model override in chat() works."""
         cfg.chat_model = OLLAMA_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmSdkBackend())
         result = provider.chat(
             [{"role": "user", "content": "Say yes."}],
             model=OLLAMA_MODEL,
@@ -158,7 +158,7 @@ class TestSdkChat:
 class TestSdkModelManagement:
     def test_list_models(self) -> None:
         """list_models returns the stub's models."""
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmSdkBackend())
         models = provider.list_models()
 
         assert isinstance(models, list)
@@ -167,7 +167,7 @@ class TestSdkModelManagement:
 
     def test_show_model(self) -> None:
         """show_model returns model info dict."""
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmSdkBackend())
         info = provider.show_model(OLLAMA_MODEL)
 
         assert info is not None

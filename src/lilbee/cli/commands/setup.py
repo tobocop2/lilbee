@@ -361,7 +361,7 @@ def self_check_cmd(
         console.print(styled(("SELF-CHECK PASSED", theme.ACCENT)))
 
 
-_SELF_CHECK_EXTRAS = ("litellm", "crawl4ai", "spacy", "graspologic_native")
+_SELF_CHECK_EXTRAS = ("liter_llm", "crawl4ai", "spacy", "graspologic_native")
 
 # The name of the functional charset-detection leg in self-check-extras output.
 _CHARSET_PROBE = "charset_detection"
@@ -392,7 +392,7 @@ def _probe_charset_detection() -> str | None:
 
 
 def self_check_extras_cmd() -> None:
-    """Verify optional extras (crawler, litellm, graph) are bundled and importable."""
+    """Verify optional extras (crawler, liter-llm, graph) are bundled and importable."""
     results: dict[str, Any] = {}
     failed: list[str] = []
     for name in _SELF_CHECK_EXTRAS:
