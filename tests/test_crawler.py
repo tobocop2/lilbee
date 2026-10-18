@@ -189,6 +189,13 @@ class TestUrlToFilename:
         url = "https://example.com/" + "a" * length
         assert url_to_filename(url) == _named("example.com/" + "a" * kept, url)
 
+    def test_the_host_folder_stays_when_a_device_name_takes_a_mark_at_99_bytes(self):
+        host = "h" * 75 + ".test"
+        url = f"https://{host}/con." + "b" * 95 + ".x"
+        name = url_to_filename(url)
+        assert name == _named(f"{host}/_con", url)
+        assert len(name.encode("utf-8")) <= 200
+
     @pytest.mark.parametrize("separator", ["-", "_", "."])
     def test_a_long_name_is_cut_at_the_last_separator_inside_99_bytes(self, separator: str):
         words = [f"word{n:02d}" for n in range(40)]
