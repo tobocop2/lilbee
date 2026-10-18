@@ -52,7 +52,7 @@ _REQUEST_TIMEOUT_S = 600
 
 REMOTE_SDK_MISSING_MSG = (
     "Remote and API models need the lilbee[providers] extra. If you installed lilbee "
-    "with uv tool install, run your install command again with liter-llm added to the "
+    "with uv tool install, run your install command again with providers added to the "
     "extras. If you installed lilbee with pip, run: pip install 'lilbee[providers]'."
 )
 

@@ -111,7 +111,7 @@ class TestMissingSdk:
 
         with (
             inject_modules({"liter_llm": None}),
-            pytest.raises(ProviderError, match=r"lilbee\[liter-llm\]"),
+            pytest.raises(ProviderError, match=r"lilbee\[providers\]"),
         ):
             backend.complete(_completion_request())
 
