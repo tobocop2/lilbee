@@ -27,8 +27,10 @@ from .defaults import (
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
     ENGINE_IDLE_TTL_MINUTES_DEFAULT,
+    MAX_CRAWL_CONCURRENCY,
     MAX_CRAWL_DEPTH,
     MAX_CRAWL_PAGES,
+    MAX_CRAWL_WAIT_SECONDS,
 )
 from .enums import (
     ChatMode,
@@ -733,18 +735,30 @@ class Config(BaseSettings):
     crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
 
     # Per-request delay + jitter, seconds, at most one hour.
-    crawl_mean_delay: float = ConfigField(default=0.5, ge=0.0, le=3600.0, writable=True)
-    crawl_max_delay_range: float = ConfigField(default=0.5, ge=0.0, le=3600.0, writable=True)
+    crawl_mean_delay: float = ConfigField(
+        default=0.5, ge=0.0, le=MAX_CRAWL_WAIT_SECONDS, writable=True
+    )
+    crawl_max_delay_range: float = ConfigField(
+        default=0.5, ge=0.0, le=MAX_CRAWL_WAIT_SECONDS, writable=True
+    )
 
     # In-flight requests per crawl, at most 256.
-    crawl_concurrent_requests: int = ConfigField(default=3, ge=1, le=256, writable=True)
+    crawl_concurrent_requests: int = ConfigField(
+        default=3, ge=1, le=MAX_CRAWL_CONCURRENCY, writable=True
+    )
 
     # Per-domain rate-limiter that backs off on HTTP 429/503 and retries.
     crawl_retry_on_rate_limit: bool = ConfigField(default=True, writable=True)
     # Retry delays in seconds, at most one hour each.
-    crawl_retry_base_delay_min: float = ConfigField(default=1.0, ge=0.0, le=3600.0, writable=True)
-    crawl_retry_base_delay_max: float = ConfigField(default=3.0, ge=0.0, le=3600.0, writable=True)
-    crawl_retry_max_backoff: float = ConfigField(default=30.0, ge=0.0, le=3600.0, writable=True)
+    crawl_retry_base_delay_min: float = ConfigField(
+        default=1.0, ge=0.0, le=MAX_CRAWL_WAIT_SECONDS, writable=True
+    )
+    crawl_retry_base_delay_max: float = ConfigField(
+        default=3.0, ge=0.0, le=MAX_CRAWL_WAIT_SECONDS, writable=True
+    )
+    crawl_retry_max_backoff: float = ConfigField(
+        default=30.0, ge=0.0, le=MAX_CRAWL_WAIT_SECONDS, writable=True
+    )
     crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, writable=True)
 
     # Regex patterns dropped at link-discovery time. Defaults block CMS
