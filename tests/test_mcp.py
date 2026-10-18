@@ -2279,6 +2279,13 @@ class TestSettingsMcp:
         assert "crawl_browser_extra_wait_ms" in result["error"]
         assert cfg.crawl_browser_extra_wait_ms == 1000
 
+    def test_settings_set_refuses_a_crawl_delay_the_engine_cannot_hold(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.crawl_mean_delay = 0.5
+        result = settings_set({"crawl_mean_delay": 1e300})
+        assert "crawl_mean_delay" in result["error"]
+        assert cfg.crawl_mean_delay == 0.5
+
     def test_settings_set_refuses_a_crawl_user_agent_with_a_control_character(self, isolated_env):
         cfg.data_root = isolated_env
         before = cfg.crawl_user_agent

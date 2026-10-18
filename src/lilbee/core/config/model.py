@@ -711,14 +711,15 @@ class Config(BaseSettings):
     # site whose robots.txt cannot be read.
     crawl_respect_robots_txt: bool = ConfigField(default=True, writable=True)
 
-    # Optional global ceilings. None = no ceiling.
-    crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
-    crawl_max_pages: int | None = ConfigField(default=None, ge=1, writable=True)
+    # Optional global ceilings. None = no ceiling. A depth is at most 100 links and a page
+    # count at most ten million, so the engine never gets a number it cannot hold.
+    crawl_max_depth: int | None = ConfigField(default=None, ge=0, le=100, writable=True)
+    crawl_max_pages: int | None = ConfigField(default=None, ge=1, le=10_000_000, writable=True)
 
     # Default page bound for an unbounded crawl (no explicit max_pages /
     # crawl_max_pages), so a hostile site can't exhaust the disk by default.
     # An explicit limit overrides it; raise this to crawl larger sites unbounded.
-    crawl_safety_max_pages: int = ConfigField(default=5_000, ge=1, writable=True)
+    crawl_safety_max_pages: int = ConfigField(default=5_000, ge=1, le=10_000_000, writable=True)
 
     # Per-URL fetch timeout, seconds.
     crawl_timeout: int = ConfigField(default=30, ge=1, le=3600, writable=True)
@@ -733,18 +734,19 @@ class Config(BaseSettings):
     # Seconds between periodic syncs during crawl. 0 = sync only at end.
     crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
 
-    # Per-request delay + jitter.
-    crawl_mean_delay: float = ConfigField(default=0.5, ge=0.0, writable=True)
-    crawl_max_delay_range: float = ConfigField(default=0.5, ge=0.0, writable=True)
+    # Per-request delay + jitter, seconds, at most one hour.
+    crawl_mean_delay: float = ConfigField(default=0.5, ge=0.0, le=3600.0, writable=True)
+    crawl_max_delay_range: float = ConfigField(default=0.5, ge=0.0, le=3600.0, writable=True)
 
-    # In-flight requests per crawl.
-    crawl_concurrent_requests: int = ConfigField(default=3, ge=1, writable=True)
+    # In-flight requests per crawl, at most 256.
+    crawl_concurrent_requests: int = ConfigField(default=3, ge=1, le=256, writable=True)
 
     # Per-domain rate-limiter that backs off on HTTP 429/503 and retries.
     crawl_retry_on_rate_limit: bool = ConfigField(default=True, writable=True)
-    crawl_retry_base_delay_min: float = ConfigField(default=1.0, ge=0.0, writable=True)
-    crawl_retry_base_delay_max: float = ConfigField(default=3.0, ge=0.0, writable=True)
-    crawl_retry_max_backoff: float = ConfigField(default=30.0, ge=0.0, writable=True)
+    # Retry delays in seconds, at most one hour each.
+    crawl_retry_base_delay_min: float = ConfigField(default=1.0, ge=0.0, le=3600.0, writable=True)
+    crawl_retry_base_delay_max: float = ConfigField(default=3.0, ge=0.0, le=3600.0, writable=True)
+    crawl_retry_max_backoff: float = ConfigField(default=30.0, ge=0.0, le=3600.0, writable=True)
     crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, writable=True)
 
     # Regex patterns dropped at link-discovery time. Defaults block CMS
