@@ -182,6 +182,13 @@ class TestUrlToFilename:
         url = "https://example.com/" + "漢" * 40
         assert url_to_filename(url) == _named("example.com/" + "漢" * 33, url)
 
+    @pytest.mark.parametrize(("length", "kept"), [(99, 99), (100, 99)])
+    def test_a_name_of_100_bytes_loses_its_last_byte_and_one_of_99_is_kept(
+        self, length: int, kept: int
+    ):
+        url = "https://example.com/" + "a" * length
+        assert url_to_filename(url) == _named("example.com/" + "a" * kept, url)
+
     @pytest.mark.parametrize("separator", ["-", "_", "."])
     def test_a_long_name_is_cut_at_the_last_separator_inside_99_bytes(self, separator: str):
         words = [f"word{n:02d}" for n in range(40)]
