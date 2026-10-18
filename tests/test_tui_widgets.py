@@ -5759,6 +5759,42 @@ async def test_crawl_dialog_submit_valid():
     assert result.max_pages == 10
 
 
+@pytest.mark.parametrize(
+    ("depth", "pages", "name"),
+    [("101", "10", "depth"), ("2", "10000001", "max_pages"), ("2", str(2**64), "max_pages")],
+)
+async def test_crawl_dialog_refuses_a_depth_or_page_count_the_engine_cannot_hold(
+    depth, pages, name
+):
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#crawl-url-input").value = "https://example.com"
+        app.screen.query_one("#crawl-depth-input").value = depth
+        app.screen.query_one("#crawl-max-pages-input").value = pages
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            result = app.screen._validate()
+        assert isinstance(result, str)
+        assert name in result
+
+
+async def test_crawl_dialog_accepts_the_largest_depth_and_page_count():
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#crawl-url-input").value = "https://example.com"
+        app.screen.query_one("#crawl-depth-input").value = "100"
+        app.screen.query_one("#crawl-max-pages-input").value = "10000000"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            params = app.screen._validate()
+    assert isinstance(params, CrawlParams)
+    assert (params.depth, params.max_pages) == (100, 10_000_000)
+
+
 async def test_crawl_dialog_browser_checkbox_sets_browser_mode(monkeypatch):
     """Checking the browser checkbox returns CrawlParams with render_mode=browser."""
     from textual.widgets import Checkbox

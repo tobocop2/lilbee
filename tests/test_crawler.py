@@ -2585,7 +2585,8 @@ class TestRefusedEngine:
         assert stub.seeds == [SEED]
 
     async def test_an_error_while_lilbee_builds_the_config_stays_a_failed_crawl(self, isolated_env):
-        cfg.crawl_mean_delay = float("inf")
+        # Past the validator, which refuses an infinite delay on every entry point.
+        object.__setattr__(cfg, "crawl_mean_delay", float("inf"))
         events: list[EventType] = []
         stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)])
         with stub.installed():

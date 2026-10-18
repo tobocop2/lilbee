@@ -1477,6 +1477,34 @@ class TestCrawl:
         assert "error" in result
         mock_start.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("kwargs", "name"),
+        [
+            ({"depth": 101}, "depth"),
+            ({"depth": 2**64}, "depth"),
+            ({"max_pages": 10_000_001}, "max_pages"),
+            ({"max_pages": 2**64}, "max_pages"),
+        ],
+    )
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.start_crawl")
+    async def test_rejects_a_depth_or_page_count_the_engine_cannot_hold(
+        self, mock_start, _mock_avail, isolated_env, kwargs, name
+    ):
+        result = await crawl(url="https://example.com", **kwargs)
+        assert name in result["error"]
+        mock_start.assert_not_called()
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.require_valid_crawl_url")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="t1")
+    async def test_accepts_the_largest_depth_and_page_count(
+        self, mock_start, _mock_valid, _mock_avail, isolated_env
+    ):
+        result = await crawl(url="https://example.com", depth=100, max_pages=10_000_000)
+        assert result["status"] == "started"
+        mock_start.assert_called_once()
+
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.mcp_server.start_crawl")
     async def test_rejects_negative_max_pages(self, mock_start, _mock_avail, isolated_env):

@@ -8,6 +8,12 @@ and general system prompts, and the CORS allow-origin regex.
 
 from __future__ import annotations
 
+# The largest crawl depth and page count lilbee passes to the crawl engine. The engine itself
+# refuses a depth above 100 and cannot hold a page count near 2**64. Every entry point that takes
+# a depth or a page count (the settings and each per-crawl value) shares these two bounds.
+MAX_CRAWL_DEPTH = 100
+MAX_CRAWL_PAGES = 10_000_000
+
 DEFAULT_IGNORE_DIRS = frozenset(
     {
         "node_modules",

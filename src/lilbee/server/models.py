@@ -13,6 +13,7 @@ from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigF
 from lilbee.app.models import ModelEntry
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
+from lilbee.core.config.defaults import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
 from lilbee.core.config.enums import CrawlRenderMode, KvCacheType, OcrMode
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
@@ -352,8 +353,8 @@ class CrawlRequest(BaseModel):
     """
 
     url: str
-    depth: int | None = Field(default=None, ge=0)
-    max_pages: int | None = Field(default=None, ge=0)
+    depth: int | None = Field(default=None, ge=0, le=MAX_CRAWL_DEPTH)
+    max_pages: int | None = Field(default=None, ge=0, le=MAX_CRAWL_PAGES)
     render_mode: CrawlRenderMode | None = Field(default=None)
     include_subdomains: bool = Field(default=False)
 
