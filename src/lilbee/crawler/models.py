@@ -5,11 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TypeAlias
 
+from lilbee.core.config.defaults import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
 from lilbee.runtime.cancellation import CancelSignal
 
 # Explicit "no page limit" for a crawl. Distinct from None, which means
 # "unspecified, use the protective default cfg.crawl_safety_max_pages".
 CRAWL_PAGES_UNLIMITED = 0
+
+
+def crawl_limit_error(depth: int | None, max_pages: int | None) -> str | None:
+    """The message for a per-crawl depth or page count above the shared bounds, else None."""
+    if depth is not None and depth > MAX_CRAWL_DEPTH:
+        return f"depth must be at most {MAX_CRAWL_DEPTH}"
+    if max_pages is not None and max_pages > MAX_CRAWL_PAGES:
+        return f"max_pages must be at most {MAX_CRAWL_PAGES}"
+    return None
 
 
 @dataclass

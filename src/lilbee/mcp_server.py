@@ -68,6 +68,7 @@ from lilbee.crawler import (
     is_url,
     require_valid_crawl_url,
 )
+from lilbee.crawler.models import crawl_limit_error
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
@@ -522,6 +523,8 @@ async def crawl(
         return _error("depth must be 0 or greater (pass depth=null to crawl the whole site)")
     if max_pages is not None and max_pages < 0:
         return _error("max_pages must be 0 or greater (0 = unlimited, omit for the safety cap)")
+    if (too_large := crawl_limit_error(depth, max_pages)) is not None:
+        return _error(too_large)
     try:
         # URL validation resolves the host (blocking DNS), so it runs off the loop.
         # The crawl itself must be scheduled ON the loop: start_crawl uses
