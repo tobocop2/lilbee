@@ -314,7 +314,7 @@ jobs:
 
       - name: Install dependencies
         if: matrix.os != 'macos-15-intel'
-        run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
+        run: uv sync --extra release && uv pip install 'nuitka[onefile]==4.2.2' pip
 
       # Intel Mac: `uv sync` can't run here -- stock lancedb 0.39.0 ships no
       # macosx_x86_64 wheel. One install resolves the whole cell: lancedb comes
@@ -350,7 +350,7 @@ jobs:
           uv pip install --python-platform x86_64-apple-darwin \
             --constraint intel-constraints.txt \
             --extra-index-url https://lilbee.sh/compat/ \
-            lancedb==0.39.0+compat '.[release]' 'nuitka[onefile]>=4.0,<5' pip
+            lancedb==0.39.0+compat '.[release]' 'nuitka[onefile]==4.2.2' pip
 
       - name: Verify extras installed in build venv
         shell: bash
