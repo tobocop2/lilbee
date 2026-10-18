@@ -1360,13 +1360,12 @@ class TestRefusedEngineOnTheCli:
         assert [list(found) for found in objects] == [["error"]]
         assert objects[0]["error"].startswith(PATTERN_SETTING)
 
-    def test_a_depth_crawlberg_refuses_exits_nonzero_with_crawlbergs_reason(self, site):
+    def test_a_depth_above_the_engine_limit_is_refused_before_any_request(self, site):
         cfg.crawl_render_mode = HTTP
         result = CliRunner().invoke(app, ["add", site.url("/scope/"), "--crawl", "--depth", "101"])
-        assert result.exit_code == 1
-        assert f"Error: {NO_SETTING}invalid_config: max_depth must be <= 100 (got 101)" in (
-            result.output
-        )
+        assert result.exit_code == 2
+        assert "--depth" in result.output
+        assert "100" in result.output
         assert "Traceback" not in result.output
         assert "Crawled" not in result.output
         assert site.paths_since(0, "/scope/") == []
