@@ -366,7 +366,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Flash attention. Empty (auto) enables it; disable for backends or "
             "models where it misbehaves. Resolves the V-cache padding warning "
-            "on models with uneven per-layer V dims."
+            "on models with uneven per-layer V dims. On Vulkan and SYCL lilbee "
+            "sends auto, not on, even when this is true."
         ),
     ),
     "kv_cache_type": SettingDef(
@@ -374,8 +375,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.GENERATION,
         help_text=(
-            "KV cache element type. q8_0 / q4_0 halve or quarter cache memory "
-            "but require flash attention to be enabled."
+            "KV cache element type for both K and V. q8_0 / q4_0 halve or quarter "
+            "cache memory and apply only where lilbee sends flash attention on. On "
+            "Vulkan and SYCL lilbee sends auto, so the cache is f16 there; it is "
+            "also f16 when flash attention is off."
         ),
     ),
     "n_gpu_layers": SettingDef(
@@ -425,17 +428,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Restrict llama.cpp to specific GPU indexes on dual-GPU machines "
             "(e.g. NVIDIA dGPU + integrated). Comma-separated, like '0' or '0,1'. "
             "Applies to Vulkan, CUDA, and ROCm. Requires a restart to take effect."
-        ),
-    ),
-    "main_gpu": SettingDef(
-        int,
-        nullable=True,
-        group=SettingGroup.GENERATION,
-        help_text=(
-            "Primary GPU index for llama.cpp when multiple devices are visible. "
-            "Empty = let llama.cpp pick (index 0). Set this together with "
-            "gpu_devices to pin inference to a specific card. Requires a restart "
-            "to take effect."
         ),
     ),
     "seed": SettingDef(
@@ -939,7 +931,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.API_KEYS,
         secret=True,
-        help_text="API key for the remote OpenAI-compatible endpoint (llm_provider = remote)",
+        help_text=(
+            "API key for the remote OpenAI-compatible endpoint and local model servers. "
+            "Hosted models use their own provider key, never this one"
+        ),
     ),
     "hf_token": SettingDef(
         str,
@@ -1023,15 +1018,21 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.SYSTEM,
         help_text=(
-            "Let the engine outlive lilbee for warm launches; off stops it on last "
-            "exit unless another lilbee sharing the engine asked to keep it"
+            "Keep models loaded while lilbee runs and the engine up for warm launches; "
+            "after every lilbee process has exited, models unload after the idle time. "
+            "Off stops the engine on last exit unless another lilbee asked to keep it. "
+            "A change applies at the next engine start"
         ),
     ),
     "engine_idle_ttl_minutes": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.SYSTEM,
-        help_text="Idle minutes before the engine unloads its weights; 0 keeps them loaded",
+        help_text=(
+            "Idle minutes before the engine unloads its weights; with keep_engine_warm, "
+            "counted from the last lilbee exit; 0 keeps them loaded. "
+            "A change applies at the next engine start"
+        ),
     ),
     "agent_mcp_enabled": SettingDef(
         bool,
@@ -1046,7 +1047,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text="Hard cap on generated tokens per response (blank = no cap)",
+        help_text="Hard cap on generated tokens per response (blank = the model's context window)",
     ),
     "max_reasoning_chars": SettingDef(
         int,

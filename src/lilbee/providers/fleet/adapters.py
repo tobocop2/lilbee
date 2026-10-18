@@ -8,21 +8,22 @@ to assemble one llama-server command line.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
 from lilbee.core.config.enums import RerankerType
+from lilbee.providers.fleet.binary import engine_help, help_lists_option
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cpu import engine_thread_count
-
-log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 # llama-server batch flags; gguf-parser accepts the same names, so vram.py shares these.
 FLAG_BATCH_SIZE = "--batch-size"
 FLAG_UBATCH_SIZE = "--ubatch-size"
+FLAG_FIT_TARGET = "--fit-target"
+FLAG_KV_UNIFIED = "--kv-unified"
+FLAG_KV_UNIFIED_PER_SLOT = "--kv-unified-per-slot"
 
 
 @dataclass(frozen=True)
@@ -101,7 +102,6 @@ _RERANK_MODE_SPECS: dict[RerankMode, RoleServerSpec] = {
 # server can decode concurrently instead of serializing the fan-out.
 LLM_RERANK_CONCURRENCY = 8
 
-_FLAG_MAIN_GPU = "--main-gpu"
 _FLAG_THREADS = "--threads"
 
 
@@ -179,48 +179,29 @@ def expert_offload_patterns(*, cpu_moe: bool, n_cpu_moe: int | None) -> tuple[st
     return (EXPERT_TENSOR_REGEX,) if cpu_moe else ()
 
 
-def _attention_args(
-    flash_attn: str | None, cache_type_k: str | None, cache_type_v: str | None
-) -> list[str]:
-    """Flash-attention and KV cache flags; each stays absent to keep the engine default."""
+def _attention_args(flash_attn: str | None, cache_type: str | None) -> list[str]:
+    """Flash-attention and KV cache flags; each stays absent to keep the engine default.
+
+    One *cache_type* goes to both K and V: llama-server refuses K != V on MLA models.
+    """
     args: list[str] = []
     if flash_attn is not None:
         args += ["--flash-attn", flash_attn]
-    if cache_type_k is not None:
-        args += ["--cache-type-k", cache_type_k]
-    if cache_type_v is not None:
-        args += ["--cache-type-v", cache_type_v]
+    if cache_type is not None:
+        args += ["--cache-type-k", cache_type, "--cache-type-v", cache_type]
     return args
 
 
-def _main_gpu_args(devices: tuple[int, ...]) -> list[str]:
-    """``--main-gpu`` for this instance, empty when it does not apply.
-
-    The index is into this instance's own device list, which is the space its
-    visibility pin exposes to the engine, and it is what the setting's help text
-    already describes. llama.cpp ignores the flag with a single device, so it is
-    only emitted where it changes something: which card holds the model under
-    split-mode none, and the intermediate results and KV under split-mode row.
-
-    An index past the end is refused and said out loud. It was previously not
-    emitted at all, so a user could set it, watch it save, and get nothing.
-    """
-    from lilbee.core.config import cfg
-
-    main_gpu = cfg.main_gpu
-    if main_gpu is None or len(devices) <= 1:
-        return []
-    if not 0 <= main_gpu < len(devices):
-        log.warning(
-            "Ignoring main_gpu=%d: this server runs on %d device(s), so the index has "
-            "to be between 0 and %d. It counts within the cards this role was placed "
-            "on, not across every card in the machine.",
-            main_gpu,
-            len(devices),
-            len(devices) - 1,
-        )
-        return []
-    return [_FLAG_MAIN_GPU, str(main_gpu)]
+def _fit_and_kv_pool_args(
+    fit_target_mib: tuple[int, ...], kv_unified_per_slot: int | None
+) -> list[str]:
+    """``--fit-target`` per device and the shared KV pool flags, each only when given."""
+    args: list[str] = []
+    if fit_target_mib:
+        args += [FLAG_FIT_TARGET, ",".join(str(mib) for mib in fit_target_mib)]
+    if kv_unified_per_slot is not None:
+        args += [FLAG_KV_UNIFIED, FLAG_KV_UNIFIED_PER_SLOT, str(kv_unified_per_slot)]
+    return args
 
 
 def _thread_args() -> list[str]:
@@ -232,6 +213,24 @@ def _thread_args() -> list[str]:
     """
     threads = engine_thread_count()
     return [] if threads is None else [_FLAG_THREADS, str(threads)]
+
+
+# The flags that load the weights into a host copy instead of mapping the file.
+# llama.cpp replaced --no-mmap with --load-mode, and each build refuses the
+# other's flag at startup, so the binary's own --help picks one.
+_FLAG_LOAD_MODE = "--load-mode"
+_LOAD_MODE_NO_MMAP = "none"
+_FLAG_NO_MMAP = "--no-mmap"
+
+
+def _no_mmap_args(binary: Path) -> list[str]:
+    """The no-mmap flag *binary* lists in its ``--help``, ``--load-mode`` first; else empty."""
+    help_text = engine_help(binary)
+    if help_lists_option(help_text, _FLAG_LOAD_MODE):
+        return [_FLAG_LOAD_MODE, _LOAD_MODE_NO_MMAP]
+    if help_lists_option(help_text, _FLAG_NO_MMAP):
+        return [_FLAG_NO_MMAP]
+    return []
 
 
 def build_server_argv(
@@ -247,13 +246,14 @@ def build_server_argv(
     tensor_split: tuple[int, ...] = (),
     mmproj: Path | None = None,
     flash_attn: str | None = None,
-    cache_type_k: str | None = None,
-    cache_type_v: str | None = None,
+    cache_type: str | None = None,
     batch_size: int | None = None,
     no_mmap: bool = False,
     cpu_moe: bool = False,
     n_cpu_moe: int | None = None,
     memory_endpoint: bool = False,
+    fit_target_mib: tuple[int, ...] = (),
+    kv_unified_per_slot: int | None = None,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
@@ -262,7 +262,12 @@ def build_server_argv(
     wins over ``cpu_moe``; the pair would offload the same tensors twice.
     ``memory_endpoint`` is set only for a binary whose ``--help`` advertises
     ``--memory`` (readback.supports_memory_readback): a stock engine dies at
-    launch on the unknown flag.
+    launch on the unknown flag. ``no_mmap`` sends the no-mmap flag the binary's
+    ``--help`` lists, or nothing when it lists neither. ``fit_target_mib`` is
+    the memory the engine's own fit leaves free on each device, in
+    ``--device`` order.
+    ``kv_unified_per_slot`` makes the slots share one KV pool, each slot capped
+    at that window.
     """
     argv = [
         str(binary),
@@ -278,9 +283,8 @@ def build_server_argv(
         "--ctx-size",
         str(ctx_per_slot * slots),
     ]
-    argv += _main_gpu_args(devices)
     argv += _thread_args()
-    argv += _attention_args(flash_attn, cache_type_k, cache_type_v)
+    argv += _attention_args(flash_attn, cache_type)
     if batch_size is not None:
         argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar
@@ -302,11 +306,12 @@ def build_server_argv(
         # a load-time out-of-memory.
         argv += ["--tensor-split", ",".join(str(r) for r in tensor_split)]
     if no_mmap:
-        argv += ["--no-mmap"]
+        argv += _no_mmap_args(binary)
     if n_cpu_moe is not None:
         argv += ["--n-cpu-moe", str(n_cpu_moe)]
     elif cpu_moe:
         argv += ["--cpu-moe"]
+    argv += _fit_and_kv_pool_args(fit_target_mib, kv_unified_per_slot)
     if memory_endpoint:
         from lilbee.providers.fleet.readback import MEMORY_FLAG
 

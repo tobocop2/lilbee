@@ -401,15 +401,27 @@ def resolve_served_model(req: CanonicalChatRequest) -> str:
     return canonical
 
 
+def _log_dropped_images(req: CanonicalChatRequest, model: str) -> None:
+    """Log once when the translator dropped image parts from *req*."""
+    if req.dropped_images:
+        log.warning(
+            "Dropped %d image part(s) from a chat request: lilbee cannot pass images to %s",
+            req.dropped_images,
+            model,
+        )
+
+
 def preflight_chat_request(req: CanonicalChatRequest) -> str:
     """Synchronously validate *req* before any streaming response starts.
 
     Adds the tool-capability check to :func:`resolve_served_model`, so a model
     whose template cannot render tool calls fails with a 4xx instead of burying
-    the failure in an SSE error frame after headers flush.
+    the failure in an SSE error frame after headers flush. It also logs any
+    image parts the translator dropped.
     """
     canonical = resolve_served_model(req)
     _ensure_tool_capability(req, canonical)
+    _log_dropped_images(req, canonical)
     return canonical
 
 

@@ -192,7 +192,6 @@ class StatusConfigInfo(BaseModel):
     n_gpu_layers: int | None = None
     cpu_moe: bool | None = None
     n_cpu_moe: int | None = None
-    main_gpu: int | None = None
     gpu_devices: str | None = None
 
 

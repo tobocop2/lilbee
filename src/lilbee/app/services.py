@@ -330,10 +330,11 @@ def mark_interactive_session() -> None:
 
     The TUI owns the process for its whole lifetime, so an engine bound to it
     keeps its weights resident rather than idle-unloading under a user who is
-    still in the app; closing lilbee releases it. A keep-warm engine outlives the
-    session and keeps its idle window instead. Called by the interactive entry point
-    before anything touches ``get_services``, so the provider is constructed with
-    that intent; a one-shot CLI or the MCP server never calls it.
+    still in the app; closing lilbee releases it. An engine that outlives the
+    session (shared with its other users, or kept warm) keeps its idle window
+    instead. Called by the interactive entry point before anything touches
+    ``get_services``, so the provider is constructed with that intent; a
+    one-shot CLI or the MCP server never calls it.
     """
     _state.interactive = True
 
@@ -533,8 +534,8 @@ def wait_for_hard_exit_teardown() -> None:
 
     An interrupt while waiting force-quits the process: waiting is the only
     thing left, the interpreter would otherwise still join the non-daemon
-    teardown thread, and every platform's child guard reaps the engine when
-    the process dies (kill-on-close job object, pdeathsig, death pipe).
+    teardown thread, and the engine reaper (or, without kernel file locks, the
+    child guard) stops the engine once this was its last user.
     """
     try:
         for thread in _all_threads():

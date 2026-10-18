@@ -2,31 +2,21 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import shutil
+import subprocess
 from enum import StrEnum
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.engine_install import engine_install_hint
 
-# Every index is spelled out rather than pointing at the README. This is read at
-# the moment the engine is needed, often on a remote box. One index per hardware
-# because the builds are not interchangeable: cpu is built with every GPU backend
-# off, metal only ships a macOS arm64 wheel, and vulkan only Linux/Windows ones,
-# so naming a single "default" hands somebody an engine that ignores their GPU.
-_INSTALL_HINT = (
-    "The engine is lilbee's 'engine' extra, published on lilbee.sh rather than "
-    "PyPI, so the index is part of the command:\n"
-    "  NVIDIA (CUDA): pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/\n"
-    "  AMD (ROCm):    pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/\n"
-    "  Apple silicon: pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/metal/\n"
-    "  Other GPUs:    pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/\n"
-    "  No GPU:        pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/\n"
-    "A standalone binary from https://github.com/tobocop2/lilbee/releases/latest "
-    "bundles the engine instead. To bring your own, set LILBEE_LLAMA_SERVER_PATH to "
-    "a llama-server binary and put llama-swap / gguf-parser on PATH."
-)
+# --help exits from arg parsing, before any backend or model load, so this is
+# generous; a binary that cannot even print usage in this time is not one the
+# fleet should silently trust either way.
+_HELP_PROBE_TIMEOUT_S = 15.0
 
 
 class EngineTool(StrEnum):
@@ -60,16 +50,20 @@ def _bundled_tool(tool: EngineTool) -> Path | None:
 def engine_pin() -> str:
     """Identity of the engine this lilbee would spawn; sharing keys on it.
 
-    Two dimensions must match for two processes to share one engine: the engine
+    Three dimensions must match for two processes to share one engine: the engine
     BUILD (a configured ``LILBEE_LLAMA_SERVER_PATH`` is its own identity so a
-    bring-your-own engine never silently shares with a bundled one) and the
+    bring-your-own engine never silently shares with a bundled one), the
     load-affecting CONFIG baked into the launch argv (kv-cache type, expert
-    offload, n-gpu-layers, ctx target, ...). A process whose load config differs
-    computes a different pin, so ``contract_matches`` refuses the bind and it
-    overflows to its own engine rather than silently running on the incumbent's
-    flags. Total: never raises, because it runs on every state write.
+    offload, n-gpu-layers, ctx target, ...), and the revision of the llama-swap
+    config the engine runs under. A process whose pin differs has
+    ``contract_matches`` refuse the bind and overflows to its own engine rather
+    than silently running on the incumbent's flags. Total: never raises, because
+    it runs on every state write.
     """
-    return f"{engine_build_id()}|{_load_config_signature()}"
+    # circular: swap_config -> binary via readback.engine_help
+    from lilbee.providers.fleet.swap_config import SWAP_CONFIG_REVISION
+
+    return f"{engine_build_id()}|{_load_config_signature()}|swap-config={SWAP_CONFIG_REVISION}"
 
 
 def engine_build_id() -> str:
@@ -208,7 +202,7 @@ def resolve_engine_tool(tool: EngineTool) -> Path:
         if tool is EngineTool.LLAMA_SERVER
         else ProviderErrorKind.UNKNOWN
     )
-    raise ProviderError(f"{tool.value} binary not found. {_INSTALL_HINT}", kind=kind)
+    raise ProviderError(f"{tool.value} binary not found. {engine_install_hint()}", kind=kind)
 
 
 def resolve_llama_server() -> Path:
@@ -238,3 +232,41 @@ def llama_server_runtime_env() -> dict[str, str]:
     from lilbee.providers.fleet.cuda_runtime import cuda_runtime_env
 
     return cuda_runtime_env()
+
+
+@functools.lru_cache(maxsize=8)
+def engine_help(binary: Path) -> str:
+    """The usage text *binary* prints for ``--help``, stdout then stderr, read once per path.
+
+    Empty when the binary cannot run or answer in time: every caller reads an
+    absent flag as unsupported, so a launch never carries a flag it did not see.
+    """
+    try:
+        done = subprocess.run(  # noqa: S603 - argv is the resolved engine binary and a literal
+            [str(binary), "--help"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_HELP_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return f"{done.stdout}\n{done.stderr}"
+
+
+def help_lists_option(help_text: str, flag: str) -> bool:
+    """Whether an option line of *help_text* names *flag*.
+
+    An option line starts with ``-`` and names its flags up to the first word
+    that is not one, so a flag quoted in another option's description does not count.
+    """
+    for line in help_text.splitlines():
+        if not line.startswith("-"):
+            continue
+        for token in line.split():
+            if not token.startswith("-"):
+                break
+            if token.rstrip(",") == flag:
+                return True
+    return False

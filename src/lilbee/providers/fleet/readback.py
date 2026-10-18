@@ -30,13 +30,12 @@ still finds every line. A build that stops matching is reported, not swallowed
 
 from __future__ import annotations
 
-import functools
 import logging
 import re
-import subprocess
 from pathlib import Path
 
 from lilbee.core.health_warnings import HealthWarning, WarningCode
+from lilbee.providers.fleet.binary import engine_help, help_lists_option
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import WorkerRole
@@ -230,6 +229,15 @@ def engine_log_path(log_dir: Path, model_id: str) -> Path:
     return log_dir / _ENGINE_LOG_TEMPLATE.format(model_id=model_id)
 
 
+def writes_engine_log(argv: list[str]) -> bool:
+    """Whether a launch with *argv* writes the engine log file.
+
+    A launch carrying ``--memory`` serves its numbers over HTTP and gets no log
+    env, so no file exists for it.
+    """
+    return MEMORY_FLAG not in argv
+
+
 def engine_log_env(log_dir: Path, model_id: str) -> dict[str, str]:
     """Environment that makes the engine report what it allocated, and where."""
     path = str(engine_log_path(log_dir, model_id))
@@ -249,6 +257,7 @@ def check_launch(
     estimated_bytes: int,
     est_by_device: dict[str, int] | None = None,
     unreported_bytes: int = 0,
+    est_host_bytes: int = 0,
 ) -> HealthWarning | None:
     """Compare the engine's own report for *model_id* against the estimate.
 
@@ -280,11 +289,9 @@ def check_launch(
         # unnoticed: the check returned None forever and read as "estimate fine".
         # report_missing_log is how a caller that knows the engine is up says so.
         return None
-    per_device = {
-        label: size
-        for label, size in parse_device_buffers(text).items()
-        if not _is_host_device(label)
-    }
+    buffers = parse_device_buffers(text)
+    report_host_spill(role, model, _host_bytes(buffers), est_host_bytes)
+    per_device = {label: size for label, size in buffers.items() if not _is_host_device(label)}
     actual = sum(per_device.values())
     if actual > 0 and est_by_device:
         return _report_per_device(
@@ -306,6 +313,29 @@ def check_launch(
     return report_divergence(
         role, model, estimated_bytes - unreported_bytes, actual, tolerance=_TOLERANCE
     )
+
+
+def _host_bytes(per_device: dict[str, int]) -> int:
+    """The bytes of *per_device* that sit in host memory."""
+    return sum(size for label, size in per_device.items() if _is_host_device(label))
+
+
+def report_host_spill(role: WorkerRole, model: str, host_bytes: int, est_host_bytes: int) -> bool:
+    """Warn when the engine's fit left more of *model* in system memory than estimated.
+
+    *est_host_bytes* is what the host holds with every layer on the card; 0
+    means the engine's fit does not run for this launch, and nothing is said.
+    """
+    if est_host_bytes <= 0 or host_bytes <= est_host_bytes * (1.0 + _TOLERANCE):
+        return False
+    log.warning(
+        "The %s model %s does not fit in GPU memory: the engine keeps %.1f GiB of it in "
+        "system memory, where it runs slower. Free GPU memory or use a smaller model.",
+        role.value,
+        model,
+        host_bytes / 1024**3,
+    )
+    return True
 
 
 def _without_unreported(est_by_device: dict[str, int], unreported: int) -> dict[str, int]:
@@ -410,34 +440,22 @@ MEMORY_FLAG = "--memory"
 # The flag as --help advertises it. The lookahead keeps historic longer flags
 # (--memory-f32) from reading as support for the endpoint.
 _HELP_MEMORY_RE = re.compile(r"--memory(?!\S)")
-# --help exits from arg parsing, before any backend or model load, so this is
-# generous; a binary that cannot even print usage in this time is not one the
-# fleet should silently trust either way.
-_HELP_PROBE_TIMEOUT_S = 15.0
 
 
-@functools.lru_cache(maxsize=8)
 def supports_memory_readback(binary: Path) -> bool:
     """Whether *binary* serves ``GET /memory`` when launched with ``--memory``.
 
-    Read from the binary's own ``--help``, once per path: a stock llama-server
-    exits with "unknown argument" when handed a flag it lacks, so the launch
-    must never carry it on advertisement it did not see. Any failure to run or
-    to answer reads as unsupported, which degrades to the log path rather than
-    a failed launch.
+    Read from the binary's own ``--help``: a stock llama-server exits with
+    "unknown argument" when handed a flag it lacks, so the launch must never
+    carry it on advertisement it did not see. A binary that cannot run or answer
+    reads as unsupported, which degrades to the log path rather than a failed launch.
     """
-    try:
-        done = subprocess.run(  # noqa: S603 - argv is the resolved engine binary and a literal
-            [str(binary), "--help"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_HELP_PROBE_TIMEOUT_S,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return bool(_HELP_MEMORY_RE.search(f"{done.stdout}\n{done.stderr}"))
+    return bool(_HELP_MEMORY_RE.search(engine_help(binary)))
+
+
+def engine_advertises(binary: Path, flag: str) -> bool:
+    """Whether an option line of *binary*'s ``--help`` names *flag*."""
+    return help_lists_option(engine_help(binary), flag)
 
 
 # The per-device byte fields of one GET /memory row. Summed because the total
@@ -478,6 +496,7 @@ def check_memory_report(
     estimated_bytes: int,
     est_by_device: dict[str, int] | None,
     payload: object,
+    est_host_bytes: int = 0,
 ) -> HealthWarning | None:
     """Compare a ``GET /memory`` payload against the estimate; the API-mode twin
     of :func:`check_launch`.
@@ -491,11 +510,9 @@ def check_memory_report(
     swallowed, for the same reason a finished load with an unreadable log is:
     silent, it looks exactly like a correct estimate.
     """
-    per_device = {
-        label: size
-        for label, size in parse_memory_rows(payload).items()
-        if not _is_host_device(label)
-    }
+    rows = parse_memory_rows(payload)
+    report_host_spill(role, model, _host_bytes(rows), est_host_bytes)
+    per_device = {label: size for label, size in rows.items() if not _is_host_device(label)}
     if not per_device:
         log.warning(
             "The %s engine answered /memory without any per-device rows, so its "

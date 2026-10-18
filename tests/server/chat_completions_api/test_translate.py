@@ -143,12 +143,51 @@ class TestCompletionsToCanonicalRequest:
         )
         assert req.system == "be terse\n\nno apologies"
 
-    def test_image_content_in_user_message_is_rejected(self) -> None:
-        # The dispatcher cannot route image content to the chat provider
-        # today. Translate raises ValueError so the route layer returns 400
-        # rather than silently dropping the image and returning a text-only
-        # completion that ignored the visual input.
-        with pytest.raises(ValueError, match="Image content is not supported"):
+    def test_image_part_in_user_message_is_dropped_and_counted(self) -> None:
+        req = _translate(
+            {
+                "model": "m",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "describe"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,aGVsbG8="},
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        assert req.dropped_images == 1
+        assert req.messages[0].content == [TextBlock(text="describe")]
+
+    def test_image_part_in_system_message_is_dropped_and_counted(self) -> None:
+        req = _translate(
+            {
+                "model": "m",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": [
+                            {"type": "text", "text": "you are terse"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,aGVsbG8="},
+                            },
+                        ],
+                    },
+                    {"role": "user", "content": "hi"},
+                ],
+            }
+        )
+        assert req.dropped_images == 1
+        assert req.system == "you are terse"
+
+    def test_image_only_request_raises_naming_the_cause(self) -> None:
+        with pytest.raises(ValueError, match="holds only image content"):
             _translate(
                 {
                     "model": "m",
@@ -156,37 +195,12 @@ class TestCompletionsToCanonicalRequest:
                         {
                             "role": "user",
                             "content": [
-                                {"type": "text", "text": "describe"},
                                 {
                                     "type": "image_url",
                                     "image_url": {"url": "data:image/png;base64,aGVsbG8="},
                                 },
                             ],
                         }
-                    ],
-                }
-            )
-
-    def test_image_content_in_system_message_is_rejected(self) -> None:
-        # The same part is a 400 in a user message. The system path filtered it
-        # out instead, so an identical payload was rejected in one role and
-        # silently honoured minus the image in the other.
-        with pytest.raises(ValueError, match="Image content is not supported"):
-            _translate(
-                {
-                    "model": "m",
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": [
-                                {"type": "text", "text": "you are terse"},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": "data:image/png;base64,aGVsbG8="},
-                                },
-                            ],
-                        },
-                        {"role": "user", "content": "hi"},
                     ],
                 }
             )

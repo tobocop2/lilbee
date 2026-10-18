@@ -49,10 +49,8 @@ def kv_bytes_per_token(
     """Estimate per-token KV cache size in bytes from GGUF metadata.
 
     Formula: n_layers * n_kv_heads * (k_dim * k_elem_bytes + v_dim * v_elem_bytes).
-    K and V are charged separately because a launch can quantize one and not the
-    other: a quantized V cache needs flash attention, so the engine keeps V at
-    f16 when flash attention is not certain. ``v_elem_bytes`` defaults to the K
-    cost for callers whose caches match. Falls back to
+    K and V are always one type in a launch, so callers pass the same cost for
+    both. ``v_elem_bytes`` defaults to the K cost. Falls back to
     ``_KV_BYTES_PER_CTX_TOKEN`` when metadata is missing.
     """
     if v_elem_bytes is None:

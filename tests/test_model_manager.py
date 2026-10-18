@@ -1439,6 +1439,26 @@ class TestKnownModelCache:
         assert "ollama/gemma4:26b" in refs
         assert "openai/gpt-4o" in refs
 
+    def test_resolve_accepts_an_absolute_path_to_a_gguf_file(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """A model named by the path of a file on disk resolves as the fleet loads it."""
+        from lilbee.modelhub.model_manager import discovery
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+        from lilbee.modelhub.registry import ModelRegistry
+
+        self._stub_compose(monkeypatch, remote=[("a:1", "Ollama")])
+        discovery.get_services().registry = ModelRegistry(tmp_path / "models")
+        gguf = tmp_path / "loose" / "model-Q4.gguf"
+        gguf.parent.mkdir()
+        gguf.write_bytes(b"GGUF")
+        cache = KnownModelCache(ttl_s=60.0)
+
+        assert cache.resolve(str(gguf)) == str(gguf)
+        assert cache.resolve(str(tmp_path / "loose" / "absent.gguf")) is None
+        assert cache.resolve(str(gguf.parent)) is None
+        assert cache.resolve("loose/model-Q4.gguf") is None
+
     @POSIX_DENIES_READS
     def test_gather_surfaces_an_unreadable_registry(self, monkeypatch, tmp_path: Path) -> None:
         """An unreadable native registry raises rather than resolving remote-only.

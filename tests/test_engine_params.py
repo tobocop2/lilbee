@@ -102,9 +102,9 @@ class TestResolveChatCtx:
         model.write_bytes(b"x" * 100)
         seen: dict = {}
 
-        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> ep.ChatFit:
+        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> int:
             seen.update(available_bytes=available_bytes, ctx_ceiling=ctx_ceiling)
-            return ep.ChatFit(gpu_layers=-1, ctx=249856)
+            return 249856
 
         monkeypatch.setattr(planning, "fit_chat_ctx", _fit)
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 262144)
@@ -121,9 +121,9 @@ class TestResolveChatCtx:
         model.write_bytes(b"x" * 100)
         seen: dict = {}
 
-        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> ep.ChatFit:
+        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> int:
             seen["ctx_ceiling"] = ctx_ceiling
-            return ep.ChatFit(gpu_layers=-1, ctx=ctx_ceiling)
+            return ctx_ceiling
 
         monkeypatch.setattr(planning, "fit_chat_ctx", _fit)
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 262144)
@@ -142,20 +142,6 @@ class TestResolveChatCtx:
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 8192)
         assert ep.resolve_chat_ctx(model, {"arch": "x"}) == 6000
-
-    def test_header_math_keeps_the_configured_offload(self, tmp_path, monkeypatch) -> None:
-        # Header math sizes the window against full offload, so the launch has to
-        # run there; a traded offload only ever comes from the estimator's fit.
-        model = tmp_path / "m.gguf"
-        model.write_bytes(b"x" * 100)
-        monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 8192)
-        monkeypatch.setattr(ep, "get_available_memory", lambda _frac: 10**10)
-        monkeypatch.setattr(ep, "kv_bytes_per_token", lambda _meta, *_b: 1000)
-        monkeypatch.setattr(ep, "compute_dynamic_ctx", lambda **_k: 6000)
-        monkeypatch.setattr(cfg, "num_ctx_max", None)
-        monkeypatch.setattr(cfg, "n_gpu_layers", None)
-        monkeypatch.setattr(cfg, "chat_n_ctx_target", 8192)
-        assert ep.resolve_chat_fit(model, {"arch": "x"}) == ep.ChatFit(gpu_layers=-1, ctx=6000)
 
     def test_honors_num_ctx_max_ceiling(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "m.gguf"
@@ -215,7 +201,7 @@ class TestChatKvElemBytes:
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
         monkeypatch.setattr(cfg, "flash_attention", True)
-        assert ep.chat_kv_elem_bytes() == (18 / 32, 18 / 32)
+        assert ep.chat_kv_elem_bytes() == 18 / 32
 
     def test_q8_0_costs_more_than_a_byte(self, monkeypatch) -> None:
         # 34-byte block per 32 elements: rounding down to 1 over-grants.
@@ -223,17 +209,16 @@ class TestChatKvElemBytes:
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
         monkeypatch.setattr(cfg, "flash_attention", True)
-        assert ep.chat_kv_elem_bytes() == (34 / 32, 34 / 32)
+        assert ep.chat_kv_elem_bytes() == 34 / 32
 
-    def test_v_cache_charged_f16_when_flash_attention_is_off(self, monkeypatch) -> None:
-        """The launch leaves V at f16 without flash attention (llama.cpp refuses
-        a quantized V cache there); budgeting V at the quantized cost would
-        grant a window the card cannot hold."""
+    def test_kv_cache_charged_f16_when_flash_attention_is_off(self, monkeypatch) -> None:
+        """The launch sends f16 for K and V without flash attention; budgeting
+        the quantized cost would grant a window the card cannot hold."""
         from lilbee.core.config.enums import KvCacheType
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
         monkeypatch.setattr(cfg, "flash_attention", False)
-        assert ep.chat_kv_elem_bytes() == (18 / 32, 2.0)
+        assert ep.chat_kv_elem_bytes() == 2.0
 
 
 class TestChatCtxCeiling:

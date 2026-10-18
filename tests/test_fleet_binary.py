@@ -12,6 +12,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import binary as binary_mod
+from lilbee.providers.fleet import swap_config as swap_config_mod
 from lilbee.providers.fleet.binary import (
     EngineTool,
     engine_build_id,
@@ -311,7 +312,6 @@ class TestEnginePin:
                 "flash_attention",
                 "gpu_devices",
                 "kv_cache_type",
-                "main_gpu",
                 "n_cpu_moe",
                 "n_gpu_layers",
                 "placement",
@@ -330,18 +330,6 @@ class TestEnginePin:
             assert binary_mod._load_config_signature() != base
         finally:
             cfg.gpu_devices = original
-
-    def test_main_gpu_is_part_of_the_load_signature(self) -> None:
-        # --main-gpu picks the card that holds the model on a multi-device
-        # launch, so a peer with another index must not adopt this engine.
-        original = cfg.main_gpu
-        try:
-            cfg.main_gpu = None
-            base = binary_mod._load_config_signature()
-            cfg.main_gpu = 1
-            assert binary_mod._load_config_signature() != base
-        finally:
-            cfg.main_gpu = original
 
     def test_bundled_wheel_pin_wins_when_no_custom_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -382,6 +370,15 @@ class TestEnginePin:
         pin_on = engine_pin()
         assert pin_off != pin_on
         assert pin_on.startswith("build-x|")  # build identity still leads the pin
+
+    def test_pin_folds_in_the_swap_config_revision(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A peer whose llama-swap config is another revision never shares its engine.
+        monkeypatch.setattr(binary_mod, "engine_build_id", lambda: "build-x")
+        current = engine_pin()
+        revision = swap_config_mod.SWAP_CONFIG_REVISION
+        monkeypatch.setattr(swap_config_mod, "SWAP_CONFIG_REVISION", revision + 1)
+        assert engine_pin() != current
+        assert current.endswith(f"|swap-config={revision}")
 
     def test_pin_is_stable_for_identical_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The load signature is deterministic: identical config yields the same pin
@@ -480,9 +477,11 @@ def test_install_hint_indexes_are_documented() -> None:
     """
     import re
 
-    from lilbee.providers.fleet.binary import _INSTALL_HINT
+    from lilbee.providers.fleet.engine_install import InstallMethod, engine_install_hint
 
-    hint_indexes = set(re.findall(r"https://lilbee\.sh/(\w+)/", _INSTALL_HINT))
+    hint_indexes = set(
+        re.findall(r"https://lilbee\.sh/(\w+)/", engine_install_hint(InstallMethod.UNKNOWN))
+    )
     assert hint_indexes, "the hint must name at least one index"
 
     root = Path(__file__).resolve().parents[1]
@@ -492,3 +491,36 @@ def test_install_hint_indexes_are_documented() -> None:
         text = (root / doc).read_text(encoding="utf-8")
         documented = set(re.findall(r"https://lilbee\.sh/(\w+)/", text))
         assert hint_indexes <= documented, f"{doc} is missing {hint_indexes - documented}"
+
+
+class TestEngineHelp:
+    def test_joins_stdout_and_stderr(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            binary_mod.subprocess,
+            "run",
+            lambda *_a, **_k: SimpleNamespace(stdout="--port PORT", stderr="--no-mmap"),
+        )
+        assert binary_mod.engine_help(Path("/bin/llama-server")) == "--port PORT\n--no-mmap"
+
+    def test_a_binary_that_hangs_reads_as_empty(self, monkeypatch) -> None:
+        def _hang(*_a, **_k):
+            raise binary_mod.subprocess.TimeoutExpired("llama-server", 15.0)
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _hang)
+        assert binary_mod.engine_help(Path("/bin/llama-server")) == ""
+
+
+@pytest.mark.parametrize(
+    ("help_text", "flag", "listed"),
+    [
+        ("-lm,   --load-mode MODE   loading mode", "--load-mode", True),
+        ("--mmap, --no-mmap   whether to memory-map", "--no-mmap", True),
+        ("-ngl,  --n-gpu-layers N   see --load-mode", "--load-mode", False),
+        ("        (with --load-mode none the load is slower)", "--load-mode", False),
+        ("--load-mode-extra   a longer flag", "--load-mode", False),
+        ("", "--load-mode", False),
+    ],
+    ids=["short-and-long", "pair", "in-description", "continuation", "longer-flag", "empty"],
+)
+def test_help_lists_option_reads_option_names_only(help_text: str, flag: str, listed: bool) -> None:
+    assert binary_mod.help_lists_option(help_text, flag) is listed

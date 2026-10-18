@@ -1680,7 +1680,6 @@ class TestAValidVariableRunsTheCommand:
         [
             ("LILBEE_FLASH_ATTENTION", "enabled"),
             ("LILBEE_N_GPU_LAYERS", "all"),
-            ("LILBEE_MAIN_GPU", "cuda:0"),
             ("LILBEE_GPU_DEVICES", "cpu"),
             ("LILBEE_SEMANTIC_CHUNKING", "auto"),
         ],
@@ -6172,9 +6171,69 @@ class TestSelfCheck:
             "n_gpu_layers",
             "cpu_moe",
             "n_cpu_moe",
-            "main_gpu",
             "gpu_devices",
         }
+
+    def test_self_check_prints_the_kv_type_the_vulkan_launch_sends(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Vulkan sends flash attention auto even when the setting is true, so the cache is f16."""
+        from lilbee.core.config.enums import KvCacheType
+        from lilbee.providers.fleet import planning
+
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        monkeypatch.setattr(planning, "_fleet_backend", lambda: "Vulkan")
+        monkeypatch.setattr(cfg, "flash_attention", True)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        chat_patch, embed_patch = self._patch_self_check()
+        with chat_patch, embed_patch:
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["provider"]["kv_cache_type"] == "f16"
+
+    def test_self_check_prints_the_configured_kv_type_where_the_launch_sends_it(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.core.config.enums import KvCacheType
+        from lilbee.providers.fleet import planning
+
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        monkeypatch.setattr(planning, "_fleet_backend", lambda: "CUDA")
+        monkeypatch.setattr(cfg, "flash_attention", None)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        chat_patch, embed_patch = self._patch_self_check()
+        with chat_patch, embed_patch:
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["provider"]["kv_cache_type"] == "q8_0"
 
     def test_loading_line_prints_a_bracketed_model_path_literally(self, tmp_path: Path) -> None:
         """A user-supplied --chat-model-path can carry brackets verbatim."""

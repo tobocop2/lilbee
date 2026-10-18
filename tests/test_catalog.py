@@ -2787,6 +2787,12 @@ class TestAgentModelId:
 
         assert agent_model_id("") == ""
 
+    @pytest.mark.parametrize("path", ["/models/loose/x-Q4.gguf", "C:\\models\\x-Q4.gguf"])
+    def test_absolute_path_stays_the_id(self, path: str) -> None:
+        from lilbee.catalog import agent_model_id
+
+        assert agent_model_id(path) == path
+
 
 class TestQuantTier:
     def test_all_quant_types_mapped(self) -> None:

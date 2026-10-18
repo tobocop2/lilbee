@@ -139,9 +139,8 @@ _MISSING_ROLE_WARNING = (
 
 _LOOSE_FILE_ROLE_WARNING = (
     "%s is set to '%s', a GGUF file outside the model registry. The TUI and CLI load it, "
-    "but no model listing shows it and the HTTP chat route cannot resolve it. Install a "
-    "catalog ref with 'lilbee model pull <ref>' (or POST /api/models/pull) to make the "
-    "role routable over HTTP."
+    "but no model listing shows it. Install a catalog ref with 'lilbee model pull <ref>' "
+    "(or POST /api/models/pull) to list it."
 )
 
 
@@ -172,8 +171,12 @@ def warn_unregistered_role_refs(config: Config, registry: ModelRegistry) -> None
 
     A ref that names a GGUF file on disk gets its own message: it loads, so
     telling it to pull that path would prescribe a command that cannot run.
+    The chat role gets none: the chat routes and the model listings serve a
+    GGUF path through the same install-state check, so nothing is missing.
     """
     for field_name, ref in sorted(unregistered_role_refs(config, registry).items()):
         loose = install_state(ref, registry) is InstallState.LOOSE_FILE
+        if loose and MODEL_FIELD_TO_TASK[field_name] == ModelTask.CHAT:
+            continue
         template = _LOOSE_FILE_ROLE_WARNING if loose else _MISSING_ROLE_WARNING
         log.warning(template, field_name, ref)

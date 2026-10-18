@@ -794,40 +794,6 @@ class TestNGpuLayersConfig:
             assert c.n_gpu_layers == 3
 
 
-class TestMainGpuConfig:
-    def test_default_is_none(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
-            c = Config()
-            assert c.main_gpu is None
-
-    def test_explicit_int_from_env(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_MAIN_GPU": "1"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.main_gpu == 1
-
-    def test_auto_string_means_none(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_MAIN_GPU": "auto"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.main_gpu is None
-
-    def test_an_invalid_string_warns_and_means_auto(self, tmp_path) -> None:
-        built, warnings = _build_with(tmp_path, "", LILBEE_MAIN_GPU="garbage")
-        assert built.main_gpu is None
-        assert warnings == (
-            "LILBEE_MAIN_GPU = 'garbage' is refused (use a whole number or auto); "
-            "main_gpu uses its default",
-        )
-
-    def test_non_string_input_coerces_to_int(self, tmp_path) -> None:
-        """Direct assignment with a non-string value falls through to int(v)."""
-        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
-            c = Config()
-            c.main_gpu = 2.0  # type: ignore[assignment]
-            assert c.main_gpu == 2
-
-
 class TestGpuDevicesConfig:
     def test_default_is_none(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
@@ -921,7 +887,6 @@ class TestSemanticChunkingConfig:
         [
             ("flash_attention", '"maybe"', None, "is refused (use true, false or auto)"),
             ("n_gpu_layers", '"lots"', None, "is refused (use a whole number, cpu or auto)"),
-            ("main_gpu", '"first"', None, "is refused (use a whole number or auto)"),
             (
                 "gpu_devices",
                 '"a,b"',
@@ -943,7 +908,6 @@ class TestSemanticChunkingConfig:
         [
             ("flash_attention", "maybe"),
             ("n_gpu_layers", "lots"),
-            ("main_gpu", "first"),
             ("gpu_devices", "a,b"),
             ("semantic_chunking", "flase"),
         ],
@@ -1247,24 +1211,30 @@ class TestGenerationOptions:
         opts = c.generation_options()
         assert opts == {"temperature": 0.3, "seed": 42}
 
+    def test_max_tokens_default_sends_no_cap(self):
+        c = Config()
+        assert c.max_tokens is None
+        assert "num_predict" not in c.generation_options()
+
     def test_max_tokens_reaches_the_providers_as_num_predict(self):
         from lilbee.providers.base import filter_options, normalize_generation_options
 
         c = Config()
+        c.max_tokens = 2048
         opts = c.generation_options()
-        assert opts["num_predict"] == 4096
+        assert opts["num_predict"] == 2048
         assert "max_tokens" not in opts
-        assert filter_options(opts)["num_predict"] == 4096
-        assert normalize_generation_options(opts)["max_tokens"] == 4096
+        assert filter_options(opts)["num_predict"] == 2048
+        assert normalize_generation_options(opts)["max_tokens"] == 2048
 
-    def test_model_default_cap_uses_the_same_name(self):
+    def test_model_default_cap_wins_over_the_unset_config_cap(self):
         from lilbee.providers.model_defaults import ModelDefaults
 
         c = Config()
         c.apply_model_defaults(ModelDefaults(max_tokens=512))
-        assert c.generation_options()["num_predict"] == 4096
-        c.max_tokens = None
         assert c.generation_options()["num_predict"] == 512
+        c.max_tokens = 2048
+        assert c.generation_options()["num_predict"] == 2048
 
     def test_remaps_top_k_sampling(self):
         c = Config()
@@ -1982,7 +1952,7 @@ class TestBuildCfg:
         with mock.patch.dict(os.environ, env, clear=True):
             built_cfg, warnings = _build_cfg()
         assert warnings == ()
-        assert built_cfg.max_tokens == 4096
+        assert built_cfg.max_tokens is None
 
 
 def _build_with(tmp_path, toml: str, **env: str):
@@ -2220,7 +2190,6 @@ _REFUSED_VARIABLES = [
 _FALLBACK_VARIABLES = [
     ("flash_attention", "enabled", "true", None),
     ("n_gpu_layers", "all", "12", None),
-    ("main_gpu", "cuda:0", "1", None),
     ("gpu_devices", "cpu", '"0,1"', None),
     ("semantic_chunking", "auto", "true", False),
 ]

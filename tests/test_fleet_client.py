@@ -7,6 +7,7 @@ import base64
 import json
 import threading
 import time
+from collections.abc import Iterable
 from itertools import pairwise
 
 import httpx
@@ -85,6 +86,11 @@ def _client(handler=_handler) -> LlamaServerClient:
     return client
 
 
+def _raise_for_status(resp: httpx.Response) -> None:
+    """Report *resp* through a client that knows no model and no engine log."""
+    _unprobed_client()._raise_for_status(resp)
+
+
 def test_rerank_scores_pairs_via_rank_pooling() -> None:
     seen: dict[str, list] = {}
 
@@ -101,13 +107,21 @@ def test_rerank_scores_pairs_via_rank_pooling() -> None:
     assert seen["input"] == ["q</s></s>a", "q</s></s>b", "q</s></s>c"]
 
 
-def test_raise_for_status_maps_429_to_rate_limit() -> None:
-    from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
+# llama-swap's two 429 bodies: the pinned v223 and the v265 error envelope.
+_SWAP_429_BODIES = [
+    {"error": "Too many requests"},
+    {"error": {"message": "Too many requests", "type": "concurrency_limit", "code": 429}},
+]
 
-    with pytest.raises(ProviderError) as excinfo:
-        _raise_for_status(httpx.Response(429, json={"error": "busy"}))
+
+@pytest.mark.parametrize("body", _SWAP_429_BODIES, ids=["v223", "v265"])
+def test_raise_for_status_maps_429_to_a_busy_rate_limit(body) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    with pytest.raises(ProviderError, match="The model is busy") as excinfo:
+        _raise_for_status(httpx.Response(429, json=body))
     assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert "warming" not in str(excinfo.value)
 
 
 @pytest.mark.parametrize("status", [502, 503, 504])
@@ -116,7 +130,6 @@ def test_raise_for_status_maps_gateway_errors_to_server(status: int) -> None:
     # OOM-killed, mid-swap) with a gateway error; the kind must be retryable,
     # not terminal.
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(httpx.Response(status, text="Bad Gateway"))
@@ -128,7 +141,6 @@ def test_raise_for_status_gateway_premature_exit_stays_connection(monkeypatch) -
     # with it the replica failover path); the gateway status must not shadow it.
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda _resp: "")
     with pytest.raises(ProviderError) as excinfo:
@@ -139,8 +151,7 @@ def test_raise_for_status_gateway_premature_exit_stays_connection(monkeypatch) -
 
 
 def test_embed_retries_transient_gateway_error_then_succeeds(monkeypatch) -> None:
-    # A 502 while the upstream restarts is retried like a busy 429 instead of
-    # dropping the input.
+    # A 502 while the upstream restarts is retried instead of dropping the input.
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     calls = {"n": 0}
 
@@ -154,11 +165,11 @@ def test_embed_retries_transient_gateway_error_then_succeeds(monkeypatch) -> Non
     assert calls["n"] == 3
 
 
-def test_retry_on_busy_deadline_retries_gateway_error(monkeypatch) -> None:
-    # The deadline-bound OCR retry rides out a transient 502 the same way it
-    # rides out a busy 429: the page is re-attempted, not dropped.
+def test_retry_on_gateway_error_deadline_retries_gateway_error(monkeypatch) -> None:
+    # The deadline-bound OCR retry rides out a transient 502: the page is
+    # re-attempted, not dropped.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
-    from lilbee.providers.fleet.client import retry_on_busy
+    from lilbee.providers.fleet.client import retry_on_gateway_error
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
@@ -171,151 +182,107 @@ def test_retry_on_busy_deadline_retries_gateway_error(monkeypatch) -> None:
             raise gateway
         return "ok"
 
-    assert retry_on_busy(_call, deadline=100.0) == "ok"
+    assert retry_on_gateway_error(_call, deadline=100.0) == "ok"
     assert calls["n"] == 3
 
 
-def test_embed_retries_on_busy_then_succeeds(monkeypatch) -> None:
-    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
-    calls = {"n": 0}
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        if calls["n"] < 3:
-            return httpx.Response(429, json={"error": "Too many requests"})
-        return httpx.Response(200, json=_embed_body([[0.25, 0.5]]))
-
-    assert _as_lists(_client(handler).embed(["hello"])) == [[0.25, 0.5]]
-    assert calls["n"] == 3  # two 429s retried, third succeeds
-
-
-def test_embed_gives_up_after_retries_when_persistently_busy(monkeypatch) -> None:
+@pytest.mark.parametrize("body", _SWAP_429_BODIES, ids=["v223", "v265"])
+def test_embed_reports_a_429_after_one_request(monkeypatch, body) -> None:
+    # llama-swap answers 429 only past its concurrency limit, which the swap
+    # config sizes for several processes at full load: re-sending adds to it.
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _EMBED_BUSY_RETRIES
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        return httpx.Response(429, json={"error": "busy"})
+        return httpx.Response(429, json=body, headers={"retry-after": "1"})
 
-    with pytest.raises(ProviderError) as excinfo:
+    with pytest.raises(ProviderError, match="The model is busy") as excinfo:
         _client(handler).embed(["x"])
     assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
-    assert calls["n"] == _EMBED_BUSY_RETRIES
+    assert calls["n"] == 1
 
 
-def test_embed_rides_out_cold_start_past_interactive_budget(monkeypatch) -> None:
-    # A cold embedder can 429 more times than the short interactive budget allows;
-    # bulk ingest must wait it out (via _EMBED_BUSY_RETRIES) instead of dropping the
-    # file. With the old shared budget this warmup would have raised.
-    from lilbee.providers.fleet.client import _BUSY_RETRIES, _EMBED_BUSY_RETRIES
-
-    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
-    warmup = _BUSY_RETRIES + 2  # more 429s than the interactive budget tolerates
-    assert warmup < _EMBED_BUSY_RETRIES
-    calls = {"n": 0}
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        if calls["n"] <= warmup:
-            return httpx.Response(429, json={"error": "warming"})
-        return httpx.Response(200, json=_embed_body([[0.75]]))
-
-    assert _as_lists(_client(handler).embed(["x"])) == [[0.75]]
-    assert calls["n"] == warmup + 1
-
-
-def test_embed_with_cold_load_deadline_rides_out_more_429s_than_attempt_cap(monkeypatch) -> None:
-    # An EMBED client built with a cold-load deadline waits out the embedder's full
-    # warm even when the replica 429s more times than the fixed attempt cap tolerates:
-    # llama-swap keeps the still-loading server alive for the whole cold-load budget,
-    # so ingest must not give up (and drop the file) before that budget passes.
-    from lilbee.providers.fleet.client import _EMBED_BUSY_RETRIES
-
-    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
-    # Pin the clock so the deadline never actually passes: the retry rides out the
-    # warmup on the deadline branch, never on the attempt count.
-    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
-    warmup = _EMBED_BUSY_RETRIES + 5  # more 429s than the fixed attempt cap tolerates
-    calls = {"n": 0}
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        if calls["n"] <= warmup:
-            return httpx.Response(429, json={"error": "warming"})
-        return httpx.Response(200, json=_embed_body([[0.75]]))
-
-    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
-    client = LlamaServerClient("http://gpu0", "test-model", http=http, embed_busy_deadline_s=600.0)
-    client._needs_alternation = False
-    assert _as_lists(client.embed(["x"])) == [[0.75]]
-    assert calls["n"] == warmup + 1
-
-
-def test_retry_on_busy_deadline_retries_past_attempt_cap(monkeypatch) -> None:
-    # Under deep-queue contention the queue drains far slower than the fixed
-    # attempt budget, so a deadline-bound retry must keep waiting past
-    # _BUSY_RETRIES until the caller's own deadline, not drop the page.
+def test_retry_on_gateway_error_does_not_retry_a_rate_limit(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
-    from lilbee.providers.fleet.client import _BUSY_RETRIES, retry_on_busy
+    from lilbee.providers.fleet.client import retry_on_gateway_error
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        raise busy
+
+    with pytest.raises(ProviderError) as excinfo:
+        retry_on_gateway_error(_call)
+    assert excinfo.value is busy
+    assert calls["n"] == 1
+
+
+def test_retry_on_gateway_error_deadline_retries_past_attempt_cap(monkeypatch) -> None:
+    # A deadline-bound retry keeps riding out a restarting replica past
+    # _GATEWAY_RETRIES until the caller's own deadline, not drop the page.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+    from lilbee.providers.fleet.client import _GATEWAY_RETRIES, retry_on_gateway_error
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
-    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
-    attempts = _BUSY_RETRIES + 5  # more 429s than the attempt cap would tolerate
+    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    attempts = _GATEWAY_RETRIES + 5  # more 502s than the attempt cap would tolerate
     calls = {"n": 0}
 
     def _call() -> str:
         calls["n"] += 1
         if calls["n"] <= attempts:
-            raise busy
+            raise gateway
         return "ok"
 
-    assert retry_on_busy(_call, deadline=100.0) == "ok"
+    assert retry_on_gateway_error(_call, deadline=100.0) == "ok"
     assert calls["n"] == attempts + 1
 
 
-def test_retry_on_busy_deadline_gives_up_when_deadline_passes(monkeypatch) -> None:
+def test_retry_on_gateway_error_deadline_gives_up_when_deadline_passes(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
-    from lilbee.providers.fleet.client import retry_on_busy
+    from lilbee.providers.fleet.client import retry_on_gateway_error
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     clock = {"t": 0.0}
     monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: clock["t"])
-    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
     calls = {"n": 0}
 
     def _call() -> str:
         calls["n"] += 1
         clock["t"] += 1.0  # each attempt advances the clock toward the deadline
-        raise busy
+        raise gateway
 
     with pytest.raises(ProviderError) as excinfo:
-        retry_on_busy(_call, deadline=3.0)
-    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+        retry_on_gateway_error(_call, deadline=3.0)
+    assert excinfo.value.kind is ProviderErrorKind.SERVER
     assert calls["n"] < 10  # bounded by the deadline, not looping forever
 
 
-def test_busy_backoff_is_capped(monkeypatch) -> None:
-    # Backoff must not balloon past the cap even across the long ingest budget.
-    from lilbee.providers.fleet.client import _BUSY_BACKOFF_MAX_S, _EMBED_BUSY_RETRIES
+def test_gateway_backoff_is_capped(monkeypatch) -> None:
+    from lilbee.providers.fleet.client import _GATEWAY_BACKOFF_MAX_S, _GATEWAY_RETRIES
 
     delays: list[float] = []
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", delays.append)
 
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(429, json={"error": "busy"})
+        return httpx.Response(503, text="unavailable")
 
     with pytest.raises(ProviderError):
         _client(handler).embed(["x"])
-    assert len(delays) == _EMBED_BUSY_RETRIES - 1
-    assert max(delays) <= _BUSY_BACKOFF_MAX_S
+    assert len(delays) == _GATEWAY_RETRIES - 1
+    assert max(delays) <= _GATEWAY_BACKOFF_MAX_S
 
 
 def test_embed_does_not_retry_non_busy_errors(monkeypatch) -> None:
-    # A non-RATE_LIMIT failure (e.g. a malformed 500) must surface immediately,
+    # A non-gateway failure (e.g. a malformed 500) must surface immediately,
     # not burn the retry budget.
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     calls = {"n": 0}
@@ -329,19 +296,34 @@ def test_embed_does_not_retry_non_busy_errors(monkeypatch) -> None:
     assert calls["n"] == 1
 
 
-def test_llm_rerank_retries_on_busy(monkeypatch) -> None:
+def test_llm_rerank_retries_a_gateway_error(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         if calls["n"] < 2:
-            return httpx.Response(429, json={"error": "busy"})
+            return httpx.Response(502, text="Bad Gateway")
         return _chat_logprobs_response(0.0, -3.0)
 
     scores = _llm_rerank_client(handler).rerank("q", ["doc"])
     assert calls["n"] == 2
     assert scores[0] > 0.5
+
+
+def test_llm_rerank_sends_one_request_per_candidate_on_a_429(monkeypatch) -> None:
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, json=_SWAP_429_BODIES[1])
+
+    with pytest.raises(ProviderError, match="The model is busy"):
+        _llm_rerank_client(handler).rerank("q", ["a", "b", "c"])
+    # The first refusal cancels candidates not yet sent, so fewer than three may go out;
+    # a re-sent request would push the count past one per candidate.
+    assert 1 <= calls["n"] <= 3
 
 
 def test_llm_rerank_score_softmax_yes_over_no() -> None:
@@ -1050,7 +1032,6 @@ def test_raise_for_status_tags_context_overflow_400() -> None:
     # exceed_context_size_error type. It must surface as CONTEXT_OVERFLOW with a
     # user-facing message, not a generic internal error.
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     resp = httpx.Response(400, text='{"error":{"type":"exceed_context_size_error"}}')
     with pytest.raises(ProviderError) as excinfo:
@@ -1059,14 +1040,18 @@ def test_raise_for_status_tags_context_overflow_400() -> None:
     assert "context window" in str(excinfo.value).lower()
 
 
+_PREMATURE_BODY = (
+    '{"src":"llama-swap", "error": "unspecific error: upstream command exited prematurely"}'
+)
+
+
 def _premature_exit_response() -> httpx.Response:
     request = httpx.Request(
         "POST", "http://127.0.0.1:9100/v1/embeddings", json={"model": "embed-0"}
     )
     return httpx.Response(
         500,
-        text='{"src":"llama-swap", "error": "unspecific error: upstream command'
-        ' exited prematurely"}',
+        text=_PREMATURE_BODY,
         request=request,
     )
 
@@ -1076,7 +1061,6 @@ def test_raise_for_status_surfaces_upstream_tail_on_premature_exit(monkeypatch, 
     # client fetches the upstream's captured output, logs it, AND surfaces it in
     # the raised error so the real exit reason reaches the caller.
     import lilbee.providers.fleet.client as client_mod
-    from lilbee.providers.fleet.client import _raise_for_status
 
     seen: dict[str, str] = {}
 
@@ -1104,22 +1088,22 @@ def test_raise_for_status_surfaces_upstream_tail_on_premature_exit(monkeypatch, 
     with caplog.at_level("WARNING"), pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
     assert seen["url"] == "http://127.0.0.1:9100/logs/stream/embed-0"
-    # The captured server output is both logged and surfaced in the error message.
+    # The captured server output goes to the log; the error stays one plain line.
     assert "couldn't bind HTTP server socket" in caplog.text
-    assert "couldn't bind HTTP server socket" in str(excinfo.value)
-    assert "exited prematurely" in str(excinfo.value)
+    assert (
+        str(excinfo.value) == "The engine could not start the model: its port was taken (HTTP 500)."
+    )
 
 
 def test_raise_for_status_bind_race_death_is_a_port_conflict(monkeypatch) -> None:
     # A member that died because it lost the pick-then-bind port race is not a
     # dead server: llama-swap re-spawns it on the next request and the port is
     # normally free again by then. The death classifies as PORT_CONFLICT, which
-    # is in the transient set so retry_on_busy re-drives the spawn, rather than
+    # retry_on_gateway_error re-sends to re-drive the spawn, rather than
     # CONNECTION which writes the only replica off as unhealthy. Naming it
     # separately is what lets a port held for good reach a rebuild.
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     monkeypatch.setattr(
         client_mod,
@@ -1129,7 +1113,7 @@ def test_raise_for_status_bind_race_death_is_a_port_conflict(monkeypatch) -> Non
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
     assert excinfo.value.kind is ProviderErrorKind.PORT_CONFLICT
-    assert "couldn't bind HTTP server socket" in str(excinfo.value)
+    assert "couldn't bind" not in str(excinfo.value)
 
 
 def test_raise_for_status_non_bind_death_stays_connection(monkeypatch) -> None:
@@ -1138,7 +1122,6 @@ def test_raise_for_status_non_bind_death_stays_connection(monkeypatch) -> None:
     # failover path still marks the replica unhealthy.
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     monkeypatch.setattr(
         client_mod,
@@ -1150,10 +1133,57 @@ def test_raise_for_status_non_bind_death_stays_connection(monkeypatch) -> None:
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
 
 
+_LOAD_FAILURE_TAIL = "\n".join(
+    [f"llama_model_loader: - kv {i:3d}: general.key{i} str = v{i}" for i in range(11)]
+    + ["llama_model_load: error loading model: unknown model architecture: 'gemma4-assistant'"]
+)
+
+
+def test_raise_for_status_load_failure_message_is_plain_and_the_log_keeps_the_dump(
+    monkeypatch, caplog
+) -> None:
+    # An unfamiliar death shows two facts lilbee knows (the engine stopped, the HTTP
+    # status) and none of the engine's own text; the full output goes to the log.
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+
+    class _Stream:
+        def __enter__(self) -> _Stream:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def iter_text(self):
+            yield _LOAD_FAILURE_TAIL
+
+    monkeypatch.setattr(client_mod.httpx, "stream", lambda method, url, timeout: _Stream())
+    with caplog.at_level("WARNING"), pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert (
+        str(excinfo.value) == "The engine for the model stopped before it could answer (HTTP 500)."
+    )
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+    assert "llama_model_loader" in caplog.text
+    assert "unknown model architecture" in caplog.text
+
+
+def test_raise_for_status_out_of_memory_death_says_so_in_one_line(monkeypatch) -> None:
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+
+    monkeypatch.setattr(
+        client_mod, "_upstream_failure_tail", lambda resp: "cudaMalloc failed: out of memory"
+    )
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.CAPACITY
+    assert str(excinfo.value) == "The engine ran out of memory while loading the model (HTTP 500)."
+
+
 def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch) -> None:
     # A dead log stream must not mask the original ProviderError.
     import lilbee.providers.fleet.client as client_mod
-    from lilbee.providers.fleet.client import _raise_for_status
 
     def _refuse(method: str, url: str, timeout: float) -> object:
         raise httpx.ConnectError("refused")
@@ -1161,9 +1191,103 @@ def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch)
     monkeypatch.setattr(client_mod.httpx, "stream", _refuse)
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
-    # An unreadable tail appends nothing; the original error still propagates.
-    assert "exited prematurely" in str(excinfo.value)
-    assert "upstream server output:" not in str(excinfo.value)
+    # An unreadable tail changes nothing; the plain error still propagates.
+    assert (
+        str(excinfo.value) == "The engine for the model stopped before it could answer (HTTP 500)."
+    )
+
+
+def test_a_clients_death_error_names_its_model_and_engine_log(monkeypatch, tmp_path) -> None:
+    """The client, not each caller, puts the model ref and its engine log in the plain line."""
+    import lilbee.providers.fleet.client as client_mod
+
+    monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda resp: "")
+    log = tmp_path / "engine-chat-0.log"
+    client = LlamaServerClient("http://x", "chat-0", model_ref="acme/m-GGUF/m.gguf", engine_log=log)
+    with pytest.raises(ProviderError) as excinfo:
+        client._raise_for_status(_premature_exit_response())
+    assert str(excinfo.value) == (
+        "The engine for acme/m-GGUF/m.gguf stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {log}."
+    )
+
+
+_DEAD_MODEL_REF = "acme/m-GGUF/m.gguf"
+_CHAT_MESSAGES = [{"role": "user", "content": "hi"}]
+_TOOLS = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+_LONG_TEXT = "x" * 400
+
+
+def _dead_engine_handler(request: httpx.Request) -> httpx.Response:
+    """Every route answers the premature-exit 500."""
+    return httpx.Response(500, text=_PREMATURE_BODY)
+
+
+def _dead_after_tokenize_handler(request: httpx.Request) -> httpx.Response:
+    """Tokenize works, so a request that then needs the next route reaches it."""
+    if request.url.path.endswith("/tokenize"):
+        return httpx.Response(200, json={"tokens": [1, 2, 3]})
+    return _dead_engine_handler(request)
+
+
+def _drain(result: Iterable[object] | str) -> None:
+    """Consume a streamed result so the request actually runs."""
+    if not isinstance(result, str):
+        for _ in result:
+            pass
+
+
+def _dead_engine_client(tmp_path, handler, **kwargs) -> tuple[LlamaServerClient, object]:
+    log = tmp_path / "engine-chat-0.log"
+    transport = httpx.MockTransport(handler)
+    client = LlamaServerClient(
+        "http://gpu0",
+        "chat-0",
+        http=httpx.Client(transport=transport, base_url="http://gpu0"),
+        async_transport=transport,
+        model_ref=_DEAD_MODEL_REF,
+        engine_log=log,
+        **kwargs,
+    )
+    client._needs_alternation = False
+    return client, log
+
+
+_CLIENT_REQUESTS = {
+    "chat": ({}, lambda c: c.chat(_CHAT_MESSAGES)),
+    "chat_stream": ({}, lambda c: _drain(c.chat(_CHAT_MESSAGES, stream=True))),
+    "chat_abortable": ({}, lambda c: c.chat_abortable(_CHAT_MESSAGES)),
+    "chat_tools": ({}, lambda c: c.chat_tools(_CHAT_MESSAGES, tools=_TOOLS)),
+    "chat_result": ({}, lambda c: c.chat_result(_CHAT_MESSAGES)),
+    "chat_stream_items": ({}, lambda c: _drain(c.chat_stream_items(_CHAT_MESSAGES))),
+    "embed": ({}, lambda c: c.embed(["a"])),
+    "rerank_rank_pooling": ({}, lambda c: c.rerank("q", ["a"])),
+    "rerank_llm": ({"rerank_mode": RerankMode.LLM}, lambda c: c.rerank("q", ["a"])),
+    "count_tokens": ({}, lambda c: c.count_tokens("a")),
+    "count_chat_prompt_tokens": ({}, lambda c: c.count_chat_prompt_tokens(_CHAT_MESSAGES)),
+    "embed_truncation_detokenize": ({"token_cap": 1}, lambda c: c.embed([_LONG_TEXT])),
+}
+_AFTER_TOKENIZE = {"embed_truncation_detokenize"}
+
+
+@pytest.mark.parametrize("name", sorted(_CLIENT_REQUESTS))
+def test_each_client_request_into_a_dead_engine_names_the_model_and_its_log(
+    name, monkeypatch, tmp_path
+) -> None:
+    """Every request path ends in the one plain line that names the model and its log."""
+    import lilbee.providers.fleet.client as client_mod
+
+    monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda resp: "")
+    monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
+    kwargs, request = _CLIENT_REQUESTS[name]
+    handler = _dead_after_tokenize_handler if name in _AFTER_TOKENIZE else _dead_engine_handler
+    client, log = _dead_engine_client(tmp_path, handler, **kwargs)
+    with pytest.raises(ProviderError) as excinfo:
+        request(client)
+    assert str(excinfo.value) == (
+        f"The engine for {_DEAD_MODEL_REF} stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {log}."
+    )
 
 
 def test_chat_stream_surfaces_server_error_body() -> None:
@@ -1333,7 +1457,7 @@ def test_alternation_probe_inconclusive_when_server_unreachable() -> None:
 
 
 def test_alternation_probe_inconclusive_when_server_busy() -> None:
-    # A 429 (cold replica, slots warming) during the probe is transient, not a
+    # A 429 (llama-swap's concurrency limit) during the probe is transient, not a
     # template verdict: it must not be cached, and the next probe resolves it.
     state = {"busy": True}
 
@@ -1737,6 +1861,29 @@ def test_chat_result_recovers_bare_json_call_as_tool_calls_finish() -> None:
     assert result.tool_calls[0].name == "get_weather"
 
 
+_BARE_CALL = '{"name":"get_weather","arguments":{"city":"SF"}}'
+# JSON a user asked for, which has a "name" key and so parses as a call.
+_ASKED_FOR_JSON = '{"name": "Ada", "age": 36}'
+
+
+@pytest.mark.parametrize("tools", [None, []], ids=["omitted", "empty"])
+@pytest.mark.parametrize("content", [_BARE_CALL, f"[{_BARE_CALL}]", _ASKED_FOR_JSON])
+def test_chat_result_without_tools_returns_json_as_text(tools, content: str) -> None:
+    # With no tools offered there is no call to recover: a JSON answer is the answer.
+    from lilbee.providers.base import FinishReason
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}, "finish_reason": "stop"}]},
+        )
+
+    result = _client(handler).chat_result([{"role": "user", "content": "x"}], tools=tools)
+    assert result.text == content
+    assert result.tool_calls == ()
+    assert result.finish_reason is FinishReason.STOP
+
+
 def test_chat_result_unknown_finish_reason_falls_back_to_stop() -> None:
     from lilbee.providers.base import FinishReason
 
@@ -1907,6 +2054,25 @@ def test_chat_stream_items_text_starting_with_brace_is_not_recovered() -> None:
     assert "".join(i for i in items if isinstance(i, str)) == "{not really a call}"
 
 
+@pytest.mark.parametrize("tools", [None, []], ids=["omitted", "empty"])
+def test_chat_stream_items_without_tools_streams_json_as_text_at_once(tools) -> None:
+    # With no tools offered a JSON answer is text: no delta, and the first token
+    # reaches the caller before the stream ends instead of being held back.
+    from lilbee.providers.base import ToolCallDelta
+
+    head = '{"name": "lilbee_search", '
+    tail = '"arguments": {"query": "cats"}}'
+    body = _content_sse(head) + _content_sse(tail) + "data: [DONE]\n\n"
+    stream = _client(_stream_handler(body)).chat_stream_items(
+        [{"role": "user", "content": "x"}], tools=tools
+    )
+    first = next(stream)
+    rest = list(stream)
+    assert first == head
+    assert not any(isinstance(i, ToolCallDelta) for i in rest)
+    assert first + "".join(i for i in rest if isinstance(i, str)) == head + tail
+
+
 def test_chat_stream_items_native_tool_calls_pass_through_untouched() -> None:
     """Native tool_calls deltas are forwarded as is with no double-recovery. The
     leading text opens with '{' so it is buffered as a candidate, then flushed
@@ -2063,8 +2229,8 @@ def test_count_tokens_returns_tokenize_length() -> None:
     assert client.count_tokens("hello world") == 4
 
 
-def test_count_tokens_retries_on_busy_then_succeeds(monkeypatch) -> None:
-    """A cold replica's 429s are waited out for a count as they are for an embed."""
+def test_count_tokens_retries_a_gateway_error_then_succeeds(monkeypatch) -> None:
+    """A restarting replica's 502s are retried for a count as they are for an embed."""
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     calls = {"n": 0}
 
@@ -2072,40 +2238,28 @@ def test_count_tokens_retries_on_busy_then_succeeds(monkeypatch) -> None:
         calls["n"] += 1
         if request.url.path.endswith("/tokenize"):
             if calls["n"] < 3:
-                return httpx.Response(429, json={"error": "warming"})
+                return httpx.Response(502, text="Bad Gateway")
             return httpx.Response(200, json={"tokens": [1, 2, 3, 4]})
         return httpx.Response(404)
 
     assert _client(handler).count_tokens("hello world") == 4
-    assert calls["n"] == 3  # two 429s retried, third succeeds
+    assert calls["n"] == 3  # two 502s retried, third succeeds
 
 
-def test_count_tokens_with_cold_load_deadline_rides_out_more_429s_than_attempt_cap(
-    monkeypatch,
-) -> None:
-    # An EMBED client built with a cold-load deadline waits out the full warm for
-    # a count as it does for an embedding: chunk sizing must not estimate around
-    # a cold engine it could have waited for.
-    from lilbee.providers.fleet.client import _EMBED_BUSY_RETRIES
+def test_count_tokens_reports_a_429_after_one_request(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderErrorKind
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
-    # Pin the clock so the deadline never actually passes: the retry rides out the
-    # warmup on the deadline branch, never on the attempt count.
-    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
-    warmup = _EMBED_BUSY_RETRIES + 5  # more 429s than the fixed attempt cap tolerates
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        if calls["n"] <= warmup:
-            return httpx.Response(429, json={"error": "warming"})
-        return httpx.Response(200, json={"tokens": [1, 2, 3]})
+        return httpx.Response(429, json=_SWAP_429_BODIES[0])
 
-    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
-    client = LlamaServerClient("http://gpu0", "test-model", http=http, embed_busy_deadline_s=600.0)
-    client._needs_alternation = False
-    assert client.count_tokens("hello") == 3
-    assert calls["n"] == warmup + 1
+    with pytest.raises(ProviderError) as excinfo:
+        _client(handler).count_tokens("hello")
+    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert calls["n"] == 1
 
 
 def test_embed_retries_with_exact_tokenize_on_context_overflow() -> None:
@@ -2175,7 +2329,6 @@ def test_embed_does_not_retry_on_non_overflow_error() -> None:
 def test_raise_for_status_tags_premature_exit_as_connection(monkeypatch) -> None:
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda _resp: "")
     with pytest.raises(ProviderError) as excinfo:

@@ -6,7 +6,7 @@ import json
 import re
 from collections.abc import Iterator
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from litestar import Litestar
@@ -16,10 +16,15 @@ from lilbee.app.services import set_services
 from lilbee.providers.base import ChatResult, FinishReason, ToolCall
 from lilbee.server import auth as _auth_mod
 from lilbee.server.anthropic_api.routes import COUNT_ACCURACY_HEADER, anthropic_router
-from lilbee.server.chat_dispatch.canonical import TokenCountAccuracy
+from lilbee.server.chat_dispatch.canonical import (
+    IMAGES_DROPPED_HEADER,
+    IMAGES_ONLY_MESSAGE,
+    TokenCountAccuracy,
+)
 from lilbee.server.chat_dispatch.concurrency import chat_gate
 
 INSTALLED_REF = "vendor/Model-GGUF/model-Q4.gguf"
+_IMAGE = {"type": "image", "source": {"type": "base64", "data": "x"}}
 
 
 def _h() -> dict[str, str]:
@@ -158,19 +163,76 @@ class TestValidation:
         assert resp.json()["error"]["type"] == "invalid_request_error"
         assert "max_tokens" in resp.json()["error"]["message"]
 
-    async def test_image_content_is_400(self, services_with_chat_model, _auth_token):
+    async def test_image_beside_text_is_dropped_and_reported(
+        self, services_with_chat_model, _auth_token
+    ):
         body = _body(
-            messages=[
-                {
-                    "role": "user",
-                    "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}],
-                }
-            ]
+            messages=[{"role": "user", "content": [_IMAGE, {"type": "text", "text": "q"}]}]
         )
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post("/v1/messages", json=body, headers=_h())
+        assert resp.status_code == 200
+        assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.json()["content"] == [{"type": "text", "text": "hello"}]
+        sent = services_with_chat_model.provider.chat.call_args.kwargs["messages"]
+        assert [m["content"] for m in sent] == ["q"]
+
+    async def test_streamed_image_request_carries_the_dropped_header(
+        self, services_with_chat_model, _auth_token
+    ):
+        services_with_chat_model.provider.chat.return_value = FakeProviderStream(["he", "llo"])
+        body = _body(
+            stream=True,
+            messages=[{"role": "user", "content": [_IMAGE, _IMAGE, {"type": "text", "text": "q"}]}],
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=body, headers=_h())
+        assert resp.status_code == 200
+        assert resp.headers[IMAGES_DROPPED_HEADER] == "2"
+
+    async def test_text_only_request_has_no_dropped_header(
+        self, services_with_chat_model, _auth_token
+    ):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.status_code == 200
+        assert IMAGES_DROPPED_HEADER.lower() not in resp.headers
+
+    async def test_image_only_request_is_400_naming_the_cause(
+        self, services_with_chat_model, _auth_token
+    ):
+        body = _body(messages=[{"role": "user", "content": [_IMAGE]}])
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 400
-        assert "Image content" in resp.json()["error"]["message"]
+        assert resp.json()["error"]["message"] == IMAGES_ONLY_MESSAGE
+
+    async def test_dropped_image_is_logged_once_by_the_route(
+        self, services_with_chat_model, _auth_token
+    ):
+        body = _body(
+            messages=[{"role": "user", "content": [_IMAGE, {"type": "text", "text": "q"}]}]
+        )
+        # The Litestar app reconfigures logging, which detaches caplog's handler.
+        with patch("lilbee.server.chat_dispatch.dispatch.log") as log:
+            async with AsyncTestClient(_build_app()) as client:
+                resp = await client.post("/v1/messages", json=body, headers=_h())
+        assert resp.status_code == 200
+        log.warning.assert_called_once()
+        assert log.warning.call_args.args[1:] == (1, INSTALLED_REF)
+
+    async def test_image_to_a_vision_tagged_model_is_dropped_and_reported(
+        self, services_with_chat_model, _auth_token
+    ):
+        services_with_chat_model.provider.get_capabilities.return_value = ["completion", "vision"]
+        body = _body(
+            messages=[{"role": "user", "content": [_IMAGE, {"type": "text", "text": "q"}]}]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=body, headers=_h())
+        assert resp.status_code == 200
+        assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        services_with_chat_model.provider.chat.assert_called_once()
 
     async def test_unknown_model_is_404_not_found_error(
         self, services_with_chat_model, _auth_token
@@ -977,19 +1039,22 @@ class TestCountTokens:
         assert resp.status_code == 404
         assert resp.json()["error"]["type"] == "not_found_error"
 
-    async def test_image_content_is_400(self, services_with_chat_model, _auth_token):
-        body = _count_body(
-            messages=[
-                {
-                    "role": "user",
-                    "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}],
-                }
-            ]
-        )
+    async def test_image_only_request_is_400_naming_the_cause(
+        self, services_with_chat_model, _auth_token
+    ):
+        body = _count_body(messages=[{"role": "user", "content": [_IMAGE]}])
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(COUNT_PATH, json=body, headers=_h())
         assert resp.status_code == 400
-        assert "Image content" in resp.json()["error"]["message"]
+        assert resp.json()["error"]["message"] == IMAGES_ONLY_MESSAGE
+
+    async def test_image_beside_text_counts_the_text(self, services_with_chat_model, _auth_token):
+        body = _count_body(
+            messages=[{"role": "user", "content": [_IMAGE, {"type": "text", "text": "q"}]}]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=body, headers=_h())
+        assert resp.status_code == 200
 
     async def test_missing_messages_is_400_envelope(self, services_with_chat_model, _auth_token):
         async with AsyncTestClient(_build_app()) as client:
@@ -1011,3 +1076,63 @@ class TestCountTokens:
 
         options = services_with_chat_model.provider.count_chat_prompt_tokens.call_args.kwargs
         assert options["options"] == {"think": False}
+
+
+def _path_body(model: str) -> dict[str, Any]:
+    return _body(model=model)
+
+
+class TestModelNamedByPath:
+    """A chat model configured as the path of a GGUF file serves like a registry ref."""
+
+    @pytest.fixture
+    def loose_model(self, monkeypatch, tmp_path):
+        from lilbee.core.config import cfg
+        from lilbee.modelhub.model_manager import discovery
+        from lilbee.modelhub.registry import ModelRegistry
+        from tests.conftest import make_mock_services
+
+        gguf = tmp_path / "loose" / "model-Q4.gguf"
+        gguf.parent.mkdir()
+        gguf.write_bytes(b"GGUF")
+        other = tmp_path / "loose" / "other-Q4.gguf"
+        other.write_bytes(b"GGUF")
+        monkeypatch.setattr(cfg, "chat_model", str(gguf))
+        monkeypatch.setattr(discovery, "classify_all_remote_models", lambda **_kw: [])
+        monkeypatch.setattr(discovery, "discover_api_models", dict)
+        provider = MagicMock()
+        provider.max_concurrent_chats.return_value = 1
+        provider.supports_tools.return_value = False
+        provider.chat.return_value = ChatResult(
+            text="hello", tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        set_services(
+            make_mock_services(
+                provider=provider,
+                registry=ModelRegistry(tmp_path / "models"),
+                known_models=discovery.KnownModelCache(),
+            )
+        )
+        yield gguf, other
+        set_services(None)
+
+    async def test_the_configured_path_is_served(self, loose_model, _auth_token):
+        gguf, _ = loose_model
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_path_body(str(gguf)), headers=_h())
+        assert resp.status_code == 200
+
+    async def test_another_file_is_refused_as_not_the_configured_model(
+        self, loose_model, _auth_token
+    ):
+        _, other = loose_model
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_path_body(str(other)), headers=_h())
+        assert resp.status_code == 400
+
+    async def test_a_missing_file_is_404(self, loose_model, _auth_token):
+        gguf, _ = loose_model
+        missing = str(gguf.with_name("absent.gguf"))
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_path_body(missing), headers=_h())
+        assert resp.status_code == 404

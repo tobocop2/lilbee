@@ -17,9 +17,9 @@ def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
 
     *hold_warm* marks the provider as serving an interactive session, so a local
     fleet bound to that session keeps its weights resident instead of
-    idle-unloading for as long as the session owns the process (a keep-warm fleet
-    outlives it and keeps its idle window). Irrelevant to a remote provider, which
-    has no local engine to hold.
+    idle-unloading for as long as the session owns the process (a fleet shared
+    with other users, or kept warm, outlives it and keeps its idle window).
+    Irrelevant to a remote provider, which has no local engine to hold.
     """
     match config.llm_provider:
         case LlmProvider.AUTO:

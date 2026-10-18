@@ -65,7 +65,7 @@ class TestReferenceIsCurrent:
         )
         clause = sentence.split("The exception is the settings")[1].split(":")[0]
         named = {name for name in Config.model_fields if f"`{name}`" in clause}
-        assert len(named) == 5
+        assert len(named) == 4
         assert named == _TAKES_DEFAULT_WHEN_REFUSED
 
 

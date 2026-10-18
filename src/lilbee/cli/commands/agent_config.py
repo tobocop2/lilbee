@@ -16,7 +16,7 @@ from lilbee.app.agent_configs.document import (
 )
 from lilbee.app.agent_configs.litellm import litellm_config
 from lilbee.app.agent_configs.window import AGENT_CHAT_CTX_FLOOR
-from lilbee.app.models import installed_chat_model_refs
+from lilbee.app.models import installed_chat_model_refs, with_configured_chat
 from lilbee.cli.app import apply_overrides, data_dir_option, global_option
 from lilbee.cli.launchers.hermes_mcp import MCP_EXTRA_HINT
 from lilbee.cli.launchers.server import (
@@ -25,7 +25,6 @@ from lilbee.cli.launchers.server import (
     running_server_session,
 )
 from lilbee.core.config import cfg
-from lilbee.providers.model_ref import with_configured_remote_chat
 
 agent_config_app = typer.Typer(help="Print a paste-ready config block for an AI client.")
 
@@ -35,6 +34,17 @@ _STDIO_HINT = (
     "To have the client start lilbee itself instead of using the running "
     "server, register this block instead:"
 )
+
+
+def _apply_overrides(*, data_dir: Path | None, use_global: bool) -> None:
+    """Apply CLI overrides for a command that only writes config, with the fleet left cold.
+
+    The command lists installed models and reads the served window from the
+    running server. It runs no inference, so the services it builds must not
+    start the engine warm-up.
+    """
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    cfg.worker_pool_eager_start = False
 
 
 def _session_or_exit() -> tuple[str, int]:
@@ -47,8 +57,8 @@ def _session_or_exit() -> tuple[str, int]:
 
 
 def _served_chat_models() -> list[str]:
-    """Chat refs to advertise: the installed ones plus a remote-configured model."""
-    return with_configured_remote_chat(installed_chat_model_refs(), cfg.chat_model)
+    """Chat refs to advertise: the installed ones plus the configured model the server serves."""
+    return with_configured_chat(installed_chat_model_refs(), cfg.chat_model)
 
 
 def _warn_on_small_agent_window(chat_ctx: int | None) -> None:
@@ -118,7 +128,7 @@ def _claude_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Print a Claude Code mcpServers block registering lilbee's MCP tools."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_overrides(data_dir=data_dir, use_global=use_global)
     _emit(_build(AgentClient.CLAUDE))
 
 
@@ -128,7 +138,7 @@ def _opencode_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Print an opencode.json block (OpenAI-compatible provider + MCP server)."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_overrides(data_dir=data_dir, use_global=use_global)
     _emit(_build(AgentClient.OPENCODE))
 
 
@@ -138,7 +148,7 @@ def _hermes_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Print a hermes config.yaml block (OpenAI-compatible provider + MCP server)."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_overrides(data_dir=data_dir, use_global=use_global)
     _emit(_build(AgentClient.HERMES))
 
 
@@ -148,7 +158,7 @@ def _litellm_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Print a LiteLLM `config.yaml` snippet routing model names to lilbee."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_overrides(data_dir=data_dir, use_global=use_global)
     token, port = _session_or_exit()
     snippet = litellm_config(
         base_url=f"http://{LOOPBACK}:{port}",

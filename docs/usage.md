@@ -387,14 +387,19 @@ when the last lilbee process exits, so the machine is left clean by default; no
 VRAM, RAM, or stray processes are held while nothing is running. Two knobs
 adjust that:
 
-- **Keep engine warm** lets the engine outlive lilbee entirely, so the next
-  session's first answer skips the load. Recommended if you relaunch often or
-  use lilbee mainly through coding agents, whose sessions come and go.
-- **Engine idle ttl minutes** bounds how long idle weights stay in memory in
-  every mode, warm included, five minutes by default (the same idea as Ollama's
-  keep_alive). The memory frees itself after that many idle minutes; a small
-  proxy process stays behind, a few tens of MB and no VRAM. `0` keeps weights
-  loaded until the engine stops.
+- **Keep engine warm** keeps the weights loaded while any lilbee process runs,
+  so a relaunch or a second client skips the load. After every lilbee process
+  has exited, the weights unload after the idle time and a small proxy process
+  stays behind. Recommended if you relaunch often or use lilbee mainly through
+  coding agents, whose sessions come and go.
+- **Engine idle ttl minutes** sets that idle time, five minutes by default (the
+  same idea as Ollama's keep_alive). With keep engine warm off, it bounds how
+  long idle weights stay in memory while lilbee runs. With keep engine warm on,
+  it counts from the exit of the last lilbee process. The memory frees itself;
+  the proxy process is a few tens of MB and no VRAM. `0` keeps weights loaded
+  until the engine stops.
+- A change to either setting applies at the next engine start. Run
+  `lilbee engine stop` to apply it now.
 - **`lilbee engine stop`** frees the shared engine immediately from any
   terminal, no TUI needed, whichever process started it. It reaches the machine
   slot and this project root's own overflow engine; a private overflow engine
@@ -1167,6 +1172,15 @@ pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/  
 pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/      # no GPU
 ```
 
+Use the `uv` form that matches how you installed lilbee. The error message picks it for you.
+Swap the index the same way as above.
+
+```bash
+uv tool install --force --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/   # uv tool install
+uv pip install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/             # a uv venv or a source checkout
+pipx install --force --pip-args='--pre --extra-index-url https://lilbee.sh/cpu/' 'lilbee[engine]'     # pipx
+```
+
 </details>
 
 <details>
@@ -1351,13 +1365,18 @@ OpenAI-compatible daemon alongside lilbee's native GGUF models.
 export LILBEE_LLM_PROVIDER=auto          # "auto" routes between local and remote
 export LILBEE_OLLAMA_BASE_URL=http://localhost:11434  # Ollama URL (blank = default)
 export LILBEE_LM_STUDIO_BASE_URL=http://localhost:1234/v1  # LM Studio URL (blank = default)
-export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
+export LILBEE_LLM_API_KEY=sk-...         # API key for a remote endpoint or local server
 export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
 ```
 
 Provider options: `auto` (default; native GGUF models run on the local managed
 llama-server fleet, remote model names route to the SDK backend) and `remote`
 (everything goes to an external OpenAI-compatible endpoint).
+
+`LILBEE_LLM_API_KEY` goes only to the remote endpoint and to local model
+servers. A hosted model (Anthropic, Gemini, OpenAI, and so on) needs its own
+provider key, for example `LILBEE_GEMINI_API_KEY`. lilbee never sends
+`LILBEE_LLM_API_KEY` to a hosted provider.
 
 ---
 

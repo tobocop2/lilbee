@@ -1,53 +1,95 @@
-"""The main_gpu setting has to reach the engine or stop being a setting."""
+"""main_gpu is not a setting: llama-server reads it only under split mode none.
+
+A fleet instance on one card has nothing to choose, and one spread over several
+cards was sized for that spread, so the setting is refused rather than ignored.
+"""
 
 from __future__ import annotations
 
-import logging
+import os
 from pathlib import Path
+from unittest import mock
 
-from lilbee.core.config import cfg
+import pytest
+
+from conftest import clean_env
+from lilbee.app.settings import apply_settings_update
+from lilbee.core.config import Config
+from lilbee.core.config.load_warnings import collecting
+from lilbee.core.config.model import _build_cfg, toml_value, toml_values
 from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
 from lilbee.providers.roles import WorkerRole
 
-
-def _argv(**overrides) -> list[str]:
-    kwargs = {
-        "binary": Path("/bin/llama-server"),
-        "spec": ROLE_SPECS[WorkerRole.CHAT],
-        "model_path": Path("/m/c.gguf"),
-        "devices": (0, 1),
-        "n_gpu_layers": -1,
-        "slots": 1,
-        "ctx_per_slot": 4096,
-    }
-    kwargs.update(overrides)
-    return build_server_argv(**kwargs)
+_HINT = "choose the cards with gpu_devices or placement"
 
 
-class TestMainGpuReachesTheEngine:
-    """It was surfaced in settings and over MCP and never emitted, so a user
-    could set it, see it saved, and have nothing happen."""
+def _built_with(tmp_path: Path, toml: str, **env: str) -> tuple[Config, tuple[str, ...]]:
+    """cfg built from *toml* in a fresh data root and *env*, with its load warnings."""
+    (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
+    with mock.patch.dict(os.environ, {**clean_env(tmp_path), **env}, clear=True):
+        return _build_cfg()
 
-    def test_it_is_emitted_for_a_multi_device_instance(self, monkeypatch) -> None:
-        monkeypatch.setattr(cfg, "main_gpu", 1)
-        argv = _argv()
-        assert argv[argv.index("--main-gpu") + 1] == "1"
 
-    def test_it_is_omitted_when_unset(self, monkeypatch) -> None:
-        monkeypatch.setattr(cfg, "main_gpu", None)
-        assert "--main-gpu" not in _argv()
+def test_config_has_no_main_gpu_field() -> None:
+    assert "main_gpu" not in Config.model_fields
+    assert "gpu_devices" in Config.model_fields
 
-    def test_it_is_omitted_for_a_single_device_instance(self, monkeypatch) -> None:
-        # llama.cpp ignores it with one device; emitting it only invites confusion
-        # about which index space the number lives in.
-        monkeypatch.setattr(cfg, "main_gpu", 0)
-        assert "--main-gpu" not in _argv(devices=(0,))
 
-    def test_an_out_of_range_index_is_refused_loudly(self, monkeypatch, caplog) -> None:
-        # It indexes this instance's own device list, not the host's cards. Silently
-        # passing a number the engine will reject is how the knob stayed broken.
-        monkeypatch.setattr(cfg, "main_gpu", 5)
-        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.adapters"):
-            argv = _argv(devices=(0, 1))
-        assert "--main-gpu" not in argv
-        assert "main_gpu" in caplog.text
+def test_a_stored_main_gpu_is_refused_by_name(tmp_path) -> None:
+    _built, warnings = _built_with(tmp_path, "main_gpu = 1\ntop_k = 7\n")
+
+    assert warnings == (f"config.toml: main_gpu is not a setting and is ignored; {_HINT}",)
+    assert _built.top_k == 7
+
+
+def test_a_later_read_of_another_file_names_that_file(tmp_path) -> None:
+    other = tmp_path / "other.toml"
+    other.write_text("main_gpu = 1\ntop_k = 7\n", encoding="utf-8")
+
+    with collecting() as found:
+        values = toml_values(other)
+
+    assert values["top_k"] == 7
+    assert found == [f"{other}: main_gpu is not a setting and is ignored; {_HINT}"]
+
+
+def test_a_read_of_one_other_key_says_nothing_about_main_gpu(tmp_path) -> None:
+    other = tmp_path / "other.toml"
+    other.write_text("main_gpu = 1\ntop_k = 7\n", encoding="utf-8")
+
+    with collecting() as found:
+        value = toml_value(other, "top_k")
+
+    assert (value, found) == (7, [])
+
+
+def test_the_environment_variable_is_refused_by_name(tmp_path) -> None:
+    _built, warnings = _built_with(tmp_path, "", LILBEE_MAIN_GPU="1")
+
+    assert warnings == (f"LILBEE_MAIN_GPU is not a setting and is ignored; {_HINT}",)
+
+
+def test_a_blank_environment_variable_says_nothing(tmp_path) -> None:
+    _built, warnings = _built_with(tmp_path, "", LILBEE_MAIN_GPU="")
+
+    assert warnings == ()
+
+
+def test_a_settings_write_refuses_main_gpu() -> None:
+    with pytest.raises(ValueError, match=r"^Unknown or read-only setting: main_gpu$"):
+        apply_settings_update({"main_gpu": 1})
+
+
+def test_a_multi_device_launch_sends_no_main_gpu() -> None:
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/m/c.gguf"),
+        devices=(0, 1),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+    )
+
+    assert "--main-gpu" not in argv
+    assert "--model" in argv

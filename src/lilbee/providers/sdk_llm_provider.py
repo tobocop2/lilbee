@@ -63,9 +63,9 @@ def _api_base_for(ref: ProviderModelRef) -> str | None:
 
 
 def _api_key_for(ref: ProviderModelRef) -> str | None:
-    """A hosted ref sends the key the key check tests, else ``llm_api_key``; read per request."""
+    """A hosted ref sends only the key the key check tests; other refs send ``llm_api_key``."""
     if ref.is_api:
-        return provider_api_key_in_use(ref.provider) or cfg.llm_api_key or None
+        return provider_api_key_in_use(ref.provider)
     return cfg.llm_api_key or None
 
 

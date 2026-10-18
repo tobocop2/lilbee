@@ -36,6 +36,7 @@ def _stub_registry() -> None:
     registry.list_installed.return_value = [manifest]
     services = MagicMock()
     services.registry = registry
+    services.known_models.resolve.return_value = None
     with patch("lilbee.app.models.get_services", return_value=services):
         yield
 
@@ -1062,3 +1063,43 @@ class TestOpencodeConfigDir:
         monkeypatch.setattr("lilbee.cli.launchers.opencode.sys.platform", "win32")
         result = _opencode_skill_dest()
         assert result == tmp_path / "opencode" / "skills" / "lilbee-mcp"
+
+
+def test_run_launcher_serves_a_chat_model_set_by_path(tmp_path):
+    """A chat model set by the path of a GGUF file reaches the client picker."""
+    import typer
+
+    from lilbee.cli.launchers.launcher import run_launcher
+    from lilbee.modelhub.model_manager import discovery
+    from lilbee.modelhub.registry import ModelRegistry
+    from tests.conftest import make_mock_services
+
+    gguf = tmp_path / "loose" / "model-Q4.gguf"
+    gguf.parent.mkdir()
+    gguf.write_bytes(b"GGUF")
+    launcher = MagicMock()
+    launcher.find_binary.return_value = "/usr/local/bin/client"
+    launcher.prepare.return_value = ([], {})
+    services = make_mock_services(
+        registry=ModelRegistry(tmp_path / "models"),
+        known_models=discovery.KnownModelCache(),
+    )
+    with (
+        patch("lilbee.app.models.get_services", return_value=services),
+        patch.object(cfg, "chat_model", str(gguf)),
+        patch.object(discovery, "classify_all_remote_models", return_value=[]),
+        patch.object(discovery, "discover_api_models", return_value={}),
+        patch(
+            "lilbee.cli.launchers.launcher.ensure_server_running",
+            return_value=(("tok", 1234), None),
+        ),
+        patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[]),
+        patch("lilbee.cli.launchers.launcher.wait_for_chat_warm"),
+        patch(
+            "lilbee.cli.launchers.launcher.subprocess.run",
+            return_value=MagicMock(returncode=0),
+        ),
+        pytest.raises(typer.Exit),
+    ):
+        run_launcher(launcher)
+    assert launcher.prepare.call_args.kwargs["model_refs"] == [str(gguf)]

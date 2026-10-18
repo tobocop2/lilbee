@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -42,11 +43,14 @@ _BUILD_LOCK_TIMEOUT_S = 90.0
 # to stop alive and holding VRAM.
 _BEST_EFFORT_LOCK_TIMEOUT_S = 5.0
 _USERS_DIRNAME = "engine-users"
+# Held for its whole life by the one reaper process watching a dir's engine.
+_REAPER_LOCK_NAME = "engine-reaper.lock"
 _USER_LOCK_SUFFIX = ".lock"
 # One opt-in file per installation, keyed by config root (not pid, which changes
 # every run). Plain files, not locks: an opt-in outlives its process. Per-install
 # so a restart reclaims its own prior mark while a peer's stays distinct.
 _KEEP_WARM_SUFFIX = ".keep-warm"
+_SECONDS_PER_MINUTE = 60
 # Throwaway per-process file used to ask whether flock really works here.
 _FLOCK_PROBE_PREFIX = ".flock-probe."
 # Non-blocking probe: a live peer refuses instantly.
@@ -157,18 +161,19 @@ def _keep_warm_path(engine_dir: Path, config_root: Path) -> Path:
     return _users_dir(engine_dir) / f"{token}{_KEEP_WARM_SUFFIX}"
 
 
-def request_keep_warm(engine_dir: Path, config_root: Path) -> None:
+def request_keep_warm(engine_dir: Path, config_root: Path, idle_minutes: int) -> None:
     """Record that the installation at *config_root* wants *engine_dir*'s engine warm.
 
     The slot is shared across installations whose configs differ, so any one's
     opt-in keeps the engine warm even when a default-config sibling is last out.
     Keyed by config root, not pid: a restart of the same installation reclaims
-    its own mark. ``stop_engine`` clears the set, so a rebuilt engine starts
-    unmarked.
+    its own mark. The marker holds *idle_minutes*, how long the weights stay
+    loaded after the last user leaves. ``stop_engine`` clears the set, so a
+    rebuilt engine starts unmarked.
     """
     marker = _keep_warm_path(engine_dir, config_root)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
+    marker.write_text(str(idle_minutes), encoding="utf-8")
 
 
 def withdraw_keep_warm(engine_dir: Path, config_root: Path) -> None:
@@ -186,12 +191,34 @@ def keep_warm_requested(engine_dir: Path) -> bool:
     Not gated on liveness: an opt-in means "outlive me", so an exited user's
     marker is the case it exists for.
     """
-    return any(_users_dir(engine_dir).glob(f"*{_KEEP_WARM_SUFFIX}"))
+    return bool(_keep_warm_markers(engine_dir))
+
+
+def keep_warm_idle_s(engine_dir: Path, *, unset_minutes: int) -> float:
+    """Seconds a kept-warm engine's weights stay loaded with no user; the longest opt-in wins.
+
+    A marker of 0 never unloads (infinite). An empty or unreadable marker counts
+    as *unset_minutes*.
+    """
+    minutes = [_marker_minutes(path, unset_minutes) for path in _keep_warm_markers(engine_dir)]
+    longest = max(minutes, default=unset_minutes)
+    return math.inf if 0 in minutes else longest * _SECONDS_PER_MINUTE
+
+
+def _keep_warm_markers(engine_dir: Path) -> list[Path]:
+    return list(_users_dir(engine_dir).glob(f"*{_KEEP_WARM_SUFFIX}"))
+
+
+def _marker_minutes(marker: Path, unset_minutes: int) -> int:
+    try:
+        return int(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return unset_minutes
 
 
 def clear_keep_warm(engine_dir: Path) -> None:
     """Forget every persistence opt-in for *engine_dir*; the engine they applied to is gone."""
-    for marker in _users_dir(engine_dir).glob(f"*{_KEEP_WARM_SUFFIX}"):
+    for marker in _keep_warm_markers(engine_dir):
         marker.unlink(missing_ok=True)
 
 
@@ -259,4 +286,24 @@ def live_users_exist(engine_dir: Path) -> bool:
             return True
         probe.release()
         path.unlink(missing_ok=True)
+    return False
+
+
+def try_hold_reaper_lock(engine_dir: Path, *, timeout: float = _PROBE_TIMEOUT_S) -> FileLock | None:
+    """Hold *engine_dir*'s reaper lock, or return None when it stays held for *timeout*."""
+    engine_dir.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(engine_dir / _REAPER_LOCK_NAME, thread_local=False)
+    try:
+        lock.acquire(timeout=timeout)
+    except FileLockTimeout:
+        return None
+    return lock
+
+
+def reaper_running(engine_dir: Path) -> bool:
+    """Whether a live reaper process watches *engine_dir*'s engine."""
+    lock = try_hold_reaper_lock(engine_dir)
+    if lock is None:
+        return True
+    lock.release()
     return False

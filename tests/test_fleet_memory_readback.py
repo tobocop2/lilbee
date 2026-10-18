@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import readback
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
@@ -24,6 +25,7 @@ from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.readback import (
     MEMORY_FLAG,
+    check_launch,
     check_memory_report,
     parse_memory_rows,
     supports_memory_readback,
@@ -154,16 +156,100 @@ class TestCheckMemoryReport:
         assert not warned
 
 
-class TestSupportsMemoryReadback:
-    def setup_method(self) -> None:
-        supports_memory_readback.cache_clear()
+_SPILLED_PAYLOAD = {
+    "n_layer": 64,
+    "data": [
+        {"name": "CUDA0", "model": 10 * GIB, "context": 11 * GIB, "compute": GIB // 2},
+        {"name": "Host", "model": 6 * GIB, "context": 0, "compute": 0},
+    ],
+}
 
+
+class TestHostSpillWarning:
+    """The engine's fit leaving chat weights in system memory is said once, in plain words."""
+
+    def test_a_host_row_past_the_estimate_warns_in_plain_words(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING):
+            check_memory_report(
+                WorkerRole.CHAT, "qwen-32b", 0, None, _SPILLED_PAYLOAD, est_host_bytes=GIB
+            )
+        spills = [r.getMessage() for r in caplog.records if "system memory" in r.getMessage()]
+        assert spills == [
+            "The chat model qwen-32b does not fit in GPU memory: the engine keeps 6.0 GiB "
+            "of it in system memory, where it runs slower. Free GPU memory or use a "
+            "smaller model."
+        ]
+
+    def test_a_full_offload_host_row_is_quiet(self, caplog) -> None:
+        # Every layer on the card still leaves the token embedding on the host.
+        payload = {
+            "data": [{"name": "CUDA0", "model": 4 * GIB}, {"name": "Host", "model": GIB // 2}]
+        }
+        with caplog.at_level(logging.WARNING):
+            check_memory_report(WorkerRole.CHAT, "qwen-8b", 0, None, payload, est_host_bytes=GIB)
+        assert not [r for r in caplog.records if "system memory" in r.getMessage()]
+
+    def test_no_host_estimate_says_nothing(self, caplog) -> None:
+        # 0 means the engine's fit does not run for the launch (a user layer count).
+        with caplog.at_level(logging.WARNING):
+            check_memory_report(WorkerRole.CHAT, "qwen-32b", 0, None, _SPILLED_PAYLOAD)
+        assert not [r for r in caplog.records if "system memory" in r.getMessage()]
+
+    def test_the_log_path_reads_the_host_buffers(self, tmp_path: Path, caplog) -> None:
+        readback.engine_log_path(tmp_path, "chat-0").write_text(
+            "load_tensors:   CPU_Mapped model buffer size =  5894.48 MiB\n"
+            "load_tensors:        CUDA0 model buffer size = 10547.92 MiB\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            check_launch(
+                tmp_path, "chat-0", WorkerRole.CHAT, "qwen-32b", 10 * GIB, est_host_bytes=GIB
+            )
+        spills = [r.getMessage() for r in caplog.records if "system memory" in r.getMessage()]
+        assert len(spills) == 1
+        assert "keeps 5.8 GiB of it in system memory" in spills[0]
+
+    def test_the_spill_is_said_once_per_start(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        monkeypatch.setattr(
+            sm, "_probe_client", lambda: _FakeClient(lambda _url: _MemoryResponse(_SPILLED_PAYLOAD))
+        )
+        manager = _manager_with_launch(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
+        launch = next(iter(manager._launch_by_model.values()))
+        launch.est_host_bytes = GIB
+        with caplog.at_level(logging.WARNING):
+            manager._check_estimates({"chat-0"})
+            manager._check_estimates({"chat-0"})
+        spills = [r for r in caplog.records if "system memory" in r.getMessage()]
+        assert len(spills) == 1
+
+    def test_a_log_mode_spill_is_said_from_the_engine_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        manager = _manager_with_launch(tmp_path, ["/bin/llama-server"])
+        launch = next(iter(manager._launch_by_model.values()))
+        launch.est_host_bytes = GIB
+        log_path = readback.engine_log_path(manager.log_path.parent, "chat-0")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "load_tensors:   CPU_Mapped model buffer size =  5894.48 MiB\n"
+            "load_tensors:        CUDA0 model buffer size =  4096.00 MiB\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            manager._check_estimates({"chat-0"})
+        spills = [r for r in caplog.records if "system memory" in r.getMessage()]
+        assert len(spills) == 1
+
+
+class TestSupportsMemoryReadback:
     def _binary_with_help(self, monkeypatch: pytest.MonkeyPatch, help_text: str) -> Path:
         class _Done:
             stdout = help_text
             stderr = ""
 
-        monkeypatch.setattr(readback.subprocess, "run", lambda *a, **k: _Done())
+        monkeypatch.setattr(binary_mod.subprocess, "run", lambda *a, **k: _Done())
         return Path("/fake/llama-server")
 
     def test_true_when_help_lists_the_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -184,7 +270,7 @@ class TestSupportsMemoryReadback:
         def _boom(*a, **k):
             raise OSError("no such file")
 
-        monkeypatch.setattr(readback.subprocess, "run", _boom)
+        monkeypatch.setattr(binary_mod.subprocess, "run", _boom)
         assert not supports_memory_readback(Path("/missing/llama-server"))
 
     def test_the_answer_is_cached_per_binary(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -198,11 +284,50 @@ class TestSupportsMemoryReadback:
             calls.append(a)
             return _Done()
 
-        monkeypatch.setattr(readback.subprocess, "run", _run)
+        monkeypatch.setattr(binary_mod.subprocess, "run", _run)
         binary = Path("/fake/llama-server")
         assert supports_memory_readback(binary)
         assert supports_memory_readback(binary)
         assert len(calls) == 1
+
+
+class TestEngineAdvertises:
+    """A launch flag goes out only on the binary's own --help listing it."""
+
+    _HELP = (
+        "-fitt, --fit-target MiB0,MiB1   target margin per device\n"
+        "-kvu,  --kv-unified, -no-kvu, --no-kv-unified\n"
+    )
+
+    def _binary(self, monkeypatch: pytest.MonkeyPatch, help_text: str) -> Path:
+        class _Done:
+            stdout = help_text
+            stderr = ""
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", lambda *a, **k: _Done())
+        return Path("/fake/llama-server")
+
+    def test_a_listed_flag_is_advertised(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        binary = self._binary(monkeypatch, self._HELP)
+        assert readback.engine_advertises(binary, "--fit-target")
+        assert readback.engine_advertises(binary, "--kv-unified")
+
+    def test_a_longer_flag_does_not_advertise_its_prefix(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # b9665, the cu121 cell's engine, has --kv-unified but not the per-slot cap.
+        binary = self._binary(monkeypatch, self._HELP)
+        assert not readback.engine_advertises(binary, "--kv-unified-per-slot")
+        assert not readback.engine_advertises(binary, "--fit")
+
+    def test_a_binary_that_cannot_run_advertises_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(*a, **k):
+            raise OSError("no such file")
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _boom)
+        assert not readback.engine_advertises(Path("/missing/llama-server"), "--fit-target")
 
 
 class TestArgvAndSwapConfig:

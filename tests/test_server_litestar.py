@@ -1250,7 +1250,6 @@ class TestConfigSchemaRoute:
 _DEFAULT_WHEN_REFUSED_WRITES = [
     ("flash_attention", True, "enabled", None),
     ("n_gpu_layers", 12, "all", None),
-    ("main_gpu", 1, "cuda:0", None),
     ("gpu_devices", "0,1", "cpu", None),
     ("semantic_chunking", True, "maybe", False),
 ]

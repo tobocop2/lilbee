@@ -67,10 +67,13 @@ def test_mcp_rejects_the_line_without_the_mcpserver_module() -> None:
 
 
 def test_mcp_admits_the_current_major_and_stops_below_the_next() -> None:
-    # <3 also keeps the next major's prereleases off the beta channel, which
-    # resolves with --prerelease=allow.
+    # 2.2.0 bounds StreamableHTTP sessions (CVE-2026-59951). <3 also keeps the
+    # next major's prereleases off the beta channel, which resolves with
+    # --prerelease=allow.
     req = _base_requirement("mcp")
-    assert req.specifier.contains("2.0.0")
+    assert not req.specifier.contains("2.1.0")
+    assert req.specifier.contains("2.2.0")
+    assert req.specifier.contains("2.3.0")
     assert not req.specifier.contains("3.0.0b1", prereleases=True)
 
 

@@ -536,6 +536,29 @@ class TestConfiguredModelPreflight:
     ) -> None:
         assert preflight_chat_request(_req(model="ollama/gemma4:26b")) == "ollama/gemma4:26b"
 
+    def test_images_dropped_for_a_text_model_are_logged_once(
+        self, services_with_model, caplog
+    ) -> None:
+        with caplog.at_level("WARNING"):
+            assert preflight_chat_request(_req(dropped_images=2)) == "vendor/model::Q4"
+        assert [r.getMessage() for r in caplog.records if "image" in r.getMessage()] == [
+            "Dropped 2 image part(s) from a chat request: "
+            "lilbee cannot pass images to vendor/model::Q4"
+        ]
+
+    def test_no_log_or_probe_when_no_images_were_dropped(self, services_with_model, caplog) -> None:
+        with caplog.at_level("WARNING"):
+            preflight_chat_request(_req())
+        assert "image" not in caplog.text
+
+    def test_images_for_a_vision_tagged_model_are_logged_not_refused(
+        self, services_with_model, caplog
+    ) -> None:
+        services_with_model.provider.get_capabilities.return_value = ["completion", "vision"]
+        with caplog.at_level("WARNING"):
+            assert preflight_chat_request(_req(dropped_images=1)) == "vendor/model::Q4"
+        assert "Dropped 1 image part(s)" in caplog.text
+
     async def test_stream_rejects_not_configured_model_before_yielding(
         self, services_with_model, monkeypatch
     ) -> None:

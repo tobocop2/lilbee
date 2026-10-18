@@ -10,7 +10,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, OcrMode, RerankerType
-from lilbee.providers.engine_params import ChatFit
+from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import (
     VULKAN_BACKEND,
@@ -427,41 +427,33 @@ def test_resolve_vision_slots_ceiling_one_short_circuits(monkeypatch) -> None:
     assert planning_mod._resolve_vision_slots(Path("/m/v.gguf"), 16384, device=_card(10**12)) == 1
 
 
-def test_cache_type_flags_are_absent_for_f16(monkeypatch) -> None:
+def test_cache_type_flag_is_absent_for_f16(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.F16)
 
-    assert planning_mod.chat_cache_type_flags() == (None, None)
+    assert planning_mod.chat_cache_type_flag() is None
 
 
-def test_cache_type_flags_use_the_enum_value(monkeypatch) -> None:
+def test_cache_type_flag_uses_the_enum_value(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
+    monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: "CUDA")
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr(cfg, "flash_attention", None)
 
-    assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
+    assert planning_mod.chat_cache_type_flag() == "q8_0"
 
 
-def test_only_the_v_cache_falls_back_without_flash_attention(monkeypatch) -> None:
-    # llama.cpp refuses a quantized V cache without flash attention; K needs nothing.
+def test_the_kv_cache_falls_back_to_f16_without_flash_attention(monkeypatch) -> None:
+    # llama.cpp refuses a quantized V cache without flash attention, and K follows V.
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr(cfg, "flash_attention", False)
 
-    assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
-
-
-def test_estimator_kv_type_matches_the_launch_without_flash_attention(monkeypatch) -> None:
-    # The estimate must match the KV type actually launched.
-    from lilbee.core.config.enums import KvCacheType
-
-    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
-    monkeypatch.setattr(cfg, "flash_attention", False)
-    assert planning_mod._role_kv_cache_type(WorkerRole.CHAT) is KvCacheType.Q8_0
-    assert planning_mod._role_kv_cache_type_v(WorkerRole.CHAT) is KvCacheType.F16
+    assert planning_mod.chat_cache_type_flag() is None
+    assert planning_mod._role_kv_cache_type(WorkerRole.CHAT) is KvCacheType.F16
 
 
 def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
@@ -1046,45 +1038,178 @@ class TestBuildFleetWiring:
         assert launch.weights_bytes == 2048  # model file size scales the ready timeout
 
     @staticmethod
-    def _chat_launch(tmp_path, monkeypatch, *, num_ctx: int | None) -> tuple[InstanceLaunch, list]:
-        """A single-card chat launch whose window fit traded offload down to 24."""
+    def _chat_launch(
+        tmp_path,
+        monkeypatch,
+        *,
+        num_ctx: int | None,
+        advertised: bool = True,
+        reserved: dict[int, int] | None = None,
+        after_chat: dict[int, int] | None = None,
+    ) -> tuple[InstanceLaunch, list]:
+        """A single-card chat launch on a 24 GiB card whose window fit answers 12288."""
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "engine_advertises", lambda _b, _flag: advertised)
         calls: list = []
 
         def _fit(*_a, **kwargs):
             calls.append(kwargs.get("available_bytes"))
-            return ChatFit(gpu_layers=24, ctx=12288)
+            return 12288
 
-        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_fit", _fit)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", _fit)
         monkeypatch.setattr(cfg, "num_ctx", num_ctx)
-        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
-        device = FleetDevice("CUDA", 0, "gpu", 2 * _GB, 2 * _GB)
-        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 24 * _GB)
+        launch = planning_mod._launch_for(
+            plan,
+            "ref",
+            Path("/bin/llama-server"),
+            {0: device},
+            reserved_by_device=reserved,
+            reserved_after_chat=after_chat,
+        )
         return launch, calls
 
-    def test_launch_for_chat_offloads_the_layers_its_window_fit_chose(
+    def test_launch_for_chat_sends_the_configured_offload_for_the_engine_to_fit(
         self, tmp_path, monkeypatch
     ) -> None:
-        # The fit's answer is a (layers, window) pair: launching the window at full
-        # offload would allocate the KV the fit only found room for by leaving
-        # layers in system memory, and the load would run out of VRAM. One call
-        # yields both, so the pair cannot come from two different budgets.
+        # The layer count is the engine's: lilbee sends auto and the window.
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
         launch, calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
-        assert launch.argv[launch.argv.index("--n-gpu-layers") + 1] == "24"
+        assert launch.argv[launch.argv.index("--n-gpu-layers") + 1] == "-1"
         assert launch.ctx == 12288
-        assert calls == [int(2 * _GB * cfg.gpu_memory_fraction)]
+        assert calls == [int(24 * _GB * cfg.gpu_memory_fraction)]
+
+    def test_launch_for_chat_keeps_a_user_set_offload(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "n_gpu_layers", 12)
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert launch.argv[launch.argv.index("--n-gpu-layers") + 1] == "12"
 
     def test_launch_for_chat_keeps_full_offload_under_a_num_ctx_pin(
         self, tmp_path, monkeypatch
     ) -> None:
-        # A pin skips the fit entirely, so there is no traded offload to honour.
+        # A pin skips the window fit entirely.
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
         launch, calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=4096)
         assert launch.argv[launch.argv.index("--n-gpu-layers") + 1] == "-1"
         assert calls == []
+
+    def test_launch_for_chat_alone_on_its_card_gets_the_engine_default_fit_target(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # No other role on the card: the engine's own 1024 MiB margin and nothing on top.
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert launch.argv[launch.argv.index("--fit-target") + 1] == "1024"
+
+    def test_launch_for_chat_fit_target_holds_back_its_own_card_only(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The engine's 1024 MiB margin plus the 1 GiB vision that loads after chat
+        # on this card. The 5 GiB held on card 1 is another card's and is not charged.
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        launch, _calls = self._chat_launch(
+            tmp_path, monkeypatch, num_ctx=None, after_chat={0: _GB, 1: 5 * _GB}
+        )
+        assert launch.argv[launch.argv.index("--fit-target") + 1] == "2048"
+
+    def test_launch_for_chat_fit_target_skips_roles_resident_before_chat(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # 8 GiB embed and 1 GiB rerank warm before chat on its 24 GiB card, so the
+        # engine's live free memory already excludes them: only its own margin.
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        launch, _calls = self._chat_launch(
+            tmp_path, monkeypatch, num_ctx=None, reserved={0: 9 * _GB}
+        )
+        assert launch.argv[launch.argv.index("--fit-target") + 1] == "1024"
+
+    def test_launch_for_chat_fit_target_charges_vision_but_not_the_resident_embed(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # Embed (8 GiB, resident) and vision (3 GiB, loads on the first OCR) on one
+        # card: the embed held back for the split headroom is not charged twice.
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        launch, _calls = self._chat_launch(
+            tmp_path, monkeypatch, num_ctx=None, reserved={0: 11 * _GB}, after_chat={0: 3 * _GB}
+        )
+        assert launch.argv[launch.argv.index("--fit-target") + 1] == str(1024 + 3 * 1024)
+
+    def test_launch_for_chat_carries_the_host_estimate_where_the_engine_fits(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The readback says chat spilled when the host holds more than this.
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        estimate = GgufVramEstimate(vram_bytes=4 * _GB, ram_bytes=900 << 20, unified_bytes=5 * _GB)
+        monkeypatch.setattr(planning_mod, "estimate_instance_footprint", lambda *_a, **_k: estimate)
+        monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda: False)
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert launch.est_host_bytes == 900 << 20
+
+    def test_launch_for_chat_under_a_user_offload_carries_no_host_estimate(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A numeric layer count stops the engine's fit: the host holds what the user asked.
+        monkeypatch.setattr(cfg, "n_gpu_layers", 12)
+        estimate = GgufVramEstimate(vram_bytes=4 * _GB, ram_bytes=900 << 20, unified_bytes=5 * _GB)
+        monkeypatch.setattr(planning_mod, "estimate_instance_footprint", lambda *_a, **_k: estimate)
+        monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda: False)
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert launch.est_host_bytes == 0
+
+    def test_launch_for_chat_unsized_by_the_estimator_carries_no_host_estimate(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from lilbee.providers.base import ProviderError
+
+        def _unsized(*_a, **_k):
+            raise ProviderError("gguf-parser could not read the file")
+
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _unsized)
+        monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda: False)
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert launch.est_host_bytes == 0
+
+    def test_launch_for_chat_shares_one_kv_pool_capped_at_its_window(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert "--kv-unified" in launch.argv
+        assert launch.argv[launch.argv.index("--kv-unified-per-slot") + 1] == "12288"
+        slots = int(launch.argv[launch.argv.index("--parallel") + 1])
+        assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(12288 * slots)
+
+    def test_launch_for_chat_on_shared_memory_leaves_the_fit_target_alone(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "engine_advertises", lambda _b, _flag: True)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *a, **k: 8192)
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        device = FleetDevice("Metal", 0, "M3", 24 * _GB, 24 * _GB, unified=True)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+        assert "--fit-target" not in launch.argv
+        assert "--kv-unified" in launch.argv
+
+    def test_launch_for_chat_on_an_engine_without_the_flags_sends_neither(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The cu121 cell's engine (upstream b9665) has no --kv-unified-per-slot.
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None, advertised=False)
+        for flag in ("--fit-target", "--kv-unified", "--kv-unified-per-slot"):
+            assert flag not in launch.argv
 
     def test_launch_for_split_chat_sizes_ctx_against_per_device_headroom(
         self, tmp_path, monkeypatch
@@ -1153,6 +1278,39 @@ class TestBuildFleetWiring:
             launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
         assert "network filesystem" in caplog.text.lower()
         assert "--no-mmap" not in launch.argv  # too big to malloc; mmap kept
+
+    @pytest.mark.parametrize(
+        ("help_line", "expected"),
+        [
+            ("-lm,   --load-mode MODE   model loading mode", ["--load-mode", "none"]),
+            ("--mmap, --no-mmap   whether to memory-map model", ["--no-mmap"]),
+            ("--port PORT   port to listen", []),
+        ],
+        ids=["load-mode-build", "no-mmap-build", "neither"],
+    )
+    def test_launch_for_network_fs_chat_sends_the_listed_no_mmap_flag(
+        self, tmp_path, monkeypatch, help_line: str, expected: list[str]
+    ) -> None:
+        # A chat model on a network volume that fits RAM loads without mmap, with
+        # the flag the binary lists: each build refuses the other's flag at startup.
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
+        monkeypatch.setattr(planning_mod, "is_network_path", lambda _p: True)
+        monkeypatch.setattr(planning_mod, "_weights_bytes", lambda _p: 10 * 10**9)
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 100 * 10**9)
+        monkeypatch.setattr(
+            binary_mod.subprocess,
+            "run",
+            lambda *_a, **_k: SimpleNamespace(stdout=help_line, stderr=""),
+        )
+        device = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+        got = [t for t in launch.argv if t in ("--no-mmap", "--load-mode", "none")]
+        assert got == expected
 
     def test_launch_for_split_chat_subtracts_reserved_headroom(self, tmp_path, monkeypatch) -> None:
         # An embed/rerank server on a shared card leaves less room for the chat KV
@@ -1674,6 +1832,73 @@ class TestBuildFleetWiring:
         assert "chat, vision" in caplog.text
         assert "only one is resident" in caplog.text
 
+    def test_plan_charges_chat_fit_target_only_for_roles_loading_after_it(
+        self, monkeypatch
+    ) -> None:
+        # Embed and rerank warm before chat on card 0 and vision loads later: the
+        # split headroom holds all three, chat's fit target only vision.
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 24 * _GB)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
+        )
+        roles = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION)
+        sizes = {
+            WorkerRole.CHAT: 17,
+            WorkerRole.EMBED: 8,
+            WorkerRole.RERANK: 1,
+            WorkerRole.VISION: 3,
+        }
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [ModelPlacementInput(role, sizes[role] * _GB) for role in roles],
+                {role: f"{role.value}-ref" for role in roles},
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=tuple(InstancePlan(role, (0,)) for role in roles),
+                unplaceable_roles=(),
+            ),
+        )
+        seen: dict[WorkerRole, dict] = {}
+
+        def _launch(plan, *_a, **kw):
+            seen[plan.role] = kw
+            return MagicMock()
+
+        monkeypatch.setattr(planning_mod, "_launch_for", _launch)
+        planning_mod.plan_all_launches()
+        assert seen[WorkerRole.CHAT]["reserved_by_device"] == {0: 12 * _GB}
+        assert seen[WorkerRole.CHAT]["reserved_after_chat"] == {0: 3 * _GB}
+
+    def test_roles_loaded_before_chat_are_the_ones_the_warm_up_loads_first(self) -> None:
+        # The fit target leans on the warm-up order: every role it skips must load
+        # before chat on a shared card, and vision, which it charges, is not warmed.
+        from lilbee.providers.fleet import provider as provider_mod
+
+        shared = frozenset({"CUDA_VISIBLE_DEVICES=0"})
+        roles = list(WorkerRole)
+        chains = provider_mod._warm_chains(roles, dict.fromkeys(roles, shared))
+        assert len(chains) == 1
+        chain = chains[0]
+        assert planning_mod._LOADED_BEFORE_CHAT
+        for role in planning_mod._LOADED_BEFORE_CHAT:
+            assert chain.index(role) < chain.index(WorkerRole.CHAT)
+        later = set(WorkerRole) - planning_mod._LOADED_BEFORE_CHAT - {WorkerRole.CHAT}
+        assert later == {WorkerRole.VISION}
+        client = MagicMock()
+        provider_mod._warm_role(WorkerRole.VISION, client)
+        assert client.mock_calls == []
+
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         # The engine could not answer at all, which is the only case the fallback
@@ -1961,6 +2186,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--cont-batching",
     "--jinja",
     "--no-mmap",
+    "--load-mode",
     "--no-prefill-assistant",
     "--reasoning-format",
     "--embeddings",
@@ -2005,8 +2231,8 @@ class TestEstimateLaunchParity:
         monkeypatch.setattr(cfg, "num_ctx", 4096)
         monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
-        # Vulkan leaves V unquantized, so K and V differ; the estimate has to
-        # carry that difference or it sizes a cache the launch will not allocate.
+        # Vulkan leaves the KV cache unquantized; the estimate has to carry the
+        # same type or it sizes a cache the launch will not allocate.
         monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: backend)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
         mmproj = Path("/m/mmproj.gguf") if role is WorkerRole.VISION else None
@@ -2038,7 +2264,6 @@ class TestEstimateLaunchParity:
             gpu_layers=captured["gpu_layers"],  # type: ignore[arg-type]
             flash_attn=captured["flash_attn"],  # type: ignore[arg-type]
             kv_cache_type=captured["kv_cache_type"].value,  # type: ignore[union-attr]
-            kv_cache_type_v=captured["kv_cache_type_v"].value,  # type: ignore[union-attr]
             mmproj=str(captured["mmproj_path"]) if captured.get("mmproj_path") else None,
             tensor_split=captured.get("tensor_split", ()),  # type: ignore[arg-type]
             batch_size=captured.get("batch_size"),  # type: ignore[arg-type]
@@ -2110,7 +2335,6 @@ class TestEstimateLaunchParity:
             gpu_layers=captured["gpu_layers"],  # type: ignore[arg-type]
             flash_attn=captured["flash_attn"],  # type: ignore[arg-type]
             kv_cache_type=captured["kv_cache_type"].value,  # type: ignore[union-attr]
-            kv_cache_type_v=captured["kv_cache_type_v"].value,  # type: ignore[union-attr]
             mmproj=None,
             tensor_split=(),
             batch_size=captured.get("batch_size"),  # type: ignore[arg-type]
@@ -2348,9 +2572,10 @@ class TestFitChatCtx:
         model = tmp_path / "m.gguf"
         meta = {"arch": "x"}
 
-        assert planning_mod.fit_chat_ctx(
-            model, meta, available_bytes=40 * _GB, ctx_ceiling=262144
-        ) == ChatFit(gpu_layers=-1, ctx=32768)
+        assert (
+            planning_mod.fit_chat_ctx(model, meta, available_bytes=40 * _GB, ctx_ceiling=262144)
+            == 32768
+        )
         assert seen["model_path"] == model
         assert seen["meta"] == meta
         assert seen["slots"] == 1
@@ -2360,116 +2585,126 @@ class TestFitChatCtx:
         assert seen["kv_cache_type"] is KvCacheType.Q4_0
 
 
-class TestChatOffloadTradedForWindow:
-    """A window too small to answer with buys KV room by leaving layers off the card."""
+class TestChatWindowLeftToTheEngineFit:
+    """A window too small for a grounded prompt is raised, and the engine fits the layers."""
 
     @staticmethod
-    def _staircase(usable_at_or_below: int, *, small: int = 512, large: int = 12288):
-        """A fit that only reaches *large* once the offload drops to *usable_at_or_below*."""
+    def _fit(window: int):
+        """A gguf-parser fit that answers *window* and records the offload it was priced at."""
         probed: list[int] = []
 
         def _fit(_path, *, gpu_layers: int, **_kwargs) -> int:
             probed.append(gpu_layers)
-            return large if 0 <= gpu_layers <= usable_at_or_below else small
+            return window
 
         return _fit, probed
 
     @pytest.fixture(autouse=True)
     def _flags(self, monkeypatch, tmp_path):
         monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda: False)
+        monkeypatch.setattr(planning_mod, "_role_expert_offload", lambda _p: ())
         monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        self.advertised: list[str] = []
+
+        def _advertises(_binary, flag: str) -> bool:
+            self.advertised.append(flag)
+            return True
+
+        monkeypatch.setattr(planning_mod, "engine_advertises", _advertises)
         self.model = tmp_path / "chat.gguf"
         self.model.write_bytes(b"x" * 1024)
         self.meta = {"block_count": "28"}
+        self.needed = planning_mod.engine_params.min_usable_chat_ctx()
 
-    def test_it_keeps_the_largest_offload_that_serves_a_grounded_prompt(self, monkeypatch) -> None:
-        # Full offload leaves KV room for 512 tokens, which cannot hold a prompt.
-        # Dropping four layers to system memory buys a usable window, so the launch
-        # runs there rather than being refused.
-        fit, probed = self._staircase(24)
+    def _window(self, ctx_ceiling: int = 16384) -> int:
+        return planning_mod.fit_chat_ctx(
+            self.model, self.meta, available_bytes=2 * _GB, ctx_ceiling=ctx_ceiling
+        )
+
+    def test_a_short_window_is_raised_to_a_grounded_prompt(self, monkeypatch) -> None:
+        # Full offload leaves KV room for 512 tokens. The launch asks for the
+        # smallest window that answers and the engine's fit moves the layers.
+        fit, probed = self._fit(512)
         monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+        window = self._window()
+        assert self.needed <= window < self.needed + 256
+        assert window % 256 == 0
+        assert probed == [-1]
+        assert self.advertised == ["--fit-target"]
 
-        assert planning_mod.fit_chat_ctx(
-            self.model, self.meta, available_bytes=2 * _GB, ctx_ceiling=16384
-        ) == ChatFit(gpu_layers=24, ctx=12288)
-        assert max(probed) <= 28  # never probes past the model's own layer count
-
-    def test_it_does_not_trade_when_the_weights_alone_overflow_the_budget(
-        self, monkeypatch
-    ) -> None:
-        # The bb-mud43 case: a model whose weights already exceed the budget only
-        # gets a usable window by running out of system memory, which is the load
-        # plan_launches refuses on purpose. Offload stays put and the refusal stands.
-        fit, probed = self._staircase(24)
+    def test_an_engine_without_the_fit_keeps_the_window(self, monkeypatch) -> None:
+        # A bring-your-own llama-server older than the fit loads every layer, so
+        # a raised window would not fit beside them: it starts with the base window.
+        monkeypatch.setattr(planning_mod, "engine_advertises", lambda _b, _flag: False)
+        fit, _probed = self._fit(512)
         monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+        assert self._window() == 512
 
-        assert planning_mod.fit_chat_ctx(
-            self.model, self.meta, available_bytes=512, ctx_ceiling=16384
-        ) == ChatFit(gpu_layers=-1, ctx=512)
+    def test_no_engine_binary_keeps_the_window(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        def _missing() -> Path:
+            raise ProviderError("llama-server binary not found.")
+
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", _missing)
+        fit, _probed = self._fit(512)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+        assert self._window() == 512
+
+    def test_a_cap_just_above_the_minimum_bounds_the_raise(self, monkeypatch) -> None:
+        # The raise rounds 1000 up to 1024; a cap of 1010 sits between the two and wins.
+        monkeypatch.setattr(planning_mod.engine_params, "min_usable_chat_ctx", lambda: 1000)
+        fit, _probed = self._fit(512)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+        assert self._window(ctx_ceiling=1010) == 1010
+
+    def test_a_window_that_holds_a_grounded_prompt_is_kept(self, monkeypatch) -> None:
+        fit, probed = self._fit(12288)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+        assert self._window() == 12288
         assert probed == [-1]
 
-    def test_it_does_not_trade_for_a_window_the_user_capped_below_the_minimum(
-        self, monkeypatch
-    ) -> None:
-        # A sub-minimum num_ctx_max / chat_n_ctx_target is an explicit choice, and
-        # _unusable_chat_ctx_reason honours it; nothing is bought by trading.
-        fit, probed = self._staircase(24)
+    def test_a_weights_overflow_is_raised_for_the_engine_to_spill(self, monkeypatch) -> None:
+        # A mixture-of-experts model bigger than the card: the engine keeps the
+        # dense layers on the card and spills experts, so the window is served.
+        fit, _probed = self._fit(512)
         monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
-
-        assert planning_mod.fit_chat_ctx(
-            self.model, self.meta, available_bytes=2 * _GB, ctx_ceiling=1024
-        ) == ChatFit(gpu_layers=-1, ctx=512)
-        assert probed == [-1]
-
-    def test_it_does_not_trade_for_a_speculator_head(self, monkeypatch) -> None:
-        # A speculator scores every position it proposes, so its compute buffer
-        # grows with the window while the estimate prices it by the physical
-        # batch. The trade maximises that window, so the estimate it searches
-        # gets further from the truth the more it trades. Measured: the trade
-        # granted gemma-4-26B-A4B-eagle3 59648 tokens on a 1 GiB card against a
-        # real 1413 MiB.
-        fit, probed = self._staircase(24)
-        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
-
-        assert planning_mod.fit_chat_ctx(
+        weights = self.model.stat().st_size
+        window = planning_mod.fit_chat_ctx(
             self.model,
-            {**self.meta, "architecture": "eagle3"},
-            available_bytes=2 * _GB,
+            {"architecture": "qwen3moe", "expert_count": "128"},
+            available_bytes=weights // 2,
             ctx_ceiling=16384,
-        ) == ChatFit(gpu_layers=-1, ctx=512)
-        assert probed == [-1]
+        )
+        assert window >= self.needed
 
-    def test_it_does_not_trade_without_a_layer_count(self, monkeypatch) -> None:
-        # No block_count means no grid to search, so the configured offload stands.
-        fit, probed = self._staircase(24)
+    def test_a_window_the_user_capped_below_the_minimum_is_not_raised(self, monkeypatch) -> None:
+        fit, _probed = self._fit(512)
         monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+        assert self._window(ctx_ceiling=1024) == 512
 
-        assert planning_mod.fit_chat_ctx(
-            self.model, {}, available_bytes=2 * _GB, ctx_ceiling=16384
-        ) == ChatFit(gpu_layers=-1, ctx=512)
-        assert probed == [-1]
-
-    def test_it_stays_under_a_user_set_offload(self, monkeypatch) -> None:
-        # cfg.n_gpu_layers is the ceiling the user asked for; the trade only ever
-        # moves layers off the card, never onto it.
+    def test_a_user_set_offload_is_not_raised(self, monkeypatch) -> None:
+        # The engine's fit stops at a numeric layer count, so nothing would move.
         monkeypatch.setattr(cfg, "n_gpu_layers", 20)
-        fit, probed = self._staircase(10)
+        fit, probed = self._fit(512)
         monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+        assert self._window() == 512
+        assert probed == [20]
 
-        assert planning_mod.fit_chat_ctx(
-            self.model, self.meta, available_bytes=2 * _GB, ctx_ceiling=16384
-        ) == ChatFit(gpu_layers=10, ctx=12288)
-        assert max(probed) == 20
-
-    def test_it_keeps_the_configured_offload_when_no_reduction_serves(self, monkeypatch) -> None:
-        # A model that cannot reach the minimum at any offload is still refused,
-        # and is refused with the window full offload would have served.
-        fit, _probed = self._staircase(-1)
+    def test_a_user_set_expert_offload_is_not_raised(self, monkeypatch) -> None:
+        # The fit stops at user tensor overrides as well.
+        monkeypatch.setattr(planning_mod, "_role_expert_offload", lambda _p: ("exps=CPU",))
+        fit, _probed = self._fit(512)
         monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+        assert self._window() == 512
 
-        assert planning_mod.fit_chat_ctx(
-            self.model, self.meta, available_bytes=2 * _GB, ctx_ceiling=16384
-        ) == ChatFit(gpu_layers=-1, ctx=512)
+    def test_shared_memory_is_not_raised(self, monkeypatch) -> None:
+        # Moving a layer off a unified-memory device frees nothing.
+        monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda: True)
+        fit, _probed = self._fit(512)
+        monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
+        assert self._window() == 512
 
 
 class TestPlacementChargesAgainstFreeMemory:
@@ -2595,7 +2830,6 @@ class TestSlotsAreChargedOnce:
             gpu_layers=-1,
             flash_attn=True,
             kv_cache_type="q8_0",
-            kv_cache_type_v="q8_0",
             mmproj=None,
             tensor_split=(),
             batch_size=None,
@@ -2711,9 +2945,9 @@ class TestSizingBudgetComesFromTheDevice:
 
         def _record_fit(_path, _meta, *, available_bytes=None):
             seen.append(available_bytes)
-            return ChatFit(gpu_layers=-1, ctx=4096)
+            return 4096
 
-        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_fit", _record_fit)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", _record_fit)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(1,))
         planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: small, 1: large})
         assert seen == [int(48 * _GB * cfg.gpu_memory_fraction)]
@@ -3062,7 +3296,6 @@ def test_estimator_argv_has_no_override_tensor_without_offload(monkeypatch) -> N
         gpu_layers=-1,
         flash_attn=True,
         kv_cache_type="q8_0",
-        kv_cache_type_v="q8_0",
         mmproj=None,
         tensor_split=(),
         batch_size=None,
@@ -3085,7 +3318,6 @@ def test_estimator_argv_charges_offloaded_experts_to_cpu(monkeypatch) -> None:
         gpu_layers=-1,
         flash_attn=True,
         kv_cache_type="q8_0",
-        kv_cache_type_v="q8_0",
         mmproj=None,
         tensor_split=(),
         batch_size=None,
@@ -3390,8 +3622,8 @@ class TestFlashAttentionIsBackendAware:
 
     llama.cpp's Vulkan flash-attn coverage lags CUDA's and has been incomplete on
     Intel's mesa driver, which is what a Tiger Lake laptop reported as a chat
-    slowdown. But 'auto' cannot be passed alone: llama.cpp refuses a quantized V
-    cache without flash attention and the server never starts.
+    slowdown. Under 'auto' a quantized V cache makes llama.cpp force flash
+    attention on, so the KV cache stays f16 there.
     """
 
     def _on_backend(self, monkeypatch, backend: str | None) -> None:
@@ -3404,21 +3636,21 @@ class TestFlashAttentionIsBackendAware:
         """Every host that works today must keep the argv it has now."""
         self._on_backend(monkeypatch, backend)
         assert planning_mod.flash_attn_flag() == "on"
-        assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
+        assert planning_mod.chat_cache_type_flag() == "q8_0"
 
     def test_an_unknown_backend_keeps_todays_behaviour(self, monkeypatch) -> None:
         self._on_backend(monkeypatch, None)
         assert planning_mod.flash_attn_flag() == "on"
-        assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
+        assert planning_mod.chat_cache_type_flag() == "q8_0"
 
     @pytest.mark.parametrize("backend", ["Vulkan", "SYCL"])
-    def test_lagging_backends_defer_to_the_engine_and_leave_v_unquantized(
+    def test_lagging_backends_defer_to_the_engine_and_leave_the_cache_unquantized(
         self, monkeypatch, backend: str
     ) -> None:
-        """K quantization needs nothing; only V requires flash attention."""
+        """A quantized V would make the engine force flash attention on under auto."""
         self._on_backend(monkeypatch, backend)
         assert planning_mod.flash_attn_flag() == "auto"
-        assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
+        assert planning_mod.chat_cache_type_flag() is None
 
     def test_explicit_off_no_longer_asks_for_an_impossible_v_cache(self, monkeypatch) -> None:
         """flash_attention=false with a quantized KV type asked llama-server for
@@ -3426,7 +3658,7 @@ class TestFlashAttentionIsBackendAware:
         self._on_backend(monkeypatch, "CUDA")
         monkeypatch.setattr(cfg, "flash_attention", False)
         assert planning_mod.flash_attn_flag() == "off"
-        assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
+        assert planning_mod.chat_cache_type_flag() is None
 
     def test_the_estimate_does_not_assume_flash_attention_under_auto(self, monkeypatch) -> None:
         """The engine decides at load; assuming it would size KV below what the

@@ -13,7 +13,6 @@ from lilbee.providers.model_ref import (
     parse_model_ref,
     routes_to_native_gguf,
     translate_options,
-    with_configured_remote_chat,
 )
 
 # Canonical native HF ref for tests that need a local model.
@@ -217,21 +216,6 @@ class TestWindowsPathParity:
         raw = r"lm_studio/C:\models\phi-2.gguf"
         assert is_native_gguf_ref(raw) is False
         assert parse_model_ref(raw).provider == "lm_studio"
-
-
-class TestWithConfiguredRemoteChat:
-    """A model listing includes a remote-configured chat model."""
-
-    def test_remote_configured_chat_model_is_prepended(self) -> None:
-        refs = with_configured_remote_chat(["a/b/c.gguf"], "ollama/qwen3:8b")
-        assert refs == ["ollama/qwen3:8b", "a/b/c.gguf"]
-
-    def test_native_configured_chat_model_is_untouched(self) -> None:
-        assert with_configured_remote_chat(["a/b/c.gguf"], "a/b/c.gguf") == ["a/b/c.gguf"]
-
-    def test_already_listed_remote_ref_is_not_duplicated(self) -> None:
-        refs = with_configured_remote_chat(["ollama/qwen3:8b"], "ollama/qwen3:8b")
-        assert refs == ["ollama/qwen3:8b"]
 
 
 class TestProviderModelRefProperties:

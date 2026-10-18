@@ -26,6 +26,7 @@ from .defaults import (
     DEFAULT_GENERAL_SYSTEM_PROMPT,
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
+    ENGINE_IDLE_TTL_MINUTES_DEFAULT,
 )
 from .enums import (
     ChatMode,
@@ -85,8 +86,15 @@ _USES_ITS_DEFAULT = "uses its default"
 # A variable its setting refuses stops the command and a write of one is refused,
 # except on these: each takes its default, automatic or off, with a warning.
 _TAKES_DEFAULT_WHEN_REFUSED = frozenset(
-    {"flash_attention", "n_gpu_layers", "main_gpu", "gpu_devices", "semantic_chunking"}
+    {"flash_attention", "n_gpu_layers", "gpu_devices", "semantic_chunking"}
 )
+
+# A key that is not a setting, by name, and what to use instead. A stored or
+# exported one is refused out loud rather than silently ignored.
+_NOT_SETTINGS: dict[str, str] = {
+    # llama-server reads it only under split mode none, which no fleet launch uses.
+    "main_gpu": "choose the cards with gpu_devices or placement",
+}
 
 
 def value_is_set(field_name: str, raw: object) -> bool:
@@ -398,7 +406,9 @@ class Config(BaseSettings):
     # ("tire tire tire...") on some open-weights models.
     repeat_penalty: float | None = ConfigField(default=1.1, ge=0.0, writable=True)
     num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
-    max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
+    # None sends no cap: the engine stops at the served context, which the fleet
+    # already fits the prompt to, so a long reasoning answer is not cut at a fixed number.
+    max_tokens: int | None = ConfigField(default=None, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
     # Path to a llama-server binary. Empty = use the bundled lilbee-engine
@@ -768,11 +778,11 @@ class Config(BaseSettings):
     # for headless / scripted use where the first call doesn't need to be fast.
     worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
 
-    # Leave the engine fleet running on quit so the next launch adopts it warm.
-    # On keeps the engine process alive across app close so the next launch
-    # binds instantly; its weights still follow engine_idle_ttl_minutes. Off
-    # (default): the engine stops when the last lilbee process exits, leaving
-    # the machine clean.
+    # On: weights stay loaded while any lilbee process holds the engine, and
+    # unload engine_idle_ttl_minutes after the last one exits; the engine process
+    # stays up so the next launch binds instantly. Off (default): the engine
+    # stops when the last lilbee process exits. A change applies at the next
+    # engine start.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
     # Hugging Face's high-performance transfer mode: more connections and much
@@ -780,10 +790,12 @@ class Config(BaseSettings):
     # rather than a laptop also holding a model in memory.
     fast_model_downloads: bool = ConfigField(default=False, writable=True)
 
-    # Idle minutes before the engine unloads its weights (llama-swap ttl), in
-    # every mode: even a persistent engine naps when unused. 0 keeps weights
+    # Idle minutes before the engine unloads its weights: llama-swap's ttl, or
+    # with keep_engine_warm the time after the last lilbee exit. 0 keeps weights
     # loaded until the engine stops.
-    engine_idle_ttl_minutes: int = ConfigField(default=5, writable=True)
+    engine_idle_ttl_minutes: int = ConfigField(
+        default=ENGINE_IDLE_TTL_MINUTES_DEFAULT, writable=True
+    )
 
     # Working n_ctx the dynamic picker aims for. Default scales with
     # total host RAM (see core.system.chat_ctx_target_for_total_bytes):
@@ -830,7 +842,9 @@ class Config(BaseSettings):
 
     # KV cache element type. q8_0 (default) halves cache memory vs f16
     # with no measurable quality loss for chat; q4_0 quarters it with a
-    # small quality cost. Both require flash attention to be enabled.
+    # small quality cost. Both apply to K and V together, and only where
+    # lilbee sends flash attention on. On Vulkan and SYCL it sends auto even
+    # when flash_attention is true, so the cache is f16 there.
     kv_cache_type: KvCacheType = ConfigField(default=KvCacheType.Q8_0, writable=True)
 
     # Number of model layers to offload to GPU. None (default) = all
@@ -870,12 +884,6 @@ class Config(BaseSettings):
     # (no vulkaninfo, single device, parse error), leaving the
     # Vulkan-loader's default ordering in place.
     gpu_devices: str | None = ConfigField(default=None, writable=True)
-
-    # Primary GPU index passed to ``Llama(main_gpu=...)``. Only matters
-    # when multiple devices remain visible after ``gpu_devices``; with
-    # a single visible device, llama.cpp ignores this. ``None``
-    # (default) lets llama.cpp pick (index 0).
-    main_gpu: int | None = ConfigField(default=None, writable=True)
 
     # Manual GPU placement override stored as a JSON scalar (the config.toml store
     # is flat, and core must not depend on the provider PlacementSpec type). When
@@ -1231,22 +1239,6 @@ class Config(BaseSettings):
                 raise ValueError("use a whole number, cpu or auto") from None
         return int(v)
 
-    @field_validator("main_gpu", mode="before")
-    @classmethod
-    def _parse_main_gpu(cls, v: Any) -> int | None:
-        """Empty/auto strings -> None, integers parsed verbatim."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            label = v.strip().lower()
-            if label in ("", "auto", "none"):
-                return None
-            try:
-                return int(label)
-            except ValueError:
-                raise ValueError("use a whole number or auto") from None
-        return int(v)
-
     @field_validator("gpu_devices", mode="before")
     @classmethod
     def _parse_gpu_devices(cls, v: Any) -> str | None:
@@ -1539,6 +1531,11 @@ def _variable(settings_cls: type[BaseSettings], field_name: str) -> str:
     return f"{settings_cls.model_config.get('env_prefix', '')}{field_name.upper()}"
 
 
+def _not_a_setting(name: str, key: str) -> str:
+    """The warning for *name*, which sets *key* although *key* is not a setting."""
+    return f"{name} is not a setting and is ignored; {_NOT_SETTINGS[key]}"
+
+
 def _expected(error: ErrorDetails) -> str:
     """What one validation error says about the value, in the words of a settings file."""
     words = _EXPECTED_BY_ERROR.get(error["type"])
@@ -1610,6 +1607,10 @@ class _PlainEnvSource:
             warn_on_load(f"{variable} = {values[key]!r} {refused[key]}; {key} uses its default")
             values[key] = self._settings_cls.model_fields[key].default
             del refused[key]
+        for key in _NOT_SETTINGS:
+            variable = _variable(self._settings_cls, key)
+            if os.environ.get(variable, "").strip():
+                warn_on_load(_not_a_setting(variable, key))
         return {key: value for key, value in values.items() if key not in refused}
 
 
@@ -1661,6 +1662,14 @@ class _TomlSource:
             fallback = f"{_variable(self._settings_cls, key)} sets {key}"
         return f"{label}: {key} = {values[key]!r} {reason}; {fallback}"
 
+    def _refuse_not_settings(self, data: dict[str, Any]) -> None:
+        """Report each key in *data* that is not a setting, as a refused value is reported."""
+        for key in _NOT_SETTINGS.keys() & data.keys():
+            if self._only not in (None, key):
+                continue
+            if f"{CONFIG_FILE_NAME}: {_not_a_setting(key, key)}" not in self._reported:
+                self._warn(f"{self._label}: {_not_a_setting(key, key)}")
+
     def __call__(self) -> dict[str, Any]:
         import tomllib
 
@@ -1672,6 +1681,7 @@ class _TomlSource:
             if unreadable not in self._reported:
                 self._warn(unreadable)
             return {}
+        self._refuse_not_settings(data)
         # A blank string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.

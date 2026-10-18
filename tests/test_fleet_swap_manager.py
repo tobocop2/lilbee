@@ -17,7 +17,7 @@ from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
-from lilbee.providers.fleet.swap_manager import SwapManager
+from lilbee.providers.fleet.swap_manager import EngineLifetime, SwapManager
 from lilbee.providers.roles import EngineBackend, WorkerRole
 
 # All lifecycle tests run one manager for the chat group unless stated otherwise.
@@ -189,24 +189,46 @@ class TestStart:
         mgr.shutdown()
         assert mgr._log_file is None
 
-    def test_bind_lifetime_is_forwarded_to_the_spawn(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("lifetime", "reaper_starts", "bound", "reaper_asked"),
+        [
+            (EngineLifetime.BUILDER, True, True, False),
+            (EngineLifetime.DETACHED, True, False, False),
+            (EngineLifetime.USERS, True, False, True),
+            (EngineLifetime.USERS, False, True, True),
+        ],
+    )
+    def test_the_lifetime_decides_the_binding_and_the_reaper(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        lifetime: EngineLifetime,
+        reaper_starts: bool,
+        bound: bool,
+        reaper_asked: bool,
     ) -> None:
-        """A keep-warm fleet spawns with the death binding off so it outlives lilbee."""
+        """A users-owned engine is unbound behind a reaper, or bound when no reaper starts."""
         captured: dict[str, object] = {}
+        asked: list[Path] = []
 
         def _capturing_popen(*_args: object, **kwargs: object) -> _FakeProc:
             captured.update(kwargs)
             return _FakeProc(poll_result=None)
 
+        def _ensure(data_dir: Path) -> bool:
+            asked.append(data_dir)
+            return reaper_starts
+
         monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
         monkeypatch.setattr(sm, "spawn_bound_child", _capturing_popen)
+        monkeypatch.setattr(sm, "ensure_engine_reaper", _ensure)
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)], bind_lifetime=False)
+        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)], lifetime=lifetime)
 
-        assert captured["bind_lifetime"] is False
+        assert captured["bind_lifetime"] is bound
+        assert asked == ([tmp_path] if reaper_asked else [])
 
     def test_raises_when_process_exits_before_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

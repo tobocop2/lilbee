@@ -741,12 +741,21 @@ flowchart LR
   overflow device 0 even when the cards are unequal. A chat on one card searches the
   same grid against one device (`ctx.fit_single_ctx`, entered through
   `engine_params.resolve_chat_ctx`), so both paths price the cache the model's
-  architecture holds. On one card the search covers the **offload as well as the window**
-(`planning.fit_chat_ctx`): when full offload leaves KV room for less than a grounded
-prompt, layers move to system memory until the window is usable and the launch runs at
-that reduced `--n-gpu-layers`, so a small model on a small card is served instead of
-refused. The trade needs the weights alone to fit the budget; past that the model would
-answer out of host RAM, which is the unusable load `plan_launches` refuses on purpose.
+  architecture holds. **llama-server's own fit places the layers** (`--n-gpu-layers -1`):
+  lilbee keeps the window, the slot count and the cross-card placement, and sends
+  `--fit-target` per card: the engine's own 1024 MiB margin plus the memory held for the
+  roles that load after chat on that card (vision, which warms on the first OCR). Embed
+  and rerank warm before chat, so the card's free memory already excludes them when the
+  fit runs. When full offload leaves KV room for less than a grounded
+  prompt (`planning.fit_chat_ctx`), the window is raised to the smallest one that answers
+  and the fit moves dense layers or MoE experts to system memory to hold it. That needs
+  the fit to run: an auto layer count, no expert overrides, a card with memory of its
+  own, and an engine whose `--help` lists `--fit-target`. When the engine reports more
+  of chat in system memory than the estimate expects with every layer on the card, the
+  readback warns once. The fit reads free memory at load, so roles that share a card warm
+  one at a time, chat last (`provider._warm_chains`). Chat slots share one KV pool (`--kv-unified
+  --kv-unified-per-slot <window>`), sized at slots x window as before, on an engine whose
+  `--help` lists the per-slot cap.
 Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   for when gguf-parser cannot answer; it charges every layer as dense attention over
   the whole window, which under-grants linear-attention, sliding-window and MLA models. On a
@@ -893,19 +902,22 @@ touching the running fleet.
   replica is. Replicas are ingest-only and reclaimed after ingest completes.
 - **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
   cfg and the model's GGUF metadata for that role and config. Chat carries
-  `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and
-  `--cache-type-k/-v` from `kv_cache_type` -- but a quantized KV type needs flash
-  attention, so with it disabled the launch falls back to f16 (and the estimate
-  sizes against f16 to match). A mixture-of-experts model also offloads its expert
+  `--jinja`, `--flash-attn` (on, or `auto` on Vulkan and SYCL, unless
+  `flash_attention` is disabled) and
+  `--cache-type-k/-v` from `kv_cache_type`. K and V always carry the same type,
+  because llama-server refuses different ones on MLA models. A quantized type is
+  sent only with flash attention `on`: under `auto` it would force flash attention
+  on, and under `off` the server refuses it, so both fall back to f16 there (and
+  the estimate sizes against f16 to match). A mixture-of-experts model also offloads its expert
   weights to system memory when `cpu_moe`/`n_cpu_moe` is set (`--cpu-moe`/
   `--n-cpu-moe`, gated on the GGUF declaring routed experts), and the VRAM estimate
-  charges the same tensors to the host so the plan matches the launch. Chat also
-  loads with `--no-mmap`
-  (a malloc'd host copy) when its weights fit in at most half of total system
-  RAM -- a buffered sequential read reaches ready ~20% faster than mmap's
-  page-fault-driven upload (measured 33s vs 43s for a 112GB model on 3 GPUs),
-  while replicated roles keep mmap so their replicas share one set of
-  page-cache pages. The gate reads total (not free) memory so replans never
+  charges the same tensors to the host so the plan matches the launch. Chat on a network
+  filesystem loads without mmap (a malloc'd host copy) when its weights fit in
+  85% of total system RAM, because page faults served over the wire can wedge
+  the loader. The flag is the one the binary's `--help` lists: `--load-mode none`
+  on a current build, `--no-mmap` on an older one, and none when it lists
+  neither, since each build refuses the other's flag at startup. Local disk and
+  the other roles keep mmap. The gate reads total (not free) memory so replans never
   flap the flag; embed and rerank raise
   `--batch-size`/`--ubatch-size` to the full context (the server caps embeddings at
   `n_ubatch`, default 512); vision uses the full-core thread default and always
@@ -913,16 +925,22 @@ touching the running fleet.
   get raw, un-normalized vectors (the server would L2-normalize pooled output by
   default, which would also collapse a rank score to +-1). Context and GPU-layer
   counts come from the shared `engine_params` helpers, never a hardcoded budget.
-  `main_gpu` is forwarded
-  as `--main-gpu` only to a server placed on more than one card, as an index into
-  that server's own device list; it is part of the engine pin, so a process with a
-  different index binds its own engine.
+  No launch sends `--main-gpu`: llama-server reads it only under split mode
+  `none`, and a server sees only the cards it was placed on. `gpu_devices` and
+  `placement` choose the cards; a `main_gpu` key in `config.toml` or a
+  `LILBEE_MAIN_GPU` variable is refused with a warning at load.
 - **Lifecycle** (`swap_manager.py` / `provider.py`): each swap group runs behind its own
   llama-swap process with its own config file, so restarting one group (a placement or
   per-role model change) never touches another group's loaded servers. A reload
   re-plans the whole fleet and diffs the fresh plan per group against the
   running launches, restarting only the groups whose launches changed; an
-  untouched 100GB chat model stays resident while the embedder moves. Each
+  untouched 100GB chat model stays resident while the embedder moves. llama-swap
+  answers 429 once a model has `concurrencyLimit` requests in flight and never
+  queues them, so each model's config sets that limit to four times the larger of
+  its slots and the ingest pool: one engine serves every lilbee process, and
+  llama-server queues past its slots by itself. A 429 is then reported to the
+  caller as a busy model, not retried; gateway errors (502/503/504) from a
+  restarting server are retried with backoff. Each
   server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
   the model loads); the cold-load health timeout scales with the heaviest member's
@@ -995,7 +1013,9 @@ through the same ladder, under a cross-process build lock:
    models plus the bundled **engine pin**) covers the configuration. Binders
    spawn nothing and write nothing. lilbee version is not in the contract:
    releases sharing a pin share an engine; differing pins never run on a
-   build they were not tested against.
+   build they were not tested against. The pin carries the revision of the
+   llama-swap config, so a release that writes a new config key never binds
+   an engine started without it.
 2. **Build** into the empty slot otherwise. An incumbent is replaced in place
    when no live user holds it, and also when it is this contract's own engine
    left partially dead (a killed group) or partially covering (config grew a
@@ -1006,9 +1026,33 @@ through the same ladder, under a cross-process build lock:
    exist exactly while two different model setups run at once.
 
 Lifetime is kernel-refcounted membership: each process holds a user lock the
-OS releases on any death, and the last clean exit stops the engine.
-`keep_engine_warm` opts the engine into outliving lilbee; the idle TTL
-(`engine_idle_ttl_minutes`, default five minutes) applies in every mode;
+OS releases on any death. The engine belongs to that set of users, not to the
+process that built it: it ends when no user lock and no keep-warm opt-in is
+left, judged under the build lock. The last clean exit applies that rule
+itself. For deaths with no exit hook, one engine reaper per engine dir
+(`providers/fleet/engine_reaper.py`, a detached `python -m` process holding
+`engine-reaper.lock`) polls the user locks once a second and applies the same
+rule. Every build and every bind makes sure a reaper holds that lock, starting
+one when none does, so a reaper that died is replaced by the next user. A
+build spawns the engine unbound only after its reaper holds the lock; when no
+reaper reports running, the engine is bound to its builder. On a filesystem
+without kernel-arbitrated locks the users cannot be counted, so the engine is
+bound to its builder (PDEATHSIG, a kill-on-close job object, or a death pipe).
+`keep_engine_warm` opts the engine into outliving lilbee: it is spawned
+detached, and its weights stay loaded while any lilbee process holds a user
+lock. Each opt-in is a marker file that holds that installation's
+`engine_idle_ttl_minutes`. When the last user leaves, the reaper counts that
+idle time (the longest marker wins; 0 never unloads) and then calls llama-swap's
+`POST /api/models/unload` on each recorded proxy port, under the build lock and
+after it checks for users again. The engine process stays up, so the next
+launch binds at once and its first request reloads the weights. To keep the
+weights loaded while users remain, a build that is kept warm (by its own
+setting or by any marker) starts llama-swap with TTL 0, but only where kernel
+locks let a reaper count users. llama-swap fixes the TTL at launch, so a change
+to either setting applies at the next engine start. Every other engine
+unloads on the idle TTL (default five minutes) after its last request. Only an
+engine bound to its builder takes the TUI's and a bulk ingest's no-unload hold,
+because a shared engine outlives the holder. The command
 `lilbee engine stop` frees everything now, whoever started it. Reaping never
 disagrees with binding: an engine answering on its proxy is spared, anything
 else is stopped through its state record.
@@ -1031,14 +1075,21 @@ flowchart TD
     BU --> X
     PR --> X
     X -- "yes, warm off" --> STOP["stop engine<br/>machine clean"]
-    X -- "no, or warm on" --> LEAVE["engine keeps serving;<br/>idle weights nap after the ttl"]
+    X -- "no" --> LEAVE["engine keeps serving<br/>its other users"]
+    X -- "yes, warm on" --> WARM["engine stays up;<br/>reaper unloads the weights<br/>after the idle time"]
 ```
 
-A SIGKILLed last user cannot run its exit hook: the engine lingers, its models
-nap on the ttl, and the next lilbee run binds to it or cleans it. There is no
-background daemon; the only processes that can outlive a session are the
-engine's own, either because another lilbee still uses them or because the
-user opted into warm.
+A SIGKILLed last user cannot run its exit hook, so the reaper stops the
+engine within about a second of the death. A reaper killed while its engine
+serves is replaced at the next bind. A user that withdraws `keep_engine_warm`
+while other users are bound makes sure a reaper watches the engine in the same
+way. The remaining gap is a killed reaper when every user then dies before
+any user binds again: the engine keeps running with nobody watching, and a
+kept-warm engine keeps its weights loaded. The next
+lilbee run adopts that same engine and starts a reaper for it, and the engine
+ends when that run's users end. The only processes that can outlive a session are the engine's own, because another
+lilbee still uses them or because the user opted into warm, and the reaper of
+a shared engine. The reaper exits with the engine.
 
 ### Chat context-window management
 
@@ -1393,6 +1444,7 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 ### REST API (Litestar)
 - OpenAI-compatible: `GET /v1/models`, `POST /v1/chat/completions` (streaming + tools). Errors use the OpenAI envelope with the codes in `src/lilbee/server/chat_completions_api/errors.py::CompletionsErrorCode` (`invalid_request`, `model_not_found`, `model_does_not_support_tools`, `context_length_exceeded`, `invalid_api_key`, `rate_limit_exceeded`, `internal_error`). The active model's `/v1/models` entry carries the granted engine shape (`context_window`, `slots`); a `reasoning` request field (`separate`/`inline`/`off`, default from the `completions_reasoning` setting) picks how thinking is presented. The usage block reports prompt tokens the engine served from its cache under `prompt_tokens_details.cached_tokens`, a subset of `prompt_tokens`.
 - Anthropic-compatible: `POST /v1/messages` (streaming + tools), the route Claude Code talks to. Errors reuse the completions codes in the Anthropic envelope. The `thinking` request parameter (`{"type": "disabled"}` / `{"type": "enabled"}`) turns reasoning off or on for one call, over the `messages_reasoning` setting (`separate`/`inline`/`off`) that picks how thinking is presented. Its `budget_tokens` tightens the reasoning cap for that call, and must be 1024 or more to match Anthropic's minimum. The usage block reports prompt tokens the engine served from its cache under `cache_read_input_tokens`; as Anthropic defines them, `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens` are disjoint and sum to the prompt, and the creation count is always zero because the engine has no paid cache write. The streamed opener carries those keys with zero counts, because the engine reports usage only when the stream ends.
+- Images and models by path: the two `/v1` chat routes drop image parts, answer from the text, and report the count in the `X-Lilbee-Images-Dropped` response header, with one warning in the server log. This holds for every model, vision-tagged or not, because the chat path cannot pass images on. A request with images and no other content is a 400. A chat model configured as the absolute path of a GGUF file resolves in both routes the way the fleet loads it, and `/v1/models` lists it.
 - Token counting: `POST /v1/messages/count_tokens` answers `{"input_tokens": N}` for the `/v1/messages` body minus the sampling fields. The system prompt, the conversation and the tool schemas go to the chat server as the body a chat call would send; its `/apply-template` renders the prompt and its `/tokenize` counts the render, so the number includes the template's role markers and tool-call preamble. Counting runs no tool, so the route skips the tool-capability check `/v1/messages` runs. It is not free of generation: the first count against a fresh replica sends the one-token exchange that probes for consecutive same-role turns, and a count that finds the chat model cold loads it. A backend that renders no prompt locally — a cloud SDK backend, or a local engine whose build carries no render route — gets an estimate instead: the request's own text in UTF-8 bytes, plus four fixed allowances for the template text the request does not carry (the preamble, the role markers per wire message, the tool-calling instructions, and the wrapper around each tool schema). A message returning several tool results becomes several wire messages, so the per-message allowance follows that count. The allowances come from a survey of 47 chat templates across 51 repositories, taken 2026-09-18; four templates exceed one, so the estimate can read low as well as high, and raising a constant only moves which template breaks it. Every answer carries the `X-Lilbee-Token-Count-Accuracy` response header, `exact` when the backend measured the number and `estimated` when it did not, so a client can tell the two apart while the body keeps the one field Anthropic documents.
 - Both chat APIs bound thinking with `max_reasoning_chars` through `src/lilbee/server/chat_dispatch/reasoning_cap.py`. On a streaming call the wrapper closes the upstream stream when reasoning passes the cap, writes the cap notice into the open thinking block, and splices in a continuation asking the model to answer directly; the continuation is not capped again. On a non-streaming call the provider returns one finished result, so the wrapper re-issues only when the capped turn produced no answer.
 - Search: `GET /api/search`, `POST /api/ask`, `POST /api/chat`, `POST /api/ask/stream`, `POST /api/chat/stream` (SSE)

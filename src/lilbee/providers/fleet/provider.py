@@ -20,7 +20,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, TypeVar, overload
 
 import httpx
 
@@ -44,7 +44,7 @@ from lilbee.providers.fleet.client import (
     is_connection_failure,
     is_load_capacity_failure,
     is_rebuildable_failure,
-    retry_on_busy,
+    retry_on_gateway_error,
 )
 from lilbee.providers.fleet.contract import (
     chat_ctx_covers,
@@ -56,11 +56,14 @@ from lilbee.providers.fleet.contract import (
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.readback import engine_log_path, writes_engine_log
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
+    EngineLifetime,
     SwapManager,
     SwapState,
     engine_record_exists,
+    ensure_engine_reaper,
     find_live_state,
     reap_stale,
     state_is_healthy,
@@ -111,15 +114,10 @@ if TYPE_CHECKING:
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
-# No-healthy-replica messages: the server stopped answering, or its process exited
-# and the proxy restarts it on the next request.
+# No-healthy-replica message for a server that stopped answering at the transport.
 _NOT_RESPONDING_MESSAGE = (
     "The model server is not responding and no healthy replica is available. "
     "It may be restarting; try again in a moment."
-)
-_ENGINE_EXITED_MESSAGE = (
-    "The model server process exited and is being restarted. "
-    "No other replica is available to take the request."
 )
 # Tokens held back from the served context for the model's own generation when the
 # request does not cap it, plus a margin for chat-template overhead and estimate drift.
@@ -144,11 +142,11 @@ _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # The server parses tool calls natively via ``--jinja``; this probe only decides
 # whether to offer tools to a given model at all.
 _TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions|function_calls)\b")
-# Attempt cap for the busy-retry only when a page has no deadline (ocr_timeout=0,
-# "no limit"): it backstops the retry so a persistently busy fleet can't spin
+# Attempt cap for the gateway retry only when a page has no deadline (ocr_timeout=0,
+# "no limit"): it backstops the retry so a replica that never comes back can't spin
 # forever. A page with a deadline retries until that deadline instead (see
 # _ocr_dispatch), so the count doesn't bound the common case.
-_VISION_BUSY_RETRIES = 18
+_VISION_GATEWAY_RETRIES = 18
 # llama.cpp's repeat penalty on every vision OCR request: it damps tokens seen in
 # the last window, which stops a page looping one line to the token cap.
 _VISION_REPEAT_PENALTY = 1.1
@@ -366,7 +364,7 @@ def _retry_on_other_replica(
     """Retry *call* once on a replica other than *failed*, marking its health."""
     others = [c for c in clients if c is not failed]
     if not others:
-        raise _no_healthy_replica_error(failed, cause) from cause
+        _raise_no_healthy_replica(cause)
     retry = _reserve_least_in_flight(others)
     try:
         retry_result = call(retry)
@@ -381,20 +379,23 @@ def _retry_on_other_replica(
         retry.release()
 
 
-def _no_healthy_replica_error(failed: LlamaServerClient, cause: Exception) -> ProviderError:
-    """User-facing error for a call with no healthy replica left to retry on.
+def _engine_log_of(launch: InstanceLaunch, log_dir: Path) -> Path | None:
+    """The file *launch*'s engine writes its own output to, or None when it writes none."""
+    return engine_log_path(log_dir, launch.model_id) if writes_engine_log(launch.argv) else None
 
-    A CONNECTION-kind ProviderError is the engine process exiting under the
-    proxy (a transport error has no kind), so the message says so and names
-    the log that records the exit.
+
+def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
+    """Raise the user-facing error for a call with no healthy replica left to retry on.
+
+    A ``ProviderError`` cause is the client's own plain line for an engine that
+    died (model name, cause, engine log), so it surfaces unchanged. A transport
+    error has no such line and reads as an unresponsive server.
     """
-    if isinstance(cause, ProviderError) and cause.kind is ProviderErrorKind.CONNECTION:
-        message = _ENGINE_EXITED_MESSAGE
-        if failed.engine_log is not None:
-            message = f"{message} The engine log is {failed.engine_log}."
-    else:
-        message = _NOT_RESPONDING_MESSAGE
-    return ProviderError(message, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION)
+    if isinstance(cause, ProviderError):
+        raise cause
+    raise ProviderError(
+        _NOT_RESPONDING_MESSAGE, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION
+    ) from cause
 
 
 # Env vars a launch pins its devices with, one per backend (Metal has none).
@@ -509,8 +510,8 @@ class _VisionDispatcher:
 
     The ingest file fan-out runs many OCR requests at once; each request is
     assigned one specific replica and only while that replica has a free
-    continuous-batching slot, so lilbee's own traffic can never oversubscribe a
-    vision server into a 429 (an aggregate cap plus racy least-busy routing
+    continuous-batching slot, so lilbee's own traffic never queues past a
+    vision server's slots (an aggregate cap plus racy least-busy routing
     can). Requests past capacity wait in-process until any usable replica
     frees a slot; unhealthy replicas take no new work until their half-open
     cool-down re-admits them.
@@ -600,7 +601,7 @@ def _dispatch_vision(
             return result
     others = [replica for replica in pool if replica.client is not failed]
     if not others:
-        raise _no_healthy_replica_error(failed, cause) from cause
+        _raise_no_healthy_replica(cause)
     with _VISION_DISPATCHER.slot(others, cancel) as retry_client:
         try:
             retry_result = call(retry_client)
@@ -649,14 +650,13 @@ def _ocr_dispatch(
     deadline: float | None,
     cancel: CancelSignal | None = None,
 ) -> str:
-    """OCR *messages* on a free replica slot, retrying transient failures until *deadline*.
+    """OCR *messages* on a free replica slot, retrying gateway errors until *deadline*.
 
-    Backpressure (the dispatcher blocking until a slot frees) makes a
-    self-inflicted 429 unreachable; a residual busy response is a still-warming
-    server or foreign traffic, and a gateway error is a replica restarting
-    mid-run. The retry is deadline-bound rather than
-    attempt-bound so a page on a deep queue waits for a genuinely free slot until
-    its own budget passes instead of dropping after a fixed count. Each attempt
+    Backpressure (the dispatcher blocking until a slot frees) keeps lilbee's own
+    traffic within the slots; a gateway error is a replica restarting mid-run,
+    and a 429 is foreign overload that is reported, not re-sent. The retry is
+    deadline-bound rather than attempt-bound so a page keeps riding out a
+    restart until its own budget passes instead of dropping after a fixed count. Each attempt
     is bounded by the budget remaining before *deadline*; an exhausted budget
     raises :class:`_PageBudgetExhausted`. A ``None`` deadline (no limit) falls
     back to a bounded attempt count so the retry can't spin forever.
@@ -668,9 +668,9 @@ def _ocr_dispatch(
             raise _PageBudgetExhausted
         return _vision_call(client, messages, remaining, cancel)
 
-    return retry_on_busy(
+    return retry_on_gateway_error(
         lambda: _dispatch_vision(pool, _attempt, cancel),
-        retries=_VISION_BUSY_RETRIES,
+        retries=_VISION_GATEWAY_RETRIES,
         deadline=deadline,
     )
 
@@ -875,26 +875,65 @@ def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
     return True
 
 
-def _warm_ttl_seconds(*, hold_warm_for_session: bool = False) -> int:
-    """llama-swap idle-unload timer in seconds for the spawned fleet.
+def _engine_lifetime(engine_dir: Path) -> EngineLifetime:
+    """What ends an engine this process builds in *engine_dir*.
+
+    A keep-warm engine outlives lilbee; its reaper only unloads its weights.
+    Otherwise shared ownership needs kernel-arbitrated user locks; without them
+    the engine dies with its builder.
+    """
+    if cfg.keep_engine_warm:
+        return EngineLifetime.DETACHED
+    if kernel_arbitrates_locks(engine_dir):
+        return EngineLifetime.USERS
+    return EngineLifetime.BUILDER
+
+
+def _watch_bound_engine(engine_dir: Path) -> None:
+    """Make sure a reaper watches the engine this process just bound in *engine_dir*.
+
+    A reaper can die (killed, or a failed start) while its engine serves. Every
+    bind repairs that, so the users of a live engine leave a reaper behind them:
+    it stops a shared engine, or unloads a kept-warm one's weights after the idle time.
+    """
+    if not kernel_arbitrates_locks(engine_dir):
+        return
+    if not ensure_engine_reaper(engine_dir):
+        log.warning(
+            "No reaper watches the engine at %s; it stops at a clean last exit only.", engine_dir
+        )
+
+
+def _warm_ttl_seconds(
+    lifetime: EngineLifetime, engine_dir: Path, *, hold_warm_for_session: bool = False
+) -> int:
+    """llama-swap idle-unload timer in seconds for the fleet spawned in *engine_dir*.
 
     A ttl of 0 keeps weights resident until the engine is stopped; otherwise an
     idle engine releases its weights after ``engine_idle_ttl_minutes`` and reloads
-    transparently on the next prompt. The timer is held off (ttl 0) while someone
-    who owns the engine's lifetime depends on an instant response: an interactive
-    session (*hold_warm_for_session*) whose engine dies with it, or a bulk ingest
-    whose unevenly loaded replicas must not idle-unload and reload cold mid-run.
+    transparently on the next prompt. The timer is held off (ttl 0) for an engine
+    bound to its builder (*lifetime* ``BUILDER``) while the builder depends on an
+    instant response: an interactive session (*hold_warm_for_session*), or a bulk
+    ingest whose unevenly loaded replicas must not idle-unload and reload cold.
 
-    A ``keep_engine_warm`` engine outlives every holder, so no holder may pin its
-    weights: llama-swap's ttl is fixed at launch, and a session hold baked into a
-    detached engine would keep the weights loaded for as long as the machine
-    stays up. Keep-warm keeps the engine process (a small proxy, no weights)
-    alive across launches; the weights follow the idle window like every other
-    mode, and only the user's explicit 0 keeps them loaded.
+    An engine that outlives its builder takes no such hold: llama-swap's ttl is
+    fixed at launch, so a hold baked into it would keep the weights loaded after
+    the session or ingest ended. A kept-warm engine (this process's setting or
+    any user's marker) also gets ttl 0 when its users can be counted and a reaper
+    is confirmed running, because that reaper unloads the weights after the last
+    user leaves. Without a confirmed reaper the idle ttl stays.
     """
-    if not cfg.keep_engine_warm and (hold_warm_for_session or ingest_keep_warm()):
+    if lifetime is EngineLifetime.BUILDER and (hold_warm_for_session or ingest_keep_warm()):
+        return 0
+    if _reaper_unloads_weights(engine_dir) and ensure_engine_reaper(engine_dir):
         return 0
     return cfg.engine_idle_ttl_minutes * 60
+
+
+def _reaper_unloads_weights(engine_dir: Path) -> bool:
+    """Whether a reaper, not llama-swap's timer, unloads the weights of *engine_dir*'s engine."""
+    kept_warm = cfg.keep_engine_warm or keep_warm_requested(engine_dir)
+    return kept_warm and kernel_arbitrates_locks(engine_dir)
 
 
 class FleetProvider:
@@ -904,8 +943,8 @@ class FleetProvider:
         # An interactive session (the TUI) owns this process for its whole
         # lifetime, so a fleet bound to it stays resident instead of idle-unloading
         # under a user who is still in the app; closing lilbee releases it. A
-        # keep-warm fleet outlives the session, so _warm_ttl_seconds ignores the
-        # hold for it. Set by the container that built this provider, never
+        # fleet that outlives the session (shared or keep-warm) takes no hold, so
+        # _warm_ttl_seconds ignores it there. Set by the container that built this provider, never
         # mutated afterwards.
         self._hold_warm_for_session = hold_warm
         # One llama-swap per placed group, so restarting one group's servers (a
@@ -1090,6 +1129,7 @@ class FleetProvider:
             states = _healthy_states(engine_dir)
             if wanted and self._bind_all_in_dir(engine_dir, states, pin, demand):
                 self._hold_membership(engine_dir)
+                _watch_bound_engine(engine_dir)
                 return True
             replaceable = not live_users_exist(engine_dir) or _healthy_groups_ours(
                 states, pin, wanted
@@ -1111,6 +1151,7 @@ class FleetProvider:
                 stop_engine(engine_dir)
             if self._plan_and_spawn(engine_dir):
                 self._hold_membership(engine_dir)
+                _watch_bound_engine(engine_dir)
                 return True
             return False
 
@@ -1186,7 +1227,7 @@ class FleetProvider:
         if engine_dir not in self._engine_holds:
             self._engine_holds[engine_dir] = hold_user_lock(engine_dir)
         if cfg.keep_engine_warm:
-            request_keep_warm(engine_dir, cfg.data_root)
+            request_keep_warm(engine_dir, cfg.data_root, cfg.engine_idle_ttl_minutes)
 
     def _plan_and_spawn(self, data_dir: Path) -> bool:
         """Plan placement against the clean box and start one swap per group.
@@ -1225,15 +1266,13 @@ class FleetProvider:
         by_group = _launches_by_group(plan)
         started: dict[SwapGroup, SwapManager] = {}
         try:
+            lifetime = _engine_lifetime(data_dir)
+            ttl_seconds = _warm_ttl_seconds(
+                lifetime, data_dir, hold_warm_for_session=self._hold_warm_for_session
+            )
             for group, group_launches in by_group.items():
                 swap = SwapManager(data_dir, group)
-                swap.start(
-                    list(group_launches),
-                    ttl_seconds=_warm_ttl_seconds(
-                        hold_warm_for_session=self._hold_warm_for_session
-                    ),
-                    bind_lifetime=not cfg.keep_engine_warm,
-                )
+                swap.start(list(group_launches), ttl_seconds=ttl_seconds, lifetime=lifetime)
                 started[group] = swap
         except BaseException:
             for swap in started.values():
@@ -1275,15 +1314,8 @@ class FleetProvider:
                     rerank_mode=launch.rerank_mode,
                     inline_reasoning=role is WorkerRole.CHAT,
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
-                    engine_log=swap.log_path,
-                    # A cold embed replica 429s bulk ingest until its slots load; wait
-                    # out the same cold-load budget llama-swap keeps it alive for so a
-                    # burst never drops files while the server is legitimately warming.
-                    embed_busy_deadline_s=(
-                        cold_load_timeout_s(launch.weights_bytes, role)
-                        if role is WorkerRole.EMBED
-                        else None
-                    ),
+                    engine_log=_engine_log_of(launch, swap.log_path.parent),
+                    model_ref=launch.model,
                 )
                 for launch in role_launches
             ]
@@ -1607,17 +1639,22 @@ class FleetProvider:
                 last = hold.release_and_check_last()
                 # A flip after binding never re-acquires, so reconcile our own mark
                 # here. Skipped on a config change, which stops and clears regardless.
+                # A withdrawn opt-in turns a detached engine into one its remaining
+                # users share, so a reaper must watch it as after a bind.
                 if not config_changed:
                     if cfg.keep_engine_warm:
-                        request_keep_warm(engine_dir, cfg.data_root)
+                        request_keep_warm(engine_dir, cfg.data_root, cfg.engine_idle_ttl_minutes)
                     else:
                         withdraw_keep_warm(engine_dir, cfg.data_root)
+                        if not last:
+                            _watch_bound_engine(engine_dir)
                 # Any remaining opt-in keeps the engine, including a peer's.
                 keep = not config_changed and keep_warm_requested(engine_dir)
                 if last and not keep:
                     stop_engine(engine_dir)
                     log.info("Engine stopped at %s (last user out)", engine_dir)
                 elif last:
+                    _watch_bound_engine(engine_dir)
                     log.info("Engine left warm at %s (last user out)", engine_dir)
                 elif config_changed:
                     log.info("Engine left running at %s (still in use by peers)", engine_dir)
@@ -2621,12 +2658,15 @@ class FleetProvider:
                 for group in sorted(changed & set(new), key=lambda g: g.value):
                     group_launches = list(new[group])
                     swap = SwapManager(reload_dir, group)
+                    lifetime = _engine_lifetime(reload_dir)
                     swap.start(
                         group_launches,
                         ttl_seconds=_warm_ttl_seconds(
-                            hold_warm_for_session=self._hold_warm_for_session
+                            lifetime,
+                            reload_dir,
+                            hold_warm_for_session=self._hold_warm_for_session,
                         ),
-                        bind_lifetime=not cfg.keep_engine_warm,
+                        lifetime=lifetime,
                     )
                     with self._lock:
                         self._adopt_group(group, swap, group_launches)

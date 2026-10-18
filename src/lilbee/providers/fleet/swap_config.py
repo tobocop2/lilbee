@@ -13,7 +13,8 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
-from lilbee.providers.fleet.readback import MEMORY_FLAG, engine_log_env
+from lilbee.data.offload import max_workers
+from lilbee.providers.fleet.readback import engine_log_env, writes_engine_log
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
@@ -45,6 +46,18 @@ _PROXY_URL_TEMPLATE = "http://127.0.0.1:{port}"
 # value in survivor cmdlines.
 PORT_FLAG = "--port"
 
+# llama-swap refuses a request with HTTP 429 once this many are in flight for
+# one model (its default is 10), and a request held through a cold load counts.
+# One engine serves every lilbee process the user runs (the TUI, serve with its
+# HTTP clients, MCP, an ingest run), and llama-server queues requests past its
+# slots by itself, so the limit only has to stop runaway load. It covers this
+# many processes, each at its own ceiling: the larger of the slots and the
+# ingest pool, whose every thread can hold one embed or OCR request.
+_CONCURRENCY_PROCESSES = 4
+# Part of the engine pin, so a peer never binds an engine whose config lacks a
+# key it relies on. 1: every model carries concurrencyLimit.
+SWAP_CONFIG_REVISION = 1
+
 # llama-swap config keys.
 _KEY_HEALTH_TIMEOUT = "healthCheckTimeout"
 _KEY_LOG_LEVEL = "logLevel"
@@ -52,6 +65,7 @@ _KEY_MODELS = "models"
 _KEY_CMD = "cmd"
 _KEY_PROXY = "proxy"
 _KEY_TTL = "ttl"
+_KEY_CONCURRENCY_LIMIT = "concurrencyLimit"
 _KEY_ENV = "env"
 _KEY_GROUPS = "groups"
 _KEY_SWAP = "swap"
@@ -94,9 +108,10 @@ def build_swap_config(
             _KEY_CMD: _command_line(launch.argv, port),
             _KEY_PROXY: _PROXY_URL_TEMPLATE.format(port=port),
             _KEY_TTL: ttl_seconds,
+            _KEY_CONCURRENCY_LIMIT: _concurrency_limit(launch),
         }
         env = dict(launch.env_overrides)
-        if engine_log_dir is not None and MEMORY_FLAG not in launch.argv:
+        if engine_log_dir is not None and writes_engine_log(launch.argv):
             env.update(engine_log_env(engine_log_dir, launch.model_id))
         if env:
             entry[_KEY_ENV] = [f"{key}={value}" for key, value in env.items()]
@@ -115,6 +130,11 @@ def build_swap_config(
         },
     }
     return json.dumps(config, indent=2)
+
+
+def _concurrency_limit(launch: InstanceLaunch) -> int:
+    """Requests llama-swap lets in flight for *launch* before it answers 429."""
+    return _CONCURRENCY_PROCESSES * max(launch.slots, max_workers())
 
 
 def cold_load_timeout_s(weights_bytes: int, role: WorkerRole) -> int:

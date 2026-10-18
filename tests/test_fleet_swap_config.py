@@ -243,62 +243,133 @@ class TestHealthCheckTimeoutScaling:
 
 
 class TestWarmTtlSeconds:
-    def test_keep_engine_warm_unloads_on_the_idle_window(self, monkeypatch) -> None:
-        # keep_engine_warm keeps the engine process alive across launches, not
-        # the weights: it outlives every holder, so its idle unload stays armed.
-        from lilbee.core.config import cfg
-        from lilbee.providers.fleet.provider import _warm_ttl_seconds
+    """llama-swap's idle timer: 0 wherever the reaper owns the unload, else the idle minutes."""
 
-        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+    @pytest.fixture(autouse=True)
+    def _idle_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import provider as prov_mod
+
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
-        assert _warm_ttl_seconds() == 900
+        monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+        monkeypatch.setattr(prov_mod, "ensure_engine_reaper", lambda _d: True)
 
-    def test_keep_engine_warm_ignores_the_session_hold(self, monkeypatch) -> None:
-        # A session hold pins weights only in an engine bound to that session. A
-        # keep-warm engine survives the session, so the hold must not follow it.
+    def test_a_kept_warm_build_without_a_reaper_keeps_the_idle_window(self, monkeypatch, tmp_path):
+        # Nothing would unload weights held by ttl 0 once lilbee exits.
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import provider as prov_mod
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
+        from lilbee.runtime.engine_lock import request_keep_warm
+
+        monkeypatch.setattr(prov_mod, "ensure_engine_reaper", lambda _d: False)
+        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+        assert prov_mod._warm_ttl_seconds(EngineLifetime.DETACHED, tmp_path) == 900
+        monkeypatch.setattr(cfg, "keep_engine_warm", False)
+        request_keep_warm(tmp_path, tmp_path / "peer-install", 5)
+        assert prov_mod._warm_ttl_seconds(EngineLifetime.USERS, tmp_path) == 900
+
+    def test_a_warm_off_build_starts_no_reaper_for_the_ttl(self, monkeypatch, tmp_path):
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import provider as prov_mod
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
+
+        asked: list[object] = []
+        monkeypatch.setattr(prov_mod, "ensure_engine_reaper", lambda d: asked.append(d) or True)
+        monkeypatch.setattr(cfg, "keep_engine_warm", False)
+        assert prov_mod._warm_ttl_seconds(EngineLifetime.USERS, tmp_path) == 900
+        assert asked == []
+
+    def test_keep_engine_warm_holds_weights_while_users_remain(self, monkeypatch, tmp_path):
+        # The reaper unloads a keep-warm engine after the last user, so llama-swap never does.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", True)
-        monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
-        assert _warm_ttl_seconds(hold_warm_for_session=True) == 900
+        assert _warm_ttl_seconds(EngineLifetime.DETACHED, tmp_path) == 0
 
-    def test_keep_engine_warm_with_zero_ttl_keeps_weights_loaded(self, monkeypatch) -> None:
-        # The user's explicit 0 is the only way a keep-warm engine pins weights.
+    def test_a_peers_keep_warm_marker_holds_weights_for_a_warm_off_builder(
+        self, monkeypatch, tmp_path
+    ):
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
+        from lilbee.runtime.engine_lock import request_keep_warm
+
+        monkeypatch.setattr(cfg, "keep_engine_warm", False)
+        assert _warm_ttl_seconds(EngineLifetime.USERS, tmp_path) == 900
+        request_keep_warm(tmp_path, tmp_path / "peer-install", 5)
+        assert _warm_ttl_seconds(EngineLifetime.USERS, tmp_path) == 0
+
+    def test_keep_engine_warm_without_kernel_locks_keeps_the_idle_window(
+        self, monkeypatch, tmp_path
+    ):
+        # No user can be counted, so no reaper can unload: llama-swap's timer stays armed.
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import provider as prov_mod
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", True)
-        monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 0)
-        assert _warm_ttl_seconds(hold_warm_for_session=True) == 0
+        monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: False)
+        assert prov_mod._warm_ttl_seconds(EngineLifetime.DETACHED, tmp_path) == 900
 
-    def test_interactive_session_pins_weights_resident(self, monkeypatch) -> None:
+    def test_interactive_session_pins_weights_resident(self, monkeypatch, tmp_path) -> None:
         # A provider serving an interactive session (the TUI) holds its bound
         # engine warm for its whole lifetime, regardless of the idle window.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", False)
-        monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
-        assert _warm_ttl_seconds(hold_warm_for_session=True) == 0
+        hold = {"hold_warm_for_session": True}
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER, tmp_path, **hold) == 0
         # A provider not serving one still unloads on the idle window.
-        assert _warm_ttl_seconds() == 900
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER, tmp_path) == 900
+        # An engine shared by its users outlives the session, so the hold is off.
+        assert _warm_ttl_seconds(EngineLifetime.USERS, tmp_path, **hold) == 900
 
-    def test_on_demand_unloads_after_idle_ttl(self, monkeypatch) -> None:
+    def test_on_demand_unloads_after_idle_ttl(self, monkeypatch, tmp_path) -> None:
         # No interactive session and no keep_engine_warm: the fleet releases its
         # weights after the idle window.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", False)
-        monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
-        assert _warm_ttl_seconds() == 900
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER, tmp_path) == 900
 
-    def test_on_demand_with_zero_ttl_keeps_weights_until_teardown(self, monkeypatch) -> None:
+    def test_on_demand_with_zero_ttl_keeps_weights_until_teardown(
+        self, monkeypatch, tmp_path
+    ) -> None:
         # 0 disables the idle unload even for an on-demand fleet.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", False)
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 0)
-        assert _warm_ttl_seconds() == 0
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER, tmp_path) == 0
+
+
+@pytest.mark.parametrize(
+    ("role", "slots", "ingest_workers", "expected"),
+    [
+        (WorkerRole.CHAT, 4, 14, 56),
+        (WorkerRole.CHAT, 40, 14, 160),
+        (WorkerRole.VISION, 8, 14, 56),
+        (WorkerRole.EMBED, 1, 32, 128),
+        (WorkerRole.RERANK, 8, 6, 32),
+    ],
+    ids=["chat", "chat-slots-past-pool", "vision", "embed", "rerank"],
+)
+def test_every_model_carries_a_concurrency_limit_for_several_processes(
+    monkeypatch, role: WorkerRole, slots: int, ingest_workers: int, expected: int
+) -> None:
+    # llama-swap answers 429 past the limit (default 10) and lilbee no longer
+    # waits a 429 out, so the limit covers four processes at their own ceiling.
+    monkeypatch.setattr(swap_config_mod, "max_workers", lambda: ingest_workers)
+    launch = InstanceLaunch(
+        role=role, replica=0, argv=["/bin/llama-server"], env_overrides={}, model="m", slots=slots
+    )
+    entry = _config([launch])["models"][launch.model_id]
+    assert entry["concurrencyLimit"] == expected

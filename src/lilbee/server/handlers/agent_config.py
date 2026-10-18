@@ -11,10 +11,9 @@ from lilbee.app.agent_configs.document import (
     build_agent_config,
     client_serves_models,
 )
-from lilbee.app.models import installed_chat_model_refs
+from lilbee.app.models import installed_chat_model_refs, with_configured_chat
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
-from lilbee.providers.model_ref import with_configured_remote_chat
 from lilbee.server.auth import session_manager
 from lilbee.server.models import AgentConfigIndexResponse, AgentConfigResponse
 
@@ -37,7 +36,7 @@ def _model_inputs(client: AgentClient) -> tuple[list[str] | None, int | None]:
     """The chat refs and served window to advertise, or ``None`` for an MCP-only client."""
     if not client_serves_models(client):
         return None, None
-    refs = with_configured_remote_chat(installed_chat_model_refs(), cfg.chat_model)
+    refs = with_configured_chat(installed_chat_model_refs(), cfg.chat_model)
     return refs, get_services().provider.served_chat_ctx()
 
 

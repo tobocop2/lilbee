@@ -18,6 +18,8 @@ from lilbee.providers import engine_params, model_cache
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import ctx as fleet_ctx
 from lilbee.providers.fleet.adapters import (
+    FLAG_FIT_TARGET,
+    FLAG_KV_UNIFIED_PER_SLOT,
     LLM_RERANK_CONCURRENCY,
     ROLE_SPECS,
     RoleServerSpec,
@@ -33,6 +35,7 @@ from lilbee.providers.fleet.binary import (
     resolve_llama_server,
 )
 from lilbee.providers.fleet.devices import (
+    MIB,
     VULKAN_BACKEND,
     FleetDevice,
     host_lacks_nvlink,
@@ -50,7 +53,7 @@ from lilbee.providers.fleet.placement import (
     plan_placement,
 )
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
-from lilbee.providers.fleet.readback import supports_memory_readback
+from lilbee.providers.fleet.readback import engine_advertises, supports_memory_readback
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
 from lilbee.providers.model_cache import free_system_memory, total_system_memory
@@ -65,6 +68,11 @@ if TYPE_CHECKING:
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
+# The free memory llama-server's own fit leaves on a card when ``--fit-target`` is not given.
+ENGINE_FIT_MARGIN_MIB = 1024
+# Roles the warm-up loads before chat on a card they share (provider._warm_chains).
+# Their memory is gone from the card's free memory when chat's fit runs.
+_LOADED_BEFORE_CHAT = frozenset({WorkerRole.EMBED, WorkerRole.RERANK})
 # Stand-in in the launch log for a host whose devices could not be read.
 _NO_DEVICES = "none"
 
@@ -156,9 +164,6 @@ _SPLIT_CHAT_SLOTS = 1
 # its floor after the forced split is refused by plan_launches
 # (_unusable_chat_ctx_reason).
 _MIN_USABLE_CHAT_CTX = 8192
-# Offload-search upper bound meaning "no reduced offload is worth probing": the
-# search runs 0..upper, so a negative bound skips it.
-_NO_OFFLOAD_PROBE = -1
 # Embed and cross-encoder rerank serve one request at a time. Raising it was
 # tried and measured worse: on 8xA40 with an 8B Q8 embedder and one ~100-token
 # passage per request, --parallel 1 gave 133 docs/sec at 81% SM while
@@ -214,11 +219,12 @@ _PROBE_RETRY_DELAY_S = 1.0
 
 # A network filesystem makes mmap dangerous (page faults served over the wire can
 # wedge the loader in uninterruptible I/O), so the chat server loads its weights
-# into a malloc'd host copy (--no-mmap) whenever that copy fits in this fraction
-# of total system RAM. Local disk keeps mmap: its lazy paging gives a faster first
-# token on a cold cache -- the common desktop first launch -- and --no-mmap's
-# buffered full read only wins on an already-hot cache (#474: 33s vs 43s for a
-# 112GB model on 3 GPUs) while pessimizing cold start. Keyed on TOTAL memory
+# into a malloc'd host copy (the no-mmap flag the binary lists, --load-mode none
+# or --no-mmap) whenever that copy fits in this fraction of total system RAM.
+# Local disk keeps mmap: its lazy paging gives a faster first token on a cold
+# cache -- the common desktop first launch -- and the no-mmap buffered full read
+# only wins on an already-hot cache (#474: 33s vs 43s for a 112GB model on 3
+# GPUs) while pessimizing cold start. Keyed on TOTAL memory
 # (stable), not free (fluctuates), so replans do not flap the launch argv. The
 # exact ceiling is tuned on a network-volume host.
 _NO_MMAP_NETWORK_RAM_FRACTION = 0.85
@@ -447,7 +453,6 @@ def _fit_slots(
                 gpu_layers=_role_gpu_layers(role),
                 flash_attn=_role_flash(role, rerank_mode),
                 kv_cache_type=_role_kv_cache_type(role),
-                kv_cache_type_v=_role_kv_cache_type_v(role),
                 mmproj_path=mmproj_path,
                 expert_offload=_role_expert_offload(model_path),
             )
@@ -465,116 +470,78 @@ def fit_chat_ctx(
     *,
     available_bytes: int,
     ctx_ceiling: int,
-) -> engine_params.ChatFit:
-    """The offload and chat window gguf-parser says *available_bytes* backs.
+) -> int:
+    """The chat window gguf-parser says *available_bytes* backs at the configured offload.
 
-    Sizes one slot at the configured offload, as :func:`_slots_for` then grows
-    the slot count against what the window leaves. A window that cannot hold a
-    grounded prompt buys KV room by leaving layers in system memory, and the
-    largest offload whose window reaches ``min_usable_chat_ctx`` wins; the
-    alternative for those models is no service at all
-    (:func:`_unusable_chat_ctx_reason`). Raises when the estimator cannot
-    answer, which sends :func:`engine_params.resolve_chat_fit` to its
+    Sizes one slot, as :func:`_slots_for` then grows the slot count against
+    what the window leaves. A window below a grounded prompt is raised to one
+    when the engine's own fit will move layers and experts off the card to
+    hold it (:func:`_engine_fits_chat_offload`). Raises when the estimator
+    cannot answer, which sends :func:`engine_params.resolve_chat_ctx` to its
     header-math fallback.
     """
-
-    def fit_at(gpu_layers: int) -> int:
-        return fleet_ctx.fit_single_ctx(
-            model_path,
-            meta=meta,
-            slots=1,
-            available_bytes=available_bytes,
-            gpu_layers=gpu_layers,
-            flash_attn=_role_flash(WorkerRole.CHAT),
-            kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-            kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
-            unified=plan_sizing_is_unified(),
-            ctx_ceiling=ctx_ceiling,
-            expert_offload=_role_expert_offload(model_path),
-        )
-
-    configured = _role_gpu_layers(WorkerRole.CHAT)
-    fit = engine_params.ChatFit(configured, fit_at(configured))
-    needed = engine_params.min_usable_chat_ctx()
-    if fit.ctx >= needed or not _chat_offload_is_tradable(
+    ctx = fleet_ctx.fit_single_ctx(
         model_path,
         meta=meta,
+        slots=1,
         available_bytes=available_bytes,
+        gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
+        flash_attn=_role_flash(WorkerRole.CHAT),
+        kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+        unified=plan_sizing_is_unified(),
         ctx_ceiling=ctx_ceiling,
-        needed=needed,
-    ):
-        return fit
-    traded = _traded_chat_fit(
-        fit_at, upper=_chat_offload_probe_ceiling(meta, configured), needed=needed
+        expert_offload=_role_expert_offload(model_path),
     )
-    return traded or fit
+    needed = engine_params.min_usable_chat_ctx()
+    if (
+        ctx >= needed
+        or ctx_ceiling < needed
+        or not _engine_fits_chat_offload(model_path, _engine_binary())
+    ):
+        return ctx
+    quantum = model_cache._DYNAMIC_CTX_QUANTUM
+    return min(ctx_ceiling, -(-needed // quantum) * quantum)
 
 
-# Architectures whose head scores every position it proposes. Their compute
-# buffer grows with the window, and the estimator prices it by the physical
-# batch instead, so the estimate falls further behind the longer the window
-# gets. The trade maximises exactly that window, which turns a fixed
-# under-estimate into an unbounded one: measured on a 1 GiB card, the trade
-# granted gemma-4-26B-A4B-eagle3 59648 tokens against a real 1413 MiB.
-_NON_TRADABLE_ARCHITECTURES = frozenset({"eagle3"})
+def _engine_fits_chat_offload(model_path: Path, binary: Path | None) -> bool:
+    """Whether llama-server's own fit places the chat layers at load.
 
-
-def _chat_offload_is_tradable(
-    model_path: Path,
-    *,
-    meta: dict[str, str] | None,
-    available_bytes: int,
-    ctx_ceiling: int,
-    needed: int,
-) -> bool:
-    """Whether a too-small chat window may buy KV room by moving layers off the card.
-
-    Only while the weights alone fit *available_bytes*. Past that the layers the
-    trade leaves behind are served from system memory, and a model that answers
-    from host RAM is the unusable load :func:`_unusable_chat_ctx_reason` refuses
-    on purpose. A window the user capped below *needed* is their choice, and the
-    refusal already honours it, so nothing is bought by trading for it either.
-
-    Never for a speculator head. The estimate the search reads is not sound over
-    the window for those, so the search optimises a number that grows wrong.
+    It does for an auto layer count with no expert overrides, on a card with
+    memory of its own, when *binary* lists the fit flags in its ``--help``; a
+    numeric ``n_gpu_layers`` or tensor override stops it.
     """
-    if (meta or {}).get("architecture") in _NON_TRADABLE_ARCHITECTURES:
-        return False
-    return ctx_ceiling >= needed and _weights_bytes(model_path) <= available_bytes
+    return (
+        _role_gpu_layers(WorkerRole.CHAT) == engine_params.N_GPU_LAYERS_AUTO
+        and not _role_expert_offload(model_path)
+        and not plan_sizing_is_unified()
+        and binary is not None
+        and engine_advertises(binary, FLAG_FIT_TARGET)
+    )
 
 
-def _chat_offload_probe_ceiling(meta: dict[str, str] | None, configured: int) -> int:
-    """Highest layer count the offload search probes, below *configured*.
-
-    ``_NO_OFFLOAD_PROBE`` when the architecture does not report a layer count,
-    which leaves no grid to search.
-    """
+def _engine_binary() -> Path | None:
+    """The llama-server lilbee launches, or None on a host without one."""
     try:
-        layers = int((meta or {})["block_count"])
-    except (KeyError, ValueError):
-        return _NO_OFFLOAD_PROBE
-    if configured == engine_params.N_GPU_LAYERS_AUTO:
-        return layers
-    return min(configured - 1, layers)
+        return resolve_llama_server()
+    except ProviderError:
+        return None
 
 
-def _traded_chat_fit(
-    fit_at: Callable[[int], int], *, upper: int, needed: int
-) -> engine_params.ChatFit | None:
-    """Largest offload at or below *upper* whose window reaches *needed*, or ``None``.
-
-    Binary search: the estimate charges less VRAM the fewer layers the card
-    holds, so the fitted window is monotone in the offload.
-    """
-    lo, hi, best = 0, upper, None
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        ctx = fit_at(mid)
-        if ctx >= needed:
-            best, lo = engine_params.ChatFit(mid, ctx), mid + 1
-        else:
-            hi = mid - 1
-    return best
+def _chat_host_estimate(model_path: Path, ctx: int, slots: int) -> int:
+    """Host bytes gguf-parser expects chat to hold at its configured offload; 0 when unsized."""
+    try:
+        estimate = estimate_instance_footprint(
+            model_path,
+            ctx=ctx,
+            slots=slots,
+            gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
+            flash_attn=_role_flash(WorkerRole.CHAT),
+            kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+            expert_offload=_role_expert_offload(model_path),
+        )
+    except (ProviderError, OSError):
+        return 0
+    return estimate.ram_bytes
 
 
 def _role_ctx(
@@ -781,10 +748,18 @@ def _role_flash(role: WorkerRole, rerank_mode: RerankMode | None = None) -> bool
 
 
 def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
-    """Chat honors ``cfg.kv_cache_type``; embed/rerank/vision run f16 KV."""
+    """The one KV cache type *role* launches with, for both K and V.
+
+    Chat carries ``cfg.kv_cache_type`` only under flash attention ``on``; every
+    other role, and chat under ``auto`` or ``off``, is f16. llama-server refuses
+    K != V on MLA models, forces flash attention on for a quantized V under
+    ``auto``, and refuses a quantized V under ``off``.
+    """
     from lilbee.core.config import cfg
 
-    return cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
+    if role is WorkerRole.CHAT and flash_attn_flag() == _FLASH_ON:
+        return cfg.kv_cache_type
+    return KvCacheType.F16
 
 
 def _replica_count(role: WorkerRole, device_count: int) -> int:
@@ -792,29 +767,10 @@ def _replica_count(role: WorkerRole, device_count: int) -> int:
     return resolve_replica_count(role, device_count)
 
 
-def _role_kv_cache_type_v(role: WorkerRole) -> KvCacheType:
-    """The V cache type for *role*: the configured one only when flash attention is on.
-
-    llama.cpp refuses a quantized V cache without flash attention ("V cache
-    quantization requires flash_attn") and the server never starts, while a
-    quantized K cache needs nothing. So V follows the setting only where flash
-    attention is certain, and is f16 under ``auto`` or ``off``. That costs memory
-    rather than a launch, and the estimate moves with it.
-    """
-    from lilbee.core.config.enums import KvCacheType
-
-    configured = _role_kv_cache_type(role)
-    return configured if flash_attn_flag() == _FLASH_ON else KvCacheType.F16
-
-
-def chat_cache_type_flags() -> tuple[str | None, str | None]:
-    """``(--cache-type-k, --cache-type-v)`` for chat; ``None`` leaves the f16 default."""
-    from lilbee.core.config.enums import KvCacheType
-
-    def flag(kind: KvCacheType) -> str | None:
-        return None if kind is KvCacheType.F16 else kind.value
-
-    return flag(_role_kv_cache_type(WorkerRole.CHAT)), flag(_role_kv_cache_type_v(WorkerRole.CHAT))
+def chat_cache_type_flag() -> str | None:
+    """``--cache-type-k`` and ``--cache-type-v`` for chat; ``None`` leaves the f16 default."""
+    kind = _role_kv_cache_type(WorkerRole.CHAT)
+    return None if kind is KvCacheType.F16 else kind.value
 
 
 def _vision_mmproj(model_ref: str) -> Path | None:
@@ -872,7 +828,6 @@ def _estimate_role(
         gpu_layers=_role_gpu_layers(role),
         flash_attn=_role_flash(role, rerank_mode),
         kv_cache_type=_role_kv_cache_type(role),
-        kv_cache_type_v=_role_kv_cache_type_v(role),
         mmproj_path=mmproj,
         batch_size=_pooled_batch_size(role, rerank_mode, ctx),
         expert_offload=_role_expert_offload(path),
@@ -974,7 +929,6 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
             gpu_layers=_role_gpu_layers(role),
             flash_attn=_role_flash(role, rerank_mode),
             kv_cache_type=_role_kv_cache_type(role),
-            kv_cache_type_v=_role_kv_cache_type_v(role),
             mmproj_path=mmproj,
             tensor_split=ratio,
             batch_size=_pooled_batch_size(role, rerank_mode, ctx),
@@ -1012,7 +966,6 @@ def _chat_split_ctx_objective(
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
             flash_attn=_role_flash(WorkerRole.CHAT),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-            kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
             ctx_ceiling=target,
             expert_offload=_role_expert_offload(path),
         )
@@ -1251,7 +1204,7 @@ def _analytic_footprint_floor(
         model_cache.kv_bytes_per_token(
             meta,
             KV_CACHE_TYPE_BYTES[_role_kv_cache_type(role)],
-            KV_CACHE_TYPE_BYTES[_role_kv_cache_type_v(role)],
+            KV_CACHE_TYPE_BYTES[_role_kv_cache_type(role)],
         )
         * ctx
         * max(slots, 1)
@@ -1407,7 +1360,7 @@ def _host_bytes_must_be_resident(role: WorkerRole, ref: str) -> bool:
     weights over that mapping instead of allocating them, so with mmap they are
     evictable page cache: a model far larger than RAM streams from disk and
     serves, which is a practiced setup for a large mixture-of-experts. Only
-    ``--no-mmap`` turns them into a buffered read that must be resident, and the
+    the no-mmap load turns them into a buffered read that must be resident, and the
     single path that asks for it is a chat model on a network filesystem.
 
     Anything this cannot determine counts as mappable, because a false refusal
@@ -1652,6 +1605,27 @@ def _charge_by_device(
     }
 
 
+def _chat_fit_target_mib(
+    binary: Path, chosen: tuple[FleetDevice, ...], reserved: Mapping[int, int]
+) -> tuple[int, ...]:
+    """Memory, in MiB, the engine's fit leaves free on each of chat's cards.
+
+    The engine's own margin plus what *reserved* holds on the card for roles
+    that load after chat. Empty for an engine without ``--fit-target`` and on
+    shared memory, where a layer moved off the device frees nothing.
+    """
+    if any(device.unified for device in chosen) or not engine_advertises(binary, FLAG_FIT_TARGET):
+        return ()
+    return tuple(
+        ENGINE_FIT_MARGIN_MIB + -(-reserved.get(device.index, 0) // MIB) for device in chosen
+    )
+
+
+def _engine_shares_kv(binary: Path) -> bool:
+    """Whether *binary* can give its slots one KV pool with a per-slot cap."""
+    return engine_advertises(binary, FLAG_KV_UNIFIED_PER_SLOT)
+
+
 def _launch_for(
     plan: InstancePlan,
     model_ref: str,
@@ -1661,6 +1635,7 @@ def _launch_for(
     unified_budget: int | None = None,
     chat_reservation: int = 0,
     reserved_by_device: dict[int, int] | None = None,
+    reserved_after_chat: dict[int, int] | None = None,
     est_vram_bytes: int = 0,
     model_path: Path | None = None,
 ) -> InstanceLaunch:
@@ -1704,12 +1679,8 @@ def _launch_for(
             list(plan.devices),
         )
     split_slots = _SPLIT_CHAT_SLOTS
-    # A single-card chat is the one launch whose offload its own window fit can
-    # lower; the split and pinned paths never run that fit.
-    fit_offload = is_chat and not multi_card_chat and cfg.num_ctx is None
-    n_gpu_layers = _role_gpu_layers(plan.role)
+    reserved = reserved_by_device or {}
     if split_chat:
-        reserved = reserved_by_device or {}
         # Headroom left after the embed/rerank servers on each shared card, not the
         # card's raw free VRAM, so the chat KV doesn't over-commit.
         per_device_free = [max(0, d.free_bytes - reserved.get(d.index, 0)) for d in chosen]
@@ -1724,21 +1695,11 @@ def _launch_for(
                 gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
                 flash_attn=_role_flash(WorkerRole.CHAT),
                 kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-                kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
                 ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
                 expert_offload=_role_expert_offload(model_path),
             )
 
         split_slots, ctx = _resolve_split_chat_slots(_split_fit)
-    elif fit_offload:
-        # One call answers both halves. The window was sized against the memory
-        # this offload leaves free, so a second call for the offload could pair a
-        # window with an offload that never fitted it.
-        chat_fit = engine_params.resolve_chat_fit(
-            model_path, meta, available_bytes=plan_sizing_budget(placed_device)
-        )
-        n_gpu_layers = chat_fit.gpu_layers
-        ctx = apply_ctx_downshift(plan.role, chat_fit.ctx)
     else:
         # Downshifted here and not only in the estimate: the role resolvers are
         # pure functions of model and config, so without this the retry after a
@@ -1765,29 +1726,36 @@ def _launch_for(
         )
     )
     spec = _server_spec(plan.role, rerank_mode, meta)
+    # Where the engine's fit can move chat layers off the card, the readback
+    # compares the host memory it reports with this to say so.
+    fit_moves_chat = (
+        is_chat and placed_device is not None and _engine_fits_chat_offload(model_path, binary)
+    )
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
     # is generative and uses the default batching plus flash attention.
     cross_encoder_pooled = plan.role in _EMBED_ROLES and not is_llm_rerank
-    cache_type_k, cache_type_v = chat_cache_type_flags() if is_chat else (None, None)
     argv = build_server_argv(
         binary=binary,
         spec=spec,
         model_path=model_path,
         devices=plan.devices,
-        n_gpu_layers=n_gpu_layers,
+        n_gpu_layers=_role_gpu_layers(plan.role),
         slots=slots,
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
         mmproj=mmproj,
         flash_attn=flash_attn_flag() if _role_launches_with_flash(plan.role, rerank_mode) else None,
-        cache_type_k=cache_type_k,
-        cache_type_v=cache_type_v,
+        cache_type=chat_cache_type_flag() if is_chat else None,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
         cpu_moe=expert_offload_all(meta),
         n_cpu_moe=expert_offload_layers(meta),
         device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(),
         memory_endpoint=supports_memory_readback(binary),
+        fit_target_mib=(
+            _chat_fit_target_mib(binary, chosen, reserved_after_chat or {}) if is_chat else ()
+        ),
+        kv_unified_per_slot=ctx if is_chat and _engine_shares_kv(binary) else None,
     )
     return InstanceLaunch(
         role=plan.role,
@@ -1815,6 +1783,7 @@ def _launch_for(
         est_vram_bytes=est_vram_bytes,
         est_vram_by_device=_charge_by_device(chosen, plan.tensor_split, est_vram_bytes),
         est_unreported_bytes=_unreported_bytes(plan.role, mmproj),
+        est_host_bytes=_chat_host_estimate(model_path, ctx, slots) if fit_moves_chat else 0,
     )
 
 
@@ -2688,7 +2657,7 @@ def _chat_no_mmap(weights_bytes: int, *, on_network_fs: bool = False) -> bool:
 
     Local disk mmaps: lazy page-fault paging gives a faster first token on a cold
     cache -- the common desktop first launch -- matching mmap-by-default engines.
-    ``--no-mmap``'s buffered full read only wins on an already-hot cache and it
+    The no-mmap buffered full read only wins on an already-hot cache and it
     pessimizes cold start, so it is not worth defaulting on for local disk. A
     network filesystem still prefers the buffered read whenever the host copy
     fits, because mmap page faults served over the wire can wedge the loader in
@@ -3114,6 +3083,11 @@ def _planned_launches(
     )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
+    reserved_after_chat = _non_chat_reservation(
+        [inst for inst in placement.instances if inst.role not in _LOADED_BEFORE_CHAT],
+        inputs,
+        placement.co_tenants,
+    )
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
     launches: list[InstanceLaunch] = []
     skipped_unusable_ctx: dict[WorkerRole, str] = {}
@@ -3126,6 +3100,7 @@ def _planned_launches(
             unified_budget=unified_budget,
             chat_reservation=reservation,
             reserved_by_device=reserved_by_device,
+            reserved_after_chat=reserved_after_chat,
             est_vram_bytes=charged.get(plan.role, 0),
         )
         reason = _unusable_chat_ctx_reason(launch)

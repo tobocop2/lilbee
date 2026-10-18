@@ -340,7 +340,6 @@ class TestStatus:
             "n_gpu_layers",
             "cpu_moe",
             "n_cpu_moe",
-            "main_gpu",
             "gpu_devices",
         ):
             assert key in result["config"], f"missing {key} in MCP status"
@@ -2071,7 +2070,6 @@ class TestSettingsMcp:
         [
             ("flash_attention", True, "enabled", None),
             ("n_gpu_layers", 12, "all", None),
-            ("main_gpu", 1, "cuda:0", None),
             ("gpu_devices", "0,1", "cpu", None),
             ("semantic_chunking", True, "maybe", False),
         ],

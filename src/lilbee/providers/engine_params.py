@@ -9,7 +9,6 @@ provider compute them identically. No native binding.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -188,24 +187,18 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
     )
 
 
-def chat_kv_elem_bytes() -> tuple[float, float]:
-    """Per-element (K, V) byte costs of the KV cache a chat launch allocates.
+def chat_kv_elem_bytes() -> float:
+    """Per-element byte cost of the K and V cache a chat launch allocates.
 
-    Reads the same flags the launch passes
-    (:func:`lilbee.providers.fleet.planning.chat_cache_type_flags`): K carries
-    ``cfg.kv_cache_type``, while V carries it only when flash attention is
-    certain to be on, because llama.cpp refuses a quantized V cache without it
-    and the launch then leaves V at f16. Budgeting from the launch flags keeps
-    the granted window in step with the cache the engine actually allocates.
+    Reads the flag the launch passes for both K and V
+    (:func:`lilbee.providers.fleet.planning.chat_cache_type_flag`), so the
+    granted window stays in step with the cache the engine allocates.
     """
     # call-time import: planning imports this module at load
-    from lilbee.providers.fleet.planning import chat_cache_type_flags
+    from lilbee.providers.fleet.planning import chat_cache_type_flag
 
-    def elem_bytes(flag: str | None) -> float:
-        return KV_CACHE_TYPE_BYTES[KvCacheType(flag) if flag else KvCacheType.F16]
-
-    k_flag, v_flag = chat_cache_type_flags()
-    return elem_bytes(k_flag), elem_bytes(v_flag)
+    flag = chat_cache_type_flag()
+    return KV_CACHE_TYPE_BYTES[KvCacheType(flag) if flag else KvCacheType.F16]
 
 
 def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
@@ -216,33 +209,18 @@ def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
     return training_ctx
 
 
-@dataclass(frozen=True)
-class ChatFit:
-    """The GPU offload and per-slot window one chat launch runs with.
-
-    The pair is inseparable: the window was sized against the memory this
-    offload leaves free, so serving it at any other offload overruns the card.
-    """
-
-    gpu_layers: int
-    ctx: int
-
-
-def resolve_chat_fit(
+def resolve_chat_ctx(
     model_path: Path, meta: dict[str, str] | None, *, available_bytes: int | None = None
-) -> ChatFit:
-    """Pick a single-GPU offload and n_ctx aiming for ``cfg.chat_n_ctx_target``,
-    clamped to model + host.
+) -> int:
+    """Pick a single-GPU chat n_ctx aiming for ``cfg.chat_n_ctx_target``, clamped to model + host.
 
     A gguf-parser fit answers first
     (:func:`lilbee.providers.fleet.planning.fit_chat_ctx`), because it prices the
-    cache each layer of this architecture holds, and it may leave layers in
-    system memory to free the KV room a usable window needs. Header math takes
-    over when the estimator cannot answer; it charges every layer as dense
-    attention over the whole window at the configured offload, which
-    under-grants linear-attention, sliding-window and MLA models. Either way the
-    window stops at the smallest of the trained context, ``cfg.num_ctx_max`` and
-    the target.
+    cache each layer of this architecture holds. Header math takes over when the
+    estimator cannot answer; it charges every layer as dense attention over the
+    whole window, which under-grants linear-attention, sliding-window and MLA
+    models. Either way the window stops at the smallest of the trained context,
+    ``cfg.num_ctx_max`` and the target.
 
     A multi-GPU tensor-split chat is sized separately by the fleet against its
     per-device headroom (see :func:`lilbee.providers.fleet.ctx.fit_split_ctx`).
@@ -266,15 +244,12 @@ def resolve_chat_fit(
         return fit_chat_ctx(model_path, meta, available_bytes=available_bytes, ctx_ceiling=upper)
     except (ProviderError, OSError, ValueError):
         log.debug("gguf-parser ctx fit failed for %s, using header math", model_path, exc_info=True)
-    return ChatFit(
-        resolve_n_gpu_layers(embedding=False),
-        _header_math_chat_ctx(
-            model_path,
-            meta,
-            available_bytes=available_bytes,
-            training_ctx=training_ctx,
-            ceiling=ceiling,
-        ),
+    return _header_math_chat_ctx(
+        model_path,
+        meta,
+        available_bytes=available_bytes,
+        training_ctx=training_ctx,
+        ceiling=ceiling,
     )
 
 
@@ -289,7 +264,8 @@ def _header_math_chat_ctx(
     """Window from GGUF header arithmetic: weights plus a dense-attention cache."""
     try:
         model_bytes = model_path.stat().st_size
-        kv_per_tok = kv_bytes_per_token(meta, *chat_kv_elem_bytes())
+        elem_bytes = chat_kv_elem_bytes()
+        kv_per_tok = kv_bytes_per_token(meta, elem_bytes, elem_bytes)
         return compute_dynamic_ctx(
             model_bytes=model_bytes,
             available_bytes=available_bytes,
@@ -301,14 +277,6 @@ def _header_math_chat_ctx(
     except (OSError, ValueError):
         log.debug("dynamic ctx sizing failed for %s, using static cap", model_path, exc_info=True)
         return min(training_ctx, cfg.chat_n_ctx_target)
-
-
-def resolve_chat_ctx(
-    model_path: Path, meta: dict[str, str] | None, *, available_bytes: int | None = None
-) -> int:
-    """The window half of :func:`resolve_chat_fit`, for callers that only serve
-    or advertise the context."""
-    return resolve_chat_fit(model_path, meta, available_bytes=available_bytes).ctx
 
 
 # Tokens the minimum grounded prompt allows for the question plus the context

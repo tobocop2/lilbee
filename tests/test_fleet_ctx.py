@@ -38,7 +38,6 @@ def _fit(model_path: Path, **overrides: object) -> int:
         "gpu_layers": -1,
         "flash_attn": True,
         "kv_cache_type": KvCacheType.F16,
-        "kv_cache_type_v": KvCacheType.F16,
         # Large by default so the fit-logic tests are gated by the monkeypatched
         # chat_ctx_ceiling; the ceiling-cap test lowers it.
         "ctx_ceiling": 1_000_000,
@@ -209,7 +208,6 @@ def _fit_single(model_path: Path, **overrides: object) -> int:
         "gpu_layers": -1,
         "flash_attn": True,
         "kv_cache_type": KvCacheType.F16,
-        "kv_cache_type_v": KvCacheType.F16,
         "unified": False,
         "ctx_ceiling": 1_000_000,
         "expert_offload": (),

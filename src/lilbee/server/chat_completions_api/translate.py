@@ -52,6 +52,7 @@ from lilbee.server.chat_dispatch.canonical import (
     ToolResultBlock,
     ToolUseBlock,
     ToolUseDelta,
+    require_content_beside_images,
 )
 from lilbee.server.chat_dispatch.tool_args import parse_tool_arguments
 
@@ -68,9 +69,6 @@ _STOP_REASON_TO_FINISH: dict[StopReason, FinishReason] = {
 }
 
 _TOOL_CALL_ID_REQUIRED = "A tool message requires tool_call_id naming the call it answers."
-_IMAGE_CONTENT_UNSUPPORTED = (
-    "Image content is not supported by /v1/chat/completions yet. Send a text-only request."
-)
 
 
 def completions_to_canonical_request(
@@ -85,9 +83,10 @@ def completions_to_canonical_request(
             continue
         messages.append(_message_from_request(msg))
 
-    return CanonicalChatRequest(
+    req = CanonicalChatRequest(
         model=request.model,
         messages=messages,
+        dropped_images=_count_images(request.messages),
         system="\n\n".join(system_parts) if system_parts else None,
         tools=_tools_from_request(request.tools),
         tool_choice=_tool_choice_from_request(request.tool_choice),
@@ -103,6 +102,17 @@ def completions_to_canonical_request(
         # OFF asks the template to skip thinking; the other modes only change
         # presentation, so the template default stands.
         think=False if mode is ReasoningMode.OFF else None,
+    )
+    return require_content_beside_images(req)
+
+
+def _count_images(messages: list[CompletionsMessage]) -> int:
+    """Image parts across *messages*, whatever the role."""
+    return sum(
+        isinstance(part, CompletionsImageContent)
+        for msg in messages
+        if isinstance(msg.content, list)
+        for part in msg.content
     )
 
 
@@ -377,16 +387,10 @@ def _usage_chunk(
 
 
 def _system_text(msg: CompletionsMessage) -> str:
-    """Flatten a system message to text, rejecting image parts.
-
-    The same image part is a 400 in a user message, so silently dropping it
-    here answered as though the request had been honoured.
-    """
+    """Flatten a system message to its text parts."""
     if isinstance(msg.content, str):
         return msg.content
     if isinstance(msg.content, list):
-        if any(isinstance(part, CompletionsImageContent) for part in msg.content):
-            raise ValueError(_IMAGE_CONTENT_UNSUPPORTED)
         return "".join(
             part.text for part in msg.content if isinstance(part, CompletionsTextContent)
         )
@@ -433,8 +437,6 @@ def _content_blocks(content: str | list | None) -> list[ContentBlock]:
     for part in content:
         if isinstance(part, CompletionsTextContent):
             blocks.append(TextBlock(text=part.text))
-        elif isinstance(part, CompletionsImageContent):
-            raise ValueError(_IMAGE_CONTENT_UNSUPPORTED)
     return blocks
 
 

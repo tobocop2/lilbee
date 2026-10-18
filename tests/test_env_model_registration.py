@@ -185,7 +185,7 @@ class TestUnregisteredRoleRefsAreReported:
         gguf.write_bytes(_BLOB)
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        config = _build_config(tmp_path, {"chat_model": str(gguf)})
+        config = _build_config(tmp_path, {"vision_model": str(gguf)})
 
         with caplog.at_level(logging.WARNING, logger="lilbee.modelhub.role_validator"):
             warn_unregistered_role_refs(config, ModelRegistry(models_dir))
@@ -193,7 +193,7 @@ class TestUnregisteredRoleRefsAreReported:
         assert len(caplog.records) == 1
         message = caplog.records[0].getMessage()
         assert str(gguf) in message
-        assert "chat_model" in message
+        assert "vision_model" in message
         assert "lilbee model pull" in message
         assert "POST /api/models/pull" in message
 
@@ -304,15 +304,51 @@ class TestOneDefinitionOfInstalled:
         gguf.write_bytes(_BLOB)
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        config = _build_config(tmp_path, {"chat_model": str(gguf)})
+        config = _build_config(tmp_path, {"embedding_model": str(gguf)})
 
         with caplog.at_level(logging.WARNING, logger="lilbee.modelhub.role_validator"):
             warn_unregistered_role_refs(config, ModelRegistry(models_dir))
 
         assert [record.getMessage() for record in caplog.records] == [
-            _LOOSE_FILE_ROLE_WARNING % ("chat_model", str(gguf))
+            _LOOSE_FILE_ROLE_WARNING % ("embedding_model", str(gguf))
         ]
         assert "The TUI and CLI load it" in caplog.records[0].getMessage()
+        assert "HTTP chat route" not in caplog.records[0].getMessage()
+
+    def test_a_path_chat_model_gets_no_warning_when_services_build(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """The chat routes and listings serve a GGUF path, so building services stays quiet."""
+        from lilbee.app.services import build_services
+
+        gguf = tmp_path / "MiniMax.gguf"
+        gguf.write_bytes(_BLOB)
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        config = _build_config(tmp_path, {"chat_model": str(gguf)})
+        config.models_dir = models_dir
+
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.modelhub.role_validator"),
+            mock.patch("lilbee.data.extract.backends.sync_xberg_backends"),
+        ):
+            build_services(config, provider=mock.MagicMock())
+
+        assert caplog.records == []
+
+    def test_a_missing_path_chat_model_is_still_warned(self, tmp_path: Path, caplog) -> None:
+        """Only a file that loads is exempt; a path to nothing keeps the missing-role warning."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        absent = str(tmp_path / "absent.gguf")
+        config = _build_config(tmp_path, {"chat_model": absent})
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.modelhub.role_validator"):
+            warn_unregistered_role_refs(config, ModelRegistry(models_dir))
+
+        assert [record.getMessage() for record in caplog.records] == [
+            _MISSING_ROLE_WARNING % ("chat_model", absent)
+        ]
 
 
 class TestEntryPointParity:

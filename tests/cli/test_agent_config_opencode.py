@@ -194,3 +194,30 @@ def test_opencode_config_stays_quiet_when_the_window_is_unknown():
 
     assert result.exit_code == 0, result.stderr
     assert "engine stop" not in result.stderr
+
+
+def test_opencode_config_lists_a_chat_model_set_by_path(tmp_path):
+    from lilbee.modelhub.model_manager import discovery
+    from lilbee.modelhub.registry import ModelRegistry
+    from tests.conftest import make_mock_services
+
+    _write_server_session("tok", 9000)
+    gguf = tmp_path / "loose" / "model-Q4.gguf"
+    gguf.parent.mkdir()
+    gguf.write_bytes(b"GGUF")
+    cfg.chat_model = str(gguf)
+    services = make_mock_services(
+        registry=ModelRegistry(tmp_path / "models"),
+        known_models=discovery.KnownModelCache(),
+    )
+    with (
+        patch("lilbee.app.models.get_services", return_value=services),
+        patch.object(discovery, "classify_all_remote_models", return_value=[]),
+        patch.object(discovery, "discover_api_models", return_value={}),
+    ):
+        result = runner.invoke(app, ["agent-config", "opencode"])
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert list(payload["provider"]["lilbee"]["models"]) == [str(gguf)]
+    assert payload["model"] == f"lilbee/{gguf}"

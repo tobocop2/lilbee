@@ -11,6 +11,7 @@ from litestar.testing import TestClient, create_test_client
 from lilbee.app.agent_configs import detect as detect_mod
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
+from lilbee.modelhub.registry import ModelRegistry
 from lilbee.server import auth as auth_mod
 from lilbee.server.app import create_app
 from lilbee.server.auth import authenticates_itself, session_manager
@@ -151,6 +152,30 @@ class TestOpencodeDocument:
         models = body["config"]["provider"]["lilbee"]["models"]
         assert list(models) == ["Qwen3-0.6B"]
         assert models["Qwen3-0.6B"]["limit"]["context"] == _CHAT_CTX
+
+
+class TestModelSetByPath:
+    def test_it_lists_a_chat_model_set_by_path(self, client, served_state, tmp_path):
+        from unittest.mock import patch
+
+        from lilbee.modelhub.model_manager import discovery
+
+        gguf = tmp_path / "loose" / "Loose-Q4.gguf"
+        gguf.parent.mkdir()
+        gguf.write_bytes(b"GGUF")
+        cfg.chat_model = str(gguf)
+        services = make_mock_services(
+            registry=ModelRegistry(tmp_path / "models"),
+            known_models=discovery.KnownModelCache(),
+        )
+        services.provider.served_chat_ctx.return_value = _CHAT_CTX
+        set_services(services)
+        with (
+            patch.object(discovery, "classify_all_remote_models", return_value=[]),
+            patch.object(discovery, "discover_api_models", return_value={}),
+        ):
+            body = client.get("/api/agent-config/opencode", headers=_bearer()).json()
+        assert list(body["config"]["provider"]["lilbee"]["models"]) == [str(gguf)]
 
 
 class TestHermesDocument:

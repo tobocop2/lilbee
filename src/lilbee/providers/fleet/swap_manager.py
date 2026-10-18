@@ -19,6 +19,7 @@ import threading
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
@@ -40,7 +41,7 @@ from lilbee.providers.fleet.readback import (
     report_missing_log,
 )
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
-from lilbee.runtime.engine_lock import clear_keep_warm
+from lilbee.runtime.engine_lock import clear_keep_warm, reaper_running
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.launch import InstanceLaunch
@@ -92,6 +93,8 @@ _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
 _RUNNING_PATH = "/running"
+# Stops every upstream llama-server; llama-swap itself keeps listening.
+_UNLOAD_PATH = "/api/models/unload"
 _HTTP_TIMEOUT_S = 10.0
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
@@ -118,6 +121,12 @@ _PROBE_TIMEOUT_S = 5.0
 # for tens of seconds. A local proxy that cannot answer /running this fast is
 # not usable for inference either.
 _LIVENESS_TIMEOUT = httpx.Timeout(connect=0.5, read=2.0, write=2.0, pool=2.0)
+# Run as `python -m`; the frozen build dispatches `-m lilbee.*` to the module's main().
+_REAPER_MODULE = "lilbee.providers.fleet.engine_reaper"
+# A reaper reports running within one interpreter start; a frozen onefile start
+# on a slow disk is the long case.
+_REAPER_READY_TIMEOUT_S = 10.0
+_REAPER_READY_POLL_S = 0.05
 
 
 @lru_cache(maxsize=1)
@@ -149,6 +158,7 @@ def _platform_const(module: object, name: str, default: int) -> int:
 
 
 _CREATE_NEW_PROCESS_GROUP: int = _platform_const(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+_DETACHED_PROCESS: int = _platform_const(subprocess, "DETACHED_PROCESS", 0)
 _SIGKILL: int = _platform_const(signal, "SIGKILL", signal.SIGTERM)
 
 
@@ -173,6 +183,14 @@ def _atomic_write(path: Path, text: str) -> None:
 def _state_filename(owner_pid: int, group: str) -> str:
     """The per-owner, per-group state filename for the lilbee process *owner_pid*."""
     return f"{_STATE_FILENAME_PREFIX}{group}.{owner_pid}{_STATE_FILENAME_SUFFIX}"
+
+
+class EngineLifetime(StrEnum):
+    """What ends a spawned engine."""
+
+    BUILDER = "builder"  # the process that spawned it exits or dies
+    USERS = "users"  # the dir's reaper, once no user lock and no keep-warm opt-in is left
+    DETACHED = "detached"  # nothing; the dir's reaper only unloads its weights
 
 
 @dataclass(frozen=True)
@@ -234,7 +252,11 @@ class SwapManager:
         self._bound = False
 
     def start(
-        self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0, bind_lifetime: bool = True
+        self,
+        launches: list[InstanceLaunch],
+        *,
+        ttl_seconds: int = 0,
+        lifetime: EngineLifetime = EngineLifetime.BUILDER,
     ) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
 
@@ -252,8 +274,9 @@ class SwapManager:
         spawn-time probe to close that window; warming the roles up front
         shortens it for the roles that are warmed.
 
-        ``bind_lifetime`` binds the engine to this process so a crash cannot orphan
-        it; it is False for a keep-warm fleet that is meant to outlive lilbee.
+        *lifetime* says what ends the engine. ``USERS`` needs the caller to hold
+        the dir's build lock, and falls back to ``BUILDER`` when no reaper reports
+        running for the dir, so the engine is never left unbound and unwatched.
         """
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
@@ -291,6 +314,9 @@ class SwapManager:
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_file = self._log_path.open("ab")
         self._log_offset = self._log_path.stat().st_size
+        if lifetime is EngineLifetime.USERS and not ensure_engine_reaper(self._data_dir):
+            log.warning("The engine at %s stops with this process.", self._data_dir)
+            lifetime = EngineLifetime.BUILDER
         self._proc = spawn_bound_child(
             [
                 str(resolve_llama_swap()),
@@ -299,7 +325,7 @@ class SwapManager:
                 _LISTEN_FLAG,
                 f"{_HOST}:{self._port}",
             ],
-            bind_lifetime=bind_lifetime,
+            bind_lifetime=lifetime is EngineLifetime.BUILDER,
             stdout=self._log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -407,6 +433,7 @@ class SwapManager:
                 launch.est_vram_bytes,
                 launch.est_vram_by_device,
                 launch.est_unreported_bytes,
+                launch.est_host_bytes,
             )
             if warning is not None:
                 with self._warnings_lock:
@@ -446,6 +473,7 @@ class SwapManager:
             launch.est_vram_bytes,
             launch.est_vram_by_device,
             payload,
+            launch.est_host_bytes,
         )
         if warning is not None:
             with self._warnings_lock:
@@ -883,6 +911,67 @@ def stop_engine(data_dir: Path) -> list[str]:
                 stopped.append(group)
         state_path.unlink(missing_ok=True)
     return stopped
+
+
+def unload_engine_models(data_dir: Path) -> bool:
+    """Unload the models of every engine *data_dir* records; False when any proxy refused.
+
+    The llama-swap processes stay up, so the next request reloads on demand.
+    """
+    states = (_load_state(path) for path in sorted(data_dir.glob(_STATE_FILE_GLOB)))
+    ports = [state.proxy_port for state in states if state and state.proxy_port is not None]
+    return all([_unload_models(port) for port in ports])
+
+
+def engine_answers(data_dir: Path) -> bool:
+    """Whether any engine *data_dir* records answers on its proxy port."""
+    states = (_load_state(path) for path in sorted(data_dir.glob(_STATE_FILE_GLOB)))
+    return any(state_is_healthy(state) for state in states if state)
+
+
+def _unload_models(proxy_port: int) -> bool:
+    url = f"http://{_HOST}:{proxy_port}{_UNLOAD_PATH}"
+    try:
+        resp = _probe_client().post(url, timeout=_HTTP_TIMEOUT_S)
+    except (OSError, httpx.HTTPError) as exc:
+        log.warning("Could not unload the models at %s: %s", url, exc)
+        return False
+    if resp.status_code >= httpx.codes.BAD_REQUEST:
+        log.warning("The engine at %s refused the unload: HTTP %d", url, resp.status_code)
+        return False
+    return True
+
+
+def ensure_engine_reaper(data_dir: Path) -> bool:
+    """Make sure a live reaper watches *data_dir*; False when none reports running.
+
+    A reaper reports running by holding the dir's reaper lock. Waiting for that,
+    not only for the launch, also catches a reaper that dies on import.
+    """
+    if reaper_running(data_dir):
+        return True
+    try:
+        reaper = subprocess.Popen(  # noqa: S603 - argv is this interpreter and a fixed module
+            [sys.executable, "-m", _REAPER_MODULE, str(data_dir)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS,
+        )
+    except OSError:
+        log.warning("Could not launch the engine reaper for %s.", data_dir)
+        return False
+    deadline = time.monotonic() + _REAPER_READY_TIMEOUT_S
+    while time.monotonic() < deadline and reaper.poll() is None:
+        if reaper_running(data_dir):
+            return True
+        time.sleep(_REAPER_READY_POLL_S)
+    # An exited reaper either lost the claim to a live one or failed to start.
+    if reaper_running(data_dir):
+        return True
+    log.warning("The engine reaper for %s did not report running.", data_dir)
+    return False
 
 
 def reap_stale(data_dir: Path) -> None:

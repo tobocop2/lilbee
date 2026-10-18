@@ -134,16 +134,32 @@ def test_tool_choice_tool_without_name_raises():
         messages_to_canonical_request(_request(tool_choice={"type": "tool"}))
 
 
-def test_image_block_raises_value_error():
-    with pytest.raises(ValueError, match="Image content"):
+def test_image_block_is_dropped_and_counted():
+    req = messages_to_canonical_request(
+        _request(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "data": "x"}},
+                        {"type": "text", "text": "what is this"},
+                    ],
+                }
+            ]
+        )
+    )
+    assert req.dropped_images == 1
+    assert req.messages[0].content == [TextBlock(text="what is this")]
+
+
+def test_image_only_request_raises_naming_the_cause():
+    with pytest.raises(ValueError, match="holds only image content"):
         messages_to_canonical_request(
             _request(
                 messages=[
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "image", "source": {"type": "base64", "data": "x"}},
-                        ],
+                        "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}],
                     }
                 ]
             )
@@ -217,8 +233,34 @@ def test_tool_result_list_content_keeps_text_and_drops_unknown():
     assert result.content == [TextBlock(text="ok")]
 
 
-def test_tool_result_image_content_raises():
-    with pytest.raises(ValueError, match="Image content"):
+def test_tool_result_image_is_dropped_and_counted():
+    req = messages_to_canonical_request(
+        _request(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "t1",
+                            "content": [
+                                {"type": "image", "source": {"data": "x"}},
+                                {"type": "text", "text": "page text"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+    assert req.dropped_images == 1
+    result = req.messages[0].content[0]
+    assert isinstance(result, ToolResultBlock)
+    assert result.content == [TextBlock(text="page text")]
+
+
+def test_tool_result_with_only_an_image_raises_naming_the_cause():
+    with pytest.raises(ValueError, match="holds only image content"):
         messages_to_canonical_request(
             _request(
                 messages=[
@@ -235,6 +277,22 @@ def test_tool_result_image_content_raises():
                 ]
             )
         )
+
+
+def test_image_beside_a_system_prompt_is_not_image_only():
+    req = messages_to_canonical_request(
+        _request(
+            system="be terse",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}],
+                }
+            ],
+        )
+    )
+    assert req.dropped_images == 1
+    assert req.system == "be terse"
 
 
 def test_mid_conversation_system_message_becomes_system_reminder_user_turn():
@@ -400,3 +458,21 @@ def test_reasoning_off_reaches_the_counted_prompt():
         CountTokensRequest.model_validate(_PROMPT_BODY), mode=ReasoningMode.OFF
     )
     assert counted.think is False
+
+
+def test_image_beside_a_tool_call_is_not_image_only():
+    req = messages_to_canonical_request(
+        _request(
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "read", "input": {}}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}],
+                },
+            ]
+        )
+    )
+    assert req.dropped_images == 1

@@ -184,57 +184,23 @@ def _estimate_tokens(text: str) -> int:
     return max(1, -(-len(text) // _EMBED_EST_CHARS_PER_TOKEN))
 
 
-def _raise_for_status(resp: httpx.Response) -> None:
-    """Raise including the server's error body, which ``raise_for_status`` drops.
+_UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
+    ProviderErrorKind.CAPACITY: "The engine ran out of memory while loading {model}",
+    ProviderErrorKind.PORT_CONFLICT: "The engine could not start {model}: its port was taken",
+}
+_UPSTREAM_DEATH_DEFAULT = "The engine for {model} stopped before it could answer"
 
-    A llama-server failure otherwise surfaces as a bare "Internal Server Error"
-    with no cause; the response body carries the actual reason (oversize prompt,
-    decode failure, ...), which both diagnosis and the user-facing error need.
-    """
-    if resp.is_success:
-        return
-    resp.read()  # streaming responses aren't read yet; a no-op for buffered ones
-    body = resp.text.strip()
-    # llama-server reports an oversize prompt/conversation as a 400 whose body
-    # carries the "exceed_context_size_error" type. Tag it CONTEXT_OVERFLOW with a
-    # user-facing message so the chat route returns a clean context_length_exceeded
-    # (400) instead of a generic internal_error -- a long conversation that fills
-    # the window then reads as "too long", not "Internal server error".
-    if resp.status_code == _HTTP_BAD_REQUEST and (
-        "exceed_context_size" in body.lower() or "context size" in body.lower()
-    ):
-        raise ProviderError(
-            "The conversation exceeds this model's context window. "
-            "Start a new conversation or shorten the input.",
-            provider=_PROVIDER_NAME,
-            kind=ProviderErrorKind.CONTEXT_OVERFLOW,
-        )
-    # A 429 (slots full) is transient: a cold replica fleet rejects the first ingest
-    # fan-out until its slots load. Tag RATE_LIMIT so the caller backs off and retries
-    # instead of dropping the input.
-    if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
-        raise ProviderError(
-            "llama-server is busy (HTTP 429); replicas may still be warming.",
-            provider=_PROVIDER_NAME,
-            kind=ProviderErrorKind.RATE_LIMIT,
-        )
-    detail = f": {body[:600]}" if body else ""
-    kind = _classify_error(resp.status_code, body)
-    # llama-swap masks a dead server as "exited prematurely"; surface the server's
-    # own captured output (a missing CUDA runtime, a model load failure, a bind
-    # error) so the real exit reason reaches the caller, not only the log.
-    if _UPSTREAM_DIED_MARKER in body:
-        tail = _upstream_failure_tail(resp)
-        if tail:
-            detail = f"{detail}\nupstream server output:\n{tail}"
-        classified = classify_upstream_death(tail)
-        if classified is not None:
-            kind = classified
-    raise ProviderError(
-        f"llama-server returned HTTP {resp.status_code}{detail}",
-        provider=_PROVIDER_NAME,
-        kind=kind,
-    )
+
+def _upstream_death_message(
+    kind: ProviderErrorKind, status_code: int, model: str | None, engine_log: Path | None
+) -> str:
+    """One plain line for a model server that exited, built from what lilbee knows."""
+    subject = model if model is not None else "the model"
+    cause = _UPSTREAM_DEATH_MESSAGES.get(kind, _UPSTREAM_DEATH_DEFAULT).format(model=subject)
+    message = f"{cause} (HTTP {status_code})."
+    if engine_log is None:
+        return message
+    return f"{message} The full engine output is in {engine_log}."
 
 
 # What the engine prints when a device allocation fails during load. Every
@@ -319,7 +285,7 @@ def _classify_error(status_code: int, body: str) -> ProviderErrorKind:
     ``_raise_for_status`` upgrades to SERVER once the upstream tail proves it).
     A bare gateway error (502/503/504) is a
     momentarily-unreachable upstream -- restarting, OOM-killed, mid-swap -- so
-    it is SERVER, which the busy retry treats as transient.
+    it is SERVER, which the gateway retry treats as transient.
     """
     if _BATCH_OVERFLOW_MARKER in body:
         return ProviderErrorKind.CONTEXT_OVERFLOW
@@ -340,9 +306,9 @@ def is_connection_failure(exc: Exception) -> bool:
 
 def _is_transient_probe_failure(exc: Exception) -> bool:
     """Whether a probe failure is transient (dead replica, busy 429, gateway
-    error), not a template verdict. A cold replica 429s or 502s its first
-    traffic, so neither response must be read as the template rejecting the
-    exchange."""
+    error), not a template verdict. llama-swap 429s past its concurrency limit
+    and a restarting replica 502s, so neither response must be read as the
+    template rejecting the exchange."""
     if is_connection_failure(exc):
         return True
     return isinstance(exc, ProviderError) and exc.kind in _TRANSIENT_KINDS
@@ -431,12 +397,14 @@ _HTTP_TOO_MANY_REQUESTS = 429
 # (502 crashing/restarting, 503 unavailable, 504 gateway timeout). The request
 # succeeds once the upstream is back, so these must never terminalize a call.
 _TRANSIENT_GATEWAY_STATUSES = frozenset({502, 503, 504})
-# Error kinds the busy retry treats as transient: a 429 (slots still loading)
-# and a bare gateway error (upstream momentarily unreachable) both clear on
-# their own once the server is ready again.
-_TRANSIENT_KINDS = frozenset(
-    {ProviderErrorKind.RATE_LIMIT, ProviderErrorKind.SERVER, ProviderErrorKind.PORT_CONFLICT}
-)
+# Error kinds the gateway retry re-sends: a bare gateway error (upstream
+# momentarily unreachable) and a lost port-bind race clear on their own once
+# the server is back. A 429 is llama-swap's concurrency limit, which the swap
+# config sizes for several lilbee processes at full load, so it is reported,
+# not re-sent.
+_RETRY_KINDS = frozenset({ProviderErrorKind.SERVER, ProviderErrorKind.PORT_CONFLICT})
+# Error kinds that leave a template probe undetermined: the retry kinds plus a 429.
+_TRANSIENT_KINDS = _RETRY_KINDS | {ProviderErrorKind.RATE_LIMIT}
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
@@ -445,17 +413,12 @@ _CANCEL_POLL_S = 0.1
 # Short, separate timeout for /health: a server can wedge under heavy prompt
 # processing, and readiness/monitor polls must not block on the request timeout.
 _HEALTH_TIMEOUT_S = 5.0
-# Retry a server-busy (HTTP 429) response with exponential backoff (capped): a
-# cold replica fleet 429s the first fan-out until its slots load. Interactive
-# callers fail fast after this short budget (~15s).
-_BUSY_RETRIES = 6
-_BUSY_BACKOFF_BASE_S = 0.5
-_BUSY_BACKOFF_MAX_S = 8.0
-# Bulk embed ingest is background work, so it waits out a full cold start rather
-# than dropping files: an 8B embedder warming while a large chat model loads on
-# neighboring cards can take well past the interactive budget. Capped backoff
-# keeps the total near ~80s (0.5+1+2+4 then 8 each), which covers a real warmup.
-_EMBED_BUSY_RETRIES = 14
+# Retry a gateway error with exponential backoff (capped). llama-swap holds a
+# request through a cold load, so a gateway error is a replica restarting, and
+# callers fail after this short budget (~15s).
+_GATEWAY_RETRIES = 6
+_GATEWAY_BACKOFF_BASE_S = 0.5
+_GATEWAY_BACKOFF_MAX_S = 8.0
 # Half-open recovery: a replica marked unhealthy becomes routable again after
 # this cool-down. Recovery is probe-by-traffic and unmetered: every concurrent
 # caller sees it routable once cooled down (a success restores it, another
@@ -493,27 +456,24 @@ class ChatDeadlineError(ProviderError):
     """
 
 
-def retry_on_busy(
-    call: Callable[[], _T], *, retries: int = _BUSY_RETRIES, deadline: float | None = None
+def retry_on_gateway_error(
+    call: Callable[[], _T], *, retries: int = _GATEWAY_RETRIES, deadline: float | None = None
 ) -> _T:
-    """Run *call*, retrying transient failures (429, gateway errors) with capped backoff.
+    """Run *call*, retrying gateway errors and a lost port-bind race with capped backoff.
 
-    A cold replica fleet 429s the first fan-out until its slots load, and a
-    replica restarting mid-run answers 502 until it is back; backing off and
-    retrying turns both drops into successes. With a *deadline*
+    A replica restarting mid-run answers 502 until it is back; backing off and
+    retrying turns that drop into a success. With a *deadline*
     (``time.monotonic`` epoch) the retry waits out the server until that
-    deadline -- a page on a deep OCR queue keeps waiting for a genuinely free
-    slot instead of dropping after a fixed budget. Without one, *retries* bounds
-    the attempts. Non-transient errors (and the final still-failing response)
-    propagate.
+    deadline; without one, *retries* bounds the attempts. Every other error,
+    a 429 included, and the final still-failing response propagate.
     """
-    delay = _BUSY_BACKOFF_BASE_S
+    delay = _GATEWAY_BACKOFF_BASE_S
     attempt = 0
     while True:
         try:
             return call()
         except ProviderError as exc:
-            if exc.kind not in _TRANSIENT_KINDS:
+            if exc.kind not in _RETRY_KINDS:
                 raise
             attempt += 1
             exhausted = (
@@ -522,7 +482,7 @@ def retry_on_busy(
             if exhausted:
                 raise
             time.sleep(delay)
-            delay = min(delay * 2, _BUSY_BACKOFF_MAX_S)
+            delay = min(delay * 2, _GATEWAY_BACKOFF_MAX_S)
 
 
 class LlamaServerClient:
@@ -540,25 +500,22 @@ class LlamaServerClient:
         timeout: float = _DEFAULT_TIMEOUT_S,
         rerank_mode: RerankMode | None = None,
         inline_reasoning: bool = False,
-        embed_busy_deadline_s: float | None = None,
         on_prefill: Callable[[tuple[int, int] | None], None] | None = None,
         engine_log: Path | None = None,
+        model_ref: str | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
-        # The proxy log that records this server's exits; None for a client no
-        # swap manager fronts (the one-off self-check).
+        # The file this server's own engine writes its output to; None when the
+        # launch writes none or no swap manager fronts the client (the self-check).
         self.engine_log = engine_log
         self._model = model
+        # The model as the user knows it (the registry ref); the replica id is not
+        # something a person recognises. None names it "the model".
+        self.model_ref = model_ref
         # Prefill observer: called with (processed, total) per engine progress
         # frame during a streamed chat's prompt processing, then None once the
         # first generated frame proves the prefill is over.
         self._on_prefill = on_prefill
-        # Cold-load budget (seconds) the embed path waits out a still-warming replica
-        # before dropping the input, in place of the short attempt cap. Set on the
-        # EMBED-role client to the same ceiling llama-swap keeps the server alive for,
-        # so a bulk ingest never gives up while the replica is legitimately loading.
-        # None (rerank, chat, vision, self-check) keeps the fixed interactive budget.
-        self._embed_busy_deadline_s = embed_busy_deadline_s
         self._http = http or httpx.Client(
             base_url=self._base, timeout=timeout, verify=_LOOPBACK_SSL_CONTEXT
         )
@@ -599,6 +556,61 @@ class LlamaServerClient:
             if self._healthy:
                 return True
             return time.monotonic() - self._unhealthy_since >= _UNHEALTHY_RETRY_S
+
+    def _raise_for_status(self, resp: httpx.Response) -> None:
+        """Raise the plain error for a failed *resp*, naming this client's model and log.
+
+        The one place a client reports a failed response, so no call site can skip the
+        model name and the engine log. ``raise_for_status`` drops the server's error
+        body; the body carries the real reason (oversize prompt, decode failure, a
+        dead server), which both diagnosis and the user-facing error need.
+        """
+        if resp.is_success:
+            return
+        resp.read()  # streaming responses aren't read yet; a no-op for buffered ones
+        body = resp.text.strip()
+        # llama-server reports an oversize prompt/conversation as a 400 whose body
+        # carries the "exceed_context_size_error" type. Tag it CONTEXT_OVERFLOW with a
+        # user-facing message so the chat route returns a clean context_length_exceeded
+        # (400) instead of a generic internal_error -- a long conversation that fills
+        # the window then reads as "too long", not "Internal server error".
+        if resp.status_code == _HTTP_BAD_REQUEST and (
+            "exceed_context_size" in body.lower() or "context size" in body.lower()
+        ):
+            raise ProviderError(
+                "The conversation exceeds this model's context window. "
+                "Start a new conversation or shorten the input.",
+                provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.CONTEXT_OVERFLOW,
+            )
+        # llama-swap answers 429 once its concurrency limit for the model is reached.
+        # The swap config sizes that limit for several lilbee processes at full load,
+        # so a request past it is reported rather than re-sent into the same load.
+        if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
+            raise ProviderError(
+                "The model is busy with too many requests. Try again in a moment.",
+                provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.RATE_LIMIT,
+            )
+        kind = _classify_error(resp.status_code, body)
+        # llama-swap masks a dead server as "exited prematurely". The server's own
+        # captured output goes to the log (in _upstream_failure_tail) and decides the
+        # kind; the message the user sees stays one plain line.
+        if _UPSTREAM_DIED_MARKER in body:
+            classified = classify_upstream_death(_upstream_failure_tail(resp))
+            if classified is not None:
+                kind = classified
+            raise ProviderError(
+                _upstream_death_message(kind, resp.status_code, self.model_ref, self.engine_log),
+                provider=_PROVIDER_NAME,
+                kind=kind,
+            )
+        detail = f": {body[:600]}" if body else ""
+        raise ProviderError(
+            f"llama-server returned HTTP {resp.status_code}{detail}",
+            provider=_PROVIDER_NAME,
+            kind=kind,
+        )
 
     def mark_unhealthy(self) -> None:
         """Record a connection-level failure so the router skips this replica."""
@@ -690,7 +702,7 @@ class LlamaServerClient:
             resp = self._http.post(
                 _CHAT_PATH, json={**payload, "stream": False}, timeout=request_timeout
             )
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             # content is null for a refusal / content-filter stop / empty completion;
             # coerce to "" (like chat_result/chat_tools) so callers never see "None".
             return _inline_message_reasoning(
@@ -707,7 +719,7 @@ class LlamaServerClient:
                 "POST", _CHAT_PATH, json={**payload, "stream": True}, timeout=timeout
             ) as resp,
         ):
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             with self._abortable(resp):
                 for line in resp.iter_lines():
                     delta = inliner.feed(*_parse_sse_deltas(line))
@@ -769,7 +781,7 @@ class LlamaServerClient:
         async with http.stream("POST", _CHAT_PATH, json=payload) as resp:
             if not resp.is_success:
                 await resp.aread()
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             async for line in resp.aiter_lines():
                 parts.append(inliner.feed(*_parse_sse_deltas(line)))
         parts.append(inliner.finish())
@@ -800,7 +812,7 @@ class LlamaServerClient:
             payload["tool_choice"] = tool_choice
         with self._track():
             resp = self._http.post(_CHAT_PATH, json=payload)
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             message = resp.json()["choices"][0]["message"]
         content = _inline_message_reasoning(message, enabled=self._inline_reasoning)
         native = _parse_native_tool_calls(message.get("tool_calls"))
@@ -819,9 +831,10 @@ class LlamaServerClient:
         """Non-streaming chat returning text, tool calls, and a finish reason.
 
         The server is launched with ``--jinja`` so it parses the model's native
-        tool-call syntax into structured ``message.tool_calls``. When a model
-        instead emits a bare-JSON call as content (a native miss), recover it
-        and report ``tool_calls`` as the finish reason. Messages are reshaped to
+        tool-call syntax into structured ``message.tool_calls``. When a request
+        that offered tools gets a bare-JSON call as content (a native miss),
+        recover it and report ``tool_calls`` as the finish reason; without tools
+        a JSON answer is the answer. Messages are reshaped to
         strict alternation up front when this server's template needs it (see
         :meth:`_prepare_chat_messages`).
         """
@@ -830,7 +843,7 @@ class LlamaServerClient:
         )
         with self._track():
             resp = self._http.post(_CHAT_PATH, json=payload)
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             body = dict(resp.json())
         choice = body["choices"][0]
         usage = _usage_from_body(body) or TokenUsage()
@@ -845,8 +858,8 @@ class LlamaServerClient:
                 finish_reason=finish_reason,
                 usage=usage,
             )
-        recovered = _recover_bare_json_tool_calls(content)
-        if recovered.tool_calls:
+        recovered = _recover_bare_json_tool_calls(content) if tools else None
+        if recovered is not None and recovered.tool_calls:
             return ChatResult(
                 text=recovered.content,
                 tool_calls=tuple(recovered.tool_calls),
@@ -876,14 +889,15 @@ class LlamaServerClient:
         Not a generator: the up-front probe runs when this is called, not deferred
         to the first iteration, matching the eager non-stream paths.
 
-        A model that emits a tool call as bare-JSON text instead of native
-        ``tool_calls`` (a native miss, as on the non-stream paths) is recovered by
-        wrapping the raw frames; see :func:`_recover_bare_json_stream`.
+        When the request offered tools, a model that emits a tool call as
+        bare-JSON text instead of native ``tool_calls`` (a native miss, as on the
+        non-stream paths) is recovered by wrapping the raw frames; see
+        :func:`_recover_bare_json_stream`. Without tools the frames pass through
+        as they arrive.
         """
         prepared = self._prepare_chat_messages(messages)
-        return _recover_bare_json_stream(
-            self._open_chat_stream(prepared, tools, tool_choice, options)
-        )
+        stream = self._open_chat_stream(prepared, tools, tool_choice, options)
+        return _recover_bare_json_stream(stream) if tools else stream
 
     def _open_chat_stream(
         self,
@@ -891,7 +905,7 @@ class LlamaServerClient:
         tools: list[dict[str, Any]] | None,
         tool_choice: str | dict[str, Any] | None,
         options: dict[str, Any] | None,
-    ) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
+    ) -> Generator[str | ToolCallDelta | TokenUsage | StreamFinish]:
         """Open one SSE chat stream and yield its frames; raises before the first frame."""
         payload = self._chat_payload(messages, tools, tool_choice, options, stream=True)
         inliner = _ThinkInliner(enabled=self._inline_reasoning)
@@ -902,7 +916,7 @@ class LlamaServerClient:
                 self._track(),
                 self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
             ):
-                _raise_for_status(resp)
+                self._raise_for_status(resp)
                 with self._abortable(resp):
                     for line in resp.iter_lines():
                         if on_prefill is not None:
@@ -1016,7 +1030,7 @@ class LlamaServerClient:
                 resp = self._http.post(
                     _CHAT_PATH, json=payload, timeout=_ALTERNATION_PROBE_TIMEOUT_S
                 )
-                _raise_for_status(resp)
+                self._raise_for_status(resp)
         except (ProviderError, httpx.TransportError) as exc:
             return None if _is_transient_probe_failure(exc) else False
         return True
@@ -1130,10 +1144,10 @@ class LlamaServerClient:
         def _call() -> dict[str, Any]:
             with self._track():
                 resp = self._http.post(_CHAT_PATH, json=payload)
-                _raise_for_status(resp)
+                self._raise_for_status(resp)
                 return dict(resp.json())
 
-        return _llm_rerank_score(_first_token_top_logprobs(retry_on_busy(_call)))
+        return _llm_rerank_score(_first_token_top_logprobs(retry_on_gateway_error(_call)))
 
     def _embeddings_call(self, inputs: list[str]) -> list[dict[str, Any]]:
         """POST one already-budgeted sub-batch to ``/v1/embeddings``; return its data."""
@@ -1149,7 +1163,7 @@ class LlamaServerClient:
                         "encoding_format": _EMBED_ENCODING_FORMAT,
                     },
                 )
-                _raise_for_status(resp)
+                self._raise_for_status(resp)
                 data = resp.json()["data"]
             if len(data) != len(inputs):
                 raise ProviderError(
@@ -1158,20 +1172,7 @@ class LlamaServerClient:
                 )
             return list(data)
 
-        return self._with_busy_retry(_call)
-
-    def _with_busy_retry(self, call: Callable[[], _T]) -> _T:
-        """Run *call*, waiting out a cold replica on the embed cold-load budget.
-
-        Bulk ingest waits out a cold-start warmup rather than dropping files. With
-        a cold-load deadline (the EMBED-role client) the retry waits out a
-        still-loading replica for the full budget llama-swap keeps it alive,
-        instead of dropping the file after the fixed attempt cap; without one the
-        fixed count bounds an interactive caller.
-        """
-        if self._embed_busy_deadline_s is not None:
-            return retry_on_busy(call, deadline=time.monotonic() + self._embed_busy_deadline_s)
-        return retry_on_busy(call, retries=_EMBED_BUSY_RETRIES)
+        return retry_on_gateway_error(_call)
 
     def _truncate_and_subbatch(self, texts: list[str], *, estimate: bool) -> list[list[str]]:
         """Token-truncate over-cap inputs, then pack into server-sized sub-batches.
@@ -1180,7 +1181,7 @@ class LlamaServerClient:
         n_batch) is truncated to it via the server's tokenizer, since the server
         cannot split a pooled embedding sequence. Inputs are then grouped so each
         request stays within both the token budget and ``_EMBED_N_SEQ_MAX``
-        sequences, bounding per-request size and the busy-retry window. No cap
+        sequences, bounding per-request size and the gateway-retry window. No cap
         (chat/vision) sends a single batch untouched.
 
         When ``estimate`` is set the per-input token count comes from
@@ -1233,7 +1234,7 @@ class LlamaServerClient:
         return f"{_UPSTREAM_PREFIX}/{self._model}{suffix}"
 
     def _tokenize(self, text: str, *, parse_special: bool = _TOKENIZE_PARSE_SPECIAL) -> list[int]:
-        """Token ids for *text*; a cold replica is waited out like an embedding."""
+        """Token ids for *text*; a gateway error is retried like an embedding."""
 
         def _call() -> list[int]:
             resp = self._http.post(
@@ -1244,10 +1245,10 @@ class LlamaServerClient:
                     "parse_special": parse_special,
                 },
             )
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             return list(resp.json()["tokens"])
 
-        return self._with_busy_retry(_call)
+        return retry_on_gateway_error(_call)
 
     def count_tokens(self, text: str) -> int:
         """Number of tokens *text* encodes to under the server's tokenizer."""
@@ -1297,14 +1298,14 @@ class LlamaServerClient:
                 raise NotImplementedError(
                     f"This inference engine has no {_APPLY_TEMPLATE_PATH} route."
                 )
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             return str(resp.json()["prompt"])
 
-        return self._with_busy_retry(_call)
+        return retry_on_gateway_error(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
         resp = self._http.post(self._native_route(_DETOKENIZE_PATH), json={"tokens": tokens})
-        _raise_for_status(resp)
+        self._raise_for_status(resp)
         return str(resp.json()["content"])
 
     @contextlib.contextmanager

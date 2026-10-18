@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.catalog.refs import (
@@ -101,8 +102,12 @@ def agent_model_id(ref: str) -> str:
     The display label with spaces folded to hyphens so it is a single token an
     agent can pin and send back as the ``model`` field. ``known_models.resolve``
     maps it back to the ref when it is unambiguous, so the agent shows and routes
-    this id instead of the full GGUF path.
+    this id instead of the full GGUF path. An absolute path has no clean form
+    the lookup could map back, so it stays the id and the chat routes resolve it
+    as the file it names.
     """
+    if PurePosixPath(ref).is_absolute() or PureWindowsPath(ref).is_absolute():
+        return ref
     return display_label_for_ref(ref).replace(" ", "-")
 
 

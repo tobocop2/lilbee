@@ -27,11 +27,25 @@ from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
+from lilbee.providers.fleet.swap_manager import EngineLifetime
 from lilbee.providers.roles import RerankMode, WorkerRole
 from tests._exit_probe import assert_probe_exits
 
 _GB = 1024**3
 _real_plan_all_launches = planning_mod.plan_all_launches
+
+
+@pytest.fixture(autouse=True)
+def reaper_ensures(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record each bind's reaper check; a real one would launch a reaper process."""
+    asked: list[Path] = []
+
+    def _ensure(engine_dir: Path) -> bool:
+        asked.append(engine_dir)
+        return True
+
+    monkeypatch.setattr(prov_mod, "ensure_engine_reaper", _ensure)
+    return asked
 
 
 def _fake_client(in_flight: int = 0) -> MagicMock:
@@ -73,7 +87,7 @@ class _FakeSwap:
         self.ready: set[WorkerRole] = set()
         self.running = True
         self.bound = False  # bound to a shared engine (set by the adopt/bind path)
-        self.bound_lifetime = True  # spawned with the crash-orphan death binding
+        self.lifetime: EngineLifetime | None = None  # set by start()
         self.log_path = Path("/engine/logs/llama-swap-fake.log")
 
     def reap_stale(self) -> None:
@@ -81,7 +95,8 @@ class _FakeSwap:
 
     def start(self, launches: list, **kwargs: object) -> None:
         self.started.append(launches)
-        self.bound_lifetime = bool(kwargs.get("bind_lifetime", True))
+        self.lifetime = kwargs.get("lifetime")
+        self.ttl_seconds = kwargs.get("ttl_seconds")
         self.running = True
 
     def endpoint(self) -> str:
@@ -909,36 +924,6 @@ def test_adopt_group_threads_rerank_mode(monkeypatch) -> None:
     assert captured["rerank_mode"] is RerankMode.LLM
 
 
-def test_adopt_group_gives_embed_client_cold_load_deadline_only(monkeypatch) -> None:
-    # The EMBED client waits out a still-warming replica for the full cold-load
-    # budget (so a cold-start burst never drops files); rerank/chat/vision keep the
-    # short interactive attempt cap (deadline None). 6 GB loads well inside the
-    # embed floor, so the deadline is that floor.
-    weights = 6_000_000_000
-    launches = [
-        _fake_launch(WorkerRole.EMBED, weights_bytes=weights),
-        _fake_launch(WorkerRole.RERANK, weights_bytes=weights),
-    ]
-    for launch in launches:
-        launch.rerank_mode = None
-    captured: dict[WorkerRole, object] = {}
-
-    def _capture(_endpoint, model, **kw):
-        captured[model] = kw.get("embed_busy_deadline_s")
-        return _fake_client()
-
-    for launch in launches:
-        launch.model_id = launch.role
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
-    monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
-    monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
-    )
-    FleetProvider()._ensure_fleet()
-    assert captured[WorkerRole.EMBED] == 120
-    assert captured[WorkerRole.RERANK] is None
-
-
 def test_adopt_group_logs_the_embed_window_warning(monkeypatch) -> None:
     """Every serving process passes through adoption, so the window check fires there."""
     launch = _fake_launch(WorkerRole.EMBED)
@@ -1330,25 +1315,24 @@ def test_vision_ocr_request_body_carries_sampler_options(
     assert body["repeat_last_n"] == 64
 
 
-def test_vision_ocr_retries_busy_then_succeeds(monkeypatch) -> None:
-    # A 429 mid-ingest is transient (cold replicas, slot contention); the vision
-    # path must back off and retry so the page is ingested, not dropped.
+def test_vision_ocr_retries_a_gateway_error_then_succeeds(monkeypatch) -> None:
+    # A 502 mid-ingest is a replica restarting; the vision path backs off and
+    # retries so the page is ingested, not dropped.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
-    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
     client = _fake_client()
-    client.chat_abortable.side_effect = [busy, busy, "ocr text"]
+    client.chat_abortable.side_effect = [gateway, gateway, "ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
     assert client.chat_abortable.call_count == 3
 
 
-def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None:
-    # On a deep OCR queue the drain time exceeds the fixed attempt budget, so a
-    # 429'd image must keep retrying until its own deadline rather than being
-    # dropped after _VISION_BUSY_RETRIES attempts (bb-z34 regression).
+def test_vision_ocr_reports_a_429_after_one_request(monkeypatch) -> None:
+    # A 429 is llama-swap's concurrency limit, sized for several processes at
+    # full load, so the page fails with the busy error instead of adding to it.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
@@ -1356,14 +1340,34 @@ def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
     client = _fake_client()
-    client.chat_abortable.side_effect = [busy] * (prov_mod._VISION_BUSY_RETRIES + 5) + ["ocr text"]
+    client.chat_abortable.side_effect = [busy, "ocr text"]
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    with pytest.raises(ProviderError) as excinfo:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0)
+    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert client.chat_abortable.call_count == 1
+
+
+def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None:
+    # A replica that restarts for longer than the fixed attempt budget: the
+    # image keeps retrying until its own deadline rather than being dropped
+    # after _VISION_GATEWAY_RETRIES attempts (bb-z34 regression).
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    client = _fake_client()
+    retries = prov_mod._VISION_GATEWAY_RETRIES
+    client.chat_abortable.side_effect = [gateway] * (retries + 5) + ["ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0) == "ocr text"
-    assert client.chat_abortable.call_count == prov_mod._VISION_BUSY_RETRIES + 6
+    assert client.chat_abortable.call_count == retries + 6
 
 
 def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
-    # A fleet that never frees a slot fails the page once its deadline passes.
+    # A replica that never comes back fails the page once its deadline passes.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
@@ -1373,16 +1377,16 @@ def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     monkeypatch.setattr(cfg, "vision_load_budget_s", 0.0)  # deadline == the 20s timeout
 
-    def _busy(*_a, **_k):
+    def _gateway(*_a, **_k):
         clock["t"] += 5.0  # each attempt advances the clock toward the deadline
-        raise ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+        raise ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
 
     client = _fake_client()
-    client.chat_abortable.side_effect = _busy
+    client.chat_abortable.side_effect = _gateway
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError) as excinfo:
         p.vision_ocr(b"png", "org/repo/v.gguf", timeout=20.0)
-    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert excinfo.value.kind is ProviderErrorKind.SERVER
 
 
 def test_vision_ocr_deadline_passed_before_generation_raises_timeout(monkeypatch) -> None:
@@ -1807,7 +1811,12 @@ def test_dispatch_vision_failover_wait_stops_on_cancel() -> None:
 _EXITED_BODY = "llama-swap-error: [embed-0] upstream command exited prematurely"
 
 
-def _exited_embed_client(engine_log: Path | None) -> LlamaServerClient:
+_EXITED_MODEL = "acme/embed-GGUF/embed.gguf"
+
+
+def _exited_embed_client(
+    engine_log: Path | None, model_ref: str = _EXITED_MODEL
+) -> LlamaServerClient:
     """A real client whose proxy answers every embed with llama-swap's exit body."""
     import httpx as _httpx
 
@@ -1815,7 +1824,9 @@ def _exited_embed_client(engine_log: Path | None) -> LlamaServerClient:
         return _httpx.Response(500, text=_EXITED_BODY)
 
     http = _httpx.Client(transport=_httpx.MockTransport(_handler), base_url="http://swap")
-    return LlamaServerClient("http://swap", "embed-0", http=http, engine_log=engine_log)
+    return LlamaServerClient(
+        "http://swap", "embed-0", http=http, model_ref=model_ref, engine_log=engine_log
+    )
 
 
 def test_lone_replica_whose_engine_exited_names_the_death_and_the_log(monkeypatch) -> None:
@@ -1828,8 +1839,8 @@ def test_lone_replica_whose_engine_exited_names_the_death_and_the_log(monkeypatc
     with pytest.raises(ProviderError) as info:
         prov_mod._call_with_failover([client], lambda c: c.embed(["a"]))
     assert str(info.value) == (
-        "The model server process exited and is being restarted. No other replica "
-        f"is available to take the request. The engine log is {log}."
+        f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {log}."
     )
     assert info.value.kind is ProviderErrorKind.CONNECTION
 
@@ -1842,9 +1853,24 @@ def test_exited_engine_without_a_known_log_still_names_the_death(monkeypatch) ->
     with pytest.raises(ProviderError) as info:
         prov_mod._call_with_failover([_exited_embed_client(None)], lambda c: c.embed(["a"]))
     assert str(info.value) == (
-        "The model server process exited and is being restarted. "
-        "No other replica is available to take the request."
+        f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500)."
     )
+
+
+def test_lone_rerank_replica_whose_engine_exited_names_the_model_and_the_log(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
+    log = Path("/engine/logs/llama-swap-rerank.log")
+    client = _exited_embed_client(log)
+    with pytest.raises(ProviderError) as info:
+        prov_mod._call_with_failover([client], lambda c: c.rerank("q", ["a"]))
+    assert str(info.value) == (
+        f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {log}."
+    )
+    assert info.value.kind is ProviderErrorKind.CONNECTION
 
 
 def test_lone_unreachable_replica_keeps_the_not_responding_text() -> None:
@@ -1863,47 +1889,64 @@ def test_lone_unreachable_replica_keeps_the_not_responding_text() -> None:
     )
 
 
-def test_lone_vision_replica_whose_engine_exited_names_the_death() -> None:
-    from lilbee.providers.base import ProviderError
-
-    lone = _fake_client()
-    lone.engine_log = Path("/engine/logs/llama-swap-vision.log")
-    lone.chat.side_effect = ProviderError(
-        "llama-server returned HTTP 500", kind=ProviderErrorKind.CONNECTION
-    )
-    with pytest.raises(ProviderError, match=r"process exited and is being restarted") as info:
-        prov_mod._dispatch_vision(
-            [prov_mod._VisionReplica(lone, 1)],
-            lambda c: c.chat([], options={}, stream=False),
-        )
-    assert f"The engine log is {lone.engine_log}." in str(info.value)
-
-
-def test_embed_through_the_fleet_names_the_group_engine_log(monkeypatch) -> None:
-    # The product path: the fleet builds the embed client from its swap group, so
-    # the error a failed ingest records names that group's llama-swap log.
+def test_lone_vision_replica_whose_engine_exited_names_the_death(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError
     from lilbee.providers.fleet import client as client_mod
 
     monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
-    launch = _fake_launch(WorkerRole.EMBED, weights_bytes=_GB)
-    launch.model_id = "embed-0"
+    log = Path("/engine/logs/llama-swap-vision.log")
+    lone = _exited_embed_client(log)
+    with pytest.raises(ProviderError) as info:
+        prov_mod._dispatch_vision(
+            [prov_mod._VisionReplica(lone, 1)],
+            lambda c: c.embed(["a"]),
+        )
+    assert str(info.value) == (
+        f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {log}."
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "model_id", "call"),
+    [
+        pytest.param(WorkerRole.EMBED, "embed-0", lambda p: p.embed(["a"]), id="embed"),
+        pytest.param(WorkerRole.RERANK, "rerank-0", lambda p: p.rerank("q", ["a"]), id="rerank"),
+    ],
+)
+def test_request_through_the_fleet_names_the_model_and_the_engine_own_log(
+    engine_installed: Path, monkeypatch, role: WorkerRole, model_id: str, call
+) -> None:
+    # The product path: the fleet builds the client from its swap group, so the
+    # error a failed ingest or search records names that group's llama-swap log.
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
+    launch = _fake_launch(role, weights_bytes=_GB)
+    launch.model_id = model_id
     launch.rerank_mode = None
     swap = _FakeSwap()
     swap.log_path = Path("/engine/logs/llama-swap-embed.log")
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
+    monkeypatch.setattr(prov_mod, "_configured_model_for", lambda r: "m" if r is role else "")
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
     monkeypatch.setattr(
         planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
     )
     monkeypatch.setattr(
         prov_mod,
         "LlamaServerClient",
-        lambda _endpoint, _model, **kwargs: _exited_embed_client(kwargs["engine_log"]),
+        lambda _endpoint, _model, **kwargs: _exited_embed_client(
+            kwargs["engine_log"], kwargs["model_ref"]
+        ),
     )
     with pytest.raises(ProviderError) as info:
-        FleetProvider().embed(["a"])
-    assert "process exited and is being restarted" in str(info.value)
-    assert str(info.value).endswith(f"The engine log is {swap.log_path}.")
+        call(FleetProvider())
+    assert str(info.value).startswith(f"The engine for {launch.model} stopped")
+    assert str(info.value).endswith(
+        f"The full engine output is in {swap.log_path.parent / f'engine-{model_id}.log'}."
+    )
 
 
 def test_dispatch_vision_marks_second_replica_unhealthy_on_retry_failure() -> None:
@@ -2325,18 +2368,190 @@ def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
     p = FleetProvider()
     assert p.chat([{"role": "user", "content": "hi"}]).text == "ok"
     assert len(swap.started) == 1  # routing the first chat started the swap
-    assert swap.bound_lifetime is True  # bound by default so a crash cannot orphan it
+    # The machine slot has kernel locks, so the engine belongs to all its users.
+    assert swap.lifetime is EngineLifetime.USERS
 
 
-def test_keep_engine_warm_starts_the_swap_unbound(monkeypatch, tmp_path: Path) -> None:
-    """A warm engine must outlive lilbee, so it is spawned without the death binding."""
-    monkeypatch.setattr(cfg, "keep_engine_warm", True)
+@pytest.mark.parametrize(
+    ("keep_warm", "expected"),
+    [(False, EngineLifetime.USERS), (True, EngineLifetime.DETACHED)],
+)
+def test_a_build_on_kernel_locks_hands_the_engine_to_its_users_unless_kept_warm(
+    monkeypatch,
+    tmp_path: Path,
+    reaper_ensures: list[Path],
+    keep_warm: bool,
+    expected: EngineLifetime,
+) -> None:
+    """The reaper ends a shared engine; a keep-warm engine is detached and the reaper unloads it."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", keep_warm)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
     swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
 
     FleetProvider()._ensure_fleet()
 
-    assert swap.started  # the fleet was built
-    assert swap.bound_lifetime is False  # keep_engine_warm: not bound to this process
+    assert swap.started
+    assert swap.lifetime is expected
+    assert swap.ttl_seconds == (0 if keep_warm else 900)
+    # A kept-warm build confirms the reaper before it picks ttl 0, and again at the bind.
+    machine = prov_mod.machine_engine_dir()
+    assert reaper_ensures == ([machine, machine] if keep_warm else [machine])
+
+
+def test_a_kept_warm_build_without_a_reaper_keeps_the_idle_ttl(monkeypatch, tmp_path: Path) -> None:
+    """With no reaper to unload the weights, ttl 0 would leave them loaded after lilbee exits."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", True)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+    monkeypatch.setattr(prov_mod, "ensure_engine_reaper", lambda _d: False)
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+
+    FleetProvider()._ensure_fleet()
+
+    assert swap.lifetime is EngineLifetime.DETACHED
+    assert swap.ttl_seconds == 900
+
+
+def test_a_default_build_beside_a_peers_keep_warm_marker_gets_ttl_zero(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """The peer's reaper unloads the weights, so llama-swap's own idle timer must not."""
+    from lilbee.runtime.engine_lock import request_keep_warm
+
+    monkeypatch.setattr(cfg, "keep_engine_warm", False)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+    machine = prov_mod.machine_engine_dir()
+    request_keep_warm(machine, tmp_path / "peer-install", 5)
+
+    FleetProvider()._ensure_fleet()
+
+    assert swap.started
+    assert swap.ttl_seconds == 0
+    assert reaper_ensures == [machine, machine]
+
+
+def test_a_keep_warm_build_records_the_users_idle_minutes(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """A user who crashes leaves a marker; the reaper waits the minutes that user chose."""
+    from lilbee.runtime.engine_lock import keep_warm_idle_s
+
+    monkeypatch.setattr(cfg, "keep_engine_warm", True)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 30)
+    _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+
+    FleetProvider()._ensure_fleet()
+
+    # An unset marker would read as 12 minutes, so only a stored 30 gives 1800.
+    assert keep_warm_idle_s(prov_mod.machine_engine_dir(), unset_minutes=12) == 30 * 60
+
+
+@pytest.mark.parametrize(("peer_minutes", "expected_s"), [(5, 30 * 60), (45, 45 * 60)])
+def test_a_keep_warm_bind_beside_a_peer_marker_waits_the_longer_idle_time(
+    monkeypatch,
+    tmp_path: Path,
+    reaper_ensures: list[Path],
+    peer_minutes: int,
+    expected_s: int,
+) -> None:
+    """Binding a shared engine records this user's minutes; the longest opt-in decides."""
+    from lilbee.runtime.engine_lock import keep_warm_idle_s, request_keep_warm
+
+    _swap, machine = _bindable_machine(monkeypatch, tmp_path)
+    request_keep_warm(machine, tmp_path / "peer-install", peer_minutes)
+    monkeypatch.setattr(cfg, "keep_engine_warm", True)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 30)
+
+    provider = FleetProvider()
+    assert provider._ensure_fleet() is True
+
+    assert keep_warm_idle_s(machine, unset_minutes=12) == expected_s
+
+
+@pytest.mark.parametrize(
+    ("kernel_locks", "expected_ttl"),
+    [(True, 900), (False, 0)],
+)
+def test_a_session_hold_pins_weights_only_in_an_engine_bound_to_the_session(
+    monkeypatch, tmp_path: Path, kernel_locks: bool, expected_ttl: int
+) -> None:
+    """A shared engine outlives the TUI, so its ttl is the idle window, not the TUI's 0."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", False)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: kernel_locks)
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+    monkeypatch.setattr(prov_mod, "private_engine_dir", lambda _root: tmp_path / "private")
+
+    FleetProvider(hold_warm=True)._ensure_fleet()
+
+    assert swap.started
+    assert swap.ttl_seconds == expected_ttl
+
+
+@pytest.mark.parametrize(
+    ("keep_warm", "expected"),
+    [(False, EngineLifetime.BUILDER), (True, EngineLifetime.DETACHED)],
+)
+def test_a_build_without_kernel_locks_keeps_the_engine_with_its_builder(
+    monkeypatch, tmp_path: Path, keep_warm: bool, expected: EngineLifetime
+) -> None:
+    """Without trustworthy user locks nothing can count users, so the builder owns the engine."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", keep_warm)
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: False)
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+    monkeypatch.setattr(prov_mod, "private_engine_dir", lambda _root: tmp_path / "private")
+
+    FleetProvider()._ensure_fleet()
+
+    assert swap.started
+    assert swap.lifetime is expected
+
+
+def test_a_reload_restart_hands_the_engine_to_its_users(monkeypatch, tmp_path: Path) -> None:
+    """A group restarted by a reload is owned the same way a fresh build is."""
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)
+    fresh = _FakeSwap()
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: fresh)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+    )
+    p = FleetProvider()
+    p._swaps = {SwapGroup.CHAT: _FakeSwap()}
+    p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+
+    p._reload_pass()
+
+    assert len(fresh.started) == 1
+    assert fresh.lifetime is EngineLifetime.USERS
+
+
+def test_a_reload_restart_of_a_session_engine_takes_no_hold_when_shared(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A reload restarts the group with the same ttl rule as a fresh build."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", False)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)
+    fresh = _FakeSwap()
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: fresh)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+    )
+    p = FleetProvider(hold_warm=True)
+    p._swaps = {SwapGroup.CHAT: _FakeSwap()}
+    p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+
+    p._reload_pass()
+
+    assert fresh.ttl_seconds == 900
 
 
 def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
@@ -2684,6 +2899,87 @@ def test_warm_up_blocking_fails_with_the_engine_when_no_engine_resolves(monkeypa
     assert "lilbee[engine]" in (snap.error or "")
 
 
+def test_a_chat_load_failure_warm_text_carries_the_clients_plain_line(monkeypatch) -> None:
+    """The warm failure shows the client's own line unchanged after the plain prefix."""
+    from lilbee.providers.base import ProviderError
+
+    client = LlamaServerClient("http://127.0.0.1:1", "chat-0")
+    line = "The engine for acme/x stopped before it could answer (HTTP 500). Log: /l."
+
+    def _dies(*_args, **_kwargs):
+        raise ProviderError(line, kind=ProviderErrorKind.CONNECTION)
+
+    monkeypatch.setattr(client, "chat", _dies)
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+    p._warm_chat_role([client])
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.error == f"The chat model did not load: {line}"
+
+
+def _chat_that_cannot_load(monkeypatch, tmp_path: Path, argv: list[str]) -> FleetProvider:
+    """A provider whose chat engine dies on load, built through the fleet's own adopt path."""
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "unknown model architecture")
+    monkeypatch.setattr(cfg, "chat_model", "acme/bort-GGUF/unk-arch.gguf")
+    launch = _fake_launch(WorkerRole.CHAT, model="acme/bort-GGUF/unk-arch.gguf")
+    launch.model_id = "chat-0"
+    launch.argv = argv
+    swap = _FakeSwap()
+    swap.log_path = tmp_path / "logs" / "llama-swap-chat.log"
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
+    )
+
+    def _build(_endpoint, model, **kwargs):
+        def _handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                500, text="llama-swap-error: [chat-0] upstream command exited prematurely"
+            )
+
+        http = httpx.Client(transport=httpx.MockTransport(_handler), base_url="http://swap")
+        return LlamaServerClient("http://swap", model, http=http, **kwargs)
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _build)
+    return FleetProvider()
+
+
+def test_a_chat_request_into_a_model_that_cannot_load_names_the_model_and_its_engine_log(
+    monkeypatch, tmp_path
+) -> None:
+    """A request error and the warm text after it share one line with the model and its log."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = _chat_that_cannot_load(monkeypatch, tmp_path, ["llama-server"])
+    with pytest.raises(ProviderError) as info:
+        p.chat([{"role": "user", "content": "hi"}])
+    line = (
+        "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {tmp_path / 'logs' / 'engine-chat-0.log'}."
+    )
+    assert str(info.value) == line
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert snap.error == line
+
+
+def test_a_chat_request_names_no_log_for_an_engine_that_writes_none(monkeypatch, tmp_path) -> None:
+    """A launch that serves its numbers over HTTP has no engine log file, so none is named."""
+    from lilbee.providers.base import ProviderError
+
+    p = _chat_that_cannot_load(monkeypatch, tmp_path, ["llama-server", "--memory"])
+    with pytest.raises(ProviderError) as info:
+        p.chat([{"role": "user", "content": "hi"}])
+    assert str(info.value) == (
+        "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500)."
+    )
+
+
 def test_warm_up_blocking_fails_when_chat_model_not_installed(monkeypatch) -> None:
     """Chat model configured but not installed: the warm ends in a terminal ERROR
     naming the cause, so the prompt path renders 'failed to load' instead of an
@@ -2869,6 +3165,30 @@ def test_preload_serializes_roles_sharing_a_device(monkeypatch) -> None:
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
     p._preload_roles()
     assert order == ["embed", "chat"]
+
+
+def test_preload_starts_chat_only_after_the_card_mate_finished_loading(monkeypatch) -> None:
+    # The engine's fit reads free memory at load, so chat must not start loading
+    # while embed still allocates on the same card.
+    events: list[str] = []
+    chat, embed = _fake_client(), _fake_client()
+
+    def _embed(*_a, **_k):
+        events.append("embed-start")
+        time.sleep(0.05)
+        events.append("embed-ready")
+        return [[0.1]]
+
+    embed.embed.side_effect = _embed
+    chat.chat.side_effect = lambda *a, **k: (events.append("chat-start"), MagicMock())[1]
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    p._launches = {
+        SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
+        SwapGroup.EMBED: (_pinned_launch(WorkerRole.EMBED, "0"),),
+    }
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+    p._preload_roles()
+    assert events == ["embed-start", "embed-ready", "chat-start"]
 
 
 def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
@@ -4645,6 +4965,61 @@ def test_ladder_binds_to_a_matching_machine_engine(monkeypatch, tmp_path: Path) 
     assert list((machine / "engine-users").glob("*.lock"))
 
 
+def test_a_bind_makes_sure_a_reaper_watches_the_engine(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """A reaper that died is replaced by the next user that binds."""
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+
+    assert FleetProvider()._ensure_fleet() is True
+
+    assert len(swap.binds) == 1
+    assert reaper_ensures == [machine]
+
+
+def test_a_bind_to_a_kept_warm_engine_makes_sure_a_reaper_watches_it(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """The reaper unloads a kept-warm engine's weights once its last user leaves."""
+    from lilbee.runtime.engine_lock import request_keep_warm
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    request_keep_warm(machine, tmp_path / "other-install", 5)
+
+    assert FleetProvider()._ensure_fleet() is True
+
+    assert len(swap.binds) == 1
+    assert reaper_ensures == [machine]
+
+
+def test_a_bind_without_kernel_locks_starts_no_reaper(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """Without kernel locks no user is counted, so a reaper would stop an engine in use."""
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: False)
+
+    prov_mod._watch_bound_engine(tmp_path)
+
+    assert reaper_ensures == []
+
+
+def test_a_bind_reports_a_reaper_that_does_not_start(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(prov_mod, "ensure_engine_reaper", lambda _d: False)
+    with caplog.at_level(logging.WARNING, logger=prov_mod.__name__):
+        prov_mod._watch_bound_engine(tmp_path)
+    assert "No reaper watches the engine" in caplog.text
+
+
 def test_ladder_builds_into_the_machine_dir_when_slot_is_empty(monkeypatch, tmp_path: Path) -> None:
     swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
     p = FleetProvider()
@@ -4762,7 +5137,7 @@ def test_a_default_config_peer_leaving_last_keeps_a_warm_users_engine(
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
 
     # The warm user is a sibling installation, seeded under its own config root.
-    request_keep_warm(_machine, tmp_path / "peer-install")
+    request_keep_warm(_machine, tmp_path / "peer-install", 5)
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     plain = FleetProvider()
     assert plain._ensure_fleet() is True
@@ -4785,7 +5160,7 @@ def test_a_warm_peer_leaving_first_still_keeps_the_engine(monkeypatch, tmp_path:
     assert plain._ensure_fleet() is True
     # A sibling installation opted in and has already left: only its mark
     # remains, which is exactly what "outlive me" means.
-    request_keep_warm(_machine, tmp_path / "peer-install")
+    request_keep_warm(_machine, tmp_path / "peer-install", 5)
 
     plain.shutdown()  # last out, reading a config that says stop
     assert stopped == []
@@ -4846,7 +5221,7 @@ def test_stopping_an_engine_forgets_its_keep_warm_optin(tmp_path: Path) -> None:
     from lilbee.providers.fleet.swap_manager import stop_engine
     from lilbee.runtime.engine_lock import keep_warm_requested, request_keep_warm
 
-    request_keep_warm(tmp_path, tmp_path / "cfgroot")
+    request_keep_warm(tmp_path, tmp_path / "cfgroot", 5)
     assert keep_warm_requested(tmp_path) is True
     stop_engine(tmp_path)
     assert keep_warm_requested(tmp_path) is False
@@ -4897,7 +5272,7 @@ def test_a_prior_runs_keep_warm_is_reclaimed_when_the_setting_goes_off(
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     # An earlier run of this same installation opted in, then exited.
-    request_keep_warm(machine, prov_mod.cfg.data_root)
+    request_keep_warm(machine, prov_mod.cfg.data_root, 5)
     # A restarted run binds and releases under one pid, so the patch covers the
     # whole run. filelock 3.30+ no-ops release() when the pid moved mid-hold.
     restarted_pid = os.getpid() + 4242
@@ -4908,10 +5283,78 @@ def test_a_prior_runs_keep_warm_is_reclaimed_when_the_setting_goes_off(
     assert stopped == [machine]
 
 
-def test_ttl_applies_with_warm_off(monkeypatch) -> None:
+def _hold_reporting(last: bool) -> MagicMock:
+    """A user-lock stand-in whose release reports whether this user was the last."""
+    hold = MagicMock()
+    hold.release_and_check_last.return_value = last
+    return hold
+
+
+@pytest.mark.parametrize(
+    ("last", "peer_keeps_warm", "expect_watch"),
+    [(False, False, True), (False, True, True), (True, False, False)],
+    ids=["peers-remain", "peer-still-wants-warm", "last-user-out"],
+)
+def test_withdrawing_keep_warm_makes_sure_the_remaining_users_have_a_reaper(
+    monkeypatch,
+    tmp_path: Path,
+    reaper_ensures: list[Path],
+    last: bool,
+    peer_keeps_warm: bool,
+    expect_watch: bool,
+) -> None:
+    """A user that drops its opt-in and leaves must not strand a detached engine."""
+    from lilbee.runtime.engine_lock import request_keep_warm
+
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    request_keep_warm(tmp_path, prov_mod.cfg.data_root, 5)
+    if peer_keeps_warm:
+        request_keep_warm(tmp_path, tmp_path / "peer-install", 5)
+    p = FleetProvider()
+    p._engine_holds = {tmp_path: _hold_reporting(last)}
+
+    p.shutdown()
+
+    assert reaper_ensures == ([tmp_path] if expect_watch else [])
+
+
+def test_the_last_user_out_of_a_keep_warm_engine_leaves_a_reaper_to_unload_it(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """The engine stays up for the next launch; its reaper unloads the weights when idle."""
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p = FleetProvider()
+    p._engine_holds = {tmp_path: _hold_reporting(True)}
+
+    p.shutdown()
+
+    assert stopped == []
+    assert reaper_ensures == [tmp_path]
+
+
+def test_a_config_change_that_keeps_peers_does_not_start_a_reaper(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """Only a withdrawn opt-in changes who watches the engine; a restart does not."""
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    p = FleetProvider()
+    p._engine_holds = {tmp_path: _hold_reporting(False)}
+
+    p._release_engines(config_changed=True)
+
+    assert reaper_ensures == []
+
+
+def test_ttl_applies_with_warm_off(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
-    assert prov_mod._warm_ttl_seconds() == 420
+    assert prov_mod._warm_ttl_seconds(EngineLifetime.BUILDER, tmp_path) == 420
 
 
 def test_shutdown_latches_regardless_of_warm(monkeypatch, tmp_path: Path) -> None:
@@ -5224,6 +5667,62 @@ def test_ladder_adopts_a_warm_engine_planned_with_a_different_ctx_target(
         assert swap.started == [] and stopped == []  # never restarted it
     finally:
         holder.release_and_check_last()
+
+
+def _ladder_against_live_chat_engine(
+    monkeypatch, tmp_path: Path, recorded_pin: str
+) -> tuple[_BindableSwap, Path, list[Path], list[Path]]:
+    """Run this lilbee's ladder against a live chat engine recorded with *recorded_pin*."""
+    from lilbee.providers.fleet import binary as binary_mod
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, built = _install_ladder(
+        monkeypatch, tmp_path, launches=[_chat_launch()], pin=binary_mod.engine_pin()
+    )
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin=recorded_pin, model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # the other process still serves from it
+    monkeypatch.setattr(cfg, "data_root", tmp_path / "root", raising=False)
+    try:
+        assert FleetProvider()._ensure_fleet() is True
+    finally:
+        holder.release_and_check_last()
+    return swap, machine, built, stopped
+
+
+def test_ladder_does_not_adopt_an_engine_started_with_an_older_swap_config(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """An engine recorded without the swap-config revision is never bound.
+
+    An older lilbee wrote no concurrency limit, so llama-swap's default of 10
+    answers a full ingest pool with 429s. The ladder takes the pin-mismatch
+    path: the engine in use is left running and this process overflows.
+    """
+    from lilbee.providers.fleet import binary as binary_mod
+
+    older_pin = f"{binary_mod.engine_build_id()}|{binary_mod._load_config_signature()}"
+    swap, machine, built, stopped = _ladder_against_live_chat_engine(
+        monkeypatch, tmp_path, older_pin
+    )
+    assert swap.binds == []
+    assert stopped == []
+    assert built and machine not in built
+
+
+def test_ladder_adopts_an_engine_started_by_the_same_lilbee(monkeypatch, tmp_path: Path) -> None:
+    """A second process of this lilbee binds the engine the first one started."""
+    from lilbee.providers.fleet import binary as binary_mod
+
+    swap, _machine, _built, stopped = _ladder_against_live_chat_engine(
+        monkeypatch, tmp_path, binary_mod.engine_pin()
+    )
+    assert len(swap.binds) == 1
+    assert swap.started == [] and stopped == []
 
 
 def test_ladder_restarts_when_the_demand_exceeds_the_live_window(
@@ -5904,6 +6403,7 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
             client = mock.MagicMock(spec=LlamaServerClient)
             client.healthy = True
             client.index = i
+            client.engine_log = None
             made.append(client)
         return made, failing
 

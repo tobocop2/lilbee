@@ -1468,7 +1468,32 @@ class TestGenerationOptions:
             assert mock_svc.provider.chat.call_args[1]["options"] == {"temperature": 0.7}
         finally:
             cfg.temperature = None
-            cfg.max_tokens = 4096
+            cfg.max_tokens = None
+
+    def test_ask_raw_sends_no_answer_cap_by_default(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        cfg.temperature = 0.7
+        try:
+            get_services().searcher.ask_raw("q")
+            assert mock_svc.provider.chat.call_args[1]["options"] == {
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "top_k": 40,
+                "repeat_penalty": 1.1,
+            }
+        finally:
+            cfg.temperature = None
+
+    def test_ask_raw_sends_the_user_answer_cap(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        cfg.max_tokens = 2048
+        try:
+            get_services().searcher.ask_raw("q")
+            assert mock_svc.provider.chat.call_args[1]["options"]["num_predict"] == 2048
+        finally:
+            cfg.max_tokens = None
 
     def test_ask_stream_passes_options(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]

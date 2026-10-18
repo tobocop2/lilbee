@@ -109,6 +109,45 @@ class CanonicalChatRequest:
     # Thinking-template control (chat_template_kwargs.enable_thinking); None
     # leaves the model's template default in place.
     think: bool | None = None
+    # Image parts the wire request carried and the translator dropped.
+    dropped_images: int = 0
+
+
+IMAGES_ONLY_MESSAGE = (
+    "The request holds only image content, and lilbee cannot pass images to the model. "
+    "Send text with the request."
+)
+
+
+# Tells the client how many image parts the server dropped from its request.
+IMAGES_DROPPED_HEADER = "X-Lilbee-Images-Dropped"
+
+
+def images_dropped_headers(req: CanonicalChatRequest) -> dict[str, str]:
+    """Response headers that report the images dropped from *req*, or none."""
+    if not req.dropped_images:
+        return {}
+    return {IMAGES_DROPPED_HEADER: str(req.dropped_images)}
+
+
+def _blocks_carry_content(blocks: list[ContentBlock]) -> bool:
+    for block in blocks:
+        if isinstance(block, TextBlock) and block.text:
+            return True
+        if isinstance(block, ToolUseBlock):
+            return True
+        if isinstance(block, ToolResultBlock) and _blocks_carry_content(block.content):
+            return True
+    return False
+
+
+def require_content_beside_images(req: CanonicalChatRequest) -> CanonicalChatRequest:
+    """Return *req*, or raise ``ValueError`` when dropping its images left nothing to read."""
+    if req.dropped_images and not req.system:
+        carries_content = any(_blocks_carry_content(m.content) for m in req.messages)
+        if not carries_content:
+            raise ValueError(IMAGES_ONLY_MESSAGE)
+    return req
 
 
 @dataclass(frozen=True)
