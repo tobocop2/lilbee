@@ -189,6 +189,10 @@ class TestUrlToFilename:
         url = "https://example.com/" + "a" * length
         assert url_to_filename(url) == _named("example.com/" + "a" * kept, url)
 
+    def test_a_cut_that_leaves_a_dash_at_the_end_drops_the_dash(self):
+        url = "https://example.com/" + "a" * 98 + "-_bb"
+        assert url_to_filename(url) == _named("example.com/" + "a" * 98, url)
+
     def test_the_host_folder_stays_when_a_device_name_takes_a_mark_at_99_bytes(self):
         host = "h" * 75 + ".test"
         url = f"https://{host}/con." + "b" * 95 + ".x"
