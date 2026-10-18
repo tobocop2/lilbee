@@ -761,7 +761,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=True,
         group=SettingGroup.CRAWLING,
-        help_text="Optional recursion-depth cap (blank = no cap; per-crawl values win)",
+        help_text="Optional recursion-depth cap, 0 to 100 (blank = no cap; per-crawl values win)",
     ),
     "crawl_render_mode": SettingDef(
         str,
@@ -818,15 +818,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=True,
         group=SettingGroup.CRAWLING,
-        help_text="Optional global cap on total pages per crawl (blank = no cap).",
+        help_text="Optional global cap on total pages per crawl, 1 to 10000000 (blank = no cap).",
     ),
     "crawl_safety_max_pages": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text="Default page bound for an unbounded crawl, so a hostile site cannot "
-        "exhaust the disk. An explicit max-pages overrides it; raise this to crawl "
-        "larger sites unbounded.",
+        "exhaust the disk, 1 to 10000000. An explicit max-pages overrides it; raise this "
+        "to crawl larger sites unbounded.",
     ),
     "crawl_timeout": SettingDef(
         int,
@@ -844,19 +844,19 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Seconds between in-flight requests within a single crawl",
+        help_text="Seconds between in-flight requests within a single crawl, 0 to 3600",
     ),
     "crawl_max_delay_range": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Random jitter (seconds) added on top of mean delay",
+        help_text="Random jitter (seconds) added on top of mean delay, 0 to 3600",
     ),
     "crawl_concurrent_requests": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Concurrent in-flight URLs within one crawl",
+        help_text="Concurrent in-flight URLs within one crawl, 1 to 256",
     ),
     "crawl_retry_on_rate_limit": SettingDef(
         bool,
@@ -869,8 +869,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text=(
-            "Base delay range, low end (seconds). The first retry waits halfway between"
-            " the low and high end, and each later retry waits twice as long"
+            "Base delay range, low end (seconds, 0 to 3600). The first retry waits halfway"
+            " between the low and high end, and each later retry waits twice as long"
         ),
     ),
     "crawl_retry_base_delay_max": SettingDef(
@@ -878,15 +878,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text=(
-            "Base delay range, high end (seconds). The first retry waits halfway between"
-            " the low and high end, and each later retry waits twice as long"
+            "Base delay range, high end (seconds, 0 to 3600). The first retry waits halfway"
+            " between the low and high end, and each later retry waits twice as long"
         ),
     ),
     "crawl_retry_max_backoff": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Upper bound on any single backoff wait (seconds)",
+        help_text="Upper bound on any single backoff wait (seconds, 0 to 3600)",
     ),
     "crawl_retry_max_attempts": SettingDef(
         int,
