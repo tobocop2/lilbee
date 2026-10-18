@@ -789,7 +789,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Browser mode: milliseconds to wait after a page loads before reading it, "
             "for sites that draw their text late. Raise it when a page's text is missing; "
-            "0 = no extra wait. http mode ignores it."
+            "0 = no extra wait, at most 600000 (ten minutes). http mode ignores it."
         ),
     ),
     "crawl_user_agent": SettingDef(
@@ -832,7 +832,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Per-page fetch timeout in seconds",
+        help_text="Per-page fetch timeout in seconds, 1 to 3600",
     ),
     "crawl_sync_interval": SettingDef(
         int,

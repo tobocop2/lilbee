@@ -2386,7 +2386,8 @@ def _oversized_number(config: cb.Recorded) -> str | None:
 
 
 def _oversized_setting() -> None:
-    cfg.crawl_timeout = OVERSIZED_TIMEOUT
+    """Force the timeout past its bound, which no entry point lets through, to reach the engine."""
+    object.__setattr__(cfg, "crawl_timeout", OVERSIZED_TIMEOUT)
 
 
 def _refuse_or_overflow(config: cb.Recorded) -> str | None:

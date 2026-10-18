@@ -694,8 +694,8 @@ class Config(BaseSettings):
     )
 
     # Milliseconds a browser-mode crawl waits after a page loads before reading it, for
-    # text a script writes late. 0 = no extra wait. HTTP mode ignores it.
-    crawl_browser_extra_wait_ms: int = ConfigField(default=1000, ge=0, writable=True)
+    # text a script writes late. 0 = no extra wait, at most ten minutes. HTTP mode ignores it.
+    crawl_browser_extra_wait_ms: int = ConfigField(default=1000, ge=0, le=600_000, writable=True)
 
     # The user agent of every crawl request. Blank = no override: a browser crawl
     # sends Chrome's own, an HTTP crawl crawlberg's, the sitemap lookup httpx's.
@@ -715,7 +715,7 @@ class Config(BaseSettings):
     crawl_safety_max_pages: int = ConfigField(default=5_000, ge=1, writable=True)
 
     # Per-URL fetch timeout, seconds.
-    crawl_timeout: int = ConfigField(default=30, ge=1, writable=True)
+    crawl_timeout: int = ConfigField(default=30, ge=1, le=3600, writable=True)
 
     # 0 = unlimited, default = CPU count.
     crawl_max_concurrent: int = Field(
