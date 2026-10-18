@@ -164,6 +164,32 @@ SAVED_NAMES = [
 ]
 
 
+class TestCrawlLimitError:
+    @pytest.mark.parametrize(
+        ("depth", "max_pages", "name"),
+        [
+            (-1, None, "depth"),
+            (-5, 0, "depth"),
+            (101, None, "depth"),
+            (None, -1, "max_pages"),
+            (0, -5, "max_pages"),
+            (None, 10_000_001, "max_pages"),
+        ],
+    )
+    def test_a_value_outside_the_bounds_names_its_setting(self, depth, max_pages, name):
+        from lilbee.crawler.models import crawl_limit_error
+
+        assert name in (crawl_limit_error(depth, max_pages) or "")
+
+    @pytest.mark.parametrize(
+        ("depth", "max_pages"), [(None, None), (0, 0), (100, 10_000_000), (1, 1)]
+    )
+    def test_a_value_inside_the_bounds_is_accepted(self, depth, max_pages):
+        from lilbee.crawler.models import crawl_limit_error
+
+        assert crawl_limit_error(depth, max_pages) is None
+
+
 class TestUrlToFilename:
     @pytest.mark.parametrize(("url", "readable"), SAVED_NAMES)
     def test_an_address_is_saved_under_its_readable_name_and_hash(self, url: str, readable: str):

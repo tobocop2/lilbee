@@ -14,11 +14,11 @@ CRAWL_PAGES_UNLIMITED = 0
 
 
 def crawl_limit_error(depth: int | None, max_pages: int | None) -> str | None:
-    """The message for a per-crawl depth or page count above the shared bounds, else None."""
-    if depth is not None and depth > MAX_CRAWL_DEPTH:
-        return f"depth must be at most {MAX_CRAWL_DEPTH}"
-    if max_pages is not None and max_pages > MAX_CRAWL_PAGES:
-        return f"max_pages must be at most {MAX_CRAWL_PAGES}"
+    """The message for a per-crawl depth or page count outside the shared bounds, else None."""
+    if depth is not None and not 0 <= depth <= MAX_CRAWL_DEPTH:
+        return f"depth must be between 0 and {MAX_CRAWL_DEPTH} (omit it to crawl the whole site)"
+    if max_pages is not None and not 0 <= max_pages <= MAX_CRAWL_PAGES:
+        return f"max_pages must be between 0 and {MAX_CRAWL_PAGES} (0 = unlimited)"
     return None
 
 

@@ -517,12 +517,6 @@ async def crawl(
     ``null`` = whole site. ``render_mode``: "http"/"browser"."""
     if not crawler_available():
         return _error(CRAWLER_MISSING_MESSAGE)
-    # Mirror the REST CrawlRequest bounds so a negative value is a clean error,
-    # not an unbounded crawl.
-    if depth is not None and depth < 0:
-        return _error("depth must be 0 or greater (pass depth=null to crawl the whole site)")
-    if max_pages is not None and max_pages < 0:
-        return _error("max_pages must be 0 or greater (0 = unlimited, omit for the safety cap)")
     if (too_large := crawl_limit_error(depth, max_pages)) is not None:
         return _error(too_large)
     try:
