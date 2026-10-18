@@ -94,7 +94,7 @@ dependencies = [
 # specifier names a pre-release, to let plain `pip` resolve the beta-versioned
 # wheels without `--pre`.
 engine = ["lilbee-engine>=0.6.90b1"]
-liter-llm = ["liter-llm>=2.2.4,<3"]
+providers = ["liter-llm>=2.2.4,<3"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 # Floor for transitive soupsieve (crawl4ai -> beautifulsoup4 -> soupsieve):
 # 2.9.0 fixes GHSA-j934-xhv5-fg8f and GHSA-gjv8-xp57-g29c. beautifulsoup4 asks
@@ -110,7 +110,7 @@ cuda12 = [
     "nvidia-cublas-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
     "nvidia-cuda-nvrtc-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
-release = ["lilbee[crawler,liter-llm,graph]"]
+release = ["lilbee[crawler,providers,graph]"]
 
 [project.urls]
 Homepage = "https://lilbee.sh/"
@@ -133,8 +133,8 @@ build-backend = "hatchling.build"
 packages = ["src/lilbee"]
 
 [tool.uv]
-# crawl4ai requires unclecode-litellm, a fork that installs into the same litellm/
-# directory as litellm itself; excluding it leaves litellm the only owner.
+# crawl4ai requires unclecode-litellm, a LiteLLM fork lilbee never imports.
+# Excluding it keeps LiteLLM out of the install.
 exclude-dependencies = ["unclecode-litellm"]
 
 # Dev resolves the bundled engine from the in-repo wheel package; CI fills its
@@ -192,7 +192,7 @@ timeout = 60
 markers = [
     "slow: integration tests that download models or take >10s",
     "real_model_classify: opt out of the global _classify_installed_models mock",
-    "real_litellm_probe: opt out of the global litellm_available True override",
+    "real_remote_sdk_probe: opt out of the global remote_sdk_available True override",
     "real_engine_resolution: opt out of the engine-binary seal (host PATH and LILBEE_LLAMA_SERVER_PATH resolve again)",
     "xdist_group: pin grouped tests to a single xdist worker for serial execution",
     "no_health_default: opt out of the launch tests' default-healthy fixture",

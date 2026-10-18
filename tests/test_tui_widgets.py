@@ -4647,13 +4647,13 @@ class TestCollectNativeModelsError:
         assert buckets["chat"][0].label == "gpt-4o (OpenAI)"
         assert buckets["chat"][0].ref == "openai/gpt-4o"
 
-    def test_collect_remote_models_skipped_when_litellm_missing(
+    def test_collect_remote_models_skipped_when_providers_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Without the SDK extra the picker can't route to remote models, so skip discovery."""
         from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
 
-        monkeypatch.setattr("lilbee.providers.liter_llm_sdk.liter_llm_available", lambda: False)
+        monkeypatch.setattr("lilbee.providers.remote_sdk.remote_sdk_available", lambda: False)
         buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
         seen: set[str] = set()
         with mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models") as classify:
@@ -4661,13 +4661,13 @@ class TestCollectNativeModelsError:
         classify.assert_not_called()
         assert buckets["chat"] == []
 
-    def test_collect_api_models_skipped_when_litellm_missing(
+    def test_collect_api_models_skipped_when_providers_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """API discovery is gated on the same SDK availability."""
         from lilbee.cli.tui.widgets.model_bar import _collect_api_models
 
-        monkeypatch.setattr("lilbee.providers.liter_llm_sdk.liter_llm_available", lambda: False)
+        monkeypatch.setattr("lilbee.providers.remote_sdk.remote_sdk_available", lambda: False)
         buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
         seen: set[str] = set()
         with mock.patch("lilbee.modelhub.model_manager.discover_api_models") as discover:

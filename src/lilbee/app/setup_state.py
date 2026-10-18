@@ -24,7 +24,7 @@ def _role_ready(model: str) -> bool:
     """Whether *model* can serve. Empty means unconfigured: not ready, not an error.
 
     Remote-prefixed refs (ollama/lm_studio/API) are validated against current
-    state instead of probed on disk: an ``ollama/`` ref whose liter-llm extra is
+    state instead of probed on disk: an ``ollama/`` ref whose providers extra is
     missing or whose server is down is unusable. Does disk reads and, for
     local-server refs, an HTTP probe, so callers run it off the UI thread.
     """

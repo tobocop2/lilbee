@@ -925,7 +925,7 @@ class TestAskStream:
         mock_svc.provider.chat.side_effect = ProviderError(
             "gemini/m is rate-limited or out of quota. That's a limit on your "
             "provider API key, not a lilbee problem.",
-            provider="litellm",
+            provider="remote",
             kind=ProviderErrorKind.RATE_LIMIT,
         )
         events = [e async for e in handlers.ask_stream("question")]
@@ -943,7 +943,7 @@ class TestAskStream:
         # An UNKNOWN-kind ProviderError still surfaces its message, with no code.
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.side_effect = ProviderError(
-            "Chat failed: something odd", provider="litellm"
+            "Chat failed: something odd", provider="remote"
         )
         events = [e async for e in handlers.ask_stream("question")]
 
@@ -1562,7 +1562,7 @@ class TestChatStream:
             async def _gen():
                 raise ProviderError(
                     "gemini/m rejected your API key.",
-                    provider="litellm",
+                    provider="remote",
                     kind=ProviderErrorKind.AUTH,
                 )
                 yield  # pragma: no cover
@@ -2687,7 +2687,7 @@ class TestSetChatModel:
         Frontier models surface through ``discover_api_models`` (a per-key
         listing), NOT ``provider.list_models()``, so the bare name is absent
         from the routable set the validator checks. The ref is accepted because
-        the Gemini key is configured (litellm validates the exact name at call
+        the Gemini key is configured (the SDK validates the exact name at call
         time), and the ``gemini/`` prefix is persisted verbatim so it routes to
         the provider. (The bare name is deliberately NOT in ``list_models`` here
         so the test exercises the real path rather than a happy-path mock.)
@@ -3357,10 +3357,10 @@ class TestModelsCatalog:
     async def test_installed_reflects_registry_not_routing_provider(
         self, mock_get_catalog, mock_svc
     ):
-        """installed flag must reflect on-disk GGUFs only, not litellm routability.
+        """installed flag must reflect on-disk GGUFs only, not remote routability.
 
         The routing provider's ``list_models()`` can include models that are
-        routable via litellm proxies but have no GGUF on disk. The catalog's
+        routable via remote providers but have no GGUF on disk. The catalog's
         ``installed`` field should only be True when a ModelManifest exists
         in the registry for that ref.
         """
@@ -3404,7 +3404,7 @@ class TestModelsCatalog:
                 downloaded_at="2026-01-01T00:00:00+00:00",
             )
         ]
-        # Routing provider also claims mistral is routable (litellm proxy),
+        # Routing provider also claims mistral is routable (remote provider),
         # but its GGUF is not on disk.
         mock_svc.provider.list_models.return_value = [
             "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",

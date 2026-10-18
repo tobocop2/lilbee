@@ -6767,7 +6767,7 @@ class TestSelfCheckExtras:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload == {
             "ok": True,
-            "litellm": True,
+            "providers": True,
             "crawl4ai": True,
             "spacy": True,
             "graspologic_native": True,
@@ -6779,7 +6779,7 @@ class TestSelfCheckExtras:
         chardet.models import that frozen builds have shipped broken.
 
         Calls the probe directly rather than the command: the unmocked
-        command imports the known-heavy extras (crawl4ai, litellm, spacy),
+        command imports the known-heavy extras (crawl4ai, providers, spacy),
         and a real crawl4ai import leaves its submodules in sys.modules,
         which breaks the crawler tests' top-level-only module injection.
         """
@@ -6857,7 +6857,7 @@ class TestSelfCheckExtras:
         assert result.exit_code == 1, result.output
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload["ok"] is False
-        assert payload["litellm"] is True
+        assert payload["providers"] is True
         assert payload["crawl4ai"] is False
         assert "crawl4ai_error" in payload
         assert payload["spacy"] is True

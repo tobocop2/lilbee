@@ -14,6 +14,8 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.remote_sdk import SDK_DIST, SDK_MODULE
+from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
 from tests._gguf_fixture import has_gguf_parser
 from tests._sys_modules import inject_modules
@@ -241,18 +243,18 @@ class TestRoutingProvider:
         self._to_shutdown.append(rp)
         return rp
 
-    def test_routes_chat_to_litellm_for_api_model(self) -> None:
+    def test_routes_chat_to_sdk_for_api_model(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.chat.return_value = "hello"
-        rp._sdk_provider = mock_litellm
+        mock_sdk = mock.MagicMock()
+        mock_sdk.chat.return_value = "hello"
+        rp._sdk_provider = mock_sdk
 
         result = rp.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
         assert result == "hello"
-        mock_litellm.chat.assert_called_once()
+        mock_sdk.chat.assert_called_once()
         # Default stream=False path resolves to the str overload in
         # RoutingProvider.chat; the call must reach the backend with stream=False.
-        kwargs = mock_litellm.chat.call_args.kwargs
+        kwargs = mock_sdk.chat.call_args.kwargs
         assert kwargs["stream"] is False
 
     def test_supports_tools_delegates_to_sdk_backend_for_remote_ref(self) -> None:
@@ -304,31 +306,31 @@ class TestRoutingProvider:
         assert rp.warm_progress() is snapshot
         mock_local.warm_progress.assert_called_once_with()
 
-    def test_routes_chat_to_litellm_for_ollama_model(self) -> None:
+    def test_routes_chat_to_sdk_for_ollama_model(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.chat.return_value = "hello"
-        rp._sdk_provider = mock_litellm
+        mock_sdk = mock.MagicMock()
+        mock_sdk.chat.return_value = "hello"
+        rp._sdk_provider = mock_sdk
 
         result = rp.chat([{"role": "user", "content": "hi"}], model="ollama/qwen3:8b")
         assert result == "hello"
-        mock_litellm.chat.assert_called_once()
+        mock_sdk.chat.assert_called_once()
 
     def test_routes_chat_with_stream_true_resolves_iterator_overload(self) -> None:
         """stream=True hits the Literal[True] overload and forwards stream=True."""
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
+        mock_sdk = mock.MagicMock()
 
         def _stream_chunks() -> object:
             yield "hello"
             yield " world"
 
-        mock_litellm.chat.return_value = _stream_chunks()
-        rp._sdk_provider = mock_litellm
+        mock_sdk.chat.return_value = _stream_chunks()
+        rp._sdk_provider = mock_sdk
 
         result = rp.chat([{"role": "user", "content": "hi"}], stream=True, model="openai/gpt-4o")
         assert list(result) == ["hello", " world"]  # type: ignore[arg-type]
-        kwargs = mock_litellm.chat.call_args.kwargs
+        kwargs = mock_sdk.chat.call_args.kwargs
         assert kwargs["stream"] is True
 
     def test_remote_chat_does_not_touch_n_ctx_resolution(self) -> None:
@@ -339,9 +341,9 @@ class TestRoutingProvider:
         llama-cpp ctx picker we want this test to fail.
         """
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.chat.return_value = "ok"
-        rp._sdk_provider = mock_litellm
+        mock_sdk = mock.MagicMock()
+        mock_sdk.chat.return_value = "ok"
+        rp._sdk_provider = mock_sdk
 
         with mock.patch("lilbee.providers.engine_params.resolve_chat_ctx") as resolve_ctx:
             rp.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
@@ -352,9 +354,9 @@ class TestRoutingProvider:
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_llama.vision_ocr.return_value = "page text"
-        mock_litellm = mock.MagicMock()
+        mock_sdk = mock.MagicMock()
         rp._local = mock_llama
-        rp._sdk_provider = mock_litellm
+        rp._sdk_provider = mock_sdk
 
         result = rp.vision_ocr(
             b"\x89PNG", "noctrex/LightOnOCR-2-1B-GGUF/LightOnOCR-2-1B-Q4_K_M.gguf", "ocr"
@@ -367,20 +369,20 @@ class TestRoutingProvider:
             timeout=None,
             cancel=None,
         )
-        mock_litellm.vision_ocr.assert_not_called()
+        mock_sdk.vision_ocr.assert_not_called()
 
-    def test_routes_vision_ocr_to_litellm_for_ollama_ref(self) -> None:
+    def test_routes_vision_ocr_to_sdk_for_ollama_ref(self) -> None:
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.vision_ocr.return_value = "remote text"
+        mock_sdk = mock.MagicMock()
+        mock_sdk.vision_ocr.return_value = "remote text"
         rp._local = mock_llama
-        rp._sdk_provider = mock_litellm
+        rp._sdk_provider = mock_sdk
 
         cancel = threading.Event()
         result = rp.vision_ocr(b"\x89PNG", "ollama/llava:7b", "ocr", timeout=30.0, cancel=cancel)
         assert result == "remote text"
-        mock_litellm.vision_ocr.assert_called_once_with(
+        mock_sdk.vision_ocr.assert_called_once_with(
             b"\x89PNG", "ollama/llava:7b", "ocr", timeout=30.0, cancel=cancel
         )
         mock_llama.vision_ocr.assert_not_called()
@@ -391,7 +393,7 @@ class TestRoutingProvider:
         The routing is strict: a ``<org>/<repo>/<file>.gguf`` shape means
         native. If the registry doesn't have the model, the local engine
         raises its own 'not installed' error; routing never falls through
-        to litellm.
+        to the SDK provider.
         """
         rp = self._make_provider()
 
@@ -409,26 +411,26 @@ class TestRoutingProvider:
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_llama.chat.return_value = "local"
-        mock_litellm = mock.MagicMock()
+        mock_sdk = mock.MagicMock()
         rp._local = mock_llama
-        rp._sdk_provider = mock_litellm
+        rp._sdk_provider = mock_sdk
 
         cfg.chat_model = "openai/gpt-oss-20b-GGUF/gpt-oss-20b-Q4_K_M.gguf"
         result = rp.chat([{"role": "user", "content": "hi"}])
         assert result == "local"
         mock_llama.chat.assert_called_once()
-        mock_litellm.chat.assert_not_called()
+        mock_sdk.chat.assert_not_called()
 
-    def test_routes_embed_to_litellm_for_ollama_model(self) -> None:
+    def test_routes_embed_to_sdk_for_ollama_model(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.embed.return_value = [[0.1, 0.2]]
-        rp._sdk_provider = mock_litellm
+        mock_sdk = mock.MagicMock()
+        mock_sdk.embed.return_value = [[0.1, 0.2]]
+        rp._sdk_provider = mock_sdk
 
         cfg.embedding_model = "ollama/nomic-embed-text:latest"
         result = rp.embed(["test"])
         assert result == [[0.1, 0.2]]
-        mock_litellm.embed.assert_called_once()
+        mock_sdk.embed.assert_called_once()
 
     def test_routes_embed_to_local_engine_for_local_ref(self) -> None:
         rp = self._make_provider()
@@ -488,25 +490,25 @@ class TestRoutingProvider:
         with pytest.raises(NotImplementedError):
             rp.count_chat_prompt_tokens([{"role": "user", "content": "some text"}])
 
-    def test_local_ref_never_falls_through_to_litellm(self) -> None:
-        """Local HF refs stay on the local engine even when litellm is installed.
+    def test_local_ref_never_falls_through_to_sdk(self) -> None:
+        """Local HF refs stay on the local engine even when the providers extra is installed.
 
         The native GGUF shape is the single source of truth: anything that
         parses as a local HF ref dispatches to the local engine. Users who
         want Ollama say so with 'ollama/<name>'.
         """
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
+        mock_sdk = mock.MagicMock()
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.9, 1.0]]
-        rp._sdk_provider = mock_litellm
+        rp._sdk_provider = mock_sdk
         rp._local = mock_llama
 
         cfg.embedding_model = "org/Local-GGUF/embed.gguf"
         result = rp.embed(["test"])
         assert result == [[0.9, 1.0]]
         mock_llama.embed.assert_called_once()
-        mock_litellm.embed.assert_not_called()
+        mock_sdk.embed.assert_not_called()
 
     def test_list_models_native_only_when_sdk_unavailable(self) -> None:
         rp = self._make_provider()
@@ -693,13 +695,13 @@ class TestRoutingProvider:
 
     def test_show_model_delegates_by_prefix(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.show_model.return_value = {"parameters": "temp 0.7"}
-        rp._sdk_provider = mock_litellm
+        mock_sdk = mock.MagicMock()
+        mock_sdk.show_model.return_value = {"parameters": "temp 0.7"}
+        rp._sdk_provider = mock_sdk
 
         result = rp.show_model("ollama/qwen3:8b")
         assert result == {"parameters": "temp 0.7"}
-        mock_litellm.show_model.assert_called_once_with("ollama/qwen3:8b")
+        mock_sdk.show_model.assert_called_once_with("ollama/qwen3:8b")
 
     def test_show_model_local_ref_uses_local_engine(self) -> None:
         rp = self._make_provider()
@@ -742,9 +744,9 @@ class TestRoutingProvider:
 
     def test_chat_with_explicit_api_model_override(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.chat.return_value = "saw it"
-        rp._sdk_provider = mock_litellm
+        mock_sdk = mock.MagicMock()
+        mock_sdk.chat.return_value = "saw it"
+        rp._sdk_provider = mock_sdk
 
         cfg.chat_model = "org/Local-GGUF/local.gguf"
         result = rp.chat(
@@ -752,17 +754,17 @@ class TestRoutingProvider:
             model="openai/gpt-4o",
         )
         assert result == "saw it"
-        mock_litellm.chat.assert_called_once()
+        mock_sdk.chat.assert_called_once()
 
     def test_get_capabilities_delegates_by_prefix(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.get_capabilities.return_value = ["completion", "vision"]
-        rp._sdk_provider = mock_litellm
+        mock_sdk = mock.MagicMock()
+        mock_sdk.get_capabilities.return_value = ["completion", "vision"]
+        rp._sdk_provider = mock_sdk
 
         caps = rp.get_capabilities("ollama/llava:7b")
         assert caps == ["completion", "vision"]
-        mock_litellm.get_capabilities.assert_called_once_with("ollama/llava:7b")
+        mock_sdk.get_capabilities.assert_called_once_with("ollama/llava:7b")
 
     def test_invalidate_load_cache_forwards_to_native(self) -> None:
         """``invalidate_load_cache`` releases the native side; SDK has no cache."""
@@ -783,324 +785,8 @@ class TestRoutingProvider:
 
 
 # ---------------------------------------------------------------------------
-# liter_llm_available guard
+# remote_sdk_available guard
 # ---------------------------------------------------------------------------
-
-
-class TestAllChatModelsFor:
-    """Prefix-stripping and chat-mode filtering in litellm catalog reads."""
-
-    def _stub_litellm(
-        self, models_by_provider: dict[str, set[str]], model_cost: dict[str, dict[str, str]]
-    ) -> mock.MagicMock:
-        stub = mock.MagicMock()
-        stub.models_by_provider = models_by_provider
-        stub.model_cost = model_cost
-        return stub
-
-    def test_strips_provider_prefix_from_catalog_names(self) -> None:
-        """Names like ``mistral/codestral-latest`` come back bare."""
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
-
-        litellm = self._stub_litellm(
-            {"mistral": {"mistral/codestral-latest", "mistral/mistral-large"}},
-            {
-                "mistral/codestral-latest": {"mode": "chat"},
-                "mistral/mistral-large": {"mode": "chat"},
-            },
-        )
-        result = LiterLlmSdkBackend._all_chat_models_for("mistral", litellm)
-        assert result == ["codestral-latest", "mistral-large"]
-
-    def test_passes_through_bare_names_unchanged(self) -> None:
-        """OpenAI/Anthropic/Gemini names already lack a prefix and round-trip."""
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
-
-        litellm = self._stub_litellm(
-            {"openai": {"gpt-4o", "gpt-4o-mini"}},
-            {"gpt-4o": {"mode": "chat"}, "gpt-4o-mini": {"mode": "chat"}},
-        )
-        result = LiterLlmSdkBackend._all_chat_models_for("openai", litellm)
-        assert result == ["gpt-4o", "gpt-4o-mini"]
-
-    def test_dedupes_bare_and_prefixed_duplicates(self) -> None:
-        """``deepseek-chat`` and ``deepseek/deepseek-chat`` collapse to one entry."""
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
-
-        litellm = self._stub_litellm(
-            {"deepseek": {"deepseek-chat", "deepseek/deepseek-chat", "deepseek-reasoner"}},
-            {
-                "deepseek-chat": {"mode": "chat"},
-                "deepseek/deepseek-chat": {"mode": "chat"},
-                "deepseek-reasoner": {"mode": "chat"},
-            },
-        )
-        result = LiterLlmSdkBackend._all_chat_models_for("deepseek", litellm)
-        assert result == ["deepseek-chat", "deepseek-reasoner"]
-
-    def test_filters_out_non_chat_modes(self) -> None:
-        """Embedding-mode entries never appear in the chat catalog."""
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
-
-        litellm = self._stub_litellm(
-            {"mistral": {"mistral/mistral-large", "mistral/mistral-embed"}},
-            {
-                "mistral/mistral-large": {"mode": "chat"},
-                "mistral/mistral-embed": {"mode": "embedding"},
-            },
-        )
-        result = LiterLlmSdkBackend._all_chat_models_for("mistral", litellm)
-        assert result == ["mistral-large"]
-
-    def test_unknown_provider_returns_empty(self) -> None:
-        """A provider missing from the catalog yields ``[]`` without raising."""
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
-
-        litellm = self._stub_litellm({}, {})
-        assert LiterLlmSdkBackend._all_chat_models_for("nonexistent", litellm) == []
-
-
-class TestLitellmResponseView:
-    """The shape adapter that owns getattr-default extraction over litellm responses."""
-
-    def test_message_content_handles_missing_message(self) -> None:
-        """A choice without a .message attribute (or message=None) yields ''."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        choice = mock.MagicMock(spec=[])  # spec=[] -> no attrs at all
-        response = mock.MagicMock(choices=[choice])
-        view = _LitellmResponseView(response)
-        assert view.message_content == ""
-
-    def test_message_content_handles_no_choices(self) -> None:
-        """A response with an empty choices list yields '' for both shapes."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        response = mock.MagicMock(choices=[])
-        view = _LitellmResponseView(response)
-        assert view.message_content == ""
-        assert view.delta_content == ""
-        assert view.finish_reason is None
-
-    def test_delta_content_handles_missing_delta(self) -> None:
-        """A streaming chunk whose first choice has no .delta attribute yields ''."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        choice = mock.MagicMock(spec=[])
-        response = mock.MagicMock(choices=[choice])
-        view = _LitellmResponseView(response)
-        assert view.delta_content == ""
-
-    def test_delta_content_with_nonempty_delta(self) -> None:
-        """The happy stream-path: delta.content carries the chunk text."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        choice = mock.MagicMock()
-        choice.delta = mock.MagicMock(content="hello world")
-        response = mock.MagicMock(choices=[choice])
-        view = _LitellmResponseView(response)
-        assert view.delta_content == "hello world"
-
-    def test_tool_calls_extracts_function_id_name_arguments(self) -> None:
-        """Non-stream ``tool_calls`` maps each litellm call to an SdkToolCall."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        call = mock.MagicMock(id="c1")
-        call.function = mock.MagicMock(name="ignored")  # 'name' is a MagicMock kwarg trap
-        call.function.name = "get_weather"
-        call.function.arguments = '{"city":"SF"}'
-        choice = mock.MagicMock()
-        choice.message = mock.MagicMock(tool_calls=[call])
-        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
-        calls = view.tool_calls
-        assert len(calls) == 1
-        assert (calls[0].id, calls[0].name, calls[0].arguments) == (
-            "c1",
-            "get_weather",
-            '{"city":"SF"}',
-        )
-
-    def test_tool_calls_empty_when_message_missing(self) -> None:
-        """A choice whose first message is None yields no tool calls."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        choice = mock.MagicMock()
-        choice.message = None
-        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
-        assert view.tool_calls == ()
-
-    def test_tool_calls_empty_when_no_choices(self) -> None:
-        """No choices -> no tool calls (the ``choice is None`` guard)."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        view = _LitellmResponseView(mock.MagicMock(choices=[]))
-        assert view.tool_calls == ()
-
-    def test_extract_tool_call_handles_missing_function(self) -> None:
-        """A tool call with function=None yields empty name/arguments, not a crash."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        call = mock.MagicMock(id="c2")
-        call.function = None
-        choice = mock.MagicMock()
-        choice.message = mock.MagicMock(tool_calls=[call])
-        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
-        only = view.tool_calls[0]
-        assert (only.id, only.name, only.arguments) == ("c2", "", "")
-
-    def test_delta_tool_calls_maps_opener_and_continuation(self) -> None:
-        """Streaming deltas: opener carries id+name; later frames carry args only."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        opener = mock.MagicMock(index=0, id="c1")
-        opener.function = mock.MagicMock()
-        opener.function.name = "get_weather"
-        opener.function.arguments = ""  # empty string normalises to None
-        choice = mock.MagicMock()
-        choice.delta = mock.MagicMock(tool_calls=[opener])
-        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
-        delta = view.delta_tool_calls[0]
-        assert delta.index == 0
-        assert delta.id == "c1"
-        assert delta.name == "get_weather"
-        assert delta.arguments_delta is None  # "" -> None
-
-    def test_delta_tool_calls_uses_fallback_index_when_absent(self) -> None:
-        """A delta without an .index uses its position in the array as the index."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        frame = mock.MagicMock(index=None, id=None)
-        frame.function = None  # function=None -> name/args stay None
-        choice = mock.MagicMock()
-        choice.delta = mock.MagicMock(tool_calls=[frame])
-        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
-        delta = view.delta_tool_calls[0]
-        assert delta.index == 0  # fallback to enumerate position
-        assert delta.id is None
-        assert delta.name is None
-        assert delta.arguments_delta is None
-
-    def test_delta_tool_calls_empty_when_delta_missing(self) -> None:
-        """A streaming chunk whose first choice has no .delta yields no deltas."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        choice = mock.MagicMock(spec=["delta"])
-        choice.delta = None
-        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
-        assert view.delta_tool_calls == ()
-
-    def test_delta_tool_calls_empty_when_no_choices(self) -> None:
-        """No choices -> no streaming tool-call deltas (the ``choice is None`` guard)."""
-        from lilbee.providers.liter_llm_sdk import _LitellmResponseView
-
-        view = _LitellmResponseView(mock.MagicMock(choices=[]))
-        assert view.delta_tool_calls == ()
-
-
-class TestLitellmAvailable:
-    """The un-patched ``liter_llm_available`` probe, driven through installed-package metadata."""
-
-    @pytest.mark.real_litellm_probe
-    @pytest.mark.parametrize(
-        ("versions", "expected"),
-        [
-            ({"litellm": "1.98.0"}, True),
-            ({"litellm": "1.98.0", "unclecode_litellm": "1.81.13"}, True),
-            ({"unclecode_litellm": "1.81.13"}, False),
-            ({}, False),
-        ],
-        ids=["litellm-only", "both", "fork-only", "neither"],
-    )
-    def test_requires_the_real_litellm_distribution(
-        self, versions: dict[str, str], expected: bool
-    ) -> None:
-        from lilbee.providers.liter_llm_sdk import liter_llm_available
-
-        with mock.patch(
-            "lilbee.providers.liter_llm_sdk._dist_version", _installed_dists(**versions)
-        ):
-            assert liter_llm_available() is expected
-
-    @pytest.mark.real_litellm_probe
-    def test_does_not_execute_module_init(self) -> None:
-        """The probe reads metadata only; importing litellm would block the Settings compose."""
-        from lilbee.providers.liter_llm_sdk import liter_llm_available
-
-        had_module = "litellm" in sys.modules
-        assert liter_llm_available() is True
-        assert ("litellm" in sys.modules) is had_module
-
-    @pytest.mark.real_litellm_probe
-    def test_fork_only_reports_the_litellm_extra_missing(self) -> None:
-        from lilbee.modelhub.model_manager.validation import (
-            REASON_LITER_LLM_MISSING,
-            ValidationResult,
-            _classify_local_server_ref,
-        )
-        from lilbee.providers.local_servers import OLLAMA
-
-        lookup = _installed_dists(unclecode_litellm="1.81.13")
-        with mock.patch("lilbee.providers.liter_llm_sdk._dist_version", lookup):
-            result = _classify_local_server_ref(OLLAMA)
-        assert result == (ValidationResult.UNKNOWN, REASON_LITER_LLM_MISSING)
-
-
-class TestLitellmBackendSupportsTools:
-    """The SDK backend is optimistic about tool support: hosted models that lack
-    a tool template simply return an empty tool_calls array, handled downstream."""
-
-    def test_supports_tools_is_true_for_any_ref(self) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
-
-        backend = LiterLlmSdkBackend()
-        assert backend.supports_tools("openai/gpt-4o") is True
-        assert backend.supports_tools("ollama/llama3") is True
-
-
-class TestRequireLitellm:
-    @pytest.mark.real_litellm_probe
-    def test_raises_provider_error_with_install_hint(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.liter_llm_sdk import _require_litellm
-
-        with (
-            inject_modules({"litellm": None}),
-            pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
-        ):
-            _require_litellm()
-
-    def test_install_hint_keeps_the_users_own_extras(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.liter_llm_sdk import _require_litellm
-
-        lookup = _installed_dists(unclecode_litellm="1.81.13")
-        with (
-            mock.patch("lilbee.providers.liter_llm_sdk._dist_version", lookup),
-            pytest.raises(ProviderError) as caught,
-        ):
-            _require_litellm()
-        message = str(caught.value)
-        assert "run your install command again with litellm added to the extras" in message
-        assert "--excludes https://lilbee.sh/uv-excludes.txt" in message
-        assert "pip install 'lilbee[litellm]'" in message
-        assert "unclecode-litellm" in message
-        assert "uv tool install --prerelease=allow 'lilbee[" not in message
-
-    def test_factory_raises_when_litellm_unavailable(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.factory import create_provider
-        from lilbee.providers.liter_llm_sdk import LITER_LLM_MISSING_MSG, LiterLlmSdkBackend
-
-        cfg.llm_provider = "remote"
-        with (
-            mock.patch.object(LiterLlmSdkBackend, "available", return_value=False),
-            pytest.raises(ProviderError) as caught,
-        ):
-            create_provider(cfg)
-        assert str(caught.value) == LITER_LLM_MISSING_MSG
-
-
-_FORK_ERROR = "Both litellm and unclecode-litellm are installed"
 
 
 def _installed_dists(**versions: str) -> Callable[[str], str]:
@@ -1117,107 +803,80 @@ def _installed_dists(**versions: str) -> Callable[[str], str]:
     return lookup
 
 
-class TestLitellmForkGuard:
-    def test_raises_when_litellm_and_fork_are_both_installed(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.liter_llm_sdk import _require_litellm
+class TestRemoteSdkAvailable:
+    """The un-patched ``remote_sdk_available`` probe, driven through installed-package metadata."""
 
-        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
-        with (
-            mock.patch("lilbee.providers.liter_llm_sdk._dist_version", lookup),
-            inject_modules({"litellm": mock.MagicMock()}),
-            pytest.raises(ProviderError, match=_FORK_ERROR) as caught,
-        ):
-            _require_litellm()
-        message = str(caught.value)
-        assert "pip uninstall -y unclecode-litellm" in message
-        assert "pip install --force-reinstall --no-deps litellm==1.98.0" in message
-        assert (
-            "your install command again with --reinstall --excludes "
-            "https://lilbee.sh/uv-excludes.txt" in message
-        )
-        assert "lilbee[" not in message
-
-    def test_fork_check_runs_before_the_litellm_import(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.liter_llm_sdk import _require_litellm
-
-        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
-        with (
-            mock.patch("lilbee.providers.liter_llm_sdk._dist_version", lookup),
-            inject_modules({"litellm": None}),
-            pytest.raises(ProviderError, match=_FORK_ERROR),
-        ):
-            _require_litellm()
-
-    def test_complete_refuses_before_calling_litellm(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
-        from lilbee.providers.model_ref import parse_model_ref
-        from lilbee.providers.sdk_backend import CompletionRequest
-
-        fake_litellm = mock.MagicMock()
-        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
-        request = CompletionRequest(
-            ref=parse_model_ref("openai/gpt-4o"), messages=[{"role": "user", "content": "hi"}]
-        )
-        with (
-            mock.patch("lilbee.providers.liter_llm_sdk._dist_version", lookup),
-            inject_modules({"litellm": fake_litellm}),
-            pytest.raises(ProviderError, match=_FORK_ERROR),
-        ):
-            LiterLlmSdkBackend().complete(request)
-        fake_litellm.completion.assert_not_called()
-
-    def test_real_litellm_alone_loads(self) -> None:
-        from lilbee.providers.liter_llm_sdk import _require_litellm
-
-        fake_litellm = mock.MagicMock()
-        with (
-            mock.patch(
-                "lilbee.providers.liter_llm_sdk._dist_version", _installed_dists(litellm="1.98.0")
-            ),
-            inject_modules({"litellm": fake_litellm}),
-        ):
-            assert _require_litellm() is fake_litellm
-
+    @pytest.mark.real_remote_sdk_probe
     @pytest.mark.parametrize(
-        "versions", [{"unclecode_litellm": "1.81.13"}, {}], ids=["fork-only", "neither"]
+        ("versions", "expected"),
+        [({SDK_DIST.replace("-", "_"): "2.2.4"}, True), ({}, False)],
+        ids=["installed", "absent"],
     )
-    def test_refuses_without_the_real_distribution(self, versions: dict[str, str]) -> None:
+    def test_reads_the_sdk_distribution(self, versions: dict[str, str], expected: bool) -> None:
+        from lilbee.providers.remote_sdk import remote_sdk_available
+
+        with mock.patch("lilbee.providers.remote_sdk._dist_version", _installed_dists(**versions)):
+            assert remote_sdk_available() is expected
+
+    @pytest.mark.real_remote_sdk_probe
+    def test_does_not_import_the_module(self) -> None:
+        """The probe reads metadata only; an import would block the Settings compose."""
+        from lilbee.providers.remote_sdk import remote_sdk_available
+
+        had_module = SDK_MODULE in sys.modules
+        assert remote_sdk_available() is True
+        assert (SDK_MODULE in sys.modules) is had_module
+
+    @pytest.mark.real_remote_sdk_probe
+    def test_absent_extra_reports_the_extra_missing(self) -> None:
+        from lilbee.modelhub.model_manager.validation import (
+            REASON_PROVIDERS_MISSING,
+            ValidationResult,
+            _classify_local_server_ref,
+        )
+        from lilbee.providers.local_servers import OLLAMA
+
+        with mock.patch("lilbee.providers.remote_sdk._dist_version", _installed_dists()):
+            result = _classify_local_server_ref(OLLAMA)
+        assert result == (ValidationResult.UNKNOWN, REASON_PROVIDERS_MISSING)
+
+
+class TestRequireSdk:
+    def test_raises_provider_error_with_install_hint(self) -> None:
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.liter_llm_sdk import _require_litellm
+        from lilbee.providers.remote_sdk import _require_sdk
 
         with (
-            mock.patch(
-                "lilbee.providers.liter_llm_sdk._dist_version", _installed_dists(**versions)
-            ),
-            inject_modules({"litellm": mock.MagicMock()}),
-            pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
+            inject_modules({SDK_MODULE: None}),
+            pytest.raises(ProviderError) as caught,
         ):
-            _require_litellm()
+            _require_sdk()
+        message = str(caught.value)
+        assert "pip install 'lilbee[providers]'" in message
+        assert "run your install command again with providers added to the extras" in message
+
+    def test_factory_raises_when_sdk_unavailable(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.factory import create_provider
+        from lilbee.providers.remote_sdk import REMOTE_SDK_MISSING_MSG, RemoteSdkBackend
+
+        cfg.llm_provider = "remote"
+        with (
+            mock.patch.object(RemoteSdkBackend, "available", return_value=False),
+            pytest.raises(ProviderError) as caught,
+        ):
+            create_provider(cfg)
+        assert str(caught.value) == REMOTE_SDK_MISSING_MSG
 
 
-class TestUvExcludesFile:
-    """The hosted exclude file must stay in step with the code that names it."""
-
-    def test_content_and_url_match_the_fork_constants(self) -> None:
-        from lilbee.providers.liter_llm_sdk import _LITELLM_FORK_DIST, _UV_EXCLUDES_URL
-
-        excludes_file = Path(__file__).resolve().parents[1] / "site" / "uv-excludes.txt"
-        content = excludes_file.read_text(encoding="utf-8").strip()
-        assert content == _LITELLM_FORK_DIST
-        assert _UV_EXCLUDES_URL.endswith(excludes_file.name)
-
-
-class TestLiteLLMShowModelCapabilities:
-    """Tests for SdkLLMProvider.show_model capabilities parsing via litellm backend."""
+class TestShowModelCapabilities:
+    """Tests for SdkLLMProvider.show_model capabilities parsing via the SDK backend."""
 
     def _make_provider(self) -> SdkLLMProvider:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        return SdkLLMProvider(LiterLlmSdkBackend())
+        return SdkLLMProvider(RemoteSdkBackend())
 
     def test_show_model_returns_capabilities(self) -> None:
         provider = self._make_provider()
@@ -1314,9 +973,9 @@ class TestLMStudioCapabilityGuards:
     _LM_STUDIO_BASE = "http://localhost:1234/v1"
 
     def _backend(self):  # type: ignore[no-untyped-def]
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
 
-        return LiterLlmSdkBackend()
+        return RemoteSdkBackend()
 
     def test_pull_model_raises_user_facing_error(self) -> None:
         from lilbee.providers.base import ProviderError
@@ -3188,15 +2847,15 @@ class TestDetectLocalServer:
 
 
 class TestRouteModel:
-    """Wire-format routing lives in ``LiterLlmSdkBackend._route_model``.
+    """Wire-format routing lives in ``RemoteSdkBackend._route_model``.
 
     These tests exercise the helper directly so we do not depend on the
     internal composition of ``SdkLLMProvider`` + backend.
     """
 
     def test_ollama_url_adds_prefix(self) -> None:
-        from lilbee.providers.liter_llm_sdk import _route_model
         from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.remote_sdk import _route_model
 
         # Bare ollama refs are written with the prefix already; the helper
         # double-prefixes only the rare case where the user typed a bare
@@ -3205,55 +2864,55 @@ class TestRouteModel:
         assert _route_model(ref, "http://localhost:11434") == "ollama/qwen3:8b"
 
     def test_non_ollama_url_no_prefix(self) -> None:
-        from lilbee.providers.liter_llm_sdk import _route_model
         from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.remote_sdk import _route_model
 
         # API-prefixed refs route as-is on non-Ollama base URLs.
         ref = parse_model_ref("openai/gpt-4o")
         assert _route_model(ref, "https://api.openai.com") == "openai/gpt-4o"
 
     def test_already_prefixed_passes_through(self) -> None:
-        from lilbee.providers.liter_llm_sdk import _route_model
         from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.remote_sdk import _route_model
 
         ref = parse_model_ref("openai/gpt-4o")
         assert _route_model(ref, "http://localhost:11434") == "openai/gpt-4o"
 
     def test_provider_prefixed_on_non_ollama(self) -> None:
-        from lilbee.providers.liter_llm_sdk import _route_model
         from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.remote_sdk import _route_model
 
         ref = parse_model_ref("anthropic/claude-sonnet-4-6")
         assert _route_model(ref, "https://api.anthropic.com") == "anthropic/claude-sonnet-4-6"
 
     def test_local_ref_on_non_ollama_url_returns_bare_name(self) -> None:
         """Local HF refs route bare (no prefix) when the api_base isn't Ollama."""
-        from lilbee.providers.liter_llm_sdk import _route_model
         from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.remote_sdk import _route_model
 
         ref = parse_model_ref("Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf")
         assert _route_model(ref, "https://example.com/v1") == ref.name
 
     def test_lm_studio_ref_routes_to_lm_studio_prefix(self) -> None:
-        """LM Studio refs carry litellm's ``lm_studio/`` provider prefix."""
-        from lilbee.providers.liter_llm_sdk import _route_model
+        """LM Studio refs carry the ``lm_studio/`` provider prefix."""
         from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.remote_sdk import _route_model
 
         ref = parse_model_ref("lm_studio/qwen2.5-7b-instruct")
         assert _route_model(ref, "http://localhost:1234/v1") == "lm_studio/qwen2.5-7b-instruct"
 
     def test_local_ref_on_lm_studio_url_adds_prefix(self) -> None:
         """A bare local ref forced through an LM Studio base URL gets prefixed."""
-        from lilbee.providers.liter_llm_sdk import _route_model
         from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.remote_sdk import _route_model
 
         ref = parse_model_ref("Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf")
         assert _route_model(ref, "http://localhost:1234/v1") == f"lm_studio/{ref.name}"
 
     def test_lm_studio_ref_routes_regardless_of_api_base(self) -> None:
         """An ``lm_studio/`` ref keeps its prefix even with no api_base set."""
-        from lilbee.providers.liter_llm_sdk import _route_model
         from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.remote_sdk import _route_model
 
         ref = parse_model_ref("lm_studio/some-model")
         assert _route_model(ref, None) == "lm_studio/some-model"
@@ -3303,17 +2962,17 @@ class TestHostedRequestKey:
         assert _api_key_for(parse_model_ref("ollama/llama3")) is None
 
 
-class TestLiteLLMListModelsRouting:
+class TestListModelsRouting:
     """``list_models`` merges across configured local servers; each server's
     URL selects its listing endpoint in the backend. Pinning a single
     configured server keeps the per-endpoint routing assertions sharp."""
 
     def test_ollama_url_uses_api_tags(self) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
         from lilbee.providers.local_servers import OLLAMA
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = SdkLLMProvider(LiterLlmSdkBackend())
+        provider = SdkLLMProvider(RemoteSdkBackend())
         mock_resp = mock.MagicMock()
         mock_resp.json.return_value = {"models": [{"name": "llama3:8b"}]}
         mock_resp.raise_for_status = mock.MagicMock()
@@ -3332,12 +2991,12 @@ class TestLiteLLMListModelsRouting:
         assert result == ["llama3:8b"]
 
     def test_non_ollama_url_uses_v1_models(self) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
         from lilbee.providers.local_servers import LM_STUDIO
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
         cfg.llm_api_key = "sk-test"
-        provider = SdkLLMProvider(LiterLlmSdkBackend())
+        provider = SdkLLMProvider(RemoteSdkBackend())
         mock_resp = mock.MagicMock()
         mock_resp.json.return_value = {"data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}]}
         mock_resp.raise_for_status = mock.MagicMock()
@@ -3356,11 +3015,11 @@ class TestLiteLLMListModelsRouting:
         assert result == ["gpt-4o", "gpt-4o-mini"]
 
     def test_non_ollama_returns_empty_on_error(self) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
         from lilbee.providers.local_servers import LM_STUDIO
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = SdkLLMProvider(LiterLlmSdkBackend())
+        provider = SdkLLMProvider(RemoteSdkBackend())
 
         with (
             mock.patch(
@@ -3374,12 +3033,12 @@ class TestLiteLLMListModelsRouting:
         assert result == []
 
     def test_v1_models_sends_auth_header(self) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
         from lilbee.providers.local_servers import LM_STUDIO
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
         cfg.llm_api_key = "sk-secret"
-        provider = SdkLLMProvider(LiterLlmSdkBackend())
+        provider = SdkLLMProvider(RemoteSdkBackend())
         mock_resp = mock.MagicMock()
         mock_resp.json.return_value = {"data": []}
         mock_resp.raise_for_status = mock.MagicMock()
@@ -3400,20 +3059,20 @@ class TestLiteLLMListModelsRouting:
 def test_sdk_provider_count_tokens_not_implemented() -> None:
     """Cloud SDK backends have no local tokenizer, so count_tokens raises and chunk
     sizing degrades to the character estimate."""
-    from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+    from lilbee.providers.remote_sdk import RemoteSdkBackend
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-    provider = SdkLLMProvider(LiterLlmSdkBackend())
+    provider = SdkLLMProvider(RemoteSdkBackend())
     with pytest.raises(NotImplementedError):
         provider.count_tokens("hello")
 
 
 def test_sdk_provider_count_chat_prompt_tokens_not_implemented() -> None:
     """Cloud SDK backends render no prompt locally, so the count route estimates instead."""
-    from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+    from lilbee.providers.remote_sdk import RemoteSdkBackend
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-    provider = SdkLLMProvider(LiterLlmSdkBackend())
+    provider = SdkLLMProvider(RemoteSdkBackend())
     with pytest.raises(NotImplementedError):
         provider.count_chat_prompt_tokens([{"role": "user", "content": "hello"}])
 
@@ -3435,10 +3094,10 @@ class TestSdkLLMProviderVisionOcr:
     """``SdkLLMProvider.vision_ocr`` translates to a multipart chat call."""
 
     def _make_provider(self) -> SdkLLMProvider:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        return SdkLLMProvider(LiterLlmSdkBackend())
+        return SdkLLMProvider(RemoteSdkBackend())
 
     def test_builds_multipart_message_and_routes_to_chat(self) -> None:
         from lilbee.providers.base import ChatResult, FinishReason
@@ -3517,7 +3176,7 @@ class TestSdkLLMProviderVisionOcr:
         from lilbee.providers.base import ProviderError
 
         provider = self._make_provider()
-        error = ProviderError("backend refused the image", provider="litellm")
+        error = ProviderError("backend refused the image", provider="remote")
         with (
             mock.patch.object(provider, "chat", side_effect=error),
             pytest.raises(ProviderError) as exc_info,
@@ -3604,138 +3263,118 @@ class TestNeedsApiBase:
 
 
 class TestChatApiBaseRouting:
-    """Verify that chat() omits api_base for non-Ollama provider-prefixed models."""
+    """Verify that chat() points local servers at their /v1 route and hosted refs at none."""
 
-    def _make_fake_litellm(self) -> mock.MagicMock:
-        fake = mock.MagicMock()
-        resp = mock.MagicMock()
-        resp.choices = [mock.MagicMock()]
-        resp.choices[0].message.content = "hello"
-        fake.completion.return_value = resp
+    def _make_fake_sdk(self) -> fakes.FakeSdk:
+        fake = fakes.FakeSdk()
+        fake.chat_result = fakes.text_response("hello")
         return fake
 
-    def test_ollama_model_passes_api_base(self) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+    def test_ollama_model_passes_the_base_url(self) -> None:
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
         cfg.ollama_base_url = "http://localhost:11434"
-        provider = SdkLLMProvider(LiterLlmSdkBackend())
-        fake = self._make_fake_litellm()
+        provider = SdkLLMProvider(RemoteSdkBackend())
 
-        with inject_modules({"litellm": fake}):
+        with fakes.installed(self._make_fake_sdk()) as fake:
             provider.chat([{"role": "user", "content": "hi"}], model="ollama/qwen3:0.6b")
 
-        call_kwargs = fake.completion.call_args[1]
-        assert call_kwargs["api_base"] == "http://localhost:11434"
-        assert call_kwargs["model"] == "ollama/qwen3:0.6b"
+        assert fake.clients[-1]["base_url"] == "http://localhost:11434/v1"
+        assert fake.last("chat")["model"] == "ollama/qwen3:0.6b"
 
-    def test_frontier_model_omits_api_base(self) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+    def test_frontier_model_omits_the_base_url(self) -> None:
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = SdkLLMProvider(LiterLlmSdkBackend())
-        fake = self._make_fake_litellm()
+        provider = SdkLLMProvider(RemoteSdkBackend())
 
-        with inject_modules({"litellm": fake}):
+        with fakes.installed(self._make_fake_sdk()) as fake:
             provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
 
-        call_kwargs = fake.completion.call_args[1]
-        assert "api_base" not in call_kwargs
-        assert call_kwargs["model"] == "openai/gpt-4o"
+        assert fake.clients[-1]["base_url"] is None
+        assert fake.last("chat")["model"] == "openai/gpt-4o"
 
-    def test_anthropic_model_omits_api_base(self) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+    def test_anthropic_model_omits_the_base_url(self) -> None:
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = SdkLLMProvider(LiterLlmSdkBackend())
-        fake = self._make_fake_litellm()
+        provider = SdkLLMProvider(RemoteSdkBackend())
 
-        with inject_modules({"litellm": fake}):
+        with fakes.installed(self._make_fake_sdk()) as fake:
             provider.chat([{"role": "user", "content": "hi"}], model="anthropic/claude-sonnet-4-6")
 
-        call_kwargs = fake.completion.call_args[1]
-        assert "api_base" not in call_kwargs
+        assert fake.clients[-1]["base_url"] is None
 
-    def test_chat_sends_the_provider_key_to_litellm(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+    def test_chat_sends_the_provider_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         cfg.openai_api_key = "sk-openai"
-        provider = SdkLLMProvider(LiterLlmSdkBackend())
-        fake = self._make_fake_litellm()
+        provider = SdkLLMProvider(RemoteSdkBackend())
 
-        with inject_modules({"litellm": fake}):
+        with fakes.installed(self._make_fake_sdk()) as fake:
             provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
 
-        assert fake.completion.call_args[1]["api_key"] == "sk-openai"
+        assert fake.clients[-1]["api_key"] == "sk-openai"
 
 
 class TestEmbedApiBaseRouting:
-    """Verify that embed() omits api_base for non-Ollama provider-prefixed models."""
+    """Verify that embed() points local servers at their /v1 route and hosted refs at none."""
 
-    def test_ollama_embed_passes_api_base(self) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+    def test_ollama_embed_passes_the_base_url(self) -> None:
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
         cfg.ollama_base_url = "http://localhost:11434"
-        provider = SdkLLMProvider(LiterLlmSdkBackend())
+        provider = SdkLLMProvider(RemoteSdkBackend())
         cfg.embedding_model = "ollama/nomic-embed-text:latest"
-        fake = mock.MagicMock()
-        fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2], "index": 0}]}
+        fake = fakes.FakeSdk()
+        fake.embed_result = fakes.embedding_response([(0, [0.1, 0.2])])
 
-        with inject_modules({"litellm": fake}):
+        with fakes.installed(fake):
             provider.embed(["hello"])
 
-        call_kwargs = fake.embedding.call_args[1]
-        assert call_kwargs["api_base"] == "http://localhost:11434"
+        assert fake.clients[-1]["base_url"] == "http://localhost:11434/v1"
 
-    def test_prefixed_embed_omits_api_base(self) -> None:
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+    def test_prefixed_embed_omits_the_base_url(self) -> None:
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = SdkLLMProvider(LiterLlmSdkBackend())
+        provider = SdkLLMProvider(RemoteSdkBackend())
         cfg.embedding_model = "openai/text-embedding-3-small"
-        fake = mock.MagicMock()
-        fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2], "index": 0}]}
+        fake = fakes.FakeSdk()
+        fake.embed_result = fakes.embedding_response([(0, [0.1, 0.2])])
 
-        with inject_modules({"litellm": fake}):
+        with fakes.installed(fake):
             provider.embed(["hello"])
 
-        call_kwargs = fake.embedding.call_args[1]
-        assert "api_base" not in call_kwargs
+        assert fake.clients[-1]["base_url"] is None
 
 
 class TestSdkRerank:
-    """Coverage for SdkLLMProvider.rerank + LiterLlmSdkBackend.rerank."""
+    """Coverage for SdkLLMProvider.rerank + RemoteSdkBackend.rerank."""
 
     def _make_sdk_provider(self):
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        return SdkLLMProvider(LiterLlmSdkBackend())
+        return SdkLLMProvider(RemoteSdkBackend())
 
     def test_rerank_returns_scores_in_candidate_order(self) -> None:
         cfg.reranker_model = "cohere/rerank-english-v3.0"
         cfg.llm_api_key = "sk-rerank"
         provider = self._make_sdk_provider()
-        fake_response = {
-            "results": [
-                {"index": 2, "relevance_score": 0.9},
-                {"index": 0, "relevance_score": 0.3},
-                {"index": 1, "relevance_score": 0.7},
-            ]
-        }
-        fake_litellm = mock.MagicMock()
-        fake_litellm.rerank.return_value = fake_response
-        with mock.patch.dict(sys.modules, {"litellm": fake_litellm}):
+        fake = fakes.FakeSdk()
+        fake.rerank_result = fakes.rerank_response([(2, 0.9), (0, 0.3), (1, 0.7)])
+        with fakes.installed(fake):
             scores = provider.rerank("q", ["a", "b", "c"])
         assert scores == [0.3, 0.7, 0.9]
-        kwargs = fake_litellm.rerank.call_args.kwargs
-        assert kwargs["query"] == "q"
-        assert kwargs["documents"] == ["a", "b", "c"]
-        assert "cohere" in kwargs["model"]
-        assert kwargs["api_key"] == "sk-rerank"
+        sent = fake.last("rerank")
+        assert sent["query"] == "q"
+        assert sent["documents"] == ["a", "b", "c"]
+        assert "cohere" in sent["model"]
 
     def test_rerank_sends_the_hosted_provider_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -3743,11 +3382,11 @@ class TestSdkRerank:
         cfg.openai_api_key = "sk-openai-rerank"
         cfg.llm_api_key = "sk-generic"
         provider = self._make_sdk_provider()
-        fake_litellm = mock.MagicMock()
-        fake_litellm.rerank.return_value = {"results": [{"index": 0, "relevance_score": 0.5}]}
-        with mock.patch.dict(sys.modules, {"litellm": fake_litellm}):
+        fake = fakes.FakeSdk()
+        fake.rerank_result = fakes.rerank_response([(0, 0.5)])
+        with fakes.installed(fake):
             provider.rerank("q", ["a"])
-        assert fake_litellm.rerank.call_args.kwargs["api_key"] == "sk-openai-rerank"
+        assert fake.clients[-1]["api_key"] == "sk-openai-rerank"
 
     def test_rerank_empty_candidates_short_circuits(self) -> None:
         cfg.reranker_model = "cohere/rerank-english-v3.0"
@@ -3757,12 +3396,12 @@ class TestSdkRerank:
     def test_supports_rerank_matches_backend_available(self) -> None:
         provider = self._make_sdk_provider()
         with mock.patch(
-            "lilbee.providers.liter_llm_sdk.liter_llm_available",
+            "lilbee.providers.remote_sdk.remote_sdk_available",
             return_value=True,
         ):
             assert provider.supports_rerank() is True
         with mock.patch(
-            "lilbee.providers.liter_llm_sdk.liter_llm_available",
+            "lilbee.providers.remote_sdk.remote_sdk_available",
             return_value=False,
         ):
             assert provider.supports_rerank() is False
@@ -3772,48 +3411,38 @@ class TestSdkRerank:
 
         cfg.reranker_model = "cohere/rerank-english-v3.0"
         provider = self._make_sdk_provider()
-        fake_litellm = mock.MagicMock()
-        fake_litellm.rerank.side_effect = RuntimeError("boom")
+        fake = fakes.FakeSdk()
+        fake.rerank_error = RuntimeError("boom")
         with (
-            mock.patch.dict(sys.modules, {"litellm": fake_litellm}),
+            fakes.installed(fake),
             pytest.raises(ProviderError, match="Rerank failed"),
         ):
             provider.rerank("q", ["a"])
 
-    def test_rerank_accepts_object_style_response(self) -> None:
-        """Pydantic-style responses with attribute access also parse."""
-        cfg.reranker_model = "cohere/rerank-english-v3.0"
-        provider = self._make_sdk_provider()
-        item = mock.MagicMock(index=0, relevance_score=0.42)
-        response = mock.MagicMock(results=[item], model="cohere/rerank-english-v3.0")
-        fake_litellm = mock.MagicMock()
-        fake_litellm.rerank.return_value = response
-        with mock.patch.dict(sys.modules, {"litellm": fake_litellm}):
-            scores = provider.rerank("q", ["a"])
-        assert scores == [0.42]
-
     def test_backend_empty_candidates_skip_sdk(self) -> None:
-        """Backend-level empty-candidates guard avoids importing litellm."""
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+        """Backend-level empty-candidates guard makes no SDK call."""
         from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_backend import RerankRequest
 
-        backend = LiterLlmSdkBackend()
+        backend = RemoteSdkBackend()
         request = RerankRequest(
             ref=parse_model_ref("cohere/rerank-english-v3.0"),
             query="q",
             candidates=[],
         )
-        result = backend.rerank(request)
+        with fakes.installed(fakes.FakeSdk()) as fake:
+            result = backend.rerank(request)
         assert result.scores == []
+        assert fake.calls == []
 
     def test_backend_forwards_api_key(self) -> None:
-        """``api_key`` on the request is forwarded to litellm.rerank kwargs."""
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+        """``api_key`` on the request reaches the SDK client."""
         from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_backend import RerankRequest
 
-        backend = LiterLlmSdkBackend()
+        backend = RemoteSdkBackend()
         request = RerankRequest(
             ref=parse_model_ref("cohere/rerank-english-v3.0"),
             query="q",
@@ -3821,20 +3450,20 @@ class TestSdkRerank:
             api_base="http://localhost:11434",
             api_key="sk-test",
         )
-        fake_litellm = mock.MagicMock()
-        fake_litellm.rerank.return_value = {"results": [{"index": 0, "relevance_score": 0.5}]}
-        with mock.patch.dict(sys.modules, {"litellm": fake_litellm}):
+        fake = fakes.FakeSdk()
+        fake.rerank_result = fakes.rerank_response([(0, 0.5)])
+        with fakes.installed(fake):
             backend.rerank(request)
-        assert fake_litellm.rerank.call_args.kwargs["api_key"] == "sk-test"
+        assert fake.clients[-1]["api_key"] == "sk-test"
 
     def test_provider_wraps_non_provider_error(self) -> None:
         """A non-``ProviderError`` raised inside the backend is re-wrapped."""
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider as _SdkLLMProvider
 
         cfg.reranker_model = "cohere/rerank-english-v3.0"
-        provider = _SdkLLMProvider(LiterLlmSdkBackend())
+        provider = _SdkLLMProvider(RemoteSdkBackend())
         with (
             mock.patch.object(provider._backend, "rerank", side_effect=RuntimeError("wire error")),
             pytest.raises(ProviderError, match="Rerank failed: wire error"),
@@ -3957,7 +3586,7 @@ class TestRoutingProviderRerank:
         mock_llama.rerank.assert_called_once_with("q", ["a", "b"])
         mock_sdk.rerank.assert_not_called()
 
-    def test_empty_reranker_model_routes_to_litellm(self) -> None:
+    def test_empty_reranker_model_routes_to_sdk(self) -> None:
         """An empty ``cfg.reranker_model`` is treated as non-native (hosted)."""
         from lilbee.providers.routing_provider import _is_native_rerank_ref
 

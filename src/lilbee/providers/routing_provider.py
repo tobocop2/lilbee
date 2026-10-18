@@ -23,8 +23,8 @@ from lilbee.providers.base import (
     ProviderError,
     require_role_ref,
 )
-from lilbee.providers.liter_llm_sdk import LiterLlmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
+from lilbee.providers.remote_sdk import RemoteSdkBackend
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 from lilbee.runtime.cancellation import CancelSignal
@@ -72,7 +72,7 @@ class RoutingProvider(LLMProvider):
         if self._sdk_provider is None:
             with self._init_lock:
                 if self._sdk_provider is None:
-                    self._sdk_provider = SdkLLMProvider(LiterLlmSdkBackend())
+                    self._sdk_provider = SdkLLMProvider(RemoteSdkBackend())
         return self._sdk_provider
 
     def _pick_backend(self, ref: ProviderModelRef) -> LLMProvider:
@@ -260,7 +260,7 @@ class RoutingProvider(LLMProvider):
             raise ProviderError(
                 f"Cannot rerank with {cfg.reranker_model!r}: "
                 "hosted rerank backend not available. "
-                "Install the 'liter-llm' extra to enable hosted reranking."
+                "Install the 'providers' extra to enable hosted reranking."
             )
         return sdk.rerank(query, candidates)
 

@@ -147,7 +147,7 @@ the button at all times so you can see what's loaded without opening the
 picker.
 
 The pickers list everything the role can run: native GGUFs you already have
-installed plus, when the `litellm` extra is installed and an API key is set,
+installed plus, when the `providers` extra is installed and an API key is set,
 whatever the SDK backend exposes for that provider. There is no separate
 "local-only" picker; routing happens automatically once the model is selected.
 
@@ -180,7 +180,7 @@ override individual values at runtime without touching the file.
 
 Tabs for features that aren't installed are hidden, not greyed out:
 
-- **API-Keys** appears only when the `litellm` extra is installed.
+- **API-Keys** appears only when the `providers` extra is installed.
 - **Crawling** appears only when the `crawler` extra is installed.
 - **Wiki** appears only when the wiki layer is enabled
   (`cfg.wiki = true` in `config.toml` or `LILBEE_WIKI=1`).
@@ -818,7 +818,7 @@ naming a file is the stronger instruction.
 lilbee runs entirely on your machine until you set a cloud provider's API
 key. There are two ways to use cloud models when you want to:
 
-- **Bring your own key, inside lilbee.** Install the `[litellm]` extra and add
+- **Bring your own key, inside lilbee.** Install the `[providers]` extra and add
   an API key in `/settings` → API-Keys, then pick a cloud model from the model
   bar picker or the Frontier tab in `/catalog`. The TUI shows a persistent
   warning whenever a cloud role is active.
@@ -1151,7 +1151,7 @@ Extras exist only on a `pip` or `uv` install. If you installed a bundled build
 are already inside it and none of this applies to you.
 
 `[engine]` is the `llama-server` that runs your models, and it is the one extra
-that is not really optional. `[graph]`, `[crawler]` and `[litellm]` add
+that is not really optional. `[graph]`, `[crawler]` and `[providers]` add
 capabilities you can happily live without.
 
 <details>
@@ -1189,7 +1189,7 @@ pipx install --force --pip-args='--pre --extra-index-url https://lilbee.sh/cpu/'
 </details>
 
 <details>
-<summary><strong>pip / uv: the graph, crawler and litellm extras</strong></summary>
+<summary><strong>pip / uv: the graph, crawler and providers extras</strong></summary>
 
 These pull heavier dependencies, so they are opt-in:
 
@@ -1197,27 +1197,26 @@ These pull heavier dependencies, so they are opt-in:
 # pip
 pip install --pre 'lilbee[graph]'      # concept graph: topic clustering + search boosting
 pip install --pre 'lilbee[crawler]'    # web crawling: index websites alongside local docs
-pip install --pre 'lilbee[litellm]'    # remote providers: connect to any SDK-backed provider
+pip install --pre 'lilbee[providers]'    # remote providers: connect to any SDK-backed provider
 
 # uv tool
 uv tool install --prerelease=allow 'lilbee[graph]'
 uv tool install --prerelease=allow 'lilbee[crawler]' --excludes https://lilbee.sh/uv-excludes.txt
-uv tool install --prerelease=allow 'lilbee[litellm]'
+uv tool install --prerelease=allow 'lilbee[providers]'
 ```
 
 Install several at once, engine included:
 
 ```bash
 # uv tool
-uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/ --excludes https://lilbee.sh/uv-excludes.txt
+uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,providers]' --extra-index-url https://lilbee.sh/cu125/ --excludes https://lilbee.sh/uv-excludes.txt
 
 # pip
-pip install --pre 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
+pip install --pre 'lilbee[engine,graph,crawler,providers]' --extra-index-url https://lilbee.sh/cu125/
 pip uninstall -y unclecode-litellm
-pip install --force-reinstall --no-deps "litellm==$(pip show litellm | sed -n 's/^Version: //p')"
 ```
 
-Add `--excludes https://lilbee.sh/uv-excludes.txt` to any uv install that has `crawler` in the extras list; on uv 0.10.8 or later, `uv tool upgrade` keeps it. With pip, run the two commands above after a `pip install` that has both `crawler` and `litellm`.
+Add `--excludes https://lilbee.sh/uv-excludes.txt` to any uv install that has `crawler` in the extras list; on uv 0.10.8 or later, `uv tool upgrade` keeps it. With pip, run the `pip uninstall` command above after a `pip install` that has `crawler` in the extras list.
 
 </details>
 
@@ -1361,8 +1360,8 @@ are available locally vs. remotely and routes each call to the right backend.
 embeddings local for privacy, or to surface models from a local
 OpenAI-compatible daemon alongside lilbee's native GGUF models.
 
-**Install:** `pip install --pre 'lilbee[litellm]'` or
-`uv tool install --prerelease=allow 'lilbee[litellm]'`.
+**Install:** `pip install --pre 'lilbee[providers]'` or
+`uv tool install --prerelease=allow 'lilbee[providers]'`.
 
 **Configuration:**
 
@@ -1606,7 +1605,7 @@ languages, every page read (`ocr = all`), or skipped (`ocr = off`).
 | **Output** | Plain text | Structured markdown (tables, headings) |
 | **Languages** | 100+ via `LILBEE_OCR_LANGUAGE` (e.g. `eng+deu`) | Many scripts (model-dependent) |
 | **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
-| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
+| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[providers]'` / `uv tool install --prerelease=allow 'lilbee[providers]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
 
 ### Settings for a scanned book
@@ -1699,8 +1698,8 @@ lilbee runs vision OCR in one of two ways:
    (e.g. `lightonocr`) and lilbee serves it on `llama-server` with an `--mmproj`
    projector. This is the recommended path and supports an SSE heartbeat for
    long scans.
-2. **Remote vision model.** With `pip install --pre 'lilbee[litellm]'` (or
-   `uv tool install --prerelease=allow 'lilbee[litellm]'`), set the vision
+2. **Remote vision model.** With `pip install --pre 'lilbee[providers]'` (or
+   `uv tool install --prerelease=allow 'lilbee[providers]'`), set the vision
    model to any remote name your SDK backend understands. lilbee will route
    vision calls accordingly.
 

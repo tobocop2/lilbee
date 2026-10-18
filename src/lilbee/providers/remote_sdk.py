@@ -45,39 +45,41 @@ from lilbee.runtime import asyncio_loop
 log = logging.getLogger(__name__)
 
 _PROVIDER_NAME = "remote"
-_DIST = "liter-llm"
+# Distribution and import names of the client library behind this adapter.
+SDK_DIST = "liter-llm"
+SDK_MODULE = "liter_llm"
 
 # Seconds a single provider request may run. liter-llm has no unbounded default,
 # so a long non-streaming generation needs an explicit ceiling.
 _REQUEST_TIMEOUT_S = 600
 
-LITER_LLM_MISSING_MSG = (
-    "Remote and API models need the lilbee[liter-llm] extra. If you installed lilbee "
+REMOTE_SDK_MISSING_MSG = (
+    "Remote and API models need the lilbee[providers] extra. If you installed lilbee "
     "with uv tool install, run your install command again with liter-llm added to the "
-    "extras. If you installed lilbee with pip, run: pip install 'lilbee[liter-llm]'."
+    "extras. If you installed lilbee with pip, run: pip install 'lilbee[providers]'."
 )
 
 
 @functools.cache
-def liter_llm_available() -> bool:
+def remote_sdk_available() -> bool:
     """Return True if the ``liter-llm`` distribution is installed.
 
     Reads package metadata instead of importing the native module, so the
     Settings screen's compose does not pay for the import.
     """
     try:
-        _dist_version(_DIST)
+        _dist_version(SDK_DIST)
     except PackageNotFoundError:
         return False
     return True
 
 
-def _require_liter_llm() -> Any:
+def _require_sdk() -> Any:
     """Import ``liter_llm`` or raise a user-facing ProviderError with install steps."""
     try:
         import liter_llm
     except ImportError as exc:
-        raise ProviderError(LITER_LLM_MISSING_MSG, provider=_PROVIDER_NAME) from exc
+        raise ProviderError(REMOTE_SDK_MISSING_MSG, provider=_PROVIDER_NAME) from exc
     return liter_llm
 
 
@@ -116,9 +118,9 @@ _KIND_MESSAGES: dict[ProviderErrorKind, str] = {
 }
 
 # liter-llm exception class name -> error kind. Every HTTP status maps to one
-# typed class in liter-llm, so this one table covers all providers. Names, not
-# classes, so the table stays importable without the native module. The MRO walk
-# in ``_classify_error`` picks the most specific entry.
+# typed class in liter-llm, and the classes are flat (each subclasses
+# ``LiterLlmError`` directly), so this one table covers all providers. Names, not
+# classes, so the table stays importable without the native module.
 _ERROR_KINDS: dict[str, ProviderErrorKind] = {
     "AuthenticationError": ProviderErrorKind.AUTH,
     "NotFoundError": ProviderErrorKind.NOT_FOUND,
@@ -143,11 +145,7 @@ _RERANK_FAILED = "Rerank failed"
 
 def _classify_error(exc: BaseException) -> ProviderErrorKind:
     """Map a liter-llm exception to a ``ProviderErrorKind`` by type, never by message."""
-    for cls in type(exc).__mro__:
-        kind = _ERROR_KINDS.get(cls.__name__)
-        if kind is not None:
-            return kind
-    return ProviderErrorKind.UNKNOWN
+    return _ERROR_KINDS.get(type(exc).__name__, ProviderErrorKind.UNKNOWN)
 
 
 def _provider_error(fallback: str, exc: Exception, model: str) -> ProviderError:
@@ -192,7 +190,7 @@ def _wire_base_url(api_base: str | None) -> str | None:
 @functools.lru_cache(maxsize=32)
 def _client(model: str, base_url: str | None, api_key: str | None) -> Any:
     """Return the liter-llm client for one model, endpoint and key (cached)."""
-    liter_llm = _require_liter_llm()
+    liter_llm = _require_sdk()
     options = liter_llm.ClientOptions(
         api_key=api_key or "",
         base_url=base_url,
@@ -251,7 +249,7 @@ _UNSUPPORTED_OPTIONS = frozenset({"top_k", "num_ctx", "repeat_penalty"})
 
 def _chat_fields(request: CompletionRequest, *, stream: bool) -> dict[str, Any]:
     """Translate a ``CompletionRequest`` into liter-llm chat request fields."""
-    liter_llm = _require_liter_llm()
+    liter_llm = _require_sdk()
     fields: dict[str, Any] = {
         "model": _route_model(request.ref, request.api_base),
         "messages": _format_messages(request.messages),
@@ -310,7 +308,7 @@ def _finish_reason(choice: Any) -> str | None:
     return str(reason) if reason is not None else None
 
 
-class LiterLlmSdkBackend:
+class RemoteSdkBackend:
     """``LlmSdkBackend`` adapter backed by the ``liter-llm`` SDK."""
 
     @property
@@ -324,7 +322,7 @@ class LiterLlmSdkBackend:
 
     def available(self) -> bool:
         """Return True if the underlying SDK is installed."""
-        return liter_llm_available()
+        return remote_sdk_available()
 
     def supports_tools(self, _model_ref: str) -> bool:
         """Optimistic: all SDK-routed refs report tool support.
@@ -340,7 +338,7 @@ class LiterLlmSdkBackend:
 
     def complete(self, request: CompletionRequest) -> CompletionResult:
         """Run a single-shot completion through ``liter_llm.chat``."""
-        liter_llm = _require_liter_llm()
+        liter_llm = _require_sdk()
         model = request.ref.for_display()
         try:
             fields = _chat_fields(request, stream=False)
@@ -367,7 +365,7 @@ class LiterLlmSdkBackend:
         The first chunk is read before returning, so a connection or auth
         failure raises here, as it does for a single-shot call.
         """
-        liter_llm = _require_liter_llm()
+        liter_llm = _require_sdk()
         model = request.ref.for_display()
         try:
             fields = _chat_fields(request, stream=True)
@@ -410,7 +408,7 @@ class LiterLlmSdkBackend:
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         """Embed inputs through ``liter_llm.embed``."""
-        liter_llm = _require_liter_llm()
+        liter_llm = _require_sdk()
         model = _route_model(request.ref, request.api_base)
         try:
             client = _client(model, _wire_base_url(request.api_base), request.api_key)
@@ -453,7 +451,7 @@ class LiterLlmSdkBackend:
         """
         if not request.candidates:
             return RerankResult(scores=[])
-        liter_llm = _require_liter_llm()
+        liter_llm = _require_sdk()
         model = _route_model(request.ref, request.api_base)
         try:
             client = _client(model, _wire_base_url(request.api_base), request.api_key)

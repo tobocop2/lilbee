@@ -27,7 +27,7 @@ from lilbee.modelhub.model_manager.discovery import (
 )
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers import liter_llm_sdk
+from lilbee.providers import remote_sdk
 from lilbee.providers.key_check import provider_key_status
 from lilbee.providers.local_servers import LocalServerSpec
 from lilbee.providers.local_servers.config_urls import base_url_for
@@ -38,7 +38,7 @@ from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD
 log = logging.getLogger(__name__)
 
 # User-facing reasons a persisted ref is unusable, shared across surfaces.
-REASON_LITER_LLM_MISSING = "the liter-llm extra isn't installed"
+REASON_PROVIDERS_MISSING = "the providers extra isn't installed"
 REASON_SERVER_UNREACHABLE = "the model server at {base_url} isn't reachable"
 REASON_NO_API_KEY = "no API key is configured for {provider}"
 REASON_INVALID_API_KEY = "{provider} rejected the configured API key"
@@ -82,9 +82,9 @@ def _local_server_reachable(spec: LocalServerSpec, base_url: str) -> bool:
 
 
 def _classify_local_server_ref(spec: LocalServerSpec) -> tuple[ValidationResult, str | None]:
-    """Classify an ollama/lm_studio ref: needs the liter-llm extra and a live server."""
-    if not liter_llm_sdk.liter_llm_available():
-        return ValidationResult.UNKNOWN, REASON_LITER_LLM_MISSING
+    """Classify an ollama/lm_studio ref: needs the providers extra and a live server."""
+    if not remote_sdk.remote_sdk_available():
+        return ValidationResult.UNKNOWN, REASON_PROVIDERS_MISSING
     base_url = base_url_for(spec.key)
     if not _local_server_reachable(spec, base_url):
         return ValidationResult.UNKNOWN, REASON_SERVER_UNREACHABLE.format(base_url=base_url)

@@ -190,13 +190,13 @@ The Linux x86_64 wheel and binary bundle the Vulkan loader, so they start on any
 
 ### Optional extras
 
-These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[engine,crawler,litellm]'` (combine multiple, and `--extra-index-url` still works). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all four, which is why they need none of this. `[engine]` is the one that is not really optional; lilbee works fine without the other three. See the [install commands in the usage guide](docs/usage.md#optional-extras) for any uv install that has `crawler` in the extras list.
+These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[engine,crawler,providers]'` (combine multiple, and `--extra-index-url` still works). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all four, which is why they need none of this. `[engine]` is the one that is not really optional; lilbee works fine without the other three. See the [install commands in the usage guide](docs/usage.md#optional-extras) for any uv install that has `crawler` in the extras list.
 
 | Extra       | What it adds                                                                                                                                              |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `[engine]`  | The bundled `llama-server` that runs your models. Published on lilbee.sh rather than PyPI, so it needs the `--extra-index-url` for your hardware; without it nothing can load a model. |
 | `[crawler]` | Index websites alongside your files: crawl a docs site or wiki to markdown, then search it offline.                                                       |
-| `[litellm]` | Bridge to hosted model providers for chat, vision, or embeddings while other roles stay local. The TUI flags when a hosted role is active.                |
+| `[providers]` | Bridge to hosted model providers for chat, vision, or embeddings while other roles stay local. The TUI flags when a hosted role is active.                |
 | `[graph]`   | Concept-graph search: extracts the ideas in your documents and uses how they relate to surface matches plain keyword search misses. No extra model calls. |
 
 See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration.
@@ -500,7 +500,7 @@ https://github.com/user-attachments/assets/993a63d4-9468-4a55-b9ed-e4b1ae1ed235
 
 - **Point it at a running manager.** Your models in Ollama or LM Studio show up in the same catalog and role pickers (chat, embedding, vision, rerank), labeled by where they run, alongside lilbee's own and any cloud models. Mix freely.
 - **They stay read-only.** lilbee lists and runs them but never pulls or deletes them, so their lifecycle stays in the app you already use.
-- **On `pip` / `uv`,** this needs the `[litellm]` extra (`pip install --pre 'lilbee[litellm]'`); the Homebrew, AUR, Nix, Docker, Flatpak, and Snap builds already include it. See [Install](#install).
+- **On `pip` / `uv`,** this needs the `[providers]` extra (`pip install --pre 'lilbee[providers]'`); the Homebrew, AUR, Nix, Docker, Flatpak, and Snap builds already include it. See [Install](#install).
 
 Both reels run chat *and* embedding on the other manager's models, picked out of the catalog's Library tab where each row names the server it runs on.
 
@@ -524,7 +524,7 @@ https://github.com/user-attachments/assets/b42effc3-a7f6-4391-904c-3ac897712172
 
 lilbee runs entirely on your machine until you set a cloud provider's API key. Two ways to use a cloud model when you want one:
 
-- **Bring your own key.** Install the `[litellm]` extra, add an API key, then point any role (chat, embedding, vision, rerank) at a cloud model from the same catalog. The TUI shows a warning the whole time a cloud model is on.
+- **Bring your own key.** Install the `[providers]` extra, add an API key, then point any role (chat, embedding, vision, rerank) at a cloud model from the same catalog. The TUI shows a warning the whole time a cloud model is on.
 - **Pair lilbee with a cloud agent over MCP.** Your files, the embeddings, and the index stay local. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
 
 Either way, your files and the index stay on your computer. Only what you ask and the snippets needed to answer it get sent to the cloud model.
@@ -735,7 +735,6 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 - [LanceDB] is the embedded vector store.
 - [tree-sitter] (via [tree-sitter-language-pack]) chunks code across 150+ languages.
 - [crawl4ai] and [Playwright] crawl the web; [Tesseract] is the OCR fallback when no vision model is set.
-- [LiteLLM] bridges cloud model providers (the `[litellm]` optional extra).
 - [Textual] draws the terminal; [Litestar] runs the HTTP server.
 - [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
 - [Nuitka] compiles the whole thing into the standalone single-file binary, bundling its own Python runtime so there is nothing to install and nothing to compile.
@@ -772,7 +771,6 @@ MIT. See [LICENSE](LICENSE).
 [tree-sitter-language-pack]: https://github.com/Goldziher/tree-sitter-language-pack
 [Tesseract]: https://github.com/tesseract-ocr/tesseract
 [Litestar]: https://litestar.dev
-[LiteLLM]: https://github.com/BerriAI/litellm
 [MCP Python SDK]: https://github.com/modelcontextprotocol/python-sdk
 [Typer]: https://typer.tiangolo.com
 [Pydantic]: https://docs.pydantic.dev

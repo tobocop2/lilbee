@@ -57,7 +57,7 @@ test-ci-forked:
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data.extract import chunk, code_chunker; from lilbee.data import store, ingest; from lilbee.retrieval import embedder, query"
 
-# The hosted-key tests need the litellm extra, which only this job installs.
+# The hosted-key tests need the providers extra, which only this job installs.
 test-integration:
 	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py -v
 

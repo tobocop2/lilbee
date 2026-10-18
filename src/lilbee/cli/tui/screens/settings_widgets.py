@@ -173,10 +173,10 @@ def stringify_default(default: object) -> str:
     return str(default)
 
 
-def _liter_llm_installed() -> bool:
-    from lilbee.providers.liter_llm_sdk import liter_llm_available
+def _providers_installed() -> bool:
+    from lilbee.providers.remote_sdk import remote_sdk_available
 
-    return liter_llm_available()
+    return remote_sdk_available()
 
 
 def _crawler_installed() -> bool:
@@ -190,8 +190,8 @@ def _wiki_enabled() -> bool:
 
 
 _FEATURE_GATED_GROUPS: dict[SettingGroup, Callable[[], bool]] = {
-    SettingGroup.API_KEYS: _liter_llm_installed,
-    SettingGroup.LOCAL_SERVERS: _liter_llm_installed,
+    SettingGroup.API_KEYS: _providers_installed,
+    SettingGroup.LOCAL_SERVERS: _providers_installed,
     SettingGroup.CRAWLING: _crawler_installed,
     SettingGroup.WIKI: _wiki_enabled,
 }

@@ -1,7 +1,7 @@
 """Tests for ``SdkLLMProvider``. The SDK-agnostic semantic layer.
 
 These tests inject an inline ``FakeBackend`` satisfying the
-``LlmSdkBackend`` Protocol, so they never touch ``litellm`` or any
+``LlmSdkBackend`` Protocol, so they never touch the SDK or any
 other third-party SDK. They verify message formatting, the API key each
 request carries, option translation, error wrapping, streaming, and the
 "optional method returns not-supported" paths.
@@ -586,7 +586,7 @@ class TestListChatModels:
 
     def test_initializes_backend_before_query(self) -> None:
         # The provider must apply cfg.json_mode suppression before the
-        # catalog call, otherwise the litellm banner can leak.
+        # catalog call, otherwise the SDK banner can leak.
         cfg.json_mode = True
         backend = FakeBackend(list_chat_models_result=["m"])
         provider = SdkLLMProvider(backend)

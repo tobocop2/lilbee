@@ -8,7 +8,7 @@ on:
     paths:
       - 'tools/qa/**'
       - '.github/workflows/qa-matrix.yml'
-  # Weekly drift check: litellm upgrades and Ollama API changes arrive on a
+  # Weekly drift check: provider SDK upgrades and Ollama API changes arrive on a
   # calendar, not on a diff. Only ollama-pypi runs on this trigger.
   schedule:
     - cron: '0 8 * * 1'
@@ -123,7 +123,7 @@ jobs:
       - name: Install lilbee from PyPI (lane=pypi)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id == ''
         shell: bash
-        # Plain `lilbee` without extras; [crawler] / [litellm] live in the dedicated cells.
+        # Plain `lilbee` without extras; [crawler] / [providers] live in the dedicated cells.
         run: |
           python -m pip install "lilbee==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
@@ -161,7 +161,7 @@ jobs:
 
       - name: Bring up Ollama (Linux binary lane only)
         # macOS/Windows ollama setup is gnarlier; those lanes skip via
-        # 'daemon not reachable' inside test_e2e_litellm_ollama.
+        # 'daemon not reachable' inside test_e2e_remote_ollama.
         if: matrix.lane == 'binary' && matrix.os == 'ubuntu-latest'
         uses: ./.github/actions/ollama-up
         with:
@@ -330,7 +330,7 @@ jobs:
             tools/qa/.pytest_cache/
           retention-days: 7
 
-  # Dedicated Ollama lane (litellm SDK adds ~30-60s per lilbee call; isolated to keep main suite under budget).
+  # Dedicated Ollama lane (the provider SDK adds latency per lilbee call; isolated to keep main suite under budget).
   ollama-pypi:
     name: ollama-pypi (ubuntu-latest)
     runs-on: ubuntu-latest
@@ -366,26 +366,17 @@ jobs:
           merge-multiple: true
           github-token: ${{ github.token }}
 
-      - name: Install lilbee from local wheels with crawler + litellm extras (RC mode)
+      - name: Install lilbee from local wheels with crawler + providers extras (RC mode)
         if: inputs.wheel_run_id != ''
         run: |
-          python -m pip install --find-links ./_wheels --pre "lilbee[crawler,litellm]==${{ steps.ver.outputs.version }}"
+          python -m pip install --find-links ./_wheels --pre "lilbee[crawler,providers]==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
 
-      - name: Install lilbee from PyPI with crawler + litellm extras
+      - name: Install lilbee from PyPI with crawler + providers extras
         if: inputs.wheel_run_id == ''
         run: |
-          python -m pip install "lilbee[crawler,litellm]==${{ steps.ver.outputs.version }}"
+          python -m pip install "lilbee[crawler,providers]==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
-
-      # crawl4ai's litellm fork shares litellm's package; remove it until crawl4ai ships unclecode/crawl4ai#2107.
-      - name: Remove the litellm fork that crawl4ai installs
-        run: |
-          litellm_version="$(python -c 'from importlib.metadata import version; print(version("litellm"))')"
-          python -m pip uninstall -y unclecode-litellm
-          python -m pip install --force-reinstall --no-deps "litellm==${litellm_version}"
-          if python -m pip show -q unclecode-litellm; then exit 1; fi
-          python -c 'import crawl4ai; from litellm import completion'
 
       - name: Bring up Ollama
         uses: ./.github/actions/ollama-up
@@ -405,7 +396,7 @@ jobs:
           if [ -d "$HOME/.lilbee-qa-models" ]; then
             cp -R "$HOME/.lilbee-qa-models/." "$LILBEE_QA_MODELS_DIR/" 2>/dev/null || true
           fi
-          python -m pytest tools/qa/test_e2e_litellm_ollama.py -v --tb=short \
+          python -m pytest tools/qa/test_e2e_remote_ollama.py -v --tb=short \
             --junitxml=qa-ollama-pypi.xml
           # Persist any newly-pulled models back to the cache location.
           mkdir -p "$HOME/.lilbee-qa-models"

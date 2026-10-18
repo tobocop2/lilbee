@@ -29,6 +29,7 @@ from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
+from lilbee.providers.remote_sdk import SDK_MODULE
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import styled
 from lilbee.runtime.progress import EventType, SetupProgressEvent
@@ -361,7 +362,9 @@ def self_check_cmd(
         console.print(styled(("SELF-CHECK PASSED", theme.ACCENT)))
 
 
-_SELF_CHECK_EXTRAS = ("liter_llm", "crawl4ai", "spacy", "graspologic_native")
+_SELF_CHECK_EXTRAS = ("providers", "crawl4ai", "spacy", "graspologic_native")
+# Extras whose importable module name differs from the label the check prints.
+_SELF_CHECK_MODULES = {"providers": SDK_MODULE}
 
 # The name of the functional charset-detection leg in self-check-extras output.
 _CHARSET_PROBE = "charset_detection"
@@ -392,12 +395,12 @@ def _probe_charset_detection() -> str | None:
 
 
 def self_check_extras_cmd() -> None:
-    """Verify optional extras (crawler, liter-llm, graph) are bundled and importable."""
+    """Verify optional extras (crawler, providers, graph) are bundled and importable."""
     results: dict[str, Any] = {}
     failed: list[str] = []
     for name in _SELF_CHECK_EXTRAS:
         try:
-            importlib.import_module(name)
+            importlib.import_module(_SELF_CHECK_MODULES.get(name, name))
             results[name] = True
         except ImportError as exc:
             results[name] = False

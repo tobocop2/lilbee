@@ -41,7 +41,7 @@ flowchart LR
 
     subgraph Providers
         FLEET[llama-server fleet]
-        SDK[SDK backend litellm]
+        SDK[SDK backend]
         HF[HuggingFace Hub]
     end
 
@@ -107,7 +107,7 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **Structured files.** xberg handles XML, JSON, JSONL, YAML, and CSV natively. Language detection for code-shaped content is delegated to tree-sitter-language-pack's `detect_language()`.
 - **Web pages.** crawl4ai fetches HTML with JavaScript rendering via Playwright, converts to markdown, and saves to `documents/_web/` for indexing. Recursive crawls emit live progress, respect per-domain rate limits, and retry on HTTP 429/503 with jitter. SSRF protection blocks internal networks by default.
 - **Chunking strategy.** Fixed-size chunking (default, token-aware) for reliability on procedural and reference docs. Opt-in semantic chunking (`LILBEE_SEMANTIC_CHUNKING=true`) splits at topic boundaries via xberg's ONNX embedding model; better on prose-heavy corpora at the cost of roughly 9x more downstream embedding calls.
-- **Embedding.** Provider-agnostic: native GGUF on the local `llama-server` engine by default, or any backend reachable via the SDK protocol when `pip install lilbee[litellm]` is available.
+- **Embedding.** Provider-agnostic: native GGUF on the local `llama-server` engine by default, or any backend reachable via the SDK protocol when `pip install lilbee[providers]` is available.
 - **Asymmetric query/document embedding.** Instruction-tuned embedders (Qwen3-Embedding, e5/gte `*-instruct`) only reach their retrieval scores when the query carries a task instruction (`Instruct: ...\nQuery: <q>`) embedded differently from documents; base e5 uses `query:`/`passage:` prefixes. lilbee detects the family from the configured embedder ref and applies the right prefixes automatically (`retrieval/embedding_profiles.py`): the query path uses `embed_query`/`embed_query_batch`, the document path keeps `embed`/`embed_batch`. Symmetric models (bge-m3, nomic) and unrecognized models get no prefix, so behavior is unchanged for them. There is no instruction config: a wrong template silently underperforms, so support for a new family is a curated map entry, not a user knob.
 - **Concept extraction (opt-in).** With `pip install lilbee[graph]`, spaCy noun phrases are extracted per chunk, a co-occurrence graph is built with PPMI weights, and Leiden clustering assigns concepts to communities.
 - **Wiki generation.** Wikification is explicit: `lilbee wiki build` (or the TUI Wikify action, or the HTTP/MCP build endpoints) issues one LLM call per source; `lilbee sync` only runs the capped `lilbee.wiki.ingest.incremental_update` hook when `wiki_auto_update` is enabled. Each call jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
@@ -344,7 +344,7 @@ Batching the conversion was not the alternative. One contiguous 2D `tolist` meas
 101 ms per 1k against 96 ms per vector: the cost is allocating float objects, not call
 overhead, so only not allocating them helps.
 
-The SDK backends (Ollama, OpenAI via litellm) receive JSON float lists from their SDK
+The SDK backends (Ollama, OpenAI) receive JSON float lists from their SDK
 and convert once at the provider boundary. They are network-bound, so the conversion
 does not show up. Two places still need Python lists and say so: `MemoryRow` serializes
 to JSON on write, and LanceDB read rows (`SearchChunk.vector`) come back as lists.
@@ -648,7 +648,7 @@ lilbee treats chat, embedding, vision (OCR), and reranking as independent **mode
 flowchart TD
     APP[Application Code] --> ROUTE[RoutingProvider]
     ROUTE --> CHECK{Model ref prefix is a remote provider?}
-    CHECK -->|Yes| SDK_BACK[SDK backend via litellm]
+    CHECK -->|Yes| SDK_BACK[SDK backend]
     CHECK -->|No| FLEET[FleetProvider: local llama-server]
 
     APP -->|explicit config| SDK_P[SdkLLMProvider]
@@ -656,7 +656,7 @@ flowchart TD
 ```
 
 - **auto** (default). `RoutingProvider` dispatches by model-ref prefix: a remote ref (`ollama/`, `openai/`, ...) goes to the SDK backend; a native GGUF ref runs locally on the managed `llama-server` engine.
-- **remote**. Force all calls through the SDK backend (anything litellm reaches). Requires `pip install lilbee[litellm]`.
+- **remote**. Force all calls through the SDK backend (any provider the SDK reaches). Requires `pip install lilbee[providers]`.
 
 **Model roles** (`lilbee model list --task <role>`):
 
@@ -1780,7 +1780,7 @@ A built engine is written to the mirror and nowhere else. Storing it in the Acti
 - `cache-env` carries the runner image or container, which is what fixes the glibc floor. A repointed runner label changes the key and forces a rebuild.
 - Mirror assets never expire, unlike cache entries. That is benign for engines: they are self-contained with a baked rpath, and an engine built on an older image of the same label carries a lower glibc floor, not a higher one.
 
-Two optimisations were tried and rejected for exactly this reason. `--nofollow-import-to=litellm.proxy` would have dropped 581 modules and ~18 min of compile, but `litellm/__init__.py` imports 9 of them on a bare import, so the binary would raise `ImportError` on first use. Gating the CUDA toolkit install on a mirror probe would have saved 4.9 min, but the probe and the fetch are separate requests, and a cell that skips the toolkit and then has to build the engine fails with no `CUDA_PATH`; since these cells are `continue-on-error`, that ships a release missing a CUDA binary rather than failing it.
+One optimisation was tried and rejected for exactly this reason. Gating the CUDA toolkit install on a mirror probe would have saved 4.9 min, but the probe and the fetch are separate requests, and a cell that skips the toolkit and then has to build the engine fails with no `CUDA_PATH`; since these cells are `continue-on-error`, that ships a release missing a CUDA binary rather than failing it.
 
 ### Notes
 

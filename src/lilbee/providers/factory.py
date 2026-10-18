@@ -23,19 +23,19 @@ def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
     """
     match config.llm_provider:
         case LlmProvider.AUTO:
-            # heavy: routing_provider eagerly imports liter_llm_sdk (native module load)
+            # heavy: routing_provider eagerly imports remote_sdk (native module load)
             from lilbee.providers.routing_provider import RoutingProvider
 
             return RoutingProvider(hold_warm=hold_warm)
 
         case LlmProvider.REMOTE:
-            # heavy: liter_llm_sdk pulls in the native liter-llm module
-            from lilbee.providers.liter_llm_sdk import LITER_LLM_MISSING_MSG, LiterLlmSdkBackend
+            # heavy: remote_sdk loads the native client library
+            from lilbee.providers.remote_sdk import REMOTE_SDK_MISSING_MSG, RemoteSdkBackend
             from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-            backend = LiterLlmSdkBackend()
+            backend = RemoteSdkBackend()
             if not backend.available():
-                raise ProviderError(LITER_LLM_MISSING_MSG)
+                raise ProviderError(REMOTE_SDK_MISSING_MSG)
             return SdkLLMProvider(backend)  # pragma: no cover
 
     assert_never(config.llm_provider)  # pragma: no cover

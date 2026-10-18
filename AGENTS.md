@@ -24,7 +24,7 @@ The full rules follow; this block is the part that gets skipped under time
 pressure, so it leads.
 
 ## Project
-The whole local AI stack in one executable: a model manager plus a search engine you can talk to. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`).
+The whole local AI stack in one executable: a model manager plus a search engine you can talk to. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI through the provider SDK), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`).
 
 **Framing:** Lead with "the whole local AI stack in one executable". Two pillars, always both: it runs and manages the models (its own model manager, no Ollama or LM Studio needed, works with both), and it is a search engine you can talk to (cited answers). "RAG" and "local-first" are properties, not the identity. lilbee is both a standalone multipurpose tool AND an AI agent backend.
 
@@ -84,7 +84,7 @@ All settings except `linked_roots` override via environment variables:
 - `LILBEE_RERANKER_PROMPT` — relevance prompt for LLM rerankers (blank uses the built-in template).
 - `LILBEE_OCR_TIMEOUT` — per-page vision OCR timeout in seconds (default: `300`, `0` = no limit)
 - `LILBEE_SSE_HEARTBEAT_INTERVAL` — seconds between SSE heartbeat events when the producer queue is idle (default: `30`). Set to `0` to disable.
-- `LILBEE_LLM_PROVIDER` — provider: `auto` (default; runs models locally on the managed `llama-server` fleet) or `remote` (external OpenAI-compatible endpoint; requires `pip install lilbee[litellm]`).
+- `LILBEE_LLM_PROVIDER` — provider: `auto` (default; runs models locally on the managed `llama-server` fleet) or `remote` (external OpenAI-compatible endpoint; requires `pip install lilbee[providers]`).
 - `LILBEE_LLAMA_SERVER_PATH`: path to a `llama-server` binary; when set it always wins, even over the bundled wheel (default: the bundled wheel's binary, else PATH)
 - `LILBEE_OLLAMA_BASE_URL` — Ollama server URL (blank uses `http://localhost:11434`)
 - `LILBEE_LM_STUDIO_BASE_URL` — LM Studio server URL (blank uses `http://localhost:1234/v1`)
@@ -192,7 +192,7 @@ Default: **every import lives at module top**, ordered stdlib, third-party, loca
 **Permitted reasons for a function-local import:**
 
 1. **Circular import.** Module A's top-level already imports module B, and module B needs a symbol from A. Put A's import of B inside the one function in B that needs it, with a comment `# circular: B -> A via <symbol>`.
-2. **Heavy third-party lib.** Module-top import takes **>50 ms measured by `python -X importtime`** or loads native libraries. Known-heavy libs in this project: `litellm` (provider SDK fanout), `lancedb` (arrow + datafusion), `xberg` (OCR stack), `gguf` (numpy), `sentence_transformers`, `spacy`, `crawl4ai`, `textual` when imported outside the TUI screen modules. (The local inference engine is the out-of-process `llama-server`, reached over HTTP, so it adds no heavy Python import.) Use importtime before declaring a lib heavy.
+2. **Heavy third-party lib.** Module-top import takes **>50 ms measured by `python -X importtime`** or loads native libraries. Known-heavy libs in this project: the provider SDK (native extension), `lancedb` (arrow + datafusion), `xberg` (OCR stack), `gguf` (numpy), `sentence_transformers`, `spacy`, `crawl4ai`, `textual` when imported outside the TUI screen modules. (The local inference engine is the out-of-process `llama-server`, reached over HTTP, so it adds no heavy Python import.) Use importtime before declaring a lib heavy.
 3. **CLI startup path.** The import lives inside a Typer command body so `lilbee --help` stays fast. Treat this as a sub-case of (2): the CLI loader stays lean so unused subcommands don't pay for their dependencies.
 
 **Never lazy-import the following:**
@@ -219,7 +219,7 @@ The codebase has a small set of `try: import X except ImportError:` patterns for
 
 | Library | Helper | Extra | Used by |
 |---|---|---|---|
-| `litellm` | `lilbee.providers.litellm_sdk.litellm_available()` | `lilbee[litellm]` | SDK provider, settings TUI |
+| provider SDK | `lilbee.providers.remote_sdk.remote_sdk_available()` | `lilbee[providers]` | SDK provider, settings TUI |
 | `crawl4ai` | `lilbee.crawler.crawler_available()` | `lilbee[crawler]` | Web crawler |
 | `graspologic_native` | `lilbee.retrieval.concepts.nlp.concepts_available()` | `lilbee[graph]` | Concept-graph clustering |
 | `lilbee_engine` | resolved in `lilbee.providers.fleet.binary.resolve_engine_tool()` | bundled wheel | The local inference engine binaries (llama-server + llama-swap + gguf-parser) |
@@ -620,7 +620,7 @@ See the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) for the full
 - `data/store/` — LanceDB operations
 - `data/chunk.py` — Text chunking (token-based recursive)
 - `data/code_chunker.py` — Code chunking (tree-sitter AST)
-- `providers/` — LLM provider abstraction (base protocol, the `fleet` llama-server engine, litellm SDK, routing/factory)
+- `providers/` — LLM provider abstraction (base protocol, the `fleet` llama-server engine, remote SDK, routing/factory)
 - `catalog/` — Model discovery from HuggingFace
 - `modelhub/model_manager/` — Model lifecycle (install, remove, list)
 - `retrieval/embedder.py` — Embedding wrapper (uses provider abstraction)
