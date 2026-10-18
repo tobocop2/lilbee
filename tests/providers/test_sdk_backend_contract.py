@@ -281,6 +281,28 @@ class TestRequestFields:
         assert sdk.clients[-1]["base_url"] is None
         assert sdk.clients[-1]["api_key"] == "sk-test"
 
+    @pytest.mark.parametrize(
+        ("model", "api_base", "retries"),
+        [
+            ("ollama/m", "http://localhost:11434", 0),
+            ("lm_studio/m", "http://localhost:1234/v1", 0),
+            ("openai/gpt-4o", None, 2),
+            ("anthropic/claude-3-5-sonnet", None, 2),
+        ],
+    )
+    def test_retries_are_none_for_local_servers_and_two_for_hosted(
+        self,
+        backend: LlmSdkBackend,
+        sdk: fakes.FakeSdk,
+        model: str,
+        api_base: str | None,
+        retries: int,
+    ) -> None:
+        sdk.chat_result = fakes.text_response("ok")
+        backend.complete(_completion_request(model, api_base=api_base, api_key="sk-test"))
+        assert sdk.clients[-1]["max_retries"] == retries
+        assert sdk.clients[-1]["timeout_secs"] == 600
+
     def test_missing_key_sends_an_empty_key(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
     ) -> None:

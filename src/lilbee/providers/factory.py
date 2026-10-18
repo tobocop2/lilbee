@@ -36,6 +36,6 @@ def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
             backend = RemoteSdkBackend()
             if not backend.available():
                 raise ProviderError(REMOTE_SDK_MISSING_MSG)
-            return SdkLLMProvider(backend)  # pragma: no cover
+            return SdkLLMProvider(backend)
 
     assert_never(config.llm_provider)  # pragma: no cover

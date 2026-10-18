@@ -49,6 +49,10 @@ SDK_MODULE = "liter_llm"
 # Seconds a single provider request may run. liter-llm has no unbounded default,
 # so a long non-streaming generation needs an explicit ceiling.
 _REQUEST_TIMEOUT_S = 600
+# Retries after a failed request. A local server answers or is down, so a retry only
+# repeats a long load; a hosted provider gets two (three attempts).
+_LOCAL_SERVER_RETRIES = 0
+_HOSTED_RETRIES = 2
 
 REMOTE_SDK_MISSING_MSG = (
     "Remote and API models need the lilbee[providers] extra. If you installed lilbee "
@@ -184,6 +188,12 @@ def _wire_base_url(api_base: str | None) -> str | None:
     return f"{trimmed}/v1"
 
 
+def _max_retries(model: str) -> int:
+    """Return the retry count for a ``provider/model`` string: none for a local server."""
+    provider = model.partition("/")[0]
+    return _LOCAL_SERVER_RETRIES if local_server_for_key(provider) is not None else _HOSTED_RETRIES
+
+
 @functools.lru_cache(maxsize=32)
 def _client(model: str, base_url: str | None, api_key: str | None) -> Any:
     """Return the liter-llm client for one model, endpoint and key (cached)."""
@@ -192,6 +202,7 @@ def _client(model: str, base_url: str | None, api_key: str | None) -> Any:
         api_key=api_key or "",
         base_url=base_url,
         timeout_secs=_REQUEST_TIMEOUT_S,
+        max_retries=_max_retries(model),
         model_hint=model,
     )
     return liter_llm.create_client_with_options(options)
@@ -239,8 +250,9 @@ _REQUEST_FIELDS = frozenset(
 # ``reasoning_effort`` field only takes low/medium/high; lilbee sends ``none``
 # to turn thinking off.
 _BODY_FIELDS = frozenset({"reasoning_effort"})
-# Options the OpenAI-compatible route cannot carry. They were Ollama native
-# options (``options.num_ctx`` and friends) and are dropped here.
+# GAP: the OpenAI-compatible route cannot carry these Ollama native options
+# (``options.num_ctx`` and friends), so they are dropped here and the server
+# keeps its own values.
 _UNSUPPORTED_OPTIONS = frozenset({"top_k", "num_ctx", "repeat_penalty"})
 
 

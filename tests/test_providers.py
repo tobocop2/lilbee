@@ -432,6 +432,17 @@ class TestRoutingProvider:
         assert result == [[0.1, 0.2]]
         mock_sdk.embed.assert_called_once()
 
+    def test_remote_embed_reaches_the_sdk_through_the_real_adapter(self) -> None:
+        rp = self._make_provider()
+        cfg.embedding_model = "ollama/nomic-embed-text:latest"
+        fake = fakes.FakeSdk()
+        fake.embed_result = fakes.embedding_response([(0, [0.5, 0.25])])
+        with fakes.installed(fake):
+            result = rp.embed(["test"])
+        assert result == [[0.5, 0.25]]
+        assert fake.last("embed") == {"model": "ollama/nomic-embed-text:latest", "input": ["test"]}
+        assert fake.clients[-1]["max_retries"] == 0
+
     def test_routes_embed_to_local_engine_for_local_ref(self) -> None:
         rp = self._make_provider()
 
@@ -854,6 +865,17 @@ class TestRequireSdk:
         message = str(caught.value)
         assert "pip install 'lilbee[providers]'" in message
         assert "run your install command again with providers added to the extras" in message
+
+    def test_factory_builds_a_sdk_provider_when_sdk_available(self) -> None:
+        from lilbee.providers.factory import create_provider
+        from lilbee.providers.remote_sdk import RemoteSdkBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+        cfg.llm_provider = "remote"
+        with mock.patch.object(RemoteSdkBackend, "available", return_value=True):
+            provider = create_provider(cfg)
+        assert isinstance(provider, SdkLLMProvider)
+        assert isinstance(provider._backend, RemoteSdkBackend)
 
     def test_factory_raises_when_sdk_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
