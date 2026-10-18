@@ -6863,6 +6863,26 @@ class TestSelfCheckExtras:
         assert payload["spacy"] is True
         assert payload["graspologic_native"] is True
 
+    def test_providers_extra_is_probed_by_its_importable_module(self) -> None:
+        from lilbee.providers.remote_sdk import SDK_MODULE
+
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._probe_charset_detection",
+                return_value=None,
+            ),
+            mock.patch(
+                "lilbee.cli.commands.setup.importlib.import_module",
+                side_effect=self._import_module_stub(missing={SDK_MODULE}),
+            ),
+        ):
+            result = runner.invoke(app, ["--json", "self-check-extras"])
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["providers"] is False
+        assert payload["crawl4ai"] is True
+        assert SDK_MODULE in payload["providers_error"]
+
     def test_one_extra_missing_human_mode_reports_failure(self) -> None:
         with (
             # Patched first: mock.patch resolves its target through
