@@ -1956,6 +1956,45 @@ class TestCrawlBrowserExtraWait:
             Config(crawl_timeout=3601)
 
 
+# Each crawl setting that reaches the engine as a number, with the largest value it accepts.
+CRAWL_NUMBER_BOUNDS = {
+    "crawl_mean_delay": 3600.0,
+    "crawl_max_delay_range": 3600.0,
+    "crawl_retry_base_delay_min": 3600.0,
+    "crawl_retry_base_delay_max": 3600.0,
+    "crawl_retry_max_backoff": 3600.0,
+    "crawl_max_depth": 100,
+    "crawl_max_pages": 10_000_000,
+    "crawl_safety_max_pages": 10_000_000,
+    "crawl_concurrent_requests": 256,
+}
+
+
+class TestCrawlNumberBounds:
+    @pytest.mark.parametrize("name", CRAWL_NUMBER_BOUNDS)
+    def test_the_largest_value_is_accepted(self, name):
+        limit = CRAWL_NUMBER_BOUNDS[name]
+        assert getattr(Config(**{name: limit}), name) == limit
+
+    @pytest.mark.parametrize("name", CRAWL_NUMBER_BOUNDS)
+    def test_one_more_than_the_largest_value_is_refused_with_the_setting_named(self, name):
+        with pytest.raises(ValidationError, match=name):
+            Config(**{name: CRAWL_NUMBER_BOUNDS[name] + 1})
+
+    @pytest.mark.parametrize("name", CRAWL_NUMBER_BOUNDS)
+    def test_a_value_that_overflows_the_engine_is_refused_with_the_setting_named(self, name):
+        with pytest.raises(ValidationError, match=name):
+            Config(**{name: 2**64})
+
+    @pytest.mark.parametrize(
+        "name", [n for n, v in CRAWL_NUMBER_BOUNDS.items() if isinstance(v, float)]
+    )
+    @pytest.mark.parametrize("value", [1e300, float("inf")])
+    def test_a_huge_or_infinite_delay_is_refused_with_the_setting_named(self, name, value):
+        with pytest.raises(ValidationError, match=name):
+            Config(**{name: value})
+
+
 class TestPlainEnvSourceSkipsEmpty:
     def test_empty_chat_model_uses_default(self, tmp_path):
         env = clean_env(tmp_path)
