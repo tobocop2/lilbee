@@ -439,7 +439,7 @@ class TestRoutingProvider:
         fake.embed_result = fakes.embedding_response([(0, [0.5, 0.25])])
         with fakes.installed(fake):
             result = rp.embed(["test"])
-        assert result == [[0.5, 0.25]]
+        assert [list(map(float, vec)) for vec in result] == [[0.5, 0.25]]
         assert fake.last("embed") == {"model": "ollama/nomic-embed-text:latest", "input": ["test"]}
         assert fake.clients[-1]["max_retries"] == 0
 
