@@ -30,8 +30,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from lilbee.runtime.absorb_journal import absorb_pending
-
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -48,8 +46,8 @@ if TYPE_CHECKING:
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
-    from lilbee.runtime.cancellation import CancelSignal
     from lilbee.runtime.ingest_lock import IngestLockRegistry
+    from lilbee.runtime.progress import DetailedProgressCallback, EventType, ProgressEvent
     from lilbee.sessions import SessionStore
 
 
@@ -170,6 +168,13 @@ class _ServicesState:
         # for the session. Build-time intent only; the state that matters after
         # that lives on the provider itself.
         self.interactive: bool = False
+        # Where this process shows a library upgrade; each surface sets its own.
+        self.on_upgrade: DetailedProgressCallback | None = None
+
+    def report_upgrade(self, event_type: EventType, event: ProgressEvent) -> None:
+        """Pass a library upgrade event to the reporter the surface set last, if any."""
+        if self.on_upgrade is not None:
+            self.on_upgrade(event_type, event)
 
 
 _state = _ServicesState()
@@ -219,7 +224,7 @@ def build_services(
     registry = registry or ModelRegistry(config.models_dir)
     # The first point that sees env vars, --model and config.toml together.
     warn_unregistered_role_refs(config, registry)
-    store = Store(config)
+    store = Store(config, on_upgrade=_state.report_upgrade)
     embedder = Embedder(config, provider)
     reranker = Reranker(config)
     concepts = ConceptGraph(config, store)
@@ -258,11 +263,8 @@ def build_services(
 _singleton_create_lock = threading.Lock()
 
 
-def get_services(cancel: CancelSignal | None = None) -> Services:
+def get_services() -> Services:
     """Return the active container: a scoped override if set, else the cached singleton.
-
-    Setting *cancel* ends the wait of the call that builds for the records lock, when
-    it finishes an interrupted add, with ``SkipRecordsWaitCancelledError``.
 
     Creates the singleton on first call (against the process-global cfg). A
     config-file embedding_model with no embedding_dim would otherwise build the
@@ -300,14 +302,7 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
 
             with suppress(Exception):
                 services.provider.warm_up_pool()
-    # Outside the creation lock: the finisher takes the sync lock and the records lock.
-    # Only the thread that built: two takes of the sync lock at once can refuse each other.
-    if absorb_pending(cfg.data_root):
-        # heavy: the absorb loads the ingest pipeline
-        from lilbee.app.absorb import finish_pending_absorb_at_start
-
-        finish_pending_absorb_at_start(cfg, services.store, cancel)
-    return services
+        return services
 
 
 @contextmanager
@@ -337,6 +332,11 @@ def mark_interactive_session() -> None:
     one-shot CLI or the MCP server never calls it.
     """
     _state.interactive = True
+
+
+def report_library_upgrade(callback: DetailedProgressCallback | None) -> None:
+    """Show this process's library upgrades through *callback* (None: nowhere), for every store."""
+    _state.on_upgrade = callback
 
 
 def set_services(services: Services | None) -> None:
@@ -398,7 +398,7 @@ def reset_store() -> None:
     # Build the replacement, swap the reference, then close the old store last so
     # a new caller never observes a closed handle mid-swap.
     old_store = svc.store
-    store = Store(cfg)
+    store = Store(cfg, on_upgrade=_state.report_upgrade)
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
     searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)

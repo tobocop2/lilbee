@@ -46,10 +46,8 @@ from lilbee.cli.helpers import (
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.crawler import is_url
-from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
-_REMOVE_CANCELLED_MESSAGE = "Remove cancelled. Nothing was removed."
 # The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
 _EXIT_INTERRUPTED = 130
 
@@ -472,13 +470,10 @@ def rebuild(
             {
                 "command": "rebuild",
                 "ingested": len(result.added),
-                "skip_records_error": result.skip_records_error,
             }
         )
         return
     console.print(f"Rebuilt: {len(result.added)} documents ingested")
-    if result.skip_records_error is not None:
-        print_prefixed(console, "Error: ", result.skip_records_error, style=theme.ERROR)
 
 
 def index(
@@ -560,12 +555,11 @@ def _add_json_mode(
     *,
     force: bool,
     run_sync: Callable[[RegisterResult], object],
-    cancel_event: threading.Event,
 ) -> dict:
     """Run the JSON-mode finish: register roots, sync, return the one structured result."""
     reg_result = RegisterResult()
     if file_paths:
-        reg_result = register_sources(file_paths, force=force, cancel=cancel_event)
+        reg_result = register_sources(file_paths, force=force)
     # A sync is a whole-vault pass; run it only when something named reached the corpus.
     result = run_sync(reg_result) if reg_result.reached_corpus or crawled_paths else None
     return {
@@ -601,9 +595,7 @@ def _register_and_sync(
         return _run_sync(cancel_event, before_sync=_sync_starts)
 
     if cfg.json_mode:
-        return _add_json_mode(
-            file_paths, crawled_paths, force=force, run_sync=_sync, cancel_event=cancel_event
-        )
+        return _add_json_mode(file_paths, crawled_paths, force=force, run_sync=_sync)
     if file_paths:
         # Crawled pages are new content even when no file reached the corpus.
         add_paths(
@@ -612,7 +604,6 @@ def _register_and_sync(
             force=force,
             run_sync=_sync,
             sync_anyway=bool(crawled_paths),
-            cancel=cancel_event,
         )
     elif sync_urls:
         # URLs already saved; just trigger sync
@@ -732,14 +723,10 @@ _remove_yes_option = typer.Option(
 )
 
 
-def _remove_under_ctrl_c(names: list[str], targets: list[str]) -> RemoveResult:
-    """Remove *targets*; Ctrl+C during the wait for the records lock exits 130, nothing removed."""
-    cancel_event = threading.Event()
+def _remove_or_exit(names: list[str], targets: list[str]) -> RemoveResult:
+    """Remove *targets*; a library that refuses the removal exits 1, nothing removed."""
     try:
-        with _ctrl_c_sets(cancel_event):
-            return remove_documents_durably(names, targets=targets, cancel=cancel_event)
-    except SkipRecordsWaitCancelledError:
-        _exit_cancelled(AddRollback(), _REMOVE_CANCELLED_MESSAGE)
+        return remove_documents_durably(names, targets=targets)
     except LIBRARY_REFUSALS as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -773,7 +760,7 @@ def remove(
         removable = sum(1 for t in targets if t in set(known))
         typer.confirm(f"Remove {removable} document(s)? Source files on disk are kept.", abort=True)
 
-    result = _remove_under_ctrl_c(names, targets)
+    result = _remove_or_exit(names, targets)
 
     if cfg.json_mode:
         payload: dict = {"command": "remove", "removed": result.removed}

@@ -40,23 +40,17 @@ def is_under(key: str, root: str) -> bool:
     return key == root or key.startswith(f"{root}/")
 
 
-def rekeyed_source(key: str, old: str, new: str) -> str | None:
-    """*key* with *new* in place of *old* when it is *old* or below it, else None."""
-    return new + key[len(old) :] if is_under(key, old) else None
-
-
 @dataclass(frozen=True)
 class ShardId:
     """Which slice of the corpus one ingest worker owns.
 
-    *records_root* is the data root holding the corpus's skip records and its
-    data-root ``.lilbeeignore``, which every worker uses in place of its own
-    private data root.
+    *corpus_root* is the data root holding the corpus's ``.lilbeeignore``,
+    which every worker uses in place of its own private data root.
     """
 
     index: int
     count: int
-    records_root: Path
+    corpus_root: Path
 
     def owns(self, key: str) -> bool:
         """Whether source *key* belongs to this slice.
@@ -99,7 +93,7 @@ class DocumentRecords(NamedTuple):
 
 
 class SkippedSource(BaseModel):
-    """One file a skip marker holds out of the index, and why."""
+    """One file a held-out record holds out of the index, and why."""
 
     filename: str
     reason: str
@@ -113,7 +107,7 @@ class FileChangePlan(NamedTuple):
     updated: dict[str, None]
     unchanged: int
     stat_backfills: list[SourceStatBackfill]
-    # Files a skip marker holds out; not in the index, so never counted as unchanged.
+    # Files a held-out record holds out; not in the index, so never counted as unchanged.
     held_out: list[str]
 
 
@@ -187,7 +181,7 @@ class SyncResult(BaseModel):
     skipped: list[str] = []
     # The OCR each skipped document ran with; files that never reach OCR are absent.
     skipped_ocr: dict[str, OcrReport] = {}
-    # Files an earlier sync skip-marked, so this run did not attempt them.
+    # Files an earlier sync held out, so this run did not attempt them.
     held_out: list[SkippedSource] = []
     # Chunks whose text exceeded the embedder's char budget and were truncated
     # before embedding. Non-zero means some tail content did not reach the index.
@@ -195,8 +189,6 @@ class SyncResult(BaseModel):
     # Set when the index was built with another embedder than the one configured:
     # the sync left it as it is, and search refuses it until a rebuild or a switch back.
     index_mismatch: IndexMismatch | None = None
-    # Set when the record of held-out files could not be locked, so this run's was not saved.
-    skip_records_error: str | None = None
 
     def _lines(self) -> list[list[tuple[str, str]]]:
         """The summary as lines of ``(text, style)`` segments; ``""`` means unstyled."""
@@ -208,8 +200,6 @@ class SyncResult(BaseModel):
         ]
         if self.index_mismatch is not None:
             lines.append([("Index mismatch:", "red"), (f" {self.index_mismatch.message}", "")])
-        if self.skip_records_error is not None:
-            lines.append([(self.skip_records_error, "red")])
         if self.relocated:
             lines.append([(f"Relocated: {len(self.relocated)}", "")])
         lines += [

@@ -67,9 +67,11 @@ def _mock_table(*row_batches: list[dict[str, object]]) -> MagicMock:
     return table
 
 
-def _store_with_rows(rows: list[dict[str, object]]) -> MagicMock:
+def _store_with_rows(*row_batches: list[dict[str, object]]) -> MagicMock:
+    """A store whose chunk scan serves *row_batches*, each row's source a path."""
     store = MagicMock()
-    store.open_table.return_value = _mock_table(rows)
+    store.open_table.return_value = _mock_table(*row_batches)
+    store.chunk_batches.side_effect = lambda columns, batch_rows: iter(row_batches)
     return store
 
 
@@ -292,8 +294,7 @@ class TestEmbeddingClustererLoad:
     """Covers _load_chunk_records / _parse_chunk_row via get_clusters."""
 
     def test_returns_empty_when_no_table(self):
-        store = MagicMock()
-        store.open_table.return_value = None
+        store = _store_with_rows()
         assert EmbeddingClusterer(cfg, store).get_clusters() == []
 
     def test_returns_empty_when_all_rows_invalid(self):
@@ -339,6 +340,7 @@ class TestEmbeddingClustererLoad:
         the batch size regardless of corpus size."""
         from lilbee.retrieval.clustering_embedding.helpers import (
             _SCAN_BATCH_ROWS,
+            _SCAN_COLUMNS,
             _load_chunk_records,
         )
 
@@ -347,14 +349,10 @@ class TestEmbeddingClustererLoad:
             _row("a.md", [1.0, 0.0], chunk="alpha", chunk_index=0),
             {"source": None, "vector": [9.0, 9.0], "chunk": "bad", "chunk_index": 0},
         ]
-        table = _mock_table(first, second)
-        store = MagicMock()
-        store.open_table.return_value = table
+        store = _store_with_rows(first, second)
 
         records, matrix = _load_chunk_records(store)
-        table.to_arrow.return_value.to_batches.assert_called_once_with(
-            max_chunksize=_SCAN_BATCH_ROWS
-        )
+        store.chunk_batches.assert_called_once_with(_SCAN_COLUMNS, _SCAN_BATCH_ROWS)
         # Records from both batches, invalid row skipped, sorted with the
         # matrix rows kept aligned across the batch boundary.
         assert [(r.source, r.chunk_index) for r in records] == [("a.md", 0), ("b.md", 1)]

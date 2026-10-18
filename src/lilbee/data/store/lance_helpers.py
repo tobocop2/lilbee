@@ -61,6 +61,22 @@ def table_names(db: LanceDBConnection) -> list[str]:
             return names
 
 
+def open_committed(db: LanceDBConnection, name: str) -> LanceTable | None:
+    """Open table *name*, or ``None`` when it is absent or no process has committed it yet.
+
+    The listing names a table as soon as its folder exists, before its first
+    version is written, so a table that another process is creating is listed
+    but cannot be opened. It holds no rows yet.
+    """
+    if name not in table_names(db):
+        return None
+    try:
+        table: LanceTable = db.open_table(name)
+    except ValueError:
+        return None
+    return table
+
+
 def ensure_table(db: LanceDBConnection, name: str, schema: pa.Schema) -> LanceTable:
     table: LanceTable
     if name in table_names(db):
@@ -223,31 +239,6 @@ def _vector_index_dangling(
 ) -> bool:
     """True when the ANN index on the vector column is registered but its files are gone."""
     return any(_is_vector_index(idx) for idx in _dangling_indices(table, indices, lancedb_dir))
-
-
-def _escape_like_wildcards(value: str) -> str:
-    """Escape LIKE metacharacters so a search term matches literally.
-
-    ``%`` and ``_`` are wildcards inside a LIKE pattern; without escaping, a
-    search for ``a_b`` would also match ``axb``. Backslash is escaped first
-    because it is the ESCAPE character the predicate declares.
-    """
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def _sources_search_filter(search: str | None, *, include_title: bool = False) -> str | None:
-    """Case-insensitive filename (and optionally title) WHERE clause, or ``None``.
-
-    *include_title* requires the caller to have checked the column exists
-    (pre-title stores lack it).
-    """
-    if not search:
-        return None
-    escaped = escape_sql_string(_escape_like_wildcards(search.lower()))
-    clause = f"LOWER(filename) LIKE '%{escaped}%' ESCAPE '\\'"
-    if include_title:
-        clause = f"({clause} OR LOWER(title) LIKE '%{escaped}%' ESCAPE '\\')"
-    return clause
 
 
 def refs_compatible(

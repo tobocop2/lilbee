@@ -13,6 +13,7 @@ from lilbee.runtime.progress.types import (
     ExtractEvent,
     FileDoneEvent,
     FileStartEvent,
+    LibraryUpgradeEvent,
     OcrStartEvent,
     SetupDoneEvent,
     SetupProgressEvent,
@@ -39,6 +40,7 @@ ProgressEvent = (
     | SetupDoneEvent
     | WikiPhaseEvent
     | WikiPageEvent
+    | LibraryUpgradeEvent
 )
 
 DetailedProgressCallback = Callable[[EventType, ProgressEvent], None]

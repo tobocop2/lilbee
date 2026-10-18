@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import SearchChunk, SourceType
 from lilbee.wiki.drafts import (
     AcceptResult,
     DraftInfo,
@@ -143,20 +143,20 @@ class TestListDrafts:
 class TestDiffDraft:
     def test_raises_when_draft_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
-            diff_draft("absent", tmp_path / "wiki")
+            diff_draft("absent", tmp_path / "wiki", MagicMock())
 
     def test_diff_against_published_shows_delta(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
         _write(wiki_root / WikiSubdir.SUMMARIES / "x.md", "old line\n")
         _write(wiki_root / WikiSubdir.DRAFTS / "x.md", "new line\n")
-        diff = diff_draft("x", wiki_root)
+        diff = diff_draft("x", wiki_root, MagicMock())
         assert "-old line" in diff
         assert "+new line" in diff
 
     def test_diff_against_no_published_shows_all_new(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
         _write(wiki_root / WikiSubdir.DRAFTS / "x.md", "new body\n")
-        diff = diff_draft("x", wiki_root)
+        diff = diff_draft("x", wiki_root, MagicMock())
         assert "+new body" in diff
         assert "(new draft)" in diff
 
@@ -308,6 +308,7 @@ class TestAcceptDraft:
             full_content=_draft_content("torque body"),
             source_names=["manual.pdf"],
             page_type=WikiSubdir.CONCEPTS,
+            source_ids={},
         )
         store = MagicMock()
         with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
@@ -737,6 +738,7 @@ class TestUnpairedCollisionAccept:
             content=_cited_draft(),
             drafts_dir=wiki_root / WikiSubdir.DRAFTS,
             origin_subdir=WikiSubdir.CONCEPTS,
+            source_ids={},
         )
         store = _store_with_chunk()
         with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
@@ -815,6 +817,7 @@ def _stacked_drift_collision_draft(wiki_root: Path) -> str:
         "diff text",
         WikiSubdir.CONCEPTS,
         ["a.md"],
+        source_ids={},
     )
     return path.stem
 
@@ -968,7 +971,7 @@ class TestPathTraversalRejected:
         secret = tmp_path / "secret.md"
         _write(secret, "TOP SECRET")
         with pytest.raises(ValueError, match="escapes"):
-            diff_draft("../../secret", wiki_root)
+            diff_draft("../../secret", wiki_root, MagicMock())
         assert secret.read_text() == "TOP SECRET"
 
     def test_reject_draft_rejects_traversal_slug(self, tmp_path: Path) -> None:
@@ -991,5 +994,114 @@ class TestPathTraversalRejected:
         wiki_root = tmp_path / "wiki"
         _write(wiki_root / WikiSubdir.DRAFTS / "src" / "page.md", _draft_content("hi"))
         # No traversal: diff against an absent published page returns the draft body.
-        out = diff_draft("src/page", wiki_root)
+        out = diff_draft("src/page", wiki_root, MagicMock())
         assert "hi" in out
+
+
+def _base_draft(wiki_root: Path, sources: list[str]) -> Path:
+    """A draft as lilbee wrote it before drafts named ids: paths only."""
+    from lilbee.wiki.page import assemble_content, build_frontmatter
+
+    content = assemble_content(
+        build_frontmatter(cfg, sources, 0.2),
+        "# Roadmap\n\nThe roadmap.[^src1]\n",
+        '[^src1]: a.md, excerpt: "a.md body"\n',
+    )
+    draft = wiki_root / WikiSubdir.DRAFTS / "roadmap.md"
+    _write(draft, f"<!-- origin: concepts -->\n\n{content}")
+    return draft
+
+
+class TestADraftWrittenBeforeIds:
+    """A draft of an older library takes the id its library's keying gave each cited path."""
+
+    @pytest.fixture()
+    def library(self, tmp_path: Path):
+        from tests.test_store import _path_keyed_library
+
+        config = cfg.model_copy(update={"data_root": tmp_path, "lancedb_dir": tmp_path / "db"})
+        return config, _path_keyed_library(config)
+
+    def test_it_is_accepted_under_the_path_its_source_moved_to(self, library) -> None:
+        from lilbee.data.store import SourceMove
+
+        config, store = library
+        wiki_root = config.data_root / config.wiki_dir
+        draft = _base_draft(wiki_root, ["a.md"])
+        store.relocate_sources([SourceMove(("a.md",), "moved/a.md", None)])
+
+        with (
+            patch("lilbee.wiki.drafts.index_wiki_page", return_value=1),
+            patch("lilbee.wiki.drafts.rewrite_links_across_wiki"),
+        ):
+            accepted = accept_draft("roadmap", wiki_root, store, config)
+
+        published = accepted.moved_to.read_text(encoding="utf-8")
+        assert '[^src1]: moved/a.md, excerpt: "a.md body"' in published
+        assert 'sources: ["moved/a.md"]' in published
+        rows = store.get_citations_for_source("moved/a.md")
+        assert "wiki/concepts/roadmap.md" in [row["wiki_source"] for row in rows]
+        assert not draft.exists()
+
+    def test_a_cited_path_no_row_was_keyed_from_stays_as_written_and_is_logged(
+        self, library, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.wiki.persistence import recorded_source_ids
+
+        config, store = library
+        wiki_root = config.data_root / config.wiki_dir
+        draft = _base_draft(wiki_root, ["a.md", "never.md"])
+        stamp = draft.stat().st_mtime_ns
+
+        with caplog.at_level("WARNING", logger="lilbee.wiki.drafts"):
+            diff = diff_draft("roadmap", wiki_root, store)
+
+        recorded = recorded_source_ids(draft.read_text(encoding="utf-8"))
+        assert recorded == {"a.md": store.source_ids(["a.md"], SourceType.DOCUMENT)["a.md"]}
+        assert "never.md" in caplog.text and "a.md," not in caplog.text
+        assert '+sources: ["a.md", "never.md"]' in diff
+        assert draft.stat().st_mtime_ns == stamp
+        diff_draft("roadmap", wiki_root, store)
+        assert caplog.text.count("never.md") == 1
+
+    def test_a_draft_a_writer_replaced_meanwhile_keeps_the_newer_text(
+        self, library, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config, store = library
+        wiki_root = config.data_root / config.wiki_dir
+        draft = _base_draft(wiki_root, ["a.md"])
+        newer = draft.read_text(encoding="utf-8").replace("The roadmap.", "A newer roadmap.")
+        keyed = store.keyed_source_ids
+
+        def _a_build_writes_the_draft(paths):
+            draft.write_text(newer, encoding="utf-8")
+            return keyed(paths)
+
+        monkeypatch.setattr(store, "keyed_source_ids", _a_build_writes_the_draft)
+
+        diff_draft("roadmap", wiki_root, store)
+
+        assert draft.read_text(encoding="utf-8") == newer
+
+
+class TestSourceIdsField:
+    def test_a_page_with_no_frontmatter_records_and_drops_nothing(self) -> None:
+        from lilbee.wiki.persistence import recorded_source_ids, with_source_ids, without_source_ids
+
+        page = "# No frontmatter\n\nbody\n"
+
+        assert with_source_ids(page, {"a.md": "1"}) == page
+        assert without_source_ids(page) == page
+        assert recorded_source_ids(page) is None
+
+    def test_the_field_round_trips_and_a_hand_edited_value_reads_as_none(self) -> None:
+        from lilbee.wiki.persistence import recorded_source_ids, with_source_ids, without_source_ids
+
+        page = _draft_content("body")
+        recorded = with_source_ids(page, {"b.md": "2", 'a "q".md': "1"})
+
+        assert recorded_source_ids(recorded) == {'a "q".md': "1", "b.md": "2"}
+        assert without_source_ids(recorded) == page
+        edited = page.replace("---\n\n", "source_ids: [1]\n---\n\n", 1)
+        assert "source_ids: [1]" in edited
+        assert recorded_source_ids(edited) is None

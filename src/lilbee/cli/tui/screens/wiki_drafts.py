@@ -254,7 +254,7 @@ class WikiDraftsScreen(Screen[None]):
     def _display_diff(self, slug: str) -> None:
         """Compute and render the unified diff for *slug*."""
         try:
-            diff = diff_draft(slug, _wiki_root())
+            diff = diff_draft(slug, _wiki_root(), get_services().store)
         except FileNotFoundError:
             self._show_diff(msg.WIKI_DRAFTS_DIFF_EMPTY)
             return

@@ -11,7 +11,7 @@ import pytest
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import CHUNK_CONCEPTS_TABLE, cfg
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import ConceptRecords, SearchChunk, SourceType
 from lilbee.retrieval.concepts import ConceptGraph
 from tests._sys_modules import inject_modules
 
@@ -42,6 +42,9 @@ def mock_svc():
     mock_store.bm25_probe.return_value = []
     mock_store.get_sources.return_value = []
     mock_store.open_table.return_value = None
+    # The stand-in store names each source by its path.
+    mock_store.source_ids.side_effect = lambda paths, source_type: {path: path for path in paths}
+    mock_store.source_paths.side_effect = lambda ids: {i: i for i in ids}
     concepts = ConceptGraph(cfg, mock_store)
     services = make_mock_services(store=mock_store, concepts=concepts)
     svc_mod.set_services(services)
@@ -498,7 +501,7 @@ class TestWriteConceptRecords:
             store = Store(cfg)
             graph = ConceptGraph(cfg, store)
             for unit in write_units:
-                graph.write_concept_records(unit)
+                _write(graph, unit)
             graph.rebuild_clusters()
             table = store.open_table(CONCEPT_NODES_TABLE)
             rows = table.search().limit(None).to_list()
@@ -510,9 +513,16 @@ class TestWriteConceptRecords:
         assert len(batched_rows) > 0
 
 
+def _write(graph: ConceptGraph, records: ConceptRecords) -> None:
+    """Index each source the *records* name, as an ingest does before its concepts."""
+    for path in {row["chunk_source"] for row in records.chunk_concepts}:
+        graph._store.upsert_source(path, f"hash of {path}", 1)
+    graph.write_concept_records(records)
+
+
 def _cc_row(source: str, chunk_index: int, concept: str) -> dict:
     """A chunk_concepts table row as the batched boost query returns it."""
-    return {"chunk_source": source, "chunk_index": chunk_index, "concept": concept}
+    return {"source_id": source, "chunk_index": chunk_index, "concept": concept}
 
 
 class TestBoostResults:
@@ -537,9 +547,13 @@ class TestBoostResults:
             _make_result(chunk_index=1, score=0.95),
         ]
         mock_table = MagicMock()
+        # The concept rows name the source by its id, which is not its path.
+        mock_svc.store.source_ids.side_effect = lambda paths, source_type: {
+            p: f"id of {p}" for p in paths
+        }
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            _cc_row("test.pdf", 0, "python"),
-            _cc_row("test.pdf", 1, "python"),
+            _cc_row("id of test.pdf", 0, "python"),
+            _cc_row("id of test.pdf", 1, "python"),
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
@@ -565,7 +579,7 @@ class TestBoostResults:
 
     def test_boost_results_single_query_for_many_results(self, cg, mock_svc):
         """The whole result set is served by ONE batched chunk_concepts query
-        (chunk_source IN ... AND chunk_index IN ...), not one query per result:
+        (source_id IN ... AND chunk_index IN ...), not one query per result:
         the table has no scalar index, so each per-result predicate was a full
         table scan."""
         results = [
@@ -582,7 +596,7 @@ class TestBoostResults:
         mock_svc.store.open_table.assert_called_once()
         assert mock_table.search.call_count == 1
         where_arg = mock_table.search.return_value.where.call_args.args[0]
-        assert "chunk_source IN (" in where_arg
+        assert "source_id IN (" in where_arg
         assert "'a.md'" in where_arg
         assert "'b.md'" in where_arg
         assert "chunk_index IN (" in where_arg
@@ -847,7 +861,7 @@ class TestRebuildClusters:
         """
         from lilbee.core.config import CONCEPT_EDGES_TABLE, CONCEPT_NODES_TABLE
 
-        _cc, side = self._chunk_concepts({"chunk_source": [], "chunk_index": [], "concept": []})
+        _cc, side = self._chunk_concepts({"source_id": [], "chunk_index": [], "concept": []})
         mock_svc.store.open_table.side_effect = side
         cg.rebuild_clusters()
         mock_leiden.assert_not_called()
@@ -865,7 +879,7 @@ class TestRebuildClusters:
         # PPMI = log2(0.5 / (0.5 * 0.5)) = 1.0.
         _cc, side = self._chunk_concepts(
             {
-                "chunk_source": ["d.md"] * 6,
+                "source_id": ["d.md"] * 6,
                 "chunk_index": [0, 0, 1, 1, 2, 3],
                 "concept": ["python", "ml", "python", "ml", "rust", "rust"],
             }
@@ -892,7 +906,7 @@ class TestRebuildClusters:
 
         _cc, side = self._chunk_concepts(
             {
-                "chunk_source": ["d.md"] * 6,
+                "source_id": ["d.md"] * 6,
                 "chunk_index": [0, 0, 1, 1, 2, 3],
                 "concept": ["python", "ml", "python", "ml", "rust", "rust"],
             }
@@ -921,10 +935,10 @@ class TestRebuildClusters:
         graph = ConceptGraph(cfg, store)
         chunks = [("a.md", 0), ("b.md", 0)]
         concepts = [["python", "rust"], ["notes"]]
-        graph.write_concept_records(graph.build_concept_records(chunks, concepts))
+        _write(graph, graph.build_concept_records(chunks, concepts))
         graph.rebuild_clusters()
         # A sync re-ingests a.md: its full co-occurrence edge set is appended again.
-        graph.write_concept_records(graph.build_concept_records(chunks[:1], concepts[:1]))
+        _write(graph, graph.build_concept_records(chunks[:1], concepts[:1]))
         graph.rebuild_clusters()
 
         rows = store.open_table(CONCEPT_EDGES_TABLE).search().limit(None).to_list()
@@ -937,7 +951,7 @@ class TestRebuildClusters:
         # chunk 0 has a duplicate 'ml' row; python+ml still co-occur in 2 chunks.
         _cc, side = self._chunk_concepts(
             {
-                "chunk_source": ["d.md"] * 7,
+                "source_id": ["d.md"] * 7,
                 "chunk_index": [0, 0, 0, 1, 1, 2, 3],
                 "concept": ["python", "ml", "ml", "python", "ml", "x", "x"],
             }
@@ -958,7 +972,7 @@ class TestRebuildClusters:
         # sits exactly at chance (PMI 0) and is dropped.
         _cc, side = self._chunk_concepts(
             {
-                "chunk_source": ["d.md"] * 4,
+                "source_id": ["d.md"] * 4,
                 "chunk_index": [0, 0, 1, 1],
                 "concept": ["python", "ml", "python", "ml"],
             }
@@ -974,7 +988,7 @@ class TestRebuildClusters:
         """Chunks that each carry a single concept produce no pairs: nothing to
         cluster, and the previous graph is cleared rather than left stale."""
         _cc, side = self._chunk_concepts(
-            {"chunk_source": ["d.md", "d.md"], "chunk_index": [0, 1], "concept": ["a", "b"]}
+            {"source_id": ["d.md", "d.md"], "chunk_index": [0, 1], "concept": ["a", "b"]}
         )
         mock_svc.store.open_table.side_effect = side
         cg.rebuild_clusters()
@@ -987,7 +1001,7 @@ class TestRebuildClusters:
         """rebuild_clusters ends with optimize() on the concept tables."""
         cc_tbl, side = self._chunk_concepts(
             {
-                "chunk_source": ["d.md"] * 3,
+                "source_id": ["d.md"] * 3,
                 "chunk_index": [0, 0, 1],
                 "concept": ["a", "b", "c"],
             }
@@ -1060,7 +1074,7 @@ class TestRebuildIncremental:
         graph = ConceptGraph(cfg, store)
         chunks = [("a.md", 0), ("a.md", 1), ("b.md", 0), ("b.md", 1)]
         concepts = [["alpha", "beta"], ["alpha", "beta"], ["gamma", "delta"], ["gamma", "delta"]]
-        graph.write_concept_records(graph.build_concept_records(chunks, concepts))
+        _write(graph, graph.build_concept_records(chunks, concepts))
         return store, graph
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
@@ -1075,7 +1089,7 @@ class TestRebuildIncremental:
             r["concept"]: r["cluster_id"]
             for r in store.open_table(CONCEPT_NODES_TABLE).search().to_list()
         }
-        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
+        _write(graph, graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
 
         graph.rebuild_clusters(added=["c.md"])
 
@@ -1118,7 +1132,7 @@ class TestRebuildIncremental:
         cc_tbl = MagicMock()
         cc_tbl.to_arrow.return_value = pa.table(
             {
-                "chunk_source": ["a.md", "a.md", "b.md", "b.md"],
+                "source_id": ["a.md", "a.md", "b.md", "b.md"],
                 "chunk_index": [0, 0, 0, 0],
                 "concept": ["alpha", "beta", "gamma", "delta"],
             }
@@ -1186,7 +1200,7 @@ class TestRebuildIncremental:
         store, graph = self._seeded_graph()
         graph.rebuild_clusters()
         before = self._node_map(store)
-        store.delete_by_source("a.md")
+        store.delete_by_source("a.md", SourceType.DOCUMENT)
         mock_leiden.reset_mock()
 
         graph.rebuild_clusters(updated=["a.md"])
@@ -1236,7 +1250,7 @@ class TestRebuildIncremental:
         graph = ConceptGraph(cfg, store)
         chunks = [("g0.md", 0), ("g1.md", 0), ("s.md", 0), ("t.md", 0)]
         concepts = [["g", "d"], ["g", "d"], ["s"], ["t"]]
-        graph.write_concept_records(graph.build_concept_records(chunks, concepts))
+        _write(graph, graph.build_concept_records(chunks, concepts))
         calls = 0
 
         def fake_leiden(edge_rows):
@@ -1250,9 +1264,7 @@ class TestRebuildIncremental:
         graph.rebuild_clusters()
         assert self._node_map(store) == {"g": 1, "d": 1}
         mock_leiden.reset_mock()
-        graph.write_concept_records(
-            graph.build_concept_records([("c1.md", 0), ("c2.md", 0)], [["s"], ["t"]])
-        )
+        _write(graph, graph.build_concept_records([("c1.md", 0), ("c2.md", 0)], [["s"], ["t"]]))
 
         graph.rebuild_clusters(added=["c1.md", "c2.md"])
 
@@ -1273,7 +1285,7 @@ class TestRebuildIncremental:
             ["gamma", "delta"],
             ["gamma", "delta"],
         ]
-        graph.write_concept_records(graph.build_concept_records(chunks, concepts))
+        _write(graph, graph.build_concept_records(chunks, concepts))
         seed_partition = {
             "alpha": 0,
             "beta": 0,
@@ -1293,7 +1305,7 @@ class TestRebuildIncremental:
 
         mock_leiden.side_effect = fake_leiden
         graph.rebuild_clusters()
-        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
+        _write(graph, graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
 
         graph.rebuild_clusters(added=["c.md"])
 
@@ -1317,7 +1329,7 @@ class TestRebuildIncremental:
         store, graph = self._seeded_graph()
         graph.rebuild_clusters()
         old_max = max(self._node_map(store).values())
-        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["new1", "new2"]]))
+        _write(graph, graph.build_concept_records([("c.md", 0)], [["new1", "new2"]]))
 
         graph.rebuild_clusters(added=["c.md"])
 
@@ -1340,7 +1352,7 @@ class TestRebuildIncremental:
         store, graph = self._seeded_graph()
         graph.rebuild_clusters()
         store.clear_table(CONCEPT_NODES_TABLE, "concept IN ('alpha', 'beta')")
-        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
+        _write(graph, graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
         # The append re-adds unclustered rows; drop them so the touched pair is
         # genuinely outside every stored cluster.
         store.clear_table(CONCEPT_NODES_TABLE, "concept IN ('alpha', 'beta')")
@@ -1361,7 +1373,7 @@ class TestRebuildIncremental:
         store, graph = self._seeded_graph()
         graph.rebuild_clusters()
         stale_weight = self._edge_map(store)[("delta", "gamma")]
-        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
+        _write(graph, graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
 
         graph.rebuild_clusters(added=["c.md"])
         inc_nodes, inc_edges = self._node_map(store), self._edge_map(store)
@@ -1382,7 +1394,7 @@ class TestRebuildIncremental:
         mock_leiden.side_effect = _connected_components
         store, graph = self._seeded_graph()
         graph.rebuild_clusters()
-        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
+        _write(graph, graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
 
         with patch.object(ConceptGraph, "_chunk_concepts_batch", return_value={}):
             graph.rebuild_clusters(added=["c.md"])
@@ -1545,7 +1557,7 @@ class TestGetClusterSources:
         cc_table = MagicMock()
         cc_table.to_arrow.return_value = pa.table(
             {
-                "chunk_source": ["a.md", "b.md", "c.md", "d.md"],
+                "source_id": ["a.md", "b.md", "c.md", "d.md"],
                 "chunk_index": [0, 0, 0, 0],
                 "concept": ["python", "python", "ml", "web"],
             }
@@ -1561,9 +1573,10 @@ class TestGetClusterSources:
             return None
 
         mock_svc.store.open_table.side_effect = open_table
+        mock_svc.store.source_paths.side_effect = lambda ids: {i: f"docs/{i}" for i in ids}
         result = cg.get_cluster_sources(min_sources=3)
         assert 0 in result
-        assert result[0] == {"a.md", "b.md", "c.md"}
+        assert result[0] == {"docs/a.md", "docs/b.md", "docs/c.md"}
         assert 1 not in result
 
     def test_skips_orphan_concepts(self, cg, mock_svc):
@@ -1577,7 +1590,7 @@ class TestGetClusterSources:
         cc_table = MagicMock()
         cc_table.to_arrow.return_value = pa.table(
             {
-                "chunk_source": ["a.md", "b.md"],
+                "source_id": ["a.md", "b.md"],
                 "chunk_index": [0, 0],
                 "concept": ["python", "orphan_concept"],
             }
@@ -1610,7 +1623,7 @@ class TestGetClusterSources:
         )
         cc_table = MagicMock()
         cc_table.to_arrow.return_value = pa.table(
-            {"chunk_source": ["a.md"], "chunk_index": [0], "concept": ["python"]}
+            {"source_id": ["a.md"], "chunk_index": [0], "concept": ["python"]}
         )
 
         def open_table(name):

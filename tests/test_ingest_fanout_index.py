@@ -16,6 +16,7 @@ import time
 import zipfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple
 from unittest import mock
@@ -28,7 +29,7 @@ from lilbee.core.config import active_config, cfg
 from lilbee.core.config.model import Config
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
-from lilbee.data.store import Store
+from lilbee.data.store import CitationRecord, SourceType, Store
 from lilbee.data.store.core import _WIKI_REFRESHED_NAME, _WIKI_REFRESHED_UNREADABLE
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.wiki import stubs as stubs_mod
@@ -76,7 +77,7 @@ def slice_of(name: str, count: int) -> int:
     return next(
         index
         for index in range(count)
-        if ShardId(index=index, count=count, records_root=cfg.data_root).owns(name)
+        if ShardId(index=index, count=count, corpus_root=cfg.data_root).owns(name)
     )
 
 
@@ -170,12 +171,12 @@ class TestWhereTheWorkIs:
         """A file that failed is accounted for and is not named."""
         library = Library(tmp_path / "lib", 2)
         library.write_notes("note", 12)
-        real_rows = Store._batch_source_rows
+        real_writes = Store._batch_source_writes
         monkeypatch.setattr(
             Store,
-            "_batch_source_rows",
+            "_batch_source_writes",
             lambda store, items: [
-                row for row in real_rows(store, items) if row["filename"] != "note3.txt"
+                write for write in real_writes(store, items) if write.name != "note3.txt"
             ],
         )
         real_ingest = pipeline_mod.ingest_document
@@ -426,32 +427,27 @@ class TestEqualToOneProcess:
         assert [name for name in fanned.sources() if name.startswith("moved/")] == moved
         _assert_equal_to_one_process(fanned, single)
 
-    async def test_a_renamed_folder_costs_one_update_of_each_table_not_one_for_each_file(
-        self, tmp_path
-    ):
+    async def test_a_renamed_folder_costs_one_commit_of_the_source_table(self, tmp_path):
         from lancedb.table import LanceTable
-
-        from lilbee.data.store.core import _RELOCATABLE_TABLES
 
         library = Library(tmp_path / "lib", 1)
         for number in range(14):
             library.write(f"bulk/part_{number}.txt", f"Part {number} of the folder.")
         await library.sync()
         (library.documents / "bulk").rename(library.documents / "moved")
-        real = LanceTable.update
-        with mock.patch.object(LanceTable, "update", autospec=True, side_effect=real) as updates:
+        real = LanceTable.merge_insert
+        with mock.patch.object(
+            LanceTable, "merge_insert", autospec=True, side_effect=real
+        ) as merges:
             result = await library.sync()
 
         assert len(result.relocated) == 14
-        rekeys = [call for call in updates.call_args_list if "bulk/" in str(call.kwargs)]
-        assert 1 <= len(rekeys) <= len(_RELOCATABLE_TABLES)
+        assert [call.args[0].name for call in merges.call_args_list] == ["_sources"]
 
     async def test_files_moved_to_unrelated_names_share_updates_and_nothing_is_embedded_again(
         self, tmp_path
     ):
         from lancedb.table import LanceTable
-
-        from lilbee.data.store.core import _RELOCATABLE_TABLES
 
         counts, results = [], []
         olds = [f"bulk/ledger_{number}.txt" for number in range(14)]
@@ -467,21 +463,22 @@ class TestEqualToOneProcess:
             for old, new in zip(olds, news, strict=True):
                 (library.documents / new).parent.mkdir(exist_ok=True)
                 (library.documents / old).rename(library.documents / new)
-            real = LanceTable.update
+            real = LanceTable.merge_insert
             with mock.patch.object(
-                LanceTable, "update", autospec=True, side_effect=real
-            ) as updates:
+                LanceTable, "merge_insert", autospec=True, side_effect=real
+            ) as merges:
                 results.append(await library.sync())
-            counts.append(sum("ledger_" in str(call.kwargs) for call in updates.call_args_list))
+            counts.append([call.args[0].name for call in merges.call_args_list])
             await library.sync()
 
         fanned, single = await _play(tmp_path, history)
         for result in results:
             assert sorted(result.relocated) == sorted(news)
             assert result.added == []
-        # One process: one update of each table. Two workers: one each, at most.
-        assert 1 <= counts[1] <= len(_RELOCATABLE_TABLES)
-        assert 1 <= counts[0] <= 2 * len(_RELOCATABLE_TABLES)
+        # One process: one commit of the source table. Two workers: one each, at most.
+        assert counts[1] == ["_sources"]
+        assert 1 <= len(counts[0]) <= 2
+        assert set(counts[0]) == {"_sources"}
         assert [name for name in fanned.sources() if name.startswith("bulk/")] == []
         _assert_equal_to_one_process(fanned, single)
 
@@ -677,7 +674,7 @@ class TestAStoppedSync:
             await library.sync()
 
         fanned, single = await _play(tmp_path, history)
-        slice_zero = ShardId(index=0, count=2, records_root=cfg.data_root)
+        slice_zero = ShardId(index=0, count=2, corpus_root=cfg.data_root)
         reports = [f"report{index}.txt" for index in range(8)]
         assert [name for name in reports if slice_zero.owns(name)] == [
             name for name in kept[0] if name.startswith("report")
@@ -696,7 +693,7 @@ class TestAStoppedSync:
             library.write_notes("report", 8)
             if library.processes > 1:
                 with monkeypatch.context() as patch:
-                    patch.setattr(Store, "_replace_source_rows_unlocked", _stops)
+                    patch.setattr(Store, "_batch_source_writes", _stops)
                     failed.extend((await library.sync()).failed)
                 orphans = [name for name in library.chunk_sources() if name.startswith("report")]
                 assert len(orphans) == 8
@@ -709,7 +706,7 @@ class TestAStoppedSync:
         _assert_equal_to_one_process(fanned, single)
 
 
-def _stops(store, rows):
+def _stops(store, items):
     """A flush that ends after its chunks and before its source rows."""
     raise OSError("the writer stopped")
 
@@ -774,7 +771,7 @@ class TestWorkerMovePool:
     def _pool(self, library, *, disk_files=(), gone=()):
         from lilbee.data.ingest.ignore import IgnoreRules
 
-        shard = ShardId(index=0, count=2, records_root=cfg.data_root)
+        shard = ShardId(index=0, count=2, corpus_root=cfg.data_root)
         rules = IgnoreRules.for_corpus(cfg.data_root)
         files = {name: library.documents / name for name in disk_files}
         return pipeline_mod._worker_move_pool(Store(cfg), shard, files, set(gone), rules)
@@ -932,6 +929,182 @@ def _forget_the_loaded_pipeline() -> None:
         function.cache_clear()
 
 
+def _shown_subjects() -> dict[str, tuple[str, ...]]:
+    """Each subject of the browse index with the paths of its sources."""
+    stubs = load_stub_index(cfg)
+    paths = get_services().store.source_paths(i for stub in stubs.values() for i in stub.sources)
+    return {
+        slug: tuple(sorted(paths.get(i, i) for i in stub.sources)) for slug, stub in stubs.items()
+    }
+
+
+def _cited_page(source: str, page_name: str = "entities/renaming.md") -> Path:
+    """A wiki page whose one citation names *source*, its row in the store and its file."""
+    from lilbee.wiki.citations import render_citation_block
+    from lilbee.wiki.page import assemble_content, build_frontmatter
+
+    record = CitationRecord(
+        wiki_source=f"{cfg.wiki_dir}/{page_name}",
+        wiki_chunk_index=0,
+        citation_key="src1",
+        claim_type="fact",
+        source_filename=source,
+        source_hash="h",
+        page_start=0,
+        page_end=0,
+        line_start=1,
+        line_end=1,
+        excerpt="The one file",
+        created_at="",
+    )
+    Store(cfg).add_citations([record])
+    page = cfg.data_root / record["wiki_source"]
+    page.parent.mkdir(parents=True, exist_ok=True)
+    frontmatter = build_frontmatter(cfg, [source], 0.9)
+    block = render_citation_block([record])
+    page.write_text(assemble_content(frontmatter, "It renames.[^src1]\n", block), encoding="utf-8")
+    return page
+
+
+class TestAMovedFileInTheWiki:
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_the_page_that_cites_it_shows_its_new_name(self, tmp_path, processes):
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        library.write("old.txt", "The one file that is renamed.")
+        await library.sync()
+        library.use()
+        page = _cited_page("old.txt")
+        before = page.read_text(encoding="utf-8")
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+
+        await library.sync()
+
+        assert before.count("old.txt") == 2, "the page did not name the file, so it proves nothing"
+        shown = page.read_text(encoding="utf-8")
+        assert shown == before.replace("old.txt", "renamed.txt")
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_a_pending_draft_that_cites_it_is_accepted_under_its_new_name(
+        self, tmp_path, processes
+    ):
+        from lilbee.wiki.drafts import accept_draft
+        from tests.test_absorb import _pending_draft
+
+        excerpt = "The one file that is renamed."
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        library.write("old.txt", excerpt)
+        await library.sync()
+        library.use()
+        draft = _pending_draft(get_services().store, "old.txt", excerpt)
+        written = draft.read_text(encoding="utf-8")
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+
+        await library.sync()
+
+        library.use()
+        assert draft.read_text(encoding="utf-8") == written, "a move rewrote the draft"
+        store = get_services().store
+        with mock.patch("lilbee.wiki.drafts.rewrite_links_across_wiki"):
+            accepted = accept_draft("spring-release", cfg.data_root / cfg.wiki_dir, store, cfg)
+        published = accepted.moved_to.read_text(encoding="utf-8")
+        assert f'[^src1]: renamed.txt, excerpt: "{excerpt}"' in published
+        assert "old.txt" not in published
+        cited = store.get_citations_for_source("renamed.txt")
+        assert [row["wiki_source"] for row in cited] == ["wiki/concepts/spring-release.md"]
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_a_draft_beside_its_published_page_is_accepted_after_the_move(
+        self, tmp_path, processes
+    ):
+        from lilbee.wiki.drafts import accept_draft
+        from tests.test_absorb import _pending_draft
+
+        excerpt = "The one file that is renamed."
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        library.write("old.txt", excerpt)
+        await library.sync()
+        library.use()
+        published = _cited_page("old.txt", "concepts/spring-release.md")
+        an_hour_ago = time.time() - 3600
+        os.utime(published, (an_hour_ago, an_hour_ago))
+        _pending_draft(get_services().store, "old.txt", excerpt)
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+
+        await library.sync()
+
+        library.use()
+        assert "renamed.txt" in published.read_text(encoding="utf-8"), "no re-render: no proof"
+        assert published.stat().st_mtime == pytest.approx(an_hour_ago)
+        with mock.patch("lilbee.wiki.drafts.rewrite_links_across_wiki"):
+            accepted = accept_draft(
+                "spring-release", cfg.data_root / cfg.wiki_dir, get_services().store, cfg
+            )
+        assert accepted.moved_to == published
+        shown = published.read_text(encoding="utf-8")
+        assert f'[^src1]: renamed.txt, excerpt: "{excerpt}"' in shown
+        assert "old.txt" not in shown
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_a_sync_stopped_after_the_move_is_repaired_by_the_next(
+        self, tmp_path, monkeypatch, processes
+    ):
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        library.write("old.txt", "The one file that is renamed.")
+        await library.sync()
+        library.use()
+        page = _cited_page("old.txt")
+        before = page.read_text(encoding="utf-8")
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+        library.write("new.txt", "A new file whose write stops the sync.")
+        cancel = threading.Event()
+        real_write = Store.write_chunks_batch
+
+        def _write(store, items):
+            cancel.set()
+            return real_write(store, items)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Store, "write_chunks_batch", _write)
+            with pytest.raises(asyncio.CancelledError):
+                await library.sync(cancel=cancel)
+        assert "renamed.txt" in library.sources(), "the move did not land: nothing proven"
+        assert page.read_text(encoding="utf-8") == before, "the stopped sync rendered the page"
+
+        await library.sync()
+
+        assert before.count("old.txt") == 2
+        assert page.read_text(encoding="utf-8") == before.replace("old.txt", "renamed.txt")
+
+
+class TestARemovedFileInTheWiki:
+    async def test_a_cited_file_that_is_removed_leaves_the_index(self, tmp_path, monkeypatch):
+        extractor = MagicMock()
+        extractor.available.return_value = True
+        extractor.extract.side_effect = _subjects_of
+        monkeypatch.setattr("lilbee.wiki.stubs.get_entity_extractor", lambda *args: extractor)
+        cfg.wiki = True
+        cfg.wiki_entity_min_mentions = 1
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 2)
+        await library.sync()
+        library.use()
+        _cited_page("note0.txt")
+
+        library.remove("note0.txt")
+
+        library.use()
+        assert Store(cfg).source_ids(["note0.txt"], SourceType.DOCUMENT), (
+            "the cited file kept no row: nothing proven"
+        )
+        assert "note0.txt" not in library.sources()
+        assert "note0.txt" not in _shown_subjects().get("experiments", ())
+        assert "about-note0.txt" not in _shown_subjects()
+
+
 class TestTheWikiIndex:
     """The browse index of the wiki after a fan-out sync lists what a one-process sync lists."""
 
@@ -946,9 +1119,11 @@ class TestTheWikiIndex:
         return extractor
 
     def _listed(self, library) -> list[str]:
-        """Every source the browse index lists under a subject."""
+        """Every source the browse index lists under a subject: its path, or its id with none."""
         library.use()
-        return sorted({name for stub in load_stub_index(cfg).values() for name in stub.sources})
+        ids = {source_id for stub in load_stub_index(cfg).values() for source_id in stub.sources}
+        paths = get_services().store.source_paths(ids)
+        return sorted(paths.get(source_id, source_id) for source_id in ids)
 
     def _refuse_rst(self, patch) -> None:
         from lilbee.data.ingest import discovery
@@ -1016,7 +1191,7 @@ class TestTheWikiIndex:
             await library.sync()
             (library.documents / old).rename(library.documents / new)
             await library.sync()
-            subjects.append({slug: stub.sources for slug, stub in load_stub_index(cfg).items()})
+            subjects.append(_shown_subjects())
 
         await _play(tmp_path, history)
         fan_out, one_process = subjects
@@ -1026,7 +1201,7 @@ class TestTheWikiIndex:
 
     def _subjects(self, library) -> dict[str, tuple[str, ...]]:
         library.use()
-        return {slug: stub.sources for slug, stub in load_stub_index(cfg).items()}
+        return _shown_subjects()
 
     def _record(self, library):
         """The checkpoint the store records for the last wiki pass that completed."""
@@ -1299,20 +1474,22 @@ class TestTheWikiIndex:
         await library.sync()
         (library.documents / "old.txt").rename(library.documents / "renamed.txt")
         await self._stop_at_the_rename(library, monkeypatch)
-        assert "old.txt" in self._listed(library)
+        assert "renamed.txt" in self._listed(library)
+        assert "old.txt" not in self._listed(library)
 
         await library.sync()
 
-        subjects = self._subjects(library)
-        assert subjects["about-renamed.txt"] == ("renamed.txt",)
-        assert "about-old.txt" not in subjects
+        assert "renamed.txt" in self._listed(library)
         assert "old.txt" not in self._listed(library)
 
     @pytest.mark.parametrize("parent", ["stops_with_its_workers", "is_killed"])
     async def test_a_fan_out_that_stops_after_a_rename_leaves_the_index_under_the_new_name(
-        self, tmp_path, monkeypatch, parent
+        self, tmp_path, monkeypatch, parent, wiki_on
     ):
         """The oracle is a one-process library whose sync of the rename never stops."""
+        # Only the subject every file names: a subject named after a file's path would
+        # differ between a library that extracted the file again and one that did not.
+        wiki_on.extract.side_effect = lambda chunks: _subjects_of(chunks)[:1]
         subjects = []
 
         async def history(library):
@@ -1328,46 +1505,37 @@ class TestTheWikiIndex:
                             "lilbee.app.ingest.forget_missing_from_wiki_index", lambda: None
                         )
                     await self._stop_at_the_rename(library, patch)
-                assert "old.txt" in self._listed(library)
+                assert "renamed.txt" in self._listed(library)
+                assert "old.txt" not in self._listed(library)
             await library.sync()
-            subjects.append(self._subjects(library))
+            subjects.append(self._listed(library))
 
         fanned, single = await _play(tmp_path, history)
         fan_out, one_process = subjects
-        assert one_process["about-renamed.txt"] == ("renamed.txt",)
-        assert "about-old.txt" not in one_process
+        assert "renamed.txt" in one_process
+        assert "old.txt" not in one_process
         assert fan_out == one_process
         _assert_equal_to_one_process(fanned, single)
 
     @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
-    async def test_a_wiki_pass_that_stops_before_its_write_still_owes_the_renamed_file(
+    async def test_a_sync_that_stops_after_a_rename_owes_the_wiki_index_nothing(
         self, tmp_path, monkeypatch, processes
     ):
-        """The pass of the second sync fails where it writes, after every read of the index."""
+        """The index names the renamed file by its id, so the next sync reads no source."""
         library = Library(tmp_path / "lib", processes)
         library.write_notes("note", 4)
         library.write("old.txt", "The one file that is renamed.")
         await library.sync()
         (library.documents / "old.txt").rename(library.documents / "renamed.txt")
         await self._stop_at_the_rename(library, monkeypatch)
-        stopped_writes = mock.Mock(side_effect=OSError("stopped at its write"))
+        writes = mock.Mock(wraps=stubs_mod._write_source_mentions)
         with monkeypatch.context() as patch:
-            patch.setattr("lilbee.wiki.stubs._write_source_mentions", stopped_writes)
+            patch.setattr("lilbee.wiki.stubs._write_source_mentions", writes)
             await library.sync()
-        assert stopped_writes.call_count == 1
 
-        await library.sync()
-
-        def _renamed(clean):
-            (clean.documents / "old.txt").rename(clean.documents / "renamed.txt")
-
-        def _written(clean):
-            clean.write_notes("note", 4)
-            clean.write("old.txt", "The one file that is renamed.")
-
-        clean = await self._clean(tmp_path, _written, _renamed)
-        assert self._subjects(clean)["about-renamed.txt"] == ("renamed.txt",)
-        self._assert_equal_to(library, clean)
+        assert writes.call_count == 0
+        assert "renamed.txt" in self._listed(library)
+        assert "old.txt" not in self._listed(library)
 
     async def test_with_no_extractor_a_removed_file_leaves_the_index(
         self, tmp_path, monkeypatch, wiki_on

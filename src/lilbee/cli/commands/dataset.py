@@ -11,9 +11,9 @@ from rich.text import Text
 
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
-from lilbee.cli.helpers import json_output, print_prefixed, sigint_cancel
+from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
-from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.cancellation import TaskCancelledError, sigint_cancel
 from lilbee.runtime.console import styled
 
 _export_output_argument = typer.Argument(

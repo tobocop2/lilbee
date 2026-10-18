@@ -70,6 +70,7 @@ from lilbee.data.store import (
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.runtime.lock import ResetRefusedError
+from lilbee.runtime.progress import UPGRADE_HEADLINE
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -297,9 +298,12 @@ def search(
 
 @_tool
 def status() -> dict[str, Any]:
-    """Show indexed documents, configuration, and chunk counts."""
+    """Show documents, config and chunk counts, or the running upgrade."""
     from lilbee.app.status import gather_status
 
+    upgrade = get_services().store.upgrade_progress()
+    if upgrade is not None:
+        return {"detail": UPGRADE_HEADLINE, "upgrade": upgrade.model_dump(mode="json")}
     return gather_status().model_dump()
 
 
@@ -444,14 +448,11 @@ async def add(
         errors.extend(url_errors)
 
     # Registration touches config.toml (a locked read-modify-write); keep the
-    # blocking disk I/O off the event loop. A cancelled call ends its wait for
-    # the records lock.
+    # blocking disk I/O off the event loop.
     try:
-        with _cancel_token() as cancel:
-            reg_result = await anyio.to_thread.run_sync(
-                functools.partial(register_sources, valid, force=force, cancel=cancel),
-                abandon_on_cancel=True,
-            )
+        reg_result = await anyio.to_thread.run_sync(
+            functools.partial(register_sources, valid, force=force), abandon_on_cancel=True
+        )
         errors.extend(reg_result.refused)
         reached = reg_result.reached_corpus or bool(crawled_count)
         sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
@@ -593,11 +594,7 @@ async def remove(names: list[str]) -> dict[str, Any]:
     from lilbee.app.ingest import LIBRARY_REFUSALS, remove_documents_durably
 
     try:
-        with _cancel_token() as cancel:
-            result = await anyio.to_thread.run_sync(
-                functools.partial(remove_documents_durably, names, cancel=cancel),
-                abandon_on_cancel=True,
-            )
+        result = await anyio.to_thread.run_sync(remove_documents_durably, names)
     except LIBRARY_REFUSALS as exc:
         return _error(str(exc))
     return {"command": "remove", "removed": result.removed, "not_found": result.not_found}
@@ -1350,7 +1347,7 @@ def wiki_drafts_diff(slug: str) -> dict[str, Any]:
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     try:
-        diff = diff_draft(slug, wiki_root)
+        diff = diff_draft(slug, wiki_root, get_services().store)
     except FileNotFoundError as exc:
         return _error(str(exc))
     except PathTraversalError:

@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 # Per-worker state (engine slots, log) under the parent data root. The index
-# and the skip records are the corpus's, at the parent data root itself.
+# and the ``.lilbeeignore`` are the corpus's, at the parent data root itself.
 SHARDS_DIRNAME = "shards"
 _DATA_ROOT_ENV = "LILBEE_DATA"
 _CPU_QUOTA_ENV = "LILBEE_CPU_QUOTA"
@@ -163,7 +163,7 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
     root = config.data_root / SHARDS_DIRNAME
     return [
         ShardSpec(
-            shard=ShardId(index=index, count=processes, records_root=config.data_root),
+            shard=ShardId(index=index, count=processes, corpus_root=config.data_root),
             device=index % devices,
             config=_shard_config(config, root / f"w{index}", plan_share, processes),
             # Keyed by card, not by worker: workers sharing a card share one
@@ -432,9 +432,6 @@ def aggregate_results(verdicts: list[ShardDone]) -> SyncResult:
         held_out=[held for r in results for held in r.held_out],
         unchanged=sum(r.unchanged for r in results),
         truncated=sum(r.truncated for r in results),
-        skip_records_error=next(
-            (r.skip_records_error for r in results if r.skip_records_error is not None), None
-        ),
     )
 
 

@@ -117,7 +117,7 @@ def render_citation_block(citations: list[CitationRecord]) -> str:
         return ""
     lines = [CITATION_BLOCK_SEP, CITATION_BLOCK_COMMENT]
     for rec in citations:
-        lines.append(f"[^{rec['citation_key']}]: {_format_source_ref(rec)}")
+        lines.append(f"[^{rec['citation_key']}]: {format_source_ref(rec)}")
     return "\n".join(lines) + "\n"
 
 
@@ -292,7 +292,7 @@ def _strip_frontmatter(markdown: str) -> str:
     return markdown
 
 
-def _format_source_ref(rec: CitationRecord) -> str:
+def format_source_ref(rec: CitationRecord) -> str:
     """Format a CitationRecord into a human-readable footnote reference."""
     ref = rec["source_filename"]
     has_page = rec["page_start"] is not None and rec["page_start"] > 0

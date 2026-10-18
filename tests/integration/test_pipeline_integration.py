@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.data.store import Store
+from lilbee.data.store import SourceType, Store
 
 pytestmark = pytest.mark.slow
 
@@ -111,6 +111,6 @@ class TestStoreRoundTrip:
             ]
         )
 
-        store.delete_by_source("delete_me.pdf")
+        store.delete_by_source("delete_me.pdf", SourceType.DOCUMENT)
         for r in store.search(embedder.embed("tire pressure"), top_k=5):
             assert r.source != "delete_me.pdf"

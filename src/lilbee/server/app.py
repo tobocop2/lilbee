@@ -6,21 +6,26 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread
 from litestar import Litestar, MediaType, Request, Response
 from litestar.config.cors import CORSConfig
 from litestar.exceptions import HTTPException
 from litestar.exceptions.responses import create_exception_response
+from litestar.middleware import ASGIMiddleware
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 
+from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import get_services, peek_services
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
+from lilbee.runtime.progress import LibraryUpgradeEvent
+from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
 from lilbee.server.auth import AuthMiddleware, session_manager
+from lilbee.server.chat_completions_api.errors import CompletionsErrorCode, completions_error_body
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.mcp_mount import build_mcp_mount
@@ -120,6 +125,8 @@ from lilbee.server.wiki import (
 )
 
 if TYPE_CHECKING:
+    from litestar.types import ASGIApp, Receive, Scope, Send
+
     from lilbee.retrieval.embedder import Embedder
 
 log = logging.getLogger(__name__)
@@ -215,6 +222,66 @@ def _log_embedding_model_state(embedder: Embedder) -> None:
     # Unconfigured: validate_model already logged the one INFO line.
 
 
+_UPGRADE_WAIT_SECONDS = 10.0
+_UPGRADE_RETRY_AFTER_SECONDS = 10
+_UPGRADING_MESSAGE = "lilbee is upgrading the library. Try again in a few seconds."
+
+
+def _upgrading_response(path: str, upgrade: LibraryUpgradeEvent | None) -> Response:
+    """The 503 for a request that waited out the limit, in the error shape of its API.
+
+    Every shape also carries the upgrade's progress, as health reports it.
+    """
+    code = CompletionsErrorCode.INTERNAL_ERROR
+    body: dict[str, Any]
+    if path.startswith("/v1/messages"):
+        body = anthropic_error_body(anthropic_error_type(code), _UPGRADING_MESSAGE)
+    elif path.startswith("/v1/"):
+        body = completions_error_body(code, _UPGRADING_MESSAGE)
+    else:
+        body = {"status_code": 503, "detail": _UPGRADING_MESSAGE}
+    body["upgrade"] = None if upgrade is None else upgrade.model_dump(mode="json")
+    return Response(
+        body,
+        status_code=503,
+        headers={"Retry-After": str(_UPGRADE_RETRY_AFTER_SECONDS)},
+        media_type=MediaType.JSON,
+    )
+
+
+class _LibraryOpenWait(ASGIMiddleware):
+    """Hold a request up to 10 s for the library to open, then answer 503 with Retry-After.
+
+    The wait runs off the loop, so an upgrade never blocks it. The limit sits under the
+    15 s timeout of the Obsidian plugin, so the plugin shows the reason. Health, the warm
+    stream and shutdown pass at once: health reports the upgrade. MCP tool calls wait
+    for the library where they use it. A process with no services has no open to wait
+    for, and the request passes without building them.
+    """
+
+    exclude_path_pattern = (
+        "^/api/health$",
+        "^/api/warm/stream$",
+        "^/api/shutdown$",
+        f"^{MCP_PATH}(/.*)?$",
+    )
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
+        services = peek_services()
+        store = None if services is None else services.store
+        if (
+            store is not None
+            and not store.is_open
+            and not await asyncio.to_thread(store.wait_for_open, _UPGRADE_WAIT_SECONDS)
+        ):
+            response = _upgrading_response(scope["path"], store.upgrade_progress())
+            await response.to_asgi_response(None, Request(scope, receive, send))(
+                scope, receive, send
+            )
+            return
+        await next_app(scope, receive, send)
+
+
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
@@ -230,6 +297,7 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         log.warning("Failed to pre-load LLM provider", exc_info=True)
     else:
         _log_embedding_model_state(services.embedder)
+        services.store.open_in_background()
     try:
         yield
     finally:
@@ -274,7 +342,7 @@ def create_app() -> Litestar:
     mcp_route, mcp_session_lifespan = build_mcp_mount()
     return Litestar(
         lifespan=[_lifespan, mcp_session_lifespan],
-        middleware=[DefineMiddleware(AuthMiddleware)],
+        middleware=[DefineMiddleware(AuthMiddleware), _LibraryOpenWait()],
         exception_handlers={
             HTTPException: _json_error_response,
             Exception: _unhandled_error_response,

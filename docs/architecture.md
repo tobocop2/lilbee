@@ -124,7 +124,7 @@ flowchart TD
     ST -->|no| H["SHA-256 the bytes"]
     H --> HC{"hash matches<br/>the stored row?"}
     HC -->|yes| BF["unchanged —<br/>backfill the fresh stat"]
-    HC -->|no| SK{"hash matches a skip marker<br/>(a failure or a removal)?"}
+    HC -->|no| SK{"hash matches a held-out record<br/>(a failure or a removal)?"}
     SK -->|yes| SKIP["held out: a failure is counted<br/>apart from unchanged and reported<br/>with its reason; a removal is not reported"]
     SK -->|no| PR["process:<br/>extract → chunk → embed,<br/>store chunks keyed by this hash"]
 ```
@@ -151,7 +151,7 @@ flowchart LR
     P3 --> I3["…"]
 ```
 
-Correctness is unchanged because shards are contiguous slices of one sorted list consumed in order: the streamed plan is byte-for-byte the single-pass plan, only delivered in pieces. Cross-shard bookkeeping (added/updated sets, one-to-one move detection for relocated files, skip markers) accumulates across shards to the same result. The planner runs on its own thread rather than the shared ingest pool, which extraction saturates once ingest is under way.
+Correctness is unchanged because shards are contiguous slices of one sorted list consumed in order: the streamed plan is byte-for-byte the single-pass plan, only delivered in pieces. Cross-shard bookkeeping (added/updated sets, one-to-one move detection for relocated files, held-out records) accumulates across shards to the same result. The planner runs on its own thread rather than the shared ingest pool, which extraction saturates once ingest is under way.
 
 **Why the list is sorted.** `os.walk` yields files in arbitrary filesystem order, so the corpus is sorted by key first. That fixed order is what makes the plan deterministic: classification fans out across a thread pool and completes out of order, but the plan is reassembled in sorted order, so it matches what a single serial pass would produce regardless of thread scheduling (a test asserts `parallel == serial`). It also makes move detection deterministic — when several deleted sources share a content hash, a reappeared file pairs with exactly one old key — and makes the shard boundaries stable, so a killed-and-restarted run re-shards the same corpus the same way.
 
@@ -396,8 +396,9 @@ off by default and measured 1.00x. Per-card workers remove the drain instead of 
 it: eight pinned workers on the same 8xH100 box measured 415 docs/sec at a GPU busy
 fraction of 0.93.
 
-**One record of what is indexed.** The index's source table and the skip records are
-the only durable statement of what is indexed. A worker reads the source rows of its own
+**One record of what is indexed.** The index's source table is the only durable
+statement of what is indexed and of what a sync holds out: a failed or removed file is
+a column of its source row, so a move or a removal changes one row. A worker reads the source rows of its own
 slice once to decide what is unchanged, and it writes each batch under the store's write lock:
 the old rows of its documents go first and their source rows land last, as in a
 one-process sync. So `lilbee remove`, a rename, an archive, a stop and a change of the
@@ -440,38 +441,123 @@ on the laptop 0.08 s and 0.09 s against 0.11 s and 0.20 s.
 **A renamed file.** The old name can belong to another worker's slice. A worker looks up
 the content hash of each new file in the source table as the sync found it. That gives
 the old names the file can take, in name order. Under the write lock the store gives the
-file the first of them that still holds a source row, and re-keys it in the same hold.
+file the first of them that still holds a source row, and moves it in the same hold.
 So no two workers take one old name. A file is an add only when every old name of its
 content is taken, so no old name stays while a file of its content is added.
 
-**A renamed folder.** Files that swap the same leading text of their name, as every file
-of a renamed folder does, take one update of each table together. So a renamed folder is
-one pass over each table. The source rows change in one merge. The vectors are not read
-or embedded again.
+**A renamed file or folder.** Every table names a source by its `source_id`; only the
+`_sources` row holds its path. A move changes that path, the title when the title came
+from the old file name, and the file's stat, in one merge of the source table. The chunk
+table takes an update only for the files whose title changes, one update a title. The
+sources inside a moved archive move with it. The vectors are not read or embedded again. A
+failed file moves too, at the hash it failed at, and stays held out. A removed file does
+not move: its removal stays at its old path, and the file at its new path is indexed.
+`lilbee add` at a moved folder's new place moves the folder's rows and then releases the
+removals under the added path, because adding a path asks for its removed files back. So
+a moved folder forgets the removed files under it, by an add at the new place or by an
+edit of `config.toml`.
 
-**Other renames.** Fewer than 256 files that swap one leading text, and files moved to
-unrelated names, share updates too: one update maps each old name to its new one. The
-store library builds that map once for each row it updates, so an update takes files
-only while the names in its maps times the chunk rows it re-keys stay under 500,000:
-about 700 files of one chunk, or about 220 files of ten chunks. Files that also take a
-new title, because the title came from the old file name, count three times, and at most
-256 of them share an update.
+**One hold of the write lock** moves at most 2,000 files. The sync pauses for 0.1 s
+between two holds, so other writers get a turn. A sync that stops between two holds
+leaves the remaining files under their old names, and the next sync moves them.
 
-**One hold of the write lock** re-keys at most 2,000 files with at most 16 updates of the
-chunk table. The sync pauses for 0.1 s between two holds, so other writers get a turn. A
-sync that stops between two holds leaves the remaining files under their old names, and
-the next sync moves them.
+**Source ids.** A source that a library held before ids existed takes the md5 of its
+path, and a wiki page the md5 of its path joined with a NUL and `wiki`, so a page and a
+document of one path keep two ids; a new source takes a random id, so a new file at a path that a moved file left
+gets an id of its own. A flush writes the row of a new source before its chunks, so a
+flush that stops between them leaves rows the next flush of that file finds and deletes.
+A removed source that a wiki citation names keeps its row, held out of every listing, so
+the citation still shows its path. An indexed wiki page has a row of type `wiki` that no
+listing shows.
 
-A hold has a bound in files and in updates, not in time. The time of one update follows
-the size of the index. Holds for renamed files, 1024-dimension vectors, one chunk a file,
-two runs each, on a rented 16-core Linux machine while other tenants loaded it:
+**The wiki after a move.** The subject index `wiki/stubs.json` and the wiki mention rows
+name each source by its id, so a move leaves them as they are. A page file shows paths:
+its frontmatter `sources` and provenance, and its citation footnotes. Every sync renders
+again each page that shows a path other than the one the store holds for a cited id, so
+the next sync repairs a page that a stopped sync left. An add that takes a source in
+renders again the pages that show the old names. A
+footnote whose text is its citation row under another path takes the current path, and
+that old path is replaced by the new one in the frontmatter. The step reads only the page
+and the store, so running it again changes nothing. A page written again keeps its
+modified time, which the stale check of its pending draft compares. A draft has no citation rows: its frontmatter
+`source_ids` names the id of each source path it was written with, and accepting it or
+showing its diff renders the path each id has now, so a move never rewrites a draft. A
+draft written before drafts named ids takes them the first time it is accepted or diffed:
+each cited path resolves to the id the first open of the older library gave the source at
+that path, and a path no row holds stays as written and is logged. Archived pages keep the
+paths they were written with; nothing restores them. A subject index of an older version is aggregated
+again from the mention rows the first time it is read, with no extraction.
 
-| Renamed files | 100,000 rows in the index | 250,000 rows in the index |
-|---|---|---|
-| A renamed folder, 512 files | 1 hold of 0.28 s and 0.30 s | 1 hold of 0.49 s and 0.47 s |
-| A new file name for each of 512 files | 1 hold of 0.54 s and 0.60 s | 1 hold of 1.18 s and 1.07 s |
-| Unrelated names, 512 files | 1 hold of 0.50 s and 0.52 s | 1 hold of 0.86 s and 0.83 s |
-| Unrelated names, 1,500 files | 1 hold of 1.39 s and 1.34 s | 1 hold of 2.57 s and 2.63 s |
+**The first open of an older library** keys it in place under the write lock. Each table
+gains `source_id` as the md5 of its path (a wiki chunk takes the id of its page), takes the BTREE index of the path column when
+it had one, and loses the path column; `_sources.filename` becomes `path`. Each step reads
+the table's columns, and the schema stamp reads `_meta`, so an open that stops part way is
+finished by the next, also when it stops after the last column drop. LanceDB adds
+a column one fragment at a time, so each table gains its id column on a thread of its own
+from the start of the open. A path column goes only after every path in it has a source
+row of its type, and the key comparison runs in Arrow. On a library of 8.8 million chunks,
+the first open takes about 35 s and about 2.3 GiB of peak memory, with the full-text,
+vector and bitmap indexes kept. An older lilbee then fails on the renamed column
+(`KeyError: 'filename'`) in every command that reads the index, and changes nothing.
+`lilbee rebuild` of the older version works and starts the library again.
+
+**Upgrade progress.** One thread, the opener, reports the upgrade: it names each table
+as it checks it, then again while it waits for that table's id column, so the count of
+tables done only rises and never reads done while a thread still runs. Every event
+carries the seconds since the upgrade began. The TUI start screen and a CLI command on
+a terminal redraw that time each second with Textual's and Rich's own timers; piped,
+under `--json`, and in `serve` and `mcp`, each event is one plain line on stderr. While
+it runs, `GET /api/health` carries an `upgrade` object (phase, work, table, rows, tables
+done and total, elapsed seconds), a held request's 503 body carries the same object,
+and the MCP `status` tool answers with it at once.
+
+**Stored locations, computed names.** The `path` of a source under an added folder is
+the folder's path from the registry plus the path below it, in POSIX spelling. The name
+a person sees is computed when the store reads the row: the label of the deepest added
+folder that holds the path, then the rest. Every other path (an owned file, a crawled
+page, a wiki page, an imported source) shows itself. The listing search builds one SQL
+arm per folder from the same ordered list. The store reads the registry again when
+`config.toml` changes, and a sync holds the registry it started with. The first open
+stores the location of each row a registered label still names, deepest folder first. It
+reads the rows in batches of 8192 from the source table held at one version and updates
+each batch by its row addresses, one commit a batch, so its memory does not follow the
+number of rows; a row an outer folder kept for a file of an inner folder folds
+into the inner folder's row. Only a document is stored at its location; a wiki page and
+an imported source keep their own names. Every write of a source row by name states the
+type of its source. A write finds the row of that type at its stored path or at the label
+form of its name and keeps that row's id, so a write never adds a second row for one
+source. A removal, a deletion and the wiki mentions of a source find its ids at the key of
+its type, and a name a person removes is a document. Three writers change rows without a
+name: a folder move carries document rows to their new locations by id and deletes the rows
+they land on; a prefix rewrite folds each landing row into the row already at the new place
+before it moves the rest; a drop or a release changes the rows of ids it read. None of them
+gives a source a second row or a second id. A
+record imported from the older files lands on the row the first open gave a removed source
+that a citation names, and an import that runs again writes the same rows. When a folder
+leaves the registry, the rows it keeps for citations are stored by their names again, as a
+label with no folder keeps them; a row that lands on a name another row holds folds into it.
+
+Four limits of stored locations remain:
+
+- **A folder moved and pointed at by an edit of `config.toml` forgets its removals.** A
+  move that a sync finds carries listed and failed files only, so the sync indexes the
+  folder's removed files again at the new place. Before stored locations, a removal was
+  kept by name, and the name did not change, so these files stayed removed. An older
+  library that this version first opens after the edit keeps them too: the first open
+  stores each location by the folders that `config.toml` names at that time.
+- **A root pointed around an unmoved file keeps its removal.** If an edit of
+  `config.toml` adds a root at the folder of a removed file, or points a root at a folder
+  above or below it, the file's name changes but its place does not. The removal is kept
+  by place, so the file stays removed. Before stored locations, the file was indexed
+  again under its new name.
+- **A file added under another label.** The add labels a file by its file name. If you
+  give it another label by an edit of `config.toml` and then add a parent folder, the
+  document keeps the title it had under the old label.
+- **A folder named like the wiki folder.** Its documents and the wiki pages share names
+  that start with `wiki/`. A document and a wiki page with the same name are two sources
+  with two ids. A citation lookup, a page text lookup, a removal by name, the concept
+  rows and the concept boost of a search find the document. A name that a reader gives
+  with no type, such as the source of a chunk lookup, finds the wiki page.
 
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.

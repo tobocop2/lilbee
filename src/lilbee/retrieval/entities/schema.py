@@ -143,7 +143,7 @@ def _entities_schema() -> pa.Schema:
             pa.field("entity", pa.utf8()),
             pa.field("type", pa.utf8()),
             pa.field("normalized_value", pa.utf8()),
-            pa.field("source", pa.utf8()),
+            pa.field("source_id", pa.utf8()),
             pa.field("page", pa.int32()),
             pa.field("chunk_index", pa.int32()),
             pa.field("confidence", pa.float32()),

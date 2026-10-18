@@ -39,10 +39,36 @@ class SourceType(StrEnum):
     ``DOCUMENT`` mirrors a file under ``documents/`` and is managed by the
     file-driven sync. ``IMPORTED`` is detached: it came from ``lilbee import``
     and has no backing file, so sync must not treat it as a missing document.
+    ``WIKI`` is an indexed wiki page; no listing shows it.
     """
 
     DOCUMENT = "document"
     IMPORTED = "imported"
+    WIKI = "wiki"
+
+
+class HeldOut(StrEnum):
+    """Why a ``_sources`` row holds its path out of later syncs.
+
+    ``REMOVED``: the user removed it; the row also keeps the path a citation names.
+    ``FAILED``: ingestion produced nothing at that content; a row that holds a
+    document keeps it listed.
+    """
+
+    FAILED = "failed"
+    REMOVED = "removed"
+
+
+class HeldRecord(NamedTuple):
+    """Why a sync holds a path out, and the content hash it holds it out at."""
+
+    kind: HeldOut
+    file_hash: str
+    reason: str
+
+
+# The reason a removal records, shown with the held-out file.
+REMOVED_REASON = "removed via remove (add the source again to restore)"
 
 
 class SourceMeta(NamedTuple):
@@ -96,7 +122,8 @@ class ChunkType(StrEnum):
 # add or rename a meta column without forcing every store to drop_all.
 # 2: nomic-embed document prefixes are stamped at ingest (see
 # lilbee.retrieval.embedding_profiles doc_prefix_since).
-META_SCHEMA_VERSION = 2
+# 3: every table keys a source by ``source_id``; ``_sources`` alone holds its path.
+META_SCHEMA_VERSION = 3
 
 # Always-true predicate used to clear the single-row ``_meta`` table before re-insert.
 # Lance's ``Table.delete`` requires a SQL where clause; this matches every row without

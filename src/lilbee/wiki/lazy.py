@@ -62,19 +62,21 @@ def _chunks_for_stub(stub: WikiStub, store: Store) -> tuple[dict[str, list[Searc
     re-ingested with fewer chunks contributes what it still has instead of
     failing the page.
     """
+    paths = store.source_paths(stub.sources)
     wanted: dict[str, set[int]] = {}
-    for source, index in stub.chunk_refs:
-        wanted.setdefault(source, set()).add(index)
+    for source_id, index in stub.chunk_refs:
+        if source_id in paths:
+            wanted.setdefault(paths[source_id], set()).add(index)
     if not wanted:
         # Subtracting a re-indexed source can empty the refs while leaving real
         # evidence: the cap may have given every ref to the source that went.
         # The recorded sources are the truth, so fall back to reading them.
-        wanted = {source: set() for source in stub.sources}
+        wanted = {path: set() for path in paths.values()}
 
     # Most-mentioning source first, so when the context budget truncates it
     # drops the documents with least to say rather than the alphabetically
     # unlucky ones.
-    counts = dict(stub.source_mentions)
+    counts = {paths[source_id]: n for source_id, n in stub.source_mentions if source_id in paths}
     order = sorted(wanted, key=lambda name: (-counts.get(name, 0), name))
 
     by_source: dict[str, list[SearchChunk]] = {}
@@ -120,7 +122,7 @@ def generate_stub_page(
     Runs the same citation verification, faithfulness gate, and drafts
     quarantine a build does; nothing here bypasses them. Holds the wiki mutex,
     so a page generated from the browse tree cannot interleave with a build,
-    and the sync mark, so no source key moves while the page is written.
+    and the sync mark, so no reset runs while the page is written.
     Emits the same wiki_phase/wiki_page events a build does; a *cancel* set
     before the model call skips it, and one set during the wait for the sync
     mark ends the wait.

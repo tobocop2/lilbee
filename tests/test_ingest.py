@@ -19,8 +19,10 @@ import lilbee.app.services as svc_mod
 from lilbee.app.ingest import RegisterResult
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
+from lilbee.data.store import REMOVED_REASON, HeldOut, HeldRecord
 from lilbee.data.types import ExtractMode, OcrBackendName
 from lilbee.runtime.progress import OcrBackendUsed
+from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
 from tests.conftest import make_pdf
 
 
@@ -48,22 +50,17 @@ def isolated_env(tmp_path):
         setattr(cfg, name, getattr(snapshot, name))
 
 
-@pytest.fixture(autouse=True)
-def mock_svc():
-    """Provide a mock Services container for all ingest tests."""
-    from tests.conftest import make_mock_services
+class _FakeIndex:
+    """The source rows and held-out records the mock store keeps, as the real store does."""
 
-    _sources: dict[str, dict] = {}
-    store = MagicMock()
-    store.search.return_value = []
-    store.bm25_probe.return_value = []
-    store.get_sources.side_effect = lambda: list(_sources.values())
-    store.add_chunks.side_effect = len
+    def __init__(self) -> None:
+        self.sources: dict[str, dict] = {}
+        self.held: dict[str, HeldRecord] = {}
 
-    def _upsert(fn, fh, cc, source_type="document"):
+    def upsert(self, fn, fh, cc, source_type="document"):
         from datetime import UTC, datetime
 
-        _sources[fn] = {
+        self.sources[fn] = {
             "filename": fn,
             "file_hash": fh,
             "chunk_count": cc,
@@ -71,44 +68,82 @@ def mock_svc():
             "source_type": source_type,
         }
 
-    store.upsert_source.side_effect = _upsert
-
-    def _write_batch(items):
-        # Mirror the real write: each batched doc upserts a source record so
-        # multi-sync tests see it via get_sources().
+    def write_batch(self, items):
+        # Each batched doc upserts a source record so multi-sync tests see it via
+        # get_sources(); the new row holds nothing out.
         for it in items:
-            _upsert(it.source, it.file_hash, len(it.records))
+            self.upsert(it.source, it.file_hash, len(it.records))
+            self.held.pop(it.source, None)
         return sum(len(it.records) for it in items)
 
-    store.write_chunks_batch.side_effect = _write_batch
-    store.delete_source.side_effect = lambda fn: _sources.pop(fn, None)
-    store.delete_by_source.return_value = None
-
-    def _remove_documents(names, **_kw):
+    def remove_documents(self, names, held=None):
         from lilbee.data.store.types import RemoveResult
 
-        removed = [n for n in names if n in _sources]
-        not_found = [n for n in names if n not in _sources]
+        removed = [n for n in names if n in self.sources]
         for name in removed:
-            _sources.pop(name, None)
-        return RemoveResult(removed=removed, not_found=not_found)
+            self.sources.pop(name, None)
+        self.held.update(held or {})
+        return RemoveResult(removed=removed, not_found=[n for n in names if n not in removed])
 
-    store.remove_documents.side_effect = _remove_documents
+    def release_held(self, paths):
+        for path in list(paths):
+            self.held.pop(path, None)
 
-    def _relocate(moves):
+    def release_failed(self):
+        released = sorted(p for p, record in self.held.items() if record.kind is HeldOut.FAILED)
+        self.release_held(released)
+        return released
+
+    def _movable(self, name):
+        record = self.held.get(name)
+        if record is not None:
+            return record.kind is HeldOut.FAILED
+        return name in self.sources
+
+    def relocate(self, moves):
         from lilbee.data.store import SourceRelocation
 
-        # Mirror the real re-key: a move takes its first candidate that holds a row.
+        # A move takes its first candidate that holds a row, a failure's record
+        # moves with its row, and a removal never moves.
         taken = {}
         for move in moves:
-            old = next((name for name in move.candidates if name in _sources), None)
-            if old is not None:
-                _sources[move.new] = {**_sources.pop(old), "filename": move.new}
-                taken[move.new] = old
+            old = next((name for name in move.candidates if self._movable(name)), None)
+            if old is None:
+                continue
+            if old in self.sources:
+                self.sources[move.new] = {**self.sources.pop(old), "filename": move.new}
+            if old in self.held:
+                self.held[move.new] = self.held.pop(old)
+            taken[move.new] = old
         return SourceRelocation(taken, len(moves))
 
-    store.relocate_sources.side_effect = _relocate
-    store.drop_all.side_effect = lambda: _sources.clear()
+    def drop_all(self):
+        self.sources.clear()
+        self.held.clear()
+
+
+@pytest.fixture(autouse=True)
+def mock_svc():
+    """Provide a mock Services container for all ingest tests."""
+    from tests.conftest import make_mock_services
+
+    index = _FakeIndex()
+    store = MagicMock()
+    store.search.return_value = []
+    store.bm25_probe.return_value = []
+    store.get_sources.side_effect = lambda: list(index.sources.values())
+    store.add_chunks.side_effect = len
+    store.upsert_source.side_effect = index.upsert
+    store.write_chunks_batch.side_effect = index.write_batch
+    store.delete_source.side_effect = lambda fn: index.sources.pop(fn, None)
+    store.delete_by_source.return_value = None
+    store.remove_documents.side_effect = index.remove_documents
+    store.held_records.side_effect = lambda: dict(index.held)
+    store.hold_failed.side_effect = index.held.update
+    store.release_held.side_effect = index.release_held
+    store.release_failed.side_effect = index.release_failed
+    store.relocate_sources.side_effect = index.relocate
+    store.drop_all.side_effect = index.drop_all
     store.ensure_fts_index.return_value = None
     store.get_meta.return_value = None
     store.index_mismatch.return_value = None
@@ -275,9 +310,8 @@ def test_reconcile_missing_flags_only_silent_drops():
     assert missing == ["d.pdf"]
 
 
-def test_reconcile_missing_accounts_for_persisted_skip_markers():
-    """A file an earlier run marked is in neither this run's failed nor skipped
-    lists, so without the marker set it reads as a silent drop every sync."""
+def test_reconcile_missing_accounts_for_held_out_records():
+    """A file an earlier run held out is not reported as a silent drop."""
     from pathlib import Path
 
     from lilbee.data.ingest.pipeline import _reconcile_missing
@@ -356,35 +390,25 @@ class TestSync:
         mock_batch.assert_called()
         mock_extract_file.assert_not_called()
 
-    async def test_a_move_subtracts_the_old_name_from_the_wiki_index(
-        self, mock_extract_file, isolated_env, monkeypatch
+    @pytest.mark.parametrize("move", [False, True], ids=["no-move", "move"])
+    async def test_every_sync_renders_the_current_paths_in_the_wiki(
+        self, mock_extract_file, isolated_env, monkeypatch, move
     ):
-        """The index is keyed by source name. Without the old key the move
-        leaves it there forever: its mentions double-count and its dead chunk
-        refs occupy the per-subject cap ahead of live evidence."""
         import shutil
 
-        from lilbee.core.config import cfg
         from lilbee.data.ingest import sync
 
         (isolated_env / "a.txt").write_text("Hello world. This document will move.")
         await sync()
-
-        monkeypatch.setattr(cfg, "wiki", True)
-        seen: list[set] = []
-
-        def fake_refresh(store, config, named):
-            seen.append(named)
-            return set()
-
-        monkeypatch.setattr("lilbee.wiki.stubs.refresh_owed_sources", fake_refresh)
-        (isolated_env / "sub").mkdir()
-        shutil.move(str(isolated_env / "a.txt"), str(isolated_env / "sub" / "a.txt"))
+        shown = mock.MagicMock()
+        monkeypatch.setattr("lilbee.app.ingest.show_current_paths_in_wiki", shown)
+        if move:
+            (isolated_env / "sub").mkdir()
+            shutil.move(str(isolated_env / "a.txt"), str(isolated_env / "sub" / "a.txt"))
 
         await sync()
 
-        assert seen, "the post-sync refresh did not run"
-        assert {"a.txt", "sub/a.txt"} <= seen[-1]
+        shown.assert_called_once_with()
 
     async def test_moved_file_relocates_without_reingest(self, mock_extract_file, isolated_env):
         import shutil
@@ -466,7 +490,6 @@ class TestSync:
     ):
         from lilbee.core.config import cfg
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import load_skip_reasons
 
         monkeypatch.setattr(cfg, "max_chunks_per_file", 2)
         mock_extract_file.return_value = _make_archive_result(
@@ -479,7 +502,7 @@ class TestSync:
         assert result.skipped == ["runs.gz"]
         assert result.added == []
         mock_svc.embedder.embed_batch.assert_not_called()
-        reason = load_skip_reasons(cfg.data_root)["runs.gz"]
+        reason = held_reasons()["runs.gz"]
         assert reason.startswith("runs.gz/runs.csv: 5 chunks exceed the per-file limit of 2")
 
     async def test_chunk_explosion_is_skipped_before_it_is_embedded(
@@ -488,7 +511,6 @@ class TestSync:
         """A file past the cap is refused with its count, and never reaches the embedder."""
         from lilbee.core.config import cfg
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import load_skip_reasons
         from lilbee.runtime.progress import BatchStatus, EventType
 
         monkeypatch.setattr(cfg, "max_chunks_per_file", 2)
@@ -506,7 +528,7 @@ class TestSync:
         assert any(
             t is EventType.BATCH_PROGRESS and d.status is BatchStatus.SKIPPED for t, d in events
         )
-        reason = load_skip_reasons(cfg.data_root)["huge.txt"]
+        reason = held_reasons()["huge.txt"]
         assert "5 chunks exceed the per-file limit of 2" in reason
 
     async def test_raising_the_chunk_cap_lets_the_file_in(
@@ -1057,12 +1079,12 @@ class TestSync:
         added: dict[str, None] = {"a.txt": None}
         updated: dict[str, None] = {}
         failed: dict[str, None] = {}
-        flush_failed: set[str] = set()
-        pipeline._flush_writes(buffer, added, updated, failed, {}, flush_failed)
+        retry_next: set[str] = set()
+        pipeline._flush_writes(buffer, added, updated, failed, {}, retry_next)
 
         assert added == {}
         assert list(failed) == ["a.txt"]
-        assert flush_failed == {"a.txt"}
+        assert retry_next == {"a.txt"}
         assert buffer == []
 
     def test_flush_failure_drops_page_text_only_file_from_skipped(self, _mock_extract_file):
@@ -1114,20 +1136,20 @@ class TestSync:
 
         added: dict[str, None] = {"a.txt": None}
         failed: dict[str, None] = {}
-        flush_failed: set[str] = set()
-        pipeline._flush_writes([result], added, {}, failed, {}, flush_failed)
+        retry_next: set[str] = set()
+        pipeline._flush_writes([result], added, {}, failed, {}, retry_next)
 
         assert store.write_chunks_batch.call_count == 2
         assert sleeps == [pipeline._FLUSH_RETRY_DELAY_SECONDS]
         assert list(added) == ["a.txt"]
         assert failed == {}
-        assert flush_failed == set()
+        assert retry_next == set()
 
-    def test_flush_writes_lock_timeout_twice_marks_flush_failed(
+    def test_flush_writes_lock_timeout_twice_marks_retry_next(
         self, _mock_extract_file, monkeypatch
     ):
-        # Both attempts time out: the file is failed AND flush_failed (transient,
-        # retried next sync), never skip-marked.
+        # Both attempts time out: the file is failed AND in retry_next (transient,
+        # retried next sync), never held out.
         from lilbee.app.services import get_services
         from lilbee.data.ingest import pipeline
         from lilbee.data.types import _IngestResult
@@ -1147,28 +1169,26 @@ class TestSync:
 
         added: dict[str, None] = {"a.txt": None}
         failed: dict[str, None] = {}
-        flush_failed: set[str] = set()
-        pipeline._flush_writes([result], added, {}, failed, {}, flush_failed)
+        retry_next: set[str] = set()
+        pipeline._flush_writes([result], added, {}, failed, {}, retry_next)
 
         assert list(failed) == ["a.txt"]
-        assert flush_failed == {"a.txt"}
+        assert retry_next == {"a.txt"}
 
-    async def test_flush_failure_does_not_write_skip_marker(self, _mock_extract_file, isolated_env):
-        # End-to-end: a hard flush failure records the file as failed but leaves
-        # no skip marker, so the next sync re-plans it; an extraction failure
-        # still gets a marker.
+    async def test_flush_failure_does_not_hold_the_file_out(self, _mock_extract_file, isolated_env):
+        # End-to-end: a hard flush failure records the file as failed but writes
+        # no held-out record, so the next sync re-plans it.
         from lilbee.app.services import get_services
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import load_skip_markers
 
         (isolated_env / "doc.txt").write_text("content here")
         get_services().store.write_chunks_batch.side_effect = RuntimeError("disk full")
 
         result = await sync(quiet=True)
         assert "doc.txt" in result.failed
-        assert "doc.txt" not in load_skip_markers(cfg.data_root)
+        assert "doc.txt" not in held_hashes()
 
-        # Next sync re-plans the file (no marker, hash unchanged but never stored).
+        # Next sync re-plans the file (no record, hash unchanged but never stored).
         get_services().store.write_chunks_batch.side_effect = None
         retry = await sync(quiet=True)
         assert "doc.txt" in retry.added
@@ -1217,13 +1237,13 @@ class TestSync:
         )
         added: dict[str, None] = {"a.pdf": None}
         failed: dict[str, None] = {}
-        flush_failed: set[str] = set()
+        retry_next: set[str] = set()
         with mock.patch.object(core_mod, "ensure_table", _failing_ensure):
-            pipeline._flush_writes([replanned], added, {}, failed, {}, flush_failed)
+            pipeline._flush_writes([replanned], added, {}, failed, {}, retry_next)
 
         assert added == {}
         assert list(failed) == ["a.pdf"]
-        assert flush_failed == {"a.pdf"}
+        assert retry_next == {"a.pdf"}
         record = {s["filename"]: s for s in store.get_sources()}["a.pdf"]
         assert record["file_hash"] == "h1"
         assert source_stat(record) == old_stat
@@ -1443,7 +1463,7 @@ class TestSyncDropsNewlyIgnored:
         store = svc_mod.get_services().store
         for index in range(2):
             result = await sync(
-                prune_ignored=True, shard=ShardId(index=index, count=2, records_root=cfg.data_root)
+                prune_ignored=True, shard=ShardId(index=index, count=2, corpus_root=cfg.data_root)
             )
             assert result.removed == []
         store.remove_documents.assert_not_called()
@@ -1574,7 +1594,7 @@ class TestSyncCancellation:
         added: dict[str, None] = {}
         flushed: list[str] = []
 
-        def _record_flush(buffer, _added, _updated, _failed, _skipped, _flush_failed):
+        def _record_flush(buffer, _added, _updated, _failed, _skipped, _retry_next):
             flushed.extend(r.name for r in buffer)
 
         # `done` is a set, so the order the loop sees the two completed futures is
@@ -1823,9 +1843,9 @@ class TestCancellation:
             )
 
 
-class TestSkipMarkerLifecycle:
-    """A file that produces no chunks gets a skip marker; the next sync skips it
-    until the file changes or retry_skipped / force_rebuild clears the marker."""
+class TestHeldOutRecordLifecycle:
+    """A file that produces no chunks is held out; the next sync skips it
+    until the file changes or retry_skipped / force_rebuild releases the record."""
 
     @staticmethod
     def _zero_chunks(*_args, **_kwargs):
@@ -1838,7 +1858,6 @@ class TestSkipMarkerLifecycle:
 
     async def test_failed_file_is_skipped_on_next_sync(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import load_skip_markers
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
         with mock.patch(
@@ -1846,15 +1865,14 @@ class TestSkipMarkerLifecycle:
         ):
             first = await sync(quiet=True)
             assert "scanned.pdf" in first.skipped
-            assert "scanned.pdf" in load_skip_markers(cfg.data_root)
+            assert "scanned.pdf" in held_hashes()
             # Second sync: same content, same hash -> skipped, not retried.
             second = await sync(quiet=True)
             assert "scanned.pdf" not in second.skipped
             assert "scanned.pdf" not in second.added
 
     async def test_held_out_file_is_reported_apart_from_unchanged(self, isolated_env, mock_svc):
-        """A marker-held file must not be tallied as unchanged: it is not indexed,
-        and 'Unchanged: N' would present it as a file the index already holds."""
+        """A held-out file is not tallied as unchanged: it is not indexed."""
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.pipeline import produce_records as orig
 
@@ -1881,8 +1899,7 @@ class TestSkipMarkerLifecycle:
     async def test_held_out_file_does_not_trip_the_reconciliation_guard(
         self, isolated_env, mock_svc, caplog
     ):
-        """The marker accounts for the file, so the data-loss warning must stay
-        silent rather than naming the same file on every sync."""
+        """The held-out record accounts for the file, so the data-loss warning stays silent."""
         import logging
 
         from lilbee.data.ingest import sync
@@ -1897,10 +1914,8 @@ class TestSkipMarkerLifecycle:
 
         assert "possible silent drop" not in caplog.text
 
-    async def test_stale_marker_does_not_hide_a_silent_drop(self, isolated_env, mock_svc, caplog):
-        """A marker for an older hash accounts for nothing once the file changes.
-        Only the files this run held out are subtracted, so an edited file that
-        then vanishes without a failure is still reported."""
+    async def test_stale_record_does_not_hide_a_silent_drop(self, isolated_env, mock_svc, caplog):
+        """A record for an older hash accounts for nothing once the file changes."""
         import logging
 
         from lilbee.data.ingest import sync
@@ -1927,7 +1942,7 @@ class TestSkipMarkerLifecycle:
         assert "possible silent drop" in caplog.text
         assert "scanned.pdf" in caplog.text
 
-    async def test_retry_skipped_clears_markers(self, isolated_env, mock_svc):
+    async def test_retry_skipped_releases_failures(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
@@ -1935,7 +1950,7 @@ class TestSkipMarkerLifecycle:
             "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
         ):
             await sync(quiet=True)
-            # retry_skipped drops the marker so the file is attempted again.
+            # retry_skipped releases the record so the file is attempted again.
             retried = await sync(quiet=True, retry_skipped=True)
             assert "scanned.pdf" in retried.skipped  # attempted again (still 0 chunks)
 
@@ -1943,7 +1958,6 @@ class TestSkipMarkerLifecycle:
         """retry-skipped retries failed files only; a removed source stays removed."""
         from lilbee.app.ingest import remove_documents_durably
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
 
         (isolated_env / "gone.txt").write_text("removed by the user", encoding="utf-8")
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
@@ -1956,12 +1970,9 @@ class TestSkipMarkerLifecycle:
 
         assert "scanned.pdf" in retried.skipped
         assert "gone.txt" not in [*retried.added, *retried.updated, *retried.skipped]
-        assert load_skip_kinds(cfg.data_root) == {
-            "gone.txt": SkipKind.REMOVED,
-            "scanned.pdf": SkipKind.FAILED,
-        }
+        assert held_kinds() == {"gone.txt": HeldOut.REMOVED, "scanned.pdf": HeldOut.FAILED}
 
-    async def test_force_rebuild_also_clears_markers(self, isolated_env, mock_svc):
+    async def test_force_rebuild_also_releases_records(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
@@ -1974,7 +1985,6 @@ class TestSkipMarkerLifecycle:
 
     async def test_a_failure_is_recorded_as_failed(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
         with mock.patch(
@@ -1982,7 +1992,7 @@ class TestSkipMarkerLifecycle:
         ):
             await sync(quiet=True)
 
-        assert load_skip_kinds(cfg.data_root) == {"scanned.pdf": SkipKind.FAILED}
+        assert held_kinds() == {"scanned.pdf": HeldOut.FAILED}
 
     async def test_a_removal_stays_removed_and_is_not_reported_held_out(
         self, isolated_env, mock_svc
@@ -1990,7 +2000,6 @@ class TestSkipMarkerLifecycle:
         """The sync keeps a removal's kind and leaves it out of the held-out list."""
         from lilbee.app.ingest import remove_documents_durably
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
 
         (isolated_env / "gone.txt").write_text("removed later", encoding="utf-8")
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
@@ -2003,16 +2012,12 @@ class TestSkipMarkerLifecycle:
 
         assert "gone.txt" not in second.added
         assert [held.filename for held in second.held_out] == ["scanned.pdf"]
-        assert load_skip_kinds(cfg.data_root) == {
-            "gone.txt": SkipKind.REMOVED,
-            "scanned.pdf": SkipKind.FAILED,
-        }
+        assert held_kinds() == {"gone.txt": HeldOut.REMOVED, "scanned.pdf": HeldOut.FAILED}
 
     async def test_an_edited_removal_that_fails_becomes_a_failure(self, isolated_env, mock_svc):
         """A removed file edited on disk is retried; failing then records it as failed."""
         from lilbee.app.ingest import remove_documents_durably
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
 
         doc = isolated_env / "gone.txt"
         doc.write_text("removed later", encoding="utf-8")
@@ -2025,43 +2030,103 @@ class TestSkipMarkerLifecycle:
             result = await sync(quiet=True)
 
         assert "gone.txt" in result.skipped
-        assert load_skip_kinds(cfg.data_root) == {"gone.txt": SkipKind.FAILED}
+        assert held_kinds() == {"gone.txt": HeldOut.FAILED}
 
-    async def test_a_sync_keeps_the_stored_kind_of_a_marker_it_did_not_touch(
-        self, isolated_env, mock_svc
-    ):
-        """The stored kind wins over the reason: a removal with any reason stays a removal."""
+    async def test_a_sync_keeps_the_kind_of_a_record_it_did_not_touch(self, isolated_env, mock_svc):
+        """A removal the sync does not retry stays a removal."""
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import (
-            SkipKind,
-            SkipRecords,
-            load_skip_kinds,
-            write_skip_records,
-        )
 
         kept = isolated_env / "kept.md"
         kept.write_text("removed by the user", encoding="utf-8")
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 no text")
-        write_skip_records(
-            cfg.data_root,
-            SkipRecords(
-                markers={"kept.md": file_hash(kept)},
-                reasons={"kept.md": "custom note"},
-                kinds={"kept.md": SkipKind.REMOVED},
-            ),
-        )
+        hold_removed({"kept.md": file_hash(kept)})
         with mock.patch(
             "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_for("scanned.pdf")
         ):
             result = await sync(quiet=True)
 
         assert "scanned.pdf" in result.failed + result.skipped
-        assert load_skip_kinds(cfg.data_root) == {
-            "kept.md": SkipKind.REMOVED,
-            "scanned.pdf": SkipKind.FAILED,
-        }
+        assert held_kinds() == {"kept.md": HeldOut.REMOVED, "scanned.pdf": HeldOut.FAILED}
         assert [held.filename for held in result.held_out] == []
+
+    @pytest.mark.parametrize(
+        ("error", "held"),
+        [
+            pytest.param("engine", {}, id="engine-failure"),
+            pytest.param("file", {"doc.txt": HeldOut.FAILED}, id="file-failure"),
+        ],
+    )
+    async def test_an_engine_failure_is_not_held_out_and_ingests_next_sync(
+        self, isolated_env, mock_svc, error, held
+    ):
+        """A ProviderError is the model engine failing, so the file is planned again next sync."""
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import ProviderError
+
+        raised = ProviderError("engine crashed") if error == "engine" else ValueError("bad file")
+        (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
+        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised):
+            first = await sync(quiet=True)
+
+        assert first.failed == ["doc.txt"]
+        assert held_kinds() == held
+        second = await sync(quiet=True)
+        assert ("doc.txt" in second.added) is not held
+
+    async def _fail_then_move_folder(self, isolated_env):
+        """Fail old/bad.pdf on a real store, rename old/ to new/, and sync with no extraction."""
+        from lilbee.data.ingest import sync
+
+        _install_real_store()
+        bad = isolated_env / "old" / "bad.pdf"
+        bad.parent.mkdir()
+        bad.write_bytes(b"%PDF-1.4 not really text")
+        (isolated_env / "readable.txt").write_text("plenty of text", encoding="utf-8")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_for("old/bad.pdf")
+        ):
+            first = await sync(quiet=True)
+        assert held_kinds() == {"old/bad.pdf": HeldOut.FAILED}
+        assert "readable.txt" in first.added
+
+        (isolated_env / "old").rename(isolated_env / "new")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
+        ) as produce:
+            moved = await sync(quiet=True)
+        produce.assert_not_called()
+        return moved
+
+    async def test_a_failed_file_moves_with_its_folder_and_is_not_extracted_again(
+        self, isolated_env
+    ):
+        """A failed file whose folder is renamed keeps its record at the new path."""
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.discovery import file_hash
+
+        moved = await self._fail_then_move_folder(isolated_env)
+
+        assert held_kinds() == {"new/bad.pdf": HeldOut.FAILED}
+        assert held_hashes() == {"new/bad.pdf": file_hash(isolated_env / "new" / "bad.pdf")}
+        assert "new/bad.pdf" not in [*moved.added, *moved.failed, *moved.skipped]
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
+        ) as produce:
+            after = await sync(quiet=True)
+        produce.assert_not_called()
+        assert [held.filename for held in after.held_out] == ["new/bad.pdf"]
+
+    async def test_the_sync_that_moves_a_failure_reports_it_held_out(self, isolated_env, caplog):
+        """The moved failure is held out, not relocated into the index or dropped."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            moved = await self._fail_then_move_folder(isolated_env)
+
+        assert "new/bad.pdf" not in moved.relocated
+        assert [held.filename for held in moved.held_out] == ["new/bad.pdf"]
+        assert "possible silent drop" not in caplog.text
 
     @classmethod
     def _zero_for(cls, *targets: str):
@@ -2075,11 +2140,11 @@ class TestSkipMarkerLifecycle:
         return _produce
 
 
-class TestSyncMergesItsSkipRecords:
-    """A writer that changes the skip records while a sync runs keeps its change.
+class TestSyncKeepsConcurrentHeldRecords:
+    """A writer that changes the held-out records while a sync runs keeps its change.
 
-    Each writer runs in the gap between the sync's read of the records and its
-    write-back, and the sync's own verdict for a file that produced no chunks
+    Each writer runs after the sync read the records and before it writes its
+    failures, and the sync's own verdict for a file that produced no chunks
     still lands. A reset in that gap is refused instead.
     """
 
@@ -2102,7 +2167,7 @@ class TestSyncMergesItsSkipRecords:
         with (
             mock.patch(
                 "lilbee.data.ingest.pipeline.produce_records",
-                side_effect=TestSkipMarkerLifecycle._zero_chunks,
+                side_effect=TestHeldOutRecordLifecycle._zero_chunks,
             ),
             self._writer_in_the_gap(writer),
         ):
@@ -2111,35 +2176,20 @@ class TestSyncMergesItsSkipRecords:
 
     async def test_a_file_that_now_ingests_drops_its_record(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import (
-            load_skip_markers,
-            load_skip_reasons,
-            write_skip_markers,
-            write_skip_reasons,
-        )
 
         (isolated_env / "fixed.txt").write_text("readable now", encoding="utf-8")
-        write_skip_markers(cfg.data_root, {"fixed.txt": "hash-of-the-unreadable-version"})
-        write_skip_reasons(cfg.data_root, {"fixed.txt": "no text extracted (0 chunks)"})
+        hold_failed({"fixed.txt": "hash-of-the-unreadable-version"})
 
         assert (await sync(quiet=True)).added == ["fixed.txt"]
 
-        assert load_skip_markers(cfg.data_root) == {}
-        assert load_skip_reasons(cfg.data_root) == {}
+        assert held_hashes() == {}
 
     async def test_a_reset_during_a_sync_is_refused(self, isolated_env, mock_svc):
         from lilbee.app.reset import perform_reset
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import (
-            load_skip_markers,
-            load_skip_reasons,
-            write_skip_markers,
-            write_skip_reasons,
-        )
         from lilbee.runtime.lock import ResetRefusedError
 
-        write_skip_markers(cfg.data_root, {"older.txt": "abc"})
-        write_skip_reasons(cfg.data_root, {"older.txt": "held before the sync"})
+        hold_failed({"older.txt": "abc"}, reason="held before the sync")
         scan = isolated_env / "scanned.pdf"
         refused: list[Exception] = []
 
@@ -2156,28 +2206,17 @@ class TestSyncMergesItsSkipRecords:
 
         assert len(refused) == 1
         assert scan.exists()
-        assert load_skip_markers(cfg.data_root) == {
-            "older.txt": "abc",
-            "scanned.pdf": file_hash(scan),
-        }
-        assert load_skip_reasons(cfg.data_root) == {
+        assert held_hashes() == {"older.txt": "abc", "scanned.pdf": file_hash(scan)}
+        assert held_reasons() == {
             "older.txt": "held before the sync",
             "scanned.pdf": "no text extracted (0 chunks)",
         }
         assert perform_reset().deleted_docs == 1
-        assert load_skip_markers(cfg.data_root) == {}
 
     async def test_a_delete_during_a_sync_stays_deleted(self, isolated_env, mock_svc):
         from lilbee.app.ingest import remove_documents_durably
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import (
-            REMOVED_SKIP_REASON,
-            SkipKind,
-            load_skip_kinds,
-            load_skip_markers,
-            load_skip_reasons,
-        )
 
         stay = isolated_env / "stay.txt"
         stay.write_text("indexed before the delete", encoding="utf-8")
@@ -2186,18 +2225,12 @@ class TestSyncMergesItsSkipRecords:
 
         await self._sync_holding_out(scan, lambda: remove_documents_durably(["stay.txt"]))
 
-        assert load_skip_markers(cfg.data_root) == {
-            "stay.txt": file_hash(stay),
-            "scanned.pdf": file_hash(scan),
-        }
-        assert load_skip_reasons(cfg.data_root) == {
-            "stay.txt": REMOVED_SKIP_REASON,
+        assert held_hashes() == {"stay.txt": file_hash(stay), "scanned.pdf": file_hash(scan)}
+        assert held_reasons() == {
+            "stay.txt": REMOVED_REASON,
             "scanned.pdf": "no text extracted (0 chunks)",
         }
-        assert load_skip_kinds(cfg.data_root) == {
-            "stay.txt": SkipKind.REMOVED,
-            "scanned.pdf": SkipKind.FAILED,
-        }
+        assert held_kinds() == {"stay.txt": HeldOut.REMOVED, "scanned.pdf": HeldOut.FAILED}
 
     async def test_an_add_rolled_back_during_a_sync_stays_rolled_back(
         self, isolated_env, mock_svc, tmp_path
@@ -2205,29 +2238,22 @@ class TestSyncMergesItsSkipRecords:
         from lilbee.app.ingest import register_sources
         from lilbee.cli.tui.screens.chat_helpers import unregister_added_roots
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import (
-            load_skip_markers,
-            load_skip_reasons,
-            write_skip_markers,
-            write_skip_reasons,
-        )
 
         corpus = tmp_path / "corpus"
         corpus.mkdir()
         (corpus / "a.txt").write_bytes(b"")
         register_sources([corpus])
-        write_skip_markers(cfg.data_root, {"corpus/a.txt": file_hash(corpus / "a.txt")})
-        write_skip_reasons(cfg.data_root, {"corpus/a.txt": "no text extracted (0 chunks)"})
+        hold_failed({"corpus/a.txt": file_hash(corpus / "a.txt")})
         scan = isolated_env / "scanned.pdf"
 
         await self._sync_holding_out(scan, lambda: unregister_added_roots(["corpus"]))
 
-        assert load_skip_markers(cfg.data_root) == {"scanned.pdf": file_hash(scan)}
-        assert load_skip_reasons(cfg.data_root) == {"scanned.pdf": "no text extracted (0 chunks)"}
+        assert held_hashes() == {"scanned.pdf": file_hash(scan)}
+        assert held_reasons() == {"scanned.pdf": "no text extracted (0 chunks)"}
         assert cfg.linked_roots == {}
 
 
-class TestFanoutReadsTheCorpusSkipRecords:
+class TestFanoutReadsTheCorpusHeldRecords:
     """A multi-worker sync holds out and records files exactly as a single-process one does.
 
     The workers run as threads over the one mock store, so the real fan-out path
@@ -2255,89 +2281,68 @@ class TestFanoutReadsTheCorpusSkipRecords:
     async def test_a_removed_file_is_not_ingested_again(self, isolated_env, fan_out):
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds, mark_removed
 
         (isolated_env / "gone.txt").write_text("removed by the user", encoding="utf-8")
         (isolated_env / "kept.txt").write_text("still wanted", encoding="utf-8")
-        mark_removed(cfg.data_root, {"gone.txt": file_hash(isolated_env / "gone.txt")})
+        hold_removed({"gone.txt": file_hash(isolated_env / "gone.txt")})
 
         result = await sync(quiet=True)
 
         assert result.added == ["kept.txt"]
-        assert load_skip_kinds(cfg.data_root) == {"gone.txt": SkipKind.REMOVED}
+        assert held_kinds() == {"gone.txt": HeldOut.REMOVED}
 
     async def test_a_failure_is_recorded_for_the_corpus(self, isolated_env, fan_out):
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
         (isolated_env / "kept.txt").write_text("still wanted", encoding="utf-8")
         with mock.patch(
             "lilbee.data.ingest.pipeline.produce_records",
-            side_effect=TestSkipMarkerLifecycle._zero_for("scanned.pdf"),
+            side_effect=TestHeldOutRecordLifecycle._zero_for("scanned.pdf"),
         ):
             first = await sync(quiet=True)
             second = await sync(quiet=True)
 
         assert first.added == ["kept.txt"]
-        assert load_skip_kinds(cfg.data_root) == {"scanned.pdf": SkipKind.FAILED}
+        assert held_kinds() == {"scanned.pdf": HeldOut.FAILED}
         assert [held.filename for held in second.held_out] == ["scanned.pdf"]
 
     async def test_retry_skipped_retries_a_failure_and_keeps_a_removal(self, isolated_env, fan_out):
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import (
-            SkipKind,
-            load_skip_kinds,
-            mark_removed,
-            update_skip_records,
-        )
 
         gone = isolated_env / "gone.txt"
         fixed = isolated_env / "fixed.txt"
         gone.write_text("removed by the user", encoding="utf-8")
         fixed.write_text("readable now", encoding="utf-8")
-        mark_removed(cfg.data_root, {"gone.txt": file_hash(gone)})
-
-        def _fail(records):
-            records.markers["fixed.txt"] = file_hash(fixed)
-            records.kinds["fixed.txt"] = SkipKind.FAILED
-
-        update_skip_records(cfg.data_root, _fail)
+        hold_removed({"gone.txt": file_hash(gone)})
+        hold_failed({"fixed.txt": file_hash(fixed)})
 
         result = await sync(quiet=True, retry_skipped=True)
 
         assert result.added == ["fixed.txt"]
-        assert load_skip_kinds(cfg.data_root) == {"gone.txt": SkipKind.REMOVED}
+        assert held_kinds() == {"gone.txt": HeldOut.REMOVED}
 
     async def test_a_rebuild_clears_the_records_once_and_keeps_new_verdicts(
-        self, isolated_env, fan_out, monkeypatch
+        self, isolated_env, fan_out, mock_svc
     ):
         """A worker clearing the shared records would erase a sibling's fresh verdict."""
-        from lilbee.data.ingest import pipeline, sync
+        from lilbee.data.ingest import sync
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds, mark_removed
 
-        cleared = []
-        real_clear = pipeline.clear_skip_markers
-        monkeypatch.setattr(
-            pipeline,
-            "clear_skip_markers",
-            lambda root, cancel: cleared.append(root) or real_clear(root, cancel),
-        )
         gone = isolated_env / "gone.txt"
         gone.write_text("removed, then restored by the rebuild", encoding="utf-8")
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
-        mark_removed(cfg.data_root, {"gone.txt": file_hash(gone)})
+        hold_removed({"gone.txt": file_hash(gone)})
         with mock.patch(
             "lilbee.data.ingest.pipeline.produce_records",
-            side_effect=TestSkipMarkerLifecycle._zero_for("scanned.pdf"),
+            side_effect=TestHeldOutRecordLifecycle._zero_for("scanned.pdf"),
         ):
             result = await sync(quiet=True, force_rebuild=True)
 
-        assert cleared == [cfg.data_root]
+        assert mock_svc.store.drop_all.call_count == 1
         assert result.added == ["gone.txt"]
-        assert load_skip_kinds(cfg.data_root) == {"scanned.pdf": SkipKind.FAILED}
+        assert held_kinds() == {"scanned.pdf": HeldOut.FAILED}
 
     async def test_the_data_root_ignore_file_keeps_a_file_out(self, isolated_env, fan_out):
         from lilbee.data.ingest import sync
@@ -2366,33 +2371,30 @@ class TestFanoutReadsTheCorpusSkipRecords:
 
         assert result.removed == ["drop.txt"]
 
-    async def test_a_held_records_lock_leaves_the_records_unwritten_and_says_so(
-        self, isolated_env, fan_out, monkeypatch
+    async def test_a_busy_store_lock_leaves_the_failures_unheld_and_logs_it(
+        self, isolated_env, fan_out, monkeypatch, mock_svc, caplog
     ):
-        from filelock import FileLock
+        import logging
 
-        from lilbee.data.ingest import skip_marker, sync
-        from lilbee.data.ingest.skip_marker import SKIP_MARKER_FILENAME, load_skip_kinds
+        from lilbee.data.ingest import pipeline, sync
+        from lilbee.runtime.lock import LockTimeoutError
 
-        monkeypatch.setattr(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(pipeline.time, "sleep", lambda _s: None)
+        mock_svc.store.hold_failed.side_effect = LockTimeoutError("busy")
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
         (isolated_env / "kept.txt").write_text("still wanted", encoding="utf-8")
-        holder = FileLock(str(cfg.data_root / SKIP_MARKER_FILENAME) + ".lock")
-        holder.acquire()
-        try:
-            with mock.patch(
+        with (
+            mock.patch(
                 "lilbee.data.ingest.pipeline.produce_records",
-                side_effect=TestSkipMarkerLifecycle._zero_for("scanned.pdf"),
-            ):
-                result = await sync(quiet=True)
-        finally:
-            holder.release()
+                side_effect=TestHeldOutRecordLifecycle._zero_for("scanned.pdf"),
+            ),
+            caplog.at_level(logging.ERROR, logger="lilbee.data.ingest.pipeline"),
+        ):
+            result = await sync(quiet=True)
 
-        assert load_skip_kinds(cfg.data_root) == {}
+        assert held_kinds() == {}
         assert result.added == ["kept.txt"]
-        assert result.skip_records_error is not None
-        assert SKIP_MARKER_FILENAME + ".lock" in result.skip_records_error
-        assert result.skip_records_error in str(result)
+        assert "Could not hold 1 failed file(s) out of the next sync" in caplog.text
 
 
 class TestStatusExposesTheIndexEmbedder:
@@ -2474,34 +2476,28 @@ class TestOcrBackendChosen:
 
 
 class TestStatusReportsHeldOutFiles:
-    """/api/status and `lilbee status --json` read the skip sidecars, so a client
+    """/api/status and `lilbee status --json` read the held-out records, so a client
     can show which files are held out of the index and why."""
 
     def test_status_lists_held_out_files_with_reasons(self):
         from lilbee.app.status import gather_status
-        from lilbee.data.ingest.skip_marker import (
-            DEFAULT_SKIP_REASON,
-            write_skip_markers,
-            write_skip_reasons,
-        )
 
-        write_skip_markers(cfg.data_root, {"scan.pdf": "deadbeef", "blank.md": "cafef00d"})
-        write_skip_reasons(cfg.data_root, {"scan.pdf": "OCR timed out after 300s"})
+        hold_failed({"blank.md": "cafef00d"})
+        hold_failed({"scan.pdf": "deadbeef"}, reason="OCR timed out after 300s")
 
         status = gather_status()
 
         assert [(s.filename, s.reason) for s in status.skipped] == [
-            ("blank.md", DEFAULT_SKIP_REASON),
+            ("blank.md", "no text extracted (0 chunks)"),
             ("scan.pdf", "OCR timed out after 300s"),
         ]
         assert status.skipped_total == 2
 
     def test_status_caps_the_list_but_reports_the_real_total(self, monkeypatch):
         from lilbee.app import status as status_mod
-        from lilbee.data.ingest.skip_marker import write_skip_markers
 
         monkeypatch.setattr(status_mod, "STATUS_SKIPPED_LIMIT", 2)
-        write_skip_markers(cfg.data_root, {f"scan{i}.pdf": "hash" for i in range(5)})
+        hold_failed({f"scan{i}.pdf": "hash" for i in range(5)})
 
         status = status_mod.gather_status()
 
@@ -2511,21 +2507,9 @@ class TestStatusReportsHeldOutFiles:
     def test_status_leaves_removed_sources_out(self):
         """A removed source is not a library problem, so status does not list it."""
         from lilbee.app.status import gather_status
-        from lilbee.data.ingest.skip_marker import (
-            REMOVED_SKIP_REASON,
-            SkipKind,
-            SkipRecords,
-            write_skip_records,
-        )
 
-        write_skip_records(
-            cfg.data_root,
-            SkipRecords(
-                markers={"scan.pdf": "h1", "gone.txt": "h2", "old.md": "h3"},
-                reasons={"old.md": REMOVED_SKIP_REASON},
-                kinds={"scan.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED},
-            ),
-        )
+        hold_failed({"scan.pdf": "h1"})
+        hold_removed({"gone.txt": "h2"})
 
         status = gather_status()
 
@@ -2956,7 +2940,7 @@ class TestStatShortCircuit:
         assert _disk_stat(isolated_env / "does-not-exist.txt") is None
 
     def test_flush_failure_without_tracker_still_fails_files(self, mock_svc):
-        # _flush_writes tolerates a missing flush_failed tracker (default None).
+        # _flush_writes tolerates a missing retry_next tracker (default None).
         from lilbee.data.ingest import pipeline
         from lilbee.data.types import _IngestResult
 
@@ -3234,7 +3218,7 @@ class TestExcludedFormats:
             (isolated_env / f"a{i}.svg").write_text("<svg/>", encoding="utf-8")
 
         slices = [
-            discover_corpus(ShardId(index=i, count=3, records_root=cfg.data_root)) for i in range(3)
+            discover_corpus(ShardId(index=i, count=3, corpus_root=cfg.data_root)) for i in range(3)
         ]
         assert sum(len(s.files) for s in slices) == 12
         assert sum(len(s.excluded) for s in slices) == 12
@@ -3816,9 +3800,9 @@ class TestCancelDuringThresholdFlush:
         monkeypatch.setattr(pipeline, "_WRITE_FLUSH_CHUNKS", flush_at)
         monkeypatch.setattr(pipeline, "_flush_batch", _disk_full)
         failed: dict[str, None] = {}
-        flush_failed: set[str] = set()
+        retry_next: set[str] = set()
         collect = pipeline._collect_results(
-            _feed([_done()]), {}, {}, failed, {}, window=1, flush_failed=flush_failed, cancel=cancel
+            _feed([_done()]), {}, {}, failed, {}, window=1, retry_next=retry_next, cancel=cancel
         )
         with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
             if stopping:
@@ -3828,7 +3812,7 @@ class TestCancelDuringThresholdFlush:
             else:
                 await collect  # a failed write with no cancel is tracked, and the sync goes on
         assert failed == {"a.txt": None}
-        assert flush_failed == {"a.txt"}
+        assert retry_next == {"a.txt"}
         # The tracked failure is logged once, where it was tracked.
         assert [r.getMessage() for r in caplog.records] == ["Failed to write a.txt: disk full"]
 
@@ -4214,10 +4198,8 @@ class TestStreamedPlan:
         ):
             await sync(quiet=True, cancel=cancel)
         assert embedded, "the cancel must land after extraction, in the embed step"
-        # Cancelled before the marker pass: the file is not skip-marked.
-        from lilbee.data.ingest.skip_marker import load_skip_markers
-
-        assert load_skip_markers(cfg.data_root) == {}
+        # Cancelled before the failures are held: the file is not held out.
+        assert held_hashes() == {}
 
     async def test_feed_close_discards_a_shard_that_landed_late(self):
         # A shard landing between the prefetch and the close still owns unstarted
@@ -5725,7 +5707,7 @@ class TestUnsupportedFileInSync:
 
 
 class TestRemoveDropsFromWikiIndex:
-    """A removed document's skip marker keeps it out of later syncs, so no
+    """A removed document's held-out record keeps it out of later syncs, so no
     refresh would ever revisit its entries: removal has to drop them itself."""
 
     def test_removed_documents_leave_the_index(self, isolated_env, monkeypatch):
@@ -5744,21 +5726,19 @@ class TestRemoveDropsFromWikiIndex:
                     label="Ford",
                     kind=EntityKind.ENTITY,
                     type_hint="PERSON",
-                    source_mentions=(("gone.txt", 2),),
-                    chunk_refs=(("gone.txt", 0),),
+                    source_mentions=(("gone-id", 2),),
+                    chunk_refs=(("gone-id", 0),),
                 )
             }
         )
-        monkeypatch.setattr(
-            "lilbee.app.ingest.get_services",
-            lambda cancel=None: mock.MagicMock(
-                store=mock.MagicMock(
-                    remove_documents=mock.MagicMock(
-                        return_value=mock.MagicMock(removed=["gone.txt"], not_found=[])
-                    )
-                )
+        store = mock.MagicMock(
+            remove_documents=mock.MagicMock(
+                return_value=mock.MagicMock(removed=["gone.txt"], not_found=[])
             ),
+            source_paths=mock.MagicMock(return_value={}),
+            wiki_mention_rows=mock.MagicMock(return_value=[]),
         )
+        monkeypatch.setattr("lilbee.app.ingest.get_services", lambda: mock.MagicMock(store=store))
 
         remove_documents_durably(["gone.txt"])
 
@@ -5769,12 +5749,10 @@ class TestRemoveDropsFromWikiIndex:
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "wiki", False)
-        called: list[set] = []
-        monkeypatch.setattr(
-            "lilbee.wiki.stubs.drop_sources_from_index", lambda names: called.append(names)
-        )
+        called = mock.MagicMock()
+        monkeypatch.setattr("lilbee.wiki.stubs.drop_removed_sources", called)
         ingest_mod.forget_removed_from_wiki_index(["gone.txt"])
-        assert called == []
+        called.assert_not_called()
 
     def test_an_index_failure_does_not_fail_the_removal(self, isolated_env, monkeypatch):
         """The removal already succeeded; a wiki failure must not surface as one."""
@@ -5782,23 +5760,86 @@ class TestRemoveDropsFromWikiIndex:
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "wiki", True)
-        monkeypatch.setattr(
-            "lilbee.wiki.stubs.drop_sources_from_index",
-            mock.MagicMock(side_effect=RuntimeError("index unwritable")),
-        )
+        failing = mock.MagicMock(side_effect=RuntimeError("index unwritable"))
+        monkeypatch.setattr("lilbee.wiki.stubs.drop_removed_sources", failing)
         ingest_mod.forget_removed_from_wiki_index(["gone.txt"])
+        failing.assert_called_once()
 
     def test_removing_nothing_touches_no_index(self, isolated_env, monkeypatch):
         from lilbee.app import ingest as ingest_mod
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "wiki", True)
-        called: list[set] = []
-        monkeypatch.setattr(
-            "lilbee.wiki.stubs.drop_sources_from_index", lambda names: called.append(names)
-        )
+        called = mock.MagicMock()
+        monkeypatch.setattr("lilbee.wiki.stubs.drop_removed_sources", called)
         ingest_mod.forget_removed_from_wiki_index([])
-        assert called == []
+        called.assert_not_called()
+
+
+def _stub_of(source_id: str):
+    """A wiki index entry one source names."""
+    from lilbee.wiki.entity_extractor import EntityKind
+    from lilbee.wiki.stubs import WikiStub
+
+    return WikiStub(
+        slug=source_id,
+        label=source_id,
+        kind=EntityKind.ENTITY,
+        type_hint="ORG",
+        source_mentions=((source_id, 1),),
+        chunk_refs=((source_id, 0),),
+    )
+
+
+class TestShowCurrentPathsInWiki:
+    def test_with_no_citation_no_page_is_read(self, isolated_env, mock_svc):
+        from lilbee.app import ingest as ingest_mod
+
+        mock_svc.store.wiki_citations_by_page.return_value = {}
+        with mock.patch("lilbee.wiki.rerender.rerender_stale_pages") as rendered:
+            ingest_mod.show_current_paths_in_wiki()
+        mock_svc.store.wiki_citations_by_page.assert_called_once_with()
+        rendered.assert_not_called()
+
+    def test_the_citations_read_once_are_the_ones_rendered(self, isolated_env, mock_svc):
+        from lilbee.app import ingest as ingest_mod
+
+        citations = {"wiki/entities/a.md": [{"citation_key": "src1"}]}
+        mock_svc.store.wiki_citations_by_page.return_value = citations
+        with mock.patch("lilbee.wiki.rerender.rerender_stale_pages") as rendered:
+            ingest_mod.show_current_paths_in_wiki()
+        mock_svc.store.wiki_citations_by_page.assert_called_once_with()
+        assert rendered.call_args.args[0] is mock_svc.store
+        assert rendered.call_args.args[2] is citations
+
+    def test_a_failure_to_write_a_page_is_logged_and_does_not_raise(
+        self, isolated_env, mock_svc, caplog
+    ):
+        from lilbee.app import ingest as ingest_mod
+
+        mock_svc.store.wiki_citations_by_page.return_value = {"wiki/entities/a.md": []}
+        failing = mock.MagicMock(side_effect=OSError("disk full"))
+        with (
+            mock.patch("lilbee.wiki.rerender.rerender_stale_pages", failing),
+            caplog.at_level("WARNING", logger=ingest_mod.log.name),
+        ):
+            ingest_mod.show_current_paths_in_wiki()
+        failing.assert_called_once()
+        assert "Failed to show the current document paths in the wiki pages" in caplog.text
+
+    def test_a_failure_to_read_the_citations_is_logged_and_does_not_raise(
+        self, isolated_env, mock_svc, caplog
+    ):
+        from lilbee.app import ingest as ingest_mod
+
+        mock_svc.store.wiki_citations_by_page.side_effect = OSError("table unreadable")
+        with (
+            mock.patch("lilbee.wiki.rerender.rerender_stale_pages") as rendered,
+            caplog.at_level("WARNING", logger=ingest_mod.log.name),
+        ):
+            ingest_mod.show_current_paths_in_wiki()
+        rendered.assert_not_called()
+        assert "Failed to show the current document paths in the wiki pages" in caplog.text
 
 
 class TestForgetMissingFromWikiIndex:
@@ -5824,16 +5865,17 @@ class TestForgetMissingFromWikiIndex:
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "wiki", True)
+        mock_svc.store.source_paths.return_value = {"kept-id": "kept.txt"}
         mock_svc.store.missing_sources.return_value = set()
-        read = mock.MagicMock(return_value={})
-        dropped = mock.MagicMock()
+        read = mock.MagicMock(return_value={"ford": _stub_of("kept-id")})
+        written = mock.MagicMock()
         monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
-        monkeypatch.setattr("lilbee.wiki.stubs.drop_sources_from_index", dropped)
+        monkeypatch.setattr("lilbee.wiki.stubs.save_stub_index", written)
 
         ingest_mod.forget_missing_from_wiki_index()
 
         assert read.call_count == 1
-        dropped.assert_not_called()
+        written.assert_not_called()
 
     def test_a_missing_source_is_dropped_and_no_extractor_is_asked(
         self, isolated_env, monkeypatch, mock_svc
@@ -5842,17 +5884,20 @@ class TestForgetMissingFromWikiIndex:
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "wiki", True)
-        mock_svc.store.missing_sources.return_value = {"gone.txt"}
+        mock_svc.store.source_paths.return_value = {"kept-id": "kept.txt"}
+        mock_svc.store.missing_sources.return_value = set()
         mock_svc.store.wiki_mention_rows.return_value = []
         asked = mock.MagicMock()
-        dropped = mock.MagicMock()
+        written = mock.MagicMock()
+        index = {"ford": _stub_of("gone-id"), "gm": _stub_of("kept-id")}
         monkeypatch.setattr("lilbee.wiki.stubs.get_entity_extractor", asked)
-        monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", mock.MagicMock(return_value={}))
-        monkeypatch.setattr("lilbee.wiki.stubs.drop_sources_from_index", dropped)
+        monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", mock.MagicMock(return_value=index))
+        monkeypatch.setattr("lilbee.wiki.stubs.save_stub_index", written)
 
         ingest_mod.forget_missing_from_wiki_index()
 
-        assert [call.args[0] for call in dropped.call_args_list] == [{"gone.txt"}]
+        assert written.call_args.args[0] == {"gm": index["gm"]}
+        mock_svc.store.wiki_mention_rows.assert_called_once_with(slugs={"ford"})
         asked.assert_not_called()
 
     def test_with_the_wiki_off_the_index_is_not_read(self, isolated_env, monkeypatch):
@@ -5867,66 +5912,29 @@ class TestForgetMissingFromWikiIndex:
 
 
 class TestRemoveDocumentsDurably:
-    def test_writes_skip_marker_for_kept_file(self, isolated_env, mock_svc):
-        """A durable delete keeps the file but skip-marks it so sync won't re-ingest."""
+    def test_holds_out_the_kept_file_as_a_removal(self, isolated_env, mock_svc):
+        """A durable delete keeps the file but holds it out so sync won't re-ingest."""
         from lilbee.app.ingest import remove_documents_durably
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import (
-            SkipKind,
-            load_skip_kinds,
-            load_skip_markers,
-            load_skip_reasons,
-        )
-        from lilbee.data.store.types import RemoveResult
 
         doc = isolated_env / "keep.txt"
         doc.write_text("content")
-        mock_svc.store.remove_documents.side_effect = None
-        mock_svc.store.remove_documents.return_value = RemoveResult(
-            removed=["keep.txt"], not_found=[]
-        )
+        mock_svc.store.upsert_source("keep.txt", "hash", 1)
 
         remove_documents_durably(["keep.txt"])
 
         assert doc.exists()  # non-destructive: file stays on disk
-        assert load_skip_markers(cfg.data_root)["keep.txt"] == file_hash(doc)
-        assert "keep.txt" in load_skip_reasons(cfg.data_root)
-        assert load_skip_kinds(cfg.data_root) == {"keep.txt": SkipKind.REMOVED}
+        assert held_hashes() == {"keep.txt": file_hash(doc)}
+        assert held_reasons() == {"keep.txt": REMOVED_REASON}
+        assert held_kinds() == {"keep.txt": HeldOut.REMOVED}
 
-    def test_no_marker_when_nothing_removed(self, isolated_env, mock_svc):
+    def test_no_record_when_nothing_removed(self, isolated_env, mock_svc):
         from lilbee.app.ingest import remove_documents_durably
-        from lilbee.data.ingest.skip_marker import load_skip_markers
-        from lilbee.data.store.types import RemoveResult
 
-        mock_svc.store.remove_documents.side_effect = None
-        mock_svc.store.remove_documents.return_value = RemoveResult(removed=[], not_found=["gone"])
-        remove_documents_durably(["gone"])
-        assert load_skip_markers(cfg.data_root) == {}
+        result = remove_documents_durably(["gone"])
 
-    def test_marker_lands_under_the_active_config_data_root(self, isolated_env, mock_svc, tmp_path):
-        """A caller running against its own Config gets the marker where it reads it.
-
-        The library API removes inside a ``config_scope``; a marker written to the
-        process-global data root instead would leave that caller's next sync
-        re-ingesting the document it just removed.
-        """
-        from lilbee.app.ingest import remove_documents_durably
-        from lilbee.core.config.context import config_scope
-        from lilbee.data.ingest.skip_marker import load_skip_markers
-
-        scoped_root = tmp_path / "scoped"
-        (scoped_root / "documents").mkdir(parents=True)
-        (scoped_root / "documents" / "keep.txt").write_text("content", encoding="utf-8")
-        scoped = cfg.model_copy(
-            update={"data_root": scoped_root, "documents_dir": scoped_root / "documents"}
-        )
-        mock_svc.store.upsert_source("keep.txt", "hash", 1)
-
-        with config_scope(scoped):
-            remove_documents_durably(["keep.txt"])
-
-        assert "keep.txt" in load_skip_markers(scoped_root)
-        assert load_skip_markers(cfg.data_root) == {}
+        assert result.not_found == ["gone"]
+        assert held_hashes() == {}
 
 
 class TestRemovalHoldsAcrossSyncs:
@@ -5935,7 +5943,7 @@ class TestRemovalHoldsAcrossSyncs:
     async def test_removal_survives_a_sync_with_the_root_unavailable(
         self, isolated_env, mock_svc, tmp_path
     ):
-        """A root offline for one sync must not erase the markers holding its removals."""
+        """A root offline for one sync must not erase the records holding its removals."""
         from lilbee.app.ingest import register_sources, remove_documents_durably
         from lilbee.data.ingest import detect_pending, sync
 
@@ -5957,13 +5965,12 @@ class TestRemovalHoldsAcrossSyncs:
 
         assert detect_pending() == 0
 
-    async def test_a_sync_keeps_the_reason_for_a_marker_it_did_not_touch(
+    async def test_a_sync_keeps_the_reason_for_a_record_it_did_not_touch(
         self, isolated_env, mock_svc
     ):
-        """The reasons sidecar must still explain every marker still in force."""
+        """Every record still in force keeps its reason across a sync."""
         from lilbee.app.ingest import remove_documents_durably
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import load_skip_reasons
 
         (isolated_env / "gone.txt").write_text("removed later", encoding="utf-8")
         (isolated_env / "stay.txt").write_text("stays indexed", encoding="utf-8")
@@ -5973,7 +5980,7 @@ class TestRemovalHoldsAcrossSyncs:
         (isolated_env / "new.txt").write_text("brand new", encoding="utf-8")
         await sync(quiet=True)
 
-        assert "gone.txt" in load_skip_reasons(cfg.data_root)
+        assert held_reasons() == {"gone.txt": REMOVED_REASON}
 
 
 class TestRemovingHeldOutFiles:
@@ -5991,7 +5998,7 @@ class TestRemovingHeldOutFiles:
         for name in failing:
             (corpus / name).write_text(f"unreadable {name}", encoding="utf-8")
         register_sources([corpus])
-        producer = TestSkipMarkerLifecycle._zero_for(*(f"corpus/{n}" for n in failing))
+        producer = TestHeldOutRecordLifecycle._zero_for(*(f"corpus/{n}" for n in failing))
         with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=producer):
             await sync(quiet=True)
         return corpus
@@ -6002,18 +6009,17 @@ class TestRemovingHeldOutFiles:
         from lilbee.app.ingest import remove_documents_durably
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds, load_skip_markers
 
         corpus = await self._fail_under_corpus(tmp_path, "bad.txt")
-        assert load_skip_kinds(cfg.data_root) == {"corpus/bad.txt": SkipKind.FAILED}
+        assert held_kinds() == {"corpus/bad.txt": HeldOut.FAILED}
 
         result = remove_documents_durably(["corpus/bad.txt"])
         again = await sync(quiet=True)  # nothing patched: the file would ingest now
 
         assert result.removed == ["corpus/bad.txt"]
         assert result.not_found == []
-        assert load_skip_kinds(cfg.data_root) == {"corpus/bad.txt": SkipKind.REMOVED}
-        assert load_skip_markers(cfg.data_root) == {"corpus/bad.txt": file_hash(corpus / "bad.txt")}
+        assert held_kinds() == {"corpus/bad.txt": HeldOut.REMOVED}
+        assert held_hashes() == {"corpus/bad.txt": file_hash(corpus / "bad.txt")}
         assert "corpus/bad.txt" not in again.added
         assert "corpus/bad.txt" not in _indexed(mock_svc)
         assert again.held_out == []
@@ -6023,7 +6029,6 @@ class TestRemovingHeldOutFiles:
     async def test_a_folder_covers_the_failures_beneath_it(self, isolated_env, mock_svc, tmp_path):
         from lilbee.app.ingest import remove_documents_durably
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
 
         corpus = await self._fail_under_corpus(tmp_path)
         sub = corpus / "sub"
@@ -6031,75 +6036,40 @@ class TestRemovingHeldOutFiles:
         (sub / "bad.txt").write_text("unreadable", encoding="utf-8")
         with mock.patch(
             "lilbee.data.ingest.pipeline.produce_records",
-            side_effect=TestSkipMarkerLifecycle._zero_for("corpus/sub/bad.txt"),
+            side_effect=TestHeldOutRecordLifecycle._zero_for("corpus/sub/bad.txt"),
         ):
             await sync(quiet=True)
 
         result = remove_documents_durably(["corpus/sub"])
 
         assert result.removed == ["corpus/sub/bad.txt"]
-        assert load_skip_kinds(cfg.data_root) == {"corpus/sub/bad.txt": SkipKind.REMOVED}
+        assert held_kinds() == {"corpus/sub/bad.txt": HeldOut.REMOVED}
 
     def test_an_unreachable_failure_keeps_its_hash_as_a_removal(self, isolated_env, mock_svc):
         """A failed file that is not on disk now stays out when it comes back."""
         from lilbee.app.ingest import remove_documents_durably
-        from lilbee.data.ingest.skip_marker import (
-            SkipKind,
-            load_skip_kinds,
-            load_skip_markers,
-            write_skip_markers,
-        )
 
-        write_skip_markers(cfg.data_root, {"away.pdf": "h1"})
+        hold_failed({"away.pdf": "h1"})
 
         result = remove_documents_durably(["away.pdf"])
 
         assert result.removed == ["away.pdf"]
-        assert load_skip_markers(cfg.data_root) == {"away.pdf": "h1"}
-        assert load_skip_kinds(cfg.data_root) == {"away.pdf": SkipKind.REMOVED}
-
-    def test_an_unreachable_failure_keeps_the_hash_recorded_when_it_is_marked(
-        self, isolated_env, mock_svc
-    ):
-        """A marker another writer changes while the removal runs is the hash the removal keeps."""
-        from lilbee.app.ingest import remove_documents_durably
-        from lilbee.data.ingest.discovery import resolve_source_path
-        from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
-
-        written = ["h1"]
-        write_skip_markers(cfg.data_root, {"away.pdf": written[-1]})
-
-        def _rewritten_meanwhile(name: str) -> Path:
-            written.append(f"h{len(written) + 1}")
-            write_skip_markers(cfg.data_root, {"away.pdf": written[-1]})
-            return resolve_source_path(name)
-
-        with mock.patch("lilbee.app.ingest.resolve_source_path", side_effect=_rewritten_meanwhile):
-            result = remove_documents_durably(["away.pdf"])
-
-        assert result.removed == ["away.pdf"]
-        assert len(written) > 2
-        assert load_skip_markers(cfg.data_root) == {"away.pdf": written[-1]}
+        assert held_hashes() == {"away.pdf": "h1"}
+        assert held_kinds() == {"away.pdf": HeldOut.REMOVED}
 
     def test_a_failed_single_file_root_is_forgotten(self, isolated_env, mock_svc, tmp_path):
         """A single-file root is un-registered and its records dropped, not converted."""
         from lilbee.app.ingest import register_sources, remove_documents_durably
-        from lilbee.data.ingest.skip_marker import (
-            load_skip_kinds,
-            load_skip_markers,
-            write_skip_markers,
-        )
 
         scan = tmp_path / "scan.pdf"
         scan.write_bytes(b"%PDF-1.4")
         register_sources([scan])
-        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
+        hold_failed({"scan.pdf": "h1"})
 
         result = remove_documents_durably(["scan.pdf"])
 
         assert result.removed == ["scan.pdf"]
-        assert load_skip_markers(cfg.data_root) == {}
-        assert load_skip_kinds(cfg.data_root) == {}
+        assert held_hashes() == {}
         assert "scan.pdf" not in cfg.linked_roots
         assert scan.exists()
 
@@ -6107,29 +6077,21 @@ class TestRemovingHeldOutFiles:
         self, isolated_env, mock_svc, tmp_path
     ):
         from lilbee.app.ingest import remove_documents_durably
-        from lilbee.data.ingest.skip_marker import (
-            load_skip_markers,
-            load_skip_reasons,
-            write_skip_markers,
-        )
 
         await self._fail_under_corpus(tmp_path, "bad.txt")
-        write_skip_markers(
-            cfg.data_root, load_skip_markers(cfg.data_root) | {"elsewhere.txt": "h9"}
-        )
+        hold_failed({"elsewhere.txt": "h9"}, reason="held elsewhere")
 
         result = remove_documents_durably(["corpus"])
 
         assert result.removed == ["corpus/good.txt", "corpus/bad.txt"]
         assert "corpus" not in cfg.linked_roots
-        assert load_skip_markers(cfg.data_root) == {"elsewhere.txt": "h9"}
-        assert load_skip_reasons(cfg.data_root) == {}
+        assert held_hashes() == {"elsewhere.txt": "h9"}
+        assert held_reasons() == {"elsewhere.txt": "held elsewhere"}
 
     async def test_a_root_whose_files_all_failed_can_be_removed(
         self, isolated_env, mock_svc, tmp_path
     ):
         from lilbee.app.ingest import remove_documents_durably
-        from lilbee.data.ingest.skip_marker import load_skip_markers
 
         corpus = await self._fail_under_corpus(tmp_path, "bad.txt")
         mock_svc.store.remove_documents(["corpus/good.txt"])  # nothing of it indexed
@@ -6139,15 +6101,14 @@ class TestRemovingHeldOutFiles:
         assert result.removed == ["corpus/bad.txt"]
         assert result.not_found == []
         assert "corpus" not in cfg.linked_roots
-        assert load_skip_markers(cfg.data_root) == {}
+        assert held_hashes() == {}
         assert (corpus / "bad.txt").exists()
 
-    def test_removing_a_root_marks_no_owned_file_of_the_same_path(
+    def test_removing_a_root_holds_out_no_owned_file_of_the_same_path(
         self, isolated_env, mock_svc, tmp_path
     ):
-        """A name under the removed root never marks the documents_dir file it now resolves to."""
+        """A name under the removed root never holds out the documents_dir file it resolves to."""
         from lilbee.app.ingest import register_sources, remove_documents_durably
-        from lilbee.data.ingest.skip_marker import load_skip_markers
 
         corpus = tmp_path / "corpus"
         corpus.mkdir()
@@ -6162,7 +6123,7 @@ class TestRemovingHeldOutFiles:
 
         assert result.removed == ["corpus/a.txt"]
         assert "corpus" not in cfg.linked_roots
-        assert load_skip_markers(cfg.data_root) == {}
+        assert held_hashes() == {}
 
     @pytest.mark.parametrize("name", ["empty", "empty/"])
     def test_an_empty_root_can_be_removed(self, isolated_env, mock_svc, tmp_path, name):
@@ -6182,34 +6143,22 @@ class TestRemovingHeldOutFiles:
     def test_a_removed_source_is_not_a_target_again(self, isolated_env, mock_svc):
         """Only failures are held-out targets; a removal already holds and is not found."""
         from lilbee.app.ingest import remove_documents_durably
-        from lilbee.data.ingest.skip_marker import (
-            SkipKind,
-            load_skip_kinds,
-            mark_removed,
-            write_skip_markers,
-        )
 
-        mark_removed(cfg.data_root, {"gone.txt": "h1"})
-        write_skip_markers(cfg.data_root, {"gone.txt": "h1", "x.txt": "h2"})
+        hold_removed({"gone.txt": "h1"})
+        hold_failed({"x.txt": "h2"})
 
         result = remove_documents_durably(["gone.txt", "nope.txt"])
 
         assert result.removed == []
         assert result.not_found == ["gone.txt", "nope.txt"]
-        assert load_skip_kinds(cfg.data_root)["gone.txt"] is SkipKind.REMOVED
+        assert held_kinds()["gone.txt"] is HeldOut.REMOVED
 
     def test_removable_names_lists_indexed_then_failures(self, isolated_env, mock_svc):
         from lilbee.app.ingest import removable_names
-        from lilbee.data.ingest.skip_marker import SkipKind, SkipRecords, write_skip_records
 
         mock_svc.store.upsert_source("a.txt", "hash", 1)
-        write_skip_records(
-            cfg.data_root,
-            SkipRecords(
-                markers={"a.txt": "h0", "b.pdf": "h1", "gone.txt": "h2"},
-                kinds={"gone.txt": SkipKind.REMOVED},
-            ),
-        )
+        hold_failed({"a.txt": "h0", "b.pdf": "h1"})
+        hold_removed({"gone.txt": "h2"})
 
         assert removable_names() == ["a.txt", "b.pdf"]
 
@@ -7792,10 +7741,10 @@ def _indexed(services) -> set[str]:
 
 
 # Removing a source then explicitly adding it back must re-index it. A removal
-# leaves a skip marker so discovery stops resurrecting the source; an ``add``
-# naming the path is the user asking for it back and outranks that marker. Every
+# leaves a held-out record so discovery stops resurrecting the source; an ``add``
+# naming the path is the user asking for it back and outranks that record. Every
 # surface that takes an explicit path gets the same round trip below.
-class TestRegisterSourcesClearsMarkers:
+class TestRegisterSourcesReleasesRecords:
     """The shared primitive every add surface funnels through."""
 
     async def test_file_under_a_directory_root_comes_back(self, isolated_env, mock_svc, tmp_path):
@@ -7833,30 +7782,28 @@ class TestRegisterSourcesClearsMarkers:
         from lilbee.app.ingest import register_sources
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import write_skip_markers
 
         doc = tmp_path / "cv-manual.txt"
         doc.write_text("a manual", encoding="utf-8")
         register_sources([doc])
         await sync(quiet=True)
-        # Mark it directly: a single-file root removed by its label un-registers
-        # instead of marking, so this is the shape reached when the root is still
+        # Hold it out directly: a single-file root removed by its label un-registers
+        # instead of holding out, so this is the shape reached when the root is still
         # registered -- an extraction that yielded nothing, or a re-registered root.
         mock_svc.store.remove_documents(["cv-manual.txt"])
-        write_skip_markers(cfg.data_root, {"cv-manual.txt": file_hash(doc)})
+        hold_failed({"cv-manual.txt": file_hash(doc)})
 
         register_sources([doc])
         await sync(quiet=True)
 
         assert "cv-manual.txt" in _indexed(mock_svc)
 
-    async def test_markers_outside_the_named_paths_are_left_alone(
+    async def test_records_outside_the_named_paths_are_left_alone(
         self, isolated_env, mock_svc, tmp_path
     ):
-        """An add clears the markers it covers, not the marker set."""
+        """An add releases the records it covers, not every record."""
         from lilbee.app.ingest import register_sources, remove_documents_durably
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import load_skip_markers
 
         corpus = tmp_path / "corpus"
         corpus.mkdir()
@@ -7869,9 +7816,9 @@ class TestRegisterSourcesClearsMarkers:
 
         register_sources([corpus])
 
-        markers = load_skip_markers(cfg.data_root)
-        assert "corpus/gone.txt" not in markers
-        assert "elsewhere.txt" in markers
+        held = held_hashes()
+        assert "corpus/gone.txt" not in held
+        assert "elsewhere.txt" in held
 
     def test_re_adding_a_tracked_source_is_not_reported_as_a_collision(
         self, isolated_env, mock_svc, tmp_path
@@ -8165,11 +8112,10 @@ class TestIngestPoolLifetime:
 
 class TestTuiSurface:
     def test_do_sync_cancelled_mid_extraction_holds_no_file_out(self, isolated_env, mock_svc):
-        """A TUI sync cancelled while a file extracts ends cancelled, with no skip marker."""
+        """A TUI sync cancelled while a file extracts ends cancelled, with no held-out record."""
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-        from lilbee.data.ingest.skip_marker import load_skip_markers
         from lilbee.runtime.cancellation import TaskCancelledError
 
         (isolated_env / "scan.pdf").write_bytes(b"%PDF-1.4 scanned")
@@ -8191,7 +8137,7 @@ class TestTuiSurface:
         ):
             screen._do_sync(reporter)
         assert cancelled.is_set()
-        assert load_skip_markers(cfg.data_root) == {}
+        assert held_hashes() == {}
 
     async def test_do_add_reindexes_a_removed_source(self, isolated_env, mock_svc, tmp_path):
         """The TUI's /add worker body, with the real registration primitive."""
@@ -9291,7 +9237,7 @@ class TestSyncLoadsThePersistedRegistry:
         settings.set_value(cfg.data_root, "linked_roots", {"notes": str(notes)})
         cfg.linked_roots = {"work": str(work)}
 
-        result = await sync(quiet=True, shard=ShardId(index=0, count=1, records_root=cfg.data_root))
+        result = await sync(quiet=True, shard=ShardId(index=0, count=1, corpus_root=cfg.data_root))
 
         assert result.added == ["work/old.txt"]
         assert cfg.linked_roots == {"work": str(work)}

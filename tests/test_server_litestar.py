@@ -15,6 +15,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.config.model import _TAKES_DEFAULT_WHEN_REFUSED, _refusals
+from lilbee.data.store import SourceType
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.runtime.progress import EmbedEvent, EventType
 from tests.server.conftest import parse_sse_events
@@ -1436,108 +1437,18 @@ class TestDocumentsRemoveRoute:
         assert resp.status_code == 201
         assert resp.json()["removed"] == ["a.md"]
 
-    def test_a_held_records_lock_is_a_conflict(self, client, held_records_lock):
-        """A busy records lock refuses the removal with the store, markers and files untouched."""
-        from lilbee.app.services import set_services
-        from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
-        from tests.conftest import make_mock_services
+    def test_a_library_that_cannot_lock_files_is_a_conflict(self, client):
+        from lilbee.runtime.lock import LockingUnsupportedError
 
-        (cfg.documents_dir / "a.md").write_text("kept", encoding="utf-8")
-        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
-        services = make_mock_services()
-        set_services(services)
-        try:
+        refused = "/data is on a filesystem that does not support file locking."
+        with mock.patch(
+            "lilbee.app.ingest.remove_documents_durably",
+            side_effect=LockingUnsupportedError(refused),
+        ):
             resp = client.post("/api/documents/remove", json={"names": ["a.md"]})
-        finally:
-            set_services(None)
 
         assert resp.status_code == 409
-        assert "Could not lock" in resp.json()["detail"]
-        services.store.remove_documents.assert_not_called()
-        assert load_skip_markers(cfg.data_root) == {"scan.pdf": "h1"}
-        assert (cfg.documents_dir / "a.md").read_text(encoding="utf-8") == "kept"
-
-    async def test_a_client_that_disconnects_ends_the_wait_at_the_records_lock(
-        self, client, caplog
-    ):
-        """The server reports the disconnect on the receive channel: nothing is removed."""
-        import lilbee.app.ingest as app_ingest
-        from lilbee.app.services import set_services
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
-        from tests.conftest import make_mock_services
-
-        loop, waiting, gone = asyncio.get_running_loop(), asyncio.Event(), asyncio.Event()
-        asked_again = asyncio.Event()
-        body = json.dumps({"names": ["a.md"]}).encode()
-        asked: list[str] = []
-
-        async def receive():
-            asked.append("receive")
-            if len(asked) == 1:
-                return {"type": "http.request", "body": body, "more_body": False}
-            if len(asked) == 2:
-                # A server answers an early wake-up with an empty body message.
-                await waiting.wait()
-                return {"type": "http.request", "body": b"", "more_body": False}
-            asked_again.set()
-            await gone.wait()
-            return {"type": "http.disconnect"}
-
-        sent: list[dict] = []
-
-        async def send(message):
-            sent.append(message)
-
-        scope = {
-            "type": "http",
-            "asgi": {"version": "3.0", "spec_version": "2.3"},
-            "http_version": "1.1",
-            "method": "POST",
-            "scheme": "http",
-            "path": "/api/documents/remove",
-            "raw_path": b"/api/documents/remove",
-            "query_string": b"",
-            "root_path": "",
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode()),
-            ],
-            "client": ("127.0.0.1", 50000),
-            "server": ("127.0.0.1", 80),
-            "extensions": {},
-            "state": {},
-        }
-        (cfg.documents_dir / "a.md").write_text("kept", encoding="utf-8")
-        services = make_mock_services()
-        set_services(services)
-        call, outcome = recorded(app_ingest.remove_documents_durably)
-        try:
-            with (
-                records_lock_held_elsewhere(
-                    cfg.data_root, lambda: loop.call_soon_threadsafe(waiting.set)
-                ),
-                mock.patch.object(app_ingest, "remove_documents_durably", call),
-            ):
-                before = files_under(cfg.data_root)
-                caplog.set_level(logging.INFO, logger="lilbee.server.routes.documents")
-                request = asyncio.ensure_future(client.app(scope, receive, send))
-                listening = asyncio.ensure_future(asked_again.wait())
-                await asyncio.wait({request, listening}, return_when=asyncio.FIRST_COMPLETED)
-                listening.cancel()
-                # A message that is not a disconnect leaves the request at the lock.
-                assert not request.done() and sent == [] and not outcome.ended.is_set()
-                gone.set()
-                await request
-                await asyncio.to_thread(outcome.ended.wait)
-                assert files_under(cfg.data_root) == before
-        finally:
-            set_services(None)
-
-        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
-        services.store.remove_documents.assert_not_called()
-        assert [m["status"] for m in sent if m["type"] == "http.response.start"] == [499]
-        assert "the client disconnected" in caplog.text
+        assert resp.json()["detail"] == refused
 
 
 SSE_ROUTES = [
@@ -2507,7 +2418,7 @@ class TestExportRoute:
 class TestImportRoute:
     def test_round_trip_streams_progress_and_done(self, dataset_store, client):
         data = client.get("/api/export", params={"format": "jsonl"}).content
-        dataset_store.delete_by_source("doc.pdf")
+        dataset_store.delete_by_source("doc.pdf", SourceType.DOCUMENT)
 
         resp = client.post("/api/import", params={"format": "jsonl"}, content=data)
         assert resp.status_code == 201
