@@ -1711,3 +1711,4 @@ export LILBEE_VISION_MODEL=lightonocr         # persist across runs (GGUF via mt
 
 Pick or change a vision model interactively via `/settings` in the
 TUI; the selection is saved to `config.toml` and persists across sessions.
+
