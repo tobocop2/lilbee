@@ -4,7 +4,11 @@ name: CI
 # ci-result, always reports. The jobs run only when the paths they test changed.
 on:
   push:
-    branches: [main]
+    # chore/engine-pin-sync is the rolling engine bump branch. The bot opens its
+    # pull request, so GitHub holds that pull_request run for approval, and the
+    # suite never ran on a bump. The push from the sync workflow's deploy key
+    # starts this run without approval, the same way it starts the engine build.
+    branches: [main, chore/engine-pin-sync]
   pull_request:
   workflow_call:
   workflow_dispatch:
