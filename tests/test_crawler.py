@@ -226,6 +226,10 @@ class TestUrlToFilename:
         url = "https://example.com/" + "a" * 98 + "@bbbbb"
         assert url_to_filename(url) == _named("example.com/" + "a" * 98 + "@", url)
 
+    def test_a_cut_just_before_an_at_sign_still_backs_up_to_the_last_word_break(self):
+        url = "https://example.com/" + "x" * 10 + "-" + "a" * 88 + "@bbb"
+        assert url_to_filename(url) == _named("example.com/" + "x" * 10, url)
+
     def test_a_cut_that_leaves_a_dash_at_the_end_drops_the_dash(self):
         url = "https://example.com/" + "a" * 98 + "-_bb"
         assert url_to_filename(url) == _named("example.com/" + "a" * 98, url)
