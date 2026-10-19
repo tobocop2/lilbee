@@ -3,7 +3,7 @@
   "systems": {
     "x86_64-linux": {
       "asset": "lilbee-compat-linux-x86_64",
-      "sha256": "b61ae6c70626f8c233d80caa0cdc9226e30fc00a8319a2bc824b2e4db403bea6"
+      "sha256": "not-a-hash"
     }
   }
 }
