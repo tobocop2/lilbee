@@ -304,7 +304,10 @@ def _browser_config(
     extra_wait = extra_wait_ms if browser else None
     # Crawlberg's default wait sleeps 500 ms on every page. Waiting for the root element,
     # which a loaded page already has, ends it at once; the extra wait is then the whole wait.
-    page_wait = {"wait": crawlberg.BrowserWait.SELECTOR, "wait_selector": _READY_SELECTOR}
+    page_wait: dict[str, Any] = {
+        "wait": crawlberg.BrowserWait.SELECTOR,
+        "wait_selector": _READY_SELECTOR,
+    }
     return crawlberg.BrowserConfig(
         mode=_BROWSER_MODES[render_mode],
         timeout=timeout_ms,
