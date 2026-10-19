@@ -344,7 +344,7 @@ class TestBrowserMode:
             "chrome_args": FLAGS,
             "extra_wait": 0,
             "wait": "selector",
-            "wait_selector": "body",
+            "wait_selector": ":root",
         }
 
     @pytest.mark.parametrize("wait_ms", [0, 2500])
