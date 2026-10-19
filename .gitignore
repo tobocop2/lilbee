@@ -68,6 +68,9 @@ scripts/*
 !scripts/channel_asset_blockers.sh
 !scripts/ci_retry.sh
 !scripts/install_engine.sh
+!scripts/ci_result.sh
+!scripts/release_ci_passed.sh
+!scripts/flake_pin_pr.sh
 !scripts/qa/
 scripts/qa/*
 !scripts/qa/*.py

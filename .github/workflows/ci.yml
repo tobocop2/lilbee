@@ -1,30 +1,11 @@
 name: CI
 
-# Full CI only runs when the app, its tests, or their toolchain change;
-# docs/site edits skip it. release.yml re-runs lint+test itself when a tag
-# has no green CI run, so a skipped push never strands a release.
+# Every pull request and push to main starts the run, so the one required check,
+# ci-result, always reports. The jobs run only when the paths they test changed.
 on:
   push:
     branches: [main]
-    paths: &ci-paths
-      - 'src/**'
-      - 'tests/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'Makefile'
-      - '.coveragerc-windows'
-      - 'engine-versions.env'
-      - 'scripts/check_style_rules.py'
-      - 'tools/qa/**'
-      - 'packages/lilbee/**'
-      - 'tools/wheel-build/**'
-      - 'packaging/tools/**'
-      - 'scripts/qa/**'
-      - '.github/workflows/**'
-      - '.github/actions/**'
-      - 'scripts/*.sh'
   pull_request:
-    paths: *ci-paths
   workflow_call:
   workflow_dispatch:
 
@@ -33,7 +14,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      # A run with no diff to read (dispatch, workflow_call) runs every job.
+      code: ${{ steps.filter.outputs.code || 'true' }}
+      flake: ${{ steps.filter.outputs.flake || 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'push'
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'Makefile'
+              - '.coveragerc-windows'
+              - 'engine-versions.env'
+              - 'scripts/check_style_rules.py'
+              - 'tools/qa/**'
+              - 'packages/lilbee/**'
+              - 'tools/wheel-build/**'
+              - 'packaging/tools/**'
+              - 'scripts/qa/**'
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - 'scripts/*.sh'
+            flake:
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'sources.json'
+              - 'sources-cuda.json'
+              - 'sources-rocm.json'
+              - 'sources-compat.json'
+              - '.github/workflows/ci.yml'
+
   lint:
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -75,6 +102,8 @@ jobs:
             "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
 
   shell:
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -104,6 +133,8 @@ jobs:
       - run: make test-shell
 
   npm-launcher:
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -123,6 +154,8 @@ jobs:
 
   # Seeded TUI fuzz: fixed seeds, deterministic, fails on any invariant break.
   fuzz-smoke:
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -144,6 +177,8 @@ jobs:
         run: make fuzz-smoke
 
   test:
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     # Bumped from 60 to 120: Windows 3.11 runs the suite serially (no
     # xdist) to dodge reactive-timing flakes, which exceeds 60 min. All
     # other matrix entries finish well under the original budget.
@@ -240,6 +275,8 @@ jobs:
           [ -n "$found" ] || echo "no hang-watchdog dumps (no worker wedged)"
 
   integration:
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     # Authenticate HF API + model downloads so the runner's shared IP doesn't
@@ -445,3 +482,29 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
           LILBEE_TEST_FULL_CRAWL: ${{ matrix.full-crawl && '1' || '' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+  # Evaluates every system's derivations, so a pin that does not parse or a
+  # malformed hash fails here. The download itself is checked by Flake Check.
+  flake:
+    needs: [changes]
+    if: needs.changes.outputs.flake == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - name: Evaluate the flake against its pins
+        run: nix flake check --all-systems --no-build
+
+  # The one check branch protection requires.
+  ci-result:
+    if: always()
+    needs: [changes, lint, shell, npm-launcher, fuzz-smoke, test, integration, flake]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Every needed job passed or was rightly skipped
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: bash scripts/ci_result.sh changes
