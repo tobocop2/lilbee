@@ -239,14 +239,17 @@ INLINE_IMAGE_PAYLOAD = (
 # A page that links to a second page, each with text hidden three ways beside visible text.
 HIDDEN_PAGE = "/hidden/"
 LATE_PAGE = "/late/"
+LATER_PAGE = "/later/"
 LATE_NEXT_PAGE = "/late/next"
 LATE_HEADING = "Harbor timetable"
 LATE_TEXT = "The ferry leaves at noon"
-# Later than crawlberg's own wait after the load (500 ms), well under the default extra wait.
-LATE_DELAY_MS = 600
-# A page timeout and a wait that, with crawlberg's own 500 ms, outlast two page timeouts.
+# Within the default extra wait (200 ms) of the load, and a text later than it.
+LATE_DELAY_MS = 100
+LATER_DELAY_MS = 600
+LATER_WAIT_MS = 1000
+# A page timeout and a wait that alone outlasts two page timeouts.
 LONG_WAIT_TIMEOUT_S = 3
-LONG_WAIT_MS = 5800
+LONG_WAIT_MS = 6300
 HIDDEN_NEXT_PAGE = "/hidden/next"
 COOKIE_START = "/cookie/"
 COOKIE_NEED = "/cookie/need"
@@ -353,12 +356,12 @@ def _hidden_page(link: str) -> str:
     return f"<html><body><p>{VISIBLE_TEXT}</p>{hidden}{link}</body></html>"
 
 
-def _late_page(link: str) -> str:
-    """A page whose script writes its main text :data:`LATE_DELAY_MS` after the load, and *link*."""
+def _late_page(link: str, delay_ms: int = LATE_DELAY_MS) -> str:
+    """A page whose script writes its main text *delay_ms* after the load, and *link*."""
     write = (
         'window.addEventListener("load", () => setTimeout(() => {'
         f'document.getElementById("late").textContent = "{LATE_TEXT}";'
-        f"}}, {LATE_DELAY_MS}));"
+        f"}}, {delay_ms}));"
     )
     return (
         f'<html><body><h1>{LATE_HEADING}</h1><p id="late"></p>{link}'
@@ -390,6 +393,7 @@ def _fixed_pages(filler: str, robots_status: int) -> dict[str, tuple[int, str]]:
         HIDDEN_NEXT_PAGE: (HTTPStatus.OK, _hidden_page("")),
         LATE_PAGE: (HTTPStatus.OK, _late_page(f'<a href="{LATE_NEXT_PAGE}">next</a>')),
         LATE_NEXT_PAGE: (HTTPStatus.OK, _late_page("")),
+        LATER_PAGE: (HTTPStatus.OK, _late_page("", LATER_DELAY_MS)),
         COOKIE_START: (
             HTTPStatus.OK,
             f'<html><body><h1>Start</h1><a href="{COOKIE_NEED}">need</a>{filler}</body></html>',
@@ -1536,9 +1540,13 @@ class TestBrowserLaunch:
         cfg.crawl_browser_extra_wait_ms = LONG_WAIT_MS
         _assert_late_text(self._crawl(site.url(LATE_PAGE)), 1, kept=True)
 
-    def test_with_no_extra_wait_text_written_after_the_load_is_missing(self, site):
+    def test_with_no_extra_wait_text_written_after_the_default_wait_is_missing(self, site):
         cfg.crawl_browser_extra_wait_ms = 0
-        _assert_late_text(self._crawl(site.url(LATE_PAGE)), 1, kept=False)
+        _assert_late_text(self._crawl(site.url(LATER_PAGE)), 1, kept=False)
+
+    def test_a_longer_extra_wait_keeps_text_written_after_the_default_wait(self, site):
+        cfg.crawl_browser_extra_wait_ms = LATER_WAIT_MS
+        _assert_late_text(self._crawl(site.url(LATER_PAGE)), 1, kept=True)
 
     def test_with_no_override_chrome_names_itself_and_its_hints_agree(self, site):
         paths = self._crawl(site.url("/hints/"), depth=1)

@@ -103,6 +103,8 @@ _TILDE_ENCODED = "%7E"
 # A browser fetch as a whole (launch, navigation, render, close) may take this many page timeouts.
 _BROWSER_OVERALL_TIMEOUTS = 2
 _BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
+# The element every loaded page has, which ends crawlberg's own wait as soon as the page loads.
+_READY_SELECTOR = "body"
 _RATE_LIMIT_STATUSES = (429, 503)
 # The most retries crawlberg 1.11.1 accepts; it refuses a config with more.
 _MAX_RETRIES = 20
@@ -293,13 +295,16 @@ def _browser_config(
 ) -> crawlberg.BrowserConfig:
     """The browser settings, with a deadline on each whole browser fetch.
 
-    Only browser mode names a Chrome binary, launch flags and the wait after a page loads.
-    The deadline adds that wait, which crawlberg counts inside it.
+    Only browser mode names a Chrome binary, launch flags and the waits after a page loads.
+    The deadline adds the extra wait, which crawlberg counts inside it.
     """
     import crawlberg
 
     browser = render_mode is CrawlRenderMode.BROWSER
     extra_wait = extra_wait_ms if browser else None
+    # Crawlberg's default wait sleeps 500 ms on every page. Waiting for the body, which a
+    # loaded page already has, ends it at once; the extra wait is then the whole wait.
+    page_wait = {"wait": crawlberg.BrowserWait.SELECTOR, "wait_selector": _READY_SELECTOR}
     return crawlberg.BrowserConfig(
         mode=_BROWSER_MODES[render_mode],
         timeout=timeout_ms,
@@ -308,6 +313,7 @@ def _browser_config(
         chrome_path=_headless_shell() if browser else None,
         chrome_args=list(chrome_args) if browser else [],
         extra_wait=extra_wait,
+        **(page_wait if browser else {}),
     )
 
 
