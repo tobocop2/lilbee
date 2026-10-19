@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
+import click
 import pytest
 from click.testing import Result
 from cryptography import x509
@@ -1384,8 +1385,9 @@ class TestRefusedEngineOnTheCli:
         cfg.crawl_render_mode = HTTP
         result = CliRunner().invoke(app, ["add", site.url("/scope/"), "--crawl", "--depth", "101"])
         assert result.exit_code == 2
-        assert "--depth" in result.output
-        assert "100" in result.output
+        refusal = click.unstyle(result.output)
+        assert "--depth" in refusal
+        assert "100" in refusal
         assert "Traceback" not in result.output
         assert "Crawled" not in result.output
         assert site.paths_since(0, "/scope/") == []
