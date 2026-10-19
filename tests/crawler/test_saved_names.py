@@ -1069,7 +1069,8 @@ class TestEarlierLibraries:
         rows = [("x", _X_EARLIER, True), (f"{_CRAFTED}/y", _Y_EARLIER, False)]
         pages = _plant_site(_HOSTILE, rows)
         await sync(quiet=True)
-        name = url_to_filename(_HOSTILE + "x")
+        # The warning prints the saved path in the platform's own separator.
+        name = str(Path(url_to_filename(_HOSTILE + "x")))
         with caplog.at_level(_logging.WARNING, logger="lilbee.crawler.save"):
             for _ in range(2):
                 await _crawl_pages(monkeypatch, _HOSTILE, ["x"], "2")
