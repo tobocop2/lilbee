@@ -705,7 +705,7 @@ class Config(BaseSettings):
 
     # Milliseconds a browser-mode crawl waits after a page loads before reading it, for
     # text a script writes late. 0 = no extra wait, at most ten minutes. HTTP mode ignores it.
-    crawl_browser_extra_wait_ms: int = ConfigField(default=1000, ge=0, le=600_000, writable=True)
+    crawl_browser_extra_wait_ms: int = ConfigField(default=200, ge=0, le=600_000, writable=True)
 
     # The user agent of every crawl request. Blank = no override: a browser crawl
     # sends Chrome's own, an HTTP crawl crawlberg's, the sitemap lookup httpx's.
