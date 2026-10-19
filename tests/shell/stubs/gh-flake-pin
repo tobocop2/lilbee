@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Stand-in for the gh CLI when scripts/flake_pin_pr.sh opens a pin pull request.
+# Every call is appended to $FIXTURE/gh.log; any call the script does not make
+# is a loud failure.
+#
+#   $FIXTURE/open_prs.json  the open pull requests, [{number, headRefName}]
+set -uo pipefail
+
+echo "$*" >> "${FIXTURE}/gh.log"
+[ "${1-}" = pr ] || { echo "stub gh: unhandled $*" >&2; exit 2; }
+sub="$2"; shift 2
+
+case "${sub}" in
+  list)
+    head=""; jqexpr=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --head) head="$2"; shift 2 ;;
+        --jq) jqexpr="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    prs="${FIXTURE}/open_prs.json"
+    [ -f "${prs}" ] || echo '[]' > "${prs}"
+    if [ -n "${head}" ]; then
+      jq --arg h "${head}" '[.[] | select(.headRefName == $h)]' "${prs}" | jq -r "${jqexpr}"
+    else
+      jq -r "${jqexpr}" "${prs}"
+    fi
+    ;;
+  create | merge | close | edit) : ;;
+  *) echo "stub gh: unhandled pr ${sub}" >&2; exit 2 ;;
+esac

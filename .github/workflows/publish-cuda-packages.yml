@@ -83,11 +83,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
           ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # A deploy key: its push starts the pin pull request's CI.
+          ssh-key: ${{ secrets.FLAKE_PINS_SSH_KEY }}
       - name: Build systems JSON
         id: sys
         env:

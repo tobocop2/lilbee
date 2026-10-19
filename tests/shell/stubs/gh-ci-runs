@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Stand-in for the gh CLI when scripts/release_ci_passed.sh reads a commit's CI
+# runs. Serves files under $FIXTURE through the caller's own --jq filter; any
+# other call is a loud failure.
+#
+#   $FIXTURE/sha             the sha a ref resolves to (absent: the ref is unknown)
+#   $FIXTURE/runs.json       the ci.yml workflow runs for that sha
+#   $FIXTURE/jobs/<id>.json  the jobs of run <id>
+set -uo pipefail
+
+[ "${1-}" = api ] || { echo "stub gh: unhandled $*" >&2; exit 2; }
+target="$2"; shift 2
+jqexpr=""
+while [ $# -gt 0 ]; do
+  case "$1" in -q|--jq) jqexpr="$2"; shift 2 ;; *) shift ;; esac
+done
+
+case "${target}" in
+  */commits/*)
+    [ -f "${FIXTURE}/sha" ] || { echo "stub gh: no commit found for ${target##*/}" >&2; exit 1; }
+    printf '{"sha":"%s"}\n' "$(cat "${FIXTURE}/sha")" | jq -r "${jqexpr}"
+    ;;
+  */actions/workflows/ci.yml/runs\?head_sha=*)
+    jq -r "${jqexpr}" < "${FIXTURE}/runs.json"
+    ;;
+  */actions/runs/*/jobs*)
+    id="${target%/jobs*}"; id="${id##*/}"
+    [ -f "${FIXTURE}/jobs/${id}.json" ] || { echo "stub gh: no jobs for run ${id}" >&2; exit 1; }
+    jq -r "${jqexpr}" < "${FIXTURE}/jobs/${id}.json"
+    ;;
+  *) echo "stub gh: unhandled api ${target}" >&2; exit 2 ;;
+esac

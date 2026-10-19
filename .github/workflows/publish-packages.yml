@@ -17,6 +17,11 @@ on:
         description: "Channels to publish: 'all' or a comma list of homebrew,aur,nix,snap,scoop,npm."
         required: false
         default: "all"
+      dry_run:
+        description: "Print the flake pin branch, commit and pull request without pushing. Needs channels 'nix'."
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -38,6 +43,12 @@ jobs:
       sha_windows_cu125: ${{ steps.info.outputs.sha_windows_cu125 }}
       sha_windows_cu124: ${{ steps.info.outputs.sha_windows_cu124 }}
     steps:
+      - name: A dry run publishes nothing
+        if: inputs.dry_run
+        env:
+          CHANNELS: ${{ inputs.channels }}
+        run: |
+          [ "${CHANNELS}" = "nix" ] || { echo "dry_run covers the nix channel only; set channels to 'nix'"; exit 1; }
       - name: Resolve tag and asset digests
         id: info
         env:
@@ -175,11 +186,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
           ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # A deploy key: its push starts the pin pull request's CI.
+          ssh-key: ${{ secrets.FLAKE_PINS_SSH_KEY }}
       - name: Build systems JSON
         id: sys
         env:
@@ -204,6 +217,7 @@ jobs:
           version: ${{ needs.resolve.outputs.version }}
           systems-json: ${{ steps.sys.outputs.value }}
           commit-message: "lilbee ${{ needs.resolve.outputs.version }} (flake)"
+          dry-run: ${{ inputs.dry_run }}
 
   # The bucket is tobocop2/scoop-lilbee. Scoop updates a bucket with a plain
   # `git pull`, so it cannot live in this repository: users would clone the whole

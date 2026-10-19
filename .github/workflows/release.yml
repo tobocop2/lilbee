@@ -30,37 +30,20 @@ permissions:
   actions: read   # gate job: look up the CI workflow's conclusion for this commit
 
 jobs:
-  # Skip the lint + test re-run if the CI workflow already went green on this
-  # exact commit (every main push runs it). Fail-soft: any uncertainty -> run them.
+  # Skip the lint + test re-run if CI already linted and tested this exact
+  # commit. Fail-soft: any uncertainty -> run them.
   gate:
     runs-on: ubuntu-latest
     outputs:
       ci_passed: ${{ steps.check.outputs.ci_passed }}
     steps:
+      - uses: actions/checkout@v7
       - name: Did CI already pass on this commit?
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          INPUT_REF: ${{ inputs.ref }}
-          DEFAULT_REF: ${{ github.ref_name }}
-        run: |
-          set -uo pipefail
-          REF="${INPUT_REF:-$DEFAULT_REF}"
-          REF="${REF#refs/tags/}"; REF="${REF#refs/heads/}"   # bare ref for the commits API
-          SHA=$(gh api "repos/${REPO}/commits/${REF}" --jq .sha 2>/dev/null) || SHA=""
-          if [ -z "$SHA" ]; then
-            echo "couldn't resolve ${REF} -> SHA; will run lint + test"
-            echo "ci_passed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          PASSED=$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=100" --jq '[.workflow_runs[] | select(.conclusion == "success")] | length' 2>/dev/null) || PASSED=0
-          echo "${REF} -> ${SHA}; successful CI runs = ${PASSED}"
-          if [ "${PASSED:-0}" -gt 0 ]; then
-            echo "ci_passed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ci_passed=false" >> "$GITHUB_OUTPUT"
-          fi
+          REF: ${{ inputs.ref || github.ref_name }}
+        run: bash scripts/release_ci_passed.sh "${GITHUB_REPOSITORY}" "${REF}" >> "$GITHUB_OUTPUT"
 
   lint:
     needs: [gate]
