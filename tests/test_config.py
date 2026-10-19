@@ -1921,8 +1921,8 @@ class TestCrawlUserAgent:
 
 
 class TestCrawlBrowserExtraWait:
-    def test_default_is_one_second(self):
-        assert Config().crawl_browser_extra_wait_ms == 1000
+    def test_default_is_two_tenths_of_a_second(self):
+        assert Config().crawl_browser_extra_wait_ms == 200
 
     def test_env_var_sets_the_wait(self, tmp_path):
         env = clean_env(tmp_path)
