@@ -1656,8 +1656,13 @@ def server_log(isolated_env) -> Iterator[Path]:
     root = logging.getLogger()
     root_level = root.level
     handler_levels = [(handler, handler.level) for handler in root.handlers]
+    # Importing litellm raises the httpx logger to WARNING; the test reads its request line.
+    httpx_logger = logging.getLogger("httpx")
+    httpx_level = httpx_logger.level
+    httpx_logger.setLevel(logging.INFO)
     cfg.data_root = isolated_env
     yield setup_server_log_file()
+    httpx_logger.setLevel(httpx_level)
     earlier = [handler for handler, _ in handler_levels]
     for handler in [h for h in root.handlers if h not in earlier]:
         root.removeHandler(handler)
