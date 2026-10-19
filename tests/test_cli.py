@@ -4115,7 +4115,10 @@ class TestAddWithUrls:
 
     def test_a_refused_seed_prints_no_username_or_password(self):
         seed = "http://user:secret@example.com:80a/"
-        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+        ):
             result = runner.invoke(app, ["--json", "add", seed])
         assert result.exit_code == 1
         assert "secret" not in result.stdout
@@ -4130,7 +4133,10 @@ class TestAddWithUrls:
     @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
     def test_a_seed_whose_host_does_not_parse_is_refused_by_name(self, json_mode):
         flags = ["--json"] if json_mode else []
-        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+        ):
             result = runner.invoke(app, [*flags, "add", "http://alice:cret@[::1/a"])
         assert result.exit_code == 1
         assert f"{UNPARSED_ADDRESS}: Invalid IPv6 URL" in result.output
@@ -4140,7 +4146,10 @@ class TestAddWithUrls:
     def test_a_refused_seed_is_named_without_its_userinfo(self, json_mode):
         seed = "http://alice:se/cret@example.com/"
         flags = ["--json"] if json_mode else []
-        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+        ):
             result = runner.invoke(app, [*flags, "add", seed])
         assert result.exit_code == 1
         assert f"{UNPARSED_ADDRESS}: URL has an invalid port" in result.output
@@ -4150,7 +4159,10 @@ class TestAddWithUrls:
     @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
     def test_a_refused_seed_is_never_named_by_a_host_in_its_query(self, json_mode):
         flags = ["--json"] if json_mode else []
-        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+        ):
             result = runner.invoke(
                 app, [*flags, "add", "http://example.com:80a/?next=a@evil.example"]
             )
@@ -4277,7 +4289,10 @@ class TestAddWithUrls:
     @pytest.mark.parametrize("crawl", [[], ["--crawl"]], ids=["one-page", "site"])
     def test_a_seed_with_a_backslash_after_the_port_is_refused_by_name(self, crawl):
         seed = "http://example.com:8080\\path"
-        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+        ):
             result = runner.invoke(app, ["--json", "add", seed, *crawl])
         assert result.exit_code == 1
         assert json.loads(result.stdout)["error"] == (
