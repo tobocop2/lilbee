@@ -428,6 +428,8 @@ class TestBrowserMode:
         assert stub.config["browser"].kwargs["chrome_args"] == []
         assert stub.config["browser"].kwargs["extra_wait"] is None
         assert stub.config["browser"].kwargs["overall_timeout"] == 10000
+        assert "wait" not in stub.config["browser"].kwargs
+        assert "wait_selector" not in stub.config["browser"].kwargs
 
     async def test_http_mode_does_not_look_for_the_shell(self, monkeypatch):
         looked: list[bool] = []
