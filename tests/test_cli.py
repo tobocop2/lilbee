@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
+import click
 import numpy as np
 import pytest
 from filelock import ReadWriteLock
@@ -3794,7 +3795,7 @@ class TestAddWithUrls:
     ):
         result = runner.invoke(app, ["add", "--crawl", flag, value, "https://example.com"])
         assert result.exit_code != 0
-        assert flag.removeprefix("--") in result.output
+        assert flag in click.unstyle(result.output)
         mock_crawl.assert_not_called()
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
