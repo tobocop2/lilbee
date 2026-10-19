@@ -58,7 +58,8 @@ _MAX_NAME_BYTES = (
     - len(PAGE_SUFFIX)
 )
 # A slug keeps letters, digits and these; every other run of characters becomes one fill.
-_SLUG_KEPT = frozenset("-_.")
+_WORD_BREAKS = frozenset("-_.")
+_SLUG_KEPT = _WORD_BREAKS | {"@"}
 _SLUG_FILL = "-"
 _SLUG_FILL_RUN = re.compile(f"{_SLUG_FILL}{{2,}}")
 _SLUG_ENDS = ".- "
@@ -149,9 +150,9 @@ def _without_suffix(text: str) -> str:
 def _cut_at_word(text: str, limit: int) -> str:
     """*text* cut to at most *limit* UTF-8 bytes, at the last separator when a word would break."""
     head = _cut(text, limit)
-    if len(head) == len(text) or text[len(head)] in _SLUG_KEPT:
+    if len(head) == len(text) or text[len(head)] in _WORD_BREAKS:
         return head
-    end = max(head.rfind(c) for c in _SLUG_KEPT)
+    end = max(head.rfind(c) for c in _WORD_BREAKS)
     return head[:end] if end > 0 else head
 
 

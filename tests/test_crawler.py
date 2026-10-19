@@ -140,6 +140,13 @@ SAVED_NAMES = [
         id="non-ascii-ext",
     ),
     pytest.param("https://example.com/t/con.html", "example.com/t/_con", id="device-ext"),
+    pytest.param(
+        "https://forum.example.com/@forum.growweedeasy.com/",
+        "forum.example.com/@forum.growweedeasy",
+        id="leading-at",
+    ),
+    pytest.param("https://example.com/@user/page", "example.com/@user/page", id="at-folder"),
+    pytest.param("https://example.com/t/a@b", "example.com/t/a@b", id="inner-at"),
     pytest.param("https://example.com/page?q=1", "example.com/page", id="query"),
     pytest.param("https://example.com/page#section", "example.com/page", id="fragment"),
     pytest.param("https://example.com/t/caf%C3%A9", "example.com/t/café", id="escaped-letter"),
@@ -214,6 +221,10 @@ class TestUrlToFilename:
     ):
         url = "https://example.com/" + "a" * length
         assert url_to_filename(url) == _named("example.com/" + "a" * kept, url)
+
+    def test_an_at_sign_is_not_a_word_break_when_a_name_is_cut(self):
+        url = "https://example.com/" + "a" * 98 + "@bbbbb"
+        assert url_to_filename(url) == _named("example.com/" + "a" * 98 + "@", url)
 
     def test_a_cut_that_leaves_a_dash_at_the_end_drops_the_dash(self):
         url = "https://example.com/" + "a" * 98 + "-_bb"
@@ -1939,6 +1950,25 @@ class TestCrawlAndSave:
         assert pages[stored].content_hash == content_hash("# Hyphen")
         assert pages[stored].file == url_to_filename(stored)
         assert not any((web / entry.file).exists() for entry in before.values())
+
+    @patch("lilbee.crawler.runner.crawl_recursive")
+    async def test_a_saved_account_page_keeps_the_at_sign_in_its_title(
+        self, mock_crawl_recursive, isolated_env, mock_services
+    ):
+        from lilbee.data.title import derive_title
+
+        account = "https://forum.example.com/@forum.growweedeasy.com/"
+        reported = [CrawlResult(url=account, markdown="# A")]
+
+        async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+            await kwargs["on_result"](reported[0])  # type: ignore[operator]
+            return reported
+
+        mock_crawl_recursive.side_effect = crawl
+        paths = await crawl_and_save("https://example.com/", depth=1)
+        assert [derive_title(p.relative_to(cfg.documents_dir).as_posix()) for p in paths] == [
+            "@forum.growweedeasy"
+        ]
 
     @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_a_page_stored_under_several_spellings_keeps_one_entry_and_one_file(
