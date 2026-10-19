@@ -241,6 +241,12 @@ HIDDEN_PAGE = "/hidden/"
 LATE_PAGE = "/late/"
 LATER_PAGE = "/later/"
 LATE_NEXT_PAGE = "/late/next"
+# Documents with no body element: an SVG image and a frameset page.
+SVG_PAGE = "/chart.svg"
+FRAMESET_PAGE = "/frames/"
+# Long enough for Chromium to start and load the page, far under a hang to the page timeout.
+NO_BODY_TIMEOUT_S = 12
+CONTENT_TYPES = {SVG_PAGE: "image/svg+xml"}
 LATE_HEADING = "Harbor timetable"
 LATE_TEXT = "The ferry leaves at noon"
 # Within the default extra wait (200 ms) of the load, and a text later than it.
@@ -394,6 +400,16 @@ def _fixed_pages(filler: str, robots_status: int) -> dict[str, tuple[int, str]]:
         LATE_PAGE: (HTTPStatus.OK, _late_page(f'<a href="{LATE_NEXT_PAGE}">next</a>')),
         LATE_NEXT_PAGE: (HTTPStatus.OK, _late_page("")),
         LATER_PAGE: (HTTPStatus.OK, _late_page("", LATER_DELAY_MS)),
+        SVG_PAGE: (
+            HTTPStatus.OK,
+            '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="60">'
+            f'<text x="5" y="30">{LATE_HEADING}</text></svg>',
+        ),
+        FRAMESET_PAGE: (
+            HTTPStatus.OK,
+            f'<html><head><title>Frames</title></head><frameset><frame src="{LATE_NEXT_PAGE}">'
+            "</frameset></html>",
+        ),
         COOKIE_START: (
             HTTPStatus.OK,
             f'<html><body><h1>Start</h1><a href="{COOKIE_NEED}">need</a>{filler}</body></html>',
@@ -553,7 +569,7 @@ class _Site:
                     return
                 data = body.encode()
                 self.send_response(status)
-                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Type", CONTENT_TYPES.get(self.path, "text/html"))
                 if self.path == COOKIE_START:
                     self.send_header("Set-Cookie", f"{SESSION_COOKIE}; Path=/")
                 self.send_header("Content-Length", str(len(data)))
@@ -1543,6 +1559,13 @@ class TestBrowserLaunch:
     def test_with_no_extra_wait_text_written_after_the_default_wait_is_missing(self, site):
         cfg.crawl_browser_extra_wait_ms = 0
         _assert_late_text(self._crawl(site.url(LATER_PAGE)), 1, kept=False)
+
+    @pytest.mark.parametrize("page", [SVG_PAGE, FRAMESET_PAGE])
+    def test_a_page_with_no_body_ends_before_the_page_timeout(self, site, page):
+        cfg.crawl_timeout = NO_BODY_TIMEOUT_S
+        start = time.monotonic()
+        self._crawl(site.url(page))
+        assert time.monotonic() - start < NO_BODY_TIMEOUT_S
 
     def test_a_longer_extra_wait_keeps_text_written_after_the_default_wait(self, site):
         cfg.crawl_browser_extra_wait_ms = LATER_WAIT_MS
