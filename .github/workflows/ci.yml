@@ -483,8 +483,8 @@ jobs:
           LILBEE_TEST_FULL_CRAWL: ${{ matrix.full-crawl && '1' || '' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
-  # Evaluates every system's derivations, so a pin that does not parse or a
-  # malformed hash fails here. The download itself is checked by Flake Check.
+  # A pin that does not parse or a malformed hash fails here. The download
+  # itself is checked by Flake Check.
   flake:
     needs: [changes]
     if: needs.changes.outputs.flake == 'true'
@@ -492,9 +492,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      - name: Every pin has a version, an asset and a well-formed hash
+        run: bash scripts/check_flake_pins.sh sources*.json
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Evaluate the flake against its pins
         run: nix flake check --all-systems --no-build
+      - name: Instantiate every package of every system
+        run: |
+          nix eval --json .#packages --apply 'builtins.mapAttrs (_: builtins.mapAttrs (_: p: p.drvPath))'
 
   # The one check branch protection requires.
   ci-result:

@@ -71,6 +71,7 @@ scripts/*
 !scripts/ci_result.sh
 !scripts/release_ci_passed.sh
 !scripts/flake_pin_pr.sh
+!scripts/check_flake_pins.sh
 !scripts/qa/
 scripts/qa/*
 !scripts/qa/*.py

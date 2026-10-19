@@ -106,5 +106,7 @@ job_needs() {
 
 @test "the flake job evaluates the flake against its pins" {
   run yq -r '.jobs.flake.if, (.jobs.flake.steps[] | select(.run != null) | .run)' "${CI}"
-  [ "$output" = "$(printf '%s\n' "needs.changes.outputs.flake == 'true'" 'nix flake check --all-systems --no-build')" ]
+  [ "${lines[0]}" = "needs.changes.outputs.flake == 'true'" ]
+  [[ "$output" == *"nix flake check --all-systems --no-build"* ]]
+  [[ "$output" == *"p.drvPath"* ]]
 }
