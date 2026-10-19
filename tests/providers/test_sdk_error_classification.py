@@ -2,8 +2,7 @@
 
 liter-llm is an optional extra, so a stand-in module with its exception classes
 is injected. The classifier only reads the class name, so the real classes are
-not required to verify the table; ``tests/integration/test_liter_llm_wire.py``
-drives the real ones.
+not required to verify the table.
 """
 
 from __future__ import annotations

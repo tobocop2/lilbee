@@ -159,6 +159,17 @@ class TestChatNonStream:
         assert result.text == "hi"
         assert result.finish_reason == FinishReason.STOP
 
+    def test_chat_result_carries_the_reported_usage(self) -> None:
+        from lilbee.providers.base import TokenUsage
+
+        backend = FakeBackend(
+            complete_result=CompletionResult(
+                content="hi", usage=TokenUsage(prompt_tokens=11, completion_tokens=5)
+            )
+        )
+        result = SdkLLMProvider(backend).chat([{"role": "user", "content": "hey"}])
+        assert result.usage == TokenUsage(prompt_tokens=11, completion_tokens=5)
+
     def test_tool_calls_surface_in_chat_result(self) -> None:
         from lilbee.providers.base import ChatResult, FinishReason
         from lilbee.providers.sdk_backend import SdkToolCall
@@ -430,6 +441,19 @@ class TestChatStream:
         provider = SdkLLMProvider(backend)
         items = list(provider.chat([{"role": "user", "content": "hi"}], stream=True))
         assert items == ["hi", StreamFinish(reason=FinishReason.LENGTH)]
+
+    def test_yields_the_usage_a_chunk_reports(self) -> None:
+        from lilbee.providers.base import TokenUsage
+
+        backend = FakeBackend(
+            stream_chunks=[
+                StreamChunk(content="hi"),
+                StreamChunk(content="", usage=TokenUsage(prompt_tokens=7, completion_tokens=3)),
+            ]
+        )
+        provider = SdkLLMProvider(backend)
+        items = list(provider.chat([{"role": "user", "content": "hi"}], stream=True))
+        assert items == ["hi", TokenUsage(prompt_tokens=7, completion_tokens=3)]
 
     def test_wraps_errors_when_opening_stream(self) -> None:
         backend = FakeBackend(raise_complete=RuntimeError("stream boom"))
