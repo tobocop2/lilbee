@@ -1,5 +1,5 @@
 name: Publish Nix flake sources
-description: "Write a sources JSON file, validate the flake against it, and commit. Used by publish-packages and publish-cuda-packages."
+description: "Write a sources JSON file, validate the flake against it, and land it on main through an auto-merging pull request. Used by the four publish-*packages workflows."
 
 inputs:
   target-file:
@@ -12,13 +12,17 @@ inputs:
     description: "JSON-encoded systems map, e.g. {\"x86_64-linux\":{\"asset\":\"...\",\"sha256\":\"...\"}}."
     required: true
   commit-message:
-    description: "Commit message for the sources file commit."
+    description: "Commit message for the sources file commit, and the pull request's title."
     required: true
+  dry-run:
+    description: "When 'true', print the branch, commit and pull request it would make, and push nothing."
+    required: false
+    default: "false"
 
 runs:
   using: composite
   steps:
-    - uses: DeterminateSystems/nix-installer-action@main
+    - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
     - name: Write sources file
       shell: bash
       env:
@@ -37,20 +41,17 @@ runs:
       shell: bash
       run: nix flake check --all-systems
 
-    - name: Commit and push
+    # The checkout's deploy key pushes the branch; GH_TOKEN opens the pull request.
+    - name: Open the pin pull request
       shell: bash
       env:
+        GH_TOKEN: ${{ github.token }}
         TARGET_FILE: ${{ inputs.target-file }}
+        VERSION: ${{ inputs.version }}
         COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        DRY_RUN: ${{ inputs.dry-run }}
       run: |
         set -euo pipefail
         git config user.name "lilbee-bot"
         git config user.email "lilbee-bot@users.noreply.github.com"
-        git add "${TARGET_FILE}"
-        if git diff --cached --quiet; then
-          echo "no source changes; skipping push"
-          exit 0
-        fi
-        git commit -m "${COMMIT_MESSAGE}"
-        # The CUDA and compat flake jobs commit to this same branch in parallel.
-        bash "${GITHUB_WORKSPACE}/tools/ci/git_push_retry.sh"
+        bash "${GITHUB_WORKSPACE}/scripts/flake_pin_pr.sh"
