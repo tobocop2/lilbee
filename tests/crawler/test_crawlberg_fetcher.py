@@ -343,6 +343,8 @@ class TestBrowserMode:
             "chrome_path": str(shell),
             "chrome_args": FLAGS,
             "extra_wait": 0,
+            "wait": "selector",
+            "wait_selector": "body",
         }
 
     @pytest.mark.parametrize("wait_ms", [0, 2500])
