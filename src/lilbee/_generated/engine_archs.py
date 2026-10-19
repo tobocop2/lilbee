@@ -11,8 +11,8 @@ from __future__ import annotations
 # The ref is a build-time source coordinate, not a dependency: llama-server is
 # compiled from the llama.cpp commit below, cloned from ENGINE_LLAMA_CPP_REPO at
 # this ref. lilbee ships no llama.cpp package.
-ENGINE_LLAMA_CPP_REF = "memory-20261017-193536"
-LLAMA_CPP_COMMIT = "a958b76c2bee84d84c725f46b96d5d82ce188df3"
+ENGINE_LLAMA_CPP_REF = "memory-20261019-152820"
+LLAMA_CPP_COMMIT = "62be051e90f7ece1067b21a787299dab1306811d"
 
 SUPPORTED_ARCHS: frozenset[str] = frozenset(
     {
