@@ -58,7 +58,8 @@ SEED_ONLY_DEPTH = 0
 CONFIG_MAX_DEPTH = 1
 FAILED_PAGE_COUNT = 2
 TIMEOUT_S = 2
-# A pattern Python's ``re`` compiles and crawlberg refuses.
+# A pattern Python's ``re`` compiles and crawlberg refuses. The setting's own check refuses it
+# too, so the test sets it past that check to reach the refusal crawlberg makes at a crawl.
 REFUSED_PATTERN = "(?P<n>a)(?(n)b|c)"
 
 
@@ -309,7 +310,7 @@ async def test_config_render_mode_applies_without_a_flag(
 async def test_a_crawl_crawlberg_refuses_ends_as_a_failed_task_with_the_reason(
     root: Path, crawl_site: CrawlSite
 ) -> None:
-    cfg.crawl_exclude_patterns = [REFUSED_PATTERN]
+    object.__setattr__(cfg, "crawl_exclude_patterns", [REFUSED_PATTERN])
     url = crawl_site.url("/rel/child.html")
     app = _CrawlApp()
     async with app.run_test(size=(120, 40)) as pilot:
