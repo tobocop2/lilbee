@@ -814,8 +814,9 @@ class TestWorkerThread:
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestCrawlAndSave:
     @pytest.mark.parametrize("mode", list(CrawlRenderMode), ids=[m.value for m in CrawlRenderMode])
-    async def test_a_saved_page_records_its_own_title(self, site, mode):
-        paths = await crawl_and_save(site.url("/query/"), depth=0, render_mode=mode)
+    def test_a_saved_page_records_its_own_title(self, site, mode):
+        with windows_proactor_loop():
+            paths = asyncio.run(crawl_and_save(site.url("/query/"), depth=0, render_mode=mode))
         assert len(paths) == 1
         assert list(page_titles().values()) == ["Listing"]
 
