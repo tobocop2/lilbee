@@ -2708,9 +2708,8 @@ class TestRefusedEngineOnEachEntryPoint:
         with _refusing_stub().installed():
             result = CliRunner().invoke(app, ["add", SEED, *CLI_FLAGS[depth]])
         assert result.exit_code == 1
-        assert f"Error: {message}" in result.output
+        assert f"{SEED}: {message}" in result.output
         assert "Traceback" not in result.output
-        assert "Crawled" not in result.output
         assert _saved_pages(isolated_env) == []
 
     @REFUSED
@@ -2729,7 +2728,9 @@ class TestRefusedEngineOnEachEntryPoint:
             result = CliRunner().invoke(app, ["--json", "add", SEED, *CLI_FLAGS[depth]])
         assert result.exit_code == 1
         objects = [json.loads(line) for line in result.output.splitlines() if line.startswith("{")]
-        assert objects == [{"error": message}]
+        assert [obj["error"] for obj in objects] == [f"{SEED}: {message}"]
+        assert objects[0]["failed"] == [{"url": SEED, "reason": f"{SEED}: {message}"}]
+        assert objects[0]["crawled"] == 0
 
     @REFUSED
     async def test_http_stream_ends_with_an_error_frame(
