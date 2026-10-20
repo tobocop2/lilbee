@@ -479,10 +479,15 @@ def _owns_name(address: str, held: str | None, new_hash: str, record: CrawlRecor
 
 
 def _unchanged(prev: CrawlMeta | None, held: str | None, new_hash: str, title: str) -> bool:
-    """Whether the record and the file already hold this text, and the record its title."""
+    """Whether the record and the file already hold this text, and the record this title."""
     if prev is None or held != new_hash or prev.content_hash != new_hash:
         return False
-    return not title or prev.title == title
+    return prev.title == title
+
+
+def _kept_title(result: CrawlResult, prev: CrawlMeta | None) -> str:
+    """The title the crawl reports, else the one the record holds; no title never clears one."""
+    return result.title or (prev.title if prev is not None else "")
 
 
 def _write(
@@ -496,12 +501,13 @@ def _write(
     """Record and write *markdown* at *path*, whose file holds *held*; None when it holds it."""
     new_hash = content_hash(markdown)
     prev = record.pages.get(address)
-    if _unchanged(prev, held, new_hash, result.title):
+    title = _kept_title(result, prev)
+    if _unchanged(prev, held, new_hash, title):
         log.info("Content unchanged, skipping save: %s", result.url)
         return None
     now = datetime.now(UTC).isoformat()
     replaces = "" if held is None else held
-    entry = CrawlMeta(page_name(address), new_hash, now, replaces, result.title)
+    entry = CrawlMeta(page_name(address), new_hash, now, replaces, title)
     _claim(address, entry, record)
     if held == new_hash:
         log.info("Recorded the page %s at %s, which already holds its text", result.url, path)
