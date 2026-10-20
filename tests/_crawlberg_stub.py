@@ -6,6 +6,7 @@ The crawler extra is absent from the unit-test environment, so the adapter's
 
 from __future__ import annotations
 
+import importlib.machinery
 import json
 import types
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
@@ -81,6 +82,22 @@ def _listed(payloads: Iterable[Payload]) -> Script:
     return replay
 
 
+def refusing_patterns(*bad: str) -> Refusal:
+    """A refusal, in crawlberg's words, of a config whose exclude paths hold one of *bad*."""
+
+    def refuse(config: Recorded) -> str | None:
+        for pattern in config.kwargs.get("exclude_paths", ()):
+            if pattern in bad:
+                return (
+                    f"invalid_config: invalid exclude_path regex '{pattern}': "
+                    f"regex parse error:\n    {pattern}\n    ^\n"
+                    "error: unrecognized escape sequence"
+                )
+        return None
+
+    return refuse
+
+
 class StubCrawlberg:
     """Builds the stand-in module and records every engine config, seed and close."""
 
@@ -96,6 +113,8 @@ class StubCrawlberg:
 
     def _build(self) -> types.ModuleType:
         module = types.ModuleType("crawlberg")
+        # importlib.util.find_spec refuses a module in sys.modules that has no spec.
+        module.__spec__ = importlib.machinery.ModuleSpec("crawlberg", None)
         module.CrawlConfig = Recorded  # type: ignore[attr-defined]
         module.ContentConfig = Recorded  # type: ignore[attr-defined]
         module.BrowserConfig = Recorded  # type: ignore[attr-defined]

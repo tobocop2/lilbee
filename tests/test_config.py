@@ -34,6 +34,7 @@ from lilbee.core.config.model import (
     env_value,
     value_is_set,
 )
+from tests._sys_modules import inject_modules
 
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -2689,15 +2690,18 @@ class TestARefusedVariableStops:
         fields = list(Config.model_fields)
         assert len(fields) > 150
         refused: set[str] = set()
-        for key in fields:
-            variable = f"LILBEE_{key.upper()}"
-            for bad in _HOSTILE_ENV_VALUES:
-                line = _refusal_of(tmp_path, _STORED_TOML, **{variable: bad})
-                if line is None:
-                    continue
-                assert line.startswith(f"{variable} = {bad!r} is "), line
-                assert "\n" not in line and "; " not in line.removeprefix(variable), line
-                refused.add(key)
+        # The crawler extra, when installed, also refuses a pattern such as "{"; the list of
+        # settings that refuse must not depend on it.
+        with inject_modules({"crawlberg": None}):
+            for key in fields:
+                variable = f"LILBEE_{key.upper()}"
+                for bad in _HOSTILE_ENV_VALUES:
+                    line = _refusal_of(tmp_path, _STORED_TOML, **{variable: bad})
+                    if line is None:
+                        continue
+                    assert line.startswith(f"{variable} = {bad!r} is "), line
+                    assert "\n" not in line and "; " not in line.removeprefix(variable), line
+                    refused.add(key)
         kinds = {name: _kind_of(field) for name, field in Config.model_fields.items()}
         for kind in ("flag", "choice", "number", "optional number"):
             assert sum(1 for found in kinds.values() if found == kind) > 10, kind

@@ -18,6 +18,7 @@ from lilbee.core.config.model import _TAKES_DEFAULT_WHEN_REFUSED, _refusals
 from lilbee.data.store import SourceType
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.runtime.progress import EmbedEvent, EventType
+from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests.server.conftest import parse_sse_events
 
 
@@ -1301,9 +1302,11 @@ class TestConfigUpdateRoute:
         _inner()
 
     def test_crawl_exclude_patterns_rejects_invalid_regex(self, client):
-        # Invalid character class: `p-a` is a backwards range; should be rejected
-        # at PATCH time rather than crashing the next crawl with an opaque error.
-        resp = client.patch("/api/config", json={"crawl_exclude_patterns": ["[wp-a]"]})
+        # crawlberg refuses a pattern its regex rules cannot compile; the PATCH answers 400
+        # rather than crashing the next crawl with an opaque error.
+        stub = StubCrawlberg(refuse=refusing_patterns("[wp-a]"))
+        with stub.installed():
+            resp = client.patch("/api/config", json={"crawl_exclude_patterns": ["[wp-a]"]})
         assert resp.status_code == 400
         body = resp.text
         assert "crawl_exclude_patterns" in body or "regex" in body or "[0]" in body
