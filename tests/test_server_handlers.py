@@ -4830,6 +4830,7 @@ class TestCrawlStream:
             cancel=None,
             include_subdomains=False,
             render_mode=None,
+            login=None,
         ):
             from lilbee.runtime.progress import CrawlDoneEvent, CrawlPageEvent, CrawlStartEvent
 
@@ -4869,6 +4870,7 @@ class TestCrawlStream:
             cancel=None,
             include_subdomains=False,
             render_mode=None,
+            login=None,
         ):
             from lilbee.runtime.progress import CrawlStartEvent
 
