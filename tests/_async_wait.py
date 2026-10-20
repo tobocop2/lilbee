@@ -14,10 +14,15 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
+
+from textual.widget import Widget
 
 if TYPE_CHECKING:
+    from textual.app import App
     from textual.pilot import Pilot
+
+WidgetT = TypeVar("WidgetT", bound=Widget)
 
 
 async def wait_until(
@@ -53,3 +58,22 @@ def poll_until(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
             return False
         time.sleep(0.02)
     return True
+
+
+async def wait_for_widget(
+    pilot: Pilot,
+    app: App,
+    selector: str,
+    widget_type: type[WidgetT] = Widget,  # type: ignore[assignment]
+    *,
+    timeout: float = 5.0,
+) -> WidgetT:
+    """Wait until the current screen holds *selector*, then return that widget.
+
+    Some screens mount sections after they become current, so a query made
+    right after the screen switch can miss a widget that is still coming.
+    """
+    assert await wait_until(pilot, lambda: bool(app.screen.query(selector)), timeout=timeout), (
+        f"{selector} never mounted"
+    )
+    return app.screen.query_one(selector, widget_type)
