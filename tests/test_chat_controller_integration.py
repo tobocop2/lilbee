@@ -1794,7 +1794,7 @@ async def test_cancelling_a_tui_crawl_stops_its_sync(tmp_path, monkeypatch) -> N
             await asyncio.sleep(0.01)
         raise AssertionError("the crawl's sync never saw the task's cancel")
 
-    async def _fake_single(url, *, quiet=False, on_progress=None, render_mode=None):
+    async def _fake_single(url, *, quiet=False, on_progress=None, render_mode=None, login=None):
         return CrawlResult(url=url, markdown="# page")
 
     app = LilbeeApp()
