@@ -3328,6 +3328,24 @@ class TestEnsureChatModelWiring:
         assert "](file:///" not in out
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_title_with_escaped_brackets_is_one_hyperlink_shown_plain(self, mock_sync, mock_svc):
+        from rich.console import Console
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer",
+            "\n\nSources:\n",
+            "1. [a · x\\](file:///etc/passwd) \\[y](file:///kb/a.md)",
+        )
+        term = Console(force_terminal=True, legacy_windows=False, width=200)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        out = cap.get()
+        assert "a · x](file:///etc/passwd) [y" in out
+        assert "file:///kb/a.md" in out
+        assert out.count("\x1b]8;id=") == 1
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_a_citation_line_with_a_bracket_is_not_part_of_a_link(self, mock_sync, mock_svc):
         from rich.console import Console
 

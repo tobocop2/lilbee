@@ -37,6 +37,7 @@ from lilbee.core.config import (
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.security import write_private_text
 from lilbee.core.vectors import Vector
+from lilbee.core.web_names import is_web_source
 from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
@@ -3001,6 +3002,19 @@ class Store:
         name = self._locations().name
         found = self._lookup(_SOURCE_ID, source_ids, _PATH)
         return {source_id: name(path) for source_id, path in found.items()}
+
+    def web_titles(self, names: Iterable[str]) -> dict[str, str]:
+        """The stored title of each crawled page among *names* that has one."""
+        key = self._locations().key
+        wanted = {key(name, SourceType.DOCUMENT): name for name in names if is_web_source(name)}
+        if not wanted:
+            return {}
+        rows = self._rows_where(_PATH, wanted, [_SOURCE_TYPE, _TITLE_COLUMN])
+        return {
+            wanted[row[_PATH]]: row[_TITLE_COLUMN]
+            for row in rows
+            if row[_SOURCE_TYPE] == SourceType.DOCUMENT and row[_TITLE_COLUMN]
+        }
 
     def keyed_source_ids(self, paths: Iterable[str]) -> dict[str, str]:
         """The id the keying of an older library gave each of *paths*, when a row holds it."""

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import cache
 from pathlib import Path
 
@@ -84,11 +84,15 @@ def display_source_path(source: str) -> str:
 
 
 _SOURCE_SEP = " · "
+# A page controls its title, so a label never opens a link, code span or tag of its own.
+_MARKDOWN_SPECIAL = r"\\\[\]`<"
+_MARKDOWN_SPECIAL_RE = re.compile(f"[{_MARKDOWN_SPECIAL}]")
+_MARKDOWN_ESCAPED_RE = re.compile(f"\\\\([{_MARKDOWN_SPECIAL}])")
 
 
-def source_label(source: str) -> str:
-    """Readable name for a source. Web-ingested docs collapse to ``host · slug``;
-    local files keep their documents-dir-relative path."""
+def source_label(source: str, title: str = "") -> str:
+    """Readable name for a source. A crawled page is ``host · title`` when it has a
+    stored *title*, else ``host · slug``; local files keep their documents-dir-relative path."""
     if not is_web_source(source):
         return source
     *folders, file_name = source.removeprefix(WEB_PREFIX).split("/")
@@ -97,8 +101,18 @@ def source_label(source: str) -> str:
     if not segments:
         return source
     host = segments[0].removeprefix("www.")
-    slug = segments[-1]
+    slug = title or segments[-1]
     return host if slug == segments[0] else f"{host}{_SOURCE_SEP}{slug}"
+
+
+def markdown_text(text: str) -> str:
+    """*text* with the characters that could open a link, code span or tag escaped."""
+    return _MARKDOWN_SPECIAL_RE.sub(r"\\\g<0>", text)
+
+
+def unescape_markdown_text(text: str) -> str:
+    """The plain text :func:`markdown_text` escaped."""
+    return _MARKDOWN_ESCAPED_RE.sub(r"\g<1>", text)
 
 
 def _source_file_url(source: str) -> str | None:
@@ -149,26 +163,28 @@ def _location_suffix(result: SearchChunk) -> str:
     return ""
 
 
-def source_markdown_link(source: str) -> str:
+def source_markdown_link(source: str, title: str = "") -> str:
     """A bare source name as the same clickable ``[label](file-url)`` markdown a
     live answer's Sources block uses; the plain label when no path resolves.
     Public so restored transcripts render sources identically to live ones."""
-    label = collapse_whitespace(source_label(source))
+    label = markdown_text(collapse_whitespace(source_label(source, title)))
     if is_memory_source(source):
         return label
     url = _source_file_url(source)
     return f"[{label}]({url})" if url else label
 
 
-def format_source(result: SearchChunk, citations: list[CitationRecord] | None = None) -> str:
+def format_source(
+    result: SearchChunk, citations: list[CitationRecord] | None = None, title: str = ""
+) -> str:
     """Format a source as a clickable, readable citation: a ``[label](file-url)``
-    markdown link plus any page/line locator. Web docs render as ``host · slug``;
+    markdown link plus any page/line locator. Web docs render as ``host · title``;
     wiki chunks append their indented transitive citations. Memory rows render
     as their plain ``memory:<id>`` label: they have no file to link.
     """
     if result.memory_id is not None:
         return source_label(result.source)
-    head = source_markdown_link(result.source)
+    head = source_markdown_link(result.source, title)
     if result.chunk_type is ChunkType.WIKI and citations:
         return "\n".join([head, *(_format_citation(c) for c in citations)])
     return f"{head}{_source_locator(result)}"
@@ -219,19 +235,22 @@ def build_context(results: list[SearchChunk]) -> str:
 # Grepped by consumers to know an answer carries its own Sources list (the
 # no-results toast; the pill row, which must not stack a second list).
 SOURCES_BLOCK_MARKER = "\n\nSources:\n"
-# A Sources line's ``[label](file-url)`` link, matched within one line.
-FILE_LINK_RE = re.compile(r"\[(?P<label>.+?)\]\((?P<url>file://[^)\s]+)\)")
+# A Sources line's ``[label](file-url)`` link, matched within one line; an escaped
+# bracket stays inside the label.
+FILE_LINK_RE = re.compile(r"\[(?P<label>(?:\\.|[^\\\n])+?)\]\((?P<url>file://[^)\s]+)\)")
 # Parsed after a text; if it lands inside a fence, the text left that fence open.
 _FENCE_PROBE = "\n\n# probe"
 
 
 def format_sources_block(
     results: list[SearchChunk],
+    titles: Mapping[str, str],
     citations_map: dict[str, list[CitationRecord]] | None = None,
 ) -> str:
     """The authoritative numbered ``Sources:`` block appended to an answer. Each
     unique source is numbered to match the ``[n]`` markers the model emitted, so
-    every inline citation resolves to a line here. '' when there are no sources."""
+    every inline citation resolves to a line here; *titles* holds the stored title
+    of each crawled page. '' when there are no sources."""
     sources = unique_sources(results)
     if not sources:
         return ""
@@ -239,7 +258,7 @@ def format_sources_block(
     # line (plain "  → path" lines collapse into one soft-wrapped paragraph) and
     # the list number is the citation number the model cited inline.
     lines = [
-        f"{i}. {format_source(r, citations=(citations_map or {}).get(r.source))}"
+        f"{i}. {format_source(r, (citations_map or {}).get(r.source), titles.get(r.source, ''))}"
         for i, r in enumerate(sources, 1)
     ]
     return SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
@@ -248,14 +267,17 @@ def format_sources_block(
 def with_sources_block(
     content: str,
     sources: Sequence[str],
-    render: Callable[[str], str] = source_markdown_link,
+    titles: Callable[[Sequence[str]], Mapping[str, str]],
+    render: Callable[[str, str], str] = source_markdown_link,
 ) -> str:
     """*content* ending in the numbered ``Sources:`` list a live answer carries,
-    each source shown by *render*, unless it already has one. A code block the
-    content leaves open is closed first, so the list is never inside it."""
+    each source and its stored title from *titles* shown by *render*, unless it
+    already has one. A code block the content leaves open is closed first, so the
+    list is never inside it."""
     if SOURCES_BLOCK_MARKER in content:
         return content
-    lines = [f"{i}. {render(s)}" for i, s in enumerate(sources, 1)]
+    stored = titles(sources)
+    lines = [f"{i}. {render(s, stored.get(s, ''))}" for i, s in enumerate(sources, 1)]
     return close_open_fence(content.rstrip()) + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
 
 
