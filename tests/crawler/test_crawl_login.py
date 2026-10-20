@@ -69,9 +69,16 @@ class TestFetcherLogin:
     @pytest.mark.parametrize("mode", list(CrawlRenderMode))
     @pytest.mark.parametrize("case", LOGINS.values(), ids=list(LOGINS))
     async def test_the_login_reaches_the_crawlberg_config(
-        self, case: tuple[CrawlLogin, Any, dict[str, str]], mode: CrawlRenderMode
+        self,
+        case: tuple[CrawlLogin, Any, dict[str, str]],
+        mode: CrawlRenderMode,
+        monkeypatch,
+        tmp_path,
     ):
         login, auth, cookie = case
+        monkeypatch.setattr(
+            fetcher_mod.bootstrap, "headless_shell_executable", lambda: tmp_path / "shell"
+        )
         stub = StubCrawlberg([page(SEED, "# Home", depth=0), complete(1)])
         with stub.installed():
             await CrawlbergFetcher(render_mode=mode, login=login).fetch_single(
