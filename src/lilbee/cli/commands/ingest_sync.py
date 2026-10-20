@@ -188,12 +188,12 @@ class _CrawlOutcome:
     ) -> list[Path]:
         """Crawl the seed shown as *url* with *crawl_one*; keep its pages, or its failure.
 
-        *url* failed when its address is refused (ValueError), or when it saved no page and
-        every page its crawl counted failed.
+        *url* failed when its address is refused (ValueError), when its crawl cannot start
+        (RuntimeError), or when it saved no page and every page its crawl counted failed.
         """
         try:
             paths = crawl_one()
-        except ValueError as exc:
+        except (ValueError, RuntimeError) as exc:
             self.failed.append(_FailedSource(url, f"{url}: {exc}"))
             return []
         self.saved.extend(paths)
@@ -588,15 +588,6 @@ def _validate_file_paths(file_paths: list[Path]) -> None:
         raise SystemExit(1)
 
 
-def _refuse_crawl(message: str) -> NoReturn:
-    """Print the refusal of a crawl, as a JSON error in JSON mode, and exit 1."""
-    if cfg.json_mode:
-        json_output({"error": message})
-    else:
-        console.print(message, style=theme.ERROR, soft_wrap=True)
-    raise SystemExit(1)
-
-
 def _crawl_urls_step(
     urls: list[str],
     *,
@@ -606,13 +597,15 @@ def _crawl_urls_step(
     include_subdomains: bool,
     cancel_event: threading.Event,
 ) -> _CrawlOutcome:
-    """Crawl URLs (or fail fast when crawler extra is missing)."""
+    """Crawl URLs; without the crawler extra every URL fails with the install message."""
     if not urls:
         return _CrawlOutcome()
     from lilbee.crawler import CRAWLER_MISSING_MESSAGE, crawler_available
 
     if not crawler_available():
-        _refuse_crawl(CRAWLER_MISSING_MESSAGE)
+        return _CrawlOutcome(
+            failed=[_FailedSource(without_userinfo(url), CRAWLER_MISSING_MESSAGE) for url in urls]
+        )
     outcome = _crawl_urls_blocking(
         urls,
         crawl=crawl,
@@ -631,7 +624,7 @@ def _crawl_urls_step(
 
 def _report_failed_sources(payload: dict | None, failed: list[_FailedSource]) -> None:
     """Print the add result with each failed source's reason; exit 1 when a source failed."""
-    error = "\n".join(source.reason for source in failed)
+    error = "\n".join(dict.fromkeys(source.reason for source in failed))
     if payload is not None:
         if failed:
             payload["error"] = error
