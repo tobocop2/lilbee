@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from lilbee.app.ingest import remove_sources_and_forget_in_wiki
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
@@ -289,10 +290,9 @@ def _make_flush_page(
     record: CrawlRecord, written_paths: list[Path]
 ) -> Callable[[CrawlResult], Any]:
     """A flush closure that saves a page at its name and records it in *record*."""
-    remove_sources = get_services().store.remove_documents
 
     def _sync_flush(result: CrawlResult) -> list[Path]:
-        path = save.save_page(result, record, remove_sources)
+        path = save.save_page(result, record, remove_sources_and_forget_in_wiki)
         return [] if path is None else [path]
 
     async def flush_page(result: CrawlResult) -> list[Path]:
