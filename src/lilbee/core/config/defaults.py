@@ -8,6 +8,10 @@ and general system prompts, and the CORS allow-origin regex.
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
+from lilbee.core.config import mediawiki_namespaces as wiki_namespaces
+
 # Upper bounds for the numbers lilbee passes to the crawl engine, shared by every entry point.
 MAX_CRAWL_DEPTH = 100
 MAX_CRAWL_PAGES = 10_000_000
@@ -172,21 +176,34 @@ _META_EXCLUDE: tuple[str, ...] = (
     r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp3|mp4|webm|ogg|ttf|woff2?|css|js|map|json|xml)(\?.*)?$",
 )
 
-# Mediawiki/Wikipedia navlinks that dominate BFS before the article body.
+
+def _namespace_pattern(names: tuple[str, ...]) -> str:
+    """The pattern for a wiki address in one of the namespaces *names*, in any language.
+
+    crawlberg matches a pattern against the address with every character outside ASCII
+    percent-encoded as UTF-8, so the pattern holds each name in that form.
+    """
+    return rf"/wiki/(?:{'|'.join(dict.fromkeys(quote(name) for name in names))}):"
+
+
+# Mediawiki/Wikipedia navlinks that dominate BFS before the article body. A wiki shows each
+# namespace under its own language, so each pattern lists the names of the largest Wikipedias.
+# A pattern needs the namespace name before the first colon: an article title that holds a
+# colon, such as Re:Zero or Mission:_Impossible, is content and is crawled.
 # Help: is a content namespace and is crawled.
 _MEDIAWIKI_EXCLUDE: tuple[str, ...] = (
     r"/wiki/Main_Page$",
-    r"/wiki/Wikipedia:",
-    r"/wiki/Portal:",
-    r"/wiki/Special:",
-    r"/wiki/Category:",
-    r"/wiki/Template:",
-    r"/wiki/Template_talk:",
-    r"/wiki/Talk:",
-    r"/wiki/File:",
-    r"/wiki/File_talk:",
-    r"/wiki/User:",
-    r"/wiki/User_talk:",
+    _namespace_pattern(wiki_namespaces.PROJECT),
+    _namespace_pattern(wiki_namespaces.PORTAL),
+    _namespace_pattern(wiki_namespaces.SPECIAL),
+    _namespace_pattern(wiki_namespaces.CATEGORY),
+    _namespace_pattern(wiki_namespaces.TEMPLATE),
+    _namespace_pattern(wiki_namespaces.TEMPLATE_TALK),
+    _namespace_pattern(wiki_namespaces.TALK),
+    _namespace_pattern(wiki_namespaces.FILE),
+    _namespace_pattern(wiki_namespaces.FILE_TALK),
+    _namespace_pattern(wiki_namespaces.USER),
+    _namespace_pattern(wiki_namespaces.USER_TALK),
     r"/w/index\.php",
 )
 
