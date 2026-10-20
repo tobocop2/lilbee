@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import string
 from collections.abc import Iterator
 from functools import cache
 from pathlib import Path
@@ -22,8 +21,9 @@ from lilbee.retrieval.query.formatting import (
     FILE_LINK_RE,
     SOURCES_BLOCK_MARKER,
     close_open_fence,
+    markdown_text,
     open_code_fence,
-    source_label,
+    source_markdown_label,
     unescape_markdown_text,
     with_sources_block,
 )
@@ -45,12 +45,9 @@ _ESCAPE = "\\"
 # The only characters a markdown blank line may hold.
 _MARKDOWN_BLANK = " \t"
 _LINE_BREAK_RE = re.compile(r"\r\n?")
-_ASCII_PUNCTUATION = frozenset(string.punctuation)
 # An HTML heading's ``<h``/``</h`` plus level; a boundary after the digit (or the
 # text simply ending there) is what excludes ``<header>``, ``<hr>`` and ``<h2o>``.
 _HTML_HEADING_RE = re.compile(r"<(?P<slash>/?)(?P<tag>[Hh])(?P<level>[1-6])(?=[\s/>]|$)")
-# An ordered-list marker at the start of a name, as in ``2. notes.md``.
-_LIST_NUMBER_RE = re.compile(r"^(\d+)([.)])(?=\s|$)")
 
 
 def session_markdown(session: Session) -> str:
@@ -75,14 +72,16 @@ def _front_matter(meta: SessionMeta) -> str:
 
 
 def _message_section(message: SessionMessage) -> str:
-    """One turn: the message with its headings nested, then its Sources list as plain names."""
+    """One turn: the message with its headings nested, then its Sources list without links."""
     content = _LINE_BREAK_RE.sub("\n", message.content).rstrip()
     text, stored_sources = _split_sources_list(content)
     body = _contained(text.rstrip())
     if stored_sources:
         body += _contained(FILE_LINK_RE.sub(_plain_link, stored_sources))
     elif message.sources:
-        body = with_sources_block(body, message.sources, stored_web_titles, render=_plain_source)
+        body = with_sources_block(
+            body, message.sources, stored_web_titles, render=source_markdown_label
+        )
     return f"## {_ROLE_HEADINGS[message.role]}\n\n{body}"
 
 
@@ -117,20 +116,9 @@ def _contained(text: str) -> str:
     return _nest_headings(close_open_fence(text))
 
 
-def _plain_source(source: str, title: str) -> str:
-    return _plain_name(source_label(source, title))
-
-
 def _plain_link(link: re.Match[str]) -> str:
-    return _plain_name(unescape_markdown_text(link["label"]))
-
-
-def _plain_name(name: str) -> str:
-    """*name* on one line, escaped so it cannot start a heading, list, quote or other block."""
-    name = collapse_whitespace(name)
-    if name[:1] in _ASCII_PUNCTUATION:
-        return _ESCAPE + name
-    return _LIST_NUMBER_RE.sub(r"\1\\\2", name, count=1)
+    """A stored Sources link as its label alone, escaped as a live label is."""
+    return markdown_text(unescape_markdown_text(link["label"]))
 
 
 def _html_inline_with_span(state: StateInline, silent: bool) -> bool:

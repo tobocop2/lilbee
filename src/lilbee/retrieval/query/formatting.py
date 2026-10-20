@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import string
 from collections.abc import Callable, Mapping, Sequence
 from functools import cache
 from pathlib import Path
@@ -84,10 +85,15 @@ def display_source_path(source: str) -> str:
 
 
 _SOURCE_SEP = " · "
-# A page controls its title, so a label never opens a link, code span or tag of its own.
-_MARKDOWN_SPECIAL = r"\\\[\]`<"
-_MARKDOWN_SPECIAL_RE = re.compile(f"[{_MARKDOWN_SPECIAL}]")
-_MARKDOWN_ESCAPED_RE = re.compile(f"\\\\([{_MARKDOWN_SPECIAL}])")
+# A page controls its title, so a label never opens a link, image, code span, tag,
+# entity, emphasis or strikethrough of its own, and never starts a block.
+_MARKDOWN_SPECIAL = "\\[]`<&*_~"
+_MARKDOWN_SPECIAL_RE = re.compile(f"[{re.escape(_MARKDOWN_SPECIAL)}]")
+_BLOCK_MARK_RE = re.compile(
+    f"^[{re.escape(''.join(c for c in string.punctuation if c not in _MARKDOWN_SPECIAL))}]"
+)
+_LIST_NUMBER_RE = re.compile(r"^(\d+)([.)])(?=\s|$)")
+_MARKDOWN_ESCAPED_RE = re.compile(f"\\\\([{re.escape(string.punctuation)}])")
 
 
 def source_label(source: str, title: str = "") -> str:
@@ -106,13 +112,20 @@ def source_label(source: str, title: str = "") -> str:
 
 
 def markdown_text(text: str) -> str:
-    """*text* with the characters that could open a link, code span or tag escaped."""
-    return _MARKDOWN_SPECIAL_RE.sub(r"\\\g<0>", text)
+    """*text* on one line as markdown that shows exactly that text, with no markup or block."""
+    escaped = _MARKDOWN_SPECIAL_RE.sub(r"\\\g<0>", collapse_whitespace(text))
+    escaped = _BLOCK_MARK_RE.sub(r"\\\g<0>", escaped)
+    return _LIST_NUMBER_RE.sub(r"\1\\\2", escaped)
 
 
 def unescape_markdown_text(text: str) -> str:
-    """The plain text :func:`markdown_text` escaped."""
+    """The text a markdown renderer shows for *text*'s backslash escapes."""
     return _MARKDOWN_ESCAPED_RE.sub(r"\g<1>", text)
+
+
+def source_markdown_label(source: str, title: str = "") -> str:
+    """The label of *source*, titled *title*, as markdown that shows exactly that label."""
+    return markdown_text(source_label(source, title))
 
 
 def _source_file_url(source: str) -> str | None:
@@ -167,7 +180,7 @@ def source_markdown_link(source: str, title: str = "") -> str:
     """A bare source name as the same clickable ``[label](file-url)`` markdown a
     live answer's Sources block uses; the plain label when no path resolves.
     Public so restored transcripts render sources identically to live ones."""
-    label = markdown_text(collapse_whitespace(source_label(source, title)))
+    label = source_markdown_label(source, title)
     if is_memory_source(source):
         return label
     url = _source_file_url(source)
@@ -183,7 +196,7 @@ def format_source(
     as their plain ``memory:<id>`` label: they have no file to link.
     """
     if result.memory_id is not None:
-        return source_label(result.source)
+        return source_markdown_label(result.source)
     head = source_markdown_link(result.source, title)
     if result.chunk_type is ChunkType.WIKI and citations:
         return "\n".join([head, *(_format_citation(c) for c in citations)])
