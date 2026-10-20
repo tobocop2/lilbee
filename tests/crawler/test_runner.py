@@ -587,6 +587,36 @@ class TestSitemapRobotsSetting:
         assert [call["respect_robots_txt"] for call in asked] == [respect]
 
 
+class TestUserAgentSetting:
+    """``crawl_user_agent`` reaches crawlberg and the sitemap request from every crawl shape."""
+
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single", "site"])
+    @pytest.mark.parametrize("agent", ["", "Probe/1.0"], ids=["blank", "override"])
+    async def test_the_setting_reaches_crawlberg(self, depth: int, agent: str):
+        cfg.crawl_user_agent = agent
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save("https://example.com/", depth=depth, max_pages=5)
+        assert [config.kwargs["user_agent"] for config in stub.configs] == [agent or None]
+
+    @pytest.mark.parametrize("agent", ["", "Probe/1.0"], ids=["blank", "override"])
+    async def test_the_setting_reaches_the_sitemap_request(self, monkeypatch, agent: str):
+        asked: list[dict[str, object]] = []
+
+        def count(url: str, **kwargs: object) -> int:
+            asked.append(kwargs)
+            return -1
+
+        monkeypatch.setattr("lilbee.crawler.sitemap._count_sitemap_urls", count)
+        cfg.crawl_user_agent = agent
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save("https://example.com/", depth=1, max_pages=5)
+        assert [call["user_agent"] for call in asked] == [agent]
+
+
 class TestExtraWaitSetting:
     """``crawl_browser_extra_wait_ms`` reaches crawlberg from every browser crawl shape."""
 
