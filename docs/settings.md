@@ -319,7 +319,7 @@ These are not configuration fields, so they have no row above and `config.toml` 
 | `LILBEE_CPU_QUOTA` | CPU concurrency cap. Defaults to half the available cores; a non-positive or unparseable value falls back to that default |
 | `LILBEE_CRAWL_AUTHORIZATION` | Authorization header value `lilbee add` sends to the host `LILBEE_CRAWL_LOGIN_HOST` names; the same as `--authorization`, kept out of shell history |
 | `LILBEE_CRAWL_COOKIE` | Cookie header value `lilbee add` sends to the host `LILBEE_CRAWL_LOGIN_HOST` names; the same as `--cookie`, kept out of shell history |
-| `LILBEE_CRAWL_LOGIN_HOST` | The one host that gets the login in the other `LILBEE_CRAWL_*` login variables. Unset, or a command that crawls another host, sends none of them |
+| `LILBEE_CRAWL_LOGIN_HOST` | The one host that gets the login in the other `LILBEE_CRAWL_*` login variables. The match ignores the scheme and the port. Unset, or a command that crawls another host, sends none of them |
 | `LILBEE_CRAWL_PASSWORD` | Basic-auth password `lilbee add` sends with `--username` to the host `LILBEE_CRAWL_LOGIN_HOST` names; the same as `--password`, kept out of shell history |
 | `LILBEE_DATA` | Data directory for this library, the same value as `data_root`. The older and more common spelling; `--data-dir` overrides it |
 | `LILBEE_ENGINE_DIR` | Directory holding the llama-server engine binaries. Set it to run against an engine build other than the bundled one |
