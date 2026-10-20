@@ -26,7 +26,15 @@ from lilbee.crawler.bootstrap import (
     ChromiumMissingError,
     CrawlEngineRefusedError,
 )
-from lilbee.crawler.models import CancelToken, ConcurrencySpec, FetchedPage, FilterSpec
+from lilbee.crawler.models import (
+    AUTHORIZATION_HEADER,
+    NO_LOGIN,
+    CancelToken,
+    ConcurrencySpec,
+    CrawlLogin,
+    FetchedPage,
+    FilterSpec,
+)
 from lilbee.crawler.save import parsed_address
 
 # crawlberg is the optional ``crawler`` extra and loads a native library, so each
@@ -327,10 +335,12 @@ def _crawl_config(
     user_agent: str,
     respect_robots_txt: bool,
     extra_wait_ms: int,
+    login: CrawlLogin,
 ) -> crawlberg.CrawlConfig:
     """The crawlberg config for one crawl, with every default lilbee depends on set.
 
     A blank *user_agent* leaves the user agent to crawlberg: Chrome's own in browser mode.
+    crawlberg sends the *login* only to the seed host.
     """
     import crawlberg
 
@@ -351,7 +361,8 @@ def _crawl_config(
         tracking_params=list(_TRACKING_PARAMS),
         request_timeout=timeout_ms,
         user_agent=user_agent or None,
-        custom_headers=dict(_CUSTOM_HEADERS[render_mode]),
+        custom_headers={**_CUSTOM_HEADERS[render_mode], **login.cookie_header},
+        auth=_auth(login),
         rate_limit_ms=pacing.rate_limit_ms,
         rate_limit_jitter_ratio=pacing.jitter_ratio,
         max_redirects=_MAX_REDIRECTS,
@@ -369,6 +380,17 @@ def _crawl_config(
         browser=_browser_config(render_mode, timeout_ms, chrome_args, extra_wait_ms),
         ssrf=_ssrf_policy(),
     )
+
+
+def _auth(login: CrawlLogin) -> crawlberg.AuthConfig | None:
+    """crawlberg's form of the basic credentials or authorization header of *login*."""
+    import crawlberg
+
+    if login.basic_credentials is not None:
+        return crawlberg.AuthConfig.basic(*login.basic_credentials)
+    if login.authorization:
+        return crawlberg.AuthConfig.header(AUTHORIZATION_HEADER, login.authorization)
+    return None
 
 
 def _refusal_message(reason: str) -> str:
@@ -602,12 +624,14 @@ class CrawlbergFetcher:
         user_agent: str = "",
         respect_robots_txt: bool = True,
         extra_wait_ms: int = 0,
+        login: CrawlLogin = NO_LOGIN,
     ) -> None:
         self._render_mode = render_mode
         self._chrome_args = tuple(chrome_args)
         self._user_agent = user_agent
         self._respect_robots_txt = respect_robots_txt
         self._extra_wait_ms = extra_wait_ms
+        self._login = login
 
     async def __aenter__(self) -> CrawlbergFetcher:
         return self
@@ -631,6 +655,7 @@ class CrawlbergFetcher:
             self._user_agent,
             self._respect_robots_txt,
             self._extra_wait_ms,
+            self._login,
         )
         return _events(config, seed_url, cancel)
 

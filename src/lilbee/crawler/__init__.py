@@ -16,6 +16,7 @@ from lilbee.crawler.fetcher import WebFetcher
 from lilbee.crawler.models import (
     CancelToken,
     ConcurrencySpec,
+    CrawlLogin,
     CrawlResult,
     FetchedPage,
     FilterSpec,
@@ -42,6 +43,7 @@ __all__ = [
     "CRAWLER_MISSING_MESSAGE",
     "CancelToken",
     "ConcurrencySpec",
+    "CrawlLogin",
     "CrawlMeta",
     "CrawlResult",
     "CrawlerBackendError",

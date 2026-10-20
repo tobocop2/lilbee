@@ -35,7 +35,13 @@ from lilbee.crawler.events import (
     _handle_crawl_teardown_error,
     _pages_cap,
 )
-from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED, CancelToken, CrawlResult
+from lilbee.crawler.models import (
+    CRAWL_PAGES_UNLIMITED,
+    NO_LOGIN,
+    CancelToken,
+    CrawlLogin,
+    CrawlResult,
+)
 from lilbee.crawler.save import CrawlRecord
 from lilbee.crawler.url_filter import validate_crawl_url, without_userinfo
 from lilbee.runtime.progress import (
@@ -100,23 +106,27 @@ def _require_crawler_extra() -> None:
         raise bootstrap.CrawlerBackendError(CRAWLER_MISSING_MESSAGE)
 
 
-def _fetcher(render_mode: CrawlRenderMode) -> CrawlbergFetcher:
-    """The fetcher for one crawl, with its browser, user agent and robots.txt settings."""
+def _fetcher(render_mode: CrawlRenderMode, login: CrawlLogin) -> CrawlbergFetcher:
+    """The fetcher for one crawl, with its browser, user agent, robots.txt and login settings."""
     return CrawlbergFetcher(
         render_mode=render_mode,
         chrome_args=cfg.crawl_browser_extra_args,
         user_agent=cfg.crawl_user_agent,
         respect_robots_txt=cfg.crawl_respect_robots_txt,
         extra_wait_ms=cfg.crawl_browser_extra_wait_ms,
+        login=login,
     )
 
 
 async def _fetch_single_page(
-    url: str, render_mode: CrawlRenderMode, on_progress: DetailedProgressCallback | None
+    url: str,
+    render_mode: CrawlRenderMode,
+    on_progress: DetailedProgressCallback | None,
+    login: CrawlLogin,
 ) -> CrawlResult:
     """One single-URL fetch; a failure to fetch the page becomes a failed result."""
     try:
-        async with _fetcher(render_mode) as fetcher:
+        async with _fetcher(render_mode, login) as fetcher:
             warm_up_done = _browser_warm_up(on_progress, render_mode)
             page = await fetcher.fetch_single(
                 url, timeout=cfg.crawl_timeout, concurrency=build_concurrency_spec()
@@ -137,8 +147,9 @@ async def crawl_single(
     *,
     render_mode: CrawlRenderMode = CrawlRenderMode.BROWSER,
     on_progress: DetailedProgressCallback | None = None,
+    login: CrawlLogin = NO_LOGIN,
 ) -> CrawlResult:
-    """Fetch a single URL.
+    """Fetch a single URL, sending *login* to its host.
 
     ``render_mode`` defaults to ``BROWSER`` for direct callers; the public
     entry point :func:`crawl_and_save` resolves it from ``cfg.crawl_render_mode``
@@ -152,11 +163,11 @@ async def crawl_single(
     validate_crawl_url(url)
     _require_crawler_extra()
     try:
-        return await _fetch_single_page(url, render_mode, on_progress)
+        return await _fetch_single_page(url, render_mode, on_progress, login)
     except ChromiumMissingError:
         log.warning("Chromium missing for %s; bootstrapping then retrying", without_userinfo(url))
         await bootstrap.bootstrap_chromium(on_progress=None)
-        return await _fetch_single_page(url, render_mode, on_progress)
+        return await _fetch_single_page(url, render_mode, on_progress, login)
 
 
 async def crawl_recursive(
@@ -169,8 +180,11 @@ async def crawl_recursive(
     include_subdomains: bool = False,
     on_result: Callable[[CrawlResult], Any] | None = None,
     render_mode: CrawlRenderMode = CrawlRenderMode.BROWSER,
+    login: CrawlLogin = NO_LOGIN,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
+
+    The *login* goes to the seed host only, in the crawl and in the sitemap lookup.
 
     ``render_mode`` defaults to ``BROWSER`` for direct callers; the public
     entry point :func:`crawl_and_save` resolves it from ``cfg.crawl_render_mode``
@@ -213,6 +227,7 @@ async def crawl_recursive(
         include_subdomains=include_subdomains,
         respect_robots_txt=cfg.crawl_respect_robots_txt,
         user_agent=cfg.crawl_user_agent,
+        login=login,
     )
 
     concurrency = build_concurrency_spec()
@@ -220,7 +235,7 @@ async def crawl_recursive(
 
     results: list[CrawlResult] = []
     try:
-        async with _fetcher(render_mode) as fetcher:
+        async with _fetcher(render_mode, login) as fetcher:
             # The explicit reference lets the stream close, and the crawl stop,
             # the moment the drain breaks on max_pages or cancel.
             page_stream = fetcher.fetch_recursive(
@@ -331,6 +346,7 @@ async def _run_crawl(
     include_subdomains: bool,
     flush_page: Callable[[Any], Awaitable[list[Path]]],
     render_mode: CrawlRenderMode,
+    login: CrawlLogin,
 ) -> int:
     """Run the single-URL or recursive crawl. Returns ``pages_seen``.
 
@@ -344,7 +360,9 @@ async def _run_crawl(
     if cancel is not None and cancel.is_set():
         return 0
     if depth == 0 or _resolve_page_limit(max_pages) == _ONE_PAGE:
-        result = await crawl_single(url, render_mode=render_mode, on_progress=on_progress)
+        result = await crawl_single(
+            url, render_mode=render_mode, on_progress=on_progress, login=login
+        )
         try:
             await flush_page(result)
         except OSError:
@@ -363,6 +381,7 @@ async def _run_crawl(
         include_subdomains=include_subdomains,
         on_result=flush_page,
         render_mode=render_mode,
+        login=login,
     )
     return len(results)
 
@@ -376,8 +395,11 @@ async def crawl_and_save(
     cancel: CancelToken | None = None,
     include_subdomains: bool = False,
     render_mode: CrawlRenderMode | None = None,
+    login: CrawlLogin = NO_LOGIN,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, record each saved page. Returns paths written.
+
+    ``login`` goes to the seed host only and is never saved or logged.
 
     ``depth``: ``None`` = whole-site unbounded recursion (default). ``0`` =
     single URL, no recursion. ``N > 0`` = max link-follow depth. ``max_pages``:
@@ -421,6 +443,7 @@ async def crawl_and_save(
             include_subdomains=include_subdomains,
             flush_page=flush_page,
             render_mode=mode,
+            login=login,
         )
 
         cancelled = cancel is not None and cancel.is_set()

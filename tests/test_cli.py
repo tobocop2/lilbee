@@ -3856,6 +3856,34 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["include_subdomains"] is True
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_sends_the_login_flags_and_reads_secrets_from_the_environment(
+        self, mock_sync, mock_crawl, mock_avail
+    ):
+        from lilbee.crawler.models import CrawlLogin
+
+        result = runner.invoke(
+            app,
+            ["add", "--crawl", "--username", "alice", "--cookie", "sid=1", "https://example.com"],
+            env={"LILBEE_CRAWL_PASSWORD": "pw-env"},
+        )
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["login"] == CrawlLogin(
+            username="alice", password="pw-env", cookie="sid=1"
+        )
+
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
+    def test_add_url_refuses_a_password_without_a_username_before_crawling(self, mock_crawl):
+        result = runner.invoke(app, ["add", "--password", "pw-9Tx", "https://example.com"])
+        assert result.exit_code != 0
+        assert "password needs a username" in result.output
+        assert "pw-9Tx" not in result.output
+        mock_crawl.assert_not_called()
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_json_mode(self, mock_sync, mock_crawl, mock_avail, isolated_env):
