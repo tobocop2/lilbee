@@ -35,6 +35,7 @@ from lilbee.retrieval.query.searcher import (
     SEARCH_NEEDS_EMBEDDER,
     QueryMode,
 )
+from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, crafted_label, shown_inline
 from tests.conftest import make_citation
 
 
@@ -261,7 +262,7 @@ class TestFormatSource:
     def test_degenerate_web_path_keeps_raw_source_label(self):
         # Nothing left after dropping the index page: fall back to the stored path.
         r = _make_result(source="_web/index~0123456789abcdef.md", content_type="text")
-        assert format_source(r).startswith("[_web/index~0123456789abcdef.md](file://")
+        assert format_source(r).startswith("[\\_web/index\\~0123456789abcdef.md](file://")
 
     def test_unresolvable_path_renders_plain_label_without_link(self, monkeypatch):
         # A source that can't resolve to a file URL degrades to bare text. The
@@ -301,26 +302,42 @@ class TestFormatSource:
         assert format_source(r, title="A note").startswith("[notes/a.md](file://")
 
     @pytest.mark.parametrize(
-        "title", ["x](https://evil.example) `[y` <b> \\ end", "a\\](https://evil.example/z) b"]
+        "name", ["# hash.md", "- dash.md", "+ plus.md", "2. two.md", "3) three.md", *CRAFTED_TITLES]
     )
-    def test_a_title_cannot_add_a_link_or_code_of_its_own(self, title):
+    def test_the_terminal_shows_a_label_as_it_was_before_escaping(self, name):
+        from lilbee.core.text import collapse_whitespace
+        from lilbee.retrieval.query.formatting import markdown_text, unescape_markdown_text
+
+        assert unescape_markdown_text(markdown_text(name)) == collapse_whitespace(name)
+
+    @pytest.mark.parametrize("surface", ["link", "answer", "restored"])
+    @pytest.mark.parametrize("title", CRAFTED_TITLES)
+    def test_a_title_cannot_add_markup_of_its_own(self, title, surface):
         from lilbee.cli.tui.widgets.message import _answer_markdown_parser
         from lilbee.retrieval.query.formatting import (
             FILE_LINK_RE,
             source_markdown_link,
             unescape_markdown_text,
+            with_sources_block,
         )
 
-        link = source_markdown_link("_web/forum.example/a~0123456789abcdef.md", title)
-        inline = _answer_markdown_parser().parseInline(link)[0].children or []
-        hrefs = [t.attrGet("href") for t in inline if t.type == "link_open"]
-        assert len(hrefs) == 1 and str(hrefs[0]).startswith("file://")
-        assert not [t for t in inline if t.type in ("code_inline", "html_inline")]
-        shown = "".join(t.content for t in inline if t.type == "text")
-        assert shown == f"forum.example · {title}"
-        match = FILE_LINK_RE.search(link)
+        lines = {
+            "link": lambda: source_markdown_link(CRAFTED_SOURCE, title),
+            "answer": lambda: format_sources_block(
+                [_make_result(source=CRAFTED_SOURCE, content_type="text")],
+                {CRAFTED_SOURCE: title},
+            ),
+            "restored": lambda: with_sources_block(
+                "x [1]", [CRAFTED_SOURCE], lambda names: {CRAFTED_SOURCE: title}
+            ),
+        }
+        line = lines[surface]().rpartition("\n1. ")[2]
+        hrefs, shown = shown_inline(_answer_markdown_parser(), line)
+        assert len(hrefs) == 1 and hrefs[0].startswith("file://")
+        assert shown == crafted_label(title)
+        match = FILE_LINK_RE.search(line)
         assert match is not None
-        assert unescape_markdown_text(match["label"]) == f"forum.example · {title}"
+        assert unescape_markdown_text(match["label"]) == crafted_label(title)
         assert match["url"] == hrefs[0]
 
 
