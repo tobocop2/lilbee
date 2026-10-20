@@ -8,7 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, PropertyMock, call, patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -3402,6 +3402,16 @@ async def test_chat_slash_reset_confirm_executes():
             mock_reset.assert_called_once()
 
 
+# A bound that only stops a broken test from hanging; release is always set first.
+_HANG_GUARD_S = 60
+
+
+def _reset_decided(notify: MagicMock, clear: MagicMock) -> bool:
+    """Whether the confirmed reset was refused or ran, so the blocked task may finish."""
+    refused = call(_RESET_REFUSED_MID_SYNC, severity="warning")
+    return clear.called or refused in notify.call_args_list
+
+
 async def test_chat_slash_reset_refused_while_a_sync_runs():
     """A reset confirmed mid-sync is refused, so the sync cannot write its records back after it."""
     import asyncio
@@ -3416,7 +3426,7 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
     @_marks_sync_running
     async def _blocked_sync(**_kwargs):
         started.set()
-        await asyncio.to_thread(release.wait, 5)
+        await asyncio.to_thread(release.wait, _HANG_GUARD_S)
         return SyncResult()
 
     app = ChatTestApp()
@@ -3431,8 +3441,9 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
             app.screen._handle_slash("/reset")
             await _pilot.pause()
             await _pilot.press("y")
-            await _pilot.pause()
+            decided = await pump_until(_pilot, lambda: _reset_decided(mock_notify, mock_clear))
             release.set()
+            assert decided
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
         mock_clear.assert_not_called()
         mock_notify.assert_any_call(_RESET_REFUSED_MID_SYNC, severity="warning")
@@ -3457,7 +3468,7 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
 
     async def _blocked_import(_store, rows, **_kwargs):
         started.set()
-        await asyncio.to_thread(release.wait, 5)
+        await asyncio.to_thread(release.wait, _HANG_GUARD_S)
         return ImportResult(sources=["doc.pdf"], pages=len(rows), chunks=1)
 
     app = ChatTestApp()
@@ -3473,8 +3484,9 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
             app.screen._handle_slash("/reset")
             await _pilot.pause()
             await _pilot.press("y")
-            await _pilot.pause()
+            decided = await pump_until(_pilot, lambda: _reset_decided(mock_notify, mock_clear))
             release.set()
+            assert decided
             task = await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
         assert task.status == TaskStatus.DONE
         mock_clear.assert_not_called()
