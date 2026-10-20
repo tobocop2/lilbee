@@ -21,6 +21,7 @@ import lilbee.app.services as svc_mod
 from conftest import clean_env
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
+from lilbee.crawler.models import CrawlLogin
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.crawler.url_filter import UNPARSED_ADDRESS
 from lilbee.data.ingest import SyncResult
@@ -1420,7 +1421,31 @@ class TestCrawl:
             max_pages=None,
             render_mode=None,
             include_subdomains=False,
+            login=CrawlLogin(),
         )
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
+    async def test_the_login_reaches_the_crawl_and_not_the_answer(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env
+    ):
+        result = await crawl(url="https://example.com", authorization="Bearer t-1", cookie="s=2")
+        assert mock_start.call_args.kwargs["login"] == CrawlLogin(
+            authorization="Bearer t-1", cookie="s=2"
+        )
+        assert result["status"] == "started"
+        assert "t-1" not in str(result)
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
+    async def test_a_login_with_a_header_and_a_username_is_refused(
+        self, mock_start, _mock_avail, isolated_env
+    ):
+        result = await crawl(url="https://example.com", authorization="Bearer t-1", username="a")
+        assert "not both" in result["error"]
+        assert "t-1" not in str(result)
+        mock_start.assert_not_called()
 
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")

@@ -120,6 +120,10 @@ class StubCrawlberg:
         module.BrowserConfig = Recorded  # type: ignore[attr-defined]
         module.BrowserWait = types.SimpleNamespace(SELECTOR="selector")  # type: ignore[attr-defined]
         module.SsrfPolicy = Recorded  # type: ignore[attr-defined]
+        module.AuthConfig = types.SimpleNamespace(  # type: ignore[attr-defined]
+            basic=lambda username, password: ("basic", username, password),
+            header=lambda name, value: ("header", name, value),
+        )
         module.HostMatcher = types.SimpleNamespace(cidr=lambda value: ("cidr", value))  # type: ignore[attr-defined]
         module.create_engine = self._create_engine  # type: ignore[attr-defined]
         module.crawl_stream = self._crawl_stream  # type: ignore[attr-defined]

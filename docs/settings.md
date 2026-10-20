@@ -317,6 +317,9 @@ These are not configuration fields, so they have no row above and `config.toml` 
 |---|---|
 | `LILBEE_AGENT_ID` | Owner namespace for an MCP agent's memories and sessions. An explicit `agent_id` tool argument wins over it |
 | `LILBEE_CPU_QUOTA` | CPU concurrency cap. Defaults to half the available cores; a non-positive or unparseable value falls back to that default |
+| `LILBEE_CRAWL_AUTHORIZATION` | Authorization header value `lilbee add` sends to the host of each URL; the same as `--authorization`, kept out of shell history |
+| `LILBEE_CRAWL_COOKIE` | Cookie header value `lilbee add` sends to the host of each URL; the same as `--cookie`, kept out of shell history |
+| `LILBEE_CRAWL_PASSWORD` | Basic-auth password `lilbee add` sends with `--username`; the same as `--password`, kept out of shell history |
 | `LILBEE_DATA` | Data directory for this library, the same value as `data_root`. The older and more common spelling; `--data-dir` overrides it |
 | `LILBEE_ENGINE_DIR` | Directory holding the llama-server engine binaries. Set it to run against an engine build other than the bundled one |
 | `LILBEE_EXCLUSIVE_SCOPE` | A directory that at most one server may serve at a time, for a plugin's shared root |
