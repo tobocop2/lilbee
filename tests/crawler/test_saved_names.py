@@ -1426,6 +1426,20 @@ class TestPageTitle:
         assert _titles(library, _source("tokyo")) == ("Tokyo", {"Tokyo"})
 
     @pytest.mark.timeout(120)
+    async def test_new_text_without_a_title_keeps_the_stored_title(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        await _crawl_titled(monkeypatch, "tokyo", "1", "Tokyo, the capital")
+        await sync(quiet=True)
+        await _crawl_titled(monkeypatch, "tokyo", "2", "")
+        await sync(quiet=True)
+        assert (cfg.documents_dir / _source("tokyo")).read_text(encoding="utf-8") == _plain_text(
+            "2"
+        )
+        title = "Tokyo, the capital"
+        assert _titles(library, _source("tokyo")) == (title, {title})
+
+    @pytest.mark.timeout(120)
     async def test_the_page_title_wins_over_the_heading_of_the_text(
         self, library: Store, monkeypatch: pytest.MonkeyPatch
     ):
@@ -1445,7 +1459,7 @@ class TestPageTitle:
         assert _titles(library, _source(_FORUM)) == (heading, {heading})
 
 
-_FORUM_LABEL =f"title.test · {_FORUM_TITLE}"
+_FORUM_LABEL = f"title.test · {_FORUM_TITLE}"
 
 
 async def _crawled_forum(monkeypatch: pytest.MonkeyPatch) -> str:
