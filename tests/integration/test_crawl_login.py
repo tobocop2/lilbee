@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import threading
@@ -22,6 +23,8 @@ from lilbee.crawler import url_filter  # noqa: E402
 from lilbee.crawler.models import CrawlLogin  # noqa: E402
 from lilbee.crawler.runner import crawl_and_save  # noqa: E402
 from lilbee.server.app import create_app  # noqa: E402
+from tests._windows_loop import windows_proactor_loop  # noqa: E402
+from tests.integration._crawl_site import REAL_BROWSERS_PATH  # noqa: E402
 
 LOOPBACK = ("127.0.0.0/8", "::1/128")
 USER = "alice"
@@ -142,26 +145,33 @@ def _files_under(folder: Path) -> str:
     )
 
 
+def _crawl(monkeypatch, url: str, mode: CrawlRenderMode, **kwargs) -> list[Path]:
+    """Crawl *url* the way the browser tests of the fetcher do: real browsers, proactor loop."""
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", REAL_BROWSERS_PATH)
+    with windows_proactor_loop():
+        return asyncio.run(crawl_and_save(url, depth=0, render_mode=mode, **kwargs))
+
+
 @pytest.mark.parametrize("mode", list(CrawlRenderMode))
 @pytest.mark.parametrize("case", GUARDED.values(), ids=list(GUARDED))
 class TestEachLogin:
-    async def test_the_page_is_read_with_the_login(self, site, case, mode):
+    def test_the_page_is_read_with_the_login(self, site, case, mode, monkeypatch):
         path, login, text = case
-        paths = await crawl_and_save(site.url(path), depth=0, render_mode=mode, login=login)
+        paths = _crawl(monkeypatch, site.url(path), mode, login=login)
         assert text in _texts(paths)
 
-    async def test_the_page_is_refused_without_the_login(self, site, case, mode):
+    def test_the_page_is_refused_without_the_login(self, site, case, mode, monkeypatch):
         path, _, text = case
-        paths = await crawl_and_save(site.url(path), depth=0, render_mode=mode)
+        paths = _crawl(monkeypatch, site.url(path), mode)
         assert text not in _texts(paths)
         assert site.seen(path)
 
 
 @pytest.mark.parametrize("mode", list(CrawlRenderMode))
 class TestOtherHost:
-    async def test_a_redirect_to_another_host_carries_no_login(self, site, mode):
+    def test_a_redirect_to_another_host_carries_no_login(self, site, mode, monkeypatch):
         login = CrawlLogin(authorization=TOKEN, cookie=COOKIE)
-        await crawl_and_save(site.url("/away"), depth=0, render_mode=mode, login=login)
+        _crawl(monkeypatch, site.url("/away"), mode, login=login)
         assert site.seen("/away") == [(f"127.0.0.1:{site.port}", TOKEN, COOKIE)]
         landed = site.seen("/landing")
         assert [host for host, _, _ in landed] == [f"localhost:{site.port}"] * len(landed)
