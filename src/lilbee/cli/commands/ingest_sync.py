@@ -49,6 +49,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.defaults import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
 from lilbee.core.config.enums import OcrMode
 from lilbee.crawler import is_url
+from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import without_userinfo
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
@@ -151,6 +152,28 @@ _include_subdomains_option = typer.Option(
     ),
 )
 
+_authorization_option = typer.Option(
+    "",
+    "--authorization",
+    envvar="LILBEE_CRAWL_AUTHORIZATION",
+    help="Authorization header value sent to the host of each URL, e.g. 'Bearer <token>'.",
+)
+_username_option = typer.Option(
+    "", "--username", help="Basic-auth username sent to the host of each URL."
+)
+_password_option = typer.Option(
+    "",
+    "--password",
+    envvar="LILBEE_CRAWL_PASSWORD",
+    help="Basic-auth password sent with --username.",
+)
+_cookie_option = typer.Option(
+    "",
+    "--cookie",
+    envvar="LILBEE_CRAWL_COOKIE",
+    help="Cookie header value sent to the host of each URL, e.g. 'session=<id>'.",
+)
+
 
 def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
     """Split inputs into file paths and URLs."""
@@ -210,8 +233,9 @@ def _crawl_urls_blocking(
     max_pages: int | None,
     cancel_event: threading.Event,
     include_subdomains: bool = False,
+    login: CrawlLogin = NO_LOGIN,
 ) -> _CrawlOutcome:
-    """Crawl each URL in turn; a set *cancel_event* raises a cancel.
+    """Crawl each URL in turn, sending *login* to its host; a set *cancel_event* raises a cancel.
 
     A URL whose address is refused, or whose crawl saved nothing and failed on every page,
     is a failed source; the next URL is still crawled.
@@ -281,6 +305,7 @@ def _crawl_urls_blocking(
                     cancel_event=cancel_event,
                     crawl_and_save=crawl_and_save,
                     include_subdomains=include_subdomains,
+                    login=login,
                 ),
                 failures,
                 crawled,
@@ -306,6 +331,7 @@ def _run_crawl_with_signal_cancel(
     cancel_event: threading.Event,
     crawl_and_save: Callable[..., Awaitable[list[Path]]],
     include_subdomains: bool = False,
+    login: CrawlLogin = NO_LOGIN,
 ) -> list[Path]:
     """Crawl one URL on its own event loop; a crawl that ends under a set cancel raises it."""
     # Manage the event loop explicitly. In the CLI this runs once per process,
@@ -323,6 +349,7 @@ def _run_crawl_with_signal_cancel(
             on_progress=on_progress,
             cancel=cancel_event,
             include_subdomains=include_subdomains,
+            login=login,
         )
         result: list[Path] = loop.run_until_complete(coro)
         # A cancelled crawl returns the pages it saved; the command still stops here.
@@ -596,6 +623,7 @@ def _crawl_urls_step(
     max_pages: int | None,
     include_subdomains: bool,
     cancel_event: threading.Event,
+    login: CrawlLogin,
 ) -> _CrawlOutcome:
     """Crawl URLs; without the crawler extra every URL fails with the install message."""
     if not urls:
@@ -613,6 +641,7 @@ def _crawl_urls_step(
         max_pages=max_pages,
         cancel_event=cancel_event,
         include_subdomains=include_subdomains,
+        login=login,
     )
     if not cfg.json_mode:
         console.print(
@@ -729,12 +758,20 @@ def add(
     depth: int | None = _depth_option,
     max_pages: int | None = _max_pages_option,
     include_subdomains: bool = _include_subdomains_option,
+    authorization: str = _authorization_option,
+    username: str = _username_option,
+    password: str = _password_option,
+    cookie: str = _cookie_option,
     max_cpus: int | None = _max_cpus_option,
     processes: int | None = _processes_option,
 ) -> None:
     """Link files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
+    try:
+        login = CrawlLogin(authorization, username, password, cookie)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
     if max_cpus is not None:
         cfg.ingest_workers = max_cpus
     if processes is not None:
@@ -755,6 +792,7 @@ def add(
                 max_pages=max_pages,
                 include_subdomains=include_subdomains,
                 cancel_event=cancel_event,
+                login=login,
             )
             payload = _register_and_sync(
                 file_paths,

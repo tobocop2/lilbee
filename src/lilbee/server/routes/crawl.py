@@ -9,14 +9,19 @@ from litestar.response import Stream
 
 from lilbee.server import handlers
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
-from lilbee.server.models import CrawlRequest
+from lilbee.server.models import CrawlLoginBody, CrawlRequest
 
 
 @post("/api/crawl", media_type=SSE_MEDIA_TYPE)
 async def crawl_route(data: CrawlRequest) -> Stream:
     """Crawl a URL with streaming SSE progress events."""
-    from lilbee.crawler import require_valid_crawl_url
+    from lilbee.crawler import CrawlLogin, require_valid_crawl_url
 
+    body = data.login if data.login is not None else CrawlLoginBody()
+    try:
+        login = CrawlLogin(**body.model_dump())
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
     try:
         # URL validation resolves the host (blocking DNS), so it runs off the loop,
         # mirroring the MCP crawl tool so neither async transport stalls the loop.
@@ -29,5 +34,6 @@ async def crawl_route(data: CrawlRequest) -> Stream:
         max_pages=data.max_pages,
         render_mode=data.render_mode,
         include_subdomains=data.include_subdomains,
+        login=login,
     )
     return Stream(gen, media_type=SSE_MEDIA_TYPE)

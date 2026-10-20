@@ -341,6 +341,16 @@ class ConfigUpdateResponse(BaseModel):
     reindex_required: bool
 
 
+class CrawlLoginBody(BaseModel):
+    """The login a crawl sends to its seed host: an authorization header or a username and
+    password, and a cookie header. An empty field is unset."""
+
+    authorization: str = ""
+    username: str = ""
+    password: str = ""
+    cookie: str = ""
+
+
 class CrawlRequest(BaseModel):
     """Request body for /api/crawl.
 
@@ -357,6 +367,7 @@ class CrawlRequest(BaseModel):
     max_pages: int | None = Field(default=None, ge=0, le=MAX_CRAWL_PAGES)
     render_mode: CrawlRenderMode | None = Field(default=None)
     include_subdomains: bool = Field(default=False)
+    login: CrawlLoginBody | None = Field(default=None)
 
 
 class DocumentInfo(BaseModel):
