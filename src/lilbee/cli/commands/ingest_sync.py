@@ -622,18 +622,40 @@ def _crawl_urls_step(
     return outcome
 
 
+def _failed_reasons(failed: list[_FailedSource]) -> str:
+    """The distinct failure reasons of *failed*, one per line."""
+    return "\n".join(dict.fromkeys(source.reason for source in failed))
+
+
+def _failed_json(failed: list[_FailedSource]) -> list[dict[str, str]]:
+    return [{"url": s.url, "reason": s.reason} for s in failed]
+
+
 def _report_failed_sources(payload: dict | None, failed: list[_FailedSource]) -> None:
     """Print the add result with each failed source's reason; exit 1 when a source failed."""
-    error = "\n".join(dict.fromkeys(source.reason for source in failed))
     if payload is not None:
         if failed:
-            payload["error"] = error
-            payload["failed"] = [{"url": s.url, "reason": s.reason} for s in failed]
+            payload["error"] = _failed_reasons(failed)
+            payload["failed"] = _failed_json(failed)
         json_output(payload)
     elif failed:
-        console.print(error, style=theme.ERROR, soft_wrap=True)
+        console.print(_failed_reasons(failed), style=theme.ERROR, soft_wrap=True)
     if failed:
         raise SystemExit(1)
+
+
+def _report_add_error(exc: RuntimeError, failed: list[_FailedSource]) -> NoReturn:
+    """Report the failed sources, then the error that stopped the add; exit 1."""
+    if cfg.json_mode:
+        payload: dict = {"error": str(exc)}
+        if failed:
+            payload["failed"] = _failed_json(failed)
+        json_output(payload)
+        raise SystemExit(1) from None
+    if failed:
+        console.print(_failed_reasons(failed), style=theme.ERROR, soft_wrap=True)
+    print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+    raise SystemExit(1) from None
 
 
 def _add_json_mode(
@@ -723,6 +745,7 @@ def add(
 
     cancel_event = threading.Event()
     rollback = AddRollback(paths=file_paths, at_sync=False)
+    outcome = _CrawlOutcome()
     try:
         with _ctrl_c_stops(cancel_event, rollback):
             outcome = _crawl_urls_step(
@@ -745,11 +768,7 @@ def add(
             if cancel_event.is_set() and not rollback.at_sync:
                 raise asyncio.CancelledError
     except RuntimeError as exc:
-        if cfg.json_mode:
-            json_output({"error": str(exc)})
-            raise SystemExit(1) from None
-        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
-        raise SystemExit(1) from None
+        _report_add_error(exc, outcome.failed)
     _report_failed_sources(payload, outcome.failed)
 
 

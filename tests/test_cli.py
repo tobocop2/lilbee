@@ -27,7 +27,7 @@ import lilbee.app.services as svc_mod
 from lilbee.app.search import clean_result
 from lilbee.app.version import get_version
 from lilbee.cli import app
-from lilbee.cli.commands.ingest_sync import _CrawlOutcome
+from lilbee.cli.commands.ingest_sync import _CrawlOutcome, _FailedSource
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
@@ -4379,6 +4379,37 @@ class TestAddWithUrls:
             app, ["--json", "add", str(tmp_path / "nonexistent_crawl_test_xyz.txt")]
         )
         assert result.exit_code != 0
+
+    @pytest.mark.parametrize("json_flag", [False, True])
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("Ingest needs an embedding model"),
+    )
+    def test_a_failing_sync_still_names_the_refused_url(
+        self, mock_sync, mock_avail, isolated_env, tmp_path, json_flag
+    ):
+        note = tmp_path / "source" / "note.txt"
+        note.parent.mkdir()
+        note.write_text("content", encoding="utf-8")
+        url = "http://127.0.0.1/private"
+        reason = f"{url}: address refused"
+        outcome = _CrawlOutcome(failed=[_FailedSource(url, reason)])
+        args = ["--json"] if json_flag else []
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=outcome
+        ):
+            result = runner.invoke(app, [*args, "add", str(note), url])
+        assert result.exit_code == 1
+        if json_flag:
+            data = json.loads(result.output.strip())
+            assert data["error"] == "Ingest needs an embedding model"
+            assert data["failed"] == [{"url": url, "reason": reason}]
+            return
+        output = click.unstyle(result.output)
+        assert reason in output
+        assert output.index(reason) < output.index("Ingest needs an embedding model")
 
 
 class TestIsUrl:
