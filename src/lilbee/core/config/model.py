@@ -1379,22 +1379,20 @@ class Config(BaseSettings):
     @field_validator("crawl_exclude_patterns", mode="after")
     @classmethod
     def _validate_crawl_exclude_patterns(cls, v: list[str]) -> list[str]:
-        """Reject any entry that isn't a valid Python regex.
+        """Reject any entry the crawler cannot compile, with the crawler's reason.
 
-        These patterns are compiled at crawl time. An invalid pattern there
-        surfaces as an opaque mid-crawl error; catching it at PATCH time gives
-        the user a 400 with a pointer to the bad entry.
+        The crawler compiles these with its own regex rules, not Python's. Refusing here gives
+        the user the bad entry now, not an error in the middle of a crawl. The shipped list is
+        not checked here: a test holds it to the crawler's rules, and the check loads the
+        crawler, which no other command needs at start.
         """
-        import re
+        if v == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS):
+            return v
+        from lilbee.core.crawl_patterns import refused_exclude_patterns
 
-        bad: list[str] = []
-        for i, pattern in enumerate(v):
-            try:
-                re.compile(pattern)
-            except re.error as exc:
-                bad.append(f"[{i}] {pattern!r}: {exc}")
+        bad = [f"[{index}] {v[index]!r}: {reason}" for index, reason in refused_exclude_patterns(v)]
         if bad:
-            raise ValueError("invalid regex in crawl_exclude_patterns:\n  " + "\n  ".join(bad))
+            raise ValueError("invalid regex in crawl_exclude_patterns: " + "; ".join(bad))
         return v
 
     @field_validator("ignore_dirs", mode="before")
