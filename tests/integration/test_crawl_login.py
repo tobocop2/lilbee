@@ -309,6 +309,8 @@ WRONG_PASSWORD = "Pw-wrong-2Lk"
 WRONG_BASIC = base64.b64encode(f"{USER}:{WRONG_PASSWORD}".encode()).decode()
 ORPHAN_PASSWORD = "Pw-orphan-8Ve"
 CONTROL_PASSWORD = "Pw-ctl-3Nd\nInjected: 1"
+NON_ASCII_COOKIE = "sid=Ck-café-5Rp"
+NON_ASCII_TOKEN = "Bearer Ck-café-6Hy"
 
 
 async def _status_after_the_crawl(site, **login) -> dict:
@@ -358,8 +360,16 @@ class TestNoLeakInStatusAndErrors:
             {"password": ORPHAN_PASSWORD},
             {"username": USER, "password": CONTROL_PASSWORD},
             {"authorization": TOKEN, "username": USER, "password": PASSWORD},
+            {"cookie": NON_ASCII_COOKIE},
+            {"authorization": NON_ASCII_TOKEN},
         ],
-        ids=["password-without-username", "control-character", "header-and-username"],
+        ids=[
+            "password-without-username",
+            "control-character",
+            "header-and-username",
+            "non-ascii-cookie",
+            "non-ascii-authorization",
+        ],
     )
     def test_a_refused_login_is_never_echoed(self, site, every_log_line, login):
         auth_mod.session_manager.disable()
@@ -375,28 +385,40 @@ class TestNoLeakInStatusAndErrors:
         # Positive control: the request was refused with a message about the login.
         assert resp.status_code == HTTPStatus.BAD_REQUEST
         assert "login" in resp.text
-        for secret in (ORPHAN_PASSWORD, "Pw-ctl-3Nd", PASSWORD, "Tok-bearer-4Qm"):
+        for secret in (ORPHAN_PASSWORD, "Pw-ctl-3Nd", PASSWORD, "Tok-bearer-4Qm", "Ck-café"):
             assert secret not in shown
 
     @pytest.mark.parametrize(
-        "login", [{"password": ORPHAN_PASSWORD}, {"username": USER, "password": CONTROL_PASSWORD}]
+        "login",
+        [
+            {"password": ORPHAN_PASSWORD},
+            {"username": USER, "password": CONTROL_PASSWORD},
+            {"cookie": NON_ASCII_COOKIE},
+            {"authorization": NON_ASCII_TOKEN},
+        ],
     )
     async def test_a_refused_login_is_never_echoed_by_the_mcp_tool(self, site, login):
         from lilbee.mcp_server import crawl
 
         answer = await crawl(site.url("/basic/"), **login)
         assert "login" in str(answer)
-        assert ORPHAN_PASSWORD not in str(answer)
-        assert "Pw-ctl-3Nd" not in str(answer)
+        assert answer.get("status") != "started"
+        for secret in (ORPHAN_PASSWORD, "Pw-ctl-3Nd", "Ck-café"):
+            assert secret not in str(answer)
 
-    def test_a_refused_login_is_never_echoed_by_the_command_line(self, site):
-        from typer.testing import CliRunner
-
-        from lilbee.cli import app
-
-        result = CliRunner().invoke(
-            app, ["add", site.url("/basic/"), "--password", ORPHAN_PASSWORD]
-        )
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            ["--password", ORPHAN_PASSWORD],
+            ["--cookie", NON_ASCII_COOKIE],
+            ["--authorization", NON_ASCII_TOKEN],
+        ],
+        ids=["password-without-username", "non-ascii-cookie", "non-ascii-authorization"],
+    )
+    def test_a_refused_login_is_never_echoed_by_the_command_line(self, site, isolated_env, flags):
+        result = _add(site, isolated_env, site.url("/basic/"), *flags)
         assert result.exit_code != 0
         assert "login" in result.output
-        assert ORPHAN_PASSWORD not in result.output
+        assert not site.seen("/basic/")
+        for secret in (ORPHAN_PASSWORD, "Ck-café"):
+            assert secret not in result.output
