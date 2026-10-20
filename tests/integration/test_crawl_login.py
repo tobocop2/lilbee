@@ -116,6 +116,17 @@ def allow_loopback(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_sync():
+    """Stub the sync that follows a crawl; it would warm a model and probe devices."""
+    from unittest.mock import AsyncMock, patch
+
+    from lilbee.data.ingest import SyncResult
+
+    with patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=SyncResult()):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     snapshot = cfg.model_copy()
     cfg.documents_dir = tmp_path / "documents"
@@ -180,18 +191,14 @@ class TestOtherHost:
 
 
 def _add(site, isolated_env, *args: str, env: dict[str, str] | None = None):
-    """Run `lilbee add` against the loopback site with the sync stubbed out."""
-    from unittest.mock import AsyncMock, patch
-
+    """Run `lilbee add` against the loopback site; the `no_sync` fixture stubs the sync."""
     from typer.testing import CliRunner
 
     from lilbee.cli import app
-    from lilbee.data.ingest import SyncResult
 
-    with patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=SyncResult()):
-        return CliRunner().invoke(
-            app, ["add", "--data-dir", str(isolated_env / "data"), *args], env=env
-        )
+    return CliRunner().invoke(
+        app, ["add", "--data-dir", str(isolated_env / "data"), *args], env=env
+    )
 
 
 def _carries_login(requests: list[tuple[str, str, str]]) -> bool:
@@ -239,8 +246,6 @@ class TestSecondHostEachEntryPoint:
         assert not _carries_login(site.seen("/landing"))
 
     async def test_the_mcp_tool_sends_no_login_to_a_second_host(self, site):
-        import asyncio
-
         from lilbee.crawler.task import clear_tasks
         from lilbee.mcp_server import crawl, crawl_status
 
@@ -325,8 +330,6 @@ NON_ASCII_TOKEN = "Bearer Ck-café-6Hy"
 
 async def _status_after_the_crawl(site, **login) -> dict:
     """Start a crawl through the MCP tool, wait for it to end and return its status answer."""
-    import asyncio
-
     from lilbee.crawler.task import clear_tasks
     from lilbee.mcp_server import crawl, crawl_status
 
