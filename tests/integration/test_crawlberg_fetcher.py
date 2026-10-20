@@ -282,11 +282,24 @@ QUERY_LINKS = (
 )
 
 
+# Special, talk and category pages of wikis in other languages, as the page markup writes each
+# link: a name outside ASCII is percent-encoded.
+LOCALIZED_WIKI_LINKS = (
+    "/wiki/Spezial:Suche",
+    "/wiki/Diskussion:Physik",
+    "/wiki/Kategorie:Physik",
+    "/wiki/Sp%C3%A9cial:Recherche",
+    "/wiki/%D0%A1%D0%BB%D1%83%D0%B6%D0%B5%D0%B1%D0%BD%D0%B0%D1%8F:%D0%9F%D0%BE%D0%B8%D1%81%D0%BA",
+    "/wiki/%E7%89%B9%E5%88%A5:%E6%A4%9C%E7%B4%A2",
+)
 # The links of the ``/defaults/`` listing on the site's own host, each with the request the
 # crawl makes for it when no exclude pattern matches: a tracking parameter is not sent.
 DEFAULTS_LINKS = {
     "/wiki/Help:Formatting": "/wiki/Help:Formatting",
     "/wiki/Manual:Installation_guide": "/wiki/Manual:Installation_guide",
+    "/wiki/Re:Zero": "/wiki/Re:Zero",
+    "/wiki/Star_Trek:_Voyager": "/wiki/Star_Trek:_Voyager",
+    **{link: link for link in LOCALIZED_WIKI_LINKS},
     "/v/order": "/v/order",
     "/v/layout": "/v/layout",
     "/v/tilde?q=~x*y": "/v/tilde?q=%7Ex*y",
@@ -304,6 +317,12 @@ DEFAULTS_EXCLUDED = {
     "/cart": r"^https?://[^/?#]+/cart(?:/|\?|#|$)",
     "/login?next=%2F": r"^https?://[^/?#]+/login(?:/|\?|#|$)",
 }
+DEFAULTS_EXCLUDED.update(
+    {
+        link: next((p for p in DEFAULT_CRAWL_EXCLUDE_PATTERNS if re.search(p, link)), "")
+        for link in LOCALIZED_WIKI_LINKS
+    }
+)
 # The requests a crawl of that listing makes before it follows a link: the listing, its sitemap
 # and its robots.txt.
 SEED_REQUESTS = {"/defaults/", "/sitemap.xml", "/robots.txt"}
@@ -927,6 +946,8 @@ class TestDefaultExcludePatterns:
         assert await self._requested(site) == {
             "/wiki/Help:Formatting",
             "/wiki/Manual:Installation_guide",
+            "/wiki/Re:Zero",
+            "/wiki/Star_Trek:_Voyager",
             "/v/order",
             "/v/layout",
             "/v/tilde?q=%7Ex*y",
