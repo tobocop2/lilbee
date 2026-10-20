@@ -1833,7 +1833,9 @@ class TestSitemapCounting:
 
         monkeypatch.setattr("httpx.get", _raise)
         assert (
-            _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+            _count_sitemap_urls(
+                "https://example.com/start", include_subdomains=False, respect_robots_txt=False
+            )
             == CRAWL_TOTAL_UNKNOWN
         )
 
@@ -1844,7 +1846,9 @@ class TestSitemapCounting:
         fake = MagicMock(status_code=404, text="")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         assert (
-            _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+            _count_sitemap_urls(
+                "https://example.com/start", include_subdomains=False, respect_robots_txt=False
+            )
             == CRAWL_TOTAL_UNKNOWN
         )
 
@@ -1861,7 +1865,9 @@ class TestSitemapCounting:
         )
         fake = MagicMock(status_code=200, text=body, url="https://example.com/sitemap.xml")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
-        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        count = _count_sitemap_urls(
+            "https://example.com/start", include_subdomains=False, respect_robots_txt=False
+        )
         assert count == 2
 
     def test_include_subdomains_counts_children(self, monkeypatch):
@@ -1876,7 +1882,9 @@ class TestSitemapCounting:
         )
         fake = MagicMock(status_code=200, text=body, url="https://example.com/sitemap.xml")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
-        count = _count_sitemap_urls("https://example.com/start", include_subdomains=True)
+        count = _count_sitemap_urls(
+            "https://example.com/start", include_subdomains=True, respect_robots_txt=False
+        )
         assert count == 2
 
     def test_returns_unknown_when_start_url_has_no_host(self):
@@ -1886,7 +1894,9 @@ class TestSitemapCounting:
 
         # file:///foo has no hostname, so the helper bails immediately.
         assert (
-            _count_sitemap_urls("file:///not-a-real-host", include_subdomains=False)
+            _count_sitemap_urls(
+                "file:///not-a-real-host", include_subdomains=False, respect_robots_txt=False
+            )
             == CRAWL_TOTAL_UNKNOWN
         )
 
@@ -1902,7 +1912,9 @@ class TestSitemapCounting:
         )
         fake = MagicMock(status_code=200, text=body, url="https://example.com/sitemap.xml")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
-        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        count = _count_sitemap_urls(
+            "https://example.com/start", include_subdomains=False, respect_robots_txt=False
+        )
         assert count == 1
 
     def test_caps_at_max_urls(self, monkeypatch):
@@ -1918,7 +1930,9 @@ class TestSitemapCounting:
             url="https://example.com/sitemap.xml",
         )
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
-        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        count = _count_sitemap_urls(
+            "https://example.com/start", include_subdomains=False, respect_robots_txt=False
+        )
         assert count == 3
 
 

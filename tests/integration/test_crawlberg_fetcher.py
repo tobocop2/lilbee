@@ -310,6 +310,9 @@ ROBOTS_LISTING = "/robots/"
 ROBOTS_DISALLOWED = "/robots/private/page"
 ROBOTS_ALLOWED = "/robots/open"
 ROBOTS_TXT = "User-agent: *\nDisallow: /robots/private/\n"
+ROBOTS_DISALLOW_ALL = "User-agent: *\nDisallow: /\n"
+ROBOTS_DISALLOW_SITEMAP = "User-agent: *\nDisallow: /sitemap.xml\n"
+ROBOTS_DISALLOW_OVERRIDE = "User-agent: *\nAllow: /\n\nUser-agent: probebot\nDisallow: /\n"
 # A link of the same listing to a host the crawl does not follow, which a default pattern matches.
 OTHER_HOST_LINK = "http://other.test/feed/"
 # Where a served page that is not a listing starts, besides the listing prefixes.
@@ -376,7 +379,7 @@ def _late_page(link: str, delay_ms: int = LATE_DELAY_MS) -> str:
     )
 
 
-def _fixed_pages(filler: str, robots_status: int) -> dict[str, tuple[int, str]]:
+def _fixed_pages(filler: str, robots_status: int, robots_text: str) -> dict[str, tuple[int, str]]:
     """The status and body, or redirect target, of each page served at one exact path."""
     image = f"data:image/png;base64,{INLINE_IMAGE_PAYLOAD}"
     logo = f'<img alt="{INLINE_IMAGE_ALT}" src="{image}">'
@@ -388,7 +391,7 @@ def _fixed_pages(filler: str, robots_status: int) -> dict[str, tuple[int, str]]:
             f"<html><body><h1>Index</h1>{defaults}{filler}</body></html>",
         ),
         "/moved": (HTTPStatus.MOVED_PERMANENTLY, "/query/target"),
-        "/robots.txt": (robots_status, ROBOTS_TXT),
+        "/robots.txt": (robots_status, robots_text),
         ROBOTS_LISTING: (
             HTTPStatus.OK,
             f'<html><body><h1>Robots</h1><a href="{ROBOTS_DISALLOWED}">private</a> '
@@ -441,6 +444,7 @@ class _Site:
         # The Authorization header the sitemap needs; blank serves no sitemap.
         self.sitemap_authorization = ""
         self.robots_status = HTTPStatus.OK
+        self.robots_text = ROBOTS_TXT
         self._answered: set[str] = set()
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -518,7 +522,7 @@ class _Site:
 
     def _body(self, path: str) -> tuple[int, str]:
         filler = "<p>" + "Ordinary prose for a real page. " * 6 + "</p>"
-        fixed = _fixed_pages(filler, self.robots_status)
+        fixed = _fixed_pages(filler, self.robots_status, self.robots_text)
         if path in fixed:
             return fixed[path]
         if path.startswith(("/query/", *LINK_LISTINGS)):
@@ -841,7 +845,7 @@ class TestCrawlAndSave:
             for record in caplog.records
             if record.name == FETCHER_LOGGER and record.levelname == "WARNING"
         ]
-        assert site.paths_since(0, "/") == ["/sitemap.xml"]
+        assert site.paths_since(0, "/") == ["/robots.txt", "/sitemap.xml"]
         assert paths == []
         assert warnings == [LEFT_OUT.format(url=site.url("/"), pattern=ROOT_PATTERN)]
 
@@ -1798,11 +1802,56 @@ class TestRobotsTxt:
         paths, events = await _robots_single_crawl(site, HTTP)
         _assert_single_crawl_honours_robots(site, paths, events)
 
+    async def test_a_site_that_disallows_everything_gets_no_sitemap_request(self, site):
+        site.robots_text = ROBOTS_DISALLOW_ALL
+        paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
+        assert paths == []
+        assert site.paths_since(0, "/robots.txt")
+        assert site.paths_since(0, SITEMAP_PATH) == []
+
+    async def test_a_sitemap_robots_txt_disallows_is_not_requested_but_the_pages_are(self, site):
+        site.robots_text = ROBOTS_DISALLOW_SITEMAP
+        paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
+        assert len(paths) == 3
+        assert site.paths_since(0, SITEMAP_PATH) == []
+
+    async def test_a_robots_txt_that_allows_the_sitemap_gets_the_sitemap_request(self, site):
+        await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
+        assert site.paths_since(0, "/robots.txt")
+        assert site.paths_since(0, SITEMAP_PATH) == [SITEMAP_PATH]
+
+    async def test_a_robots_txt_that_cannot_be_read_gets_no_sitemap_request(self, site):
+        site.robots_status = HTTPStatus.SERVICE_UNAVAILABLE
+        paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
+        assert paths == []
+        assert site.paths_since(0, "/robots.txt")
+        assert site.paths_since(0, SITEMAP_PATH) == []
+
+    async def test_the_crawl_user_agent_picks_the_robots_txt_group_for_the_sitemap(self, site):
+        site.robots_text = ROBOTS_DISALLOW_OVERRIDE
+        cfg.crawl_user_agent = "probebot/1.0"
+        await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
+        assert site.paths_since(0, SITEMAP_PATH) == []
+        cfg.crawl_user_agent = ""
+        await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
+        assert site.paths_since(0, SITEMAP_PATH) == [SITEMAP_PATH]
+
     async def test_with_the_setting_off_the_disallowed_page_is_crawled(self, site):
         cfg.crawl_respect_robots_txt = False
         site_paths = await _robots_site_crawl(site, HTTP)
         single_paths, _ = await _robots_single_crawl(site, HTTP)
         _assert_robots_ignored(site, site_paths, single_paths)
+        assert site.paths_since(0, SITEMAP_PATH) == [SITEMAP_PATH]
+
+    async def test_with_the_setting_off_a_disallow_all_robots_txt_still_gets_the_sitemap_request(
+        self, site
+    ):
+        cfg.crawl_respect_robots_txt = False
+        site.robots_text = ROBOTS_DISALLOW_ALL
+        paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
+        assert len(paths) == 3
+        assert site.paths_since(0, "/robots.txt") == []
+        assert site.paths_since(0, SITEMAP_PATH) == [SITEMAP_PATH]
 
     @pytest.mark.parametrize(
         "status", [HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.REQUEST_TIMEOUT], ids=["503", "408"]

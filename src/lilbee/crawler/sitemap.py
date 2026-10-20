@@ -6,6 +6,7 @@ import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlparse
+from urllib.robotparser import RobotFileParser
 
 from lilbee.crawler.url_filter import host_in_scope, parsed_url, require_valid_crawl_url
 from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
@@ -13,6 +14,7 @@ from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 # ada-url is in the optional ``crawler`` extra, so it is imported on call.
 if TYPE_CHECKING:
     import ada_url
+    import httpx
 
 # Sitemap lookups are best-effort progress hints; never block the actual crawl.
 _SITEMAP_FETCH_TIMEOUT_SECONDS = 5.0
@@ -20,6 +22,9 @@ _SITEMAP_MAX_URLS = 10_000
 _SITEMAP_URL_TAG_RE = re.compile(r"<loc>\s*([^<]+?)\s*</loc>", re.IGNORECASE)
 _USER_AGENT_HEADER = "User-Agent"
 _SITEMAP_PATH = "/sitemap.xml"
+_ROBOTS_PATH = "/robots.txt"
+_ROBOTS_ABSENT_STATUSES = frozenset({HTTPStatus.NOT_FOUND, HTTPStatus.GONE})
+_ANY_USER_AGENT = "*"
 
 
 def _basic_credentials(seed: ada_url.URL) -> tuple[str, str] | None:
@@ -29,43 +34,77 @@ def _basic_credentials(seed: ada_url.URL) -> tuple[str, str] | None:
     return unquote(seed.username), unquote(seed.password)
 
 
-def _fetch_sitemap_text(start_url: str, *, user_agent: str = "") -> str | None:
-    """Return sitemap.xml body or None on any fetch/status failure.
+def _get(url: str, seed: ada_url.URL, user_agent: str) -> httpx.Response | None:
+    """One GET of *url* with the seed's credentials, or None on a transport failure.
 
-    A blank *user_agent* leaves the user agent to the HTTP client.
+    Redirects are not followed: a 3xx could steer this best-effort request to a
+    private or metadata host (SSRF) before the body is inspected.
     """
     import httpx
 
-    parsed = parsed_url(start_url)
-    if parsed is None:
-        return None
-    sitemap_url = f"{parsed.origin}{_SITEMAP_PATH}"
-    # Validate the seed before any connection, and do not follow redirects: a
-    # 3xx could otherwise steer this best-effort fetch to a private/metadata
-    # host (SSRF) before the body is inspected. This is only a progress hint,
-    # so a redirecting or unvalidated sitemap simply yields an unknown total.
     try:
-        require_valid_crawl_url(sitemap_url)
-    except ValueError:
-        return None
-    try:
-        resp = httpx.get(
-            sitemap_url,
-            auth=_basic_credentials(parsed),
+        return httpx.get(
+            url,
+            auth=_basic_credentials(seed),
             headers={_USER_AGENT_HEADER: user_agent} if user_agent else None,
             timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS,
             follow_redirects=False,
         )
     except (httpx.HTTPError, OSError):
         return None
-    # Accept only a direct 2xx; an unfollowed 3xx (or any error status) yields
-    # no usable sitemap and is treated as a miss.
-    if not (HTTPStatus.OK <= resp.status_code < HTTPStatus.MULTIPLE_CHOICES):
+
+
+def _is_success(resp: httpx.Response) -> bool:
+    return HTTPStatus.OK <= resp.status_code < HTTPStatus.MULTIPLE_CHOICES
+
+
+def _robots_allow_sitemap(seed: ada_url.URL, sitemap_url: str, user_agent: str) -> bool:
+    """True when the site's robots.txt lets *user_agent* fetch *sitemap_url*.
+
+    A missing robots.txt (404 or 410) allows everything. A robots.txt that cannot
+    be read, or that answers with any other status, allows nothing.
+    """
+    resp = _get(f"{seed.origin}{_ROBOTS_PATH}", seed, user_agent)
+    if resp is None:
+        return False
+    if resp.status_code in _ROBOTS_ABSENT_STATUSES:
+        return True
+    if not _is_success(resp):
+        return False
+    rules = RobotFileParser()
+    rules.parse(resp.text.splitlines())
+    return rules.can_fetch(user_agent or _ANY_USER_AGENT, sitemap_url)
+
+
+def _fetch_sitemap_text(
+    start_url: str, *, user_agent: str = "", respect_robots_txt: bool
+) -> str | None:
+    """Return sitemap.xml body or None on any fetch/status failure.
+
+    A blank *user_agent* leaves the user agent to the HTTP client. With
+    *respect_robots_txt* the sitemap is requested only when robots.txt allows it.
+    """
+    parsed = parsed_url(start_url)
+    if parsed is None:
+        return None
+    sitemap_url = f"{parsed.origin}{_SITEMAP_PATH}"
+    # Validate the seed before any connection. This is only a progress hint, so
+    # an unvalidated or redirecting sitemap simply yields an unknown total.
+    try:
+        require_valid_crawl_url(sitemap_url)
+    except ValueError:
+        return None
+    if respect_robots_txt and not _robots_allow_sitemap(parsed, sitemap_url, user_agent):
+        return None
+    resp = _get(sitemap_url, parsed, user_agent)
+    if resp is None or not _is_success(resp):
         return None
     return resp.text
 
 
-def _count_sitemap_urls(start_url: str, *, include_subdomains: bool, user_agent: str = "") -> int:
+def _count_sitemap_urls(
+    start_url: str, *, include_subdomains: bool, respect_robots_txt: bool, user_agent: str = ""
+) -> int:
     """Best-effort count of URLs in the host's /sitemap.xml that match the crawl scope.
 
     Returns ``CRAWL_TOTAL_UNKNOWN`` on any failure (missing sitemap, timeout,
@@ -78,7 +117,9 @@ def _count_sitemap_urls(start_url: str, *, include_subdomains: bool, user_agent:
     host = (urlparse(start_url).hostname or "").lower()
     if not host:
         return CRAWL_TOTAL_UNKNOWN
-    text = _fetch_sitemap_text(start_url, user_agent=user_agent)
+    text = _fetch_sitemap_text(
+        start_url, user_agent=user_agent, respect_robots_txt=respect_robots_txt
+    )
     if text is None:
         return CRAWL_TOTAL_UNKNOWN
 

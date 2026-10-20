@@ -210,6 +210,7 @@ async def crawl_recursive(
         sitemap._count_sitemap_urls,
         url,
         include_subdomains=include_subdomains,
+        respect_robots_txt=cfg.crawl_respect_robots_txt,
         user_agent=cfg.crawl_user_agent,
     )
 
