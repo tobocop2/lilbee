@@ -357,6 +357,21 @@ class TestSitemapRobots:
         )
         assert asked == [ROBOTS_URL, SITEMAP_URL]
 
+    @pytest.mark.parametrize(
+        ("rules", "allowed"),
+        [
+            ("User-agent: *\nDisallow: /sitemap.xml\n", False),
+            ("User-agent: *\nDisallow: /start\n", True),
+        ],
+        ids=["sitemap-path-disallowed", "seed-path-disallowed"],
+    )
+    def test_robots_txt_is_checked_against_the_sitemap_path(self, monkeypatch, rules, allowed):
+        robots = MagicMock(status_code=200, text=rules)
+        sitemap = MagicMock(status_code=200, text=SITEMAP_BODY)
+        _serve(monkeypatch, {ROBOTS_URL: robots, SITEMAP_URL: sitemap})
+        fetched = _fetch_sitemap_text("https://example.com/start", respect_robots_txt=True)
+        assert fetched == (SITEMAP_BODY if allowed else None)
+
     @pytest.mark.parametrize("status", [404, 410])
     def test_a_missing_robots_txt_lets_the_sitemap_through(self, monkeypatch, status):
         robots = MagicMock(status_code=status, text="Not Found")
