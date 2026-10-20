@@ -42,6 +42,7 @@ class CrawlResult:
     markdown: str = ""
     success: bool = True
     error: str | None = None
+    title: str = ""
 
     def failure_reason(self) -> str | None:
         """Why this page has nothing to save, or None when it does.
@@ -70,6 +71,7 @@ class FetchedPage:
     success: bool = True
     error: str | None = None
     links: list[str] = field(default_factory=list)
+    title: str = ""
 
 
 @dataclass(frozen=True)

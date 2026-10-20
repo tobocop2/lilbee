@@ -21,7 +21,6 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import (
     CRAWLER_MISSING_MESSAGE,
-    CrawlMeta,
     CrawlResult,
     content_hash,
     crawl_and_save,
@@ -52,6 +51,7 @@ from lilbee.crawler.save import (
 from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl
 from lilbee.crawler.url_filter import UNPARSED_ADDRESS, without_userinfo
 from lilbee.data.ingest.discovery import discover_files
+from lilbee.data.page_record import CrawlMeta
 from lilbee.runtime.progress import EventType
 from tests import _crawlberg_stub as cb
 from tests._crawl_meta import write_crawl_metadata
