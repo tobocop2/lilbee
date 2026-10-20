@@ -1376,13 +1376,15 @@ class TestPageTitle:
         assert get_services().embedder.embed_batch.call_count == embedded
 
     @pytest.mark.timeout(120)
+    @pytest.mark.parametrize("line_end", ["\n", "\r\n"], ids=["posix", "windows"])
     async def test_a_page_an_older_lilbee_saved_keeps_its_title_until_crawled_again(
-        self, library: Store, monkeypatch: pytest.MonkeyPatch
+        self, library: Store, monkeypatch: pytest.MonkeyPatch, line_end: str
     ):
+        """An older lilbee wrote in text mode, so on Windows its page holds CRLF line ends."""
         source = _source(_FORUM)
         path = cfg.documents_dir / source
         path.parent.mkdir(parents=True)
-        path.write_text(_plain_text("1"), encoding="utf-8")
+        path.write_bytes(_plain_text("1").replace("\n", line_end).encode("utf-8"))
         older = {"url": _TITLE_SITE + _FORUM, "file": source.removeprefix("_web/")}
         older |= {"content_hash": content_hash(_plain_text("1")), "crawled_at": "t"}
         save.pages_path().write_text(_json.dumps(older) + "\n", encoding="utf-8")
@@ -1398,6 +1400,15 @@ class TestPageTitle:
 
         assert path.stat().st_mtime_ns == written
         assert _titles(library, source) == (_FORUM_TITLE, {_FORUM_TITLE})
+
+    @pytest.mark.timeout(120)
+    async def test_a_page_crawled_with_crlf_line_ends_is_updated_by_the_next_crawl(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        await _crawl_text(monkeypatch, _FORUM, _plain_text("1").replace("\n", "\r\n"), "")
+        await _crawl_text(monkeypatch, _FORUM, _plain_text("2"), "")
+        path = cfg.documents_dir / _source(_FORUM)
+        assert path.read_bytes() == _plain_text("2").encode("utf-8")
 
     @pytest.mark.timeout(120)
     async def test_a_moved_page_keeps_its_title_and_its_id(
