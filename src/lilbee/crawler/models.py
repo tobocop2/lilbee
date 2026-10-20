@@ -15,6 +15,8 @@ CRAWL_PAGES_UNLIMITED = 0
 
 AUTHORIZATION_HEADER = "Authorization"
 COOKIE_HEADER = "Cookie"
+# The login fields sent as raw header values; crawlberg and httpx send ASCII only.
+_HEADER_FIELDS = ("authorization", "cookie")
 
 
 def crawl_limit_error(depth: int | None, max_pages: int | None) -> str | None:
@@ -92,6 +94,12 @@ class CrawlLogin:
         for name, value in values.items():
             if CONTROL_CHARACTER.search(value):
                 raise ValueError(f"the crawl login {name} holds a control character")
+        for name in _HEADER_FIELDS:
+            if not values[name].isascii():
+                raise ValueError(
+                    f"the crawl login {name} holds a character outside ASCII, "
+                    "which an HTTP header cannot carry"
+                )
         if self.password and not self.username:
             raise ValueError("the crawl login password needs a username")
         if self.authorization and self.username:
