@@ -12,7 +12,7 @@ import string
 import tempfile
 import unicodedata
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
@@ -22,13 +22,11 @@ from lilbee.core.security import file_lock_or_warn, validate_path_within
 from lilbee.core.web_names import INDEX_STEM, PAGE_HASH_MARK, PAGE_SUFFIX, WEB_DIR
 from lilbee.crawler.models import CrawlResult
 from lilbee.crawler.url_filter import parsed_url
+from lilbee.data.page_record import CrawlMeta, pages_path, read_pages, record_line
 
 log = logging.getLogger(__name__)
 
 _CRAWL_META_FILE = "crawl_meta.json"
-_CRAWL_PAGES_FILE = "crawl_pages.jsonl"
-# The field of a page record line that holds the page's canonical address.
-_RECORD_ADDRESS_FIELD = "url"
 _RECORD_LOCK_TIMEOUT_S = 10.0
 _NOT_SAVED = "Page %s is not saved: %s holds a file or folder of its own; move or delete it"
 
@@ -225,17 +223,6 @@ def _crawl_meta_path() -> Path:
     return cfg.data_dir / _CRAWL_META_FILE
 
 
-@dataclass
-class CrawlMeta:
-    """Metadata for a single crawled URL."""
-
-    file: str
-    content_hash: str
-    crawled_at: str
-    # The hash of the text the file held when this entry was recorded; empty for a new file.
-    replaces: str = ""
-
-
 def load_crawl_metadata() -> dict[str, CrawlMeta]:
     """Load URL→metadata mapping from the JSON sidecar."""
     path = _crawl_meta_path()
@@ -295,11 +282,6 @@ def normalize_crawled_markdown(markdown: str) -> str:
     return _REFERENCE_LINK_RE.sub(r"[\1](\2)", markdown)
 
 
-def _pages_path() -> Path:
-    """The page record: one JSON line per save, the last line for an address counts."""
-    return cfg.data_dir / _CRAWL_PAGES_FILE
-
-
 @dataclass
 class CrawlRecord:
     """The pages saved at their names, by address, and the copies an earlier name rule saved."""
@@ -325,34 +307,16 @@ class CrawlRecord:
             self.claimed.discard(previous.file)
 
 
-def _record_line(address: str, entry: CrawlMeta) -> str:
-    """The page record line of *entry* for the page at *address*."""
-    return json.dumps({_RECORD_ADDRESS_FIELD: address, **asdict(entry)}, ensure_ascii=False)
-
-
-def _read_pages(lines: list[str]) -> dict[str, CrawlMeta]:
-    """The last entry of each address in the page record *lines*; a malformed line is skipped."""
-    pages: dict[str, CrawlMeta] = {}
-    for line in filter(None, lines):
-        try:
-            data = json.loads(line)
-            address = data.pop(_RECORD_ADDRESS_FIELD)
-            pages[address] = CrawlMeta(**data)
-        except (json.JSONDecodeError, TypeError, KeyError, AttributeError):
-            log.warning("Skipping malformed crawl record line in %s", _pages_path())
-    return pages
-
-
 def _load_pages() -> dict[str, CrawlMeta]:
     """The page record, rewritten with one line per page when it holds more lines than pages."""
-    path = _pages_path()
+    path = pages_path()
     if not path.exists():
         return {}
     with file_lock_or_warn(path, _RECORD_LOCK_TIMEOUT_S):
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        pages = _read_pages(lines)
+        pages = read_pages(lines)
         if len(pages) < len(list(filter(None, lines))):
-            text = "".join(f"{_record_line(a, e)}\n" for a, e in pages.items())
+            text = "".join(f"{record_line(a, e)}\n" for a, e in pages.items())
             _replace_atomically(path, text)
     return pages
 
@@ -368,10 +332,10 @@ def load_crawl_record() -> CrawlRecord:
 
 def _claim(address: str, entry: CrawlMeta, record: CrawlRecord) -> None:
     """Append *entry* to the page record and sync it to disk; a cut line stays alone."""
-    path = _pages_path()
+    path = pages_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with file_lock_or_warn(path, _RECORD_LOCK_TIMEOUT_S), path.open("a", encoding="utf-8") as out:
-        out.write(f"\n{_record_line(address, entry)}\n")
+        out.write(f"\n{record_line(address, entry)}\n")
         out.flush()
         os.fsync(out.fileno())
     previous = record.pages.get(address)
@@ -438,7 +402,7 @@ def _retire_earlier(
     for entry in record.earlier.pop(address, []):
         if entry.file in record.claimed:
             continue
-        with file_lock_or_warn(_pages_path(), _RECORD_LOCK_TIMEOUT_S):
+        with file_lock_or_warn(pages_path(), _RECORD_LOCK_TIMEOUT_S):
             if not _holds_only(address, entry, record):
                 continue
             source = PurePosixPath(WEB_DIR, _disk_name(entry.file)).as_posix()
@@ -514,6 +478,13 @@ def _owns_name(address: str, held: str | None, new_hash: str, record: CrawlRecor
     return _may_write(address, held, new_hash, record)
 
 
+def _unchanged(prev: CrawlMeta | None, held: str | None, new_hash: str, title: str) -> bool:
+    """Whether the record and the file already hold this text, and the record its title."""
+    if prev is None or held != new_hash or prev.content_hash != new_hash:
+        return False
+    return not title or prev.title == title
+
+
 def _write(
     result: CrawlResult,
     address: str,
@@ -525,12 +496,13 @@ def _write(
     """Record and write *markdown* at *path*, whose file holds *held*; None when it holds it."""
     new_hash = content_hash(markdown)
     prev = record.pages.get(address)
-    if held == new_hash and prev is not None and prev.content_hash == new_hash:
+    if _unchanged(prev, held, new_hash, result.title):
         log.info("Content unchanged, skipping save: %s", result.url)
         return None
     now = datetime.now(UTC).isoformat()
     replaces = "" if held is None else held
-    _claim(address, CrawlMeta(page_name(address), new_hash, now, replaces), record)
+    entry = CrawlMeta(page_name(address), new_hash, now, replaces, result.title)
+    _claim(address, entry, record)
     if held == new_hash:
         log.info("Recorded the page %s at %s, which already holds its text", result.url, path)
         return None

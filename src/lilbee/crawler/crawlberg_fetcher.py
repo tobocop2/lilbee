@@ -128,6 +128,8 @@ _REFUSED_SETTING_MESSAGES = {
     "invalid_config: invalid exclude_path regex": EXCLUDE_PATTERN_REFUSED_MESSAGE,
 }
 _NO_CONTENT = "No content extracted"
+# The most characters of a page title lilbee keeps; a page controls its title.
+_MAX_TITLE_CHARS = 512
 # How crawlberg 1.11.1 starts the error of a page the site's robots.txt disallows, and of a
 # page it refuses because the site's robots.txt could not be read.
 _ROBOTS_DISALLOWED_START = "robots.txt disallows "
@@ -171,6 +173,7 @@ class _Event:
     markdown: str = ""
     error: str = ""
     links: tuple[str, ...] = ()
+    title: str = ""
 
     @property
     def refused_by_ssrf(self) -> bool:
@@ -438,6 +441,11 @@ def _error_text(error: str) -> str:
     return ROBOTS_UNREACHABLE_MESSAGE.format(reason=reason)
 
 
+def _page_title(title: str | None) -> str:
+    """A page's ``<title>`` on one line, cut at ``_MAX_TITLE_CHARS``; empty when it has none."""
+    return " ".join((title or "").split())[:_MAX_TITLE_CHARS]
+
+
 def _parse_event(raw: object) -> _Event | None:
     """Read a crawlberg event, whose payload is only reachable as JSON; None for other kinds.
 
@@ -452,12 +460,14 @@ def _parse_event(raw: object) -> _Event | None:
         return _Event(kind, url, error=_error_text(payload["error"]))
     result: dict[str, Any] = payload["result"]
     markdown: dict[str, Any] = result.get("markdown") or {}
+    metadata: dict[str, Any] = result.get("metadata") or {}
     return _Event(
         kind,
         url_filter.without_userinfo(result["url"]),
         depth=result.get("depth", _SEED_DEPTH),
         markdown=markdown.get("content") or "",
         links=tuple(url_filter.without_userinfo(link["url"]) for link in result.get("links") or ()),
+        title=_page_title(metadata.get("title")),
     )
 
 
@@ -502,16 +512,15 @@ async def _to_page(event: _Event, seed_url: str) -> FetchedPage | None:
         log.warning("Dropped %s: lilbee's URL policy refuses it", event.url)
         return None
     url = seed_url if event.depth == _SEED_DEPTH else event.url
-    return FetchedPage(url=url, markdown=event.markdown)
+    return FetchedPage(url=url, markdown=event.markdown, title=event.title)
 
 
 def _single_result(page: FetchedPage | None, url: str) -> FetchedPage:
     """A single-URL fetch result under the requested URL, failed when it has no text."""
     if page is not None and not page.success:
         return FetchedPage(url=url, success=False, error=page.error)
-    markdown = page.markdown.strip() if page is not None else ""
-    if markdown:
-        return FetchedPage(url=url, markdown=markdown)
+    if page is not None and page.markdown.strip():
+        return FetchedPage(url=url, markdown=page.markdown.strip(), title=page.title)
     return FetchedPage(url=url, success=False, error=_NO_CONTENT)
 
 

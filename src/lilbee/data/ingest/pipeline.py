@@ -84,6 +84,7 @@ from lilbee.data.offload import (
     to_executor,
     to_ingest_thread,
 )
+from lilbee.data.page_record import page_titles
 from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
     ChunkWrite,
@@ -349,6 +350,12 @@ class _FileChangeVerdict:
     held: bool = False
 
 
+def _title_is_stale(name: str, record: SourceRecord) -> bool:
+    """Whether the page record gives the crawled page *name* a title its source row lacks."""
+    title = page_titles().get(name)
+    return title is not None and record.get("title") != title
+
+
 def _classify_file_change(
     name: str,
     path: Path,
@@ -361,8 +368,10 @@ def _classify_file_change(
         raise ValueError(f"Unsupported file slipped through discovery: {name}")
     stored_stat = source_stat(record) if record is not None else None
     current_stat = _disk_stat(path)
+    stale = record is not None and _title_is_stale(name, record)
     if (
         record is not None
+        and not stale
         and stored_stat is not None
         and current_stat is not None
         and _stat_unchanged(stored_stat, current_stat)
@@ -370,7 +379,7 @@ def _classify_file_change(
         return _FileChangeVerdict()
     old_hash = record["file_hash"] if record is not None else None
     current_hash = file_hash(path)
-    if old_hash == current_hash:
+    if old_hash == current_hash and not stale:
         # Content verified unchanged; persist the stat pair so the next
         # sync skips the hash entirely.
         backfill = (

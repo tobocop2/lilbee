@@ -49,7 +49,6 @@ from hypothesis import strategies as st
 from lilbee.app.services import set_services
 from lilbee.core.config import CHUNKS_TABLE, CITATIONS_TABLE, SOURCES_TABLE, cfg
 from lilbee.crawler import (
-    CrawlMeta,
     CrawlResult,
     content_hash,
     crawl_and_save,
@@ -57,6 +56,7 @@ from lilbee.crawler import (
     url_to_filename,
 )
 from lilbee.data.ingest import sync
+from lilbee.data.page_record import CrawlMeta
 from lilbee.data.store import Store
 from lilbee.retrieval.query.formatting import source_label
 from lilbee.wiki.entity_extractor import EntityKind
@@ -1269,3 +1269,151 @@ class TestEarlierLibraries:
         await _crawl_pages(monkeypatch, _NEWER, _addresses(_NEWER, _NEWER_ROWS), "2")
         await sync(quiet=True)
         assert _library_state(rev_library, dict.fromkeys(pages, "2")) == _clean(len(pages))
+
+
+_TITLE_SITE = "http://title.test/"
+_FORUM = (
+    "forum/how-to-grow-tomatoes-indoors-under-lights"
+    "-in-a-cold-flat-without-a-greenhouse-or-a-balcony-and-what-to-feed-them"
+)
+_FORUM_TITLE = (
+    "How to grow tomatoes indoors under lights in a cold flat without a greenhouse"
+    " or a balcony, and what to feed them | The Growers Forum"
+)
+
+
+def _plain_text(version: str) -> str:
+    """A page body with no heading, so only the record or the file name can title it."""
+    return f"Body in version {version}.\n\n{_FILLER}\n"
+
+
+async def _crawl_titled(
+    monkeypatch: pytest.MonkeyPatch, path: str, version: str, title: str
+) -> None:
+    """Crawl the page at *path* with the text of *version* and the page title *title*."""
+    result = CrawlResult(url=_TITLE_SITE + path, markdown=_plain_text(version), title=title)
+
+    async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+        await kwargs["on_result"](result)  # type: ignore[operator]
+        return [result]
+
+    monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
+    await crawl_and_save(_TITLE_SITE + path, depth=1)
+
+
+def _titles(store: Store, source: str) -> tuple[object, set[object]]:
+    """The title of the source row of *source* and the set of titles of its chunks."""
+    rows = {s["filename"]: s.get("title") for s in store.get_sources()}
+    return rows.get(source), {chunk.title for chunk in store.get_chunks_by_source(source)}
+
+
+def _source(path: str) -> str:
+    return f"_web/{url_to_filename(_TITLE_SITE + path)}"
+
+
+class TestPageTitle:
+    """A crawled page is stored under its own title; its file name keeps the 99-byte cut."""
+
+    @pytest.mark.timeout(120)
+    async def test_a_long_title_is_stored_in_full(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        await _crawl_titled(monkeypatch, _FORUM, "1", _FORUM_TITLE)
+        await sync(quiet=True)
+        stem = Path(_source(_FORUM)).name.rpartition("~")[0]
+        assert len(stem.encode()) <= 99 < len(_FORUM_TITLE.encode())
+        assert _titles(library, _source(_FORUM)) == (_FORUM_TITLE, {_FORUM_TITLE})
+
+    @pytest.mark.timeout(120)
+    async def test_a_non_ascii_title_is_stored(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        await _crawl_titled(monkeypatch, "tokyo", "1", "東京都 - Wikipedia")
+        await sync(quiet=True)
+        assert _titles(library, _source("tokyo")) == ("東京都 - Wikipedia", {"東京都 - Wikipedia"})
+
+    @pytest.mark.timeout(120)
+    async def test_a_page_with_no_title_is_titled_by_its_file_name(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        await _crawl_titled(monkeypatch, "a-guide-to-bees", "1", "")
+        await sync(quiet=True)
+        assert _titles(library, _source("a-guide-to-bees")) == (
+            "a guide to bees",
+            {"a guide to bees"},
+        )
+
+    @pytest.mark.timeout(120)
+    async def test_a_recrawl_with_a_new_title_retitles_the_page(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        await _crawl_titled(monkeypatch, "tokyo", "1", "Tokyo")
+        await sync(quiet=True)
+        await _crawl_titled(monkeypatch, "tokyo", "2", "Tokyo, the capital")
+        await sync(quiet=True)
+        assert _titles(library, _source("tokyo")) == ("Tokyo, the capital", {"Tokyo, the capital"})
+
+    @pytest.mark.timeout(120)
+    async def test_a_recrawl_of_the_same_page_adds_no_line_and_ingests_nothing(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        from lilbee.app.services import get_services
+
+        await _crawl_titled(monkeypatch, "tokyo", "1", "Tokyo")
+        await sync(quiet=True)
+        lines = save.pages_path().read_text(encoding="utf-8")
+        embedded = get_services().embedder.embed_batch.call_count
+        await _crawl_titled(monkeypatch, "tokyo", "1", "Tokyo")
+        await sync(quiet=True)
+        assert save.pages_path().read_text(encoding="utf-8") == lines
+        assert get_services().embedder.embed_batch.call_count == embedded
+
+    @pytest.mark.timeout(120)
+    async def test_a_page_an_older_lilbee_saved_keeps_its_title_until_crawled_again(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        source = _source(_FORUM)
+        path = cfg.documents_dir / source
+        path.parent.mkdir(parents=True)
+        path.write_text(_plain_text("1"), encoding="utf-8")
+        older = {"url": _TITLE_SITE + _FORUM, "file": source.removeprefix("_web/")}
+        older |= {"content_hash": content_hash(_plain_text("1")), "crawled_at": "t"}
+        save.pages_path().write_text(_json.dumps(older) + "\n", encoding="utf-8")
+        await sync(quiet=True)
+        stem_title = _titles(library, source)
+        assert stem_title[0] == Path(source).name.rpartition("~")[0].replace("-", " ")
+        await sync(quiet=True)
+        assert _titles(library, source) == stem_title
+        written = path.stat().st_mtime_ns
+
+        await _crawl_titled(monkeypatch, _FORUM, "1", _FORUM_TITLE)
+        await sync(quiet=True)
+
+        assert path.stat().st_mtime_ns == written
+        assert _titles(library, source) == (_FORUM_TITLE, {_FORUM_TITLE})
+
+    @pytest.mark.timeout(120)
+    async def test_a_moved_page_keeps_its_title_and_its_id(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        await _crawl_titled(monkeypatch, _FORUM, "1", _FORUM_TITLE)
+        await sync(quiet=True)
+        source = _source(_FORUM)
+        before = library.source_ids([source], None)[source]
+        moved = "_web/title.test/moved.md"
+        (cfg.documents_dir / source).rename(cfg.documents_dir / moved)
+        await sync(quiet=True)
+        assert library.source_ids([moved], None) == {moved: before}
+        assert _titles(library, moved) == (_FORUM_TITLE, {_FORUM_TITLE})
+
+    @pytest.mark.timeout(120)
+    async def test_a_recrawl_that_reports_no_title_keeps_the_title(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        await _crawl_titled(monkeypatch, "tokyo", "1", "Tokyo")
+        await sync(quiet=True)
+        lines = save.pages_path().read_text(encoding="utf-8")
+        await _crawl_titled(monkeypatch, "tokyo", "1", "")
+        await sync(quiet=True)
+        assert save.pages_path().read_text(encoding="utf-8") == lines
+        assert _titles(library, _source("tokyo")) == ("Tokyo", {"Tokyo"})

@@ -33,6 +33,7 @@ def page(
     depth: int = 1,
     links: Iterable[str] = (),
     original_url: str | None = None,
+    title: str | None = None,
 ) -> Payload:
     """A ``page`` event payload; ``markdown=None`` is a page with no markdown output."""
     content = None if markdown is None else {"content": markdown}
@@ -42,6 +43,7 @@ def page(
         "markdown": content,
         "links": [_link(u) for u in links],
         "original_url": url if original_url is None else original_url,
+        "metadata": {"title": title},
     }
     return {"type": "page", "result": result}
 
