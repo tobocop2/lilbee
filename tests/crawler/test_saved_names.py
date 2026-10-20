@@ -59,6 +59,8 @@ from lilbee.crawler import (
 from lilbee.data.ingest import sync
 from lilbee.data.store import Store
 from lilbee.retrieval.query.formatting import source_label
+from lilbee.wiki.entity_extractor import EntityKind
+from lilbee.wiki.stubs import WikiStub, load_stub_index, save_stub_index
 from tests._crawl_meta import write_crawl_metadata
 from tests.conftest import make_citation, make_mock_services
 from tests.test_store import _axis_record, _citation, _early_source
@@ -665,6 +667,42 @@ class TestLibraryMainSaved:
         columns = library.get_db().open_table(CHUNKS_TABLE).schema.names
         assert ("source_id" in columns, "source" in columns) == (True, False)
         assert _guide_after_recrawl(library) == _expected_guide()
+
+
+def _subject(slug: str, source_id: str) -> WikiStub:
+    """A browse-index subject that one document names."""
+    return WikiStub(
+        slug=slug,
+        label=slug,
+        kind=EntityKind.ENTITY,
+        type_hint="ORG",
+        source_mentions=((source_id, 1),),
+        chunk_refs=((source_id, 0),),
+    )
+
+
+class TestRecrawlForgetsInWikiIndex:
+    @pytest.mark.timeout(120)
+    async def test_a_page_moved_to_its_new_name_leaves_the_browse_index(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.wiki = True
+        cfg.data_root = cfg.data_dir.parent
+        _write_earlier_guide()
+        (cfg.documents_dir / "notes.md").write_text(_text("notes", "1"), encoding="utf-8")
+        await sync(quiet=True)
+        ids = library.source_ids([_GUIDE_SOURCE, "notes.md"], None)
+        save_stub_index(
+            {
+                "guide": _subject("guide", ids[_GUIDE_SOURCE]),
+                "notes": _subject("notes", ids["notes.md"]),
+            }
+        )
+
+        await _recrawl_guide(monkeypatch)
+
+        assert not (cfg.documents_dir / _GUIDE_SOURCE).exists()
+        assert sorted(load_stub_index()) == ["notes"]
 
 
 class _CountingMeta(dict):
