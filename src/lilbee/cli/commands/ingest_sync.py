@@ -39,6 +39,7 @@ from lilbee.cli.app import (
     global_option,
 )
 from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
+from lilbee.cli.commands.crawl_login import crawl_login
 from lilbee.cli.helpers import (
     add_paths,
     json_output,
@@ -155,23 +156,16 @@ _include_subdomains_option = typer.Option(
 _authorization_option = typer.Option(
     "",
     "--authorization",
-    envvar="LILBEE_CRAWL_AUTHORIZATION",
-    help="Authorization header value sent to the host of each URL, e.g. 'Bearer <token>'.",
+    help="Authorization header value sent to the one host of the URLs, e.g. 'Bearer <token>'.",
 )
 _username_option = typer.Option(
-    "", "--username", help="Basic-auth username sent to the host of each URL."
+    "", "--username", help="Basic-auth username sent to the one host of the URLs."
 )
-_password_option = typer.Option(
-    "",
-    "--password",
-    envvar="LILBEE_CRAWL_PASSWORD",
-    help="Basic-auth password sent with --username.",
-)
+_password_option = typer.Option("", "--password", help="Basic-auth password sent with --username.")
 _cookie_option = typer.Option(
     "",
     "--cookie",
-    envvar="LILBEE_CRAWL_COOKIE",
-    help="Cookie header value sent to the host of each URL, e.g. 'session=<id>'.",
+    help="Cookie header value sent to the one host of the URLs, e.g. 'session=<id>'.",
 )
 
 
@@ -235,7 +229,8 @@ def _crawl_urls_blocking(
     include_subdomains: bool = False,
     login: CrawlLogin = NO_LOGIN,
 ) -> _CrawlOutcome:
-    """Crawl each URL in turn, sending *login* to its host; a set *cancel_event* raises a cancel.
+    """Crawl each URL in turn, sending *login* to the one host of *urls*; a set *cancel_event*
+    raises a cancel.
 
     A URL whose address is refused, or whose crawl saved nothing and failed on every page,
     is a failed source; the next URL is still crawled.
@@ -623,7 +618,7 @@ def _crawl_urls_step(
     max_pages: int | None,
     include_subdomains: bool,
     cancel_event: threading.Event,
-    login: CrawlLogin,
+    typed_login: CrawlLogin,
 ) -> _CrawlOutcome:
     """Crawl URLs; without the crawler extra every URL fails with the install message."""
     if not urls:
@@ -634,6 +629,10 @@ def _crawl_urls_step(
         return _CrawlOutcome(
             failed=[_FailedSource(without_userinfo(url), CRAWLER_MISSING_MESSAGE) for url in urls]
         )
+    try:
+        login = crawl_login(urls, typed_login)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
     outcome = _crawl_urls_blocking(
         urls,
         crawl=crawl,
@@ -769,7 +768,7 @@ def add(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
     try:
-        login = CrawlLogin(authorization, username, password, cookie)
+        typed_login = CrawlLogin(authorization, username, password, cookie)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from None
     if max_cpus is not None:
@@ -792,7 +791,7 @@ def add(
                 max_pages=max_pages,
                 include_subdomains=include_subdomains,
                 cancel_event=cancel_event,
-                login=login,
+                typed_login=typed_login,
             )
             payload = _register_and_sync(
                 file_paths,
