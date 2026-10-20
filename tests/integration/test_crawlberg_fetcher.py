@@ -41,7 +41,7 @@ from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, Config, cfg  # no
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
 from lilbee.core.crawl_patterns import refused_exclude_patterns  # noqa: E402
 from lilbee.core.web_names import page_stem  # noqa: E402
-from lilbee.crawler import CrawlMeta, bootstrap, crawl_and_save, save, url_filter  # noqa: E402
+from lilbee.crawler import bootstrap, crawl_and_save, save, url_filter  # noqa: E402
 from lilbee.crawler.bootstrap import CrawlEngineRefusedError  # noqa: E402
 from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
     _SSRF_ERROR_CODE,
@@ -53,6 +53,7 @@ from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
 )
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402
 from lilbee.crawler.task import CrawlTask, TaskStatus, get_task, run_crawl  # noqa: E402
+from lilbee.data.page_record import CrawlMeta, page_titles  # noqa: E402
 from lilbee.mcp_server import add as mcp_add  # noqa: E402
 from lilbee.mcp_server import crawl as mcp_crawl  # noqa: E402
 from lilbee.runtime.progress import CrawlPageFailedEvent, EventType  # noqa: E402
@@ -812,6 +813,12 @@ class TestWorkerThread:
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestCrawlAndSave:
+    @pytest.mark.parametrize("mode", list(CrawlRenderMode), ids=[m.value for m in CrawlRenderMode])
+    async def test_a_saved_page_records_its_own_title(self, site, mode):
+        paths = await crawl_and_save(site.url("/query/"), depth=0, render_mode=mode)
+        assert len(paths) == 1
+        assert list(page_titles().values()) == ["Listing"]
+
     async def test_max_pages_saves_exactly_that_many_pages(self, site):
         paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=5)
         assert len(paths) == 5
