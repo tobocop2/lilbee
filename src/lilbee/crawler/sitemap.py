@@ -57,10 +57,10 @@ def _get(url: str, seed: ada_url.URL, user_agent: str, login: CrawlLogin) -> htt
         return None
 
 
-def _headers(user_agent: str, login: CrawlLogin) -> dict[str, str]:
-    """The user agent, when set, and the authorization and cookie headers of *login*."""
+def _headers(user_agent: str, login: CrawlLogin) -> dict[str, str] | None:
+    """The user agent, when set, and the login's authorization and cookie headers, or None."""
     agent = {_USER_AGENT_HEADER: user_agent} if user_agent else {}
-    return {**agent, **login.authorization_header, **login.cookie_header}
+    return {**agent, **login.authorization_header, **login.cookie_header} or None
 
 
 def _is_success(resp: httpx.Response) -> bool:
