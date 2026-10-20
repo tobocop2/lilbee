@@ -37,6 +37,19 @@ class TestCrawlLogin:
             CrawlLogin(**{**values, name: "sec\r\nret"})
         assert "sec" not in str(caught.value)
 
+    @pytest.mark.parametrize("name", ["authorization", "cookie"])
+    @pytest.mark.parametrize("value", ["tok=caféX", "tok=\u0080X", "tok=\U0001f600X"])
+    def test_a_header_value_outside_ascii_is_refused_by_field_name_only(self, name, value):
+        with pytest.raises(
+            ValueError, match=f"login {name} holds a character outside ASCII"
+        ) as caught:
+            CrawlLogin(**{name: value})
+        assert "tok" not in str(caught.value)
+
+    def test_a_username_and_password_outside_ascii_are_kept(self):
+        login = CrawlLogin(username="josé", password="pässwort")
+        assert login.basic_credentials == ("josé", "pässwort")
+
     def test_a_password_needs_a_username(self):
         with pytest.raises(ValueError, match="password needs a username"):
             CrawlLogin(password=PASSWORD)
