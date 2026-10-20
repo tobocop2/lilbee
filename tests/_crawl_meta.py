@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from lilbee.core.config import cfg
-from lilbee.crawler import CrawlMeta
+from lilbee.data.page_record import CrawlMeta
 
 CRAWL_META_FILE = "crawl_meta.json"
 

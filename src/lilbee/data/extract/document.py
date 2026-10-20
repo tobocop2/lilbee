@@ -17,6 +17,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import active_config
 from lilbee.core.config.enums import OcrMode, OcrPageStrategy
 from lilbee.data.offload import to_ingest_thread
+from lilbee.data.page_record import page_titles
 from lilbee.data.store import ChunkType, PageTextRecord, SourceMeta
 from lilbee.data.title import derive_title, source_meta_from_extraction
 from lilbee.data.types import (
@@ -884,10 +885,12 @@ async def ingest_markdown(
     Each chunk gets the heading hierarchy path (e.g. "# Setup > ## Install")
     prepended for better retrieval context. When ``page_texts_out`` is given,
     the full text is appended as page 0 for export. The returned metadata's
-    title is the note's leading ``# Heading`` when it has one, else the stem.
+    title is a crawled page's own title, else the note's leading ``# Heading``,
+    else the stem.
     """
     raw_text = await to_ingest_thread(path.read_text, encoding="utf-8", errors="replace")
-    meta = SourceMeta(title=derive_title(source_name, _markdown_h1(raw_text)))
+    page_title = page_titles().get(source_name)
+    meta = SourceMeta(title=derive_title(source_name, page_title or _markdown_h1(raw_text)))
     if not raw_text.strip():
         return [], meta
 

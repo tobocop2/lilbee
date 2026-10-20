@@ -56,6 +56,7 @@ def _fetched_to_result(page: FetchedPage) -> CrawlResult:
         markdown=page.markdown,
         success=page.success,
         error=page.error,
+        title=page.title,
     )
 
 

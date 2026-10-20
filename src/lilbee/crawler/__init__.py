@@ -27,7 +27,6 @@ from lilbee.crawler.runner import (
     crawl_single,
 )
 from lilbee.crawler.save import (
-    CrawlMeta,
     content_hash,
     load_crawl_metadata,
     url_to_filename,
@@ -44,7 +43,6 @@ __all__ = [
     "CancelToken",
     "ConcurrencySpec",
     "CrawlLogin",
-    "CrawlMeta",
     "CrawlResult",
     "CrawlerBackendError",
     "CrawlerBrowserError",
