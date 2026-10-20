@@ -183,12 +183,16 @@ class _Collected(logging.Handler):
 @pytest.fixture
 def every_log_line() -> Iterator[_Collected]:
     root = logging.getLogger()
+    httpx_logger = logging.getLogger("httpx")
     collected = _Collected()
-    level = root.level
+    level, httpx_level = root.level, httpx_logger.level
     root.setLevel(logging.DEBUG)
+    # The request lines are the log's positive control; other imports can raise this logger's level.
+    httpx_logger.setLevel(logging.INFO)
     root.addHandler(collected)
     yield collected
     root.removeHandler(collected)
+    httpx_logger.setLevel(httpx_level)
     root.setLevel(level)
 
 
