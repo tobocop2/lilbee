@@ -61,8 +61,8 @@ _UNSET_PATH = Path()
 # (eng, en, chi_sim, jpn_vert). xberg rejects anything else before extracting.
 _TESSERACT_LANGUAGE_CODE = re.compile(r"[a-z]{2,3}(?:_[a-z]+)*")
 
-# A control character, which the crawl user agent setting refuses.
-_CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
+# A control character, which a crawl request header value refuses.
+CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
 
 # Model roles that can be off. An empty LILBEE_<FIELD> or config.toml value
 # clears one of these; on every other field an empty value counts as unset.
@@ -1359,7 +1359,7 @@ class Config(BaseSettings):
     def _validate_crawl_user_agent(cls, v: str) -> str:
         """The user agent without surrounding whitespace; a control character is refused."""
         user_agent = v.strip()
-        if _CONTROL_CHARACTER.search(user_agent):
+        if CONTROL_CHARACTER.search(user_agent):
             raise ValueError("crawl_user_agent holds a control character")
         return user_agent
 

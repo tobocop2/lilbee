@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.server.handlers.sse import SseStream
 
 
@@ -16,6 +17,7 @@ async def crawl_stream(
     max_pages: int | None = None,
     render_mode: CrawlRenderMode | None = None,
     include_subdomains: bool = False,
+    login: CrawlLogin = NO_LOGIN,
 ) -> AsyncGenerator[str, None]:
     """Stream crawl progress as SSE events.
 
@@ -46,6 +48,7 @@ async def crawl_stream(
                 cancel=sse.cancel,
                 include_subdomains=include_subdomains,
                 render_mode=render_mode,
+                login=login,
             )
         finally:
             sse.queue.put_nowait(None)

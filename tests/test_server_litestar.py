@@ -1787,6 +1787,26 @@ class TestCorsDefaultRegex:
 
 class TestCrawlRoute:
     @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_passes_the_login_to_the_crawl(self, mock_stream, client):
+        from lilbee.crawler.models import CrawlLogin
+
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        login = {"username": "alice", "password": "pw-4Rv", "cookie": "sid=3"}
+        resp = client.post("/api/crawl", json={"url": "https://example.com", "login": login})
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs["login"] == CrawlLogin(**login)
+        assert b"pw-4Rv" not in resp.content
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_refuses_a_bad_login_without_echoing_it(self, mock_stream, client):
+        login = {"authorization": "Bearer t-7Hn", "username": "alice"}
+        resp = client.post("/api/crawl", json={"url": "https://example.com", "login": login})
+        assert resp.status_code == 400
+        assert "not both" in resp.text
+        assert "t-7Hn" not in resp.text
+        mock_stream.assert_not_called()
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
     def test_post_crawl_streams_sse(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen(
             "event: crawl_start\ndata: {}\n\n",

@@ -20,8 +20,11 @@ from lilbee.crawler import crawlberg_fetcher as crawlberg_fetcher_mod
 from lilbee.crawler import discovery as discovery_mod
 from lilbee.crawler import events as events_mod
 from lilbee.crawler import runner as runner_mod
+from lilbee.crawler import sitemap as sitemap_mod
 from lilbee.crawler.models import (
+    NO_LOGIN,
     ConcurrencySpec,
+    CrawlLogin,
     CrawlResult,
     FetchedPage,
     FilterSpec,
@@ -670,3 +673,36 @@ class TestFetcherModuleNotDirectlyImported:
         with open(adapter_source, encoding="utf-8") as fh:
             adapter_text = fh.read()
         assert "import crawlberg" in adapter_text
+
+
+LOGIN_SEED = "https://example.com/"
+LOGIN_TOKEN = "Bearer tok-5Qz"
+LOGIN_COOKIE = "sid=ck-8Wm"
+
+
+class TestRunnerLogin:
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single", "site"])
+    async def test_crawl_and_save_sends_the_login_to_crawlberg_and_the_sitemap(
+        self, monkeypatch, depth: int
+    ):
+        asked: list[Any] = []
+
+        def count(url: str, **kwargs: Any) -> int:
+            asked.append(kwargs["login"])
+            return -1
+
+        monkeypatch.setattr(sitemap_mod, "_count_sitemap_urls", count)
+        login = CrawlLogin(authorization=LOGIN_TOKEN, cookie=LOGIN_COOKIE)
+        stub = StubCrawlberg([crawlberg_page(LOGIN_SEED, "# Home", depth=0), complete(1)])
+        with stub.installed():
+            await crawl_and_save(
+                LOGIN_SEED, depth=depth, max_pages=5, render_mode=CrawlRenderMode.HTTP
+            )
+            await crawl_and_save(
+                LOGIN_SEED, depth=depth, max_pages=5, render_mode=CrawlRenderMode.HTTP, login=login
+            )
+        assert [config.kwargs["auth"] for config in stub.configs] == [
+            None,
+            ("header", "Authorization", LOGIN_TOKEN),
+        ]
+        assert asked == ([NO_LOGIN, login] if depth else [])

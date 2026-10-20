@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlparse
 from urllib.robotparser import RobotFileParser
 
+from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import host_in_scope, parsed_url, require_valid_crawl_url
 from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
@@ -34,8 +35,10 @@ def _basic_credentials(seed: ada_url.URL) -> tuple[str, str] | None:
     return unquote(seed.username), unquote(seed.password)
 
 
-def _get(url: str, seed: ada_url.URL, user_agent: str) -> httpx.Response | None:
-    """One GET of *url* with the seed's credentials, or None on a transport failure.
+def _get(url: str, seed: ada_url.URL, user_agent: str, login: CrawlLogin) -> httpx.Response | None:
+    """One GET of *url* with the seed's credentials and *login*, or None on a transport failure.
+
+    The seed's own username and password win over *login*'s, as in crawlberg.
 
     Redirects are not followed: a 3xx could steer this best-effort request to a
     private or metadata host (SSRF) before the body is inspected.
@@ -45,8 +48,8 @@ def _get(url: str, seed: ada_url.URL, user_agent: str) -> httpx.Response | None:
     try:
         return httpx.get(
             url,
-            auth=_basic_credentials(seed),
-            headers={_USER_AGENT_HEADER: user_agent} if user_agent else None,
+            auth=_basic_credentials(seed) or login.basic_credentials,
+            headers=_headers(user_agent, login),
             timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS,
             follow_redirects=False,
         )
@@ -54,17 +57,25 @@ def _get(url: str, seed: ada_url.URL, user_agent: str) -> httpx.Response | None:
         return None
 
 
+def _headers(user_agent: str, login: CrawlLogin) -> dict[str, str]:
+    """The user agent, when set, and the authorization and cookie headers of *login*."""
+    agent = {_USER_AGENT_HEADER: user_agent} if user_agent else {}
+    return {**agent, **login.authorization_header, **login.cookie_header}
+
+
 def _is_success(resp: httpx.Response) -> bool:
     return HTTPStatus.OK <= resp.status_code < HTTPStatus.MULTIPLE_CHOICES
 
 
-def _robots_allow_sitemap(seed: ada_url.URL, sitemap_url: str, user_agent: str) -> bool:
+def _robots_allow_sitemap(
+    seed: ada_url.URL, sitemap_url: str, user_agent: str, login: CrawlLogin
+) -> bool:
     """True when the site's robots.txt lets *user_agent* fetch *sitemap_url*.
 
     A missing robots.txt (404 or 410) allows everything. A robots.txt that cannot
     be read, or that answers with any other status, allows nothing.
     """
-    resp = _get(f"{seed.origin}{_ROBOTS_PATH}", seed, user_agent)
+    resp = _get(f"{seed.origin}{_ROBOTS_PATH}", seed, user_agent, login)
     if resp is None:
         return False
     if resp.status_code in _ROBOTS_ABSENT_STATUSES:
@@ -77,7 +88,7 @@ def _robots_allow_sitemap(seed: ada_url.URL, sitemap_url: str, user_agent: str) 
 
 
 def _fetch_sitemap_text(
-    start_url: str, *, user_agent: str = "", respect_robots_txt: bool
+    start_url: str, *, user_agent: str = "", respect_robots_txt: bool, login: CrawlLogin = NO_LOGIN
 ) -> str | None:
     """Return sitemap.xml body or None on any fetch/status failure.
 
@@ -94,16 +105,21 @@ def _fetch_sitemap_text(
         require_valid_crawl_url(sitemap_url)
     except ValueError:
         return None
-    if respect_robots_txt and not _robots_allow_sitemap(parsed, sitemap_url, user_agent):
+    if respect_robots_txt and not _robots_allow_sitemap(parsed, sitemap_url, user_agent, login):
         return None
-    resp = _get(sitemap_url, parsed, user_agent)
+    resp = _get(sitemap_url, parsed, user_agent, login)
     if resp is None or not _is_success(resp):
         return None
     return resp.text
 
 
 def _count_sitemap_urls(
-    start_url: str, *, include_subdomains: bool, respect_robots_txt: bool, user_agent: str = ""
+    start_url: str,
+    *,
+    include_subdomains: bool,
+    respect_robots_txt: bool,
+    user_agent: str = "",
+    login: CrawlLogin = NO_LOGIN,
 ) -> int:
     """Best-effort count of URLs in the host's /sitemap.xml that match the crawl scope.
 
@@ -118,7 +134,7 @@ def _count_sitemap_urls(
     if not host:
         return CRAWL_TOTAL_UNKNOWN
     text = _fetch_sitemap_text(
-        start_url, user_agent=user_agent, respect_robots_txt=respect_robots_txt
+        start_url, user_agent=user_agent, respect_robots_txt=respect_robots_txt, login=login
     )
     if text is None:
         return CRAWL_TOTAL_UNKNOWN
