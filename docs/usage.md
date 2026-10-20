@@ -1328,10 +1328,25 @@ depth, or `depth=null` for the whole site.
 
 **Sites that need a login:** `lilbee add` takes `--authorization`, `--username`,
 `--password` and `--cookie`. The REST body takes a `login` object with the same
-four fields. The MCP `crawl` tool takes them as four parameters. The crawl sends
-them only to the host of the first URL. They are never saved to `config.toml`
-or the crawl record. The TUI `/crawl` command and the MCP `add` tool do not take
-a login.
+four fields. The MCP `crawl` tool takes them as four parameters. A login goes to
+one host only: the host of the URL, and never to a host a page links or
+redirects to. If one `lilbee add` command has a login and URLs on more than one
+host, lilbee refuses the command. Add the URLs of each host in their own
+command. The login is never saved to `config.toml` or the crawl record. The TUI
+`/crawl` command and the MCP `add` tool do not take a login.
+
+To keep a secret out of shell history, export it as `LILBEE_CRAWL_AUTHORIZATION`,
+`LILBEE_CRAWL_PASSWORD` or `LILBEE_CRAWL_COOKIE`, and name its host in
+`LILBEE_CRAWL_LOGIN_HOST`. lilbee sends these variables only to a command whose
+URLs are all on that host. For any other command, lilbee sends none of them and
+prints a note. A flag on the command line wins over the variable of the same
+field.
+
+```bash
+export LILBEE_CRAWL_LOGIN_HOST=wiki.example.com
+export LILBEE_CRAWL_COOKIE='session=<id>'
+lilbee add https://wiki.example.com/space --crawl
+```
 
 **Configuration (all optional):**
 
