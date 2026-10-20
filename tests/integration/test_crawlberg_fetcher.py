@@ -1362,9 +1362,8 @@ class TestRefusedEngineOnTheCli:
         cfg.crawl_render_mode = HTTP
         result = self._add("add", site.url("/scope/"))
         assert result.exit_code == 1
-        assert "Error: " + PATTERN_SETTING + "invalid_config: invalid exclude_path" in result.output
+        assert PATTERN_SETTING + "invalid_config: invalid exclude_path" in result.output
         assert "Traceback" not in result.output
-        assert "Crawled" not in result.output
         assert site.paths_since(0, "/scope/") == []
 
     def test_a_refused_flag_exits_nonzero_and_names_the_setting(self, site):
@@ -1372,7 +1371,7 @@ class TestRefusedEngineOnTheCli:
         cfg.crawl_render_mode = BROWSER
         result = self._add("add", site.url("/scope/"))
         assert result.exit_code == 1
-        assert "Error: " + FLAG_SETTING + "invalid_config: browser.chrome_args" in result.output
+        assert FLAG_SETTING + "invalid_config: browser.chrome_args" in result.output
         assert "Traceback" not in result.output
         assert site.paths_since(0, "/scope/") == []
 
@@ -1382,8 +1381,9 @@ class TestRefusedEngineOnTheCli:
         result = self._add("--json", "add", site.url("/scope/"))
         assert result.exit_code == 1
         objects = [json.loads(line) for line in result.output.splitlines() if line.startswith("{")]
-        assert [list(found) for found in objects] == [["error"]]
-        assert objects[0]["error"].startswith(PATTERN_SETTING)
+        assert len(objects) == 1
+        assert objects[0]["crawled"] == 0
+        assert objects[0]["error"].startswith(site.url("/scope/") + ": " + PATTERN_SETTING)
 
     def test_a_depth_above_the_engine_limit_is_refused_before_any_request(self, site):
         cfg.crawl_render_mode = HTTP
@@ -1401,9 +1401,8 @@ class TestRefusedEngineOnTheCli:
         cfg.crawl_render_mode = HTTP
         result = self._add("add", site.url("/scope/"))
         assert result.exit_code == 1
-        assert f"Error: {NO_SETTING}{OVERSIZED_REASON}" in result.output
+        assert f"{NO_SETTING}{OVERSIZED_REASON}" in result.output
         assert "Traceback" not in result.output
-        assert "Crawled" not in result.output
         assert site.paths_since(0, "/scope/") == []
 
     @pytest.mark.parametrize(
