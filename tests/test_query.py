@@ -301,16 +301,16 @@ class TestFormatSource:
         assert format_source(r, title="A note").startswith("[notes/a.md](file://")
 
     def test_a_title_cannot_add_a_link_or_code_of_its_own(self):
+        from lilbee.cli.tui.widgets.message import _answer_markdown_parser
         from lilbee.retrieval.query.formatting import (
             FILE_LINK_RE,
-            commonmark,
             source_markdown_link,
             unescape_markdown_text,
         )
 
         title = "x](https://evil.example) `[y` <b> \\ end"
         link = source_markdown_link("_web/forum.example/a~0123456789abcdef.md", title)
-        inline = commonmark().parseInline(link)[0].children or []
+        inline = _answer_markdown_parser().parseInline(link)[0].children or []
         hrefs = [t.attrGet("href") for t in inline if t.type == "link_open"]
         assert len(hrefs) == 1 and str(hrefs[0]).startswith("file://")
         assert not [t for t in inline if t.type in ("code_inline", "html_inline")]
