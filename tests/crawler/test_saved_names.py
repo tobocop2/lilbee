@@ -1417,3 +1417,77 @@ class TestPageTitle:
         await sync(quiet=True)
         assert save.pages_path().read_text(encoding="utf-8") == lines
         assert _titles(library, _source("tokyo")) == ("Tokyo", {"Tokyo"})
+
+
+_FORUM_LABEL = f"title.test · {_FORUM_TITLE}"
+
+
+async def _crawled_forum(monkeypatch: pytest.MonkeyPatch) -> str:
+    """The source of the forum page, crawled with its long title and synced."""
+    await _crawl_titled(monkeypatch, _FORUM, "1", _FORUM_TITLE)
+    await sync(quiet=True)
+    return _source(_FORUM)
+
+
+class TestEverySurfaceShowsTheStoredTitle:
+    """Each place that names a crawled page shows its stored title, not its cut file name."""
+
+    @pytest.mark.timeout(120)
+    async def test_the_sources_block_of_an_answer(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        from lilbee.retrieval.query.formatting import format_sources_block
+
+        source = await _crawled_forum(monkeypatch)
+        chunks = library.get_chunks_by_source(source)
+        block = format_sources_block(chunks, library.web_titles([source, "notes.md"]))
+        assert f"1. [{_FORUM_LABEL}](file://" in block
+
+    @pytest.mark.timeout(120)
+    async def test_a_restored_chat_turn(self, library: Store, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        source = await _crawled_forum(monkeypatch)
+        restored = AssistantMessage(content="Feed them weekly [1].", sources=(source,))
+        assert f"1. [{_FORUM_LABEL}](file://" in "".join(restored._content_parts)
+
+    @pytest.mark.timeout(120)
+    async def test_a_chat_export(self, library: Store, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.app.session_export import session_markdown
+        from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
+
+        source = await _crawled_forum(monkeypatch)
+        meta = SessionMeta(
+            id="3f2a1b2c-0000-4000-8000-000000000000",
+            title="Tomatoes",
+            created_at="2026-10-20T10:00:00+00:00",
+            updated_at="2026-10-20T10:05:00+00:00",
+            model_ref="qwen3:8b",
+            scope="both",
+            message_count=1,
+        )
+        answer = SessionMessage(role=MessageRole.ASSISTANT, content="x [1]", sources=(source,))
+        markdown = session_markdown(Session(meta=meta, messages=(answer,), summary=""))
+        assert markdown.endswith(f"Sources:\n\n1. {_FORUM_LABEL}\n")
+
+    @pytest.mark.timeout(120)
+    async def test_the_source_route(self, library: Store, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server.handlers.documents import _get_source_content_sync
+
+        source = await _crawled_forum(monkeypatch)
+        content = _get_source_content_sync(source, False)
+        assert not isinstance(content, tuple)
+        assert content.title == _FORUM_TITLE
+
+    @pytest.mark.timeout(120)
+    async def test_a_page_with_no_stored_title_keeps_its_slug(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        from lilbee.retrieval.query.formatting import format_sources_block
+
+        source = await _crawled_forum(monkeypatch)
+        unknown = "_web/title.test/never-crawled~0123456789abcdef.md"
+        assert library.web_titles([unknown, "notes.md"]) == {}
+        chunks = library.get_chunks_by_source(source)
+        block = format_sources_block(chunks, {})
+        assert f"1. [title.test · {Path(source).name.rpartition('~')[0]}](file://" in block

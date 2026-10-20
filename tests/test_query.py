@@ -290,6 +290,37 @@ class TestFormatSource:
         link = source_markdown_link("a\nb\r\nc.md")
         assert link.startswith("[a b c.md](file://")
 
+    def test_a_crawled_page_is_labelled_with_its_stored_title(self):
+        source = "_web/forum.example/how-to-grow-tomatoes~0123456789abcdef.md"
+        r = _make_result(source=source, content_type="text")
+        title = "How to grow tomatoes indoors | The Growers Forum"
+        assert format_source(r, title=title).startswith(f"[forum.example · {title}](file://")
+
+    def test_a_local_file_keeps_its_path_whatever_its_title(self):
+        r = _make_result(source="notes/a.md", content_type="text")
+        assert format_source(r, title="A note").startswith("[notes/a.md](file://")
+
+    def test_a_title_cannot_add_a_link_or_code_of_its_own(self):
+        from lilbee.retrieval.query.formatting import (
+            FILE_LINK_RE,
+            commonmark,
+            source_markdown_link,
+            unescape_markdown_text,
+        )
+
+        title = "x](https://evil.example) `[y` <b> \\ end"
+        link = source_markdown_link("_web/forum.example/a~0123456789abcdef.md", title)
+        inline = commonmark().parseInline(link)[0].children or []
+        hrefs = [t.attrGet("href") for t in inline if t.type == "link_open"]
+        assert len(hrefs) == 1 and str(hrefs[0]).startswith("file://")
+        assert not [t for t in inline if t.type in ("code_inline", "html_inline")]
+        shown = "".join(t.content for t in inline if t.type == "text")
+        assert shown == f"forum.example · {title}"
+        match = FILE_LINK_RE.search(link)
+        assert match is not None
+        assert unescape_markdown_text(match["label"]) == f"forum.example · {title}"
+        assert match["url"] == hrefs[0]
+
 
 class TestUniqueSources:
     def test_first_chunk_per_distinct_source_in_order(self):
@@ -309,7 +340,7 @@ class TestFormatSourcesBlock:
             _make_result(source="a.md", content_type="text"),
             _make_result(source="b.md", content_type="text"),
         ]
-        block = format_sources_block(results)
+        block = format_sources_block(results, {})
         assert block.startswith("\n\nSources:\n\n")
         assert "1. [a.md](file://" in block
         assert "2. [b.md](file://" in block
@@ -320,13 +351,13 @@ class TestFormatSourcesBlock:
             _make_result(source="a.md", content_type="text"),
             _make_result(source="b.md", content_type="text"),
         ]
-        block = format_sources_block(results)
+        block = format_sources_block(results, {})
         assert "1. [a.md](file://" in block
         assert "2. [b.md](file://" in block
         assert "3." not in block
 
     def test_empty_when_no_sources(self):
-        assert format_sources_block([]) == ""
+        assert format_sources_block([], {}) == ""
 
 
 class TestSortByRelevance:
@@ -992,6 +1023,23 @@ class TestCitedSources:
         answer = get_services().searcher.ask("q")
         assert "1. [a.pdf](file://" in answer
         assert "2. [b.pdf](file://" in answer
+
+    def test_ask_labels_a_crawled_page_with_its_stored_title(self, mock_svc):
+        page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
+        mock_svc.store.search.return_value = [_make_result(source=page, chunk="alpha")]
+        mock_svc.store.web_titles.return_value = {page: "How to grow tomatoes indoors"}
+        mock_svc.provider.chat.return_value = _text_result("From [1].")
+        answer = get_services().searcher.ask("q")
+        assert "1. [forum.example · How to grow tomatoes indoors](file://" in answer
+
+    def test_ask_stream_labels_a_crawled_page_with_its_stored_title(self, mock_svc):
+        page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
+        mock_svc.store.search.return_value = [_make_result(source=page, chunk="alpha")]
+        mock_svc.store.web_titles.return_value = {page: "How to grow tomatoes indoors"}
+        mock_svc.provider.chat.return_value = iter(["From ", "[1]."])
+        tokens = list(get_services().searcher.ask_stream("q"))
+        combined = "".join(token.content for token in tokens)
+        assert "1. [forum.example · How to grow tomatoes indoors](file://" in combined
 
     def test_ask_closes_a_cut_off_code_block_before_the_sources(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(source="a.pdf")]
