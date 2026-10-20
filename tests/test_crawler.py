@@ -2355,7 +2355,7 @@ class TestCrawlAndSave:
         cancel = threading.Event()
 
         async def fetch_then_cancel(
-            url: str, *, render_mode: CrawlRenderMode, on_progress: object
+            url: str, *, render_mode: CrawlRenderMode, on_progress: object, login: object
         ) -> CrawlResult:
             cancel.set()
             return CrawlResult(url=url, markdown="# Hello")
@@ -3715,7 +3715,7 @@ class TestStreamingFlush:
             raise AssertionError("the periodic sync never saw the crawl's cancel")
 
         async def _fake_single(
-            url: str, *, quiet: bool = False, on_progress=None, render_mode=None
+            url: str, *, quiet: bool = False, on_progress=None, render_mode=None, login=None
         ) -> CrawlResult:
             return CrawlResult(url=url, markdown="# page")
 
@@ -3746,7 +3746,9 @@ class TestStreamingFlush:
         async def _short_sync(*_args, **_kwargs):
             await asyncio.sleep(0)
 
-        async def _fake_single(url: str, *, on_progress=None, render_mode=None) -> CrawlResult:
+        async def _fake_single(
+            url: str, *, on_progress=None, render_mode=None, login=None
+        ) -> CrawlResult:
             await asyncio.sleep(0)
             return CrawlResult(url=url, markdown=f"# {url}")
 
