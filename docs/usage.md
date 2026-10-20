@@ -1338,7 +1338,9 @@ command. The login is never saved to `config.toml` or the crawl record. The TUI
 To keep a secret out of shell history, export it as `LILBEE_CRAWL_AUTHORIZATION`,
 `LILBEE_CRAWL_PASSWORD` or `LILBEE_CRAWL_COOKIE`, and name its host in
 `LILBEE_CRAWL_LOGIN_HOST`. lilbee sends these variables only to a command whose
-URLs are all on that host. For any other command, lilbee sends none of them and
+URLs are all on that host. The match ignores the scheme and the port, as
+crawlberg does, so the login also goes to `http://` URLs and to other ports of
+that host. For any other command, lilbee sends none of them and
 prints a note. A flag on the command line wins over the variable of the same
 field.
 
