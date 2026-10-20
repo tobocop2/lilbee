@@ -3884,8 +3884,9 @@ class TestAddWithUrls:
             ["https://private.example/a", "https://other.example/b"],
             ["https://other.example\\@private.example/", "https://private.example/a"],
             ["https://private.example/a", "https://private.example:99999/"],
+            ["https://one.example:99999/", "https://two.example:99999/"],
         ],
-        ids=["two-hosts", "parser-trick", "unparsed"],
+        ids=["two-hosts", "parser-trick", "unparsed", "two-unparsed"],
     )
     def test_add_url_refuses_a_typed_login_for_urls_on_several_hosts(
         self, mock_sync, mock_crawl, mock_avail, urls
