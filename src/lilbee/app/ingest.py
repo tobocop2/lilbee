@@ -661,6 +661,13 @@ def _removal_holds(
     return holds
 
 
+def remove_sources_and_forget_in_wiki(names: list[str]) -> RemoveResult:
+    """Remove indexed sources by name and drop them from the wiki's browse index."""
+    result = get_services().store.remove_documents(names)
+    forget_removed_from_wiki_index(list(result.removed))
+    return result
+
+
 def forget_removed_from_wiki_index(removed: list[str]) -> None:
     """Drop removed documents from the wiki's browse index.
 
