@@ -98,6 +98,7 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
     ),
     "LILBEE_CRAWL_LOGIN_HOST": (
         "The one host that gets the login in the other `LILBEE_CRAWL_*` login variables. "
+        "The match ignores the scheme and the port. "
         "Unset, or a command that crawls another host, sends none of them",
         False,
     ),
