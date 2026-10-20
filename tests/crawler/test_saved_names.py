@@ -1532,3 +1532,13 @@ class TestEverySurfaceShowsTheStoredTitle:
         chunks = library.get_chunks_by_source(source)
         block = format_sources_block(chunks, {})
         assert f"1. [title.test · {Path(source).name.rpartition('~')[0]}](file://" in block
+
+    @pytest.mark.timeout(120)
+    async def test_a_local_file_with_a_title_is_not_a_crawled_page(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        source = await _crawled_forum(monkeypatch)
+        (cfg.documents_dir / "notes.md").write_text(_text("notes", "1"), encoding="utf-8")
+        await sync(quiet=True)
+        assert library.source_ids(["notes.md"], None)
+        assert library.web_titles([source, "notes.md"]) == {source: _FORUM_TITLE}
