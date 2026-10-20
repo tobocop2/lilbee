@@ -1489,6 +1489,7 @@ class TestCrawl:
             max_pages=10,
             render_mode=None,
             include_subdomains=False,
+            login=CrawlLogin(),
         )
 
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
@@ -1573,6 +1574,7 @@ class TestCrawl:
             max_pages=None,
             render_mode=CrawlRenderMode.BROWSER,
             include_subdomains=False,
+            login=CrawlLogin(),
         )
 
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
