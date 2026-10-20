@@ -3423,12 +3423,12 @@ class TestSdkRerank:
     def test_supports_rerank_matches_backend_available(self) -> None:
         provider = self._make_sdk_provider()
         with mock.patch(
-            "lilbee.providers.factory.provider_sdk_available",
+            "lilbee.providers.backends.liter_llm.backend.provider_sdk_available",
             return_value=True,
         ):
             assert provider.supports_rerank() is True
         with mock.patch(
-            "lilbee.providers.factory.provider_sdk_available",
+            "lilbee.providers.backends.liter_llm.backend.provider_sdk_available",
             return_value=False,
         ):
             assert provider.supports_rerank() is False
