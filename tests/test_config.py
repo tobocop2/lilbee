@@ -10,6 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Union, get_args, get_origin
 from unittest import mock
+from urllib.parse import quote
 
 import pytest
 from pydantic import ValidationError
@@ -1445,6 +1446,8 @@ class TestIgnoreDirsFallback:
 # anchored in the default exclude list.
 _FIRST = r"^https?://[^/?#]+"
 _END = r"(?:/|\?|#|$)"
+# How each generated MediaWiki namespace pattern starts.
+WIKI_NAMESPACE_START = "/wiki/(?:"
 # Each default exclude pattern, with one address the pattern is in the list to exclude.
 ADDRESS_FOR_EACH_DEFAULT_PATTERN = {
     r"/wp-admin/": "https://blog.example/wp-admin/options.php",
@@ -1508,19 +1511,111 @@ ADDRESS_FOR_EACH_DEFAULT_PATTERN = {
         r"|ttf|woff2?|css|js|map|json|xml)(\?.*)?$"
     ): "https://blog.example/img/logo.png?v=3",
     r"/wiki/Main_Page$": "https://wiki.example/wiki/Main_Page",
-    r"/wiki/Wikipedia:": "https://wiki.example/wiki/Wikipedia:About",
-    r"/wiki/Portal:": "https://wiki.example/wiki/Portal:Science",
-    r"/wiki/Special:": "https://wiki.example/wiki/Special:RecentChanges",
-    r"/wiki/Category:": "https://wiki.example/wiki/Category:Physics",
-    r"/wiki/Template:": "https://wiki.example/wiki/Template:Infobox",
-    r"/wiki/Template_talk:": "https://wiki.example/wiki/Template_talk:Infobox",
-    r"/wiki/Talk:": "https://wiki.example/wiki/Talk:Physics",
-    r"/wiki/File:": "https://wiki.example/wiki/File:Diagram.svg",
-    r"/wiki/File_talk:": "https://wiki.example/wiki/File_talk:Diagram.svg",
-    r"/wiki/User:": "https://wiki.example/wiki/User:Example",
-    r"/wiki/User_talk:": "https://wiki.example/wiki/User_talk:Example",
     r"/w/index\.php": "https://wiki.example/w/index.php?title=Physics&action=history",
 }
+# The MediaWiki namespaces the default list skips, in list order, each with an address in English.
+# A wiki in another language shows the namespace under its own name; the pattern holds both.
+WIKI_NAMESPACE_ADDRESSES = (
+    ("project", "https://wiki.example/wiki/Wikipedia:About"),
+    ("portal", "https://wiki.example/wiki/Portal:Science"),
+    ("special", "https://wiki.example/wiki/Special:RecentChanges"),
+    ("category", "https://wiki.example/wiki/Category:Physics"),
+    ("template", "https://wiki.example/wiki/Template:Infobox"),
+    ("template talk", "https://wiki.example/wiki/Template_talk:Infobox"),
+    ("talk", "https://wiki.example/wiki/Talk:Physics"),
+    ("file", "https://wiki.example/wiki/File:Diagram.svg"),
+    ("file talk", "https://wiki.example/wiki/File_talk:Diagram.svg"),
+    ("user", "https://wiki.example/wiki/User:Example"),
+    ("user talk", "https://wiki.example/wiki/User_talk:Example"),
+)
+# Addresses of special, talk, category, user, file, template and project pages on wikis in other
+# languages, as the names appear on each wiki. The crawler matches the address with every
+# character outside ASCII percent-encoded, so the test encodes it first.
+LOCALIZED_WIKI_ADDRESSES = [
+    "https://de.wiki.example/wiki/Spezial:Suche",
+    "https://de.wiki.example/wiki/Diskussion:Physik",
+    "https://de.wiki.example/wiki/Kategorie:Physik",
+    "https://de.wiki.example/wiki/Benutzer:Beispiel",
+    "https://de.wiki.example/wiki/Benutzer_Diskussion:Beispiel",
+    "https://de.wiki.example/wiki/Datei:Bild.png",
+    "https://de.wiki.example/wiki/Vorlage:Infobox",
+    "https://fr.wiki.example/wiki/Spécial:Recherche",
+    "https://fr.wiki.example/wiki/Sp%C3%A9cial:Recherche",
+    "https://fr.wiki.example/wiki/Discussion:Physique",
+    "https://fr.wiki.example/wiki/Catégorie:Physique",
+    "https://fr.wiki.example/wiki/Cat%C3%A9gorie:Physique",
+    "https://fr.wiki.example/wiki/Utilisateur:Exemple",
+    "https://fr.wiki.example/wiki/Fichier:Schema.png",
+    "https://fr.wiki.example/wiki/Modèle:Infobox",
+    "https://fr.wiki.example/wiki/Wikipédia:Accueil",
+    "https://es.wiki.example/wiki/Especial:Buscar",
+    "https://es.wiki.example/wiki/Discusión:Física",
+    "https://es.wiki.example/wiki/Categoría:Física",
+    "https://it.wiki.example/wiki/Speciale:Ricerca",
+    "https://it.wiki.example/wiki/Discussione:Fisica",
+    "https://it.wiki.example/wiki/Categoria:Fisica",
+    "https://pt.wiki.example/wiki/Especial:Pesquisar",
+    "https://pt.wiki.example/wiki/Discussão:Física",
+    "https://nl.wiki.example/wiki/Speciaal:Zoeken",
+    "https://nl.wiki.example/wiki/Overleg:Natuurkunde",
+    "https://pl.wiki.example/wiki/Specjalna:Szukaj",
+    "https://pl.wiki.example/wiki/Dyskusja:Fizyka",
+    "https://sv.wiki.example/wiki/Special:Sök",
+    "https://tr.wiki.example/wiki/Özel:Ara",
+    "https://tr.wiki.example/wiki/Tart%C4%B1%C5%9Fma:Fizik",
+    "https://id.wiki.example/wiki/Istimewa:Pencarian",
+    "https://id.wiki.example/wiki/Kategori:Fisika",
+    "https://vi.wiki.example/wiki/Đặc_biệt:Tìm_kiếm",
+    "https://ru.wiki.example/wiki/Служебная:Поиск",
+    "https://ru.wiki.example/wiki/%D0%A1%D0%BB%D1%83%D0%B6%D0%B5%D0%B1%D0%BD%D0%B0%D1%8F:%D0%9F%D0%BE%D0%B8%D1%81%D0%BA",
+    "https://ru.wiki.example/wiki/Обсуждение:Физика",
+    "https://ru.wiki.example/wiki/Категория:Физика",
+    "https://ru.wiki.example/wiki/Участник:Пример",
+    "https://uk.wiki.example/wiki/Спеціальна:Пошук",
+    "https://uk.wiki.example/wiki/Категорія:Фізика",
+    "https://ja.wiki.example/wiki/特別:検索",
+    "https://ja.wiki.example/wiki/%E7%89%B9%E5%88%A5:%E6%A4%9C%E7%B4%A2",
+    "https://ja.wiki.example/wiki/ノート:物理学",
+    "https://ja.wiki.example/wiki/Category:物理学",
+    "https://zh.wiki.example/wiki/Special:搜索",
+    "https://zh.wiki.example/wiki/Talk:物理学",
+    "https://zh.wiki.example/wiki/分类:物理学",
+    "https://ko.wiki.example/wiki/특수:검색",
+    "https://ko.wiki.example/wiki/분류:물리학",
+    "https://ar.wiki.example/wiki/خاص:بحث",
+    "https://ar.wiki.example/wiki/نقاش:فيزياء",
+    "https://ar.wiki.example/wiki/تصنيف:فيزياء",
+    "https://fa.wiki.example/wiki/ویژه:جستجو",
+    "https://cs.wiki.example/wiki/Speciální:Hledání",
+    "https://hu.wiki.example/wiki/Speciális:Keresés",
+    "https://fi.wiki.example/wiki/Toiminnot:Haku",
+    "https://ca.wiki.example/wiki/Especial:Cerca",
+    "https://ca.wiki.example/wiki/Viquipèdia:Portada",
+    "https://no.wiki.example/wiki/Spesial:Søk",
+]
+# Article titles that hold a colon: the text before it is part of the title, so these are content.
+ARTICLES_WITH_A_COLON = [
+    "https://wiki.example/wiki/Re:Zero",
+    "https://wiki.example/wiki/Star_Trek:_Voyager",
+    "https://wiki.example/wiki/Mission:_Impossible",
+    "https://wiki.example/wiki/2001:_A_Space_Odyssey",
+    "https://wiki.example/wiki/CSI:_Miami",
+    "https://wiki.example/wiki/Fate/Zero",
+    "https://wiki.example/wiki/Mall:_Music_from_the_Motion_Picture",
+    "https://wiki.example/wiki/Vita:_Life_in_a_Zone_of_Social_Abandonment",
+    "https://de.wiki.example/wiki/Star_Trek:_Deep_Space_Nine",
+    "https://fr.wiki.example/wiki/Mission:_Impossible_(film)",
+    "https://ru.wiki.example/wiki/Хроники_Нарнии:_Лев,_колдунья_и_волшебный_шкаф",
+    "https://ja.wiki.example/wiki/新世紀エヴァンゲリオン:_序",
+    "https://wiki.example/wiki/Special_Forces",
+    "https://wiki.example/wiki/Talk_(album)",
+    "https://de.wiki.example/wiki/Spezialist",
+    "https://de.wiki.example/wiki/Kategorie_(Philosophie)",
+    "https://wiki.example/wiki/Diskussion",
+    "https://de.wiki.example/wiki/Hilfe:Hauptseite",
+    "https://fr.wiki.example/wiki/Aide:Accueil",
+    "https://es.wiki.example/wiki/Ayuda:Contenidos",
+]
 # Paths of ordinary pages on documentation sites and wikis.
 CONTENT_PATHS = [
     "/wiki/MediaWiki",
@@ -1731,7 +1826,26 @@ class TestDefaultCrawlExcludePatterns:
         from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
         assert len(set(DEFAULT_CRAWL_EXCLUDE_PATTERNS)) == len(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
-        assert set(ADDRESS_FOR_EACH_DEFAULT_PATTERN) == set(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+        fixed = [
+            p for p in DEFAULT_CRAWL_EXCLUDE_PATTERNS if not p.startswith(WIKI_NAMESPACE_START)
+        ]
+        assert set(ADDRESS_FOR_EACH_DEFAULT_PATTERN) == set(fixed)
+
+    def test_the_default_list_has_one_pattern_for_each_wiki_namespace_in_order(self):
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+        patterns = [p for p in DEFAULT_CRAWL_EXCLUDE_PATTERNS if p.startswith(WIKI_NAMESPACE_START)]
+        assert len(patterns) == len(WIKI_NAMESPACE_ADDRESSES)
+        for pattern, (kind, url) in zip(patterns, WIKI_NAMESPACE_ADDRESSES, strict=True):
+            assert re.search(pattern, url), f"the {kind} pattern should exclude: {url}"
+
+    @pytest.mark.parametrize("url", LOCALIZED_WIKI_ADDRESSES)
+    def test_a_special_talk_category_or_user_page_in_another_language_is_excluded(self, url):
+        assert self._matches_any(quote(url, safe=":/%")), f"should exclude: {url}"
+
+    @pytest.mark.parametrize("url", ARTICLES_WITH_A_COLON)
+    def test_an_article_with_a_colon_in_its_title_is_not_excluded(self, url):
+        assert not self._matches_any(quote(url, safe=":/%")), f"should NOT exclude: {url}"
 
     @pytest.mark.parametrize("path", CONTENT_PATHS)
     def test_no_pattern_matches_a_content_address(self, path):
