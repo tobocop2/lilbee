@@ -47,7 +47,7 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from lilbee.app.services import set_services
-from lilbee.core.config import cfg
+from lilbee.core.config import CHUNKS_TABLE, CITATIONS_TABLE, SOURCES_TABLE, cfg
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,
@@ -60,7 +60,8 @@ from lilbee.data.ingest import sync
 from lilbee.data.store import Store
 from lilbee.retrieval.query.formatting import source_label
 from tests._crawl_meta import write_crawl_metadata
-from tests.conftest import make_mock_services
+from tests.conftest import make_citation, make_mock_services
+from tests.test_store import _axis_record, _citation, _early_source
 
 _LAST_SEGMENT = "page"
 _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
@@ -569,6 +570,101 @@ class TestRecrawledLibrary:
             "pages not in exactly one file": [],
             "empty folders": [],
         }
+
+
+# One page of a library main saved: its address, the name main gave it, and a wiki page citing it.
+_GUIDE = "guide"
+_GUIDE_EARLIER = "site.test/s/guide/index.md"
+_GUIDE_SOURCE = f"_web/{_GUIDE_EARLIER}"
+_GUIDE_WIKI = "wiki/concepts/guide.md"
+
+
+def _write_earlier_guide() -> None:
+    """Save the guide page under the name main gave it, with main's crawl metadata."""
+    text = _text(_GUIDE, "1")
+    path = cfg.documents_dir / _GUIDE_SOURCE
+    path.parent.mkdir(parents=True)
+    path.write_text(text, encoding="utf-8")
+    meta = CrawlMeta(_GUIDE_EARLIER, content_hash(text), "2026-01-01T00:00:00+00:00")
+    write_crawl_metadata({_SITE + _GUIDE: meta})
+
+
+async def _recrawl_guide(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Crawl the guide page again, the crawler reporting a changed text."""
+    result = CrawlResult(url=_SITE + _GUIDE, markdown=_text(_GUIDE, "2"))
+
+    async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+        await kwargs["on_result"](result)  # type: ignore[operator]
+        return [result]
+
+    monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
+    await crawl_and_save(_SITE + _GUIDE, depth=1)
+
+
+def _guide_after_recrawl(store: Store) -> dict[str, object]:
+    """What the library holds of the guide page once it was crawled again and synced."""
+    renamed = f"_web/{url_to_filename(_SITE + _GUIDE)}"
+    chunks = store.get_chunks_by_source(renamed)
+    return {
+        "sources": sorted(s["filename"] for s in store.get_sources()),
+        "earlier file": (cfg.documents_dir / _GUIDE_SOURCE).exists(),
+        "renamed file": (cfg.documents_dir / renamed).is_file(),
+        "new text indexed": any("in version 2." in c.chunk for c in chunks),
+        "citation names": [c["source_filename"] for c in store.get_citations_for_wiki(_GUIDE_WIKI)],
+    }
+
+
+def _expected_guide() -> dict[str, object]:
+    return {
+        "sources": [f"_web/{url_to_filename(_SITE + _GUIDE)}"],
+        "earlier file": False,
+        "renamed file": True,
+        "new text indexed": True,
+        "citation names": [_GUIDE_SOURCE],
+    }
+
+
+class TestLibraryMainSaved:
+    """A library main saved, with source ids or from before them, crawled again by this rule."""
+
+    @pytest.mark.timeout(120)
+    async def test_a_page_main_indexed_by_id_moves_to_its_new_name_once(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        _write_earlier_guide()
+        await sync(quiet=True)
+        library.add_citations([make_citation(_GUIDE_WIKI, _GUIDE_SOURCE)])
+        earlier_id = library.source_ids([_GUIDE_SOURCE], None)[_GUIDE_SOURCE]
+
+        await _recrawl_guide(monkeypatch)
+        await sync(quiet=True)
+
+        renamed = f"_web/{url_to_filename(_SITE + _GUIDE)}"
+        assert _guide_after_recrawl(library) == _expected_guide()
+        assert library.source_ids([renamed], None)[renamed] != earlier_id
+
+    @pytest.mark.timeout(120)
+    async def test_a_page_main_indexed_by_path_is_upgraded_before_its_name_moves(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        import lancedb
+
+        _write_earlier_guide()
+        source = {**_early_source(_GUIDE_SOURCE, "h1"), "size_bytes": 1, "mtime_ns": 2}
+        # Text values, so each metadata column is a string column as an older lilbee wrote it.
+        source = {**source, "stat_captured_ns": 3, "title": "Guide", "authors": "A"}
+        chunk = {**_axis_record(_GUIDE_SOURCE, 0, cfg.embedding_dim), "title": "Guide"}
+        db = lancedb.connect(str(cfg.lancedb_dir))
+        db.create_table(SOURCES_TABLE, [{**source, "created_at": "2026-01-01"}])
+        db.create_table(CHUNKS_TABLE, [chunk])
+        db.create_table(CITATIONS_TABLE, [_citation(_GUIDE_SOURCE, wiki_source=_GUIDE_WIKI)])
+
+        await _recrawl_guide(monkeypatch)
+        await sync(quiet=True)
+
+        columns = library.get_db().open_table(CHUNKS_TABLE).schema.names
+        assert ("source_id" in columns, "source" in columns) == (True, False)
+        assert _guide_after_recrawl(library) == _expected_guide()
 
 
 class _CountingMeta(dict):
