@@ -12,6 +12,7 @@ import yaml
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
+from lilbee.app.services import set_services
 from lilbee.app.session_export import (
     _HTML_HEADING_RE,
     SLUG_MAX_LEN,
@@ -24,6 +25,7 @@ from lilbee.app.session_export import (
 )
 from lilbee.retrieval.query.formatting import source_markdown_link
 from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
+from tests.conftest import make_mock_services
 
 _ID = "3f2a1b2c-0000-4000-8000-000000000000"
 
@@ -123,6 +125,7 @@ def test_structured_sources_become_a_numbered_list_of_plain_names():
     ],
 )
 def test_every_kind_of_source_is_named_as_the_live_answer_labels_it(source, name):
+    set_services(make_mock_services())
     markdown = session_markdown(_session(_assistant("x [1]", sources=(source,))))
     assert markdown.endswith(f"Sources:\n\n1. {name}\n")
 

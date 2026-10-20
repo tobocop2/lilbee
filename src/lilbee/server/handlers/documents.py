@@ -9,6 +9,7 @@ from litestar.exceptions import ClientException
 from litestar.status_codes import HTTP_409_CONFLICT
 
 from lilbee.app.services import get_services
+from lilbee.app.titles import stored_web_titles
 from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT
 from lilbee.server.models import (
     DocumentInfo,
@@ -131,8 +132,6 @@ async def get_source_content(
 
 def _get_source_content_sync(source: str, raw: bool) -> SourceContentResponse | tuple[bytes, str]:
     """Blocking body of :func:`get_source_content`: path validation + file read."""
-    from lilbee.wiki.index import parse_title
-
     if not source or not source.strip():
         raise ValueError("source must not be empty")
     from lilbee.data.ingest.discovery import resolve_source_path_checked
@@ -148,7 +147,7 @@ def _get_source_content_sync(source: str, raw: bool) -> SourceContentResponse | 
         if raw:
             return markdown.encode("utf-8"), "text/markdown"
         return SourceContentResponse(
-            markdown=markdown, content_type="text/markdown", title=parse_title(markdown) or None
+            markdown=markdown, content_type="text/markdown", title=_source_title(source, markdown)
         )
 
     content_type, _ = mimetypes.guess_type(resolved.name)
@@ -169,5 +168,13 @@ def _get_source_content_sync(source: str, raw: bool) -> SourceContentResponse | 
         return SourceContentResponse(markdown="", content_type=content_type, title=None)
 
     text = resolved.read_text(encoding="utf-8", errors="replace")
-    title = parse_title(text) or None
-    return SourceContentResponse(markdown=text, content_type=content_type, title=title)
+    return SourceContentResponse(
+        markdown=text, content_type=content_type, title=_source_title(source, text)
+    )
+
+
+def _source_title(source: str, text: str) -> str | None:
+    """A crawled page's stored title, else the title the text gives itself, else None."""
+    from lilbee.wiki.index import parse_title
+
+    return stored_web_titles([source]).get(source) or parse_title(text) or None
