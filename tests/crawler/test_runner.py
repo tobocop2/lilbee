@@ -567,6 +567,26 @@ class TestRobotsSetting:
         assert [config.kwargs["respect_robots_txt"] for config in stub.configs] == [respect]
 
 
+class TestSitemapRobotsSetting:
+    """``crawl_respect_robots_txt`` reaches the sitemap request of a recursive crawl."""
+
+    @pytest.mark.parametrize("respect", [True, False])
+    async def test_the_robots_setting_reaches_the_sitemap_request(self, monkeypatch, respect: bool):
+        asked: list[dict[str, object]] = []
+
+        def count(url: str, **kwargs: object) -> int:
+            asked.append(kwargs)
+            return -1
+
+        monkeypatch.setattr("lilbee.crawler.sitemap._count_sitemap_urls", count)
+        cfg.crawl_respect_robots_txt = respect
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save("https://example.com/", depth=1, max_pages=5)
+        assert [call["respect_robots_txt"] for call in asked] == [respect]
+
+
 class TestExtraWaitSetting:
     """``crawl_browser_extra_wait_ms`` reaches crawlberg from every browser crawl shape."""
 
