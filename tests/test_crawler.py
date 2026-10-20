@@ -2476,7 +2476,8 @@ def _refused_flag() -> None:
 
 
 def _refused_pattern() -> None:
-    cfg.crawl_exclude_patterns = [r"/ok/", REFUSED_PATTERN]
+    """Force a pattern crawlberg refuses past the setting, which refuses it when it is saved."""
+    object.__setattr__(cfg, "crawl_exclude_patterns", [r"/ok/", REFUSED_PATTERN])
 
 
 def _reworded_refusal() -> None:

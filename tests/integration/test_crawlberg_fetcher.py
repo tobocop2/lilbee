@@ -37,8 +37,9 @@ crawlberg = pytest.importorskip("crawlberg")
 import lilbee.server.auth as auth_mod  # noqa: E402
 from lilbee.cli.app import app  # noqa: E402
 from lilbee.cli.commands.serve_logging import setup_server_log_file  # noqa: E402
-from lilbee.core.config import Config, cfg  # noqa: E402
+from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, Config, cfg  # noqa: E402
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
+from lilbee.core.crawl_patterns import refused_exclude_patterns  # noqa: E402
 from lilbee.core.web_names import page_stem  # noqa: E402
 from lilbee.crawler import CrawlMeta, bootstrap, crawl_and_save, save, url_filter  # noqa: E402
 from lilbee.crawler.bootstrap import CrawlEngineRefusedError  # noqa: E402
@@ -961,6 +962,32 @@ class TestDefaultExcludePatterns:
         )
 
 
+class TestExcludePatternCheck:
+    """The check asks crawlberg itself, so it follows crawlberg's regex rules and not Python's."""
+
+    @pytest.mark.parametrize(
+        "pattern", [r"/wiki/(?!Main)", r"(a)\1", r"/wiki/\p{L}+:", r"(?P<name>a)"]
+    )
+    def test_a_pattern_crawlberg_compiles_is_accepted(self, pattern):
+        assert refused_exclude_patterns([pattern]) == []
+
+    @pytest.mark.parametrize("pattern", ["[", r"\Z", "a{2,1}", "*"])
+    def test_a_pattern_crawlberg_refuses_is_named_with_a_reason(self, pattern):
+        [(index, reason)] = refused_exclude_patterns(["/ok", pattern])
+        assert index == 1
+        assert reason
+
+    def test_crawlberg_compiles_every_default_pattern(self):
+        assert refused_exclude_patterns(DEFAULT_CRAWL_EXCLUDE_PATTERNS) == []
+
+    def test_the_setting_refuses_what_crawlberg_refuses_and_keeps_what_it_compiles(self):
+        probe = cfg.model_copy()
+        probe.crawl_exclude_patterns = [r"/wiki/\p{L}+:"]
+        with pytest.raises(ValueError, match="crawl_exclude_patterns"):
+            probe.crawl_exclude_patterns = [r"\Z"]
+        assert probe.crawl_exclude_patterns == [r"/wiki/\p{L}+:"]
+
+
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestQueryUrlsAndRedirects:
     async def _saved_text(self, site: _Site) -> str:
@@ -1311,6 +1338,11 @@ class TestShellThatCannotRun:
         assert site.paths_since(0, "/wiki/Home") == []
 
 
+def _force_exclude_patterns(patterns: list[str]) -> None:
+    """Set patterns past the setting's check, to reach the refusal crawlberg makes at a crawl."""
+    object.__setattr__(cfg, "crawl_exclude_patterns", patterns)
+
+
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestRefusedExcludePatterns:
     """crawlberg parses the exclude patterns when it builds the engine, before it fetches a page."""
@@ -1323,8 +1355,9 @@ class TestRefusedExcludePatterns:
         shell = tmp_path / "chrome-headless-shell"
         monkeypatch.setattr(bootstrap, "chromium_installed", lambda: True)
         monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: shell)
-        assert Config(crawl_exclude_patterns=[pattern]).crawl_exclude_patterns == [pattern]
-        cfg.crawl_exclude_patterns = [r"/scope/skip/", pattern]
+        with pytest.raises(ValueError, match="crawl_exclude_patterns"):
+            Config(crawl_exclude_patterns=[pattern])
+        _force_exclude_patterns([r"/scope/skip/", pattern])
         with pytest.raises(CrawlEngineRefusedError) as refused:
             await crawl_and_save(site.url("/scope/"), depth=1, max_pages=0, render_mode=render_mode)
         message = str(refused.value)
@@ -1333,7 +1366,7 @@ class TestRefusedExcludePatterns:
         assert site.paths_since(0, "/scope/") == []
 
     async def test_a_single_page_crawl_sends_no_pattern_and_fetches_the_page(self, site):
-        cfg.crawl_exclude_patterns = [REFUSED_PATTERNS[0]]
+        _force_exclude_patterns([REFUSED_PATTERNS[0]])
         paths = await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
         assert len(paths) == 1
 
@@ -1358,7 +1391,7 @@ class TestRefusedEngineOnTheCli:
         return CliRunner().invoke(app, [*args, "--crawl", "--depth", "1"])
 
     def test_a_refused_exclude_pattern_exits_nonzero_and_names_the_setting(self, site):
-        cfg.crawl_exclude_patterns = [REFUSED_PATTERNS[0]]
+        _force_exclude_patterns([REFUSED_PATTERNS[0]])
         cfg.crawl_render_mode = HTTP
         result = self._add("add", site.url("/scope/"))
         assert result.exit_code == 1
@@ -1376,7 +1409,7 @@ class TestRefusedEngineOnTheCli:
         assert site.paths_since(0, "/scope/") == []
 
     def test_json_output_is_one_error_object(self, site):
-        cfg.crawl_exclude_patterns = [REFUSED_PATTERNS[0]]
+        _force_exclude_patterns([REFUSED_PATTERNS[0]])
         cfg.crawl_render_mode = HTTP
         result = self._add("--json", "add", site.url("/scope/"))
         assert result.exit_code == 1
