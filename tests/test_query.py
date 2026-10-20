@@ -300,7 +300,10 @@ class TestFormatSource:
         r = _make_result(source="notes/a.md", content_type="text")
         assert format_source(r, title="A note").startswith("[notes/a.md](file://")
 
-    def test_a_title_cannot_add_a_link_or_code_of_its_own(self):
+    @pytest.mark.parametrize(
+        "title", ["x](https://evil.example) `[y` <b> \\ end", "a\\](https://evil.example/z) b"]
+    )
+    def test_a_title_cannot_add_a_link_or_code_of_its_own(self, title):
         from lilbee.cli.tui.widgets.message import _answer_markdown_parser
         from lilbee.retrieval.query.formatting import (
             FILE_LINK_RE,
@@ -308,7 +311,6 @@ class TestFormatSource:
             unescape_markdown_text,
         )
 
-        title = "x](https://evil.example) `[y` <b> \\ end"
         link = source_markdown_link("_web/forum.example/a~0123456789abcdef.md", title)
         inline = _answer_markdown_parser().parseInline(link)[0].children or []
         hrefs = [t.attrGet("href") for t in inline if t.type == "link_open"]
