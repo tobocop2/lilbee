@@ -1291,7 +1291,14 @@ async def _crawl_titled(
     monkeypatch: pytest.MonkeyPatch, path: str, version: str, title: str
 ) -> None:
     """Crawl the page at *path* with the text of *version* and the page title *title*."""
-    result = CrawlResult(url=_TITLE_SITE + path, markdown=_plain_text(version), title=title)
+    await _crawl_text(monkeypatch, path, _plain_text(version), title)
+
+
+async def _crawl_text(
+    monkeypatch: pytest.MonkeyPatch, path: str, markdown: str, title: str
+) -> None:
+    """Crawl the page at *path* with the text *markdown* and the page title *title*."""
+    result = CrawlResult(url=_TITLE_SITE + path, markdown=markdown, title=title)
 
     async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
         await kwargs["on_result"](result)  # type: ignore[operator]
@@ -1418,8 +1425,27 @@ class TestPageTitle:
         assert save.pages_path().read_text(encoding="utf-8") == lines
         assert _titles(library, _source("tokyo")) == ("Tokyo", {"Tokyo"})
 
+    @pytest.mark.timeout(120)
+    async def test_the_page_title_wins_over_the_heading_of_the_text(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        headed = f"# How to grow tomatoes\n\n{_plain_text('1')}"
+        await _crawl_text(monkeypatch, _FORUM, headed, _FORUM_TITLE)
+        await sync(quiet=True)
+        assert _titles(library, _source(_FORUM)) == (_FORUM_TITLE, {_FORUM_TITLE})
 
-_FORUM_LABEL = f"title.test · {_FORUM_TITLE}"
+    @pytest.mark.timeout(120)
+    async def test_a_page_with_no_title_is_titled_by_the_heading_of_its_text(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        headed = f"# How to grow tomatoes\n\n{_plain_text('1')}"
+        await _crawl_text(monkeypatch, _FORUM, headed, "")
+        await sync(quiet=True)
+        heading = "How to grow tomatoes"
+        assert _titles(library, _source(_FORUM)) == (heading, {heading})
+
+
+_FORUM_LABEL =f"title.test · {_FORUM_TITLE}"
 
 
 async def _crawled_forum(monkeypatch: pytest.MonkeyPatch) -> str:
