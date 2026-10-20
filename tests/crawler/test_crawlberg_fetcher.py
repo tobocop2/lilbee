@@ -1072,6 +1072,16 @@ class TestExcludedLinks:
             await _recursive(_http(), filters=EXCLUDES)
         assert _named(caplog) == [_left_out(FEED, FEED_PATTERN)]
 
+    async def test_a_crawl_with_a_pattern_only_crawlberg_compiles_still_runs_and_names_the_rest(
+        self, caplog
+    ):
+        crawlberg_only = r"/\p{L}+/"
+        script = [page(SEED, depth=0, links=[FEED, "https://example.com/a"]), complete(1)]
+        with StubCrawlberg(script).installed():
+            pages = await _recursive(_http(), filters=FilterSpec([crawlberg_only, FEED_PATTERN]))
+        assert [fetched.url for fetched in pages] == [SEED]
+        assert _named(caplog) == [_left_out(FEED, FEED_PATTERN)]
+
     async def test_the_first_pattern_that_matches_is_the_one_named(self, caplog):
         link = "https://example.com/tag/feed/"
         script = [page(SEED, depth=0, links=[link])]
