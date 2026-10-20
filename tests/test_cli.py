@@ -3868,12 +3868,101 @@ class TestAddWithUrls:
         result = runner.invoke(
             app,
             ["add", "--crawl", "--username", "alice", "--cookie", "sid=1", "https://example.com"],
-            env={"LILBEE_CRAWL_PASSWORD": "pw-env"},
+            env={"LILBEE_CRAWL_PASSWORD": "pw-env", "LILBEE_CRAWL_LOGIN_HOST": "Example.COM"},
         )
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["login"] == CrawlLogin(
             username="alice", password="pw-env", cookie="sid=1"
         )
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @pytest.mark.parametrize(
+        "urls",
+        [
+            ["https://private.example/a", "https://other.example/b"],
+            ["https://other.example\\@private.example/", "https://private.example/a"],
+            ["https://private.example/a", "https://private.example:99999/"],
+        ],
+        ids=["two-hosts", "parser-trick", "unparsed"],
+    )
+    def test_add_url_refuses_a_typed_login_for_urls_on_several_hosts(
+        self, mock_sync, mock_crawl, mock_avail, urls
+    ):
+        result = runner.invoke(app, ["add", *urls, "--cookie", "sid=Ck-9Lq"])
+        assert result.exit_code != 0
+        assert "login goes to one host" in result.output
+        assert "Ck-9Lq" not in result.output
+        mock_crawl.assert_not_called()
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_sends_a_typed_login_to_several_urls_on_one_host(
+        self, mock_sync, mock_crawl, mock_avail
+    ):
+        from lilbee.crawler.models import CrawlLogin
+
+        urls = ["https://private.example/a", "https://PRIVATE.example:8443/b"]
+        result = runner.invoke(app, ["add", *urls, "--cookie", "sid=1"])
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["login"] == CrawlLogin(cookie="sid=1")
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @pytest.mark.parametrize(
+        ("login_host", "urls"),
+        [
+            (None, ["https://other.example/"]),
+            ("private.example", ["https://other.example/"]),
+            ("private.example", ["https://private.example/", "https://other.example/"]),
+            ("private example", ["https://private.example/"]),
+        ],
+        ids=["no-login-host", "another-host", "several-hosts", "unparsed-login-host"],
+    )
+    def test_add_url_sends_no_environment_login_to_a_host_it_does_not_name(
+        self, mock_sync, mock_crawl, mock_avail, login_host, urls
+    ):
+        from lilbee.crawler.models import NO_LOGIN
+
+        env = {"LILBEE_CRAWL_COOKIE": "sid=Ck-env-3Tz", "LILBEE_CRAWL_AUTHORIZATION": "Bearer t"}
+        if login_host is not None:
+            env["LILBEE_CRAWL_LOGIN_HOST"] = login_host
+        result = runner.invoke(app, ["add", *urls], env=env)
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["login"] == NO_LOGIN
+        assert "LILBEE_CRAWL_LOGIN_HOST" in result.output
+        assert "Ck-env-3Tz" not in result.output
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_sends_the_environment_login_to_the_host_it_names(
+        self, mock_sync, mock_crawl, mock_avail
+    ):
+        from lilbee.crawler.models import CrawlLogin
+
+        env = {
+            "LILBEE_CRAWL_COOKIE": "sid=env",
+            "LILBEE_CRAWL_AUTHORIZATION": "Bearer env",
+            "LILBEE_CRAWL_LOGIN_HOST": "BÜCHER.example",
+        }
+        result = runner.invoke(
+            app, ["add", "https://xn--bcher-kva.example/", "--cookie", "sid=typed"], env=env
+        )
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["login"] == CrawlLogin(
+            authorization="Bearer env", cookie="sid=typed"
+        )
+        assert "LILBEE_CRAWL_LOGIN_HOST" not in result.output
 
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
     def test_add_url_refuses_a_password_without_a_username_before_crawling(self, mock_crawl):
