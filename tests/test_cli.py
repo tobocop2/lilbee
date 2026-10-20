@@ -51,6 +51,7 @@ from lilbee.runtime.progress import (
 )
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
+from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, crafted_label
 from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
@@ -3343,6 +3344,25 @@ class TestEnsureChatModelWiring:
         out = cap.get()
         assert "a · x](file:///etc/passwd) [y" in out
         assert "file:///kb/a.md" in out
+        assert out.count("\x1b]8;id=") == 1
+
+    @pytest.mark.parametrize("title", CRAFTED_TITLES)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_page_title_is_shown_as_typed_in_one_hyperlink(self, mock_sync, mock_svc, title):
+        from rich.console import Console
+
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        link = source_markdown_link(CRAFTED_SOURCE, title)
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n", f"1. {link}"
+        )
+        term = Console(force_terminal=True, legacy_windows=False, width=400)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        out = cap.get()
+        assert "1. \x1b]8;id=" in out and crafted_label(title) in out
         assert out.count("\x1b]8;id=") == 1
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
