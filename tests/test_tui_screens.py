@@ -57,6 +57,7 @@ from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPha
 from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 from tests._async_wait import wait_until
+from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
@@ -1263,28 +1264,51 @@ async def test_settings_list_editor_strips_blanks():
         assert cfg.crawl_exclude_patterns == ["a", "b"]
 
 
-async def test_settings_list_editor_invalid_regex_blocks_save():
-    """An invalid regex shows an error and does not mutate cfg."""
+async def test_settings_list_editor_refused_pattern_blocks_save():
+    """A pattern crawlberg refuses shows its line and reason and does not mutate cfg."""
     from textual.widgets import Static
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
+    refused = r"\Z"
+    stub = StubCrawlberg(refuse=refusing_patterns(refused))
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        cfg.crawl_exclude_patterns = ["keep"]
-        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-        ta.focus()
-        await pilot.pause()
-        ta.load_text("[")
-        ta.blur()
-        err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
-        # Focus change → blur handler → regex validation → error widget
-        # class toggle are all async. Single pilot.pause is not enough on
-        # slower runners; poll until the -visible class lands.
-        await pump_until(pilot, lambda: err.has_class("-visible"))
-        assert err.has_class("-visible")
-        assert "line 1" in str(err.render())
-        assert cfg.crawl_exclude_patterns == ["keep"]
+    with stub.installed():
+        async with app.run_test(size=(120, 40)) as pilot:
+            cfg.crawl_exclude_patterns = ["keep"]
+            ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+            ta.focus()
+            await pilot.pause()
+            ta.load_text(f"/ok\n{refused}")
+            ta.blur()
+            err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
+            # Focus change → blur handler → check → error widget class toggle are all
+            # async. Single pilot.pause is not enough on slower runners; poll until
+            # the -visible class lands.
+            await pump_until(pilot, lambda: err.has_class("-visible"))
+            shown = str(err.render())
+            assert "line 2" in shown
+            assert "unrecognized escape sequence" in shown
+            assert cfg.crawl_exclude_patterns == ["keep"]
+
+
+async def test_settings_list_editor_saves_a_pattern_only_crawlberg_compiles():
+    """Python's re refuses this pattern; crawlberg compiles it, so the screen saves it."""
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    pattern = r"/wiki/\p{L}+:"
+    stub = StubCrawlberg(refuse=refusing_patterns(r"\Z"))
+    app = SettingsTestApp()
+    with stub.installed():
+        async with app.run_test(size=(120, 40)) as pilot:
+            cfg.crawl_exclude_patterns = ["keep"]
+            ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+            ta.focus()
+            await pilot.pause()
+            ta.load_text(pattern)
+            ta.blur()
+            await pump_until(pilot, lambda: cfg.crawl_exclude_patterns == [pattern])
+            assert cfg.crawl_exclude_patterns == [pattern]
 
 
 async def test_settings_browser_flags_editor_saves_on_blur():
@@ -15987,27 +16011,31 @@ async def test_settings_leaves_non_credentials_visible():
 
 
 async def test_settings_invalid_regex_error_shows_brackets_as_written():
-    """The regex error quotes the typed pattern; ``[/x]`` must not parse as a tag."""
+    """The refusal quotes text with brackets; ``[/x]`` must not parse as a tag."""
     from textual.widgets import Static
 
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.screens.settings_widgets import LIST_ERROR_ID_PREFIX
 
+    def refuse(config):
+        return "invalid_config: invalid exclude_path regex\nerror: bad group name '[/x]'"
+
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        screen.populate_all_panes()
-        await pilot.pause()
-        event = MagicMock()
-        event.control.name = "crawl_exclude_patterns"
-        event.control.text = "(?P<[/x]>a)"
-        with patch.object(screen, "_persist_value"):
-            screen._on_list_blur_save(event)
-        await pilot.pause()
-        error = screen.query_one(f"#{LIST_ERROR_ID_PREFIX}crawl_exclude_patterns", Static)
-        rendered = str(error.render())
-    assert "bad character in group name '[/x]'" in rendered
+    with StubCrawlberg(refuse=refuse).installed():
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, SettingsScreen)
+            screen.populate_all_panes()
+            await pilot.pause()
+            event = MagicMock()
+            event.control.name = "crawl_exclude_patterns"
+            event.control.text = "(?P<[/x]>a)"
+            with patch.object(screen, "_persist_value"):
+                screen._on_list_blur_save(event)
+            await pilot.pause()
+            error = screen.query_one(f"#{LIST_ERROR_ID_PREFIX}crawl_exclude_patterns", Static)
+            rendered = str(error.render())
+    assert "bad group name '[/x]'" in rendered
 
 
 async def test_a_choice_select_offers_no_blank_when_the_setting_is_not_nullable():

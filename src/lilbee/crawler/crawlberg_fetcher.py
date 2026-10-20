@@ -519,6 +519,23 @@ def _queued_url(link: str) -> str:
     return urlunsplit(parts._replace(query=query, fragment=""))
 
 
+def _python_patterns(patterns: Sequence[str]) -> tuple[re.Pattern[str], ...]:
+    """The *patterns* Python compiles; crawlberg also accepts some that Python refuses.
+
+    The log names an excluded address through Python. A pattern only crawlberg compiles
+    still excludes its addresses and is left out of the log.
+    """
+    compiled = []
+    for pattern in patterns:
+        try:
+            compiled.append(re.compile(pattern))
+        except re.error:
+            log.debug(
+                "The exclude pattern %s is not a Python pattern; the log cannot name it", pattern
+            )
+    return tuple(compiled)
+
+
 class _ExcludedLinks:
     """The addresses one crawl leaves out because an exclude pattern matches them.
 
@@ -530,7 +547,7 @@ class _ExcludedLinks:
         self._seed_host = urlsplit(seed_url).hostname or ""
         self._depth = spec.depth
         self._include_subdomains = spec.filters.include_subdomains
-        self._patterns = tuple(re.compile(pattern) for pattern in spec.filters.exclude_patterns)
+        self._patterns = _python_patterns(spec.filters.exclude_patterns)
         self._seen_links: set[str] = set()
         self._checked: set[str] = set()
 
