@@ -217,6 +217,19 @@ LITELLM_MISSING_MSG = (
 )
 
 _LITELLM_DIST = "litellm"
+# lilbee releases that crawled with crawl4ai installed unclecode-litellm, a fork that writes
+# into litellm's package directory, so the litellm package alone does not tell which one is
+# installed. pip leaves the fork behind when it upgrades lilbee.
+_LITELLM_FORK_DIST = "unclecode-litellm"
+_LITELLM_FORK_MSG = (
+    "Both litellm and unclecode-litellm are installed. unclecode-litellm is a fork of "
+    "litellm that earlier lilbee releases installed with crawl4ai, and it writes into the "
+    "same litellm package, so remote and API models cannot load reliably. If you installed "
+    "lilbee with uv tool install, run your install command again with --reinstall added. "
+    "If you installed lilbee with pip, run: "
+    "pip uninstall -y unclecode-litellm && "
+    "pip install --force-reinstall --no-deps litellm=={version}"
+)
 
 
 def _installed_version(dist: str) -> str | None:
@@ -239,8 +252,13 @@ def litellm_available() -> bool:
 
 def _require_litellm() -> Any:
     """Import ``litellm`` or raise a user-facing ProviderError with install steps."""
-    if _installed_version(_LITELLM_DIST) is None:
+    litellm_version = _installed_version(_LITELLM_DIST)
+    if litellm_version is None:
         raise ProviderError(LITELLM_MISSING_MSG, provider=_PROVIDER_NAME)
+    if _installed_version(_LITELLM_FORK_DIST) is not None:
+        raise ProviderError(
+            _LITELLM_FORK_MSG.format(version=litellm_version), provider=_PROVIDER_NAME
+        )
     try:
         import litellm
     except ImportError as exc:
