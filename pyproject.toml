@@ -258,6 +258,9 @@ max-complexity = 10
 extend-immutable-calls = ["litestar.params.Body"]
 
 [tool.ruff.lint.per-file-ignores]
+# The namespace names of non-English wikis hold letters that look like ASCII, such as the
+# Turkish dotless i; the table is the names as the wikis write them.
+"src/lilbee/core/config/mediawiki_namespaces.py" = ["RUF001"]
 # Test-context S-rule noise. Each of these is either a test fixture
 # (hardcoded token/password literals, fake /tmp paths, 0.0.0.0 bind
 # assertions), or an intentional subprocess spawn for an e2e test:
