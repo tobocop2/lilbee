@@ -1528,6 +1528,7 @@ class TestEverySurfaceShowsTheStoredTitle:
         source = await _crawled_forum(monkeypatch)
         unknown = "_web/title.test/never-crawled~0123456789abcdef.md"
         assert library.web_titles([unknown, "notes.md"]) == {}
+        assert library.web_titles(["notes.md"]) == {}
         chunks = library.get_chunks_by_source(source)
         block = format_sources_block(chunks, {})
         assert f"1. [title.test · {Path(source).name.rpartition('~')[0]}](file://" in block
