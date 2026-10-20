@@ -1125,6 +1125,59 @@ def _installed_dists(**versions: str) -> Callable[[str], str]:
     return lookup
 
 
+_FORK_ERROR = "Both litellm and unclecode-litellm are installed"
+
+
+class TestLitellmForkGuard:
+    def test_raises_when_litellm_and_fork_are_both_installed(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
+        with (
+            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
+            inject_modules({"litellm": mock.MagicMock()}),
+            pytest.raises(ProviderError, match=_FORK_ERROR) as caught,
+        ):
+            _require_litellm()
+        message = str(caught.value)
+        assert "pip uninstall -y unclecode-litellm" in message
+        assert "pip install --force-reinstall --no-deps litellm==1.98.0" in message
+        assert "uv tool install" in message
+        assert "--reinstall" in message
+
+    def test_fork_check_runs_before_the_litellm_import(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
+        with (
+            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
+            inject_modules({"litellm": None}),
+            pytest.raises(ProviderError, match=_FORK_ERROR),
+        ):
+            _require_litellm()
+
+    def test_complete_refuses_before_calling_litellm(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.sdk_backend import CompletionRequest
+
+        fake_litellm = mock.MagicMock()
+        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
+        request = CompletionRequest(
+            ref=parse_model_ref("openai/gpt-4o"), messages=[{"role": "user", "content": "hi"}]
+        )
+        with (
+            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
+            inject_modules({"litellm": fake_litellm}),
+            pytest.raises(ProviderError, match=_FORK_ERROR),
+        ):
+            LitellmSdkBackend().complete(request)
+        fake_litellm.completion.assert_not_called()
+
+
 class TestUvExcludesFile:
     """lilbee.sh keeps serving the exclude file that install lines for older releases name."""
 
