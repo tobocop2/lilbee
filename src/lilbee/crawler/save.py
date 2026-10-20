@@ -274,12 +274,14 @@ _REFERENCE_LINK_RE = re.compile(r"\[\[([^\]]*)\]\]\(([^)]*)\)")
 
 
 def normalize_crawled_markdown(markdown: str) -> str:
-    """Collapse reference-style ``[[N]](url)`` links to plain ``[N](url)``.
+    """Give the page LF line ends and collapse ``[[N]](url)`` links to plain ``[N](url)``.
 
-    This fixes the double-bracket/wikilink collision without dropping the
-    link text or URL. Ordinary single-bracket links are left untouched.
+    LF line ends keep the saved bytes equal to the text a universal-newline read
+    gives back. The link collapse fixes the double-bracket/wikilink collision
+    without dropping the link text or URL; ordinary single-bracket links stay.
     """
-    return _REFERENCE_LINK_RE.sub(r"[\1](\2)", markdown)
+    lf = markdown.replace("\r\n", "\n").replace("\r", "\n")
+    return _REFERENCE_LINK_RE.sub(r"[\1](\2)", lf)
 
 
 @dataclass
@@ -453,10 +455,14 @@ def _page_path(result: CrawlResult, address: str, record: CrawlRecord) -> Path |
 
 
 def _held_text(path: Path) -> str | None:
-    """The hash of the text the file at *path* holds, or None when there is no file."""
+    """The hash of the text the file at *path* holds, or None when there is no file.
+
+    The file is read with universal newlines: an older lilbee wrote pages in text
+    mode, so on Windows a page it saved holds CRLF line ends its record never hashed.
+    """
     if not path.is_file():
         return None
-    return content_hash(path.read_bytes().decode("utf-8", errors="replace"))
+    return content_hash(path.read_text(encoding="utf-8", errors="replace"))
 
 
 def _may_write(address: str, held: str | None, new_hash: str, record: CrawlRecord) -> bool:
