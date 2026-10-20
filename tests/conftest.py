@@ -718,6 +718,7 @@ def _default_store_mock():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
+    store.web_titles.return_value = {}
     store.source_summary.return_value = SourceSummary(0, 0, {}, [])
     store.count_sources.return_value = 0
     store.get_page_texts.return_value = []

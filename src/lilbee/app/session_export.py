@@ -15,6 +15,7 @@ from markdown_it.rules_inline.html_inline import html_inline as _stock_html_inli
 from markdown_it.rules_inline.state_inline import StateInline
 from markdown_it.token import Token
 
+from lilbee.app.titles import stored_web_titles
 from lilbee.core.security import write_private_text
 from lilbee.core.text import collapse_whitespace, make_slug
 from lilbee.retrieval.query.formatting import (
@@ -23,6 +24,7 @@ from lilbee.retrieval.query.formatting import (
     close_open_fence,
     open_code_fence,
     source_label,
+    unescape_markdown_text,
     with_sources_block,
 )
 from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
@@ -80,7 +82,7 @@ def _message_section(message: SessionMessage) -> str:
     if stored_sources:
         body += _contained(FILE_LINK_RE.sub(_plain_link, stored_sources))
     elif message.sources:
-        body = with_sources_block(body, message.sources, render=_plain_source)
+        body = with_sources_block(body, message.sources, stored_web_titles, render=_plain_source)
     return f"## {_ROLE_HEADINGS[message.role]}\n\n{body}"
 
 
@@ -115,12 +117,12 @@ def _contained(text: str) -> str:
     return _nest_headings(close_open_fence(text))
 
 
-def _plain_source(source: str) -> str:
-    return _plain_name(source_label(source))
+def _plain_source(source: str, title: str) -> str:
+    return _plain_name(source_label(source, title))
 
 
 def _plain_link(link: re.Match[str]) -> str:
-    return _plain_name(link["label"])
+    return _plain_name(unescape_markdown_text(link["label"]))
 
 
 def _plain_name(name: str) -> str:

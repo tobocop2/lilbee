@@ -1483,7 +1483,8 @@ class Searcher:
         if not result.sources:
             return result.answer
         answer = close_open_fence(strip_llm_citations(result.answer))
-        return f"{answer}{format_sources_block(result.sources)}"
+        titles = self._store.web_titles(r.source for r in result.sources)
+        return f"{answer}{format_sources_block(result.sources, titles)}"
 
     def _stream_direct(
         self,
@@ -1557,7 +1558,7 @@ class Searcher:
         # A model that emits its own trailing Sources block has had it dropped by
         # the filter above; this authoritative list is numbered to match the
         # ``[n]`` markers the model used, so every citation resolves to a line.
-        block = format_sources_block(results)
+        block = format_sources_block(results, self._store.web_titles(r.source for r in results))
         if block:
             fence_closer = close_open_fence(answer).removeprefix(answer)
             yield StreamToken(content=fence_closer + block, is_reasoning=False)
