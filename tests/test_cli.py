@@ -32,6 +32,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.security import PathTraversalError
+from lilbee.crawler.bootstrap import CrawlEngineRefusedError, CrawlerBrowserError
 from lilbee.crawler.url_filter import UNPARSED_ADDRESS
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk, SourceSummary
@@ -3931,9 +3932,9 @@ class TestAddWithUrls:
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
             result = runner.invoke(app, ["--json", "add", "https://example.com", "--crawl"])
         assert result.exit_code == 1
-        assert json.loads(result.stdout) == {
-            "error": "Web crawling requires: pip install 'lilbee[crawler]'"
-        }
+        assert json.loads(result.stdout)["error"] == (
+            "Web crawling requires: pip install 'lilbee[crawler]'"
+        )
 
     @pytest.mark.parametrize("json_mode", [True, False])
     def test_a_refused_crawl_address_prints_its_error_without_a_traceback(self, json_mode):
@@ -4029,6 +4030,73 @@ class TestAddWithUrls:
         assert data["copied"] == ["note.md"]
         reason = f"http://127.0.0.1:9/: {refusal}"
         assert data["failed"] == [{"url": "http://127.0.0.1:9/", "reason": reason}]
+
+    @pytest.mark.parametrize("json_mode", [True, False])
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            CrawlEngineRefusedError("The crawl_browser_extra_args setting holds a refused flag"),
+            CrawlerBrowserError("The browser cannot start"),
+        ],
+        ids=["engine-refused", "browser-cannot-start"],
+    )
+    def test_a_file_named_beside_a_crawl_that_cannot_start_is_added_and_the_command_exits_1(
+        self, json_mode, refusal, tmp_path
+    ):
+        note = tmp_path / "source" / "note.md"
+        note.parent.mkdir()
+        note.write_text("my note", encoding="utf-8")
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch(
+                "lilbee.crawler.crawl_and_save", new_callable=AsyncMock, side_effect=refusal
+            ),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, [*flags, "add", str(note), "https://example.com/"])
+        assert result.exit_code == 1, result.output
+        assert cfg.linked_roots == {"note.md": str(note.resolve())}
+        reason = f"https://example.com/: {refusal}"
+        if json_mode:
+            data = json.loads(result.stdout)
+            assert data["copied"] == ["note.md"]
+            assert data["failed"] == [{"url": "https://example.com/", "reason": reason}]
+        else:
+            assert reason in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False])
+    def test_a_file_named_beside_a_missing_crawler_extra_is_added_and_the_command_exits_1(
+        self, json_mode, tmp_path
+    ):
+        note = tmp_path / "source" / "note.md"
+        note.parent.mkdir()
+        note.write_text("my note", encoding="utf-8")
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=False),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, [*flags, "add", str(note), "https://example.com/"])
+        assert result.exit_code == 1, result.output
+        assert cfg.linked_roots == {"note.md": str(note.resolve())}
+        if json_mode:
+            assert json.loads(result.stdout)["copied"] == ["note.md"]
+        assert "pip install 'lilbee[crawler]'" in result.output
+
+    def test_two_urls_without_the_crawler_extra_fail_with_the_install_message_once(self):
+        message = "Web crawling requires: pip install 'lilbee[crawler]'"
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            result = runner.invoke(
+                app, ["--json", "add", "https://example.com/a", "https://example.com/b"]
+            )
+        assert result.exit_code == 1, result.output
+        data = json.loads(result.stdout)
+        assert data["error"] == message
+        assert [entry["url"] for entry in data["failed"]] == [
+            "https://example.com/a",
+            "https://example.com/b",
+        ]
 
     def test_a_refused_address_does_not_stop_the_next_url(self, tmp_path):
         saved = tmp_path / "page.md"
