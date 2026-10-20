@@ -150,3 +150,24 @@ class TestTitleIsStale:
 
     def test_a_local_file_is_never_stale(self):
         assert _title_is_stale("notes/a.md", _row("a")) is False
+
+
+def test_a_list_with_no_crawled_page_starts_no_services(monkeypatch: pytest.MonkeyPatch):
+    from types import SimpleNamespace
+
+    from lilbee.app import titles
+
+    started: list[bool] = []
+
+    def services() -> SimpleNamespace:
+        started.append(True)
+        return SimpleNamespace(
+            store=SimpleNamespace(web_titles=lambda pages: dict.fromkeys(pages, "T"))
+        )
+
+    monkeypatch.setattr(titles, "get_services", services)
+    assert titles.stored_web_titles(["notes.md", "memory:m1"]) == {}
+    assert started == []
+    page = "_web/example.com/a.md"
+    assert titles.stored_web_titles(["notes.md", page]) == {page: "T"}
+    assert started == [True]
