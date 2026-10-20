@@ -49,9 +49,11 @@ from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SourceSummary
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+from lilbee.providers.backends.liter_llm.availability import SDK_DIST
+from lilbee.providers.backends.liter_llm.availability import (
+    provider_sdk_available as _real_provider_sdk_available,
+)
 from lilbee.providers.fleet.binary import EngineTool
-from lilbee.providers.remote_sdk import SDK_DIST
-from lilbee.providers.remote_sdk import remote_sdk_available as _real_remote_sdk_available
 from lilbee.runtime.lock import _no_sync_running
 
 # Pristine extraction entry points, captured before any test can patch them.
@@ -228,18 +230,22 @@ def _suppress_model_scan(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _assume_remote_sdk_available(request, monkeypatch):
+def _assume_provider_sdk_available(request, monkeypatch):
     """Assume the SDK extra is installed for unit tests.
 
-    Production code gates remote-model discovery on ``remote_sdk_available()``.
+    Production code gates remote-model discovery on ``provider_sdk_available()``.
     Dev environments without ``lilbee[providers]`` would otherwise
     short-circuit every remote-discovery test. Tests that cover the
     missing-extra path skip this fixture with
-    ``@pytest.mark.real_remote_sdk_probe``.
+    ``@pytest.mark.real_provider_sdk_probe``.
     """
-    if "real_remote_sdk_probe" in {m.name for m in request.node.iter_markers()}:
+    if "real_provider_sdk_probe" in {m.name for m in request.node.iter_markers()}:
         return
-    monkeypatch.setattr("lilbee.providers.remote_sdk.remote_sdk_available", lambda: True)
+    monkeypatch.setattr("lilbee.providers.factory.provider_sdk_available", lambda: True)
+    monkeypatch.setattr(f"{_SDK_PACKAGE}.backend.provider_sdk_available", lambda: True)
+
+
+_SDK_PACKAGE = "lilbee.providers.backends.liter_llm"
 
 
 def _only_providers_installed(dist: str) -> str:
@@ -249,12 +255,12 @@ def _only_providers_installed(dist: str) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _seal_remote_sdk_distribution(monkeypatch):
+def _seal_provider_sdk_distribution(monkeypatch):
     """Report the SDK installed, instead of the host's packages."""
-    monkeypatch.setattr("lilbee.providers.remote_sdk._dist_version", _only_providers_installed)
-    _real_remote_sdk_available.cache_clear()
+    monkeypatch.setattr(f"{_SDK_PACKAGE}.availability._dist_version", _only_providers_installed)
+    _real_provider_sdk_available.cache_clear()
     yield
-    _real_remote_sdk_available.cache_clear()
+    _real_provider_sdk_available.cache_clear()
 
 
 @pytest.fixture(autouse=True)

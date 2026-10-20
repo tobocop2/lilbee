@@ -146,7 +146,7 @@ def _skip_without_providers(lane: Lane, lilbee_data: Path) -> None:
     """Skip when the lilbee under test doesn't have the ``providers`` extra wired."""
     import importlib.util
 
-    from lilbee.providers.remote_sdk import SDK_MODULE
+    from lilbee.providers.factory import SDK_MODULE
 
     if importlib.util.find_spec(SDK_MODULE) is None:
         if _ollama_required():

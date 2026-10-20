@@ -14,9 +14,11 @@ from typing import Any
 
 import pytest
 
+from lilbee.providers.backends.liter_llm.availability import SDK_MODULE
+from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
+from lilbee.providers.backends.liter_llm.client import _client
 from lilbee.providers.base import ProviderError
 from lilbee.providers.model_ref import parse_model_ref
-from lilbee.providers.remote_sdk import SDK_MODULE, RemoteSdkBackend, _client
 from lilbee.providers.sdk_backend import CompletionRequest, EmbeddingRequest, RerankRequest
 from tests import _fake_sdk as fakes
 
@@ -161,7 +163,7 @@ class TestCompleteOnRealTypes:
     )
     def test_a_text_reply_gives_its_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY)))
-        result = RemoteSdkBackend().complete(_completion())
+        result = LiterLlmBackend().complete(_completion())
         assert result.content == "Pong."
 
     @pytest.mark.xfail(
@@ -174,19 +176,19 @@ class TestCompleteOnRealTypes:
         choice = {"index": 0, "message": {"role": "assistant", "content": parts}}
         body = {**_CHAT_BODY, "choices": [{**choice, "finish_reason": "stop"}]}
         _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(body)))
-        assert RemoteSdkBackend().complete(_completion()).content == "Pong."
+        assert LiterLlmBackend().complete(_completion()).content == "Pong."
 
     def test_finish_reason_and_model_are_plain_strings(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY)))
-        result = RemoteSdkBackend().complete(_completion())
+        result = LiterLlmBackend().complete(_completion())
         assert (type(result.content), type(result.finish_reason)) == (str, str)
         assert (result.finish_reason, result.model) == ("stop", "qwen2.5:1.5b")
 
     def test_usage_is_the_reply_token_counts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(_CHAT_BODY)))
-        usage = RemoteSdkBackend().complete(_completion()).usage
+        usage = LiterLlmBackend().complete(_completion()).usage
         assert (usage.prompt_tokens, usage.completion_tokens) == (31, 4)
         assert {type(usage.prompt_tokens), type(usage.completion_tokens)} == {int}
 
@@ -199,14 +201,14 @@ class TestCompleteOnRealTypes:
             choice = {**_CHAT_BODY["choices"][0], "finish_reason": wire}
             body = {**_CHAT_BODY, "choices": [choice]}
             _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(body)))
-            got.append(RemoteSdkBackend().complete(_completion()).finish_reason)
+            got.append(LiterLlmBackend().complete(_completion()).finish_reason)
         assert got == list(wires)
 
     def test_reasoning_effort_low_is_the_typed_request_field(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         sent = _record_chat(monkeypatch)
-        RemoteSdkBackend().complete(_completion(options={"reasoning_effort": "low"}))
+        LiterLlmBackend().complete(_completion(options={"reasoning_effort": "low"}))
         assert sent[0].reasoning_effort == liter_llm.ReasoningEffort.LOW
 
     @pytest.mark.xfail(
@@ -216,12 +218,12 @@ class TestCompleteOnRealTypes:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         sent = _record_chat(monkeypatch)
-        RemoteSdkBackend().complete(_completion(options={"reasoning_effort": "none"}))
+        LiterLlmBackend().complete(_completion(options={"reasoning_effort": "none"}))
         assert str(sent[0].reasoning_effort) == "none"
 
     def test_tool_call_fields_are_plain_strings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(_TOOL_BODY)))
-        result = RemoteSdkBackend().complete(_completion())
+        result = LiterLlmBackend().complete(_completion())
         assert result.content == ""
         assert [
             (type(c.id), type(c.name), type(c.arguments), c.name, c.arguments)
@@ -232,7 +234,7 @@ class TestCompleteOnRealTypes:
     def test_a_reply_without_text_is_an_empty_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
         body = {**_CHAT_BODY, "choices": [{"index": 0, "message": {"role": "assistant"}}]}
         _answer(monkeypatch, "chat", liter_llm.ChatCompletionResponse.from_json(_json(body)))
-        result = RemoteSdkBackend().complete(_completion())
+        result = LiterLlmBackend().complete(_completion())
         assert (result.content, result.finish_reason) == ("", None)
 
 
@@ -241,7 +243,7 @@ class TestStreamOnRealTypes:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _stream(monkeypatch, _STREAM_BODIES)
-        chunks = list(RemoteSdkBackend().complete_stream(_completion()))
+        chunks = list(LiterLlmBackend().complete_stream(_completion()))
         assert [(c.content, c.finish_reason) for c in chunks] == [
             ("Po", None),
             ("ng", None),
@@ -275,7 +277,7 @@ class TestStreamOnRealTypes:
             ],
         }
         _stream(monkeypatch, [opener])
-        (chunk,) = RemoteSdkBackend().complete_stream(_completion())
+        (chunk,) = LiterLlmBackend().complete_stream(_completion())
         (delta,) = chunk.tool_call_deltas
         assert (delta.index, delta.id, delta.name, delta.arguments_delta) == (
             0,
@@ -291,7 +293,7 @@ class TestEmbedAndRerankOnRealTypes:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _answer(monkeypatch, "embed", liter_llm.EmbeddingResponse.from_json(_json(_EMBED_BODY)))
-        result = RemoteSdkBackend().embed(
+        result = LiterLlmBackend().embed(
             EmbeddingRequest(ref=parse_model_ref("ollama/all-minilm"), inputs=["a", "b"])
         )
         assert result.vectors == [[0.125, 0.0625], [0.5, 0.25]]
@@ -302,7 +304,7 @@ class TestEmbedAndRerankOnRealTypes:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _answer(monkeypatch, "rerank", liter_llm.RerankResponse.from_json(_json(_RERANK_BODY)))
-        result = RemoteSdkBackend().rerank(
+        result = LiterLlmBackend().rerank(
             RerankRequest(
                 ref=parse_model_ref("openai/rerank-x"),
                 query="q",

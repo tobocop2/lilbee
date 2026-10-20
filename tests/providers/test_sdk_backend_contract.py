@@ -1,7 +1,7 @@
 """Contract tests for ``LlmSdkBackend`` implementations.
 
 The tests are the executable contract behind the Protocol. The adapter is
-``RemoteSdkBackend``, run against a scripted stand-in for ``liter_llm`` so no
+``LiterLlmBackend``, run against a scripted stand-in for ``liter_llm`` so no
 real SDK call happens and the extra need not be installed.
 """
 
@@ -16,9 +16,9 @@ from unittest import mock
 import httpx
 import pytest
 
+from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import parse_model_ref
-from lilbee.providers.remote_sdk import RemoteSdkBackend
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     EmbeddingRequest,
@@ -30,7 +30,7 @@ from tests import _fake_sdk as fakes
 
 @pytest.fixture
 def backend() -> LlmSdkBackend:
-    return RemoteSdkBackend()
+    return LiterLlmBackend()
 
 
 @pytest.fixture
@@ -90,21 +90,23 @@ class TestAvailable:
     def test_reads_the_installed_distribution(self, backend: LlmSdkBackend) -> None:
         assert backend.available() is True
 
-    @pytest.mark.real_remote_sdk_probe
+    @pytest.mark.real_provider_sdk_probe
     def test_returns_false_when_sdk_missing(self, backend: LlmSdkBackend) -> None:
         from importlib.metadata import PackageNotFoundError
 
         def not_installed(dist: str) -> str:
             raise PackageNotFoundError(dist)
 
-        with mock.patch("lilbee.providers.remote_sdk._dist_version", not_installed):
-            from lilbee.providers.remote_sdk import remote_sdk_available
+        with mock.patch(
+            "lilbee.providers.backends.liter_llm.availability._dist_version", not_installed
+        ):
+            from lilbee.providers.factory import provider_sdk_available
 
-            remote_sdk_available.cache_clear()
+            provider_sdk_available.cache_clear()
             try:
                 assert backend.available() is False
             finally:
-                remote_sdk_available.cache_clear()
+                provider_sdk_available.cache_clear()
 
 
 class TestMissingSdk:
@@ -405,7 +407,7 @@ class TestRequestFields:
         value: float,
     ) -> None:
         sdk.chat_result = fakes.text_response("ok")
-        with caplog.at_level(logging.DEBUG, logger="lilbee.providers.remote_sdk"):
+        with caplog.at_level(logging.DEBUG, logger="lilbee.providers.backends.liter_llm"):
             backend.complete(_completion_request("ollama/m", options={option: value}))
         sent = sdk.last("chat")
         assert option not in sent
@@ -426,7 +428,7 @@ class TestRequestFields:
         value: float,
     ) -> None:
         sdk.chat_result = fakes.text_response("ok")
-        with caplog.at_level(logging.DEBUG, logger="lilbee.providers.remote_sdk"):
+        with caplog.at_level(logging.DEBUG, logger="lilbee.providers.backends.liter_llm"):
             backend.complete(
                 _completion_request(
                     "lm_studio/m", api_base="http://localhost:1234", options={option: value}

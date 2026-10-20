@@ -11,15 +11,15 @@ from collections.abc import Iterator
 
 import pytest
 
-from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.model_ref import parse_model_ref
-from lilbee.providers.remote_sdk import (
+from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
+from lilbee.providers.backends.liter_llm.errors import (
     _ERROR_KINDS,
     _KIND_MESSAGES,
-    RemoteSdkBackend,
     _classify_error,
     _provider_error,
 )
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.sdk_backend import CompletionRequest
 from tests import _fake_sdk as fakes
 
@@ -130,7 +130,7 @@ def test_complete_surfaces_classified_message_end_to_end(sdk: fakes.FakeSdk) -> 
         messages=[{"role": "user", "content": "test"}],
     )
     with pytest.raises(ProviderError) as caught:
-        RemoteSdkBackend().complete(req)
+        LiterLlmBackend().complete(req)
     assert caught.value.kind == ProviderErrorKind.RATE_LIMIT
     assert "gemini-3.1-pro" in str(caught.value)
     assert "blob" not in str(caught.value)

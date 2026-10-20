@@ -5,11 +5,25 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, assert_never
 
 from lilbee.core.config.enums import LlmProvider
+from lilbee.providers.backends.liter_llm import (
+    PROVIDER_SDK_MISSING_MESSAGE,
+    SDK_MODULE,
+    create_sdk_backend,
+    provider_sdk_available,
+)
 from lilbee.providers.base import ProviderError
 
 if TYPE_CHECKING:
     from lilbee.core.config import Config
     from lilbee.providers.base import LLMProvider
+
+__all__ = [
+    "PROVIDER_SDK_MISSING_MESSAGE",
+    "SDK_MODULE",
+    "create_provider",
+    "create_sdk_backend",
+    "provider_sdk_available",
+]
 
 
 def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
@@ -23,19 +37,18 @@ def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
     """
     match config.llm_provider:
         case LlmProvider.AUTO:
-            # heavy: routing_provider eagerly imports remote_sdk (native module load)
+            # circular: routing_provider -> factory via create_sdk_backend
             from lilbee.providers.routing_provider import RoutingProvider
 
             return RoutingProvider(hold_warm=hold_warm)
 
         case LlmProvider.REMOTE:
-            # heavy: remote_sdk loads the native client library
-            from lilbee.providers.remote_sdk import REMOTE_SDK_MISSING_MSG, RemoteSdkBackend
+            # heavy: the SDK provider imports numpy, and setup.py imports this module at CLI startup
             from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-            backend = RemoteSdkBackend()
+            backend = create_sdk_backend()
             if not backend.available():
-                raise ProviderError(REMOTE_SDK_MISSING_MSG)
+                raise ProviderError(PROVIDER_SDK_MISSING_MESSAGE)
             return SdkLLMProvider(backend)
 
     assert_never(config.llm_provider)  # pragma: no cover

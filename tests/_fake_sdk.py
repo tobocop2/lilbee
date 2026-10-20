@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from lilbee.providers.remote_sdk import SDK_MODULE
+from lilbee.providers.backends.liter_llm.availability import SDK_MODULE
 from tests._sys_modules import inject_modules
 
 # liter-llm's exception classes: every one subclasses LiterLlmError.
@@ -349,11 +349,11 @@ class FakeSdk:
 @contextmanager
 def installed(fake: FakeSdk) -> Iterator[FakeSdk]:
     """Inject *fake* as ``liter_llm`` and start with an empty client cache."""
-    from lilbee.providers import remote_sdk
+    from lilbee.providers.backends.liter_llm import client as sdk_client
 
-    remote_sdk._client.cache_clear()
+    sdk_client._client.cache_clear()
     with inject_modules({SDK_MODULE: fake.module_cached()}):
         try:
             yield fake
         finally:
-            remote_sdk._client.cache_clear()
+            sdk_client._client.cache_clear()
