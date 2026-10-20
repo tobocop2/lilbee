@@ -169,6 +169,84 @@ class TestOtherHost:
         assert all(TOKEN not in auth and COOKIE not in cookie for _, auth, cookie in landed)
 
 
+def _add(site, isolated_env, *args: str, env: dict[str, str] | None = None):
+    """Run `lilbee add` against the loopback site with the sync stubbed out."""
+    from unittest.mock import AsyncMock, patch
+
+    from typer.testing import CliRunner
+
+    from lilbee.cli import app
+    from lilbee.data.ingest import SyncResult
+
+    with patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=SyncResult()):
+        return CliRunner().invoke(
+            app, ["add", "--data-dir", str(isolated_env / "data"), *args], env=env
+        )
+
+
+def _carries_login(requests: list[tuple[str, str, str]]) -> bool:
+    return any(TOKEN in auth or COOKIE in cookie for _, auth, cookie in requests)
+
+
+class TestSecondHostEachEntryPoint:
+    """A second host gets no Authorization or Cookie header, whatever surface started the crawl."""
+
+    def test_the_command_line_sends_no_typed_login_to_a_second_host(self, site, isolated_env):
+        urls = (site.url("/cookie/"), site.url("/landing", "localhost"))
+        result = _add(site, isolated_env, *urls, "--cookie", COOKIE, "--authorization", TOKEN)
+        # Positive control: the command answered about the login it was given.
+        assert "login" in result.output
+        assert not _carries_login(site.seen("/landing"))
+        assert not _carries_login(site.seen("/cookie/"))
+
+    def test_the_command_line_sends_no_exported_login_to_another_host(self, site, isolated_env):
+        env = {"LILBEE_CRAWL_COOKIE": COOKIE, "LILBEE_CRAWL_AUTHORIZATION": TOKEN}
+        result = _add(site, isolated_env, site.url("/landing", "localhost"), env=env)
+        # Positive control: the crawl of the other host ran.
+        assert result.exit_code == 0, result.output
+        assert site.seen("/landing")
+        assert not _carries_login(site.seen("/landing"))
+
+    def test_the_command_line_sends_the_exported_login_to_the_host_it_names(
+        self, site, isolated_env
+    ):
+        env = {"LILBEE_CRAWL_COOKIE": COOKIE, "LILBEE_CRAWL_LOGIN_HOST": "127.0.0.1"}
+        result = _add(site, isolated_env, site.url("/cookie/"), env=env)
+        assert result.exit_code == 0, result.output
+        assert site.seen("/cookie/")[0][2] == COOKIE
+
+    def test_the_rest_route_sends_no_login_to_a_second_host(self, site):
+        body = {"url": site.url("/away"), "depth": 0, "render_mode": "http"}
+        body["login"] = {"authorization": TOKEN, "cookie": COOKIE}
+        auth_mod.session_manager.disable()
+        try:
+            resp = TestClient(create_app()).post("/api/crawl", json=body)
+        finally:
+            auth_mod.session_manager.cleanup()
+        assert resp.status_code == HTTPStatus.CREATED
+        assert site.seen("/away") == [(f"127.0.0.1:{site.port}", TOKEN, COOKIE)]
+        assert site.seen("/landing")
+        assert not _carries_login(site.seen("/landing"))
+
+    async def test_the_mcp_tool_sends_no_login_to_a_second_host(self, site):
+        import asyncio
+
+        from lilbee.crawler.task import clear_tasks
+        from lilbee.mcp_server import crawl, crawl_status
+
+        clear_tasks()
+        started = await crawl(
+            site.url("/away"), render_mode=CrawlRenderMode.HTTP, authorization=TOKEN, cookie=COOKIE
+        )
+        for _ in range(200):
+            if crawl_status(started["task_id"])["status"] not in ("pending", "running"):
+                break
+            await asyncio.sleep(0.05)
+        assert site.seen("/away") == [(f"127.0.0.1:{site.port}", TOKEN, COOKIE)]
+        assert site.seen("/landing")
+        assert not _carries_login(site.seen("/landing"))
+
+
 class _Collected(logging.Handler):
     """Every record any logger emits, formatted with its arguments."""
 
