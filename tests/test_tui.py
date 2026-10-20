@@ -707,12 +707,14 @@ class TestStatusScreenAsync:
         tmp_path: Path,
     ) -> None:
         """The Documents table shows one stored page, then the rest once scrolled to the end."""
+        from textual.widgets import DataTable
+
         from lilbee.app.services import set_services
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.status import StatusScreen
         from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT
-        from tests._async_wait import wait_until
+        from tests._async_wait import wait_for_widget, wait_until
 
         mock_catalog.return_value = _EMPTY_CATALOG
         total = DOCUMENTS_PAGE_DEFAULT + 2
@@ -728,7 +730,7 @@ class TestStatusScreenAsync:
                 await await_chat(app, pilot)
                 app.push_screen(StatusScreen())
                 await pump_until(pilot, lambda: isinstance(app.screen, StatusScreen))
-                docs = app.screen.query_one("#docs-table")
+                docs = await wait_for_widget(pilot, app, "#docs-table", DataTable)
                 await wait_until(pilot, lambda: docs.row_count == DOCUMENTS_PAGE_DEFAULT)
                 first_hint = str(app.screen.query_one("#docs-more").render())
                 docs.scroll_end(animate=False)

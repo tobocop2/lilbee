@@ -55,7 +55,7 @@ from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
-from tests._async_wait import wait_until
+from tests._async_wait import wait_for_widget, wait_until
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
@@ -2144,9 +2144,10 @@ async def test_status_screen_renders_info(mock_svc):
 
 async def test_status_screen_has_collapsible_sections(mock_svc):
     app = StatusTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Collapsible
 
+        await wait_for_widget(pilot, app, "#storage-section")
         sections = app.screen.query(Collapsible)
         assert len(sections) == 5
 
@@ -2157,7 +2158,7 @@ async def test_status_screen_sections_start_expanded(mock_svc):
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Collapsible
 
-        await pilot.pause()
+        await wait_for_widget(pilot, app, "#storage-section")
         sections = list(app.screen.query(Collapsible))
         assert len(sections) == 5
         # The held-out section opens only when the store holds something out.
@@ -2222,18 +2223,18 @@ def _serve_sources(mock_svc, *names: str, total: int | None = None) -> None:
 async def test_status_screen_shows_documents(mock_svc):
     _serve_sources(mock_svc, "notes.md")
     app = StatusTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#docs-table", DataTable)
+    async with app.run_test(size=(120, 40)) as pilot:
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _wait_for_row_count(pilot, table, 1)
         assert table.row_count == 1
 
 
 async def test_status_screen_store_error(mock_svc):
     mock_svc.store.count_sources.side_effect = Exception("no table")
     app = StatusTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        table = app.screen.query_one("#docs-table", DataTable)
+    async with app.run_test(size=(120, 40)) as pilot:
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _wait_for_row_count(pilot, table, 1)
         assert table.row_count == 1
 
 
@@ -2257,7 +2258,7 @@ async def test_status_screen_first_load_is_one_page_of_a_huge_library(mock_svc):
     _serve_sources(mock_svc, *names, total=8_800_000)
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        table = app.screen.query_one("#docs-table", DataTable)
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
         await _wait_for_row_count(pilot, table, DOCUMENTS_PAGE_DEFAULT)
         hint = str(app.screen.query_one("#docs-more", Static).render())
         storage = str(app.screen.query_one("#storage-info", Static).render())
@@ -2280,7 +2281,7 @@ async def test_status_screen_lists_held_out_files(mock_svc, monkeypatch):
     monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held, 3))
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        table = app.screen.query_one("#held-out-table", DataTable)
+        table = await wait_for_widget(pilot, app, "#held-out-table", DataTable)
         await _wait_for_row_count(pilot, table, 2)
         assert app.screen.query_one("#held-out-section", Collapsible).collapsed is False
 
@@ -2300,8 +2301,8 @@ async def test_status_screen_renders_bracketed_held_out_and_doc_names_as_written
     monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held, 1))
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        held_table = app.screen.query_one("#held-out-table", DataTable)
-        docs_table = app.screen.query_one("#docs-table", DataTable)
+        held_table = await wait_for_widget(pilot, app, "#held-out-table", DataTable)
+        docs_table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
         await _wait_for_row_count(pilot, held_table, 1)
         await _wait_for_row_count(pilot, docs_table, 1)
         held_cells = [default_cell_formatter(c).plain for c in held_table.get_row_at(0)]
@@ -2319,7 +2320,7 @@ async def test_status_screen_keeps_the_held_out_section_closed_when_empty(mock_s
     monkeypatch.setattr(status_screen, "held_out_sources", lambda: ([], 0))
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        table = app.screen.query_one("#held-out-table", DataTable)
+        table = await wait_for_widget(pilot, app, "#held-out-table", DataTable)
         await _wait_for_row_count(pilot, table, 1)
         assert app.screen.query_one("#held-out-section", Collapsible).collapsed is True
 
@@ -2327,8 +2328,9 @@ async def test_status_screen_keeps_the_held_out_section_closed_when_empty(mock_s
 async def test_status_screen_storage_section(mock_svc):
     _serve_sources(mock_svc, "a.md")
     app = StatusTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        info = app.screen.query_one("#storage-info", Static)
+    async with app.run_test(size=(120, 40)) as pilot:
+        info = await wait_for_widget(pilot, app, "#storage-info", Static)
+        await wait_until(pilot, lambda: "Data dir" in str(info.render()))
         rendered = str(info.render())
         assert "Documents" in rendered
         assert "Data dir" in rendered
@@ -2338,7 +2340,7 @@ async def test_status_screen_storage_section(mock_svc):
 async def test_status_screen_arch_section(mock_svc):
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        info = app.screen.query_one("#arch-info", Static)
+        info = await wait_for_widget(pilot, app, "#arch-info", Static)
         # Architecture reads run on a worker; poll until the
         # placeholder is replaced with real content, capped so a
         # genuine failure still fails fast.
@@ -2355,7 +2357,7 @@ async def test_status_screen_arch_with_vision(mock_svc):
     cfg.chat_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        info = app.screen.query_one("#arch-info", Static)
+        info = await wait_for_widget(pilot, app, "#arch-info", Static)
         for _ in range(40):
             await pilot.pause()
             if "Vision proj" in str(info.render()):
@@ -2367,13 +2369,11 @@ async def test_status_screen_arch_with_vision(mock_svc):
 async def test_status_screen_vim_keys(mock_svc):
     _serve_sources(mock_svc, "a.md", "b.md")
     app = StatusTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#docs-table", DataTable)
+    async with app.run_test(size=(120, 40)) as pilot:
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
         table.focus()
-        await _pilot.press("j")
-        await _pilot.press("k")
+        await pilot.press("j")
+        await pilot.press("k")
         assert table.has_focus
 
 

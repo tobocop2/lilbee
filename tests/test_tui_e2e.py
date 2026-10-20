@@ -20,6 +20,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg_module
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
+from tests._async_wait import wait_for_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
 
@@ -700,11 +701,7 @@ class TestScreenTransitions:
                 await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
-                # Two pauses: first lets the screen mount and on_mount run,
-                # second lets the deferred Documents/Architecture/Storage
-                # collapsibles land via call_after_refresh.
-                await pilot.pause()
-                await pilot.pause()
+                await wait_for_widget(pilot, app, "#docs-table")
                 await pilot.press("q")
                 await pilot.pause()
                 assert isinstance(app.screen, ChatScreen)
@@ -2247,11 +2244,7 @@ class TestStatusInteractions:
                 await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
-                # Two pauses: first lets the screen mount and on_mount run,
-                # second lets the deferred Documents/Architecture/Storage
-                # collapsibles land via call_after_refresh.
-                await pilot.pause()
-                await pilot.pause()
+                await wait_for_widget(pilot, app, "#storage-section")
                 collapsibles = app.screen.query(Collapsible)
                 assert len(collapsibles) >= 3
 
@@ -2265,12 +2258,7 @@ class TestStatusInteractions:
                 await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
-                # Two pauses: first lets the screen mount and on_mount run,
-                # second lets the deferred Documents/Architecture/Storage
-                # collapsibles land via call_after_refresh.
-                await pilot.pause()
-                await pilot.pause()
-                config_info = app.screen.query_one("#config-info")
+                config_info = await wait_for_widget(pilot, app, "#config-info")
                 assert config_info is not None
 
     async def test_documents_table_populated(self, _mock_resolve):
@@ -2285,12 +2273,8 @@ class TestStatusInteractions:
                 await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
-                # Two pauses: first lets the screen mount and on_mount run,
-                # second lets the deferred Documents/Architecture/Storage
-                # collapsibles land via call_after_refresh.
-                await pilot.pause()
-                await pilot.pause()
-                table = app.screen.query_one("#docs-table", DataTable)
+                table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+                await wait_until(pilot, lambda: table.row_count >= 1)
                 assert table is not None
                 assert table.row_count >= 1
 
@@ -2304,11 +2288,7 @@ class TestStatusInteractions:
                 await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
-                # Two pauses: first lets the screen mount and on_mount run,
-                # second lets the deferred Documents/Architecture/Storage
-                # collapsibles land via call_after_refresh.
-                await pilot.pause()
-                await pilot.pause()
+                await wait_for_widget(pilot, app, "#docs-table")
                 await pilot.press("j")
                 await pilot.pause()
                 await pilot.press("k")
@@ -2325,11 +2305,7 @@ class TestStatusInteractions:
                 await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
-                # Two pauses: first lets the screen mount and on_mount run,
-                # second lets the deferred Documents/Architecture/Storage
-                # collapsibles land via call_after_refresh.
-                await pilot.pause()
-                await pilot.pause()
+                await wait_for_widget(pilot, app, "#docs-table")
                 await pilot.press("G")
                 await pilot.pause()
                 await pilot.press("g")
@@ -2347,11 +2323,7 @@ class TestStatusInteractions:
                 await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
-                # Two pauses: first lets the screen mount and on_mount run,
-                # second lets the deferred Documents/Architecture/Storage
-                # collapsibles land via call_after_refresh.
-                await pilot.pause()
-                await pilot.pause()
+                await wait_for_widget(pilot, app, "#docs-table")
                 await pilot.press("q")
                 await pilot.pause()
                 assert isinstance(app.screen, ChatScreen)
@@ -3286,11 +3258,7 @@ class TestCatalogViewSwitching:
                 assert isinstance(app.screen, CatalogScreen)
 
                 app.switch_view("Status")
-                # Two pauses: first lets the screen mount and on_mount run,
-                # second lets the deferred Documents/Architecture/Storage
-                # collapsibles land via call_after_refresh.
-                await pilot.pause()
-                await pilot.pause()
+                await wait_for_widget(pilot, app, "#storage-section")
                 assert app.active_view == "Status"
 
                 app.switch_view("Catalog")
