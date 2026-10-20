@@ -707,6 +707,8 @@ class TestStatusScreenAsync:
         tmp_path: Path,
     ) -> None:
         """The Documents table shows one stored page, then the rest once scrolled to the end."""
+        import asyncio
+
         from lilbee.app.services import set_services
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.app import LilbeeApp
@@ -722,18 +724,34 @@ class TestStatusScreenAsync:
         mock_svc = mock.MagicMock()
         mock_svc.store = store
         set_services(mock_svc)
+        real_mount = StatusScreen._mount_remaining_sections
+
+        async def late_mount(screen: StatusScreen) -> None:
+            # The screen mounts its sections after it becomes current. A slow runner
+            # (Windows CI) lands that after the test looks for the table; delay it here.
+            await asyncio.sleep(0.5)
+            await real_mount(screen)
+
         try:
             app = LilbeeApp()
-            async with app.run_test() as pilot:
-                await await_chat(app, pilot)
-                app.push_screen(StatusScreen())
-                await pump_until(pilot, lambda: isinstance(app.screen, StatusScreen))
-                docs = app.screen.query_one("#docs-table")
-                await wait_until(pilot, lambda: docs.row_count == DOCUMENTS_PAGE_DEFAULT)
-                first_hint = str(app.screen.query_one("#docs-more").render())
-                docs.scroll_end(animate=False)
-                await wait_until(pilot, lambda: docs.row_count == total)
-                rows = [[str(cell) for cell in docs.get_row_at(i)] for i in range(docs.row_count)]
+            with mock.patch.object(StatusScreen, "_mount_remaining_sections", late_mount):
+                async with app.run_test() as pilot:
+                    await await_chat(app, pilot)
+                    app.push_screen(StatusScreen())
+                    await pump_until(pilot, lambda: isinstance(app.screen, StatusScreen))
+                    assert await wait_until(
+                        pilot, lambda: bool(app.screen.query("#docs-table")), timeout=10.0
+                    )
+                    docs = app.screen.query_one("#docs-table")
+                    await wait_until(
+                        pilot, lambda: docs.row_count == DOCUMENTS_PAGE_DEFAULT, timeout=10.0
+                    )
+                    first_hint = str(app.screen.query_one("#docs-more").render())
+                    docs.scroll_end(animate=False)
+                    await wait_until(pilot, lambda: docs.row_count == total)
+                    rows = [
+                        [str(cell) for cell in docs.get_row_at(i)] for i in range(docs.row_count)
+                    ]
         finally:
             set_services(None)
         assert first_hint == msg.STATUS_DOCS_MORE.format(count=DOCUMENTS_PAGE_DEFAULT)
