@@ -6,11 +6,15 @@ from dataclasses import dataclass, field
 from typing import TypeAlias
 
 from lilbee.core.config.defaults import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
+from lilbee.core.config.model import CONTROL_CHARACTER
 from lilbee.runtime.cancellation import CancelSignal
 
 # Explicit "no page limit" for a crawl. Distinct from None, which means
 # "unspecified, use the protective default cfg.crawl_safety_max_pages".
 CRAWL_PAGES_UNLIMITED = 0
+
+AUTHORIZATION_HEADER = "Authorization"
+COOKIE_HEADER = "Cookie"
 
 
 def crawl_limit_error(depth: int | None, max_pages: int | None) -> str | None:
@@ -64,6 +68,52 @@ class FetchedPage:
     success: bool = True
     error: str | None = None
     links: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CrawlLogin:
+    """The login one crawl sends to its seed host; no field shows in a repr.
+
+    An empty field is unset. Raises ``ValueError`` naming the field, never its value.
+    """
+
+    authorization: str = field(default="", repr=False)
+    username: str = field(default="", repr=False)
+    password: str = field(default="", repr=False)
+    cookie: str = field(default="", repr=False)
+
+    def __post_init__(self) -> None:
+        values = {
+            "authorization": self.authorization,
+            "username": self.username,
+            "password": self.password,
+            "cookie": self.cookie,
+        }
+        for name, value in values.items():
+            if CONTROL_CHARACTER.search(value):
+                raise ValueError(f"the crawl login {name} holds a control character")
+        if self.password and not self.username:
+            raise ValueError("the crawl login password needs a username")
+        if self.authorization and self.username:
+            raise ValueError("give the crawl login an authorization header or a username, not both")
+
+    @property
+    def basic_credentials(self) -> tuple[str, str] | None:
+        """The username and password, or None when no username is set."""
+        return (self.username, self.password) if self.username else None
+
+    @property
+    def cookie_header(self) -> dict[str, str]:
+        """The Cookie request header, or no header when no cookie is set."""
+        return {COOKIE_HEADER: self.cookie} if self.cookie else {}
+
+    @property
+    def authorization_header(self) -> dict[str, str]:
+        """The Authorization request header, or no header when none is set."""
+        return {AUTHORIZATION_HEADER: self.authorization} if self.authorization else {}
+
+
+NO_LOGIN = CrawlLogin()
 
 
 @dataclass

@@ -1326,6 +1326,13 @@ Also available via MCP (`crawl`), REST API (`POST /api/crawl`), and TUI
 (`/crawl`). The MCP tool defaults to a single page (`depth=0`); agents pass a
 depth, or `depth=null` for the whole site.
 
+**Sites that need a login:** `lilbee add` takes `--authorization`, `--username`,
+`--password` and `--cookie`. The REST body takes a `login` object with the same
+four fields. The MCP `crawl` tool takes them as four parameters. The crawl sends
+them only to the host of the first URL. They are never saved to `config.toml`
+or the crawl record. The TUI `/crawl` command and the MCP `add` tool do not take
+a login.
+
 **Configuration (all optional):**
 
 ```bash

@@ -10,6 +10,7 @@ from enum import StrEnum
 
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import crawl_and_save
+from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.runtime.progress import (
     CrawlPageEvent,
@@ -53,6 +54,8 @@ class CrawlTask:
     max_pages: int | None
     render_mode: CrawlRenderMode | None = None
     include_subdomains: bool = False
+    # Dropped when the crawl ends, so a finished task keeps no secret.
+    login: CrawlLogin = field(default=NO_LOGIN, repr=False)
     status: TaskStatus = TaskStatus.PENDING
     pages_crawled: int = 0
     pages_total: int | None = None
@@ -129,6 +132,7 @@ async def run_crawl(task: CrawlTask) -> None:
             cancel=task.cancel,
             include_subdomains=task.include_subdomains,
             render_mode=task.render_mode,
+            login=task.login,
         )
         if task.cancel.is_set():
             task.status = TaskStatus.CANCELLED
@@ -157,6 +161,7 @@ async def run_crawl(task: CrawlTask) -> None:
         task.finished_at = now_iso()
         log.warning("Crawl failed: %s: %s", task.shown_url, exc)
     finally:
+        task.login = NO_LOGIN
         task._async_task = None
 
 
@@ -185,12 +190,14 @@ def start_crawl(
     render_mode: CrawlRenderMode | None = None,
     *,
     include_subdomains: bool = False,
+    login: CrawlLogin = NO_LOGIN,
 ) -> str:
     """Create a crawl task and launch it as an asyncio background task.
 
     Defaults to whole-site unbounded recursion. Pass depth=0 for single URL.
     ``render_mode`` of ``None`` defers to ``cfg.crawl_render_mode``.
     ``include_subdomains`` widens whole-site scope to the host's subdomains.
+    ``login`` goes to the seed host and is dropped when the crawl ends.
     Returns the task_id for status polling.
     """
     _evict_completed()
@@ -202,6 +209,7 @@ def start_crawl(
         max_pages=max_pages,
         render_mode=render_mode,
         include_subdomains=include_subdomains,
+        login=login,
     )
     _registry.tasks[task_id] = task
     task._async_task = asyncio.create_task(run_crawl(task))

@@ -68,7 +68,7 @@ from lilbee.crawler import (
     is_url,
     require_valid_crawl_url,
 )
-from lilbee.crawler.models import crawl_limit_error
+from lilbee.crawler.models import CrawlLogin, crawl_limit_error
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
@@ -511,14 +511,24 @@ async def crawl(
     max_pages: int | None = None,
     render_mode: CrawlRenderMode | None = None,
     include_subdomains: bool = False,
+    authorization: str = "",
+    username: str = "",
+    password: str = "",
+    cookie: str = "",
 ) -> dict[str, Any]:
     """Start a non-blocking crawl; poll via ``crawl_status(task_id)``.
     ``depth=0`` (default) = single URL, ``N`` = follow links N levels,
-    ``null`` = whole site. ``render_mode``: "http"/"browser"."""
+    ``null`` = whole site. ``render_mode``: "http"/"browser".
+    ``authorization`` (a whole Authorization header value) or ``username`` and
+    ``password``, and ``cookie`` (a Cookie header value), log in to the seed host only."""
     if not crawler_available():
         return _error(CRAWLER_MISSING_MESSAGE)
     if (too_large := crawl_limit_error(depth, max_pages)) is not None:
         return _error(too_large)
+    try:
+        login = CrawlLogin(authorization, username, password, cookie)
+    except ValueError as exc:
+        return _error(str(exc))
     try:
         # URL validation resolves the host (blocking DNS), so it runs off the loop.
         # The crawl itself must be scheduled ON the loop: start_crawl uses
@@ -533,6 +543,7 @@ async def crawl(
         max_pages=max_pages,
         render_mode=render_mode,
         include_subdomains=include_subdomains,
+        login=login,
     )
     return {"status": "started", "task_id": task_id, "url": without_userinfo(url)}
 
