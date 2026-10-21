@@ -35,6 +35,7 @@ from typer.testing import CliRunner
 crawlberg = pytest.importorskip("crawlberg")
 
 import lilbee.server.auth as auth_mod  # noqa: E402
+from lilbee.app.settings import apply_settings_update  # noqa: E402
 from lilbee.cli.app import app  # noqa: E402
 from lilbee.cli.commands.serve_logging import setup_server_log_file  # noqa: E402
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, Config, cfg  # noqa: E402
@@ -1011,12 +1012,12 @@ class TestExcludePatternCheck:
     def test_crawlberg_compiles_every_default_pattern(self):
         assert refused_exclude_patterns(DEFAULT_CRAWL_EXCLUDE_PATTERNS) == []
 
+    @pytest.mark.usefixtures("isolated_env")
     def test_the_setting_refuses_what_crawlberg_refuses_and_keeps_what_it_compiles(self):
-        probe = cfg.model_copy()
-        probe.crawl_exclude_patterns = [r"/wiki/\p{L}+:"]
+        apply_settings_update({"crawl_exclude_patterns": [r"/wiki/\p{L}+:"]})
         with pytest.raises(ValueError, match="crawl_exclude_patterns"):
-            probe.crawl_exclude_patterns = [r"\Z"]
-        assert probe.crawl_exclude_patterns == [r"/wiki/\p{L}+:"]
+            apply_settings_update({"crawl_exclude_patterns": [r"\Z"]})
+        assert cfg.crawl_exclude_patterns == [r"/wiki/\p{L}+:"]
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
@@ -1387,7 +1388,7 @@ class TestRefusedExcludePatterns:
         monkeypatch.setattr(bootstrap, "chromium_installed", lambda: True)
         monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: shell)
         with pytest.raises(ValueError, match="crawl_exclude_patterns"):
-            Config(crawl_exclude_patterns=[pattern])
+            apply_settings_update({"crawl_exclude_patterns": [pattern]})
         _force_exclude_patterns([r"/scope/skip/", pattern])
         with pytest.raises(CrawlEngineRefusedError) as refused:
             await crawl_and_save(site.url("/scope/"), depth=1, max_pages=0, render_mode=render_mode)
