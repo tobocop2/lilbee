@@ -46,8 +46,8 @@ from lilbee.crawler.backends.crawlberg.config import (  # noqa: E402
     CRAWLBERG_DENIED_NETWORKS,
     admitted_networks,
 )
+from lilbee.crawler.backends.crawlberg.events import _SSRF_ERROR_CODE  # noqa: E402
 from lilbee.crawler.backends.crawlberg.fetcher import (  # noqa: E402
-    _SSRF_ERROR_CODE,
     CrawlbergFetcher,
     _queued_url,
 )
@@ -350,7 +350,7 @@ PLAIN_PAGE_PREFIXES = (
     "/cart",
     "/login",
 )
-FETCHER_LOGGER = "lilbee.crawler.backends.crawlberg.fetcher"
+BACKEND_LOGGER = "lilbee.crawler.backends.crawlberg"
 LEFT_OUT = "Left out {url}: it matches {pattern}, a pattern of the crawl_exclude_patterns setting"
 
 
@@ -855,7 +855,7 @@ class TestCrawlAndSave:
         warnings = [
             record.getMessage()
             for record in caplog.records
-            if record.name == FETCHER_LOGGER and record.levelname == "WARNING"
+            if record.name.startswith(BACKEND_LOGGER) and record.levelname == "WARNING"
         ]
         # crawlberg 1.11.1 leaves out a seed an exclude pattern matches, at any limit.
         assert site.paths_since(0, EXCLUDED_SEED) == []
@@ -873,7 +873,7 @@ class TestCrawlAndSave:
         warnings = [
             record.getMessage()
             for record in caplog.records
-            if record.name == FETCHER_LOGGER and record.levelname == "WARNING"
+            if record.name.startswith(BACKEND_LOGGER) and record.levelname == "WARNING"
         ]
         assert site.paths_since(0, "/") == ["/robots.txt", "/sitemap.xml"]
         assert paths == []
@@ -891,7 +891,7 @@ class TestCrawlAndSave:
         warnings = [
             record.getMessage()
             for record in caplog.records
-            if record.name == FETCHER_LOGGER and record.levelname == "WARNING"
+            if record.name.startswith(BACKEND_LOGGER) and record.levelname == "WARNING"
         ]
         # crawlberg 1.11.1 matches a pattern against the address without its userinfo.
         assert site.paths_since(0, EXCLUDED_SEED) == []
@@ -983,7 +983,7 @@ class TestDefaultExcludePatterns:
         warnings = sorted(
             record.getMessage()
             for record in caplog.records
-            if record.name == FETCHER_LOGGER and record.levelname == "WARNING"
+            if record.name.startswith(BACKEND_LOGGER) and record.levelname == "WARNING"
         )
         never_received = set(DEFAULTS_LINKS.values()) - requested
         assert never_received == set(DEFAULTS_EXCLUDED)
