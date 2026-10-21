@@ -6,7 +6,7 @@ from __future__ import annotations
 import random
 import sys
 from contextlib import AbstractContextManager
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from textual.app import ComposeResult
@@ -437,9 +437,15 @@ async def test_search_submit_on_an_empty_list_leaves_focus_alone() -> None:
         screen._list_widget.clear_options()
         assert screen._list_widget.option_count == 0
         inp = screen.query_one("#catalog-search", _Input)
-        screen._on_search_submitted(_Input.Submitted(input=inp, value=inp.value))
-        assert screen._list_widget.highlighted is None
-        assert not screen._list_widget.has_focus
+        with (
+            patch.object(type(screen._list_widget), "focus") as focus,
+            patch.object(
+                type(screen._list_widget), "highlighted", new_callable=PropertyMock
+            ) as highlight,
+        ):
+            screen._on_search_submitted(_Input.Submitted(input=inp, value=inp.value))
+        assert not focus.called
+        highlight.assert_not_called()
 
 
 def test_local_lines_renders_remote_backend_pill() -> None:
