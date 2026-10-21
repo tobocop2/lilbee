@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -16,11 +17,12 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.crawler import crawlberg_fetcher as crawlberg_fetcher_mod
 from lilbee.crawler import discovery as discovery_mod
 from lilbee.crawler import events as events_mod
 from lilbee.crawler import runner as runner_mod
 from lilbee.crawler import sitemap as sitemap_mod
+from lilbee.crawler.backends import crawlberg as crawlberg_backend
+from lilbee.crawler.backends.crawlberg import fetcher as crawlberg_fetcher_mod
 from lilbee.crawler.models import (
     NO_LOGIN,
     ConcurrencySpec,
@@ -154,7 +156,7 @@ class TestCrawlRecursiveOrchestration:
         cfg.crawl_retry_on_rate_limit = True
         cfg.crawl_retry_base_delay_min = 1.0
         fake = FakeFetcher(pages=[])
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert fake.recursive_calls
         spec: ConcurrencySpec = fake.recursive_calls[0]["concurrency"]
@@ -166,7 +168,7 @@ class TestCrawlRecursiveOrchestration:
     async def test_builds_filter_spec_from_cfg_and_flag(self):
         cfg.crawl_exclude_patterns = ["/tag/", "/page/\\d+"]
         fake = FakeFetcher(pages=[])
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             await crawl_recursive(
                 "https://example.com",
                 max_depth=1,
@@ -187,7 +189,7 @@ class TestCrawlRecursiveOrchestration:
         def on_progress(event_type: EventType, data: Any) -> None:
             events.append((event_type, data))
 
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             results = await crawl_recursive(
                 "https://example.com", max_depth=2, max_pages=10, on_progress=on_progress
             )
@@ -205,7 +207,7 @@ class TestCrawlRecursiveOrchestration:
         ]
         fake = FakeFetcher(pages=pages)
         events: list[tuple[EventType, Any]] = []
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             await crawl_recursive(
                 "https://example.com",
                 max_depth=1,
@@ -224,7 +226,7 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 6)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             results = await crawl_recursive("https://example.com", max_depth=1, max_pages=3)
         assert len(results) == 3
         assert [r.url for r in results] == [
@@ -249,7 +251,7 @@ class TestCrawlRecursiveOrchestration:
                         cancel.set()
 
         fake = _CancelAfterTwo(pages=pages)
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             results = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=10, cancel=cancel
             )
@@ -262,7 +264,7 @@ class TestCrawlRecursiveOrchestration:
         ]
         fake = FakeFetcher(pages=pages)
         observed: list[str] = []
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             await crawl_recursive(
                 "https://example.com",
                 max_depth=1,
@@ -279,7 +281,7 @@ class TestCrawlRecursiveOrchestration:
         def flaky(result: CrawlResult) -> None:
             raise OSError("disk full")
 
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             # Should not raise even though the callback errors.
             results = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=5, on_result=flaky
@@ -300,7 +302,7 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 50)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             results = await crawl_recursive("https://example.com", max_depth=None, max_pages=None)
         assert fake.recursive_calls[0]["max_pages"] == 4
         assert len(results) == 4
@@ -312,7 +314,7 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 20)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             results = await crawl_recursive("https://example.com", max_depth=1, max_pages=100)
         assert fake.recursive_calls[0]["max_pages"] == 100
         assert len(results) == 19
@@ -324,7 +326,7 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 20)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert fake.recursive_calls[0]["max_pages"] == 5
 
@@ -337,7 +339,7 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 20)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(runner_mod, "CrawlbergFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             results = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=CRAWL_PAGES_UNLIMITED
             )
@@ -658,7 +660,7 @@ class TestExtraWaitSetting:
 
 
 class TestFetcherModuleNotDirectlyImported:
-    """Sanity guard: nothing outside ``crawlberg_fetcher`` imports crawlberg."""
+    """Sanity guard: nothing outside ``backends.crawlberg`` imports crawlberg."""
 
     def test_runner_module_has_no_crawlberg_import(self):
         source = (runner_mod.__file__ or "").strip()
@@ -668,10 +670,9 @@ class TestFetcherModuleNotDirectlyImported:
         assert "import crawlberg" not in text
         assert "from crawlberg" not in text
 
-    def test_crawlberg_fetcher_is_the_sole_importer(self):
-        adapter_source = (crawlberg_fetcher_mod.__file__ or "").strip()
-        with open(adapter_source, encoding="utf-8") as fh:
-            adapter_text = fh.read()
+    def test_the_backend_package_is_the_sole_importer(self):
+        package = Path(crawlberg_backend.__file__ or "").parent
+        adapter_text = "".join(path.read_text(encoding="utf-8") for path in package.glob("*.py"))
         assert "import crawlberg" in adapter_text
 
 
