@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, assert_never
 
 from lilbee.core.config.enums import LlmProvider
 from lilbee.providers import availability
+from lilbee.providers.backends.liter_llm.names import SDK_DIST, SDK_MODULE
 from lilbee.providers.base import ProviderError
 
 if TYPE_CHECKING:
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
     from lilbee.providers.base import LLMProvider
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-__all__ = ["create_provider", "create_sdk_provider"]
+__all__ = ["SDK_DIST", "SDK_MODULE", "create_provider", "create_sdk_provider"]
 
 
 def create_sdk_provider() -> SdkLLMProvider:

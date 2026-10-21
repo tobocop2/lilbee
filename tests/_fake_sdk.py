@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from lilbee.providers.backends.liter_llm.names import SDK_MODULE
+from lilbee.providers.factory import SDK_MODULE
 from tests._sys_modules import inject_modules
 
 # liter-llm's exception classes: every one subclasses LiterLlmError.

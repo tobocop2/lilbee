@@ -16,8 +16,8 @@ import pytest
 
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.backends.liter_llm.client import _client
-from lilbee.providers.backends.liter_llm.names import SDK_MODULE
 from lilbee.providers.base import ProviderError
+from lilbee.providers.factory import SDK_MODULE
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.sdk_backend import CompletionRequest, EmbeddingRequest, RerankRequest
 from tests import _fake_sdk as fakes

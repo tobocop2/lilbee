@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.backends.liter_llm.names import SDK_DIST, SDK_MODULE
+from lilbee.providers.factory import SDK_DIST, SDK_MODULE
 from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
 from tests._gguf_fixture import has_gguf_parser

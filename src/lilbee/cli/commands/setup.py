@@ -29,7 +29,7 @@ from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
-from lilbee.providers.backends.liter_llm.names import SDK_MODULE
+from lilbee.providers.factory import SDK_MODULE
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import styled
 from lilbee.runtime.progress import EventType, SetupProgressEvent
