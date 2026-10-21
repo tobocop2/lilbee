@@ -2,28 +2,49 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, assert_never
 
 from lilbee.core.config.enums import LlmProvider
 from lilbee.providers import availability
-from lilbee.providers.backends.liter_llm.names import SDK_DIST, SDK_MODULE
 from lilbee.providers.base import ProviderError
 
 if TYPE_CHECKING:
     from lilbee.core.config import Config
     from lilbee.providers.base import LLMProvider
+    from lilbee.providers.sdk_backend import LlmSdkBackend
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-__all__ = ["SDK_DIST", "SDK_MODULE", "create_provider", "create_sdk_provider"]
+__all__ = ["SdkLibrary", "create_provider", "create_sdk_provider", "sdk_library"]
+
+
+@dataclass(frozen=True)
+class SdkLibrary:
+    """The client library behind the SDK backend."""
+
+    dist: str
+    """Distribution name, as package metadata lists it."""
+    module: str
+    """Top-level import name."""
+    create_backend: Callable[[], LlmSdkBackend]
+    """Builds a new backend over the library."""
+
+
+def sdk_library() -> SdkLibrary:
+    """Return the client library's names and backend builder, importing nothing heavy."""
+    # heavy: setup.py imports this module at CLI startup; the backend package
+    # defers its backend module and the library to create_backend
+    from lilbee.providers.backends.liter_llm import SDK_DIST, SDK_MODULE, create_sdk_backend
+
+    return SdkLibrary(dist=SDK_DIST, module=SDK_MODULE, create_backend=create_sdk_backend)
 
 
 def create_sdk_provider() -> SdkLLMProvider:
     """Return a new provider over the SDK backend, for remote and API models."""
-    # heavy: the backend package imports httpx, and setup.py imports this module at CLI startup
-    from lilbee.providers.backends.liter_llm import create_sdk_backend
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-    return SdkLLMProvider(create_sdk_backend())
+    return SdkLLMProvider(sdk_library().create_backend())
 
 
 def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:

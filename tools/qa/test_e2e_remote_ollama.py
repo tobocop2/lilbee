@@ -146,9 +146,9 @@ def _skip_without_providers(lane: Lane, lilbee_data: Path) -> None:
     """Skip when the lilbee under test doesn't have the ``providers`` extra wired."""
     import importlib.util
 
-    from lilbee.providers.factory import SDK_MODULE
+    from lilbee.providers.factory import sdk_library
 
-    if importlib.util.find_spec(SDK_MODULE) is None:
+    if importlib.util.find_spec(sdk_library().module) is None:
         if _ollama_required():
             pytest.fail("provider SDK not importable in a lane that requires the ollama path")
         pytest.skip("provider SDK not importable; ollama provider path not available")

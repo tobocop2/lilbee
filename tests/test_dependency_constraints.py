@@ -17,8 +17,9 @@ from pathlib import Path
 
 from packaging.requirements import Requirement
 
-from lilbee.providers.factory import SDK_DIST
+from lilbee.providers.factory import sdk_library
 
+SDK_DIST = sdk_library().dist
 _PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 _QA_REQUIREMENTS = Path(__file__).parents[1] / "tools" / "qa" / "requirements.txt"
 

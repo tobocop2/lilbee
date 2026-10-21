@@ -17,9 +17,9 @@ import httpx
 import numpy as np
 import pytest
 
-from lilbee.providers.factory import SDK_MODULE
+from lilbee.providers.factory import sdk_library
 
-pytest.importorskip(SDK_MODULE)
+pytest.importorskip(sdk_library().module)
 
 from lilbee.core.config import cfg
 from lilbee.providers.backends.liter_llm import backend as _backend_mod

@@ -1,8 +1,8 @@
 """liter-llm backend for the provider layer.
 
-The provider factory is the only caller of ``create_sdk_backend``. Importing this
-package loads nothing heavy: the backend module loads inside that function, and the
-client library loads on the first request.
+The provider factory is the only module outside this package that imports it.
+Importing this package loads nothing heavy: the backend module loads inside
+``create_sdk_backend``, and the client library loads on the first request.
 """
 
 from __future__ import annotations
@@ -12,7 +12,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from lilbee.providers.sdk_backend import LlmSdkBackend
 
-__all__ = ["create_sdk_backend"]
+__all__ = ["SDK_DIST", "SDK_MODULE", "create_sdk_backend"]
+
+# Distribution and import names of the client library.
+SDK_DIST = "liter-llm"
+SDK_MODULE = "liter_llm"
 
 
 def create_sdk_backend() -> LlmSdkBackend:

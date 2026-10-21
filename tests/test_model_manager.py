@@ -17,13 +17,14 @@ from lilbee.modelhub.model_manager import (
     RemoteModel,
     discover_api_models,
 )
-from lilbee.providers.factory import SDK_MODULE
+from lilbee.providers.factory import sdk_library
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.sdk_backend import detect_backend_name
 from tests import _fake_sdk
 from tests._sys_modules import inject_modules
 from tests._unreadable import POSIX_DENIES_READS, unreadable
 
+SDK_MODULE = sdk_library().module
 _NATIVE_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
 
 

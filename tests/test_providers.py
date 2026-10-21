@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -14,7 +15,7 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.factory import SDK_DIST, SDK_MODULE
+from lilbee.providers.factory import sdk_library
 from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
 from tests._gguf_fixture import has_gguf_parser
@@ -40,6 +41,12 @@ def _reset_provider() -> None:
     yield
     reset_services()
 
+
+_SDK = sdk_library()
+SDK_DIST = _SDK.dist
+SDK_MODULE = _SDK.module
+# The backend module the factory defers until a provider is built.
+SDK_BACKEND_MODULE = f"{_SDK.create_backend.__module__}.backend"
 
 TEST_MODEL_REPO = "org/test-model-GGUF"
 TEST_MODEL_FILE = "test-model.gguf"
@@ -814,6 +821,30 @@ def _installed_dists(**versions: str) -> Callable[[str], str]:
     return lookup
 
 
+class TestLibraryBoundary:
+    """The client library's name stays inside its backend package."""
+
+    def test_only_the_factory_import_names_the_library_outside_its_package(self) -> None:
+        src = Path(__file__).parents[1] / "src" / "lilbee"
+        backends = src / "providers" / "backends"
+        # Matches the distribution, module and package spellings: any separator, any case.
+        spelling = re.compile(
+            ".?".join(re.escape(part) for part in re.split(r"[-_.]", SDK_MODULE)), re.IGNORECASE
+        )
+        hits = [
+            (path.relative_to(src).as_posix(), line)
+            for path in sorted(src.rglob("*.py"))
+            if not path.is_relative_to(backends)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if spelling.search(line)
+        ]
+        assert len(hits) == 1, hits
+        where, line = hits[0]
+        assert where == "providers/factory.py"
+        # Indented: the import runs inside a function, not when the factory loads.
+        assert line.lstrip().startswith("from ") and line != line.lstrip(), line
+
+
 class TestProviderSdkAvailable:
     """The un-patched ``provider_sdk_available`` probe, driven by installed-package metadata."""
 
@@ -823,8 +854,8 @@ class TestProviderSdkAvailable:
 
         probe = (
             "import sys, lilbee.providers.factory;"
-            f" loaded = {{m for m in ({SDK_MODULE!r},"
-            " 'lilbee.providers.backends.liter_llm.backend') if m in sys.modules};"
+            f" loaded = {{m for m in ({SDK_MODULE!r}, {SDK_BACKEND_MODULE!r})"
+            " if m in sys.modules};"
             " print(sorted(loaded))"
         )
         done = subprocess.run(
@@ -842,8 +873,8 @@ class TestProviderSdkAvailable:
 
         probe = (
             "import sys, lilbee.providers.availability as a;"
-            f" loaded = {{m for m in ({SDK_MODULE!r}, 'httpx',"
-            " 'lilbee.providers.backends.liter_llm.backend') if m in sys.modules};"
+            f" loaded = {{m for m in ({SDK_MODULE!r}, 'httpx', {SDK_BACKEND_MODULE!r})"
+            " if m in sys.modules};"
             " assert 'lilbee.providers.availability' in sys.modules;"
             " print(sorted(loaded))"
         )

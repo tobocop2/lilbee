@@ -16,8 +16,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from lilbee.providers.factory import SDK_MODULE
+from lilbee.providers.factory import sdk_library
 from tests._sys_modules import inject_modules
+
+SDK_MODULE = sdk_library().module
 
 # liter-llm's exception classes: every one subclasses LiterLlmError.
 ERROR_NAMES = (

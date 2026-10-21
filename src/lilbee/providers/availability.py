@@ -20,11 +20,11 @@ def provider_sdk_available() -> bool:
     Reads package metadata instead of importing the native module, so the
     Settings screen's compose does not pay for the import.
     """
-    # circular: the factory imports this module
-    from lilbee.providers import factory
+    # circular: the factory imports this module for its REMOTE refusal
+    from lilbee.providers.factory import sdk_library
 
     try:
-        _dist_version(factory.SDK_DIST)
+        _dist_version(sdk_library().dist)
     except PackageNotFoundError:
         return False
     return True
