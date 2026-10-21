@@ -7,6 +7,7 @@ and auto-sync.
 
 from __future__ import annotations
 
+import ast
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -15,13 +16,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import lilbee
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import discovery as discovery_mod
 from lilbee.crawler import events as events_mod
 from lilbee.crawler import runner as runner_mod
 from lilbee.crawler import sitemap as sitemap_mod
-from lilbee.crawler.backends import crawlberg as crawlberg_backend
 from lilbee.crawler.backends.crawlberg import config as crawlberg_config_mod
 from lilbee.crawler.models import (
     NO_LOGIN,
@@ -659,21 +660,53 @@ class TestExtraWaitSetting:
         assert [config.kwargs["browser"].kwargs["extra_wait"] for config in stub.configs] == [None]
 
 
-class TestFetcherModuleNotDirectlyImported:
-    """Sanity guard: nothing outside ``backends.crawlberg`` imports crawlberg."""
+CRAWLBERG = "crawlberg"
+# Every module of lilbee that imports crawlberg, as a path under src/lilbee. A new importer
+# is added here on purpose, with its import kept inside the function that needs it.
+CRAWLBERG_IMPORTERS = frozenset(
+    {
+        "core/crawl_patterns.py",
+        "crawler/backends/crawlberg/config.py",
+        "crawler/backends/crawlberg/events.py",
+    }
+)
 
-    def test_runner_module_has_no_crawlberg_import(self):
-        source = (runner_mod.__file__ or "").strip()
-        assert source, "runner module must have a __file__"
-        with open(source, encoding="utf-8") as fh:
-            text = fh.read()
-        assert "import crawlberg" not in text
-        assert "from crawlberg" not in text
 
-    def test_the_backend_package_is_the_sole_importer(self):
-        package = Path(crawlberg_backend.__file__ or "").parent
-        adapter_text = "".join(path.read_text(encoding="utf-8") for path in package.glob("*.py"))
-        assert "import crawlberg" in adapter_text
+def _imports_crawlberg(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            alias.name.split(".")[0] == CRAWLBERG for alias in node.names
+        ):
+            return True
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == CRAWLBERG:
+            return True
+    return False
+
+
+class TestCrawlbergImporters:
+    def test_only_the_listed_modules_import_crawlberg(self):
+        root = Path(lilbee.__file__).parent
+        found = {
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*.py")
+            if _imports_crawlberg(ast.parse(path.read_text(encoding="utf-8")))
+        }
+        assert found == CRAWLBERG_IMPORTERS
+
+    @pytest.mark.parametrize(
+        ("source", "imports"),
+        [
+            ("import crawlberg", True),
+            ("import crawlberg.errors as errors", True),
+            ("def f():\n    from crawlberg import CrawlConfig", True),
+            ("from crawlberg.config import x", True),
+            ("import crawlberg_extras", False),
+            ("from . import crawlberg", False),
+            ("import os", False),
+        ],
+    )
+    def test_the_import_finder_reads_every_import_form(self, source: str, imports: bool):
+        assert _imports_crawlberg(ast.parse(source)) is imports
 
 
 LOGIN_SEED = "https://example.com/"
