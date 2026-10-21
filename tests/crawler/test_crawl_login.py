@@ -11,6 +11,7 @@ import pytest
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import sitemap
 from lilbee.crawler import task as task_mod
+from lilbee.crawler.backends.crawlberg import config as config_mod
 from lilbee.crawler.backends.crawlberg import fetcher as fetcher_mod
 from lilbee.crawler.backends.crawlberg.fetcher import CrawlbergFetcher
 from lilbee.crawler.models import NO_LOGIN, CrawlLogin
@@ -21,7 +22,7 @@ TOKEN = "Bearer tok-5Qz"
 COOKIE = "sid=ck-8Wm"
 USER = "alice"
 PASSWORD = "pw-3Lx"
-ACCEPT = fetcher_mod._BROWSER_ACCEPT_HEADERS
+ACCEPT = config_mod._BROWSER_ACCEPT_HEADERS
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +91,7 @@ class TestFetcherLogin:
     ):
         login, auth, cookie = case
         monkeypatch.setattr(
-            fetcher_mod.bootstrap, "headless_shell_executable", lambda: tmp_path / "shell"
+            config_mod.bootstrap, "headless_shell_executable", lambda: tmp_path / "shell"
         )
         stub = StubCrawlberg([page(SEED, "# Home", depth=0), complete(1)])
         with stub.installed():

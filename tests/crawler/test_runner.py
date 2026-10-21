@@ -22,7 +22,7 @@ from lilbee.crawler import events as events_mod
 from lilbee.crawler import runner as runner_mod
 from lilbee.crawler import sitemap as sitemap_mod
 from lilbee.crawler.backends import crawlberg as crawlberg_backend
-from lilbee.crawler.backends.crawlberg import fetcher as crawlberg_fetcher_mod
+from lilbee.crawler.backends.crawlberg import config as crawlberg_config_mod
 from lilbee.crawler.models import (
     NO_LOGIN,
     ConcurrencySpec,
@@ -632,7 +632,7 @@ class TestExtraWaitSetting:
     ):
         shell = tmp_path / "chrome-headless-shell"
         monkeypatch.setattr(
-            crawlberg_fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell
+            crawlberg_config_mod.bootstrap, "headless_shell_executable", lambda: shell
         )
         cfg.crawl_browser_extra_wait_ms = wait_ms
         home = crawlberg_page("https://example.com/", "# Home", depth=0)
