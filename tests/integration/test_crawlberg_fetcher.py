@@ -42,12 +42,14 @@ from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
 from lilbee.core.crawl_patterns import refused_exclude_patterns  # noqa: E402
 from lilbee.core.web_names import page_stem  # noqa: E402
 from lilbee.crawler import bootstrap, crawl_and_save, save, url_filter  # noqa: E402
+from lilbee.crawler.backends.crawlberg.config import (  # noqa: E402
+    CRAWLBERG_DENIED_NETWORKS,
+    admitted_networks,
+)
 from lilbee.crawler.backends.crawlberg.fetcher import (  # noqa: E402
     _SSRF_ERROR_CODE,
-    CRAWLBERG_DENIED_NETWORKS,
     CrawlbergFetcher,
     _queued_url,
-    admitted_networks,
 )
 from lilbee.crawler.bootstrap import CrawlEngineRefusedError  # noqa: E402
 from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE  # noqa: E402
@@ -720,7 +722,7 @@ class TestSsrfBlocklistsAgree:
         ids=str,
     )
     async def test_built_policy_refuses_every_network_lilbee_blocks(self, network):
-        from lilbee.crawler.backends.crawlberg.fetcher import _ssrf_policy
+        from lilbee.crawler.backends.crawlberg.config import _ssrf_policy
 
         error = await _first_error(_ssrf_policy(), _representative(network))
         assert error.startswith(_SSRF_ERROR_CODE), error
@@ -746,7 +748,7 @@ class TestSsrfBlocklistsAgree:
         assert not fetched.error.startswith(_SSRF_ERROR_CODE), fetched.error
 
     async def test_built_policy_admits_what_lilbee_admits(self):
-        from lilbee.crawler.backends.crawlberg.fetcher import _ssrf_policy
+        from lilbee.crawler.backends.crawlberg.config import _ssrf_policy
 
         assert admitted_networks(url_filter.get_blocked_networks()) == [
             ipaddress.ip_network("224.0.0.0/4")
