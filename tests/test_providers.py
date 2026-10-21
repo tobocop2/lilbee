@@ -848,13 +848,13 @@ class TestLibraryBoundary:
 class TestProviderSdkAvailable:
     """The un-patched ``provider_sdk_available`` probe, driven by installed-package metadata."""
 
-    def test_importing_the_factory_loads_neither_the_library_nor_the_backend(self) -> None:
-        """The factory names the backend package but loads its backend module only on use."""
+    def test_the_library_names_load_neither_the_library_nor_the_backend(self) -> None:
+        """Reading the library's names loads no client library, backend module or HTTP client."""
         import subprocess
 
         probe = (
-            "import sys, lilbee.providers.factory;"
-            f" loaded = {{m for m in ({SDK_MODULE!r}, {SDK_BACKEND_MODULE!r})"
+            "import sys, lilbee.providers.factory as f; f.sdk_library();"
+            f" loaded = {{m for m in ({SDK_MODULE!r}, 'httpx', {SDK_BACKEND_MODULE!r})"
             " if m in sys.modules};"
             " print(sorted(loaded))"
         )
@@ -867,12 +867,12 @@ class TestProviderSdkAvailable:
         )
         assert done.stdout.strip() == "[]"
 
-    def test_importing_the_check_loads_neither_the_library_nor_the_backend(self) -> None:
-        """The check module stays light: no client library, no backend module, no HTTP client."""
+    def test_the_check_loads_neither_the_library_nor_the_backend(self) -> None:
+        """The install check stays light: no client library, no backend module, no HTTP client."""
         import subprocess
 
         probe = (
-            "import sys, lilbee.providers.availability as a;"
+            "import sys, lilbee.providers.availability as a; a.provider_sdk_available();"
             f" loaded = {{m for m in ({SDK_MODULE!r}, 'httpx', {SDK_BACKEND_MODULE!r})"
             " if m in sys.modules};"
             " assert 'lilbee.providers.availability' in sys.modules;"
