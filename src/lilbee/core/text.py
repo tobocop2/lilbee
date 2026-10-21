@@ -6,6 +6,14 @@ import re
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")
 _WHITESPACE_RE = re.compile(r"\s+")
+# ECMA-48 escape sequences: CSI, string commands (OSC and the like) up to their terminator,
+# and two-character escapes. A C1 byte stands for its ESC form.
+_ESCAPE_SEQUENCE_RE = re.compile(
+    r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]"
+    r"|(?:\x1b[\]PX^_]|[\x90\x98\x9d\x9e\x9f])[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)?"
+    r"|\x1b[ -~]"
+)
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def collapse_whitespace(text: str) -> str:
@@ -16,6 +24,11 @@ def collapse_whitespace(text: str) -> str:
     before anything downstream sees it.
     """
     return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def strip_control_characters(text: str) -> str:
+    """*text* without terminal escape sequences or any other control character."""
+    return _CONTROL_RE.sub("", _ESCAPE_SEQUENCE_RE.sub("", text))
 
 
 # Trailing possessive clitic on an entity surface: 's with a straight or

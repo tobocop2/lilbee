@@ -26,6 +26,15 @@ CRAFTED_TITLES = (
     "back\\slash \\[x]",
     "line1\nline2 # head",
 )
+# Titles that hold a terminal control sequence or character.
+CONTROL_TITLES = (
+    "red \x1b[31mwarning\x1b[0m page",
+    "\x1b]0;owned\x07 window title",
+    "\x1b[2J\x1b[H cleared",
+    "bell \x07 and backspace \x08 and nul \x00 here",
+    "c1 \x9b31m \x85 \x9d0;x\x9c here",
+    "\x1b]8;;https://evil.example\x1b\\hidden link\x1b]8;;\x1b\\",
+)
 # Names every raw surface shows exactly as typed.
 PLAIN_NAMES = ("my_notes.md", "AT&T", "R&D plan_v2.md", "__init__.py")
 _MARKUP = frozenset({"image", "code_inline", "html_inline", "em_open", "strong_open", "s_open"})
