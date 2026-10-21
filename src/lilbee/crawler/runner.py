@@ -18,6 +18,7 @@ from lilbee.app.ingest import remove_sources_and_forget_in_wiki
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.core.crawl_patterns import exclude_patterns_refusal
 from lilbee.crawler import availability, bootstrap, save, sitemap
 from lilbee.crawler.availability import CRAWLER_MISSING_MESSAGE
 from lilbee.crawler.backends.crawlberg import fetcher_from_config
@@ -307,19 +308,28 @@ def _make_flush_page(
     return flush_page
 
 
+def _require_valid_exclude_patterns() -> None:
+    """Raise :class:`CrawlEngineRefusedError` naming each exclude pattern crawlberg refuses."""
+    refusal = exclude_patterns_refusal(cfg.crawl_exclude_patterns)
+    if refusal is not None:
+        raise CrawlEngineRefusedError(refusal)
+
+
 async def _ensure_crawler_ready(
     on_progress: DetailedProgressCallback | None,
     render_mode: CrawlRenderMode,
 ) -> None:
-    """Reject early when the extra is missing; bootstrap Chromium on first use.
+    """Reject early when the extra is missing or a setting is invalid; bootstrap Chromium.
 
     Runs before the Chromium bootstrap so a user without [crawler] doesn't pay
     the ~160 MB download just to hit the same error afterward. Only browser mode
     needs Chromium; HTTP mode skips the bootstrap entirely. The bootstrap
     short-circuits when Chromium is already installed; any progress is forwarded
-    through ``on_progress`` so downstream UIs surface a 'setup' stage.
+    through ``on_progress`` so downstream UIs surface a 'setup' stage. An exclude pattern
+    crawlberg refuses fails both a single-page and a recursive crawl before any setup.
     """
     _require_crawler_extra()
+    await asyncio.to_thread(_require_valid_exclude_patterns)
 
     if render_mode is CrawlRenderMode.BROWSER and not bootstrap.chromium_installed():
         await bootstrap.bootstrap_chromium(on_progress=on_progress)
