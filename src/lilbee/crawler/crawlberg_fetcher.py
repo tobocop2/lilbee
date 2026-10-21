@@ -34,7 +34,6 @@ from lilbee.crawler.models import (
     FetchedPage,
     FilterSpec,
 )
-from lilbee.crawler.save import parsed_address
 
 # crawlberg is the optional ``crawler`` extra and loads a native library, so each
 # function that needs it imports it on call.
@@ -576,7 +575,7 @@ class _ExcludedLinks:
         The seed is matched as crawlberg's URL parser writes it; a seed that does not parse is
         one crawlberg refuses, so no pattern applies to it.
         """
-        address = parsed_address(seed_url)
+        address = url_filter.parsed_address(seed_url)
         if address is None:
             return
         url = _queued_url(address)
