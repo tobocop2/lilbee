@@ -59,7 +59,8 @@ CONFIG_MAX_DEPTH = 1
 FAILED_PAGE_COUNT = 2
 TIMEOUT_S = 2
 # A pattern Python's ``re`` compiles and crawlberg refuses. The setting's own check refuses it
-# too, so the test sets it past that check to reach the refusal crawlberg makes at a crawl.
+# too, so the test sets it past that check to reach the refusal every crawl makes before it
+# starts.
 REFUSED_PATTERN = "(?P<n>a)(?(n)b|c)"
 
 
@@ -320,9 +321,7 @@ async def test_a_crawl_crawlberg_refuses_ends_as_a_failed_task_with_the_reason(
         task = _crawl_task(app)
         assert task is not None
         assert task.status is TaskStatus.FAILED
-        assert task.detail.startswith(
-            "The crawl_exclude_patterns setting holds a pattern that crawlberg refuses: "
-        )
+        assert task.detail.startswith("invalid regex in crawl_exclude_patterns: [0] ")
         assert REFUSED_PATTERN in task.detail
         assert await _wait_for(pilot, _workers_idle, _CRAWL_WAIT_S)
     assert msg.CMD_CRAWL_SUCCESS.format(count=0, url=url) not in app.messages
