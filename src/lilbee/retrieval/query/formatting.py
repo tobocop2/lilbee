@@ -11,7 +11,7 @@ from pathlib import Path
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
-from lilbee.core.text import collapse_whitespace
+from lilbee.core.text import collapse_whitespace, strip_control_characters
 from lilbee.core.web_names import INDEX_STEM, WEB_PREFIX, is_web_source, page_stem
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, is_memory_source
 
@@ -312,6 +312,21 @@ def _never_closed(fence: Token, content: str) -> bool:
         and fence.map is not None
         and end.map[0] == fence.map[0]
     )
+
+
+def terminal_sources_text(sources: str) -> str:
+    """The Sources list *sources* with every control character and escape sequence removed.
+
+    The one place a stored title or source label is made safe for a terminal. A page controls
+    its title, and a terminal reads an escape sequence in it as a command. Line breaks stay.
+    """
+    return "\n".join(strip_control_characters(line) for line in sources.split("\n"))
+
+
+def terminal_sources_block(content: str) -> str:
+    """*content* with the Sources list it ends in made safe for a terminal or a TUI widget."""
+    text, sources = split_sources_list(content)
+    return text + terminal_sources_text(sources)
 
 
 def markdown_sources_block(content: str) -> str:

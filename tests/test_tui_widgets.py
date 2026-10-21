@@ -24,7 +24,14 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.core.config import cfg
-from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, crafted_label, shown_inline
+from tests._crafted_titles import (
+    CONTROL_TITLES,
+    CRAFTED_SOURCE,
+    CRAFTED_TITLES,
+    TERMINAL_CONTROL_RE,
+    crafted_label,
+    shown_inline,
+)
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
@@ -7696,3 +7703,58 @@ async def test_warm_line_names_the_model_being_loaded() -> None:
         assert warm is not None
         assert "chat ·" not in warm  # not the fallback name
         assert "warming up " in warm
+
+
+class TestTerminalSafeSourcesList:
+    """The Sources list a widget renders holds no control character of a stored label."""
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    async def test_a_restored_turn_renders_a_title_without_control_characters(
+        self, title: str
+    ) -> None:
+        from textual.widgets import Markdown
+
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        content = f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        app = _RestoredApp(content)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert isinstance(am._content_widget, Markdown)
+            assert TERMINAL_CONTROL_RE.search(am._content_widget.source.replace("\n", "")) is None
+            assert "".join(am._content_parts) == content
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    async def test_a_live_turn_renders_a_title_without_control_characters(self, title: str) -> None:
+        from textual.widgets import Markdown
+
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        block = f"\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("x [1]")
+            am.append_content(block)
+            am.finish()
+            await pilot.pause()
+            assert isinstance(am._content_widget, Markdown)
+            assert TERMINAL_CONTROL_RE.search(am._content_widget.source.replace("\n", "")) is None
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    async def test_the_plain_text_view_shows_a_title_without_control_characters(
+        self, title: str
+    ) -> None:
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        content = f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        app = _RestoredApp(content)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            await am.rebuild_content_widget(use_markdown=False)
+            assert isinstance(am._content_widget, Static)
+            plain = am._content_widget.content.plain
+            assert TERMINAL_CONTROL_RE.search(plain.replace("\n", "")) is None
