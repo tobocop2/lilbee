@@ -49,8 +49,8 @@ from lilbee.crawler.backends.crawlberg.config import (  # noqa: E402
 from lilbee.crawler.backends.crawlberg.events import _SSRF_ERROR_CODE  # noqa: E402
 from lilbee.crawler.backends.crawlberg.fetcher import (  # noqa: E402
     CrawlbergFetcher,
-    _queued_url,
 )
+from lilbee.crawler.backends.crawlberg.links import _queued_url  # noqa: E402
 from lilbee.crawler.bootstrap import CrawlEngineRefusedError  # noqa: E402
 from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE  # noqa: E402
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402

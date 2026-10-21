@@ -19,8 +19,8 @@ from lilbee.crawler.backends.crawlberg.config import CRAWLBERG_DENIED_NETWORKS, 
 from lilbee.crawler.backends.crawlberg.events import _SSRF_ERROR_CODE
 from lilbee.crawler.backends.crawlberg.fetcher import (
     CrawlbergFetcher,
-    _queued_url,
 )
+from lilbee.crawler.backends.crawlberg.links import _queued_url
 from lilbee.crawler.bootstrap import ChromiumMissingError, CrawlEngineRefusedError
 from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE, ROBOTS_UNREACHABLE_MESSAGE
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
