@@ -13,13 +13,13 @@ import pytest
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import availability
 from lilbee.crawler.availability import crawler_available
+from lilbee.crawler.backends.crawlberg import config as config_mod
 from lilbee.crawler.backends.crawlberg import fetcher as fetcher_mod
+from lilbee.crawler.backends.crawlberg.config import CRAWLBERG_DENIED_NETWORKS, admitted_networks
 from lilbee.crawler.backends.crawlberg.fetcher import (
     _SSRF_ERROR_CODE,
-    CRAWLBERG_DENIED_NETWORKS,
     CrawlbergFetcher,
     _queued_url,
-    admitted_networks,
 )
 from lilbee.crawler.bootstrap import ChromiumMissingError, CrawlEngineRefusedError
 from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE, ROBOTS_UNREACHABLE_MESSAGE
@@ -146,7 +146,7 @@ class TestCrawlConfig:
         self, monkeypatch, tmp_path
     ):
         shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
             await _recursive(_browser())
@@ -176,7 +176,7 @@ class TestCrawlConfig:
         self, monkeypatch, tmp_path, mode: CrawlRenderMode
     ):
         shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
             await _recursive(CrawlbergFetcher(render_mode=mode, user_agent=OVERRIDE))
@@ -306,7 +306,7 @@ class TestCrawlConfig:
 
     async def test_ssrf_policy_reads_the_blocklist_at_crawl_time(self, monkeypatch):
         blocked = tuple(n for n in _BLOCKED_NETWORKS if n not in LOOPBACK)
-        monkeypatch.setattr(fetcher_mod.url_filter, "get_blocked_networks", lambda: blocked)
+        monkeypatch.setattr(config_mod.url_filter, "get_blocked_networks", lambda: blocked)
         stub = StubCrawlberg()
         with stub.installed():
             await _recursive(_http())
@@ -331,7 +331,7 @@ class TestBrowserMode:
         self, monkeypatch, tmp_path
     ):
         shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
             await _browser(FLAGS).fetch_single(SEED, timeout=5, concurrency=NO_PACING)
@@ -352,7 +352,7 @@ class TestBrowserMode:
         self, monkeypatch, tmp_path, wait_ms: int
     ):
         shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
         fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.BROWSER, extra_wait_ms=wait_ms)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
@@ -367,7 +367,7 @@ class TestBrowserMode:
         self, monkeypatch, tmp_path, wait_ms: int, overall_ms: int
     ):
         shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
         fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.BROWSER, extra_wait_ms=wait_ms)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
@@ -376,7 +376,7 @@ class TestBrowserMode:
 
     async def test_a_recursive_crawl_names_the_same_shell_and_flags(self, monkeypatch, tmp_path):
         shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
         stub = StubCrawlberg([page(SEED, depth=0), complete(1)])
         with stub.installed():
             pages = await _recursive(_browser(FLAGS))
@@ -388,7 +388,7 @@ class TestBrowserMode:
         self, monkeypatch, tmp_path
     ):
         shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
         flags = list(FLAGS)
         fetcher = _browser(flags)
         flags.append("--mute-audio")
@@ -402,7 +402,7 @@ class TestBrowserMode:
         self, monkeypatch, tmp_path, before: str | None
     ):
         shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
         monkeypatch.delenv(CHROME_ENV, raising=False)
         if before is not None:
             monkeypatch.setenv(CHROME_ENV, before)
@@ -416,7 +416,7 @@ class TestBrowserMode:
         self, monkeypatch, tmp_path
     ):
         shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
         fetcher = CrawlbergFetcher(
             render_mode=CrawlRenderMode.HTTP, chrome_args=FLAGS, extra_wait_ms=2500
         )
@@ -434,7 +434,7 @@ class TestBrowserMode:
     async def test_http_mode_does_not_look_for_the_shell(self, monkeypatch):
         looked: list[bool] = []
         monkeypatch.setattr(
-            fetcher_mod.bootstrap, "headless_shell_executable", lambda: looked.append(True)
+            config_mod.bootstrap, "headless_shell_executable", lambda: looked.append(True)
         )
         stub = StubCrawlberg([page(SEED, "# Page", depth=0)])
         with stub.installed():
@@ -443,7 +443,7 @@ class TestBrowserMode:
         assert looked == []
 
     async def test_missing_shell_raises_before_any_engine_starts(self, monkeypatch):
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: None)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: None)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed(), pytest.raises(ChromiumMissingError, match="lilbee setup crawler"):
             await _browser().fetch_single(SEED, timeout=5, concurrency=NO_PACING)
@@ -506,7 +506,7 @@ class TestRefusedEngine:
     @pytest.fixture(autouse=True)
     def _shell(self, monkeypatch, tmp_path):
         shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
 
     async def test_a_single_fetch_names_the_setting_and_gives_crawlbergs_reason(self):
         stub = StubCrawlberg([page(SEED, depth=0)], refuse=_refuses_headless)
