@@ -9,10 +9,10 @@ import httpx
 import pytest
 
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.crawler import crawlberg_fetcher as fetcher_mod
 from lilbee.crawler import sitemap
 from lilbee.crawler import task as task_mod
-from lilbee.crawler.crawlberg_fetcher import CrawlbergFetcher
+from lilbee.crawler.backends.crawlberg import fetcher as fetcher_mod
+from lilbee.crawler.backends.crawlberg.fetcher import CrawlbergFetcher
 from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from tests._crawlberg_stub import StubCrawlberg, complete, page
 
