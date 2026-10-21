@@ -23,7 +23,7 @@ from lilbee.providers.base import (
     ProviderError,
     require_role_ref,
 )
-from lilbee.providers.factory import create_sdk_backend
+from lilbee.providers.factory import create_sdk_provider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
@@ -72,7 +72,7 @@ class RoutingProvider(LLMProvider):
         if self._sdk_provider is None:
             with self._init_lock:
                 if self._sdk_provider is None:
-                    self._sdk_provider = SdkLLMProvider(create_sdk_backend())
+                    self._sdk_provider = create_sdk_provider()
         return self._sdk_provider
 
     def _pick_backend(self, ref: ProviderModelRef) -> LLMProvider:

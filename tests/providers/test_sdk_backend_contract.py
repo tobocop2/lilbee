@@ -97,10 +97,8 @@ class TestAvailable:
         def not_installed(dist: str) -> str:
             raise PackageNotFoundError(dist)
 
-        with mock.patch(
-            "lilbee.providers.backends.liter_llm.availability._dist_version", not_installed
-        ):
-            from lilbee.providers.factory import provider_sdk_available
+        with mock.patch("lilbee.providers.availability._dist_version", not_installed):
+            from lilbee.providers.availability import provider_sdk_available
 
             provider_sdk_available.cache_clear()
             try:

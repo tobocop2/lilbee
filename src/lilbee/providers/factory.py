@@ -5,25 +5,24 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, assert_never
 
 from lilbee.core.config.enums import LlmProvider
-from lilbee.providers.backends.liter_llm import (
-    PROVIDER_SDK_MISSING_MESSAGE,
-    SDK_MODULE,
-    create_sdk_backend,
-    provider_sdk_available,
-)
+from lilbee.providers import availability
 from lilbee.providers.base import ProviderError
 
 if TYPE_CHECKING:
     from lilbee.core.config import Config
     from lilbee.providers.base import LLMProvider
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-__all__ = [
-    "PROVIDER_SDK_MISSING_MESSAGE",
-    "SDK_MODULE",
-    "create_provider",
-    "create_sdk_backend",
-    "provider_sdk_available",
-]
+__all__ = ["create_provider", "create_sdk_provider"]
+
+
+def create_sdk_provider() -> SdkLLMProvider:
+    """Return a new provider over the SDK backend, for remote and API models."""
+    # heavy: the backend package imports httpx, and setup.py imports this module at CLI startup
+    from lilbee.providers.backends.liter_llm import create_sdk_backend
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+    return SdkLLMProvider(create_sdk_backend())
 
 
 def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
@@ -37,18 +36,14 @@ def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
     """
     match config.llm_provider:
         case LlmProvider.AUTO:
-            # circular: routing_provider -> factory via create_sdk_backend
+            # circular: routing_provider -> factory via create_sdk_provider
             from lilbee.providers.routing_provider import RoutingProvider
 
             return RoutingProvider(hold_warm=hold_warm)
 
         case LlmProvider.REMOTE:
-            # heavy: the SDK provider imports numpy, and setup.py imports this module at CLI startup
-            from lilbee.providers.sdk_llm_provider import SdkLLMProvider
-
-            backend = create_sdk_backend()
-            if not backend.available():
-                raise ProviderError(PROVIDER_SDK_MISSING_MESSAGE)
-            return SdkLLMProvider(backend)
+            if not availability.provider_sdk_available():
+                raise ProviderError(availability.PROVIDER_SDK_MISSING_MESSAGE)
+            return create_sdk_provider()
 
     assert_never(config.llm_provider)  # pragma: no cover

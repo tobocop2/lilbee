@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 from typing import Any
 
-from lilbee.providers.backends.liter_llm.availability import PROVIDER_SDK_MISSING_MESSAGE
+from lilbee.providers.availability import PROVIDER_SDK_MISSING_MESSAGE
 from lilbee.providers.backends.liter_llm.errors import _PROVIDER_NAME
 from lilbee.providers.base import ProviderError
 from lilbee.providers.local_servers import local_server_for_key

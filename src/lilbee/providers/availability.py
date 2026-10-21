@@ -1,4 +1,4 @@
-"""Install check for the client library behind the provider backend."""
+"""Install check for the client library behind the provider backends."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import functools
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version
 
-# Distribution and import names of the client library behind this backend.
+# Distribution and import names of the client library behind the provider backend.
 SDK_DIST = "liter-llm"
 SDK_MODULE = "liter_llm"
 

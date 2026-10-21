@@ -4653,7 +4653,7 @@ class TestCollectNativeModelsError:
         """Without the SDK extra the picker can't route to remote models, so skip discovery."""
         from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
 
-        monkeypatch.setattr("lilbee.providers.factory.provider_sdk_available", lambda: False)
+        monkeypatch.setattr("lilbee.providers.availability.provider_sdk_available", lambda: False)
         buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
         seen: set[str] = set()
         with mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models") as classify:
@@ -4667,7 +4667,7 @@ class TestCollectNativeModelsError:
         """API discovery is gated on the same SDK availability."""
         from lilbee.cli.tui.widgets.model_bar import _collect_api_models
 
-        monkeypatch.setattr("lilbee.providers.factory.provider_sdk_available", lambda: False)
+        monkeypatch.setattr("lilbee.providers.availability.provider_sdk_available", lambda: False)
         buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
         seen: set[str] = set()
         with mock.patch("lilbee.modelhub.model_manager.discover_api_models") as discover:

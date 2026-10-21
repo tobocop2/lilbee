@@ -291,14 +291,14 @@ class TestSettingsFeatureGating:
     def test_api_keys_group_hidden_without_providers(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
-        with mock.patch("lilbee.providers.factory.provider_sdk_available", return_value=False):
+        with mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=False):
             groups = settings_mod.group_settings()
         assert "API-Keys" not in groups
 
     def test_api_keys_group_visible_with_providers(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
-        with mock.patch("lilbee.providers.factory.provider_sdk_available", return_value=True):
+        with mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=True):
             groups = settings_mod.group_settings()
         assert "API-Keys" in groups
 

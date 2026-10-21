@@ -27,7 +27,7 @@ from lilbee.modelhub.model_manager.discovery import (
 )
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers import factory
+from lilbee.providers import availability
 from lilbee.providers.key_check import provider_key_status
 from lilbee.providers.local_servers import LocalServerSpec
 from lilbee.providers.local_servers.config_urls import base_url_for
@@ -83,7 +83,7 @@ def _local_server_reachable(spec: LocalServerSpec, base_url: str) -> bool:
 
 def _classify_local_server_ref(spec: LocalServerSpec) -> tuple[ValidationResult, str | None]:
     """Classify an ollama/lm_studio ref: needs the providers extra and a live server."""
-    if not factory.provider_sdk_available():
+    if not availability.provider_sdk_available():
         return ValidationResult.UNKNOWN, REASON_PROVIDERS_MISSING
     base_url = base_url_for(spec.key)
     if not _local_server_reachable(spec, base_url):

@@ -141,7 +141,7 @@ def _settings_gates_open():
     installed in the test environment."""
     with (
         patch(
-            "lilbee.providers.factory.provider_sdk_available",
+            "lilbee.providers.availability.provider_sdk_available",
             return_value=True,
         ),
         patch(

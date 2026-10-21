@@ -156,9 +156,9 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
     Skipped when the providers extra is not installed -- surfacing a model
     the SDK cannot route is a guaranteed runtime error.
     """
-    from lilbee.providers.factory import provider_sdk_available
+    from lilbee.providers import availability
 
-    if not provider_sdk_available():
+    if not availability.provider_sdk_available():
         return
     try:
         from lilbee.modelhub.model_manager import classify_all_remote_models
@@ -183,9 +183,9 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add frontier API chat models. Skipped without the providers extra (cannot route)."""
-    from lilbee.providers.factory import provider_sdk_available
+    from lilbee.providers import availability
 
-    if not provider_sdk_available():
+    if not availability.provider_sdk_available():
         return
     try:
         from lilbee.modelhub.model_manager import discover_api_models

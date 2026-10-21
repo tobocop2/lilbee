@@ -219,7 +219,7 @@ The codebase has a small set of `try: import X except ImportError:` patterns for
 
 | Library | Helper | Extra | Used by |
 |---|---|---|---|
-| provider SDK | `lilbee.providers.factory.provider_sdk_available()` | `lilbee[providers]` | SDK provider, settings TUI |
+| provider SDK | `lilbee.providers.availability.provider_sdk_available()` | `lilbee[providers]` | SDK provider, settings TUI |
 | `crawl4ai` | `lilbee.crawler.crawler_available()` | `lilbee[crawler]` | Web crawler |
 | `graspologic_native` | `lilbee.retrieval.concepts.nlp.concepts_available()` | `lilbee[graph]` | Concept-graph clustering |
 | `lilbee_engine` | resolved in `lilbee.providers.fleet.binary.resolve_engine_tool()` | bundled wheel | The local inference engine binaries (llama-server + llama-swap + gguf-parser) |

@@ -174,9 +174,9 @@ def stringify_default(default: object) -> str:
 
 
 def _providers_installed() -> bool:
-    from lilbee.providers.factory import provider_sdk_available
+    from lilbee.providers import availability
 
-    return provider_sdk_available()
+    return availability.provider_sdk_available()
 
 
 def _crawler_installed() -> bool:

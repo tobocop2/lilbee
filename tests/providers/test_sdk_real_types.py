@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from lilbee.providers.backends.liter_llm.availability import SDK_MODULE
+from lilbee.providers.availability import SDK_MODULE
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.backends.liter_llm.client import _client
 from lilbee.providers.base import ProviderError

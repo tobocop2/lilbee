@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.backends.liter_llm.availability import SDK_DIST, SDK_MODULE
+from lilbee.providers.availability import SDK_DIST, SDK_MODULE
 from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
 from tests._gguf_fixture import has_gguf_parser
@@ -824,10 +824,10 @@ class TestProviderSdkAvailable:
         ids=["installed", "absent"],
     )
     def test_reads_the_sdk_distribution(self, versions: dict[str, str], expected: bool) -> None:
-        from lilbee.providers.factory import provider_sdk_available
+        from lilbee.providers.availability import provider_sdk_available
 
         with mock.patch(
-            "lilbee.providers.backends.liter_llm.availability._dist_version",
+            "lilbee.providers.availability._dist_version",
             _installed_dists(**versions),
         ):
             assert provider_sdk_available() is expected
@@ -835,7 +835,7 @@ class TestProviderSdkAvailable:
     @pytest.mark.real_provider_sdk_probe
     def test_does_not_import_the_module(self) -> None:
         """The probe reads metadata only; an import would block the Settings compose."""
-        from lilbee.providers.factory import provider_sdk_available
+        from lilbee.providers.availability import provider_sdk_available
 
         had_module = SDK_MODULE in sys.modules
         assert provider_sdk_available() is True
@@ -850,9 +850,7 @@ class TestProviderSdkAvailable:
         )
         from lilbee.providers.local_servers import OLLAMA
 
-        with mock.patch(
-            "lilbee.providers.backends.liter_llm.availability._dist_version", _installed_dists()
-        ):
+        with mock.patch("lilbee.providers.availability._dist_version", _installed_dists()):
             result = _classify_local_server_ref(OLLAMA)
         assert result == (ValidationResult.UNKNOWN, REASON_PROVIDERS_MISSING)
 
@@ -877,19 +875,19 @@ class TestRequireSdk:
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
         cfg.llm_provider = "remote"
-        with mock.patch.object(LiterLlmBackend, "available", return_value=True):
+        with mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=True):
             provider = create_provider(cfg)
         assert isinstance(provider, SdkLLMProvider)
         assert isinstance(provider._backend, LiterLlmBackend)
 
     def test_factory_raises_when_sdk_unavailable(self) -> None:
-        from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
+        from lilbee.providers.availability import PROVIDER_SDK_MISSING_MESSAGE
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.factory import PROVIDER_SDK_MISSING_MESSAGE, create_provider
+        from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "remote"
         with (
-            mock.patch.object(LiterLlmBackend, "available", return_value=False),
+            mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=False),
             pytest.raises(ProviderError) as caught,
         ):
             create_provider(cfg)
@@ -3423,12 +3421,12 @@ class TestSdkRerank:
     def test_supports_rerank_matches_backend_available(self) -> None:
         provider = self._make_sdk_provider()
         with mock.patch(
-            "lilbee.providers.backends.liter_llm.backend.provider_sdk_available",
+            "lilbee.providers.availability.provider_sdk_available",
             return_value=True,
         ):
             assert provider.supports_rerank() is True
         with mock.patch(
-            "lilbee.providers.backends.liter_llm.backend.provider_sdk_available",
+            "lilbee.providers.availability.provider_sdk_available",
             return_value=False,
         ):
             assert provider.supports_rerank() is False

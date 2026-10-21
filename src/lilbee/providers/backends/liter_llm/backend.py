@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
-from lilbee.providers.backends.liter_llm.availability import provider_sdk_available
+from lilbee.providers import availability
 from lilbee.providers.backends.liter_llm.client import _client, _require_sdk
 from lilbee.providers.backends.liter_llm.config import _chat_fields, _route_model, _wire_base_url
 from lilbee.providers.backends.liter_llm.errors import (
@@ -59,7 +59,7 @@ class LiterLlmBackend:
 
     def available(self) -> bool:
         """Return True if the underlying SDK is installed."""
-        return provider_sdk_available()
+        return availability.provider_sdk_available()
 
     def supports_tools(self, _model_ref: str) -> bool:
         """Optimistic: all SDK-routed refs report tool support.
