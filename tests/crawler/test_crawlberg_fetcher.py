@@ -12,16 +12,16 @@ import pytest
 
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import availability
-from lilbee.crawler import crawlberg_fetcher as fetcher_mod
 from lilbee.crawler.availability import crawler_available
-from lilbee.crawler.bootstrap import ChromiumMissingError, CrawlEngineRefusedError
-from lilbee.crawler.crawlberg_fetcher import (
+from lilbee.crawler.backends.crawlberg import fetcher as fetcher_mod
+from lilbee.crawler.backends.crawlberg.fetcher import (
     _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
     CrawlbergFetcher,
     _queued_url,
     admitted_networks,
 )
+from lilbee.crawler.bootstrap import ChromiumMissingError, CrawlEngineRefusedError
 from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE, ROBOTS_UNREACHABLE_MESSAGE
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
 from lilbee.crawler.url_filter import _BLOCKED_NETWORKS

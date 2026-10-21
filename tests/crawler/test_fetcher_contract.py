@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.crawler.crawlberg_fetcher import CrawlbergFetcher
+from lilbee.crawler.backends.crawlberg.fetcher import CrawlbergFetcher
 from lilbee.crawler.fetcher import WebFetcher
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
 from tests._crawlberg_stub import StubCrawlberg, error, page
