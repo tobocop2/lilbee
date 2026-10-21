@@ -19,6 +19,9 @@ anyio>=4.14.2
 # Floor for transitive certifi (httpx -> certifi): 2026.10.19 fixes
 # GHSA-6q48-6c7w-9gw2.
 certifi>=2026.10.19
+# Floor for transitive pygments (pytest -> pygments): 2.20.0 fixes
+# GHSA-mrwq-x4v8-fh7p and GHSA-5239-wwwm-4pmq.
+pygments>=2.20.0
 
 # Cross-platform PTY harness. POSIX uses stdlib pty.openpty + subprocess
 # (posix_spawn), so no ptyprocess dependency. Windows uses pywinpty (ConPTY).
