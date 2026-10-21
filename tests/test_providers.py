@@ -824,7 +824,7 @@ class TestProviderSdkAvailable:
         probe = (
             "import sys, lilbee.providers.factory;"
             f" loaded = {{m for m in ({SDK_MODULE!r},"
-            " 'lilbee.providers.backends.liter_llm.backend') if m in sys.modules}};"
+            " 'lilbee.providers.backends.liter_llm.backend') if m in sys.modules};"
             " print(sorted(loaded))"
         )
         done = subprocess.run(
