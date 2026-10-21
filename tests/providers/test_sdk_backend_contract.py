@@ -112,7 +112,7 @@ class TestMissingSdk:
         from tests._sys_modules import inject_modules
 
         with (
-            inject_modules({"liter_llm": None}),
+            inject_modules({fakes.SDK_MODULE: None}),
             pytest.raises(ProviderError, match=r"lilbee\[providers\]"),
         ):
             backend.complete(_completion_request())

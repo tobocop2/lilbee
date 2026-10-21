@@ -1,6 +1,6 @@
 """liter-llm backend for the provider layer.
 
-The provider factory is the only module outside this package that imports it.
+The provider factory is the only lilbee module outside this package that imports it.
 Importing this package loads nothing heavy: the backend module loads inside
 ``create_sdk_backend``, and the client library loads on the first request.
 """
