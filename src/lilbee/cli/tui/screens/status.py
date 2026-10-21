@@ -29,6 +29,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
+from lilbee.core.text import strip_control_characters
 from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, SourceRecord
 from lilbee.data.types import SkippedSource
 from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
@@ -381,7 +382,7 @@ class StatusScreen(Screen[None]):
                 table.add_row(msg.STATUS_HELD_OUT_EMPTY, "")
                 return
             for held in docs.held_out:
-                table.add_row(Text(held.filename), Text(held.reason))
+                table.add_row(Text(strip_control_characters(held.filename)), Text(held.reason))
             hidden = docs.held_out_total - len(docs.held_out)
             if hidden > 0:
                 table.add_row(msg.STATUS_HELD_OUT_MORE.format(count=hidden), "")
@@ -421,7 +422,9 @@ class StatusScreen(Screen[None]):
                 table.add_row(placeholder, "")
                 return
             for src in docs.sources:
-                table.add_row(Text(src["filename"]), str(src["chunk_count"]))
+                table.add_row(
+                    Text(strip_control_characters(src["filename"])), str(src["chunk_count"])
+                )
 
     def _append_docs_page(self, page: _DocsPage) -> None:
         """Add a further page of sources under the rows already shown."""
@@ -431,7 +434,9 @@ class StatusScreen(Screen[None]):
         with contextlib.suppress(NoMatches):
             table = self.query_one("#docs-table", DataTable)
             for src in page.sources:
-                table.add_row(Text(src["filename"]), str(src["chunk_count"]))
+                table.add_row(
+                    Text(strip_control_characters(src["filename"])), str(src["chunk_count"])
+                )
             self._docs_loaded += len(page.sources)
             self._docs_page_failed = page.load_failed
             # An empty page means the library shrank under the count; stop asking.
