@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from lilbee.crawler.availability import CRAWLER_MISSING_MESSAGE, crawler_available
 from lilbee.crawler.bootstrap import (
     CrawlerBackendError,
     CrawlerBrowserError,
@@ -11,7 +12,6 @@ from lilbee.crawler.bootstrap import (
     chromium_installed,
     crawler_browsers_path,
 )
-from lilbee.crawler.crawlberg_fetcher import CRAWLER_MISSING_MESSAGE, crawler_available
 from lilbee.crawler.fetcher import WebFetcher
 from lilbee.crawler.models import (
     CancelToken,

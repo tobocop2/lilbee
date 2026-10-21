@@ -56,7 +56,7 @@ def isolated_env(tmp_path, monkeypatch):
     # Both the SDK façade (used by callers) and the impl (used by tests that
     # import directly) are patched so the value is consistent across import paths.
     monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: True)
-    monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: True)
+    monkeypatch.setattr("lilbee.crawler.availability.crawler_available", lambda: True)
     # Periodic sync off: at the 30s default, a fresh services container (every
     # test on the forked CI lane) fires a REAL ingest sync inside crawl_and_save,
     # and that native work inside a forked child can deadlock past the 60s test
