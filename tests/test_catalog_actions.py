@@ -424,6 +424,24 @@ async def test_search_submit_does_not_refire_the_hub_search() -> None:
             assert not install.called
 
 
+async def test_search_submit_on_an_empty_list_leaves_focus_alone() -> None:
+    """Enter in the search box with no list rows has no cursor to place."""
+    from textual.widgets import Input as _Input
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._active_tab_id_cache = "chat"
+        screen._grid_view = False
+        screen._list_widget.clear_options()
+        assert screen._list_widget.option_count == 0
+        inp = screen.query_one("#catalog-search", _Input)
+        screen._on_search_submitted(_Input.Submitted(input=inp, value=inp.value))
+        assert screen._list_widget.highlighted is None
+        assert not screen._list_widget.has_focus
+
+
 def test_local_lines_renders_remote_backend_pill() -> None:
     """Non-native backends (ollama, etc.) get an explicit pill on the card."""
     from lilbee.cli.tui.widgets.model_grid import _local_lines
