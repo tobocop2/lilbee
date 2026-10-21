@@ -17,7 +17,7 @@ import httpx
 import numpy as np
 import pytest
 
-from lilbee.providers.availability import SDK_MODULE
+from lilbee.providers.backends.liter_llm.names import SDK_MODULE
 
 pytest.importorskip(SDK_MODULE)
 

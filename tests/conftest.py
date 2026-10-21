@@ -49,8 +49,8 @@ from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SourceSummary
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
-from lilbee.providers.availability import SDK_DIST
 from lilbee.providers.availability import provider_sdk_available as _real_provider_sdk_available
+from lilbee.providers.backends.liter_llm.names import SDK_DIST
 from lilbee.providers.fleet.binary import EngineTool
 from lilbee.runtime.lock import _no_sync_running
 

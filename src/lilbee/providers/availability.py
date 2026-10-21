@@ -6,9 +6,7 @@ import functools
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version
 
-# Distribution and import names of the client library behind the provider backend.
-SDK_DIST = "liter-llm"
-SDK_MODULE = "liter_llm"
+from lilbee.providers.backends.liter_llm.names import SDK_DIST
 
 PROVIDER_SDK_MISSING_MESSAGE = (
     "Remote and API models need the lilbee[providers] extra. If you installed lilbee "
@@ -19,7 +17,7 @@ PROVIDER_SDK_MISSING_MESSAGE = (
 
 @functools.cache
 def provider_sdk_available() -> bool:
-    """Return True if the ``liter-llm`` distribution is installed.
+    """Return True if the provider client distribution is installed.
 
     Reads package metadata instead of importing the native module, so the
     Settings screen's compose does not pay for the import.

@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.availability import SDK_DIST, SDK_MODULE
+from lilbee.providers.backends.liter_llm.names import SDK_DIST, SDK_MODULE
 from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
 from tests._gguf_fixture import has_gguf_parser
@@ -816,6 +816,26 @@ def _installed_dists(**versions: str) -> Callable[[str], str]:
 
 class TestProviderSdkAvailable:
     """The un-patched ``provider_sdk_available`` probe, driven by installed-package metadata."""
+
+    def test_importing_the_check_loads_neither_the_library_nor_the_backend(self) -> None:
+        """The check module stays light: no client library, no backend module, no HTTP client."""
+        import subprocess
+
+        probe = (
+            "import sys, lilbee.providers.availability as a;"
+            f" loaded = {{m for m in ({SDK_MODULE!r}, 'httpx',"
+            " 'lilbee.providers.backends.liter_llm.backend') if m in sys.modules};"
+            " assert 'lilbee.providers.availability' in sys.modules;"
+            " print(sorted(loaded))"
+        )
+        done = subprocess.run(
+            [sys.executable, "-I", "-c", probe],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        assert done.stdout.strip() == "[]"
 
     @pytest.mark.real_provider_sdk_probe
     @pytest.mark.parametrize(

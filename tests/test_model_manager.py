@@ -17,7 +17,7 @@ from lilbee.modelhub.model_manager import (
     RemoteModel,
     discover_api_models,
 )
-from lilbee.providers.availability import SDK_MODULE
+from lilbee.providers.backends.liter_llm.names import SDK_MODULE
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.sdk_backend import detect_backend_name
 from tests import _fake_sdk

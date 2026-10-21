@@ -6864,7 +6864,7 @@ class TestSelfCheckExtras:
         assert payload["graspologic_native"] is True
 
     def test_providers_extra_is_probed_by_its_importable_module(self) -> None:
-        from lilbee.providers.availability import SDK_MODULE
+        from lilbee.providers.backends.liter_llm.names import SDK_MODULE
 
         with (
             mock.patch(
