@@ -18,12 +18,11 @@ from lilbee.crawler.bootstrap import ChromiumMissingError, CrawlEngineRefusedErr
 from lilbee.crawler.crawlberg_fetcher import (
     _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
-    ROBOTS_REFUSED_MESSAGE,
-    ROBOTS_UNREACHABLE_MESSAGE,
     CrawlbergFetcher,
     _queued_url,
     admitted_networks,
 )
+from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE, ROBOTS_UNREACHABLE_MESSAGE
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
 from lilbee.crawler.url_filter import _BLOCKED_NETWORKS
 from tests._crawlberg_stub import (

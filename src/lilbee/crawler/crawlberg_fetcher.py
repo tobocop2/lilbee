@@ -16,13 +16,14 @@ from urllib.parse import parse_qsl, quote_plus, urlsplit, urlunsplit
 
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap, url_filter
-from lilbee.crawler.bootstrap import (
+from lilbee.crawler.bootstrap import ChromiumMissingError, CrawlEngineRefusedError
+from lilbee.crawler.messages import (
     BROWSER_FLAGS_REFUSED_MESSAGE,
     CHROMIUM_MISSING_MESSAGE,
     CRAWL_REFUSED_MESSAGE,
     EXCLUDE_PATTERN_REFUSED_MESSAGE,
-    ChromiumMissingError,
-    CrawlEngineRefusedError,
+    ROBOTS_REFUSED_MESSAGE,
+    ROBOTS_UNREACHABLE_MESSAGE,
 )
 from lilbee.crawler.models import (
     AUTHORIZATION_HEADER,
@@ -129,14 +130,6 @@ _MAX_TITLE_CHARS = 512
 # page it refuses because the site's robots.txt could not be read.
 _ROBOTS_DISALLOWED_START = "robots.txt disallows "
 _ROBOTS_UNREACHABLE_START = "robots_unreachable: "
-ROBOTS_REFUSED_MESSAGE = (
-    "The site's robots.txt does not allow crawlers to fetch this page. "
-    "Set crawl_respect_robots_txt to false to crawl it."
-)
-ROBOTS_UNREACHABLE_MESSAGE = (
-    "The site's robots.txt could not be read ({reason}), so no page of the site is crawled. "
-    "Set crawl_respect_robots_txt to false to crawl the site without reading its robots.txt."
-)
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
 # The headers a browser sends with a page request, which crawlberg's HTTP client does not send.
 # Browser mode sends none: crawlberg adds custom headers to Chrome's requests too.
