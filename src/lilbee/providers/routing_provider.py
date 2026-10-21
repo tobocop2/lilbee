@@ -26,10 +26,10 @@ from lilbee.providers.base import (
 from lilbee.providers.factory import create_sdk_provider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
-from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
     from lilbee.providers.warm_progress import WarmProgress
 
 

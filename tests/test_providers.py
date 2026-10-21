@@ -658,7 +658,7 @@ class TestRoutingProvider:
 
             def shutdown(self) -> None: ...
 
-        monkeypatch.setattr("lilbee.providers.routing_provider.SdkLLMProvider", FakeSdk)
+        monkeypatch.setattr("lilbee.providers.sdk_llm_provider.SdkLLMProvider", FakeSdk)
 
         rp = RoutingProvider()
         self._to_shutdown.append(rp)
