@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
-import importlib.util
 import ipaddress
 import json
 import logging
@@ -118,9 +116,6 @@ _RATE_LIMIT_STATUSES = (429, 503)
 _MAX_RETRIES = 20
 _MS_PER_SECOND = 1000
 _SEED_DEPTH = 0
-# The modules of the crawler extra a crawl imports: the crawler, and the URL parser of saved names.
-_CRAWLER_MODULES = ("crawlberg", "ada_url")
-CRAWLER_MISSING_MESSAGE = "Web crawling requires: pip install 'lilbee[crawler]'"
 _SSRF_ERROR_CODE = "ssrf_policy_violation"
 # How crawlberg 1.11.1 starts its refusal of a setting, and the message that names that setting.
 _REFUSED_SETTING_MESSAGES = {
@@ -713,9 +708,3 @@ class CrawlbergFetcher:
 # Protocol conformance check: CrawlbergFetcher is structurally a WebFetcher.
 if TYPE_CHECKING:
     _: WebFetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP)
-
-
-@functools.cache
-def crawler_available() -> bool:
-    """Whether every module of the crawler extra is installed, checked without importing one."""
-    return all(importlib.util.find_spec(module) is not None for module in _CRAWLER_MODULES)
