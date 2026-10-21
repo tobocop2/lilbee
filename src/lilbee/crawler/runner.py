@@ -21,7 +21,6 @@ from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import availability, bootstrap, save, sitemap
 from lilbee.crawler.availability import CRAWLER_MISSING_MESSAGE
 from lilbee.crawler.bootstrap import (
-    CHROMIUM_MISSING_MESSAGE,
     ChromiumMissingError,
     CrawlEngineRefusedError,
     CrawlerBrowserError,
@@ -36,6 +35,7 @@ from lilbee.crawler.events import (
     _handle_crawl_teardown_error,
     _pages_cap,
 )
+from lilbee.crawler.messages import CHROMIUM_MISSING_MESSAGE
 from lilbee.crawler.models import (
     CRAWL_PAGES_UNLIMITED,
     NO_LOGIN,

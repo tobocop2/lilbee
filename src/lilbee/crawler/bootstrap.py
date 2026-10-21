@@ -38,18 +38,6 @@ class CrawlerBackendError(RuntimeError):
     """The ``crawler`` extra was never installed."""
 
 
-CHROMIUM_MISSING_MESSAGE = (
-    "The headless Chromium browser is not installed. "
-    "Run 'lilbee setup crawler' to enable browser-mode crawling."
-)
-# ``{reason}`` is crawlberg's own error text.
-CRAWL_REFUSED_MESSAGE = "crawlberg refuses to start this crawl: {reason}"
-BROWSER_FLAGS_REFUSED_MESSAGE = (
-    "The crawl_browser_extra_args setting holds a launch flag that crawlberg refuses: {reason}"
-)
-EXCLUDE_PATTERN_REFUSED_MESSAGE = (
-    "The crawl_exclude_patterns setting holds a pattern that crawlberg refuses: {reason}"
-)
 _CHROMIUM_COMPONENT = "chromium"
 # Playwright's name for the headless shell in browsers.json, and its cache directory prefix.
 _HEADLESS_SHELL_BROWSER = "chromium-headless-shell"

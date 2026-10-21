@@ -46,11 +46,11 @@ from lilbee.crawler.bootstrap import CrawlEngineRefusedError  # noqa: E402
 from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
     _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
-    ROBOTS_REFUSED_MESSAGE,
     CrawlbergFetcher,
     _queued_url,
     admitted_networks,
 )
+from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE  # noqa: E402
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402
 from lilbee.crawler.task import CrawlTask, TaskStatus, get_task, run_crawl  # noqa: E402
 from lilbee.data.page_record import CrawlMeta, page_titles  # noqa: E402

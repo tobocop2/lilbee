@@ -1320,7 +1320,7 @@ class TestAddWithUrls:
         self, mock_crawl, mock_sync, _mock_avail, isolated_env
     ):
         """A page the crawl saves nothing for gives the reason the crawl reported for it."""
-        from lilbee.crawler.crawlberg_fetcher import ROBOTS_REFUSED_MESSAGE
+        from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE
 
         async def refused(url: str, **kwargs: Any) -> list[Path]:
             kwargs["on_progress"](
