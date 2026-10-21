@@ -123,9 +123,11 @@ def test_structured_sources_become_a_numbered_list_of_plain_names():
         ("_web/www.example.com/guide.md", "example.com · guide"),
         ("memory:m1", "memory:m1"),
         ("notes [draft].md", "notes \\[draft\\].md"),
+        ("my_notes.md", "my\\_notes.md"),
+        ("R&D plan_v2.md", "R\\&D plan\\_v2.md"),
     ],
 )
-def test_every_kind_of_source_is_named_as_the_live_answer_labels_it(source, name):
+def test_every_kind_of_source_is_named_as_markdown_that_shows_its_label(source, name):
     set_services(make_mock_services())
     markdown = session_markdown(_session(_assistant("x [1]", sources=(source,))))
     assert markdown.endswith(f"Sources:\n\n1. {name}\n")

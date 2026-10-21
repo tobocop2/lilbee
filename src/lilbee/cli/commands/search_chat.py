@@ -44,7 +44,7 @@ from lilbee.core.config import cfg
 from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
 from lilbee.providers.roles import WorkerRole
-from lilbee.retrieval.query.formatting import FILE_LINK_RE, unescape_markdown_text
+from lilbee.retrieval.query.formatting import FILE_LINK_RE
 from lilbee.runtime.console import PlainConsole, styled
 
 # How many top concepts to show inline before truncating with a ``+N more`` tail.
@@ -186,7 +186,7 @@ def _print_sources_block(block: str) -> None:
     last = 0
     for m in FILE_LINK_RE.finditer(block):
         rendered.append(block[last : m.start()])
-        rendered.append(unescape_markdown_text(m["label"]), Style(link=m["url"]))
+        rendered.append(m["label"], Style(link=m["url"]))
         last = m.end()
     rendered.append(block[last:])
     console.print(rendered)
