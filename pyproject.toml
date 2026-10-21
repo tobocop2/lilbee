@@ -45,7 +45,7 @@ dependencies = [
     "textual>=0.75",
     # Floor is 2.2.0: it bounds StreamableHTTP sessions (CVE-2026-59951); 1.x lacks mcp.server.mcpserver.
     "mcp>=2.2.0,<3",
-    "pillow>=11.3.0",
+    "pillow>=13.0.0",
     "litestar>=2.0",
     "uvicorn>=0.30",
     "httpx",

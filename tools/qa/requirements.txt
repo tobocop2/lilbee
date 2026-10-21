@@ -16,6 +16,9 @@ idna>=3.15
 # Floor for transitive anyio (httpx -> anyio): 4.14.2 fixes GHSA-82r6-8w77-94w6
 # and GHSA-5p39-cfhj-2xmp.
 anyio>=4.14.2
+# Floor for transitive certifi (httpx -> certifi): 2026.10.19 fixes
+# GHSA-6q48-6c7w-9gw2.
+certifi>=2026.10.19
 
 # Cross-platform PTY harness. POSIX uses stdlib pty.openpty + subprocess
 # (posix_spawn), so no ptyprocess dependency. Windows uses pywinpty (ConPTY).
