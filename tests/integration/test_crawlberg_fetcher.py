@@ -199,7 +199,7 @@ REFUSED_PATTERNS = (
     "(?P<n>browser.chrome_args)(?(n)b|c)",
 )
 FLAG_SETTING = "The crawl_browser_extra_args setting holds a launch flag that crawlberg refuses: "
-PATTERN_SETTING = "The crawl_exclude_patterns setting holds a pattern that crawlberg refuses: "
+PATTERN_SETTING = "invalid regex in crawl_exclude_patterns: "
 NO_SETTING = "crawlberg refuses to start this crawl: "
 # A timeout in seconds whose milliseconds pass crawlberg's integer width, and what it raises.
 OVERSIZED_TIMEOUT = 10**17
@@ -1393,14 +1393,16 @@ class TestRefusedExcludePatterns:
         with pytest.raises(CrawlEngineRefusedError) as refused:
             await crawl_and_save(site.url("/scope/"), depth=1, max_pages=0, render_mode=render_mode)
         message = str(refused.value)
-        assert message.startswith(PATTERN_SETTING + "invalid_config: invalid exclude_path regex")
-        assert pattern in message
+        assert message.startswith(PATTERN_SETTING + f"[1] {pattern!r}: ")
+        assert "[0]" not in message
         assert site.paths_since(0, "/scope/") == []
 
-    async def test_a_single_page_crawl_sends_no_pattern_and_fetches_the_page(self, site):
+    async def test_a_single_page_crawl_is_refused_before_any_request(self, site):
         _force_exclude_patterns([REFUSED_PATTERNS[0]])
-        paths = await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
-        assert len(paths) == 1
+        with pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
+        assert str(refused.value).startswith(PATTERN_SETTING + f"[0] {REFUSED_PATTERNS[0]!r}: ")
+        assert site.paths_since(0, "/wiki/") == []
 
     async def test_the_same_crawl_without_the_pattern_reaches_the_site(self, site):
         cfg.crawl_exclude_patterns = [r"/scope/skip/"]
@@ -1427,7 +1429,7 @@ class TestRefusedEngineOnTheCli:
         cfg.crawl_render_mode = HTTP
         result = self._add("add", site.url("/scope/"))
         assert result.exit_code == 1
-        assert PATTERN_SETTING + "invalid_config: invalid exclude_path" in result.output
+        assert PATTERN_SETTING + f"[0] {REFUSED_PATTERNS[0]!r}: " in result.output
         assert "Traceback" not in result.output
         assert site.paths_since(0, "/scope/") == []
 
