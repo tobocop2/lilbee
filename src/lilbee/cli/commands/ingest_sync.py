@@ -49,6 +49,7 @@ from lilbee.cli.helpers import (
 from lilbee.core.config import cfg
 from lilbee.core.config.defaults import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
 from lilbee.core.config.enums import OcrMode
+from lilbee.core.text import strip_control_characters
 from lilbee.crawler import is_url
 from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import without_userinfo
@@ -841,7 +842,10 @@ def chunks(
 
     console.print(
         Text.assemble(
-            (str(len(cleaned)), theme.LABEL), " chunks from ", (source, theme.ACCENT), "\n"
+            (str(len(cleaned)), theme.LABEL),
+            " chunks from ",
+            (strip_control_characters(source), theme.ACCENT),
+            "\n",
         ),
         soft_wrap=True,
     )
@@ -911,7 +915,10 @@ def remove(
         return
 
     for name in result.removed:
-        console.print(Text.assemble("Removed ", (name, theme.ACCENT)), soft_wrap=True)
+        console.print(
+            Text.assemble("Removed ", (strip_control_characters(name), theme.ACCENT)),
+            soft_wrap=True,
+        )
     for name in result.not_found:
         print_prefixed(console, "Not found: ", name, style=theme.ERROR)
     if not result.removed and result.not_found:

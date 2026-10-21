@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
 from rich.table import Table
 from rich.text import Text
 
 from lilbee.app.status import StatusConfig, StatusResult
 from lilbee.cli.helpers import render_status_result
 from lilbee.data.types import SkippedSource
+from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 
 
 def _status(skipped: list[SkippedSource] | None = None, skipped_total: int = 0) -> StatusResult:
@@ -108,3 +110,13 @@ def test_the_scanned_pages_line_is_printed_under_its_label() -> None:
     assert any(
         s.startswith("Scanned pages:") and s.endswith("skipped (ocr = off)") for s in strings
     )
+
+
+@pytest.mark.parametrize("name", CONTROL_TITLES)
+def test_a_held_out_filename_shows_without_a_control_character(name: str) -> None:
+    status = _status(skipped=[SkippedSource(filename=name, reason="bad")], skipped_total=1)
+    tables, _strings = _texts(status)
+    table = next(t for t in tables if t.title == "Held out of the index")
+    cell = next(col._cells[0] for col in table.columns)
+    assert TERMINAL_CONTROL_RE.search(cell.plain) is None
+    assert cell.plain.strip()

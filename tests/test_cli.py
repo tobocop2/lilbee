@@ -8645,3 +8645,79 @@ class TestSyncCancelledExit:
         assert json.loads(result.output) == {"error": "Sync cancelled."}
         assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
         mock_svc.searcher.ask_raw.assert_not_called()
+
+
+class TestTerminalSafeSourceNames:
+    """A stored source name reaches the terminal without a control character."""
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_the_search_table_writes_no_control_character_of_a_source(self, mock_svc, name):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})
+        ]
+        result = runner.invoke(app, ["search", "engine oil"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_search_json_keeps_the_source_as_stored(self, mock_svc, name):
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})
+        ]
+        result = runner.invoke(app, ["--json", "search", "engine oil"])
+        assert json.loads(result.output.strip())["results"][0]["source"] == name
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_the_status_table_writes_no_control_character_of_a_filename(
+        self, isolated_env, mock_svc, name
+    ):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.source_summary.return_value = summary_of(
+            [{"filename": name, "file_hash": "h", "chunk_count": 1, "ingested_at": "t"}]
+        )
+        result = runner.invoke(app, ["status"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_the_source_listing_writes_no_control_character_of_a_name(self, mock_svc, name):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.iter_source_heads.return_value = iter([{"filename": name}])
+        result = runner.invoke(app, ["status", "--list-sources"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_the_wiki_citation_table_writes_no_control_character_of_a_source(self, mock_svc, name):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.get_citations_for_wiki.return_value = [_citation_row(source_filename=name)]
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_remove_writes_no_control_character_of_a_name(self, isolated_env, mock_svc, name):
+        from lilbee.data.store import RemoveResult
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(removed=[name], not_found=[])
+        result = runner.invoke(app, ["remove", name])
+        assert result.exit_code == 0, result.output
+        assert "Removed" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_chunks_writes_no_control_character_of_the_source(self, isolated_env, mock_svc, name):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.get_sources.return_value = [{"filename": name, "source": name}]
+        mock_svc.store.get_chunks_by_source.return_value = []
+        result = runner.invoke(app, ["chunks", name])
+        assert result.exit_code == 0, result.output
+        assert "0 chunks from" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None

@@ -57,6 +57,7 @@ from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPha
 from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 from tests._async_wait import wait_for_widget, wait_until
+from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
@@ -16108,3 +16109,43 @@ async def test_blanking_a_select_hands_the_save_an_empty_value():
             select.value = Select.NULL
             assert await pump_until(pilot, lambda: len(saved) == 2)
         assert saved == ["chat", ""]
+
+
+@pytest.mark.parametrize("name", CONTROL_TITLES)
+async def test_status_screen_tables_show_a_name_without_control_characters(
+    mock_svc, monkeypatch, name
+):
+    from textual.widgets import DataTable
+    from textual.widgets._data_table import default_cell_formatter
+
+    from lilbee.cli.tui.screens import status as status_screen
+    from lilbee.data.types import SkippedSource
+
+    _serve_sources(mock_svc, name)
+    held = [SkippedSource(filename=name, reason="bad header")]
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held, 1))
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        held_table = await wait_for_widget(pilot, app, "#held-out-table", DataTable)
+        docs_table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _wait_for_row_count(pilot, held_table, 1)
+        await _wait_for_row_count(pilot, docs_table, 1)
+        shown = [
+            default_cell_formatter(held_table.get_row_at(0)[0]).plain,
+            default_cell_formatter(docs_table.get_row_at(0)[0]).plain,
+        ]
+    assert all(TERMINAL_CONTROL_RE.search(cell) is None for cell in shown)
+
+
+@pytest.mark.parametrize("name", CONTROL_TITLES)
+async def test_chat_slash_delete_lists_a_name_without_control_characters(mock_svc, name):
+    mock_svc.store.get_sources.return_value = [{"filename": name, "source": name}]
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            mock_notify.assert_called_once()
+            assert TERMINAL_CONTROL_RE.search(mock_notify.call_args[0][0].replace("\n", "")) is None

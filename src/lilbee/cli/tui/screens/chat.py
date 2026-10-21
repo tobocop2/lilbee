@@ -89,6 +89,7 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
+from lilbee.core.text import strip_control_characters
 from lilbee.crawler import (
     CRAWLER_MISSING_MESSAGE,
     crawler_available,
@@ -1224,7 +1225,8 @@ class ChatScreen(Screen[None]):
             return
 
         if not name:
-            usage = msg.CMD_DELETE_USAGE.format(names=", ".join(sorted(known)))
+            names = ", ".join(strip_control_characters(n) for n in sorted(known))
+            usage = msg.CMD_DELETE_USAGE.format(names=names)
             call_from_thread(self, self.notify, usage)
             return
 
@@ -1232,7 +1234,8 @@ class ChatScreen(Screen[None]):
             message = msg.CMD_DELETE_NOT_FOUND.format(name=name)
             suggestion = _closest_source(name, known)
             if suggestion is not None:
-                message = f"{message}. {msg.CMD_DELETE_SUGGESTION.format(name=suggestion)}"
+                hint = msg.CMD_DELETE_SUGGESTION.format(name=strip_control_characters(suggestion))
+                message = f"{message}. {hint}"
             call_from_thread(self, self.notify, message, severity="error")
             return
 

@@ -48,9 +48,16 @@ def _markdown_source(text: str) -> str:
     """*text* as the markdown the widget renders: its Sources labels shown as written."""
     # Lazy: formatting transitively imports the store stack, which widget
     # import must not pay at TUI startup.
-    from lilbee.retrieval.query.formatting import markdown_sources_block
+    from lilbee.retrieval.query.formatting import markdown_sources_block, terminal_sources_block
 
-    return markdown_sources_block(text)
+    return markdown_sources_block(terminal_sources_block(text))
+
+
+def _plain_source(text: str) -> str:
+    """*text* with the Sources labels it ends in made safe for a terminal."""
+    from lilbee.retrieval.query.formatting import terminal_sources_block
+
+    return terminal_sources_block(text)
 
 
 _REASONING_BLOCK_CLASS = "reasoning-block"
@@ -152,7 +159,7 @@ class AssistantMessage(Vertical):
                 parser_factory=_answer_markdown_parser,
                 open_links=False,
             )
-        return Static(Content(text), classes="response-md")
+        return Static(Content(_plain_source(text)), classes="response-md")
 
     @property
     def use_markdown(self) -> bool:
@@ -180,7 +187,7 @@ class AssistantMessage(Vertical):
         if isinstance(widget, Markdown):
             widget.update(_markdown_source(text))
         else:
-            widget.update(Content(text))
+            widget.update(Content(_plain_source(text)))
 
     def append_reasoning(self, text: str) -> None:
         """Append a reasoning token; debounced at ``_MD_UPDATE_INTERVAL``."""
