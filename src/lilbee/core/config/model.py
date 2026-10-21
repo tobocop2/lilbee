@@ -31,6 +31,7 @@ from .defaults import (
     MAX_CRAWL_DEPTH,
     MAX_CRAWL_PAGES,
     MAX_CRAWL_WAIT_SECONDS,
+    exclude_pattern_lines,
 )
 from .enums import (
     ChatMode,
@@ -1374,32 +1375,11 @@ class Config(BaseSettings):
     def _split_crawl_exclude_patterns(cls, v: Any) -> Any:
         """Accept newline-separated strings from env vars / plain-text config.
 
-        Regex commonly uses commas (e.g. `{2,4}`) and pipes (alternation), so
-        newline is the only separator safe to use for this field. TOML lists
-        and JSON arrays pass through unchanged.
+        TOML lists and JSON arrays pass through unchanged. Loading does not ask crawlberg to
+        compile the patterns: that loads its native library at every start. A settings write
+        checks them, and a crawl refuses a bad one when it starts.
         """
-        if isinstance(v, str):
-            return [p.strip() for p in v.splitlines() if p.strip()]
-        return v
-
-    @field_validator("crawl_exclude_patterns", mode="after")
-    @classmethod
-    def _validate_crawl_exclude_patterns(cls, v: list[str]) -> list[str]:
-        """Reject any entry the crawler cannot compile, with the crawler's reason.
-
-        The crawler compiles these with its own regex rules, not Python's. Refusing here gives
-        the user the bad entry now, not an error in the middle of a crawl. The shipped list is
-        not checked here: a test holds it to the crawler's rules, and the check loads the
-        crawler, which no other command needs at start.
-        """
-        if v == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS):
-            return v
-        from lilbee.core.crawl_patterns import refused_exclude_patterns
-
-        bad = [f"[{index}] {v[index]!r}: {reason}" for index, reason in refused_exclude_patterns(v)]
-        if bad:
-            raise ValueError("invalid regex in crawl_exclude_patterns: " + "; ".join(bad))
-        return v
+        return exclude_pattern_lines(v)
 
     @field_validator("ignore_dirs", mode="before")
     @classmethod
