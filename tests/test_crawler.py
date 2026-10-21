@@ -2431,8 +2431,7 @@ FLAG_REFUSAL = (
     + REFUSED_FLAG_REASON
 )
 PATTERN_REFUSAL = (
-    "The crawl_exclude_patterns setting holds a pattern that crawlberg refuses: "
-    + REFUSED_PATTERN_REASON
+    f"invalid regex in crawl_exclude_patterns: [1] {REFUSED_PATTERN!r}: unrecognized flag"
 )
 REWORDED_REFUSAL = "crawlberg refuses to start this crawl: " + REWORDED_REASON
 
@@ -2440,12 +2439,13 @@ REWORDED_REFUSAL = "crawlberg refuses to start this crawl: " + REWORDED_REASON
 def _refuse_like_crawlberg(config: cb.Recorded) -> str | None:
     """Refuse a headless flag and a conditional pattern as crawlberg 1.9.0 does, and one more."""
     kwargs = config.kwargs
-    flags = kwargs["browser"].kwargs["chrome_args"]
+    browser = kwargs.get("browser")
+    flags = browser.kwargs["chrome_args"] if browser is not None else ()
     if "--headless=new" in flags:
         return REFUSED_FLAG_REASON
     if REWORDED_FLAG in flags:
         return REWORDED_REASON
-    if REFUSED_PATTERN in kwargs["exclude_paths"]:
+    if REFUSED_PATTERN in kwargs.get("exclude_paths", ()):
         return REFUSED_PATTERN_REASON
     return None
 
@@ -2490,12 +2490,9 @@ def _default_settings() -> None:
 
 BROWSER = CrawlRenderMode.BROWSER
 # Each refused setting, the render mode and depth that send it to crawlberg, and the error.
-# A single-page crawl follows no link, so it sends no exclude pattern.
 REFUSALS = [
     pytest.param(_refused_flag, BROWSER, 0, FLAG_REFUSAL, id="flag-single-page"),
     pytest.param(_refused_flag, BROWSER, 1, FLAG_REFUSAL, id="flag-recursive"),
-    pytest.param(_refused_pattern, CrawlRenderMode.HTTP, 1, PATTERN_REFUSAL, id="pattern"),
-    pytest.param(_refused_pattern, BROWSER, 1, PATTERN_REFUSAL, id="pattern-browser"),
     pytest.param(_reworded_refusal, BROWSER, 0, REWORDED_REFUSAL, id="reworded-single-page"),
     pytest.param(_reworded_refusal, BROWSER, 1, REWORDED_REFUSAL, id="reworded-recursive"),
 ]
@@ -2503,8 +2500,17 @@ DEPTHS = pytest.mark.parametrize("depth", [0, 1], ids=["single-page", "recursive
 # What ``lilbee add URL`` takes to crawl at each depth.
 CLI_FLAGS: dict[int, tuple[str, ...]] = {0: (), 1: ("--crawl", "--depth", "1")}
 REFUSED = pytest.mark.parametrize(("configure", "render_mode", "depth", "message"), REFUSALS)
-# The settings a cancelled HTTP crawl never sends, at each depth; a single-page
-# crawl sends no exclude pattern, so the pattern refusal exists at depth 1 only.
+# A bad exclude pattern is refused before the crawl starts, in every render mode and at every depth.
+BAD_PATTERN = pytest.mark.parametrize(
+    ("render_mode", "depth"),
+    [
+        pytest.param(CrawlRenderMode.HTTP, 0, id="http-single-page"),
+        pytest.param(CrawlRenderMode.HTTP, 1, id="http-recursive"),
+        pytest.param(BROWSER, 0, id="browser-single-page"),
+        pytest.param(BROWSER, 1, id="browser-recursive"),
+    ],
+)
+# The settings a cancelled HTTP crawl never sends, at each depth.
 CANCELLED_AT_START = pytest.mark.parametrize(
     ("configure", "depth"),
     [
@@ -2512,7 +2518,6 @@ CANCELLED_AT_START = pytest.mark.parametrize(
         pytest.param(_default_settings, 1, id="recursive"),
         pytest.param(_oversized_setting, 0, id="oversized-single-page"),
         pytest.param(_oversized_setting, 1, id="oversized-recursive"),
-        pytest.param(_refused_pattern, 1, id="pattern-recursive"),
     ],
 )
 REFUSED_BY_HTTP = pytest.mark.parametrize(
@@ -2520,7 +2525,6 @@ REFUSED_BY_HTTP = pytest.mark.parametrize(
     [
         pytest.param(_oversized_setting, 0, id="oversized-single-page"),
         pytest.param(_oversized_setting, 1, id="oversized-recursive"),
-        pytest.param(_refused_pattern, 1, id="pattern-recursive"),
     ],
 )
 
@@ -2559,6 +2563,25 @@ class TestRefusedEngine:
             await crawl_and_save(SEED, depth=1, render_mode=CrawlRenderMode.HTTP)
         assert str(refused.value) == PATTERN_REFUSAL
         assert stub.seeds == []
+
+    @BAD_PATTERN
+    async def test_a_bad_pattern_stops_the_crawl_before_it_starts(
+        self, isolated_env, render_mode: CrawlRenderMode, depth: int
+    ):
+        _refused_pattern()
+        events: list[EventType] = []
+        stub = _refusing_stub()
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(
+                SEED,
+                depth=depth,
+                render_mode=render_mode,
+                on_progress=lambda kind, data: events.append(kind),
+            )
+        assert str(refused.value) == PATTERN_REFUSAL
+        assert events == []
+        assert stub.seeds == []
+        assert _saved_pages(isolated_env) == []
 
     @REFUSED
     async def test_the_crawl_raises_crawlbergs_reason(
@@ -2695,12 +2718,6 @@ class TestRefusedEngine:
         assert events[-1] is EventType.CRAWL_DONE
         assert stub.configs == []
 
-    async def test_a_single_page_crawl_sends_no_exclude_pattern(self, isolated_env):
-        _refused_pattern()
-        with _refusing_stub().installed():
-            paths = await crawl_and_save(SEED, depth=0, render_mode=CrawlRenderMode.HTTP)
-        assert len(paths) == 1
-
     async def test_an_http_crawl_ignores_the_refused_flag(self, isolated_env):
         cfg.crawl_browser_extra_args = ["--headless=new"]
         with _refusing_stub().installed():
@@ -2772,6 +2789,56 @@ class TestRefusedEngineOnEachEntryPoint:
         assert names == ["event: crawl_start", *warm_up, "event: error"]
         payload = frames[-1].split("data: ", 1)[1]
         assert json.loads(payload)["message"] == message
+
+    @BAD_PATTERN
+    def test_cli_add_names_the_bad_pattern_setting(
+        self, isolated_env, render_mode: CrawlRenderMode, depth: int
+    ):
+        from typer.testing import CliRunner
+
+        from lilbee.cli.app import app
+
+        _refused_pattern()
+        cfg.crawl_render_mode = render_mode
+        with _refusing_stub().installed():
+            result = CliRunner().invoke(app, ["add", SEED, *CLI_FLAGS[depth]])
+        assert result.exit_code == 1
+        assert f"{SEED}: {PATTERN_REFUSAL}" in result.output
+        assert _saved_pages(isolated_env) == []
+
+    @BAD_PATTERN
+    async def test_http_stream_ends_with_an_error_frame_for_a_bad_pattern(
+        self, isolated_env, render_mode: CrawlRenderMode, depth: int
+    ):
+        import json
+
+        from lilbee.server import handlers
+
+        _refused_pattern()
+        with _refusing_stub().installed():
+            frames = [
+                frame
+                async for frame in handlers.crawl_stream(SEED, depth=depth, render_mode=render_mode)
+            ]
+        assert [frame.split("\n", 1)[0] for frame in frames] == ["event: error"]
+        assert json.loads(frames[0].split("data: ", 1)[1])["message"] == PATTERN_REFUSAL
+
+    @BAD_PATTERN
+    async def test_mcp_crawl_task_fails_for_a_bad_pattern(
+        self, isolated_env, render_mode: CrawlRenderMode, depth: int
+    ):
+        from lilbee.crawler.task import clear_tasks, get_task
+        from lilbee.mcp_server import crawl, crawl_status
+
+        _refused_pattern()
+        clear_tasks()
+        with _refusing_stub().installed():
+            started = await crawl(url=SEED, depth=depth, render_mode=render_mode)
+            task = get_task(started["task_id"])
+            assert task is not None and task._async_task is not None
+            await asyncio.wait_for(task._async_task, timeout=10)
+        status = crawl_status(started["task_id"])
+        assert (status["status"], status["error"]) == ("failed", PATTERN_REFUSAL)
 
     @REFUSED
     async def test_mcp_crawl_task_fails_with_the_reason(

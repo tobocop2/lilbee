@@ -24,6 +24,7 @@ from lilbee.crawler import events as events_mod
 from lilbee.crawler import runner as runner_mod
 from lilbee.crawler import sitemap as sitemap_mod
 from lilbee.crawler.backends.crawlberg import config as crawlberg_config_mod
+from lilbee.crawler.bootstrap import CrawlEngineRefusedError
 from lilbee.crawler.models import (
     NO_LOGIN,
     ConcurrencySpec,
@@ -34,7 +35,7 @@ from lilbee.crawler.models import (
 )
 from lilbee.crawler.runner import crawl_and_save, crawl_recursive
 from lilbee.runtime.progress import CrawlDoneEvent, CrawlStartEvent, EventType
-from tests._crawlberg_stub import StubCrawlberg, complete
+from tests._crawlberg_stub import StubCrawlberg, complete, refusing_patterns
 from tests._crawlberg_stub import page as crawlberg_page
 
 
@@ -707,6 +708,49 @@ class TestCrawlbergImporters:
     )
     def test_the_import_finder_reads_every_import_form(self, source: str, imports: bool):
         assert _imports_crawlberg(ast.parse(source)) is imports
+
+
+BAD_EXCLUDE = r"\Z"
+SEED = "https://example.com/"
+
+
+class TestBadExcludePatternRefusedBeforeSetup:
+    @pytest.fixture
+    def bootstrapped(self, monkeypatch) -> list[bool]:
+        calls: list[bool] = []
+
+        async def bootstrap(on_progress=None):
+            calls.append(True)
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: bool(calls))
+        monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", bootstrap)
+        monkeypatch.setattr(
+            "lilbee.crawler.bootstrap.headless_shell_executable", lambda: Path("/browser/shell")
+        )
+        cfg.crawl_exclude_patterns = ["/ok/", BAD_EXCLUDE]
+        return calls
+
+    @pytest.mark.parametrize("depth", [0, None], ids=["single", "recursive"])
+    @pytest.mark.parametrize("mode", list(CrawlRenderMode))
+    async def test_a_crawl_names_the_setting_before_any_browser_setup(
+        self, bootstrapped, depth, mode
+    ):
+        stub = StubCrawlberg(
+            [crawlberg_page(SEED, "# A", depth=0), complete(1)],
+            refuse=refusing_patterns(BAD_EXCLUDE),
+        )
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(SEED, depth=depth, render_mode=mode)
+        assert str(refused.value).startswith("invalid regex in crawl_exclude_patterns: [1] ")
+        assert bootstrapped == []
+        assert stub.seeds == []
+
+    async def test_a_good_list_starts_the_browser_setup(self, bootstrapped):
+        cfg.crawl_exclude_patterns = ["/ok/"]
+        stub = StubCrawlberg([crawlberg_page(SEED, "# A", depth=0), complete(1)])
+        with stub.installed():
+            await crawl_and_save(SEED, depth=0, render_mode=CrawlRenderMode.BROWSER)
+        assert bootstrapped == [True]
 
 
 LOGIN_SEED = "https://example.com/"
