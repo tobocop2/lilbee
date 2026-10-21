@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.core.text import collapse_whitespace
 from lilbee.crawler.models import CancelToken, CrawlResult, FetchedPage
 from lilbee.runtime.progress import (
     CrawlPageEvent,
@@ -23,6 +24,8 @@ log = logging.getLogger(__name__)
 
 # The setup component of a browser crawl's warm-up: the wait for the browser's first page.
 BROWSER_SETUP_COMPONENT = "browser"
+# The most characters of a page title lilbee keeps; a page controls its title.
+_MAX_TITLE_CHARS = 512
 
 
 def _browser_warm_up(
@@ -49,6 +52,11 @@ def _emit_page_failure(on_progress: DetailedProgressCallback | None, result: Cra
         )
 
 
+def _page_title(title: str) -> str:
+    """A page's ``<title>`` on one line, cut at ``_MAX_TITLE_CHARS``."""
+    return collapse_whitespace(title)[:_MAX_TITLE_CHARS]
+
+
 def _fetched_to_result(page: FetchedPage) -> CrawlResult:
     """Translate the fetcher's value type to the public ``CrawlResult`` shape."""
     return CrawlResult(
@@ -56,7 +64,7 @@ def _fetched_to_result(page: FetchedPage) -> CrawlResult:
         markdown=page.markdown,
         success=page.success,
         error=page.error,
-        title=page.title,
+        title=_page_title(page.title),
     )
 
 
