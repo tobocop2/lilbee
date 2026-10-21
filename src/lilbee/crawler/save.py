@@ -21,7 +21,7 @@ from lilbee.core.config import cfg
 from lilbee.core.security import file_lock_or_warn, validate_path_within
 from lilbee.core.web_names import INDEX_STEM, PAGE_HASH_MARK, PAGE_SUFFIX, WEB_DIR
 from lilbee.crawler.models import CrawlResult
-from lilbee.crawler.url_filter import parsed_url
+from lilbee.crawler.url_filter import parsed_address, parsed_url
 from lilbee.data.page_record import CrawlMeta, pages_path, read_pages, record_line
 
 log = logging.getLogger(__name__)
@@ -34,11 +34,6 @@ _NOT_SAVED = "Page %s is not saved: %s holds a file or folder of its own; move o
 _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
 _PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
 _HEX = 16
-# A WHATWG parser escapes a raw "^" in a path; the url crate 2.5.8 crawlberg 1.11.1 uses keeps it.
-_CARET = "^"
-_CARET_ESCAPE = "%5E"
-_CARET_ESCAPE_LOWER = "%5e"
-_ANY_CARET_ESCAPE = re.compile(_CARET_ESCAPE, re.IGNORECASE)
 _QUERY_MARK = "?"
 _QUERY_SEPARATOR = "&"
 _QUERY_VALUE_MARK = "="
@@ -95,15 +90,6 @@ def _sorted_query(address: str) -> str:
         return address
     parameters = sorted(query.split(_QUERY_SEPARATOR), key=_parameter_name)
     return f"{before}{_QUERY_MARK}{_QUERY_SEPARATOR.join(parameters)}"
-
-
-def parsed_address(url: str) -> str | None:
-    """*url* without its fragment as crawlberg 1.11.1's URL parser writes it; None if it fails."""
-    parsed = parsed_url(_ANY_CARET_ESCAPE.sub(_CARET_ESCAPE_LOWER, url))
-    if parsed is None:
-        return None
-    parsed.hash = ""
-    return parsed.href.replace(_CARET_ESCAPE, _CARET)
 
 
 def canonical_address(url: str) -> str:
