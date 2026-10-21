@@ -1340,6 +1340,22 @@ class TestAddWithUrls:
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_a_crawl_refused_before_it_starts_answers_with_the_reason(
+        self, mock_crawl, mock_sync, _mock_avail, isolated_env
+    ):
+        """A refusal before the crawl starts is an error answer that names the page and why."""
+        from lilbee.crawler.bootstrap import CrawlEngineRefusedError
+
+        reason = "invalid regex in crawl_exclude_patterns: [0] '(a': unclosed group"
+        mock_crawl.side_effect = CrawlEngineRefusedError(reason)
+        result = await add(paths=["https://user:secret@example.com/page"])
+        assert result["error"] == f"add indexed nothing. https://example.com/page: {reason}"
+        assert "secret" not in str(result)
+        mock_sync.assert_not_awaited()
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_mixed_urls_and_paths(self, mock_crawl, mock_sync, _mock_avail, isolated_env):
         """Mixed URLs and paths: URLs crawled, nonexistent paths reported."""
         mock_crawl.return_value = []

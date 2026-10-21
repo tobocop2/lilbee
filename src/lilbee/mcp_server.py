@@ -68,6 +68,7 @@ from lilbee.crawler import (
     is_url,
     require_valid_crawl_url,
 )
+from lilbee.crawler.bootstrap import CrawlEngineRefusedError
 from lilbee.crawler.models import CrawlLogin, crawl_limit_error
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.crawler.url_filter import without_userinfo
@@ -419,9 +420,13 @@ async def _crawl_add_urls(
             errors.append(f"{without_userinfo(url)}: {exc}")
             continue
         # add fetches single pages (depth=0); site crawls go through the crawl tool
-        crawled_paths = await crawl_and_save(
-            url, depth=0, render_mode=render_mode, on_progress=on_progress
-        )
+        try:
+            crawled_paths = await crawl_and_save(
+                url, depth=0, render_mode=render_mode, on_progress=on_progress
+            )
+        except CrawlEngineRefusedError as exc:
+            errors.append(f"{without_userinfo(url)}: {exc}")
+            continue
         crawled_count += len(crawled_paths)
     return crawled_count, errors
 
