@@ -14,7 +14,8 @@ _REGEX_ERROR_LINE = "error: "
 def exclude_patterns_refusal(value: Any) -> str | None:
     """The message that names every pattern in *value* crawlberg refuses, or None.
 
-    A settings write calls this. Loading the config does not, because the check loads crawlberg.
+    A settings write and every crawl call this. Loading the config does not, because the check
+    loads crawlberg.
     The shipped list is not checked: a test holds it to crawlberg's rules.
     """
     patterns = exclude_pattern_lines(value)
