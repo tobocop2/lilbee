@@ -20,12 +20,12 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import availability, bootstrap, save, sitemap
 from lilbee.crawler.availability import CRAWLER_MISSING_MESSAGE
+from lilbee.crawler.backends.crawlberg import fetcher_from_config
 from lilbee.crawler.bootstrap import (
     ChromiumMissingError,
     CrawlEngineRefusedError,
     CrawlerBrowserError,
 )
-from lilbee.crawler.crawlberg_fetcher import CrawlbergFetcher
 from lilbee.crawler.discovery import build_concurrency_spec, build_filter_spec
 from lilbee.crawler.events import (
     _browser_warm_up,
@@ -107,18 +107,6 @@ def _require_crawler_extra() -> None:
         raise bootstrap.CrawlerBackendError(CRAWLER_MISSING_MESSAGE)
 
 
-def _fetcher(render_mode: CrawlRenderMode, login: CrawlLogin) -> CrawlbergFetcher:
-    """The fetcher for one crawl, with its browser, user agent, robots.txt and login settings."""
-    return CrawlbergFetcher(
-        render_mode=render_mode,
-        chrome_args=cfg.crawl_browser_extra_args,
-        user_agent=cfg.crawl_user_agent,
-        respect_robots_txt=cfg.crawl_respect_robots_txt,
-        extra_wait_ms=cfg.crawl_browser_extra_wait_ms,
-        login=login,
-    )
-
-
 async def _fetch_single_page(
     url: str,
     render_mode: CrawlRenderMode,
@@ -127,7 +115,7 @@ async def _fetch_single_page(
 ) -> CrawlResult:
     """One single-URL fetch; a failure to fetch the page becomes a failed result."""
     try:
-        async with _fetcher(render_mode, login) as fetcher:
+        async with fetcher_from_config(render_mode, login) as fetcher:
             warm_up_done = _browser_warm_up(on_progress, render_mode)
             page = await fetcher.fetch_single(
                 url, timeout=cfg.crawl_timeout, concurrency=build_concurrency_spec()
@@ -236,7 +224,7 @@ async def crawl_recursive(
 
     results: list[CrawlResult] = []
     try:
-        async with _fetcher(render_mode, login) as fetcher:
+        async with fetcher_from_config(render_mode, login) as fetcher:
             # The explicit reference lets the stream close, and the crawl stop,
             # the moment the drain breaks on max_pages or cancel.
             page_stream = fetcher.fetch_recursive(
