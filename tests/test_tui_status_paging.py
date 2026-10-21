@@ -89,6 +89,10 @@ async def _loaded(pilot, table: DataTable, rows: int) -> None:
     assert await wait_until(pilot, lambda: table.row_count == rows, timeout=5.0)
 
 
+async def _loaded_at_least(pilot, table: DataTable, rows: int) -> None:
+    assert await wait_until(pilot, lambda: table.row_count >= rows, timeout=5.0)
+
+
 async def test_scrolling_to_the_end_loads_each_page_until_every_source_shows():
     library = _Library(TOTAL)
     _install(library)
@@ -120,7 +124,10 @@ async def test_moving_the_cursor_near_the_end_loads_the_next_page():
         await _loaded(pilot, table, PAGE)
 
         table.move_cursor(row=PAGE - 1)
-        await _loaded(pilot, table, 2 * PAGE)
+        # A stale scroll event can start the third page before this wait polls,
+        # so the row count can pass 2 * PAGE without ever equalling it.
+        await _loaded_at_least(pilot, table, 2 * PAGE)
+        assert _names(table) == [r["filename"] for r in library.records[: table.row_count]]
 
 
 async def test_each_load_asks_for_one_page_never_all():
