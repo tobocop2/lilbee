@@ -11,7 +11,9 @@ from collections.abc import AsyncIterator
 import pytest
 
 from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.crawler import availability
 from lilbee.crawler import crawlberg_fetcher as fetcher_mod
+from lilbee.crawler.availability import crawler_available
 from lilbee.crawler.bootstrap import ChromiumMissingError, CrawlEngineRefusedError
 from lilbee.crawler.crawlberg_fetcher import (
     _SSRF_ERROR_CODE,
@@ -21,7 +23,6 @@ from lilbee.crawler.crawlberg_fetcher import (
     CrawlbergFetcher,
     _queued_url,
     admitted_networks,
-    crawler_available,
 )
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
 from lilbee.crawler.url_filter import _BLOCKED_NETWORKS
@@ -1269,7 +1270,7 @@ class TestCrawlerAvailable:
             return None
 
         crawler_available.cache_clear()
-        monkeypatch.setattr(fetcher_mod.importlib.util, "find_spec", find_spec)
+        monkeypatch.setattr(availability.importlib.util, "find_spec", find_spec)
         try:
             assert crawler_available() is False
         finally:
@@ -1281,7 +1282,7 @@ class TestCrawlerAvailable:
             return None if name == "ada_url" else object()
 
         crawler_available.cache_clear()
-        monkeypatch.setattr(fetcher_mod.importlib.util, "find_spec", find_spec)
+        monkeypatch.setattr(availability.importlib.util, "find_spec", find_spec)
         try:
             assert crawler_available() is False
         finally:

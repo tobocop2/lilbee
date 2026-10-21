@@ -96,7 +96,7 @@ def isolated_env(tmp_path, monkeypatch, request):
     # ``sys.modules`` patching, so it opts out of the auto-stub.
     if cls != "TestCrawlerAvailable":
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: True)
-        monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: True)
+        monkeypatch.setattr("lilbee.crawler.availability.crawler_available", lambda: True)
         monkeypatch.setattr("lilbee.mcp_server.crawler_available", lambda: True)
     # Default the sitemap bound to "unknown" so tests don't hit the network.
     # Tests that exercise the sitemap hook directly (TestSitemapCounting)
@@ -1000,7 +1000,7 @@ class TestCrawlSingle:
         from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
-        monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.availability.crawler_available", lambda: False)
         with pytest.raises(CrawlerBackendError, match=f"^{re.escape(CRAWLER_MISSING_MESSAGE)}$"):
             await crawl_single("https://example.com")
 
@@ -1806,7 +1806,7 @@ class TestCrawlRecursive:
         from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
-        monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.availability.crawler_available", lambda: False)
         with pytest.raises(CrawlerBackendError, match=f"^{re.escape(CRAWLER_MISSING_MESSAGE)}$"):
             await crawl_recursive("https://example.com", max_depth=1)
 
@@ -2175,7 +2175,7 @@ class TestCrawlAndSave:
         """Without [crawler] extra, a browser crawl fails fast and never bootstraps Chromium."""
         from lilbee.crawler import CrawlerBackendError
 
-        monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.availability.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         bootstrap_called: list[object] = []
 

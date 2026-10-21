@@ -18,14 +18,15 @@ from lilbee.app.ingest import remove_sources_and_forget_in_wiki
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.crawler import bootstrap, crawlberg_fetcher, save, sitemap
+from lilbee.crawler import availability, bootstrap, save, sitemap
+from lilbee.crawler.availability import CRAWLER_MISSING_MESSAGE
 from lilbee.crawler.bootstrap import (
     CHROMIUM_MISSING_MESSAGE,
     ChromiumMissingError,
     CrawlEngineRefusedError,
     CrawlerBrowserError,
 )
-from lilbee.crawler.crawlberg_fetcher import CRAWLER_MISSING_MESSAGE, CrawlbergFetcher
+from lilbee.crawler.crawlberg_fetcher import CrawlbergFetcher
 from lilbee.crawler.discovery import build_concurrency_spec, build_filter_spec
 from lilbee.crawler.events import (
     _browser_warm_up,
@@ -102,7 +103,7 @@ def _resolve_page_limit(max_pages: int | None) -> int | None:
 
 def _require_crawler_extra() -> None:
     """Raise :class:`CrawlerBackendError` when the crawler extra is not installed."""
-    if not crawlberg_fetcher.crawler_available():
+    if not availability.crawler_available():
         raise bootstrap.CrawlerBackendError(CRAWLER_MISSING_MESSAGE)
 
 

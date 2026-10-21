@@ -472,7 +472,7 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Store]:
     cfg.crawl_sync_interval = 0
     monkeypatch.setattr(pipeline, "_max_concurrent", lambda: 1)
     monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: True)
-    monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: True)
+    monkeypatch.setattr("lilbee.crawler.availability.crawler_available", lambda: True)
     monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
     monkeypatch.setattr(
         "lilbee.crawler.bootstrap.headless_shell_executable", lambda: tmp_path / "shell"
