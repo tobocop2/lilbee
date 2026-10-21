@@ -172,7 +172,12 @@ class TestImportTime:
         script.write_text(_PROBE, encoding="utf-8")
         env = {**clean_env(tmp_path), "PYTHONPATH": os.pathsep.join(sys.path)}
         done = subprocess.run(
-            [sys.executable, str(script)], env=env, capture_output=True, text=True, check=False
+            [sys.executable, str(script)],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip() == "['/custom/', '/other'] []"
@@ -184,6 +189,7 @@ class TestImportTime:
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         assert done.returncode == 0, done.stderr
