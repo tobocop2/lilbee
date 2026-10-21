@@ -6,6 +6,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import sys
@@ -51,7 +52,13 @@ from lilbee.runtime.progress import (
 )
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
-from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, PLAIN_NAMES, crafted_label
+from tests._crafted_titles import (
+    CONTROL_TITLES,
+    CRAFTED_SOURCE,
+    CRAFTED_TITLES,
+    PLAIN_NAMES,
+    crafted_label,
+)
 from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
@@ -63,6 +70,9 @@ runner = CliRunner()
 _HANG_LIMIT_S = 30.0
 
 _SYNC_NOOP = SyncResult()
+# A terminal reads these as commands: C0 and C1 controls other than tab and newline, and DEL.
+_CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_LINK_CODE_RE = re.compile("\x1b\\]8;[^\x1b]*\x1b\\\\")
 
 
 def _stub_build_summary(paths: list[str], count: int) -> dict:
@@ -75,6 +85,11 @@ def _install_real_store() -> None:
     from lilbee.data.store import Store
 
     svc_mod.set_services(make_mock_services(store=Store(cfg)))
+
+
+def _without_link_codes(output: str) -> str:
+    """*output* without the OSC 8 hyperlink codes Rich writes for a link."""
+    return _LINK_CODE_RE.sub("", output)
 
 
 def _mock_stream(*texts: str):
@@ -3365,6 +3380,42 @@ class TestEnsureChatModelWiring:
         assert f"1. [{name}](file://" in out
         assert f"2. [{crafted_label(name)}](file://" in out
         assert "\\" not in out
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_terminal_ask_writes_no_control_character_of_a_label(
+        self, mock_sync, mock_svc, title
+    ):
+        from rich.console import Console
+
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n", f"1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        )
+        term = Console(force_terminal=True, legacy_windows=False, width=400)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert _CONTROL_RE.search(_without_link_codes(cap.get())) is None
+        assert "evil.example" not in cap.get()
+        assert cap.get().count("\x1b]8;id=") == 1
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_piped_ask_writes_no_control_character_of_a_label(self, mock_sync, mock_svc, title):
+        from lilbee.retrieval.query.formatting import source_markdown_link
+        from lilbee.runtime.console import PlainConsole
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n", f"1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        )
+        pipe = PlainConsole(force_terminal=False, width=400)
+        with mock.patch("lilbee.cli.commands.search_chat.console", pipe), pipe.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert _CONTROL_RE.search(cap.get()) is None
+        assert "1. [" in cap.get()
 
     @pytest.mark.parametrize("title", CRAFTED_TITLES)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
