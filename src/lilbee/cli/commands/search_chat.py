@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -41,6 +42,7 @@ from lilbee.cli.helpers import (
 )
 from lilbee.cli.log_routing import route_diagnostics_to_log_file
 from lilbee.core.config import cfg
+from lilbee.core.text import strip_control_characters
 from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
 from lilbee.providers.roles import WorkerRole
@@ -177,8 +179,14 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
     _print_sources_block(buf)
 
 
+def _plain_label_link(match: re.Match[str]) -> str:
+    """The source link of *match* with its label stripped of control characters."""
+    return f"[{strip_control_characters(match['label'])}]({match['url']})"
+
+
 def _print_sources_block(block: str) -> None:
     """Render the Sources block, turning ``[label](file://...)`` into terminal links."""
+    block = FILE_LINK_RE.sub(_plain_label_link, block)
     if not console.is_terminal or console.legacy_windows:
         console.print(block, highlight=False)
         return
