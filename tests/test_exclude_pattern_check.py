@@ -62,7 +62,7 @@ class TestTheCheck:
 
 class TestTheLogOfExcludedLinks:
     def test_a_pattern_only_crawlberg_compiles_is_left_out_of_the_log_and_the_rest_stay(self):
-        from lilbee.crawler.backends.crawlberg.fetcher import _python_patterns
+        from lilbee.crawler.backends.crawlberg.links import _python_patterns
 
         kept = _python_patterns(["/ok/", CRAWLBERG_ONLY, "/fine"])
         assert [p.pattern for p in kept] == ["/ok/", "/fine"]
