@@ -32,8 +32,6 @@ _REFUSED_SETTING_MESSAGES = {
     "invalid_config: browser.chrome_args": BROWSER_FLAGS_REFUSED_MESSAGE,
     "invalid_config: invalid exclude_path regex": EXCLUDE_PATTERN_REFUSED_MESSAGE,
 }
-# The most characters of a page title lilbee keeps; a page controls its title.
-_MAX_TITLE_CHARS = 512
 # How crawlberg 1.11.1 starts the error of a page the site's robots.txt disallows, and of a
 # page it refuses because the site's robots.txt could not be read.
 _ROBOTS_DISALLOWED_START = "robots.txt disallows "
@@ -113,11 +111,6 @@ def _error_text(error: str) -> str:
     return ROBOTS_UNREACHABLE_MESSAGE.format(reason=reason)
 
 
-def _page_title(title: str | None) -> str:
-    """A page's ``<title>`` on one line, cut at ``_MAX_TITLE_CHARS``; empty when it has none."""
-    return " ".join((title or "").split())[:_MAX_TITLE_CHARS]
-
-
 def _parse_event(raw: object) -> _Event | None:
     """Read a crawlberg event, whose payload is only reachable as JSON; None for other kinds.
 
@@ -139,7 +132,7 @@ def _parse_event(raw: object) -> _Event | None:
         depth=result.get("depth", _SEED_DEPTH),
         markdown=markdown.get("content") or "",
         links=tuple(url_filter.without_userinfo(link["url"]) for link in result.get("links") or ()),
-        title=_page_title(metadata.get("title")),
+        title=metadata.get("title") or "",
     )
 
 
