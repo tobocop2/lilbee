@@ -24,6 +24,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.core.config import cfg
+from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, crafted_label, shown_inline
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
@@ -65,6 +66,20 @@ class _MsgApp(LilbeeAppHost):
 
         yield UserMessage("hello")
         self._am = AssistantMessage()
+        yield self._am
+
+
+class _RestoredApp(LilbeeAppHost):
+    """Hosts one assistant turn restored with *content*."""
+
+    def __init__(self, content: str) -> None:
+        super().__init__()
+        self._restored = content
+
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        self._am = AssistantMessage(content=self._restored)
         yield self._am
 
 
@@ -137,6 +152,65 @@ class TestAssistantMessageAsync:
         restored = AssistantMessage(content="Try:\n\n```python\nx = 1", sources=("manual.md",))
         joined = "".join(restored._content_parts)
         assert "```python\nx = 1\n```\n\nSources:\n\n1. [manual.md](" in joined
+
+    @pytest.mark.parametrize("title", CRAFTED_TITLES)
+    async def test_a_restored_turn_renders_a_page_title_as_text(self, title: str) -> None:
+        """The widget's markdown escapes the Sources labels; the turn's text stays raw."""
+        from textual.widgets import Markdown
+
+        from lilbee.cli.tui.widgets.message import _answer_markdown_parser
+        from lilbee.retrieval.query.formatting import FILE_LINK_RE, source_markdown_link
+
+        content = f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        app = _RestoredApp(content)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert isinstance(am._content_widget, Markdown)
+            assert "".join(am._content_parts) == content
+            line = am._content_widget.source.rpartition("\n1. ")[2]
+            hrefs, shown = shown_inline(_answer_markdown_parser(), line)
+            assert hrefs == [FILE_LINK_RE.search(content)["url"]]
+            assert shown == crafted_label(title)
+
+    @pytest.mark.parametrize("title", CRAFTED_TITLES)
+    async def test_a_live_turn_renders_a_page_title_as_text(self, title: str) -> None:
+        from textual.widgets import Markdown
+
+        from lilbee.cli.tui.widgets.message import _answer_markdown_parser
+        from lilbee.retrieval.query.formatting import FILE_LINK_RE, source_markdown_link
+
+        block = f"\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("x [1]")
+            am.append_content(block)
+            am.finish()
+            await pilot.pause()
+            assert isinstance(am._content_widget, Markdown)
+            assert "".join(am._content_parts) == f"x [1]{block}"
+            line = am._content_widget.source.rpartition("\n1. ")[2]
+            hrefs, shown = shown_inline(_answer_markdown_parser(), line)
+            assert hrefs == [FILE_LINK_RE.search(block)["url"]]
+            assert shown == crafted_label(title)
+
+    async def test_rebuilding_the_markdown_widget_escapes_the_sources_again(self) -> None:
+        from textual.widgets import Markdown
+
+        content = "x [1]\n\nSources:\n\n1. [my_notes.md](file:///kb/my_notes.md)"
+        app = _RestoredApp(content)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            await am.rebuild_content_widget(use_markdown=False)
+            assert isinstance(am._content_widget, Static)
+            assert "1. [my_notes.md](file:///kb/my_notes.md)" in am._content_widget.content.plain
+            await am.rebuild_content_widget(use_markdown=True)
+            await pilot.pause()
+            assert isinstance(am._content_widget, Markdown)
+            assert "1. [my\\_notes.md](file:///kb/my_notes.md)" in am._content_widget.source
 
     def test_finishing_a_never_mounted_message_does_not_crash(self) -> None:
         """A turn can end before its bubble reaches the screen; finish() must
