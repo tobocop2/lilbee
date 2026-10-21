@@ -44,6 +44,15 @@ def _answer_markdown_parser() -> MarkdownIt:
     return _AnswerMarkdownIt("gfm-like")
 
 
+def _markdown_source(text: str) -> str:
+    """*text* as the markdown the widget renders: its Sources labels shown as written."""
+    # Lazy: formatting transitively imports the store stack, which widget
+    # import must not pay at TUI startup.
+    from lilbee.retrieval.query.formatting import markdown_sources_block
+
+    return markdown_sources_block(text)
+
+
 _REASONING_BLOCK_CLASS = "reasoning-block"
 _REASONING_STREAMING_CLASS = "-streaming"
 
@@ -138,7 +147,7 @@ class AssistantMessage(Vertical):
         """
         if self._use_markdown:
             return Markdown(
-                text,
+                _markdown_source(text),
                 classes="response-md",
                 parser_factory=_answer_markdown_parser,
                 open_links=False,
@@ -169,7 +178,7 @@ class AssistantMessage(Vertical):
         option like ``[/path]``) raises MarkupError and crashes the whole TUI.
         """
         if isinstance(widget, Markdown):
-            widget.update(text)
+            widget.update(_markdown_source(text))
         else:
             widget.update(Content(text))
 

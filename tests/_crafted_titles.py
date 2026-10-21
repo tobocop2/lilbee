@@ -19,12 +19,15 @@ CRAFTED_TITLES = (
     "*bold* _it_ __strong__",
     "~~struck~~",
     "a\\](https://evil.example/z) b",
+    "a](file:///etc/passwd) b",
     "x](https://evil.example) `[y` <b> \\ end",
     "&lt;img&gt; &amp; &#60;",
     "C++ & Rust: (a) [b] guide",
     "back\\slash \\[x]",
     "line1\nline2 # head",
 )
+# Names every raw surface shows exactly as typed.
+PLAIN_NAMES = ("my_notes.md", "AT&T", "R&D plan_v2.md", "__init__.py")
 _MARKUP = frozenset({"image", "code_inline", "html_inline", "em_open", "strong_open", "s_open"})
 
 

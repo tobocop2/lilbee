@@ -19,12 +19,10 @@ from lilbee.core.security import write_private_text
 from lilbee.core.text import collapse_whitespace, make_slug
 from lilbee.retrieval.query.formatting import (
     FILE_LINK_RE,
-    SOURCES_BLOCK_MARKER,
     close_open_fence,
     markdown_text,
-    open_code_fence,
     source_markdown_label,
-    unescape_markdown_text,
+    split_sources_list,
     with_sources_block,
 )
 from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
@@ -74,7 +72,7 @@ def _front_matter(meta: SessionMeta) -> str:
 def _message_section(message: SessionMessage) -> str:
     """One turn: the message with its headings nested, then its Sources list without links."""
     content = _LINE_BREAK_RE.sub("\n", message.content).rstrip()
-    text, stored_sources = _split_sources_list(content)
+    text, stored_sources = split_sources_list(content)
     body = _contained(text.rstrip())
     if stored_sources:
         body += _contained(FILE_LINK_RE.sub(_plain_link, stored_sources))
@@ -85,40 +83,14 @@ def _message_section(message: SessionMessage) -> str:
     return f"## {_ROLE_HEADINGS[message.role]}\n\n{body}"
 
 
-def _split_sources_list(content: str) -> tuple[str, str]:
-    """*content* split before its last Sources list, unless that list is quoted in a code block.
-
-    A list after a code block the answer never closed (a cut-off answer) is lilbee's;
-    a list inside a code block that closes after it is pasted text.
-    """
-    text, marker, stored_sources = content.rpartition(SOURCES_BLOCK_MARKER)
-    if not marker:
-        return content, ""
-    fence = open_code_fence(text)
-    if fence is None or _never_closed(fence, content):
-        return text, marker + stored_sources
-    return content, ""
-
-
-def _never_closed(fence: Token, content: str) -> bool:
-    """Whether *fence*, opened in a prefix of *content*, is still open at its end."""
-    end = open_code_fence(content)
-    return (
-        end is not None
-        and end.map is not None
-        and fence.map is not None
-        and end.map[0] == fence.map[0]
-    )
-
-
 def _contained(text: str) -> str:
     """*text* with open fences closed and headings nested, so it stays inside its turn."""
     return _nest_headings(close_open_fence(text))
 
 
 def _plain_link(link: re.Match[str]) -> str:
-    """A stored Sources link as its label alone, escaped as a live label is."""
-    return markdown_text(unescape_markdown_text(link["label"]))
+    """A stored Sources link as its label alone, as markdown that shows the label."""
+    return markdown_text(link["label"])
 
 
 def _html_inline_with_span(state: StateInline, silent: bool) -> bool:

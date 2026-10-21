@@ -21,6 +21,7 @@ from lilbee.retrieval.query import (
 )
 from lilbee.retrieval.query.dedup import _relevance_weight
 from lilbee.retrieval.query.formatting import (
+    FILE_LINK_RE,
     StreamingCitationFilter,
     _extract_cited_indices,
     _format_citation,
@@ -35,7 +36,13 @@ from lilbee.retrieval.query.searcher import (
     SEARCH_NEEDS_EMBEDDER,
     QueryMode,
 )
-from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, crafted_label, shown_inline
+from tests._crafted_titles import (
+    CRAFTED_SOURCE,
+    CRAFTED_TITLES,
+    PLAIN_NAMES,
+    crafted_label,
+    shown_inline,
+)
 from tests.conftest import make_citation
 
 
@@ -262,7 +269,7 @@ class TestFormatSource:
     def test_degenerate_web_path_keeps_raw_source_label(self):
         # Nothing left after dropping the index page: fall back to the stored path.
         r = _make_result(source="_web/index~0123456789abcdef.md", content_type="text")
-        assert format_source(r).startswith("[\\_web/index\\~0123456789abcdef.md](file://")
+        assert format_source(r).startswith("[_web/index~0123456789abcdef.md](file://")
 
     def test_unresolvable_path_renders_plain_label_without_link(self, monkeypatch):
         # A source that can't resolve to a file URL degrades to bare text. The
@@ -301,44 +308,78 @@ class TestFormatSource:
         r = _make_result(source="notes/a.md", content_type="text")
         assert format_source(r, title="A note").startswith("[notes/a.md](file://")
 
-    @pytest.mark.parametrize(
-        "name", ["# hash.md", "- dash.md", "+ plus.md", "2. two.md", "3) three.md", *CRAFTED_TITLES]
-    )
-    def test_the_terminal_shows_a_label_as_it_was_before_escaping(self, name):
-        from lilbee.core.text import collapse_whitespace
-        from lilbee.retrieval.query.formatting import markdown_text, unescape_markdown_text
-
-        assert unescape_markdown_text(markdown_text(name)) == collapse_whitespace(name)
+    @pytest.mark.parametrize("surface", ["link", "answer", "restored"])
+    @pytest.mark.parametrize("name", PLAIN_NAMES)
+    def test_a_raw_label_names_a_local_file_as_typed(self, name, surface):
+        line = _raw_sources_line(surface, name, "")
+        match = FILE_LINK_RE.search(line)
+        assert match is not None
+        assert match["label"] == name
+        assert f"[{name}](file://" in line
 
     @pytest.mark.parametrize("surface", ["link", "answer", "restored"])
-    @pytest.mark.parametrize("title", CRAFTED_TITLES)
-    def test_a_title_cannot_add_markup_of_its_own(self, title, surface):
-        from lilbee.cli.tui.widgets.message import _answer_markdown_parser
-        from lilbee.retrieval.query.formatting import (
-            FILE_LINK_RE,
-            source_markdown_link,
-            unescape_markdown_text,
-            with_sources_block,
-        )
+    @pytest.mark.parametrize("title", [*PLAIN_NAMES, *CRAFTED_TITLES])
+    def test_a_raw_label_holds_a_page_title_as_typed(self, title, surface):
+        line = _raw_sources_line(surface, CRAFTED_SOURCE, title)
+        match = FILE_LINK_RE.search(line)
+        assert match is not None
+        assert match["label"] == crafted_label(title)
+        assert match["url"].startswith("file://")
+        assert line.endswith(")")
 
-        lines = {
-            "link": lambda: source_markdown_link(CRAFTED_SOURCE, title),
-            "answer": lambda: format_sources_block(
-                [_make_result(source=CRAFTED_SOURCE, content_type="text")],
-                {CRAFTED_SOURCE: title},
-            ),
-            "restored": lambda: with_sources_block(
-                "x [1]", [CRAFTED_SOURCE], lambda names: {CRAFTED_SOURCE: title}
-            ),
-        }
-        line = lines[surface]().rpartition("\n1. ")[2]
+    @pytest.mark.parametrize("surface", ["answer", "restored"])
+    @pytest.mark.parametrize("title", CRAFTED_TITLES)
+    def test_a_title_cannot_add_markup_of_its_own_when_rendered(self, title, surface):
+        from lilbee.cli.tui.widgets.message import _answer_markdown_parser
+        from lilbee.retrieval.query.formatting import markdown_sources_block
+
+        raw = _raw_sources_line(surface, CRAFTED_SOURCE, title)
+        line = markdown_sources_block(raw).rpartition("\n1. ")[2]
         hrefs, shown = shown_inline(_answer_markdown_parser(), line)
         assert len(hrefs) == 1 and hrefs[0].startswith("file://")
         assert shown == crafted_label(title)
-        match = FILE_LINK_RE.search(line)
-        assert match is not None
-        assert unescape_markdown_text(match["label"]) == crafted_label(title)
-        assert match["url"] == hrefs[0]
+        assert FILE_LINK_RE.search(raw)["url"] == hrefs[0]
+
+
+def _raw_sources_line(surface: str, source: str, title: str) -> str:
+    """The raw text that names *source*, titled *title*, on *surface*."""
+    from lilbee.retrieval.query.formatting import source_markdown_link, with_sources_block
+
+    if surface == "link":
+        return source_markdown_link(source, title)
+    if surface == "answer":
+        return format_sources_block(
+            [_make_result(source=source, content_type="text")], {source: title}
+        )
+    return with_sources_block("x [1]", [source], lambda names: {source: title})
+
+
+class TestMarkdownSourcesBlock:
+    def test_text_without_a_sources_list_is_unchanged(self):
+        from lilbee.retrieval.query.formatting import markdown_sources_block
+
+        text = "see [my_notes.md](file:///kb/my_notes.md) and `a_b`"
+        assert markdown_sources_block(text) == text
+
+    def test_only_the_labels_of_the_list_are_escaped(self):
+        from lilbee.retrieval.query.formatting import markdown_sources_block
+
+        text = "use my_notes.md [1]\n\nSources:\n\n1. [my_notes.md](file:///kb/my_notes.md), page 2"
+        assert markdown_sources_block(text) == (
+            "use my_notes.md [1]\n\nSources:\n\n1. [my\\_notes.md](file:///kb/my_notes.md), page 2"
+        )
+
+    def test_a_list_quoted_in_a_closed_code_block_is_left_as_written(self):
+        from lilbee.retrieval.query.formatting import markdown_sources_block
+
+        text = "look:\n\n```\nold\n\nSources:\n\n1. [a_b.md](file:///kb/a_b.md)\n```"
+        assert markdown_sources_block(text) == text
+
+    def test_a_list_after_a_cut_off_code_block_is_escaped(self):
+        from lilbee.retrieval.query.formatting import markdown_sources_block
+
+        text = "Try:\n\n```python\nx = 1\n\nSources:\n\n1. [a_b.md](file:///kb/a_b.md)"
+        assert markdown_sources_block(text).endswith("1. [a\\_b.md](file:///kb/a_b.md)")
 
 
 class TestUniqueSources:
@@ -1050,6 +1091,16 @@ class TestCitedSources:
         mock_svc.provider.chat.return_value = _text_result("From [1].")
         answer = get_services().searcher.ask("q")
         assert "1. [forum.example · How to grow tomatoes indoors](file://" in answer
+
+    @pytest.mark.parametrize("title", PLAIN_NAMES)
+    def test_ask_keeps_a_stored_title_as_typed(self, mock_svc, title):
+        """The answer a session stores, and MCP and REST return, names the page as typed."""
+        page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
+        mock_svc.store.search.return_value = [_make_result(source=page, chunk="alpha")]
+        mock_svc.store.web_titles.return_value = {page: title}
+        mock_svc.provider.chat.return_value = _text_result("From [1].")
+        answer = get_services().searcher.ask("q")
+        assert f"1. [forum.example · {title}](file://" in answer
 
     def test_ask_stream_labels_a_crawled_page_with_its_stored_title(self, mock_svc):
         page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
