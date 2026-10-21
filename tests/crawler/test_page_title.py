@@ -57,11 +57,9 @@ class TestFetchedTitle:
         fetched = await _single(None)
         assert (fetched.title, fetched.markdown) == ("", "# Hello")
 
-    async def test_a_title_over_lines_is_one_line(self):
-        assert (await _single("\n  Bees \t and\n honey  ")).title == "Bees and honey"
-
-    async def test_a_title_past_the_bound_is_cut(self):
-        assert (await _single("x" * 2000)).title == "x" * 512
+    async def test_the_backend_hands_over_the_title_as_the_page_has_it(self):
+        raw = "\n  Bees \t and\n honey  " + "x" * 2000
+        assert (await _single(raw)).title == raw
 
     async def test_every_page_of_a_crawl_keeps_its_title(self):
         other = SEED + "b"
@@ -86,6 +84,14 @@ class TestFetchedTitle:
     def test_the_crawl_result_carries_the_title(self):
         result = _fetched_to_result(FetchedPage(url=SEED, markdown="# A", title="Page A"))
         assert result.title == "Page A"
+
+    def test_the_crawl_result_title_is_one_line(self):
+        fetched = FetchedPage(url=SEED, markdown="# A", title="\n  Bees \t and\n honey  ")
+        assert _fetched_to_result(fetched).title == "Bees and honey"
+
+    def test_the_crawl_result_title_is_cut_at_the_bound(self):
+        fetched = FetchedPage(url=SEED, markdown="# A", title="x" * 2000)
+        assert _fetched_to_result(fetched).title == "x" * 512
 
 
 def _append(*lines: tuple[str, CrawlMeta]) -> None:
