@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 from typing import TYPE_CHECKING
 from urllib.parse import ParseResult, urlparse
@@ -32,6 +33,11 @@ _NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 _IPV4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")  # RFC 6052 SIIT
 # The mark that ends a username and password in the host part of an address.
 _USERINFO_END = "@"
+# A WHATWG parser escapes a raw "^" in a path; the url crate 2.5.8 crawlberg 1.11.1 uses keeps it.
+_CARET = "^"
+_CARET_ESCAPE = "%5E"
+_CARET_ESCAPE_LOWER = "%5e"
+_ANY_CARET_ESCAPE = re.compile(_CARET_ESCAPE, re.IGNORECASE)
 # What is shown for an address with an ``@`` that does not parse: where a password ends is unknown.
 UNPARSED_ADDRESS = "(an address that does not parse)"
 # The refusal of a port that is not a number; the port text can hold part of a password.
@@ -77,6 +83,15 @@ def parsed_url(url: str) -> ada_url.URL | None:
         return ada_url.URL(url)
     except ValueError:
         return None
+
+
+def parsed_address(url: str) -> str | None:
+    """*url* without its fragment as crawlberg 1.11.1's URL parser writes it; None if it fails."""
+    parsed = parsed_url(_ANY_CARET_ESCAPE.sub(_CARET_ESCAPE_LOWER, url))
+    if parsed is None:
+        return None
+    parsed.hash = ""
+    return parsed.href.replace(_CARET_ESCAPE, _CARET)
 
 
 def without_userinfo(url: str) -> str:
