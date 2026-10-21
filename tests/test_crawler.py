@@ -2864,15 +2864,15 @@ class TestRefusedEngineOnEachEntryPoint:
         [(_refused_flag, FLAG_REFUSAL), (_reworded_refusal, REWORDED_REFUSAL)],
         ids=["flag", "reworded"],
     )
-    async def test_mcp_add_raises_the_reason_for_the_one_page_it_fetches(
+    async def test_mcp_add_answers_with_the_reason_for_the_one_page_it_fetches(
         self, isolated_env, configure, message: str
     ):
         from lilbee.mcp_server import add
 
         configure()
-        with _refusing_stub().installed(), pytest.raises(CrawlEngineRefusedError) as refused:
-            await add(paths=[SEED], render_mode=BROWSER)
-        assert str(refused.value) == message
+        with _refusing_stub().installed():
+            result = await add(paths=[SEED], render_mode=BROWSER)
+        assert result["error"] == f"add indexed nothing. {SEED}: {message}"
         assert _saved_pages(isolated_env) == []
 
 
