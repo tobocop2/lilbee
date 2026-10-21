@@ -22,6 +22,7 @@ from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.core.text import strip_control_characters
 from lilbee.runtime.cancellation import sigint_cancel
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhaseEvent
@@ -341,7 +342,10 @@ def _render_citations(
             else rec["excerpt"]
         )
         table.add_row(
-            Text(rec["citation_key"]), Text(column_value(rec)), rec["claim_type"], Text(excerpt)
+            Text(rec["citation_key"]),
+            Text(strip_control_characters(column_value(rec))),
+            rec["claim_type"],
+            Text(excerpt),
         )
     console.print(table)
 

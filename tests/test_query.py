@@ -41,6 +41,7 @@ from tests._crafted_titles import (
     CRAFTED_SOURCE,
     CRAFTED_TITLES,
     PLAIN_NAMES,
+    TERMINAL_CONTROL_RE,
     crafted_label,
     shown_inline,
 )
@@ -4581,3 +4582,46 @@ class TestNearDuplicateSuppression:
         a = _make_result(source="a.md", chunk="first passage", score=0.9)
         b = _make_result(source="b.md", chunk="second passage", score=0.8)
         assert len(prepare_results([a, b])) == 2
+
+
+class TestTerminalSourcesBlock:
+    """The one function that makes a Sources list safe to write to a terminal."""
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_a_label_loses_every_control_character_and_keeps_its_link(self, title):
+        from lilbee.retrieval.query.formatting import (
+            source_markdown_link,
+            terminal_sources_block,
+        )
+
+        line = source_markdown_link(CRAFTED_SOURCE, title)
+        block = terminal_sources_block(f"\n\nSources:\n\n1. {line}\n2. [b.md](file:///kb/b.md)")
+        assert TERMINAL_CONTROL_RE.search(block.replace("\n", "")) is None
+        assert FILE_LINK_RE.search(line)["url"] in block
+        assert "2. [b.md](file:///kb/b.md)" in block
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_a_label_with_no_link_loses_its_control_characters_too(self, title):
+        from lilbee.retrieval.query.formatting import terminal_sources_block
+
+        block = terminal_sources_block(f"\n\nSources:\n\n1. forum.example · {title}")
+        assert TERMINAL_CONTROL_RE.search(block.replace("\n", "")) is None
+
+    def test_the_answer_above_the_list_is_left_alone(self):
+        from lilbee.retrieval.query.formatting import terminal_sources_block
+
+        text = "colour \x1b[31mred\x1b[0m [1]"
+        assert terminal_sources_block(f"{text}\n\nSources:\n\n1. a.md").startswith(text)
+
+    def test_a_list_quoted_in_a_code_block_is_left_alone(self):
+        from lilbee.retrieval.query.formatting import terminal_sources_block
+
+        quoted = "```\nSources:\n\n1. \x1b[31mx\n```\n"
+        assert terminal_sources_block(quoted) == quoted
+
+    def test_a_plain_name_is_unchanged(self):
+        from lilbee.retrieval.query.formatting import terminal_sources_block
+
+        for name in PLAIN_NAMES:
+            block = f"\n\nSources:\n\n1. {name}"
+            assert terminal_sources_block(block) == block
