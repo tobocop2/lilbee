@@ -1,14 +1,18 @@
-"""A crawl exclude pattern crawlberg refuses is refused when the setting is saved."""
+"""A crawl exclude pattern crawlberg refuses is refused when the setting is saved.
+
+Loading the config never asks crawlberg: the check loads its native library.
+"""
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from unittest import mock
 
 import pytest
 from litestar.testing import TestClient
-from pydantic import ValidationError
 
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, Config, cfg
 from lilbee.core.config.model import _build_cfg
@@ -110,19 +114,17 @@ class TestEveryEntryPoint:
         assert response.status_code == 200
         assert cfg.crawl_exclude_patterns == [CRAWLBERG_ONLY]
 
-    def test_config_toml_drops_the_refused_list_and_names_the_reason(self, tmp_path, crawlberg):
-        built, warnings = _build_toml(
-            tmp_path, f"crawl_exclude_patterns = [{json.dumps(PYTHON_ONLY)}]\n"
-        )
-        assert (
-            built.crawl_exclude_patterns
-            == Config.model_fields["crawl_exclude_patterns"].default_factory()
-        )
-        assert len(warnings) == 1
-        assert "crawl_exclude_patterns" in warnings[0]
-        assert REASON in warnings[0]
+    def test_config_toml_loads_a_refused_list_without_asking_crawlberg(self, tmp_path):
+        asked = StubCrawlberg(refuse=refusing_patterns(PYTHON_ONLY))
+        with asked.installed():
+            built, warnings = _build_toml(
+                tmp_path, f"crawl_exclude_patterns = [{json.dumps(PYTHON_ONLY)}]\n"
+            )
+        assert built.crawl_exclude_patterns == [PYTHON_ONLY]
+        assert warnings == ()
+        assert asked.configs == []
 
-    def test_config_toml_keeps_a_pattern_only_crawlberg_compiles(self, tmp_path, crawlberg):
+    def test_config_toml_keeps_a_pattern_only_crawlberg_compiles(self, tmp_path):
         built, warnings = _build_toml(tmp_path, f"crawl_exclude_patterns = ['{CRAWLBERG_ONLY}']\n")
         assert built.crawl_exclude_patterns == [CRAWLBERG_ONLY]
         assert warnings == ()
@@ -134,15 +136,77 @@ class TestEveryEntryPoint:
         assert REASON in result["error"]
         assert cfg.crawl_exclude_patterns == before
 
-    def test_the_cli_variable_stops_the_command_with_the_reason(self, tmp_path, crawlberg):
+    def test_the_variable_loads_a_refused_list_without_asking_crawlberg(self, tmp_path):
         env = {**clean_env(tmp_path), "LILBEE_CRAWL_EXCLUDE_PATTERNS": PYTHON_ONLY}
-        with mock.patch.dict(os.environ, env, clear=True), pytest.raises(Exception, match=REASON):
-            Config()
+        asked = StubCrawlberg(refuse=refusing_patterns(PYTHON_ONLY))
+        with asked.installed(), mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_exclude_patterns == [PYTHON_ONLY]
+        assert asked.configs == []
 
-    def test_an_assignment_to_the_setting_is_refused(self, crawlberg):
-        probe = cfg.model_copy()
-        with pytest.raises(ValidationError, match=REASON):
-            probe.crawl_exclude_patterns = [PYTHON_ONLY]
+    def test_a_write_of_one_pattern_per_line_names_the_refused_line(self, tmp_path, crawlberg):
+        cfg.data_root = tmp_path
+        result = settings_set({"crawl_exclude_patterns": f"/ok/\n{PYTHON_ONLY}"})
+        assert f"[1] {PYTHON_ONLY!r}: {REASON}" in result["error"]
+
+    def test_a_write_of_the_shipped_list_does_not_ask_crawlberg(self, tmp_path):
+        cfg.data_root = tmp_path
+        asked = StubCrawlberg(refuse=refusing_patterns(PYTHON_ONLY))
+        with asked.installed():
+            result = settings_set({"crawl_exclude_patterns": list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)})
+        assert "error" not in result
+        assert asked.configs == []
+
+    def test_a_refused_write_stores_nothing(self, tmp_path, crawlberg):
+        cfg.data_root = tmp_path
+        settings_set({"crawl_exclude_patterns": [PYTHON_ONLY]})
+        assert not (tmp_path / "config.toml").exists()
+
+
+class TestImportTime:
+    def test_loading_a_config_with_custom_patterns_leaves_crawlberg_unimported(self, tmp_path):
+        """A fresh process builds cfg from a config.toml that holds patterns; none imports it."""
+        (tmp_path / "config.toml").write_text(
+            "crawl_exclude_patterns = ['/custom/', '/other']\n", encoding="utf-8"
+        )
+        script = tmp_path.parent / f"{tmp_path.name}-probe.py"
+        script.write_text(_PROBE, encoding="utf-8")
+        env = {**clean_env(tmp_path), "PYTHONPATH": os.pathsep.join(sys.path)}
+        done = subprocess.run(
+            [sys.executable, str(script)], env=env, capture_output=True, text=True, check=False
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip() == "['/custom/', '/other'] []"
+
+    def test_the_check_module_imports_first_in_a_fresh_process(self, tmp_path):
+        env = {**clean_env(tmp_path), "PYTHONPATH": os.pathsep.join(sys.path)}
+        done = subprocess.run(
+            [sys.executable, "-c", "import lilbee.core.crawl_patterns"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert done.returncode == 0, done.stderr
+
+
+_PROBE = """
+import sys
+
+attempts = []
+
+
+class Spy:
+    def find_spec(self, name, path=None, target=None):
+        if name == "crawlberg" or name.startswith("crawlberg."):
+            attempts.append(name)
+        return None
+
+
+sys.meta_path.insert(0, Spy())
+from lilbee.core.config import cfg
+
+print(cfg.crawl_exclude_patterns, attempts)
+"""
 
 
 def _build_toml(tmp_path, toml: str):

@@ -2476,8 +2476,8 @@ def _refused_flag() -> None:
 
 
 def _refused_pattern() -> None:
-    """Force a pattern crawlberg refuses past the setting, which refuses it when it is saved."""
-    object.__setattr__(cfg, "crawl_exclude_patterns", [r"/ok/", REFUSED_PATTERN])
+    """Set a pattern crawlberg refuses, as a config.toml the crawler extra never checked holds."""
+    cfg.crawl_exclude_patterns = [r"/ok/", REFUSED_PATTERN]
 
 
 def _reworded_refusal() -> None:
@@ -2539,6 +2539,26 @@ class TestRefusedEngine:
     @pytest.fixture(autouse=True)
     def _admit_every_url(self, monkeypatch):
         monkeypatch.setattr("lilbee.crawler.url_filter.validate_crawl_url", lambda url: None)
+
+    async def test_a_bad_pattern_from_config_toml_stops_the_crawl_naming_the_setting(
+        self, isolated_env, tmp_path
+    ):
+        """Loading config.toml accepts the pattern; the crawl is where crawlberg refuses it."""
+        from lilbee.core.config.model import _build_cfg
+        from tests.conftest import clean_env
+
+        (tmp_path / "config.toml").write_text(
+            f"crawl_exclude_patterns = ['/ok/', {json.dumps(REFUSED_PATTERN)}]\n", encoding="utf-8"
+        )
+        with patch.dict(os.environ, clean_env(tmp_path), clear=True):
+            built, warnings = _build_cfg()
+        assert warnings == ()
+        cfg.crawl_exclude_patterns = built.crawl_exclude_patterns
+        stub = _refusing_stub()
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(SEED, depth=1, render_mode=CrawlRenderMode.HTTP)
+        assert str(refused.value) == PATTERN_REFUSAL
+        assert stub.seeds == []
 
     @REFUSED
     async def test_the_crawl_raises_crawlbergs_reason(

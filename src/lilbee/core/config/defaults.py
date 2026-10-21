@@ -8,6 +8,7 @@ and general system prompts, and the CORS allow-origin regex.
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import quote
 
 from lilbee.core.config import mediawiki_namespaces as wiki_namespaces
@@ -206,6 +207,17 @@ _MEDIAWIKI_EXCLUDE: tuple[str, ...] = (
     _namespace_pattern(wiki_namespaces.USER_TALK),
     r"/w/index\.php",
 )
+
+
+def exclude_pattern_lines(value: Any) -> Any:
+    """The patterns in *value*: a string is one pattern per line, any other value passes through.
+
+    Regex uses commas (``{2,4}``) and pipes (alternation), so a newline is the only separator.
+    """
+    if isinstance(value, str):
+        return [line.strip() for line in value.splitlines() if line.strip()]
+    return value
+
 
 DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
     *_WP_EXCLUDE,
