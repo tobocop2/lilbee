@@ -16,8 +16,8 @@ from lilbee.crawler.availability import crawler_available
 from lilbee.crawler.backends.crawlberg import config as config_mod
 from lilbee.crawler.backends.crawlberg import fetcher as fetcher_mod
 from lilbee.crawler.backends.crawlberg.config import CRAWLBERG_DENIED_NETWORKS, admitted_networks
+from lilbee.crawler.backends.crawlberg.events import _SSRF_ERROR_CODE
 from lilbee.crawler.backends.crawlberg.fetcher import (
-    _SSRF_ERROR_CODE,
     CrawlbergFetcher,
     _queued_url,
 )
@@ -296,7 +296,7 @@ class TestCrawlConfig:
     ):
         pacing = ConcurrencySpec(retry_on_rate_limit=True, retry_max_attempts=configured)
         stub = StubCrawlberg([page(SEED, depth=0)], refuse=_refuses_many_retries)
-        with stub.installed(), caplog.at_level("WARNING", logger=fetcher_mod.__name__):
+        with stub.installed(), caplog.at_level("WARNING", logger=config_mod.__name__):
             fetched = await _recursive(_http(), concurrency=pacing)
         assert [one.url for one in fetched] == [SEED]
         assert stub.config["retry_count"] == sent
