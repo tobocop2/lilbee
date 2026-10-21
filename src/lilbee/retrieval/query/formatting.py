@@ -85,29 +85,28 @@ def display_source_path(source: str) -> str:
 
 
 _SOURCE_SEP = " · "
-# A page controls its title, so a label never opens a link, image, code span, tag,
-# entity, emphasis or strikethrough of its own, and never starts a block.
+# A page controls its title, so a rendered label never opens a link, image, code
+# span, tag, entity, emphasis or strikethrough of its own, and never starts a block.
 _MARKDOWN_SPECIAL = "\\[]`<&*_~"
 _MARKDOWN_SPECIAL_RE = re.compile(f"[{re.escape(_MARKDOWN_SPECIAL)}]")
 _BLOCK_MARK_RE = re.compile(
     f"^[{re.escape(''.join(c for c in string.punctuation if c not in _MARKDOWN_SPECIAL))}]"
 )
 _LIST_NUMBER_RE = re.compile(r"^(\d+)([.)])(?=\s|$)")
-_MARKDOWN_ESCAPED_RE = re.compile(f"\\\\([{re.escape(string.punctuation)}])")
 
 
 def source_label(source: str, title: str = "") -> str:
-    """Readable name for a source. A crawled page is ``host · title`` when it has a
-    stored *title*, else ``host · slug``; local files keep their documents-dir-relative path."""
+    """The plain one-line name of a source: ``host · title`` for a crawled page with a
+    stored *title*, else ``host · slug``; a local file's documents-dir-relative path."""
     if not is_web_source(source):
-        return source
+        return collapse_whitespace(source)
     *folders, file_name = source.removeprefix(WEB_PREFIX).split("/")
     stem = page_stem(file_name)
     segments = folders if stem == INDEX_STEM else [*folders, stem]
     if not segments:
-        return source
+        return collapse_whitespace(source)
     host = segments[0].removeprefix("www.")
-    slug = title or segments[-1]
+    slug = collapse_whitespace(title) or segments[-1]
     return host if slug == segments[0] else f"{host}{_SOURCE_SEP}{slug}"
 
 
@@ -116,11 +115,6 @@ def markdown_text(text: str) -> str:
     escaped = _MARKDOWN_SPECIAL_RE.sub(r"\\\g<0>", collapse_whitespace(text))
     escaped = _BLOCK_MARK_RE.sub(r"\\\g<0>", escaped)
     return _LIST_NUMBER_RE.sub(r"\1\\\2", escaped)
-
-
-def unescape_markdown_text(text: str) -> str:
-    """The text a markdown renderer shows for *text*'s backslash escapes."""
-    return _MARKDOWN_ESCAPED_RE.sub(r"\g<1>", text)
 
 
 def source_markdown_label(source: str, title: str = "") -> str:
@@ -177,10 +171,10 @@ def _location_suffix(result: SearchChunk) -> str:
 
 
 def source_markdown_link(source: str, title: str = "") -> str:
-    """A bare source name as the same clickable ``[label](file-url)`` markdown a
-    live answer's Sources block uses; the plain label when no path resolves.
+    """A bare source name as the ``[label](file-url)`` link a live answer's Sources
+    block uses, the label as plain text; the plain label when no path resolves.
     Public so restored transcripts render sources identically to live ones."""
-    label = source_markdown_label(source, title)
+    label = source_label(source, title)
     if is_memory_source(source):
         return label
     url = _source_file_url(source)
@@ -196,7 +190,7 @@ def format_source(
     as their plain ``memory:<id>`` label: they have no file to link.
     """
     if result.memory_id is not None:
-        return source_markdown_label(result.source)
+        return source_label(result.source)
     head = source_markdown_link(result.source, title)
     if result.chunk_type is ChunkType.WIKI and citations:
         return "\n".join([head, *(_format_citation(c) for c in citations)])
@@ -248,9 +242,9 @@ def build_context(results: list[SearchChunk]) -> str:
 # Grepped by consumers to know an answer carries its own Sources list (the
 # no-results toast; the pill row, which must not stack a second list).
 SOURCES_BLOCK_MARKER = "\n\nSources:\n"
-# A Sources line's ``[label](file-url)`` link, matched within one line; an escaped
-# bracket stays inside the label.
-FILE_LINK_RE = re.compile(r"\[(?P<label>(?:\\.|[^\\\n])+?)\]\((?P<url>file://[^)\s]+)\)")
+# A Sources line's ``[label](file-url)`` link. One source per line, so the label
+# runs to the line's last ``](file://``: a label holding that text cannot end it.
+FILE_LINK_RE = re.compile(r"\[(?P<label>[^\n]+)\]\((?P<url>file://[^)\s]+)\)")
 # Parsed after a text; if it lands inside a fence, the text left that fence open.
 _FENCE_PROBE = "\n\n# probe"
 
@@ -292,6 +286,43 @@ def with_sources_block(
     stored = titles(sources)
     lines = [f"{i}. {render(s, stored.get(s, ''))}" for i, s in enumerate(sources, 1)]
     return close_open_fence(content.rstrip()) + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
+
+
+def split_sources_list(content: str) -> tuple[str, str]:
+    """*content* split before its last Sources list, unless that list is quoted in a code block.
+
+    A list after a code block the answer never closed (a cut-off answer) is lilbee's;
+    a list inside a code block that closes after it is pasted text.
+    """
+    text, marker, stored_sources = content.rpartition(SOURCES_BLOCK_MARKER)
+    if not marker:
+        return content, ""
+    fence = open_code_fence(text)
+    if fence is None or _never_closed(fence, content):
+        return text, marker + stored_sources
+    return content, ""
+
+
+def _never_closed(fence: Token, content: str) -> bool:
+    """Whether *fence*, opened in a prefix of *content*, is still open at its end."""
+    end = open_code_fence(content)
+    return (
+        end is not None
+        and end.map is not None
+        and fence.map is not None
+        and end.map[0] == fence.map[0]
+    )
+
+
+def markdown_sources_block(content: str) -> str:
+    """*content* as the markdown a renderer shows with each Sources label as written."""
+    text, sources = split_sources_list(content)
+    return text + FILE_LINK_RE.sub(_markdown_link, sources)
+
+
+def _markdown_link(link: re.Match[str]) -> str:
+    """A raw Sources link with its label escaped."""
+    return f"[{markdown_text(link['label'])}]({link['url']})"
 
 
 @cache

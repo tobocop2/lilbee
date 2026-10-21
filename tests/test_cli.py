@@ -51,7 +51,7 @@ from lilbee.runtime.progress import (
 )
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
-from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, crafted_label
+from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, PLAIN_NAMES, crafted_label
 from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
@@ -3329,13 +3329,13 @@ class TestEnsureChatModelWiring:
         assert "](file:///" not in out
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_a_title_with_escaped_brackets_is_one_hyperlink_shown_plain(self, mock_sync, mock_svc):
+    def test_a_label_shaped_like_a_link_is_one_hyperlink_shown_as_typed(self, mock_sync, mock_svc):
         from rich.console import Console
 
         mock_svc.searcher.ask_stream.return_value = _mock_stream(
             "answer",
             "\n\nSources:\n",
-            "1. [a · x\\](file:///etc/passwd) \\[y](file:///kb/a.md)",
+            "1. [a · x](file:///etc/passwd) [y](file:///kb/a.md)",
         )
         term = Console(force_terminal=True, legacy_windows=False, width=200)
         with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
@@ -3345,6 +3345,26 @@ class TestEnsureChatModelWiring:
         assert "a · x](file:///etc/passwd) [y" in out
         assert "file:///kb/a.md" in out
         assert out.count("\x1b]8;id=") == 1
+
+    @pytest.mark.parametrize("name", PLAIN_NAMES)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_piped_ask_prints_a_name_as_typed(self, mock_sync, mock_svc, name):
+        from lilbee.retrieval.query.formatting import source_markdown_link
+        from lilbee.runtime.console import PlainConsole
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer",
+            "\n\nSources:\n",
+            f"1. {source_markdown_link(name)}\n2. {source_markdown_link(CRAFTED_SOURCE, name)}",
+        )
+        pipe = PlainConsole(force_terminal=False, width=400)
+        with mock.patch("lilbee.cli.commands.search_chat.console", pipe), pipe.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        out = cap.get()
+        assert f"1. [{name}](file://" in out
+        assert f"2. [{crafted_label(name)}](file://" in out
+        assert "\\" not in out
 
     @pytest.mark.parametrize("title", CRAFTED_TITLES)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
