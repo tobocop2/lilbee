@@ -37,6 +37,7 @@ from lilbee.retrieval.query.searcher import (
     QueryMode,
 )
 from tests._crafted_titles import (
+    CONTROL_TITLES,
     CRAFTED_SOURCE,
     CRAFTED_TITLES,
     PLAIN_NAMES,
@@ -326,6 +327,14 @@ class TestFormatSource:
         assert match["label"] == crafted_label(title)
         assert match["url"].startswith("file://")
         assert line.endswith(")")
+
+    @pytest.mark.parametrize("surface", ["link", "answer", "restored"])
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_a_raw_label_keeps_the_control_characters_of_a_title(self, title, surface):
+        match = FILE_LINK_RE.search(_raw_sources_line(surface, CRAFTED_SOURCE, title))
+        assert match is not None
+        assert match["label"] == crafted_label(title)
+        assert "\x1b" in match["label"] or "\x07" in match["label"] or "\x9b" in match["label"]
 
     @pytest.mark.parametrize("surface", ["answer", "restored"])
     @pytest.mark.parametrize("title", CRAFTED_TITLES)
