@@ -417,7 +417,9 @@ class WikiScreen(Screen[None]):
         )
         self.query_one("#wiki-breadcrumb", Static).update(_breadcrumb_for_slug(slug, page.title))
         self.query_one("#wiki-page-header", Static).update(header_text)
-        self.query_one("#wiki-content", Markdown).update(strip_control_characters(page.content))
+        self.query_one("#wiki-content", Markdown).update(
+            strip_control_characters(page.content, keep_lines=True)
+        )
 
     @on(Input.Changed, "#wiki-search")
     def _on_search_changed(self, event: Input.Changed) -> None:

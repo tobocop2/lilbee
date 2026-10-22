@@ -8818,6 +8818,35 @@ class TestTerminalSafeStoredText:
         assert result.exit_code == 0, result.output
         assert TERMINAL_CONTROL_RE.search(result.output) is None
 
+    def test_wiki_read_keeps_the_lines_of_a_markdown_body(
+        self, mock_svc, isolated_env, monkeypatch
+    ):
+        body = "# Title\n\n- a\n- b\n\n```py\nx = 1\n```\n"
+        from lilbee.wiki.browse import WikiPageContent
+
+        page = WikiPageContent("entities/x", "X", body + "\x1b[31m")
+        monkeypatch.setattr("lilbee.wiki.browse.read_page", lambda root, slug: page)
+        result = runner.invoke(app, ["wiki", "read", "entities/x"])
+        assert result.exit_code == 0, result.output
+        assert result.output == body + "\n"
+
+    def test_the_search_table_keeps_the_lines_of_a_preview(self, mock_svc):
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "alpha\nbeta\x1b[31m"})
+        ]
+        result = runner.invoke(app, ["search", "engine oil"])
+        assert result.exit_code == 0, result.output
+        assert "alpha" in result.output and "beta" in result.output
+        assert "alphabeta" not in result.output.replace(" ", "").replace("\n", "|")
+
+    def test_chunks_keeps_the_lines_of_a_preview(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [{"filename": "test.txt", "source": "test.txt"}]
+        mock_svc.store.get_chunks_by_source.return_value = [self._chunk("alpha\nbeta\x1b[31m")]
+        result = runner.invoke(app, ["chunks", "test.txt"])
+        assert result.exit_code == 0, result.output
+        lines = [line.strip() for line in result.output.splitlines()]
+        assert "[0] alpha" in lines and "beta" in lines
+
     @pytest.mark.parametrize("body", CONTROL_TITLES)
     def test_wiki_read_json_keeps_the_body_as_stored(
         self, mock_svc, isolated_env, monkeypatch, body
