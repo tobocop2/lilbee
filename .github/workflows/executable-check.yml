@@ -9,7 +9,11 @@ name: Executable check
 # The Linux cell is the cheapest required cell and compiles the whole Python
 # dependency graph, which is where a Nuitka crash on a new dependency shows.
 # The Windows cell is the one that runs the MSVC compiler. It runs only when
-# the build tooling itself changes, because a cold Windows compile takes hours.
+# the build tooling changes, the Nuitka pin included, because a cold Windows
+# compile takes hours. A change to uv.lock alone builds Linux only.
+#
+# The check publishes nothing: release.yml skips the engine mirror, the cache
+# mirror and the release attach whenever `only_asset` is set.
 on:
   pull_request:
     paths:
@@ -19,6 +23,8 @@ on:
       - 'tools/wheel-build/**'
       - '.github/release-cells.yml'
       - '.github/workflows/release.yml'
+      - '.github/workflows/build-gpu-executables.yml'
+      - '.github/workflows/flatpak-validate.yml'
       - '.github/workflows/executable-check.yml'
       - '.github/actions/bundle-llama-server/**'
       - '.github/actions/nuitka-object-cache/**'
@@ -57,6 +63,8 @@ jobs:
               - 'tools/wheel-build/**'
               - '.github/release-cells.yml'
               - '.github/workflows/release.yml'
+              - '.github/workflows/build-gpu-executables.yml'
+              - '.github/workflows/flatpak-validate.yml'
               - '.github/workflows/executable-check.yml'
 
   linux:

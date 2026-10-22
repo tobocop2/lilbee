@@ -263,7 +263,7 @@ jobs:
 
       - name: Install dependencies
         if: matrix.os != 'macos-15-intel'
-        run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.3.1,<5' pip
+        run: uv sync --extra release && uv pip install 'nuitka[onefile]==4.3.1' pip
 
       # Intel Mac: `uv sync` can't run here -- stock lancedb 0.39.0 ships no
       # macosx_x86_64 wheel. One install resolves the whole cell: lancedb comes
@@ -299,7 +299,7 @@ jobs:
           uv pip install --python-platform x86_64-apple-darwin \
             --constraint intel-constraints.txt \
             --extra-index-url https://lilbee.sh/compat/ \
-            lancedb==0.39.0+compat '.[release]' 'nuitka[onefile]>=4.3.1,<5' pip
+            lancedb==0.39.0+compat '.[release]' 'nuitka[onefile]==4.3.1' pip
 
       - name: Verify extras installed in build venv
         shell: bash
@@ -328,6 +328,9 @@ jobs:
           # Containerized cells build against the container's glibc; keep their
           # engine cache separate from bare-runner builds.
           cache-env: ${{ matrix.container || matrix.os }}
+          # A narrowed run is a check. An empty tag makes the action skip the
+          # engine mirror, so the run cannot create or write the release.
+          asset-release-tag: ${{ inputs.only_asset == '' && 'engine-binaries' || '' }}
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_floor }}
 
@@ -588,7 +591,7 @@ jobs:
       # Eager attach: release-candidate creates the pre-release shell before
       # calling, so the asset shows up as soon as this cell finishes.
       - name: Attach binary to the GH pre-release
-        if: inputs.release_tag != ''
+        if: inputs.release_tag != '' && inputs.only_asset == ''
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

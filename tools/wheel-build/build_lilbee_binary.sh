@@ -6,7 +6,7 @@
 #   PRODUCT_VERSION  Nuitka --product-version (int-tuple, e.g. 0.6.66.456)
 #
 # Run from the repo root after `uv sync --extra release` and
-# `uv pip install 'nuitka[onefile]>=4.3.1,<5'`.
+# `uv pip install 'nuitka[onefile]==4.3.1'`.
 
 set -euxo pipefail
 
