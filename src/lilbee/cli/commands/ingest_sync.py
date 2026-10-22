@@ -851,8 +851,9 @@ def chunks(
     )
     for c in cleaned:
         idx = c.get("chunk_index", "?")
-        preview = c.get("chunk", "")[:CHUNK_PREVIEW_LEN]
-        if len(c.get("chunk", "")) > CHUNK_PREVIEW_LEN:
+        chunk_text = strip_control_characters(c.get("chunk", ""))
+        preview = chunk_text[:CHUNK_PREVIEW_LEN]
+        if len(chunk_text) > CHUNK_PREVIEW_LEN:
             preview += "..."
         console.print(Text.assemble(f"  [{idx}] ", preview), soft_wrap=True)
 

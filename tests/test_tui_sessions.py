@@ -18,6 +18,7 @@ from lilbee.cli.tui.widgets.session_list import SessionListPanel, SessionRow
 from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
 from tests._async_wait import wait_until
+from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._lilbee_app_test_host import await_chat, pump_until, send_key_burst, shown_footer_keys
 from tests.conftest import make_mock_services
 
@@ -1333,3 +1334,59 @@ async def test_mouse_down_on_a_detached_session_row_does_not_crash(sessions, mon
 
         assert crash is None, f"MouseDown on a detached row still crashes: {crash!r}"
         await pilot.pause()
+
+
+# --- terminal-safe titles ---------------------------------------------------
+@pytest.mark.parametrize("title", CONTROL_TITLES)
+async def test_a_row_shows_a_title_without_control_characters(sessions, title):
+    _seed(sessions, title)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        row = drawer.query(SessionRow).first()
+        shown = row.query(".session-row-title").first()
+        assert TERMINAL_CONTROL_RE.search(shown.content.plain) is None
+        assert row.meta.title == title
+
+
+@pytest.mark.parametrize("title", CONTROL_TITLES)
+async def test_the_delete_prompt_shows_a_title_without_control_characters(sessions, title):
+    _seed(sessions, title)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        panel = drawer.query_one(SessionListPanel)
+        drawer.query_one("#sessions-list", ListView).focus()
+        await pilot.pause()
+        with (
+            patch.object(ConfirmDialog, "__init__", return_value=None) as dialog,
+            patch.object(app, "push_screen"),
+        ):
+            await panel.action_delete()
+        shown = dialog.call_args.args[1]
+        assert TERMINAL_CONTROL_RE.search(shown) is None
+
+
+@pytest.mark.parametrize("title", CONTROL_TITLES)
+async def test_the_deleted_notice_shows_a_title_without_control_characters(sessions, title):
+    _seed(sessions, title)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        panel = drawer.query_one(SessionListPanel)
+        meta = sessions.list()[0]
+        with patch.object(app, "notify") as mock_notify:
+            panel._on_delete_confirmed(meta, confirmed=True)
+            await pilot.pause()
+        assert TERMINAL_CONTROL_RE.search(mock_notify.call_args[0][0]) is None
+
+
+@pytest.mark.parametrize("title", CONTROL_TITLES)
+async def test_the_resumed_notice_shows_a_title_without_control_characters(sessions, title):
+    session_id = _seed(sessions, title)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with patch.object(app, "notify") as mock_notify:
+            screen.resume_session(session_id)
+        assert TERMINAL_CONTROL_RE.search(mock_notify.call_args[0][0]) is None

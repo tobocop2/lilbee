@@ -25,6 +25,7 @@ from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+from lilbee.core.text import strip_control_characters
 from lilbee.sessions import (
     HUMAN_ORIGINS,
     SessionMeta,
@@ -66,7 +67,7 @@ class SessionRow(ListItem):
         dot = "●" if self._active else "○"
         title = Content.assemble(
             (f"{dot} ", "$success" if self._active else "$text-muted"),
-            (self.meta.title, "bold" if self._active else ""),
+            (strip_control_characters(self.meta.title), "bold" if self._active else ""),
         )
         meta_line = msg.SESSIONS_ROW_META.format(
             count=self.meta.message_count, model=self.meta.model_ref
@@ -330,7 +331,7 @@ class SessionListPanel(Vertical):
             return
         dialog = ConfirmDialog(
             msg.SESSIONS_DELETE_CONFIRM_TITLE,
-            msg.SESSIONS_DELETE_CONFIRM.format(title=selected.title),
+            msg.SESSIONS_DELETE_CONFIRM.format(title=strip_control_characters(selected.title)),
         )
         self.app.push_screen(
             dialog, lambda confirmed: self._on_delete_confirmed(selected, confirmed)
@@ -341,4 +342,4 @@ class SessionListPanel(Vertical):
             return
         self._store().delete(meta.id)
         self.refresh_list()
-        self.app.notify(msg.SESSIONS_DELETED.format(title=meta.title))
+        self.app.notify(msg.SESSIONS_DELETED.format(title=strip_control_characters(meta.title)))
