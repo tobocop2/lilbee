@@ -589,8 +589,8 @@ jobs:
           echo "SMOKE TEST PASSED: --version, --help, server, /api/health all green"
 
           # Core-functionality sweep: real engine inference (chat + embedding),
-          # ingest, search, RAG ask, and an http-mode crawl. This is what keeps
-          # a binary whose bundled engine cannot start from ever attaching.
+          # ingest, search, RAG ask, an http-mode crawl and a browser-mode crawl.
+          # This is what keeps a binary whose bundled engine cannot start from ever attaching.
           kill $SERVER_PID 2>/dev/null || true
           wait $SERVER_PID 2>/dev/null || true
           trap - EXIT

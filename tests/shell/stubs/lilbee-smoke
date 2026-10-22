@@ -6,7 +6,8 @@
 #   SMOKE_CALLS          file each subcommand is appended to (required)
 #   SMOKE_CRAWL_INDEXED  1 when the crawled page is searchable (default: 1)
 #   SMOKE_FAIL_LEG       leg that prints an error on stdout and exits 3
-#                        (search, ask or crawl; default: none)
+#                        (search, ask, crawl, browser or browser-search; default: none)
+#   SMOKE_BROWSER_INDEXED  1 when the browser-mode crawl is searchable (default: 1)
 
 set -euo pipefail
 
@@ -16,7 +17,7 @@ fi
 sub="${1:-}"
 shift || true
 
-echo "${sub} $*" >> "${SMOKE_CALLS:?SMOKE_CALLS is required}"
+echo "${sub} $* [render=${LILBEE_CRAWL_RENDER_MODE:-}]" >> "${SMOKE_CALLS:?SMOKE_CALLS is required}"
 
 # The real CLI prints its errors on stdout, which is what the captured legs
 # discard when the command substitution takes the script down with it.
@@ -27,11 +28,26 @@ fail_leg() {  # leg
 }
 
 case "${sub}" in
+  add)
+    case "${1:-}" in
+      http*)
+        if [ "${LILBEE_CRAWL_RENDER_MODE:-}" = "browser" ]; then
+          fail_leg browser
+        fi
+        ;;
+    esac
+    ;;
   search)
     case "${1:-}" in
       *quartz*)
         fail_leg search
         echo "1. smoke-doc.md   blue quartz resonator array"
+        ;;
+      *"use in illustrative"*)
+        fail_leg browser-search
+        if [ "${SMOKE_BROWSER_INDEXED:-1}" = "1" ]; then
+          echo "1. https://example.com   This domain is for use in illustrative examples"
+        fi
         ;;
       *examples*)
         fail_leg crawl
