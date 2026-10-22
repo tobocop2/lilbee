@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Print the release.yml build-matrix assets, one name per line.
+# Print the release build-matrix assets, one name per line.
 #
 #   bash scripts/release_required_assets.sh            # the required ones
 #   bash scripts/release_required_assets.sh --soft     # the droppable ones
 #
 # A cell carrying `soft: true` is droppable and every other cell is required.
-# `soft` is declared once, in release.yml, and read once, here, so an asset
-# cannot be droppable for one gate and required by another.
+# `soft` is declared once, in .github/release-cells.yml, and read once, here,
+# so an asset cannot be droppable for one gate and required by another.
+#
+# The file argument is either a list of cells (the default) or a workflow whose
+# `build` job carries them as a matrix.
 #
 # Two rules divide the callers:
 #   - a gate that decides whether the RELEASE is complete requires only the
@@ -22,15 +25,17 @@ if [ "${1:-}" = "--soft" ]; then
   want_soft=true
   shift
 fi
-workflow="${1:-.github/workflows/release.yml}"
+workflow="${1:-.github/release-cells.yml}"
 
-# yq reads the matrix as YAML, so a re-indented or reordered cell still counts.
-# It ships with the ubuntu-latest runner image the release jobs run on.
-cells=$(yq -r '
-  (.jobs.build.strategy.matrix.include // [])[]
-  | [(.soft == true), .asset_name]
-  | @tsv
-' "${workflow}")
+# yq reads the cells as YAML, so a re-indented or reordered cell still counts.
+# It ships with the ubuntu-latest runner image the release jobs run on. Its
+# `type` names a list "array" or "!!seq" depending on the yq flavor.
+case "$(yq -r 'type' "${workflow}")" in
+  array | '!!seq') path='.[]' ;;
+  *) path='(.jobs.build.strategy.matrix.include // [])[]' ;;
+esac
+
+cells=$(yq -r "${path} | [(.soft == true), .asset_name] | @tsv" "${workflow}")
 
 if [ -z "${cells}" ]; then
   echo "release_required_assets: read no build cell out of ${workflow}." >&2

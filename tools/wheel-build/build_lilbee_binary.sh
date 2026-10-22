@@ -6,7 +6,7 @@
 #   PRODUCT_VERSION  Nuitka --product-version (int-tuple, e.g. 0.6.66.456)
 #
 # Run from the repo root after `uv sync --extra release` and
-# `uv pip install 'nuitka[onefile]==4.2.2'`.
+# `uv pip install 'nuitka[onefile]==4.3.1'`.
 
 set -euxo pipefail
 
@@ -136,6 +136,7 @@ ONEFILE_BUILD_KEY=${ONEFILE_BUILD_KEY%.exe}
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
+    --user-plugin=tools/wheel-build/playwright_generated_bytecode.py \
     --user-package-configuration-file=tools/wheel-build/lilbee.nuitka-package.config.yml \
     --no-deployment-flag=self-execution \
     --onefile-as-archive \

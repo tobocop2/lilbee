@@ -9,7 +9,7 @@
 set -euo pipefail
 
 dir="${1:?directory holding the downloaded executables is required}"
-workflow="${2:-.github/workflows/release.yml}"
+workflow="${2:-.github/release-cells.yml}"
 
 required=$(bash "$(dirname "$0")/release_required_assets.sh" "${workflow}")
 
