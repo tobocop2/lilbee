@@ -8721,3 +8721,178 @@ class TestTerminalSafeSourceNames:
         assert result.exit_code == 0, result.output
         assert "0 chunks from" in result.output
         assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+
+class TestTerminalSafeStoredText:
+    """Stored text reaches the terminal without a control character or escape sequence.
+
+    Each test feeds one surface a crafted value and checks the output. The matching
+    ``--json`` tests check that the stored value is unchanged.
+    """
+
+    @staticmethod
+    def _chunk(text: str, source: str = "test.txt") -> SearchChunk:
+        return SearchChunk(
+            source=source,
+            content_type="text",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk=text,
+            chunk_index=0,
+            vector=[0.1] * 768,
+        )
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_the_search_table_writes_no_control_character_of_a_preview(self, mock_svc, text):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})
+        ]
+        result = runner.invoke(app, ["search", "engine oil"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_search_json_keeps_the_chunk_as_stored(self, mock_svc, text):
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})
+        ]
+        result = runner.invoke(app, ["--json", "search", "engine oil"])
+        assert json.loads(result.output.strip())["results"][0]["chunk"] == text
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_chunks_writes_no_control_character_of_a_preview(self, isolated_env, mock_svc, text):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.get_sources.return_value = [{"filename": "test.txt", "source": "test.txt"}]
+        mock_svc.store.get_chunks_by_source.return_value = [self._chunk(text)]
+        result = runner.invoke(app, ["chunks", "test.txt"])
+        assert result.exit_code == 0, result.output
+        assert "1 chunks from" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_chunks_json_keeps_the_chunk_as_stored(self, isolated_env, mock_svc, text):
+        mock_svc.store.get_sources.return_value = [{"filename": "test.txt", "source": "test.txt"}]
+        mock_svc.store.get_chunks_by_source.return_value = [self._chunk(text)]
+        result = runner.invoke(app, ["--json", "chunks", "test.txt"])
+        assert json.loads(result.output)["chunks"][0]["chunk"] == text
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_wiki_list_writes_no_control_character_of_a_title(
+        self, mock_svc, isolated_env, monkeypatch, title
+    ):
+        from lilbee.wiki.browse import WikiPageInfo
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        pages = [WikiPageInfo("entities/x", title, "entity", 1, "2026-01-01")]
+        monkeypatch.setattr("lilbee.wiki.browse.list_pages", lambda root: pages)
+        result = runner.invoke(app, ["wiki", "list"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_wiki_list_json_keeps_the_title_as_stored(
+        self, mock_svc, isolated_env, monkeypatch, title
+    ):
+        from lilbee.wiki.browse import WikiPageInfo
+
+        pages = [WikiPageInfo("entities/x", title, "entity", 1, "2026-01-01")]
+        monkeypatch.setattr("lilbee.wiki.browse.list_pages", lambda root: pages)
+        result = runner.invoke(app, ["--json", "wiki", "list"])
+        assert json.loads(result.output)["pages"][0]["title"] == title
+
+    @pytest.mark.parametrize("body", CONTROL_TITLES)
+    def test_wiki_read_writes_no_control_character_of_the_body(
+        self, mock_svc, isolated_env, monkeypatch, body
+    ):
+        from lilbee.wiki.browse import WikiPageContent
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        page = WikiPageContent("entities/x", "X", body)
+        monkeypatch.setattr("lilbee.wiki.browse.read_page", lambda root, slug: page)
+        result = runner.invoke(app, ["wiki", "read", "entities/x"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("body", CONTROL_TITLES)
+    def test_wiki_read_json_keeps_the_body_as_stored(
+        self, mock_svc, isolated_env, monkeypatch, body
+    ):
+        from lilbee.wiki.browse import WikiPageContent
+
+        page = WikiPageContent("entities/x", "X", body)
+        monkeypatch.setattr("lilbee.wiki.browse.read_page", lambda root, slug: page)
+        result = runner.invoke(app, ["--json", "wiki", "read", "entities/x"])
+        assert json.loads(result.output)["content"] == body
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_the_wiki_citation_table_writes_no_control_character_of_an_excerpt(
+        self, mock_svc, text
+    ):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.get_citations_for_wiki.return_value = [_citation_row(excerpt=text)]
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_the_wiki_prune_table_writes_no_control_character(self, mock_svc, isolated_env, text):
+        from lilbee.wiki.prune import PruneAction, PruneRecord, PruneReport
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        report = PruneReport(records=[PruneRecord(text, PruneAction.FLAGGED, text)])
+        with mock.patch("lilbee.wiki.prune.prune_wiki", return_value=report):
+            result = runner.invoke(app, ["wiki", "prune"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_the_wiki_dry_run_table_writes_no_control_character_of_a_source(
+        self, mock_svc, isolated_env, monkeypatch, name
+    ):
+        from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
+        from lilbee.wiki.entity_extractor.base import ChunkRef
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        cfg.wiki = True
+        mock_svc.store.get_sources.return_value = []
+        extractor = MagicMock()
+        extractor.extract.return_value = [
+            ExtractedEntity(
+                slug="chevrolet",
+                kind=EntityKind.ENTITY,
+                label="Chevrolet",
+                type_hint="ORG",
+                chunk_refs=(ChunkRef(source=name, chunk_index=0),),
+            ),
+        ]
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.get_entity_extractor", lambda *a, **kw: extractor
+        )
+        result = runner.invoke(app, ["wiki", "build", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "chevrolet" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
+    @pytest.mark.parametrize("concept", CONTROL_TITLES)
+    def test_topics_writes_no_control_character_of_a_concept(self, _avail, mock_svc, concept):
+        from lilbee.retrieval.concepts import Community
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.top_communities.return_value = [
+            Community(cluster_id=0, size=2, concepts=[concept, "plain"]),
+        ]
+        result = runner.invoke(app, ["topics"])
+        assert result.exit_code == 0, result.output
+        assert "plain" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None

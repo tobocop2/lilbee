@@ -262,12 +262,14 @@ def search(
     table.add_column(score_label, justify="right", style=theme.MUTED)
 
     for r in cleaned:
-        chunk_text = r["chunk"]
+        chunk_text = strip_control_characters(r["chunk"])
         preview = chunk_text[:CHUNK_PREVIEW_LEN]
         if len(chunk_text) > CHUNK_PREVIEW_LEN:
             preview += "..."
         table.add_row(
-            Text(strip_control_characters(r["source"])), Text(preview), f"{_display_score(r):.4f}"
+            Text(strip_control_characters(r["source"])),
+            Text(preview),
+            f"{_display_score(r):.4f}",
         )
     console.print(table)
 
@@ -507,5 +509,5 @@ def _topics_overview(top_k: int) -> None:
         preview = ", ".join(comm.concepts[:_TOPIC_PREVIEW_LIMIT])
         if len(comm.concepts) > _TOPIC_PREVIEW_LIMIT:
             preview += f" (+{len(comm.concepts) - _TOPIC_PREVIEW_LIMIT} more)"
-        table.add_row(str(comm.cluster_id), str(comm.size), Text(preview))
+        table.add_row(str(comm.cluster_id), str(comm.size), Text(strip_control_characters(preview)))
     console.print(table)

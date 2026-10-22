@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from lilbee.cli import app
 from lilbee.core.config import cfg
+from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 
 runner = CliRunner()
 
@@ -65,3 +66,61 @@ class TestSessionsDisabled:
         result = runner.invoke(app, ["sessions", "list"])
         assert result.exit_code == 0, result.output
         assert constructed == []
+
+
+@pytest.fixture
+def stored_session(tmp_path, monkeypatch):
+    """Seed one session through the real store, and return a function that titles it."""
+    from lilbee.cli.app import apply_overrides
+    from lilbee.sessions import MessageRole, SessionMessage, SessionStore, TitleSource
+
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+    apply_overrides()
+    cfg.sessions_enabled = True
+    store = SessionStore()
+    session_id = store.create(model_ref="m", scope="both")
+
+    def seed(title: str, content: str = "hello") -> str:
+        store.set_title(session_id, title, TitleSource.CUSTOM)
+        store.add_message(session_id, SessionMessage(role=MessageRole.USER, content=content))
+        return session_id
+
+    return seed
+
+
+class TestTerminalSafeStoredText:
+    """A stored session title or message reaches the terminal without a control character."""
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_list_writes_no_control_character_of_a_title(self, stored_session, title):
+        stored_session(title)
+        result = runner.invoke(app, ["sessions", "list"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_list_json_keeps_the_title_as_stored(self, stored_session, title):
+        stored_session(title)
+        result = runner.invoke(app, ["--json", "sessions", "list"])
+        assert json.loads(result.output)["sessions"][0]["title"] == title
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_show_writes_no_control_character_of_a_title_or_message(self, stored_session, text):
+        session_id = stored_session(text, content=text)
+        result = runner.invoke(app, ["sessions", "show", session_id])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_show_json_keeps_the_message_as_stored(self, stored_session, text):
+        session_id = stored_session("t", content=text)
+        result = runner.invoke(app, ["--json", "sessions", "show", session_id])
+        assert json.loads(result.output)["messages"][0]["content"] == text
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_fork_writes_no_control_character_of_the_new_title(self, stored_session, title):
+        session_id = stored_session(title)
+        result = runner.invoke(app, ["sessions", "fork", session_id])
+        assert result.exit_code == 0, result.output
+        assert "Forked to" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None

@@ -20,6 +20,7 @@ from lilbee.core.config import cfg
 from lilbee.retrieval.query.compaction import CompactionResult
 from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, TitleSource
+from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
 
@@ -596,3 +597,17 @@ async def test_forking_a_session_an_agent_claimed_is_refused(sessions):
         assert len(_notified(notify)) == 1
         assert "belongs to the mcp surface" in _notified(notify)[0]
         assert len(sessions.list()) == 1
+
+
+@pytest.mark.parametrize("title", CONTROL_TITLES)
+async def test_the_fork_notice_shows_a_title_without_control_characters(sessions, title):
+    source = _seed(sessions)
+    sessions.set_title(source, title, TitleSource.CUSTOM)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(source)
+        with patch.object(screen, "notify") as notify:
+            screen._on_fork_picked(sessions.get(source), 2)
+        assert len(_notified(notify)) == 1
+        assert TERMINAL_CONTROL_RE.search(_notified(notify)[0]) is None
