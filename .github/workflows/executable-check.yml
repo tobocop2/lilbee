@@ -1,0 +1,73 @@
+name: Executable check
+
+# The executables are built only when a release is tagged, so a dependency that
+# breaks the Nuitka build used to fail at release. A pull request that changes
+# what the build installs or how it compiles builds one executable here, with
+# the same job the release runs (release.yml, narrowed by `only_asset`), smoke
+# test included.
+#
+# The Linux cell is the cheapest required cell and compiles the whole Python
+# dependency graph, which is where a Nuitka crash on a new dependency shows.
+# The Windows cell is the one that runs the MSVC compiler. It runs only when
+# the build tooling itself changes, because a cold Windows compile takes hours.
+on:
+  pull_request:
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'engine-versions.env'
+      - 'tools/wheel-build/**'
+      - '.github/release-cells.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/executable-check.yml'
+      - '.github/actions/bundle-llama-server/**'
+      - '.github/actions/nuitka-object-cache/**'
+      - '.github/actions/restore-ci-models/**'
+      - 'scripts/assert_launcher_boots.sh'
+      - 'tools/qa/artifact_smoke.sh'
+
+concurrency:
+  group: executable-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# release.yml declares these for its release-attach path, and a caller must
+# grant at least what the called workflow declares. Neither is used here: no
+# release_tag is passed, so nothing is attached.
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  changes:
+    # A fork's token is read-only, so the called workflow could not start.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      windows: ${{ steps.filter.outputs.windows }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            windows:
+              - 'tools/wheel-build/**'
+              - '.github/release-cells.yml'
+              - '.github/workflows/release.yml'
+              - '.github/workflows/executable-check.yml'
+
+  linux:
+    needs: [changes]
+    uses: ./.github/workflows/release.yml
+    with:
+      only_asset: lilbee-linux-x86_64
+
+  windows:
+    needs: [changes]
+    if: needs.changes.outputs.windows == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      only_asset: lilbee-windows-x86_64.exe

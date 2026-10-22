@@ -87,7 +87,7 @@ jobs:
           max-size: '2G'
 
       - name: Install dependencies
-        run: uv sync --extra release && uv pip install 'nuitka[onefile]==4.2.2' pip
+        run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.3.1,<5' pip
 
       - name: Bundle llama-server
         uses: ./.github/actions/bundle-llama-server

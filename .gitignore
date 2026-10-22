@@ -63,6 +63,7 @@ scripts/*
 !scripts/assert_launcher_boots.sh
 !scripts/assert_required_binaries.sh
 !scripts/release_required_assets.sh
+!scripts/release_plan_cells.sh
 !scripts/release_dropped_cells.sh
 !scripts/resolve_rc_run.sh
 !scripts/channel_asset_blockers.sh

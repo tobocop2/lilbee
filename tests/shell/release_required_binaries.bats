@@ -6,10 +6,10 @@ setup() {
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   SCRIPT="${REPO_ROOT}/scripts/assert_required_binaries.sh"
   DERIVE="${REPO_ROOT}/scripts/release_required_assets.sh"
-  WORKFLOW="${REPO_ROOT}/.github/workflows/release.yml"
+  WORKFLOW="${REPO_ROOT}/.github/release-cells.yml"
   FIXTURE="${BATS_TEST_TMPDIR}/fx"
   mkdir -p "${FIXTURE}/bins" "${FIXTURE}/held"
-  # The cells release.yml carries without `soft: true`.
+  # The cells release-cells.yml carries without `soft: true`.
   REQUIRED=(
     lilbee-linux-x86_64
     lilbee-macos-arm64
