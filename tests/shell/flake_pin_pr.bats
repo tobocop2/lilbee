@@ -112,6 +112,42 @@ remote_branches() {
   [ "$output" = "0" ]
 }
 
+@test "an open pin pull request for a newer version is left open" {
+  echo '[{"number":40,"headRefName":"flake-pins/lilbee-3.0.0"},{"number":38,"headRefName":"flake-pins/lilbee-1.9.0"}]' \
+    > "${FIXTURE}/open_prs.json"
+  run pin sources.json 2.0.0
+  [ "$status" -eq 0 ]
+  grep -q '^pr close 38 ' "${FIXTURE}/gh.log"
+  run grep -c '^pr close 40' "${FIXTURE}/gh.log"
+  [ "$output" = "0" ]
+}
+
+@test "pin versions compare as numbers, and a beta is older than its release" {
+  echo '[{"number":50,"headRefName":"flake-pins/lilbee-0.6.90b9"},{"number":51,"headRefName":"flake-pins/lilbee-0.6.90b11"},{"number":52,"headRefName":"flake-pins/lilbee-0.6.90"},{"number":53,"headRefName":"flake-pins/lilbee-0.6.100b1"}]' \
+    > "${FIXTURE}/open_prs.json"
+  run pin sources.json 0.6.90b10
+  [ "$status" -eq 0 ]
+  grep -q '^pr close 50 ' "${FIXTURE}/gh.log"
+  run grep -c -E '^pr close (51|52|53) ' "${FIXTURE}/gh.log"
+  [ "$output" = "0" ]
+  : > "${FIXTURE}/gh.log"
+  run pin sources.json 0.6.90
+  [ "$status" -eq 0 ]
+  run grep -c -E '^pr close (50|51) ' "${FIXTURE}/gh.log"
+  [ "$output" = "2" ]
+  run grep -c -E '^pr close (52|53) ' "${FIXTURE}/gh.log"
+  [ "$output" = "0" ]
+}
+
+@test "a dry run names only the older pull requests it would close" {
+  echo '[{"number":40,"headRefName":"flake-pins/lilbee-3.0.0"},{"number":38,"headRefName":"flake-pins/lilbee-1.9.0"}]' \
+    > "${FIXTURE}/open_prs.json"
+  run pin sources.json 2.0.0 true
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would close pull request #38"* ]]
+  [[ "$output" != *"#40"* ]]
+}
+
 @test "a sources file that did not change opens nothing" {
   run pin sources.json 1.0.0
   [ "$status" -eq 0 ]

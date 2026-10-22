@@ -15,6 +15,7 @@ fi
 bad=0
 for f in "$@"; do
   if ! problems=$(jq -r '
+    if type != "object" then "not a JSON object" else
       (if (.version | type) == "string" and .version != "" then empty else "version is missing" end),
       (if (.systems | type) == "object" then
          .systems | to_entries[]
@@ -22,7 +23,8 @@ for f in "$@"; do
             else "\(.key): asset is missing" end),
            (if (.value.sha256 | type) == "string" and (.value.sha256 | test("^[0-9a-f]{64}$")) then empty
             else "\(.key): sha256 is not 64 hex digits" end)
-       else "systems is not an object" end)' "${f}" 2>&1); then
+       else "systems is not an object" end)
+    end' "${f}" 2>&1); then
     problems="not valid JSON: ${problems}"
   fi
   if [ -n "${problems}" ]; then
