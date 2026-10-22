@@ -124,3 +124,18 @@ class TestTerminalSafeStoredText:
         assert result.exit_code == 0, result.output
         assert "Forked to" in result.output
         assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+
+class TestMultiLineBodiesKeepTheirLines:
+    """A message body is shown line for line; only the escapes go."""
+
+    def test_show_keeps_the_lines_of_a_message(self, stored_session):
+        body = "# Title\n\n- a\n- b\n\n```py\nx = 1\n```\n\x1b[31m"
+        session_id = stored_session("t", content=body)
+        result = runner.invoke(app, ["sessions", "show", session_id])
+        assert result.exit_code == 0, result.output
+        lines = [line.strip() for line in result.output.splitlines()]
+        assert "user: # Title" in lines
+        assert lines[lines.index("user: # Title") + 2 :][:3] == ["- a", "- b", ""]
+        assert "x = 1" in lines
+        assert "\x1b" not in result.output

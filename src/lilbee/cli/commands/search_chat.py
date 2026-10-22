@@ -262,7 +262,7 @@ def search(
     table.add_column(score_label, justify="right", style=theme.MUTED)
 
     for r in cleaned:
-        chunk_text = strip_control_characters(r["chunk"])
+        chunk_text = strip_control_characters(r["chunk"], keep_lines=True)
         preview = chunk_text[:CHUNK_PREVIEW_LEN]
         if len(chunk_text) > CHUNK_PREVIEW_LEN:
             preview += "..."

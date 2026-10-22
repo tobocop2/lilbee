@@ -652,3 +652,30 @@ async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_histo
             {"role": "assistant", "content": "other a"},
         ]
         assert [m.content for m in sessions.get(source).messages] == ["old question", "PARTIAL"]
+
+
+_RESTORED_BODY = "# Title\n\n- a\n- b\n\n```py\nx = 1\n```\n"
+
+
+async def test_resume_shows_message_bodies_line_for_line_without_escapes(sessions):
+    session_id = sessions.create(model_ref=cfg.chat_model, scope="both")
+    sessions.set_title(session_id, "Seeded", TitleSource.AUTO)
+    sessions.add_message(
+        session_id,
+        SessionMessage(role=MessageRole.USER, content=_RESTORED_BODY + "\x1b[31mred\x1b[0m"),
+    )
+    sessions.add_message(
+        session_id,
+        SessionMessage(role=MessageRole.ASSISTANT, content=_RESTORED_BODY + "\x1b]0;x\x07end"),
+    )
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(session_id)
+        await pilot.pause()
+        assert _bubble_text(screen.query(AssistantMessage).first()) == _RESTORED_BODY + "end"
+        user_text = str(
+            screen.query(UserMessage).first().query(".message-content").first().render()
+        )
+        assert user_text.startswith(_RESTORED_BODY)
+        assert "\x1b" not in user_text

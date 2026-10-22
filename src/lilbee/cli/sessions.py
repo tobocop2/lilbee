@@ -143,7 +143,9 @@ def show_cmd(
     for message in session.messages:
         console.print(
             Text.assemble(
-                (message.role.value, "bold"), ": ", strip_control_characters(message.content)
+                (message.role.value, "bold"),
+                ": ",
+                strip_control_characters(message.content, keep_lines=True),
             ),
             soft_wrap=True,
         )
