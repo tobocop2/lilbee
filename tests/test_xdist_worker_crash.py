@@ -7,12 +7,21 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
+import psutil
 import pytest
+
+from lilbee.providers.fleet.proc import run_bounded
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _RUN_BUDGET_S = 60.0
+_REAP_WAIT_S = 5.0
+_GRANDCHILD_EXIT_WAIT_S = 5.0
+_GRANDCHILD_POLL_S = 0.05
+_GRANDCHILD_SLEEP_S = 600
+_CHILD_START_LIMIT_S = 5.0
 # Coverage flags are irrelevant to the toy suite. --forked moves the test into a child
 # process, so the child dies and the xdist worker does not; the worker is what is under test.
 _DROPPED_FLAG_PREFIXES = ("--cov", "--forked")
@@ -175,6 +184,61 @@ def test_a_failed_make_puts_stderr_first_and_bounds_stdout() -> None:
     assert message.index("No rule to make target") < message.index("stdout (last")
 
 
+def _run_bounded_child(
+    argv: list[str], *, cwd: Path, env: dict[str, str], timeout_s: float = _RUN_BUDGET_S
+) -> tuple[str, int]:
+    """Run a child run to its end or its limit; at the limit, kill its whole process group.
+
+    The child starts its own xdist workers. `subprocess.run` kills only the child at the limit,
+    so the workers it started stay alive and the reap can wait on them.
+    """
+    return run_bounded(
+        argv, timeout_s=timeout_s, kill_wait_s=_REAP_WAIT_S, env=env, merge_stderr=True, cwd=cwd
+    )
+
+
+def _is_running(pid: int) -> bool:
+    """True while the process exists and is not a zombie waiting for a parent to reap it."""
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
+@pytest.mark.skipif(os.name != "posix", reason="only POSIX has a process group to kill")
+def test_a_child_run_that_hits_its_limit_leaves_no_worker_alive(tmp_path: Path) -> None:
+    pid_file = tmp_path / "worker.pid"
+    # One interpreter start: the worker is a fork of the child, not a second interpreter.
+    # The pid file is renamed into place, so a reader never sees a half-written pid.
+    spawn_worker_then_wait = (
+        "import os, pathlib, time\n"
+        "worker = os.fork()\n"
+        f"if worker == 0:\n    time.sleep({_GRANDCHILD_SLEEP_S})\n    os._exit(0)\n"
+        f"partial = pathlib.Path({str(pid_file) + '.partial'!r})\n"
+        "partial.write_text(str(worker))\n"
+        f"partial.rename({str(pid_file)!r})\n"
+        f"time.sleep({_GRANDCHILD_SLEEP_S})\n"
+    )
+    worker_pid: int | None = None
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            _run_bounded_child(
+                [sys.executable, "-c", spawn_worker_then_wait],
+                cwd=tmp_path,
+                env=dict(os.environ),
+                timeout_s=_CHILD_START_LIMIT_S,
+            )
+        assert pid_file.exists(), "the child did not start its worker before the limit"
+        worker_pid = int(pid_file.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + _GRANDCHILD_EXIT_WAIT_S
+        while _is_running(worker_pid) and time.monotonic() < deadline:
+            time.sleep(_GRANDCHILD_POLL_S)
+        assert not _is_running(worker_pid)
+    finally:
+        if worker_pid is not None and _is_running(worker_pid):
+            psutil.Process(worker_pid).kill()
+
+
 @pytest.mark.timeout(_RUN_BUDGET_S * 2)
 @pytest.mark.parametrize("target", sorted(_XDIST_TARGETS))
 def test_a_dead_worker_fails_the_run_instead_of_hanging_it(target: str, tmp_path: Path) -> None:
@@ -182,14 +246,11 @@ def test_a_dead_worker_fails_the_run_instead_of_hanging_it(target: str, tmp_path
     (tmp_path / "test_toy.py").write_text(_TOY_SUITE, encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith(_CHILD_ENV_PREFIXES)}
     env[_MARKER_ENV] = str(tmp_path / "died-once")
-    result = subprocess.run(
+    output, returncode = _run_bounded_child(
         [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *_XDIST_TARGETS[target]],
         cwd=tmp_path,
         env=env,
-        capture_output=True,
-        encoding="utf-8",
-        timeout=_RUN_BUDGET_S,
     )
-    assert result.returncode == _EXIT_TESTS_FAILED, result.stdout + result.stderr
-    assert _CRASH_REPORT in result.stdout
-    assert _CRASH_NODEID in result.stdout
+    assert returncode == _EXIT_TESTS_FAILED, output
+    assert _CRASH_REPORT in output
+    assert _CRASH_NODEID in output

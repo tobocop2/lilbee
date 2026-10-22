@@ -30,6 +30,7 @@ def run_bounded(
     merge_stderr: bool = False,
     label: str | None = None,
     bind_lifetime: bool = False,
+    cwd: str | os.PathLike[str] | None = None,
 ) -> tuple[str, int]:
     """Run *argv*, returning ``(stdout, returncode)``.
 
@@ -55,6 +56,7 @@ def run_bounded(
         "encoding": "utf-8",
         "errors": "replace",
         "env": env,
+        "cwd": cwd,
         "start_new_session": os.name == "posix",
     }
     if bind_lifetime:
