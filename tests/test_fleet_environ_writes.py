@@ -53,21 +53,38 @@ class _RecordingEnviron(MutableMapping[str, str]):
         return dict(self._data)
 
 
-def _is_environ(node: ast.expr) -> bool:
-    return isinstance(node, ast.Attribute) and node.attr == "environ"
+def _is_environ(node: ast.expr, aliases: set[str]) -> bool:
+    """True for ``os.environ``, a bare imported ``environ``, or a name bound to either."""
+    if isinstance(node, ast.Attribute):
+        return node.attr == "environ"
+    return isinstance(node, ast.Name) and (node.id == "environ" or node.id in aliases)
+
+
+def _environ_aliases(tree: ast.AST) -> set[str]:
+    """Names assigned the environment mapping itself, such as ``env = os.environ``."""
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and _is_environ(node.value, aliases):
+            aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return aliases
 
 
 def _writes_in(source: str) -> list[int]:
-    """Line numbers where *source* assigns to, deletes from, or mutates ``os.environ``."""
+    """Line numbers where *source* assigns to, deletes from, or mutates the environment."""
+    tree = ast.parse(source)
+    aliases = _environ_aliases(tree)
     lines: list[int] = []
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Subscript) and _is_environ(node.value):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript) and _is_environ(node.value, aliases):
             if isinstance(node.ctx, ast.Store | ast.Del):
                 lines.append(node.lineno)
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            target = node.func
-            mutates_environ = _is_environ(target.value) and target.attr in _WRITE_METHODS
-            if mutates_environ or target.attr in _WRITE_FUNCTIONS:
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                mutates_environ = _is_environ(func.value, aliases) and func.attr in _WRITE_METHODS
+                if mutates_environ or func.attr in _WRITE_FUNCTIONS:
+                    lines.append(node.lineno)
+            elif isinstance(func, ast.Name) and func.id in _WRITE_FUNCTIONS:
                 lines.append(node.lineno)
     return lines
 
@@ -93,8 +110,14 @@ def test_the_scan_sees_each_kind_of_environment_write() -> None:
         "os.unsetenv('D')\n"
         "os.environ.get('E')\n"
         "dict(os.environ)\n"
+        "from os import environ, putenv\n"
+        "environ['F'] = '1'\n"
+        "putenv('G', '1')\n"
+        "env = os.environ\n"
+        "env['H'] = '1'\n"
+        "env.setdefault('I', '1')\n"
     )
-    assert _writes_in(source) == [2, 3, 4, 5, 6, 7, 8]
+    assert _writes_in(source) == [2, 3, 4, 5, 6, 7, 8, 12, 13, 15, 16]
 
 
 def test_planning_on_a_worker_thread_writes_no_environment(
