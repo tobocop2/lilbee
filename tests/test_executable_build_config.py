@@ -115,8 +115,12 @@ def test_a_narrowed_release_run_publishes_nothing() -> None:
     publishing = _publishing_steps(steps)
 
     assert len(publishing) == 3, [step.get("name") for step in publishing]
-    unguarded = [step.get("name") for step in publishing if "only_asset" not in _step_guard(step)]
+    unguarded = [
+        step.get("name") for step in publishing if "only_asset == ''" not in _step_guard(step)
+    ]
     assert unguarded == [], f"these steps can publish when only_asset is set: {unguarded}"
+    reversed_ = [step.get("name") for step in publishing if "only_asset != ''" in _step_guard(step)]
+    assert reversed_ == [], f"these guards run when only_asset is set: {reversed_}"
 
 
 def test_the_engine_mirror_is_skipped_when_its_release_tag_is_empty() -> None:
@@ -134,3 +138,43 @@ def test_the_executable_check_passes_only_the_asset_to_the_release_workflow() ->
     assert called
     for name, job in called.items():
         assert list(job["with"]) == ["only_asset"], name
+
+
+_BUILD_TOOLING = (
+    "tools/wheel-build/**",
+    ".github/release-cells.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/build-gpu-executables.yml",
+    ".github/workflows/flatpak-validate.yml",
+    ".github/workflows/executable-check.yml",
+)
+
+
+def _windows_filter() -> list[str]:
+    jobs = _load(_WORKFLOWS / "executable-check.yml")["jobs"]
+    steps = jobs["changes"]["steps"]
+    filters = [step["with"]["filters"] for step in steps if "paths-filter" in str(step.get("uses"))]
+    assert len(filters) == 1
+    windows: list[str] = yaml.safe_load(filters[0])["windows"]
+    return windows
+
+
+def test_the_trigger_paths_list_the_build_tooling() -> None:
+    workflow = _load(_WORKFLOWS / "executable-check.yml")
+    # PyYAML reads the bare key `on` as the boolean True.
+    paths = workflow.get("on", workflow.get(True))["pull_request"]["paths"]
+
+    assert set(_BUILD_TOOLING) <= set(paths), sorted(set(_BUILD_TOOLING) - set(paths))
+
+
+def test_the_windows_filter_lists_the_build_tooling() -> None:
+    windows = _windows_filter()
+
+    assert set(_BUILD_TOOLING) <= set(windows), sorted(set(_BUILD_TOOLING) - set(windows))
+
+
+def test_every_windows_trigger_also_triggers_the_check() -> None:
+    workflow = _load(_WORKFLOWS / "executable-check.yml")
+    paths = workflow.get("on", workflow.get(True))["pull_request"]["paths"]
+
+    assert set(_windows_filter()) <= set(paths)

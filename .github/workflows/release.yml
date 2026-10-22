@@ -29,7 +29,7 @@ on:
         type: string
         default: ""
       only_asset:
-        description: "Build only the cell for this asset, e.g. lilbee-linux-x86_64 (empty = every cell). A narrowed run is a check: it skips lint and test and publishes no cache."
+        description: "Build only the cell for this asset, e.g. lilbee-linux-x86_64 (empty = every cell). A narrowed run is a check: it skips lint and test and publishes nothing."
         type: string
         default: ""
 
