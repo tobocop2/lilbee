@@ -96,3 +96,11 @@ def test_post_from_thread_drops_the_message_when_the_app_is_gone(error):
     node = MagicMock()
     node.post_message.side_effect = error
     post_from_thread(node, MagicMock())  # must not raise
+
+
+def test_call_from_thread_drops_when_the_app_has_stopped():
+    """A stopped app is not asked to run the call: Textual would wait on it forever."""
+    node = MagicMock()
+    node.app.is_running = False
+    call_from_thread(node, MagicMock(), "arg")
+    node.app.call_from_thread.assert_not_called()
