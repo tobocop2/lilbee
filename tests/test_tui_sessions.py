@@ -14,7 +14,7 @@ from lilbee.cli.tui.screens.sessions import SessionsScreen
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.drawer import Drawer
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
-from lilbee.cli.tui.widgets.session_list import SessionListPanel, SessionRow
+from lilbee.cli.tui.widgets.session_list import SessionListPanel, SessionRow, _caught_up
 from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
 from tests._async_wait import wait_until
@@ -59,6 +59,16 @@ async def _open_drawer(app, pilot) -> SessionsDrawer:
     await app.action_toggle_sessions()
     await pilot.pause()
     return screen.query_one(SessionsDrawer)
+
+
+async def _wait_for_rows(pilot, root, count: int) -> None:
+    """Wait until *root* lists *count* session rows, then assert it.
+
+    A filter or a rename re-renders the list after the keypress returns, so a
+    read taken right after a pause sees the old rows on a slow runner.
+    """
+    await wait_until(pilot, lambda: len(root.query(SessionRow)) == count)
+    assert len(root.query(SessionRow)) == count
 
 
 async def _laid_out(pilot, widget):
@@ -108,7 +118,7 @@ async def test_drawer_opens_lists_and_insets_bars(sessions):
         await app.action_toggle_sessions()
         await pilot.pause()
         drawer = screen.query_one(SessionsDrawer)
-        assert len(drawer.query(SessionRow)) == 2
+        await _wait_for_rows(pilot, drawer, 2)
         assert screen.has_class("sessions-open")
 
 
@@ -129,10 +139,8 @@ async def test_drawer_filters_by_title(sessions):
         drawer = await _open_drawer(app, pilot)
         for ch in "board":
             await pilot.press(ch)
-        await pilot.pause()
-        rows = drawer.query(SessionRow)
-        assert len(rows) == 1
-        assert rows.first().meta.title == "Board email"
+        await _wait_for_rows(pilot, drawer, 1)
+        assert drawer.query_one(SessionRow).meta.title == "Board email"
 
 
 # --- the sessions_enabled toggle -----------------------------------------
@@ -269,8 +277,7 @@ async def test_resume_from_drawer_loads_and_closes(sessions):
     async with app.run_test(size=(120, 40)) as pilot:
         await _open_drawer(app, pilot)
         await pilot.press("enter")
-        await pilot.pause()
-        assert app.chat_screen().session_id == session_id
+        assert await wait_until(pilot, lambda: app.chat_screen().session_id == session_id)
         assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
 
 
@@ -306,8 +313,7 @@ async def test_enter_resumes_while_chat_is_in_normal_mode(sessions):
         chat._insert_mode = False
         await _open_drawer(app, pilot)
         await pilot.press("enter")
-        await pilot.pause()
-        assert app.chat_screen().session_id == session_id
+        assert await wait_until(pilot, lambda: app.chat_screen().session_id == session_id)
         assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
 
 
@@ -460,9 +466,10 @@ async def test_a_filter_change_that_arrives_after_a_cursor_key_keeps_the_cursor(
             field.value = "am"
         await pilot.press("down")
         rows = drawer.query_one("#sessions-list", ListView)
-        assert rows.index == 1
+        assert await wait_until(pilot, lambda: rows.index == 1 and len(rows.children) == 2)
         field.post_message(Input.Changed(field, stale))
-        await pilot.pause()
+        await _caught_up(field)
+        assert rows.index == 1
         await pilot.press("enter")
         assert await wait_until(pilot, lambda: chat.session_id == wanted)
 
@@ -539,10 +546,9 @@ async def test_a_list_key_applies_filter_text_the_list_has_not_shown_yet(session
             field.value = "am"
         rows.focus()
         await pilot.pause()
-        assert len(drawer.query(SessionRow)) == 3
+        await _wait_for_rows(pilot, drawer, 3)
         await pilot.press(key)
-        await pilot.pause()
-        assert len(drawer.query(SessionRow)) == 2
+        await _wait_for_rows(pilot, drawer, 2)
         assert rows.highlighted_child.meta.title == title
 
 
@@ -609,8 +615,7 @@ async def test_sessions_tab_list_keys_work_with_focus_outside_the_list(sessions,
         assert tab.has_focus
         assert rows.index == start
         await pilot.press(key)
-        await pilot.pause()
-        assert rows.index == index
+        assert await wait_until(pilot, lambda: rows.index == index)
 
 
 async def test_a_readiness_change_just_before_the_drawer_opens_leaves_focus_in_the_drawer(
@@ -701,11 +706,9 @@ async def test_enter_resumes_after_filtering(sessions):
         drawer = await _open_drawer(app, pilot)
         for ch in "Gamma":
             await pilot.press(ch)
-        await pilot.pause()
-        assert len(drawer.query(SessionRow)) == 1
+        await _wait_for_rows(pilot, drawer, 1)
         await pilot.press("enter")
-        await pilot.pause()
-        assert app.chat_screen().session_id == wanted
+        assert await wait_until(pilot, lambda: app.chat_screen().session_id == wanted)
 
 
 async def test_enter_on_the_focused_list_resumes(sessions):
@@ -721,8 +724,7 @@ async def test_enter_on_the_focused_list_resumes(sessions):
         drawer.query_one("#sessions-list", ListView).focus()
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
-        assert app.chat_screen().session_id == session_id
+        assert await wait_until(pilot, lambda: app.chat_screen().session_id == session_id)
         assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
 
 
@@ -749,8 +751,9 @@ async def test_rename_in_drawer(sessions):
         for ch in " new":
             await pilot.press(ch)
         await pilot.press("enter")
-        await pilot.pause()
-        assert sessions.get(session_id).meta.title == "Old name new"
+        assert await wait_until(
+            pilot, lambda: sessions.get(session_id).meta.title == "Old name new"
+        )
 
 
 async def test_rename_cancel_leaves_title(sessions):
@@ -794,7 +797,7 @@ async def test_finishing_a_rename_of_a_deleted_session_refreshes_the_list(sessio
         sessions.delete(doomed)
         with patch.object(app, "notify") as mock_notify:
             await pilot.press("x", "enter")
-            await pilot.pause()
+            await _wait_for_rows(pilot, drawer, 1)
         mock_notify.assert_called_once_with(msg.SESSIONS_RENAME_GONE, severity="warning")
         assert app.is_running
         assert field.placeholder == msg.SESSIONS_FILTER_PLACEHOLDER
@@ -817,17 +820,13 @@ async def test_rename_cancel_clears_a_filter_left_over_from_before_the_rename(se
         drawer = await _open_drawer(app, pilot)
         for ch in "Gam":
             await pilot.press(ch)
-        await pilot.pause()
-        assert len(drawer.query(SessionRow)) == 1
+        await _wait_for_rows(pilot, drawer, 1)
         field = await _start_rename(pilot, drawer, "Gamma")
         await pilot.press("end", "ctrl+u")
-        await pilot.pause()
-        assert field.value == ""
+        assert await wait_until(pilot, lambda: field.value == "")
         drawer.query_one(SessionListPanel).action_close()  # cancels the rename, does not close
-        await pilot.pause()
+        await _wait_for_rows(pilot, drawer, 2)
         assert field.value == ""
-        rows = drawer.query(SessionRow)
-        assert len(rows) == 2, "an empty box must show every row, not the pre-rename filter"
 
 
 async def test_rename_commit_clears_a_filter_left_over_from_before_the_rename(sessions):
@@ -839,15 +838,12 @@ async def test_rename_commit_clears_a_filter_left_over_from_before_the_rename(se
         drawer = await _open_drawer(app, pilot)
         for ch in "Gam":
             await pilot.press(ch)
-        await pilot.pause()
-        assert len(drawer.query(SessionRow)) == 1
-        await _start_rename(pilot, drawer, "Gamma")
+        await _wait_for_rows(pilot, drawer, 1)
+        field = await _start_rename(pilot, drawer, "Gamma")
         await pilot.press("end", "ctrl+u")
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: field.value == "")
         await pilot.press("enter")
-        await pilot.pause()
-        rows = drawer.query(SessionRow)
-        assert len(rows) == 2, "an empty box must show every row, not the pre-rename filter"
+        await _wait_for_rows(pilot, drawer, 2)
 
 
 async def test_delete_confirmed_removes_session(sessions):
@@ -993,8 +989,8 @@ async def test_active_session_gets_the_filled_dot(sessions):
         chat.resume_session(session_id)
         await pilot.pause()
         drawer = await _open_drawer(app, pilot)
-        row = drawer.query_one(SessionRow)
-        assert row._active is True
+        await _wait_for_rows(pilot, drawer, 1)
+        assert drawer.query_one(SessionRow)._active is True
 
 
 # --- cursor + empty -------------------------------------------------------
@@ -1004,15 +1000,14 @@ async def test_cursor_moves_and_empty_state(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         drawer = await _open_drawer(app, pilot)
+        await _wait_for_rows(pilot, drawer, 2)
         await pilot.press("down")
         await pilot.press("up")
-        await pilot.pause()
         panel = drawer.query_one(SessionListPanel)
-        assert panel._selected() is not None
+        assert await wait_until(pilot, lambda: panel._selected() is not None)
         for ch in "zzz-nomatch":
             await pilot.press(ch)
-        await pilot.pause()
-        assert not drawer.query(SessionRow)
+        await _wait_for_rows(pilot, drawer, 0)
 
 
 # --- full-screen tab ------------------------------------------------------
@@ -1024,7 +1019,7 @@ async def test_sessions_tab_shows_list(sessions):
         app.switch_view("Sessions")
         await pilot.pause()
         assert isinstance(app.screen, SessionsScreen)
-        assert len(app.screen.query(SessionRow)) == 1
+        await _wait_for_rows(pilot, app.screen, 1)
 
 
 async def test_sessions_tab_click_resume_switches_to_chat(sessions):

@@ -6,7 +6,7 @@ from __future__ import annotations
 import random
 import sys
 from contextlib import AbstractContextManager
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from textual.app import ComposeResult
@@ -422,6 +422,30 @@ async def test_search_submit_does_not_refire_the_hub_search() -> None:
             screen._on_search_submitted(_Input.Submitted(input=inp, value=inp.value))
             assert not mock_trigger.called
             assert not install.called
+
+
+async def test_search_submit_on_an_empty_list_leaves_focus_alone() -> None:
+    """Enter in the search box with no list rows has no cursor to place."""
+    from textual.widgets import Input as _Input
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._active_tab_id_cache = "chat"
+        screen._grid_view = False
+        screen._list_widget.clear_options()
+        assert screen._list_widget.option_count == 0
+        inp = screen.query_one("#catalog-search", _Input)
+        with (
+            patch.object(type(screen._list_widget), "focus") as focus,
+            patch.object(
+                type(screen._list_widget), "highlighted", new_callable=PropertyMock
+            ) as highlight,
+        ):
+            screen._on_search_submitted(_Input.Submitted(input=inp, value=inp.value))
+        assert not focus.called
+        highlight.assert_not_called()
 
 
 def test_local_lines_renders_remote_backend_pill() -> None:
