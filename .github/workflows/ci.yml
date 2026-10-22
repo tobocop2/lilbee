@@ -258,7 +258,9 @@ jobs:
           # while the GIL is held. Above the 60s per-test pytest-timeout so this
           # only fires when that fails; faulthandler's C watchdog dumps every
           # thread and _exits the worker, so a wedge fails fast with a traceback
-          # instead of hanging to timeout-minutes. See tests/_hang_watchdog.py.
+          # instead of hanging to timeout-minutes. A Python timer at 75% of each
+          # test's timeout also prints every stack to this log before
+          # pytest-timeout ends a stuck test. See tests/_hang_watchdog.py.
           LILBEE_TEST_HANG_DUMP_S: "90"
           LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
 
