@@ -1,45 +1,135 @@
-"""Dump every thread's stack when a test wedges, then kill the worker.
+"""Dump every thread's stack when a test wedges, before any timeout ends it.
 
-pytest-timeout is already configured (``timeout = 60``), but on Windows it runs
-its ``thread`` method: a ``threading.Timer`` whose callback is Python. If a test
-wedges inside a native call that holds the GIL, no Python bytecode runs, the
-timer callback never fires, and the worker hangs silently until the job's
-``timeout-minutes`` kills it with no traceback (seen on CI, Windows py3.13).
+Two timers guard each test, both armed by ``LILBEE_TEST_HANG_DUMP_S``.
 
-``faulthandler.dump_traceback_later`` is the stdlib answer to exactly that case:
-its watchdog is a C thread that walks the interpreter's thread states and writes
-their stacks WITHOUT acquiring the GIL, so it fires on a GIL-frozen worker where
-pytest-timeout cannot. ``exit=True`` then ``_exit``\\s the wedged worker so the
-run fails fast instead of burning the job budget.
+The early dump is a Python timer at 75% of the test's pytest-timeout. It writes
+every thread's stack, the open file descriptors with their targets and the
+POSIX locks the process holds, to the dump file and to the real stderr, so the
+text reaches the job log while the test is still stuck. pytest-timeout ends a
+wedged test at its limit and the CI job can be cancelled soon after, so a dump
+that waits for a later limit never lands (the 90 s limit this file once used
+sat above the 60 s pytest-timeout and never fired). The early dump does not
+stop the test; pytest-timeout still reports it.
 
-Opt-in via ``LILBEE_TEST_HANG_DUMP_S`` (seconds); unset or ``0`` is a no-op, so
-local runs are untouched. Set it above pytest-timeout's value in CI so this is
-only ever the backstop for the frozen case, never a pre-empt of a merely slow
-test. The dump is written to ``LILBEE_TEST_HANG_DUMP_DIR/hang-<workerid>.txt``
-(default: the pytest rootdir) so a CI step can surface it after the killed step;
-the frozen worker cannot print it itself.
+The backstop is ``faulthandler.dump_traceback_later``: a C thread that walks
+the interpreter's thread states without the GIL. If a native call holds the GIL
+(seen on Windows py3.13), no Python timer runs, pytest-timeout cannot fire, and
+the worker hangs until the job's ``timeout-minutes``. The backstop dumps the
+stacks and ``_exit``\\s the worker so the run fails fast.
+
+Unset or ``0`` is a no-op, so local runs are untouched. Dumps go to
+``LILBEE_TEST_HANG_DUMP_DIR/hang-<workerid>.txt`` (default: the pytest rootdir)
+for a CI step to print after the test step. The next test's setup truncates
+the file, so the copy on stderr is the one that lasts.
 """
 
 from __future__ import annotations
 
 import faulthandler
 import os
+import sys
+import threading
 from pathlib import Path
+from typing import TextIO
 
 import pytest
 
 _ENV_SECONDS = "LILBEE_TEST_HANG_DUMP_S"
 _ENV_DIR = "LILBEE_TEST_HANG_DUMP_DIR"
 
+# The early dump fires at this share of the test's own timeout.
+_EARLY_SHARE = 0.75
+_FD_SCAN_LIMIT = 1024
+
 # The open dump-file handle. faulthandler writes to its raw fd from a C thread,
 # so it must outlive every test; keep a module reference so it is not closed.
-_dump_handle = None
+_dump_handle: TextIO | None = None
 _timeout_s = 0.0
+_early_timer: threading.Timer | None = None
+_early_fired = threading.Event()
 
 
 def _worker_id(config: pytest.Config) -> str:
     """xdist worker id (``gw0``), or ``master`` when running single-process."""
     return getattr(config, "workerinput", {}).get("workerid", "master")
+
+
+def _test_timeout_s(item: pytest.Item) -> float:
+    """The pytest-timeout limit for this test, or 0 when it has none."""
+    marker = item.get_closest_marker("timeout")
+    if marker is not None:
+        raw = marker.args[0] if marker.args else marker.kwargs.get("timeout")
+    else:
+        raw = item.config.getoption("timeout", None) or item.config.getini("timeout")
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fd_lines() -> list[str]:
+    """One line per open descriptor: number and what it points at."""
+    lines = []
+    for fd in range(_FD_SCAN_LIMIT):
+        try:
+            os.fstat(fd)
+        except OSError:
+            continue
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            target = _fd_path_fallback(fd)
+        lines.append(f"  fd {fd}: {target}")
+    return lines
+
+
+def _fd_path_fallback(fd: int) -> str:
+    try:
+        import fcntl
+
+        return os.fsdecode(fcntl.fcntl(fd, getattr(fcntl, "F_GETPATH", 50), b"\0" * 1024)).split(
+            "\0", 1
+        )[0]
+    except (ImportError, OSError, ValueError):
+        return "(path unknown)"
+
+
+def _lock_lines() -> list[str]:
+    """POSIX and flock locks held by this process (Linux; empty elsewhere)."""
+    try:
+        text = Path("/proc/locks").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    pid = f" {os.getpid()} "
+    return [f"  {line}" for line in text.splitlines() if pid in line]
+
+
+def _write_state(out: TextIO, nodeid: str, delay: float) -> None:
+    out.write(f"hang dump: {nodeid} still running after {delay:.0f}s\n")
+    out.write("open file descriptors:\n" + "\n".join(_fd_lines()) + "\n")
+    out.write("locks held by this process:\n" + "\n".join(_lock_lines() or ["  none"]) + "\n")
+    out.write("all thread stacks:\n")
+    out.flush()
+    faulthandler.dump_traceback(file=out, all_threads=True)
+    out.flush()
+
+
+def _early_dump(config: pytest.Config, nodeid: str, delay: float) -> None:
+    handle = _dump_handle
+    if handle is None:
+        return
+    _early_fired.set()
+    _write_state(handle, nodeid, delay)
+    # Capture would swallow stderr; suspend it so the text reaches the job log.
+    capman = config.pluginmanager.getplugin("capturemanager")
+    try:
+        if capman is None:
+            _write_state(sys.stderr, nodeid, delay)
+        else:
+            with capman.global_and_fixture_disabled():
+                _write_state(sys.stderr, nodeid, delay)
+    except (OSError, ValueError):
+        pass  # The file already holds the dump; a closed stderr must not mask the hang.
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -55,6 +145,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_runtest_setup(item: pytest.Item) -> None:
+    global _early_timer
     if _dump_handle is None:
         return
     # Record which test armed the timer, so a dump names its trigger even though
@@ -63,15 +154,27 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     _dump_handle.truncate()
     _dump_handle.write(f"hang watchdog armed for {item.nodeid} ({_timeout_s}s)\n")
     _dump_handle.flush()
+    _early_fired.clear()
+    early = _test_timeout_s(item) * _EARLY_SHARE
+    if 0 < early < _timeout_s:
+        _early_timer = threading.Timer(early, _early_dump, (item.config, item.nodeid, early))
+        _early_timer.daemon = True
+        _early_timer.start()
     # Re-arms (resets) the single C-thread timer for this test. dump_traceback_later
     # dumps every thread by default, which is what we want on a wedged worker.
     faulthandler.dump_traceback_later(_timeout_s, file=_dump_handle, exit=True)
 
 
 def pytest_runtest_teardown(item: pytest.Item) -> None:
+    global _early_timer
     if _dump_handle is None:
         return
     faulthandler.cancel_dump_traceback_later()
+    if _early_timer is not None:
+        _early_timer.cancel()
+        _early_timer = None
+    if _early_fired.is_set():
+        return  # The test ran long enough to dump; keep the evidence for the CI step.
     # The test finished, so its armed dump is stale; clear it.
     _dump_handle.seek(0)
     _dump_handle.truncate()
