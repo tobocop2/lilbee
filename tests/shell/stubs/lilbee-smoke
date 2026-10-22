@@ -7,6 +7,8 @@
 #   SMOKE_CRAWL_INDEXED  1 when the crawled page is searchable (default: 1)
 #   SMOKE_FAIL_LEG       leg that prints an error on stdout and exits 3
 #                        (search, ask, crawl, browser or browser-search; default: none)
+#   SMOKE_NO_BROWSER      1 when a browser-mode add ignores the setting and
+#                        installs no Chromium (default: 0)
 #   SMOKE_BROWSER_INDEXED  1 when the browser-mode crawl is searchable (default: 1)
 
 set -euo pipefail
@@ -33,6 +35,10 @@ case "${sub}" in
       http*)
         if [ "${LILBEE_CRAWL_RENDER_MODE:-}" = "browser" ]; then
           fail_leg browser
+          if [ "${SMOKE_NO_BROWSER:-0}" != "1" ]; then
+            mkdir -p "${PLAYWRIGHT_BROWSERS_PATH:?}/chromium_headless_shell-1000"
+            : > "${PLAYWRIGHT_BROWSERS_PATH}/chromium_headless_shell-1000/INSTALLATION_COMPLETE"
+          fi
         fi
         ;;
     esac
@@ -45,7 +51,9 @@ case "${sub}" in
         ;;
       *"use in illustrative"*)
         fail_leg browser-search
-        if [ "${SMOKE_BROWSER_INDEXED:-1}" = "1" ]; then
+        if [ "${SMOKE_BROWSER_URL_ONLY:-0}" = "1" ]; then
+          echo "1. https://example.com"
+        elif [ "${SMOKE_BROWSER_INDEXED:-1}" = "1" ]; then
           echo "1. https://example.com   This domain is for use in illustrative examples"
         fi
         ;;
