@@ -113,10 +113,10 @@ case "${ask_out}" in *"Error:"*) echo "FAIL: ask surfaced an error" >&2; exit 1 
 if [ "${SKIP_CRAWL:-0}" != "1" ]; then
   "${exe}" --data-dir "${data_dir}" add "https://example.com"
   rc=0
-  crawl_out=$("${exe}" --data-dir "${data_dir}" search "illustrative examples in documents") || rc=$?
+  crawl_out=$("${exe}" --data-dir "${data_dir}" search "domain is for use in examples") || rc=$?
   echo "${crawl_out}"
   [ "${rc}" -eq 0 ] || { echo "FAIL: crawl search exited ${rc}" >&2; exit 1; }
-  echo "${crawl_out}" | grep -qi "example" || { echo "FAIL: crawled page not searchable" >&2; exit 1; }
+  echo "${crawl_out}" | grep -qi "domain is for use in" || { echo "FAIL: crawled page not searchable" >&2; exit 1; }
 fi
 
 # Leg 5: crawl one page in browser mode into a fresh knowledge base and a fresh
@@ -144,11 +144,11 @@ if [ "${SKIP_CRAWL:-0}" != "1" ]; then
   compgen -G "${browsers_dir}/chromium_headless_shell-*/INSTALLATION_COMPLETE" > /dev/null \
     || { echo "FAIL: the browser crawl did not install or launch Chromium" >&2; exit 1; }
   rc=0
-  browser_out=$("${exe}" --data-dir "${browser_data}" search "domain for use in illustrative examples") || rc=$?
+  browser_out=$("${exe}" --data-dir "${browser_data}" search "domain is for use in documentation") || rc=$?
   echo "${browser_out}"
   [ "${rc}" -eq 0 ] || { echo "FAIL: browser crawl search exited ${rc}" >&2; exit 1; }
   # Match page body text; the printed URL alone must not satisfy the check.
-  echo "${browser_out}" | grep -qi "illustrative examples" || { echo "FAIL: browser-crawled page not searchable" >&2; exit 1; }
+  echo "${browser_out}" | grep -qi "domain is for use in" || { echo "FAIL: browser-crawled page not searchable" >&2; exit 1; }
 fi
 
 skipped=""
