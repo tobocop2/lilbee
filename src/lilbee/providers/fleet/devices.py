@@ -10,9 +10,9 @@ fallback when the binary can't enumerate. See docs/architecture.md.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -194,13 +194,20 @@ def host_lacks_nvlink() -> bool:
     return len(gpu_rows) >= _TOPO_MIN_GPUS and not pairs
 
 
-def _probe_env() -> dict[str, str]:
+def _probe_env(binary: Path) -> dict[str, str]:
     """Env for the probe: stable PCI ordering so CUDA indices match what we pin.
 
     A preset ``CUDA_DEVICE_ORDER`` is respected; ``visible_env`` re-emits the same
-    order var, so the probe and the spawned servers see one device ordering.
+    order var, so the probe and the spawned servers see one device ordering. The
+    probe runs under the engine's own environment (pin, loader safety) and with the
+    CUDA runtime libraries *binary* needs on its library path, so a zero-device
+    result reflects an unusable GPU rather than a probe that lacked them.
     """
-    env = dict(os.environ)
+    from lilbee.providers.fleet.cuda_runtime import cuda_runtime_env
+    from lilbee.providers.fleet.gpu_env import engine_environ
+
+    env = engine_environ()
+    env.update(cuda_runtime_env(binary))
     env.setdefault(_CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER)
     return env
 
@@ -299,7 +306,7 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
             [str(binary), "--list-devices"],
             timeout_s=timeout_s,
             kill_wait_s=_PROBE_KILL_WAIT_S,
-            env=_probe_env(),
+            env=_probe_env(binary),
             merge_stderr=True,
             label=f"{binary.name} --list-devices",
             bind_lifetime=True,
@@ -576,15 +583,18 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
     """
     if not devices:
         return {}
+    from lilbee.providers.fleet.gpu_env import gpu_environ
+
+    env = gpu_environ()
     backend = devices[0].backend
     indices = [d.index for d in devices]
     if backend == "CUDA":
         return {
-            _CUDA_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_CUDA_VISIBLE_VAR)),
-            _CUDA_ORDER_VAR: os.environ.get(_CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER),
+            _CUDA_VISIBLE_VAR: _compose_visible(indices, env.get(_CUDA_VISIBLE_VAR)),
+            _CUDA_ORDER_VAR: env.get(_CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER),
         }
     if backend in ("ROCm", "HIP"):
-        return _amd_visible_env(indices)
+        return _amd_visible_env(indices, env)
     if backend == VULKAN_BACKEND:
         # Deliberately not GGML_VK_VISIBLE_DEVICES. That variable indexes the raw
         # loader enumeration, while these indices come from the engine's own
@@ -604,8 +614,8 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
     return {}
 
 
-def amd_visible_var() -> str:
-    """The one AMD visibility var an index list may be written to.
+def amd_visible_var(env: Mapping[str, str]) -> str:
+    """The one AMD visibility var in *env* an index list may be written to.
 
     ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially:
     ROCr filters first, then HIP re-indexes within the survivors. Writing the same
@@ -620,12 +630,12 @@ def amd_visible_var() -> str:
     pin asks here; two callers each picking their own would put the pair back.
     """
     for name in (_HIP_VISIBLE_VAR, _GPU_DEVICE_ORDINAL_VAR, _ROCR_VISIBLE_VAR):
-        if os.environ.get(name, "").strip():
+        if env.get(name, "").strip():
             return name
     return _HIP_VISIBLE_VAR
 
 
-def _amd_visible_env(indices: list[int]) -> dict[str, str]:
+def _amd_visible_env(indices: list[int], env: Mapping[str, str]) -> dict[str, str]:
     """Pin an AMD ROCm/HIP child to the probe's *indices* with one visibility var.
 
     The probe enumerated a single index space already filtered by whichever var
@@ -633,5 +643,5 @@ def _amd_visible_env(indices: list[int]) -> dict[str, str]:
     the other is left inherited untouched. The child inherits the parent env, so
     an unset override keeps any inherited sibling var in force.
     """
-    var = amd_visible_var()
-    return {var: _compose_visible(indices, os.environ.get(var))}
+    var = amd_visible_var(env)
+    return {var: _compose_visible(indices, env.get(var))}

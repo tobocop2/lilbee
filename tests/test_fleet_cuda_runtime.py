@@ -11,7 +11,6 @@ import pytest
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import cuda_runtime, engine_diagnostics
 from lilbee.providers.fleet.cuda_runtime import (
-    apply_cuda_runtime_env,
     assert_cuda_devices_usable,
     cuda_runtime_env,
 )
@@ -59,30 +58,6 @@ def test_links_cuda_runtime_false_when_ldd_absent(monkeypatch: pytest.MonkeyPatc
     assert cuda_runtime._links_cuda_runtime(Path("/bin/llama-server"), {}) is False
 
 
-def test_apply_cuda_runtime_env_updates_os_environ(monkeypatch: pytest.MonkeyPatch) -> None:
-    _force_linux(monkeypatch)
-    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-    wheel = Path("/wheel/lib")
-    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [wheel])
-    apply_cuda_runtime_env()
-    # str(Path) keeps this host-agnostic (/ vs \ between Linux and Windows).
-    assert cuda_runtime.os.environ["LD_LIBRARY_PATH"] == str(wheel)
-
-
-def test_apply_cuda_runtime_env_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
-    # plan_all_launches re-applies on every reload pass; the wheel
-    # dirs must not accumulate duplicate copies in LD_LIBRARY_PATH.
-    _force_linux(monkeypatch)
-    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-    wheels = [Path("/wheel/a"), Path("/wheel/b")]
-    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: wheels)
-    apply_cuda_runtime_env()
-    apply_cuda_runtime_env()
-    apply_cuda_runtime_env()
-    expected = cuda_runtime.os.pathsep.join(str(w) for w in wheels)
-    assert cuda_runtime.os.environ["LD_LIBRARY_PATH"] == expected
-
-
 def test_cuda_runtime_env_keeps_unrelated_existing_path(monkeypatch: pytest.MonkeyPatch) -> None:
     _force_linux(monkeypatch)
     wheel = Path("/wheel/lib")
@@ -90,14 +65,6 @@ def test_cuda_runtime_env_keeps_unrelated_existing_path(monkeypatch: pytest.Monk
     monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/lib")
     result = cuda_runtime.cuda_runtime_env()["LD_LIBRARY_PATH"]
     assert result == cuda_runtime.os.pathsep.join([str(wheel), "/usr/local/lib"])
-
-
-def test_apply_cuda_runtime_env_noop_when_no_wheels(monkeypatch: pytest.MonkeyPatch) -> None:
-    _force_linux(monkeypatch)
-    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
-    apply_cuda_runtime_env()
-    assert "LD_LIBRARY_PATH" not in cuda_runtime.os.environ
 
 
 def test_assert_devices_noop_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:

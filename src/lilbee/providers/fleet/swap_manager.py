@@ -31,6 +31,7 @@ from lilbee.core.health_warnings import HealthWarning
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
+from lilbee.providers.fleet.gpu_env import engine_environ
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.planning import clear_ctx_downshift, log_engine_launch
@@ -326,6 +327,7 @@ class SwapManager:
                 f"{_HOST}:{self._port}",
             ],
             bind_lifetime=lifetime is EngineLifetime.BUILDER,
+            env=engine_environ(),
             stdout=self._log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,

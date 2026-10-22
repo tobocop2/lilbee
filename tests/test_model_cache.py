@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from unittest import mock
 import pytest
 
 from lilbee.core import system as system_mod
+from lilbee.core.config import cfg
 from lilbee.providers.model_cache import (
     _BUFFER_OVERHEAD_FRACTION,
     _DYNAMIC_CTX_FLOOR,
@@ -453,6 +455,14 @@ class TestCudaVisibleDevicesMask:
         self._totals(monkeypatch)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         assert _try_nvidia_memory() is None
+
+    def test_a_gpu_devices_pin_narrows_the_budget(self, monkeypatch) -> None:
+        """The pin lives in the engine environment copy, not in os.environ."""
+        self._totals(monkeypatch)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.setattr(cfg, "gpu_devices", "1")
+        assert _try_nvidia_memory(sum) == 8 * 1024**3
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
 class TestNvidiaSmiRowsThatDoNotParse:

@@ -28,10 +28,6 @@ def _reading(devices: list[FleetDevice]) -> planning_mod.DeviceReading:
 
 def _snapshot(monkeypatch, devices: list[FleetDevice], free_ram: int = 64 * _GB) -> None:
     monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
-    monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(
-        "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
-    )
     monkeypatch.setattr(planning_mod, "_read_devices", lambda _b: _reading(devices))
     monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: free_ram)
     planning_mod.capture_plan_probe()
@@ -165,10 +161,6 @@ class TestAnEngineThatChangesUnderARunningServe:
         """Point planning at *binary* and report cards only while it has content."""
         runs: list[int] = []
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: binary)
-        monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
-        )
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 64 * _GB)
 
         def _probe(_binary: Path) -> planning_mod.DeviceReading:

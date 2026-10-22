@@ -547,11 +547,13 @@ def enumerate_in_process() -> list[VulkanDevice] | None:
 
 def _run_probe_child() -> tuple[str, int, str]:
     """Run the enumeration in a child; returns ``(stdout, returncode, stderr)``."""
+    from lilbee.providers.fleet.gpu_env import engine_environ
     from lilbee.providers.fleet.proc import run_bounded
 
     argv = [sys.executable, "-m", _PROBE_MODULE]
     stdout, returncode = run_bounded(
         argv,
+        env=engine_environ(),
         timeout_s=_PROBE_TIMEOUT_S,
         kill_wait_s=_PROBE_KILL_WAIT_S,
         label="vulkan-probe",
