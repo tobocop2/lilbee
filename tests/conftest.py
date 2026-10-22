@@ -438,9 +438,11 @@ def _ignore_user_global_config(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _forget_shown_load_warnings(monkeypatch):
-    """Start each test with no load warning marked as already logged by this process tree."""
-    monkeypatch.delenv("LILBEE_LOAD_WARNINGS_SHOWN", raising=False)
+def _forget_shown_load_warnings():
+    """Start each test with no load warning marked as already logged by this process."""
+    from lilbee.core.config.load_warnings import forget_shown
+
+    forget_shown()
 
 
 @pytest.fixture(scope="session")

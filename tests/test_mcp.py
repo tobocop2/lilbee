@@ -747,22 +747,19 @@ class TestInit:
         with pytest.raises(ValidationError, match="must be a HuggingFace ref"):
             cfg.chat_model = "qwen3:0.6b"
 
-    def test_init_exports_lilbee_data_env(self, tmp_path, monkeypatch):
-        """``init`` exports ``LILBEE_DATA`` so MCP-spawned workers can write logs.
+    def test_init_leaves_the_process_environment_alone(self, tmp_path, monkeypatch):
+        """``init`` runs on a request thread, so it must not call ``setenv``.
 
-        Parity with ``cli/app.py::_apply_data_root``. Without this, worker
-        subprocesses spawned during an MCP session (chat / embed / vision)
-        re-import lilbee with a fresh cfg, lose the project's data root,
-        and silently drop their log files on the floor. On Windows this
-        turns a worker heap-corruption crash into an opaque "subprocess
-        exited unexpectedly" with no diagnostic trail.
+        Ingest workers take the vault from their shard spec (config_scope plus
+        the log path), not from the environment the parent had at spawn.
         """
         target = tmp_path / "myproject"
         target.mkdir()
-        monkeypatch.delenv("LILBEE_DATA", raising=False)
+        monkeypatch.setenv("LILBEE_DATA", "/unchanged")
 
         init(str(target))
-        assert os.environ.get("LILBEE_DATA") == str(target)
+
+        assert os.environ["LILBEE_DATA"] == "/unchanged"
 
     def test_init_overlays_per_root_config_toml(self, tmp_path, overlay_reads_config_toml):
         """init() must re-read the project base's config.toml, the same fix as

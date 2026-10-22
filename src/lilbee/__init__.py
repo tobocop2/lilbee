@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 
 # Suppress HF-default tqdm bars (metadata probes, snapshot summaries) that
@@ -11,6 +12,22 @@ import threading
 # instantiates it directly without honoring this flag. Download callbacks
 # continue to fire. See lilbee/catalog/download_progress.py::_CallbackProgressBar.
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
+def _disable_xet_where_it_stalls() -> None:
+    """Fall back to the plain HTTP download path on Windows.
+
+    hf_xet transfers stall or deadlock on Windows (xet-core issues #446, #789,
+    #850), while the plain path downloads at line speed. Everywhere else xet
+    stays on: it is the fast path. huggingface_hub parses the variable once at
+    its import, so it is set here at import, before anything imports the hub,
+    and a variable the user exported wins.
+    """
+    if sys.platform == "win32":
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+
+_disable_xet_where_it_stalls()
 
 
 def _install_thread_only_tqdm_lock() -> None:

@@ -13458,29 +13458,40 @@ def test_run_tui_exception_during_shutdown_propagates():
 async def test_chat_on_show_dismiss_with_fd():
     """on_show calls dismiss which closes the splash pipe fd."""
     import os
+    from unittest.mock import MagicMock
+
+    import lilbee.runtime.splash as splash_mod
 
     read_fd, write_fd = os.pipe()
     os.close(read_fd)
-    os.environ["_LILBEE_SPLASH_FD"] = str(write_fd)
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        app.screen.on_show()
-        assert "_LILBEE_SPLASH_FD" not in os.environ
+    original = splash_mod._active_handle
+    splash_mod._active_handle = splash_mod.SplashHandle(process=MagicMock(), write_fd=write_fd)
+    try:
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            await _pilot.pause()
+            app.screen.on_show()
+            assert splash_mod._active_handle is None
+            with pytest.raises(OSError):
+                os.close(write_fd)
+    finally:
+        splash_mod._active_handle = original
 
 
 async def test_chat_on_show_dismiss_no_fd():
-    """on_show dismiss is a no-op when no splash fd is set."""
-    import os
+    """on_show dismiss is a no-op when no splash is running."""
+    import lilbee.runtime.splash as splash_mod
 
-    os.environ.pop("_LILBEE_SPLASH_FD", None)
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        app.screen.on_show()  # Should not raise
-        assert "_LILBEE_SPLASH_FD" not in os.environ
+    original = splash_mod._active_handle
+    splash_mod._active_handle = None
+    try:
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            await _pilot.pause()
+            app.screen.on_show()  # Should not raise
+            assert splash_mod._active_handle is None
+    finally:
+        splash_mod._active_handle = original
 
 
 async def test_chat_embedding_ready_false_on_exception():

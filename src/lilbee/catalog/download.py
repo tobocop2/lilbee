@@ -2,9 +2,7 @@
 
 import fnmatch
 import logging
-import os
 import shutil
-import sys
 import time
 from collections.abc import Callable, Iterable
 from http import HTTPStatus
@@ -177,48 +175,6 @@ def _raise_if_disk_exhausted(
     ) from None
 
 
-_XET_HIGH_PERFORMANCE_ENV = "HF_XET_HIGH_PERFORMANCE"
-
-_XET_DISABLE_ENV = "HF_HUB_DISABLE_XET"
-
-
-def _disable_xet_where_it_stalls() -> None:
-    """Fall back to the plain HTTP download path on Windows.
-
-    hf_xet transfers stall or deadlock on Windows (xet-core issues #446,
-    #789, #850), while the plain path downloads at line speed. Everywhere
-    else xet stays on deliberately: it is the fast path. A user who
-    exported the variable keeps whatever they chose. huggingface_hub
-    parses the variable once at import, so the hub constant must change
-    too; the environment write covers worker subprocesses, which parse it
-    fresh.
-    """
-    if sys.platform != "win32":
-        return
-    if _XET_DISABLE_ENV in os.environ:
-        return
-    from huggingface_hub import constants
-
-    os.environ[_XET_DISABLE_ENV] = "1"
-    constants.HF_HUB_DISABLE_XET = True
-
-
-def _apply_fast_download_mode() -> None:
-    """Publish the high-performance setting to xet before it builds a session.
-
-    hf_xet reads it from the environment in Rust and caches it when the session
-    is built, so a change lands on restart.
-    """
-    # circular: catalog.download -> core.config via cfg, the same cycle
-    # _models_dir documents (config -> model_ref -> catalog -> here).
-    from lilbee.core.config.model import cfg
-
-    if cfg.fast_model_downloads:
-        os.environ[_XET_HIGH_PERFORMANCE_ENV] = "1"
-    else:
-        os.environ.pop(_XET_HIGH_PERFORMANCE_ENV, None)
-
-
 _TRANSFER_RETRIES = 2
 _RETRY_BACKOFF_SECONDS = 5
 
@@ -260,7 +216,6 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, RepositoryNotFoundError
 
-    _disable_xet_where_it_stalls()
     try:
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:
@@ -326,7 +281,6 @@ def download_model(
         RuntimeError: repo not found or download failure with details
         TaskCancelledError: the cancel signal was set
     """
-    _apply_fast_download_mode()
     models_dir = _models_dir()
     models_dir.mkdir(parents=True, exist_ok=True)
     token = hf_token()
@@ -465,7 +419,6 @@ def download_mmproj(
     The optional ``on_progress`` callback receives ``(downloaded, total)`` byte
     counts and is wired through the same tqdm hook used by the main download.
     """
-    _apply_fast_download_mode()
     return _fetch_mmproj(entry, _models_dir(), hf_token(), on_progress=on_progress)
 
 

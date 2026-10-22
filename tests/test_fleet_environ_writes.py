@@ -1,9 +1,10 @@
-"""No fleet thread writes the process environment.
+"""No lilbee thread writes the process environment after startup.
 
 ``setenv`` reallocates the C ``environ`` array. A native thread reading the
 environment at the same moment (lancedb's runtime, the Vulkan loader) can walk
-freed memory and segfault. The GPU variables belong in the environment handed to
-a child at spawn, never in this process's own.
+freed memory and segfault. A value a child needs belongs in the environment
+handed to that child at spawn. A value a library reads in this process is set
+once at startup, on the main thread, before any thread starts.
 """
 
 from __future__ import annotations
@@ -19,7 +20,18 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import cuda_runtime, gpu_env, gpu_select, planning
 
-FLEET_SOURCE = Path(planning.__file__).parent
+SOURCE = Path(planning.__file__).parents[2]
+
+# Writes proven to run once at startup on the main thread (or as the first act
+# of a fresh single-purpose process), each with the reason it is safe.
+_STARTUP_WRITES = {
+    "__init__.py": "import-time default, set on the importing main thread",
+    "__main__.py": "entry-point default set before any lilbee code runs",
+    "crawler/__init__.py": "import-time default, runs on the importing main thread",
+    "core/config/model.py": "import-time export of the resolved data root and download settings",
+    "data/ingest/fanout.py": "first act of a fresh ingest worker, before its store opens",
+    "cli/app.py": "the CLI callback exports the data root on the main thread before any command",
+}
 
 _WRITE_METHODS = {"setdefault", "update", "pop", "popitem", "clear"}
 _WRITE_FUNCTIONS = {"putenv", "unsetenv"}
@@ -89,13 +101,14 @@ def _writes_in(source: str) -> list[int]:
     return lines
 
 
-def test_no_fleet_module_writes_the_process_environment() -> None:
+def test_no_module_writes_the_process_environment_after_startup() -> None:
     offenders = {
-        f"{path.relative_to(FLEET_SOURCE)}:{line}"
-        for path in sorted(FLEET_SOURCE.rglob("*.py"))
+        f"{path.relative_to(SOURCE)}:{line}"
+        for path in sorted(SOURCE.rglob("*.py"))
+        if str(path.relative_to(SOURCE)) not in _STARTUP_WRITES
         for line in _writes_in(path.read_text(encoding="utf-8"))
     }
-    assert not offenders, f"fleet code writes os.environ at {sorted(offenders)}"
+    assert not offenders, f"code writes os.environ at {sorted(offenders)}"
 
 
 def test_the_scan_sees_each_kind_of_environment_write() -> None:
@@ -233,3 +246,21 @@ def test_the_engine_help_run_gets_the_engine_environment(
     assert binary.engine_help(tmp_path / "unique-help-binary") == "usage\n"
     assert seen["env"] == {"MARK": "engine-env"}
     binary.engine_help.cache_clear()
+
+
+def test_a_load_warning_logs_once_without_touching_the_environment(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The warned-once memory lives in the process, not in a variable."""
+    from lilbee.core.config.load_warnings import warn_on_load
+
+    recording = _RecordingEnviron(dict(os.environ))
+    monkeypatch.setattr(os, "environ", recording)
+
+    with caplog.at_level("WARNING"):
+        warn_on_load("bad value")
+        warn_on_load("bad value")
+        warn_on_load("bad value", "v2")
+
+    assert [r.getMessage() for r in caplog.records] == ["bad value", "bad value"]
+    assert recording.writes == []
