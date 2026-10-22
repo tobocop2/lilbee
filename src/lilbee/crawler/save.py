@@ -33,6 +33,7 @@ _NOT_SAVED = "Page %s is not saved: %s holds a file or folder of its own; move o
 # The characters RFC 3986 section 2.3 calls unreserved: an escape of one names the character.
 _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
 _PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+_MALFORMED_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _HEX = 16
 _QUERY_MARK = "?"
 _QUERY_SEPARATOR = "&"
@@ -93,10 +94,16 @@ def _sorted_query(address: str) -> str:
 
 
 def canonical_address(url: str) -> str:
-    """The key crawlberg 1.11.1's ``normalize_url`` gives the page at *url*, or *url* unparsed."""
+    """The key crawlberg 1.12.0's ``normalize_url`` gives the page at *url*, or *url* unparsed.
+
+    An address with a malformed escape keeps all its escapes as written: decoding the digits
+    after a bad ``%`` could make a valid escape the next time the key is made.
+    """
     address = parsed_address(url)
     if address is None:
         return url
+    if _MALFORMED_ESCAPE.search(address):
+        return _sorted_query(address)
     return _sorted_query(_PERCENT_ESCAPE.sub(_normalized_escape, address))
 
 

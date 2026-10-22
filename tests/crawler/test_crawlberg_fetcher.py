@@ -154,6 +154,23 @@ class TestCrawlConfig:
         assert [config.kwargs["user_agent"] for config in stub.configs] == [None, None]
         assert [config.kwargs["custom_headers"] for config in stub.configs] == [{}, {}]
 
+    async def test_only_browser_mode_accepts_an_invalid_certificate_in_each_crawl_shape(
+        self, monkeypatch, tmp_path
+    ):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(config_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            for fetcher in (_http(), _browser()):
+                await _recursive(fetcher)
+                await fetcher.fetch_single(SEED, timeout=5, concurrency=NO_PACING)
+        assert [config.kwargs["danger_accept_invalid_certs"] for config in stub.configs] == [
+            False,
+            False,
+            True,
+            True,
+        ]
+
     @pytest.mark.parametrize("respect", [True, False])
     async def test_the_robots_choice_reaches_crawlberg_in_each_crawl_shape(self, respect: bool):
         stub = StubCrawlberg([page(SEED, depth=0)])
