@@ -3,8 +3,10 @@
 import os
 import threading
 import tomllib
+import weakref
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Any, TypeVar
 
@@ -176,6 +178,63 @@ def overlay_persisted_settings(root: Path) -> None:
     for key, value in stored.items():
         if key in overlayable and env_value(key) is None:
             setattr(cfg, key, value)
+
+
+@dataclass
+class _RegistryWatch:
+    """The config.toml state one Config's registry was read at, and how many blocks hold it."""
+
+    stamp: tuple[int, int, int] | None = None
+    pins: int = 0
+
+
+class _RegistryWatches:
+    """One watch per live Config, keyed by identity and dropped with the Config."""
+
+    def __init__(self) -> None:
+        self._by_config: dict[int, _RegistryWatch] = {}
+        self._lock = threading.Lock()
+
+    def of(self, config: Config) -> _RegistryWatch:
+        with self._lock:
+            watch = self._by_config.get(id(config))
+            if watch is None:
+                watch = self._by_config[id(config)] = _RegistryWatch()
+                weakref.finalize(config, self._by_config.pop, id(config), None)
+            return watch
+
+
+_registry_watches = _RegistryWatches()
+
+
+def registry_is_pinned(config: Config) -> bool:
+    """Whether a block holds the registry *config* names sources by."""
+    return _registry_watches.of(config).pins > 0
+
+
+def refresh_registry(config: Config) -> None:
+    """Read the registry from config.toml again if another process changed the file.
+
+    One stat() when it did not. A pinned registry is left alone.
+    """
+    watch = _registry_watches.of(config)
+    if watch.pins:
+        return
+    stamp = overlay_stamp(config.data_root)
+    if stamp != watch.stamp:
+        watch.stamp = stamp
+        overlay_persisted_roots(config)
+
+
+@contextmanager
+def pin_registry(config: Config) -> Generator[None, None, None]:
+    """Hold the registry *config* has now: ``refresh_registry`` does nothing in the block."""
+    watch = _registry_watches.of(config)
+    watch.pins += 1
+    try:
+        yield
+    finally:
+        watch.pins -= 1
 
 
 def overlay_persisted_roots(config: Config) -> None:

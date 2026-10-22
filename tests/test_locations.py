@@ -601,3 +601,98 @@ class TestTheFillInBatches:
 
         assert _dump(reopened) == _dump(whole)
         assert "_fill_pairs" not in table_names(reopened.get_db())
+
+
+class TestAResolverInALongRunningProcess:
+    """A server that ran no store call still names a root another process registered."""
+
+    @pytest.fixture()
+    def server(self, config, overlay_reads_config_toml):
+        from lilbee.core.config import config_scope
+
+        with config_scope(config):
+            yield config
+
+    def _another_process_registers(self, config, label, root):
+        settings.set_value(config.data_root, "linked_roots", {label: str(root)})
+
+    def test_a_label_added_since_resolves_to_its_root(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        assert resolve_source_path("notes/a.md") == server.documents_dir / "notes" / "a.md"
+
+        self._another_process_registers(server, "notes", tmp_path / "elsewhere")
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "elsewhere" / "a.md"
+
+    def test_the_walked_root_follows_the_file(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_root
+
+        assert resolve_source_root("notes/a.md") == (
+            server.documents_dir,
+            server.documents_dir / "notes" / "a.md",
+        )
+
+        self._another_process_registers(server, "notes", tmp_path / "elsewhere")
+
+        assert resolve_source_root("notes/a.md") == (
+            tmp_path / "elsewhere",
+            tmp_path / "elsewhere" / "a.md",
+        )
+
+    def test_the_checked_resolver_accepts_a_new_label(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path_checked
+
+        elsewhere = tmp_path / "elsewhere"
+        assert resolve_source_path_checked("notes/a.md") is not None
+        assert resolve_source_path_checked("notes/../../x") is None
+        self._another_process_registers(server, "notes", elsewhere)
+
+        assert resolve_source_path_checked("notes/a.md") == (elsewhere / "a.md").resolve()
+        assert resolve_source_path_checked("notes/../../x") is None
+
+    def test_a_file_in_a_new_root_is_found_on_disk(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        live = tmp_path / "elsewhere" / "a.md"
+        live.parent.mkdir()
+        live.write_text("x", encoding="utf-8")
+        self._another_process_registers(server, "notes", tmp_path / "elsewhere")
+
+        assert resolve_source_path("notes/a.md").exists()
+
+    def test_a_pinned_registry_ignores_the_file(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        server.linked_roots = {"notes": str(tmp_path / "before")}
+        with settings.pin_registry(server):
+            self._another_process_registers(server, "notes", tmp_path / "after")
+            assert resolve_source_path("notes/a.md") == tmp_path / "before" / "a.md"
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "after" / "a.md"
+
+    def test_an_unparsable_file_leaves_the_registry(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        server.linked_roots = {"notes": str(tmp_path / "before")}
+        (server.data_root / "config.toml").write_text("not [valid", encoding="utf-8")
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "before" / "a.md"
+
+    def test_a_missing_file_leaves_the_registry(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        server.linked_roots = {"notes": str(tmp_path / "before")}
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "before" / "a.md"
+
+    def test_the_store_names_sources_by_what_a_resolver_read(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        store = Store(server)
+        _seed_source(store, "notes/a.md")
+        self._another_process_registers(server, "notes", tmp_path / "elsewhere")
+        resolve_source_path("notes/a.md")
+
+        assert _names(store) == ["notes/a.md"]
+        assert server.linked_roots == {"notes": str(tmp_path / "elsewhere")}

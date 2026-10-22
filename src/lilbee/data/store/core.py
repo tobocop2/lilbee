@@ -1037,11 +1037,8 @@ class Store:
         # Cache of {filename: ingested_at} rebuilt only when sources
         # mutate; callers (temporal filter) hit it per-query.
         self._source_ingested_cache: dict[str, str] | None = None
-        # The source registry names are shown by, the config.toml state it was read at,
-        # and how many blocks hold it fixed.
+        # The source registry names are shown by.
         self._registry = SourceLocations({})
-        self._registry_stamp: tuple[int, int, int] | None = None
-        self._registry_pins = 0
 
     def _fts_config(self) -> FTS:
         """Shared FTS index config: positionless (with_position=True overflows
@@ -1067,11 +1064,8 @@ class Store:
 
     def _locations(self) -> SourceLocations:
         """The rule sources are named by: the registry, read again when config.toml changes."""
-        if not self._registry_pins:
-            stamp = settings.overlay_stamp(self._config.data_root)
-            if stamp != self._registry_stamp:
-                self._registry_stamp = stamp
-                settings.overlay_persisted_roots(self._config)
+        if not settings.registry_is_pinned(self._config):
+            settings.refresh_registry(self._config)
             self._take_registry()
         return self._registry
 
@@ -1085,11 +1079,8 @@ class Store:
     def registry_pinned(self) -> Iterator[None]:
         """Name sources by the registry the config holds now, whatever changes it in the block."""
         self._take_registry()
-        self._registry_pins += 1
-        try:
+        with settings.pin_registry(self._config):
             yield
-        finally:
-            self._registry_pins -= 1
 
     def _invalidate_source_cache(self) -> None:
         """Drop the cached {filename: ingested_at} map."""
