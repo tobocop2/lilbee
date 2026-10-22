@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _Network = TypeVar("_Network", ipaddress.IPv4Network, ipaddress.IPv6Network)
-# The networks crawlberg's ``deny_private`` refuses (crawlberg 1.11.1, DEFAULT_DENY_NET_CIDRS).
+# The networks crawlberg's ``deny_private`` refuses (crawlberg 1.12.0, DEFAULT_DENY_NET_CIDRS).
 CRAWLBERG_DENIED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = tuple(
     ipaddress.ip_network(cidr)
     for cidr in (
@@ -87,7 +87,7 @@ _BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
 # The root element, which every loaded document has, SVG, XML and frameset pages included.
 _READY_SELECTOR = ":root"
 _RATE_LIMIT_STATUSES = (429, 503)
-# The most retries crawlberg 1.11.1 accepts; it refuses a config with more.
+# The most retries crawlberg 1.12.0 accepts; it refuses a config with more.
 _MAX_RETRIES = 20
 _MS_PER_SECOND = 1000
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
@@ -151,8 +151,9 @@ def _ssrf_policy() -> crawlberg.SsrfPolicy:
     """crawlberg's SSRF policy, read from lilbee's blocklist at crawl time."""
     import crawlberg
 
+    # crawlberg 1.12.0's type stubs declare ``cidr`` as an attribute and as a constructor.
     allowlist = [
-        crawlberg.HostMatcher.cidr(str(network))
+        crawlberg.HostMatcher.cidr(str(network))  # type: ignore[misc]
         for network in admitted_networks(url_filter.get_blocked_networks())
     ]
     return crawlberg.SsrfPolicy(
@@ -263,6 +264,8 @@ def _crawl_config(
     """The crawlberg config for one crawl, with every default lilbee depends on set.
 
     A blank *user_agent* leaves the user agent to crawlberg: Chrome's own in browser mode.
+    Browser mode accepts an invalid TLS certificate, as Chrome did before crawlberg 1.12 checked
+    it; HTTP mode refuses one.
     crawlberg sends the *login* only to the seed host.
     """
     import crawlberg
@@ -296,6 +299,7 @@ def _crawl_config(
         ),
         retry_max_delay_ms=_ms(concurrency.retry_max_backoff),
         respect_robots_txt=respect_robots_txt,
+        danger_accept_invalid_certs=render_mode is CrawlRenderMode.BROWSER,
         cookies_enabled=True,
         soft_http_errors=False,
         download_documents=False,
@@ -309,8 +313,13 @@ def _auth(login: CrawlLogin) -> crawlberg.AuthConfig | None:
     """crawlberg's form of the basic credentials or authorization header of *login*."""
     import crawlberg
 
+    # crawlberg 1.12.0's type stubs declare ``basic`` and ``header`` as attributes and as
+    # constructors, so mypy reads each call as a call of None.
+
     if login.basic_credentials is not None:
-        return crawlberg.AuthConfig.basic(*login.basic_credentials)
+        return crawlberg.AuthConfig.basic(*login.basic_credentials)  # type: ignore[no-any-return,misc]
     if login.authorization:
-        return crawlberg.AuthConfig.header(AUTHORIZATION_HEADER, login.authorization)
+        return crawlberg.AuthConfig.header(  # type: ignore[no-any-return,misc]
+            AUTHORIZATION_HEADER, login.authorization
+        )
     return None

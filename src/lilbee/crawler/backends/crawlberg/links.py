@@ -79,18 +79,19 @@ class _ExcludedLinks:
         self._seen_links: set[str] = set()
         self._checked: set[str] = set()
 
-    def record_seed(self, seed_url: str) -> None:
-        """Log the seed when a pattern matches it: crawlberg then crawls nothing.
+    def record_seed(self, seed_url: str) -> bool:
+        """Log the seed and return True when a pattern matches it.
 
-        The seed is matched as crawlberg's URL parser writes it; a seed that does not parse is
-        one crawlberg refuses, so no pattern applies to it.
+        crawlberg fetches a seed that an exclude pattern matches, so the crawl of a matched
+        seed does not start. The seed is matched as crawlberg's URL parser writes it; a seed
+        that does not parse is one crawlberg refuses, so no pattern applies to it.
         """
         address = url_filter.parsed_address(seed_url)
         if address is None:
-            return
+            return False
         url = _queued_url(address)
         self._checked.add(url)
-        self._check(url)
+        return self._check(url)
 
     def record(self, event: _Event) -> None:
         """Log each link of *event* that the crawl leaves out, the first time a page holds it."""
@@ -109,11 +110,13 @@ class _ExcludedLinks:
             host, self._seed_host, include_subdomains=self._include_subdomains
         )
 
-    def _check(self, url: str) -> None:
+    def _check(self, url: str) -> bool:
         matched = next((p.pattern for p in self._patterns if p.search(url)), None)
-        if matched is not None:
-            log.warning(
-                "Left out %s: it matches %s, a pattern of the crawl_exclude_patterns setting",
-                url,
-                matched,
-            )
+        if matched is None:
+            return False
+        log.warning(
+            "Left out %s: it matches %s, a pattern of the crawl_exclude_patterns setting",
+            url,
+            matched,
+        )
+        return True
