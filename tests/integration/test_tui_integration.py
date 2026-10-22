@@ -127,6 +127,7 @@ class TestChatFlow:
             for thread in threading.enumerate():
                 if thread.name == "fleet-warm-up":
                     thread.join(timeout=60)
+                    assert not thread.is_alive(), "fleet warm-up did not finish"
 
             assert len(app.screen._history) >= 2
             assistant_reply = app.screen._history[-1]["content"]
