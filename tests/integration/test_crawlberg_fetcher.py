@@ -1590,12 +1590,21 @@ class TestBrowserLaunch:
         assert "--lang=fr" in launches[0]
         assert "--lang=en_US" not in launches[0]
 
-    def test_chromium_starts_with_the_default_flags(self, site):
+    def test_a_browser_crawl_passes_every_default_flag_to_crawlberg_and_chromium(self, site):
+        cfg.crawl_browser_extra_args = []
+        _, control = self._launch(site, HIDDEN_PAGE)
         cfg.crawl_browser_extra_args = Config().crawl_browser_extra_args
-        paths, launches = self._launch(site, "/wiki/Home")
+        with mock.patch.object(crawlberg, "BrowserConfig", wraps=crawlberg.BrowserConfig) as built:
+            paths, launches = self._launch(site, "/wiki/Home")
         assert len(paths) == 1
-        assert len(launches) == 1
-        for flag in DEFAULT_FLAGS:
+        assert len(control) == len(launches) == 1
+        # crawlberg adds some of these flags itself, so Chromium's command line cannot show that
+        # lilbee passed them; the settings crawlberg receives can.
+        assert [call.kwargs["chrome_args"] for call in built.call_args_list] == [DEFAULT_FLAGS]
+        # The flags crawlberg does not add are the ones only lilbee's setting can put there.
+        lilbee_only = [flag for flag in DEFAULT_FLAGS if flag not in control[0]]
+        assert lilbee_only
+        for flag in lilbee_only:
             assert flag in launches[0]
 
     def test_a_recursive_crawl_of_several_pages_starts_chromium_once(self, site):
