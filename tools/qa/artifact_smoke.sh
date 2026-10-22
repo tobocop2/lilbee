@@ -18,25 +18,34 @@ set -euxo pipefail
 
 exe="${LILBEE_EXE:?LILBEE_EXE is required}"
 
-# Run a command under a hard time limit. macOS runners ship no timeout(1), so
-# fall back to a background watchdog. Exits 124 on a timeout, like timeout(1).
-with_timeout() {  # seconds command...
-  local secs="$1"
+# Run a command under a watchdog when timeout(1) is missing (macOS runners).
+# Job control gives the command and the watchdog a process group each, so both
+# paths kill whole groups: a timeout takes the command and its children, and a
+# finish takes the watchdog and its sleep. Exits 124 on a timeout.
+watchdog_timeout() {  # seconds command...
+  local secs="$1" cmd_pid watchdog_pid rc=0
   shift
+  set -m
+  "$@" &
+  cmd_pid=$!
+  ( sleep "${secs}"; kill -TERM -- "-${cmd_pid}" 2> /dev/null ) &
+  watchdog_pid=$!
+  set +m
+  wait "${cmd_pid}" || rc=$?
+  kill -TERM -- "-${watchdog_pid}" 2> /dev/null || true
+  wait "${watchdog_pid}" 2> /dev/null || true
+  [ "${rc}" -le 128 ] || rc=124
+  return "${rc}"
+}
+
+# Run a command under a hard time limit.
+with_timeout() {  # seconds command...
   if command -v timeout > /dev/null; then
-    timeout "${secs}" "$@"
+    timeout "$@"
   elif command -v gtimeout > /dev/null; then
-    gtimeout "${secs}" "$@"
+    gtimeout "$@"
   else
-    local cmd_pid watchdog_pid rc=0
-    "$@" &
-    cmd_pid=$!
-    ( sleep "${secs}"; kill "${cmd_pid}" 2> /dev/null ) &
-    watchdog_pid=$!
-    wait "${cmd_pid}" || rc=$?
-    kill "${watchdog_pid}" 2> /dev/null || true
-    [ "${rc}" -le 128 ] || rc=124
-    return "${rc}"
+    watchdog_timeout "$@"
   fi
 }
 
@@ -110,24 +119,32 @@ if [ "${SKIP_CRAWL:-0}" != "1" ]; then
   echo "${crawl_out}" | grep -qi "example" || { echo "FAIL: crawled page not searchable" >&2; exit 1; }
 fi
 
-# Leg 5: crawl one page in browser mode into a fresh knowledge base. The first
-# crawl downloads Chromium, so the binary must load the crawler's native
-# library, fetch the browser, launch it and render the page. A fresh data dir
-# means the HTTP leg's index cannot satisfy the search below. The hard timeout
-# keeps a hung browser from holding the runner.
+# Leg 5: crawl one page in browser mode into a fresh knowledge base and a fresh
+# Chromium cache. The first crawl downloads Chromium, so the binary must load
+# the crawler's native library, fetch the browser, launch it and render the
+# page. The cache starts empty, so the headless shell can only be there if this
+# crawl installed it: a crawl that ignored the setting and fetched over HTTP
+# leaves the cache empty and fails. The hard timeout keeps a hung browser from
+# holding the runner.
 browser=""
 if [ "${SKIP_CRAWL:-0}" != "1" ]; then
   browser=", browser crawl"
   browser_data="${work}/browser-data"
+  browsers_dir="${work}/browsers"
+  mkdir -p "${browsers_dir}"
   rc=0
-  LILBEE_CRAWL_RENDER_MODE=browser with_timeout "${BROWSER_TIMEOUT:-900}" \
+  LILBEE_CRAWL_RENDER_MODE=browser PLAYWRIGHT_BROWSERS_PATH="${browsers_dir}" \
+    with_timeout "${BROWSER_TIMEOUT:-900}" \
     "${exe}" --data-dir "${browser_data}" add "https://example.com" || rc=$?
   [ "${rc}" -eq 0 ] || { echo "FAIL: browser crawl exited ${rc}" >&2; exit 1; }
+  compgen -G "${browsers_dir}/chromium_headless_shell-*/INSTALLATION_COMPLETE" > /dev/null \
+    || { echo "FAIL: the browser crawl did not install or launch Chromium" >&2; exit 1; }
   rc=0
   browser_out=$("${exe}" --data-dir "${browser_data}" search "domain for use in illustrative examples") || rc=$?
   echo "${browser_out}"
   [ "${rc}" -eq 0 ] || { echo "FAIL: browser crawl search exited ${rc}" >&2; exit 1; }
-  echo "${browser_out}" | grep -qi "example" || { echo "FAIL: browser-crawled page not searchable" >&2; exit 1; }
+  # Match page body text; the printed URL alone must not satisfy the check.
+  echo "${browser_out}" | grep -qi "illustrative examples" || { echo "FAIL: browser-crawled page not searchable" >&2; exit 1; }
 fi
 
 skipped=""
