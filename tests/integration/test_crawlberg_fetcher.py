@@ -94,7 +94,7 @@ CANCEL_BOUND_S = 2.0
 STREAM_CONCURRENCY = 3
 SETTLE_S = 1.0
 RETRY_ATTEMPTS = 2
-# The most retries crawlberg 1.11.1 accepts.
+# The most retries crawlberg 1.12.0 accepts.
 CRAWLBERG_RETRY_LIMIT = 20
 RETRY_DELAY_S = 0.05
 RETRY_STATUSES = {
@@ -867,7 +867,7 @@ class TestCrawlAndSave:
             for record in caplog.records
             if record.name.startswith(BACKEND_LOGGER) and record.levelname == "WARNING"
         ]
-        # crawlberg 1.11.1 leaves out a seed an exclude pattern matches, at any limit.
+        # A site crawl leaves out a seed an exclude pattern matches, at any limit.
         assert site.paths_since(0, EXCLUDED_SEED) == []
         assert paths == []
         assert warnings == [LEFT_OUT.format(url=seed, pattern=pattern)]
@@ -903,7 +903,7 @@ class TestCrawlAndSave:
             for record in caplog.records
             if record.name.startswith(BACKEND_LOGGER) and record.levelname == "WARNING"
         ]
-        # crawlberg 1.11.1 matches a pattern against the address without its userinfo.
+        # The pattern is matched against the address without its userinfo.
         assert site.paths_since(0, EXCLUDED_SEED) == []
         assert paths == []
         assert warnings == [LEFT_OUT.format(url=address, pattern=pattern)]
@@ -1948,6 +1948,22 @@ class TestRobotsTxt:
         assert reasons[0].startswith("The site's robots.txt could not be read ("), reasons
         assert "crawl_respect_robots_txt" in reasons[0]
 
+    async def test_a_page_with_a_self_signed_certificate_is_refused_in_http_mode(
+        self, self_signed_site
+    ):
+        events: list[tuple[EventType, object]] = []
+        paths = await crawl_and_save(
+            self_signed_site.url(ROBOTS_ALLOWED),
+            depth=0,
+            render_mode=HTTP,
+            on_progress=lambda kind, data: events.append((kind, data)),
+        )
+        reasons = _failure_reasons(events)
+        assert paths == []
+        assert len(reasons) == 1
+        assert reasons[0].startswith("The site's robots.txt could not be read (ssl: "), reasons
+        assert self_signed_site.paths_since(0, ROBOTS_ALLOWED) == []
+
     async def test_mcp_add_of_a_site_whose_robots_txt_cannot_be_read_names_the_setting(self, site):
         site.robots_status = HTTPStatus.SERVICE_UNAVAILABLE
         result = await mcp_add(paths=[site.url(ROBOTS_ALLOWED)], render_mode=HTTP)
@@ -1998,20 +2014,14 @@ class TestRobotsTxtInBrowserMode:
             single_paths, _ = asyncio.run(_robots_single_crawl(site, BROWSER))
         _assert_robots_ignored(site, site_paths, single_paths)
 
-    def test_a_certificate_only_chrome_accepts_names_the_setting_that_crawls_the_page(
+    def test_a_page_with_a_self_signed_certificate_is_crawled_with_its_robots_txt_read(
         self, self_signed_site
     ):
-        """crawlberg reads robots.txt without Chrome, so it refuses the certificate Chrome takes."""
         with windows_proactor_loop():
-            refused, events = asyncio.run(_page_crawl(self_signed_site, ROBOTS_ALLOWED, BROWSER))
-            cfg.crawl_respect_robots_txt = False
-            crawled, _ = asyncio.run(_page_crawl(self_signed_site, ROBOTS_ALLOWED, BROWSER))
-        reasons = _failure_reasons(events)
-        assert refused == []
-        assert len(reasons) == 1
-        assert reasons[0].startswith("The site's robots.txt could not be read (ssl: "), reasons
-        assert "crawl_respect_robots_txt" in reasons[0]
+            crawled, events = asyncio.run(_page_crawl(self_signed_site, ROBOTS_ALLOWED, BROWSER))
+        assert _failure_reasons(events) == []
         assert len(crawled) == 1
+        assert self_signed_site.paths_since(0, "/robots.txt")
         assert self_signed_site.paths_since(0, ROBOTS_ALLOWED) == [ROBOTS_ALLOWED]
 
 
