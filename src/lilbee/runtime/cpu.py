@@ -22,6 +22,8 @@ import math
 import os
 from pathlib import Path
 
+from lilbee.runtime.shard_process import shard_process
+
 log = logging.getLogger(__name__)
 
 _ENV_VAR = "LILBEE_CPU_QUOTA"
@@ -97,6 +99,8 @@ def cpu_quota() -> int:
     positive integer; non-positive or unparseable values fall back to
     the default and a warning is logged once per call.
     """
+    if shard_process.cpu_quota is not None:
+        return shard_process.cpu_quota
     override = os.environ.get(_ENV_VAR)
     if override is not None:
         try:

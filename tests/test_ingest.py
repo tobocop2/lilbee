@@ -2271,7 +2271,7 @@ class TestFanoutReadsTheCorpusHeldRecords:
             monkeypatch.setattr(pipeline, "plan_fanout", lambda: fanout.shard_specs(cfg, 2, 2))
             monkeypatch.setattr(fanout.multiprocessing, "get_context", lambda _k: FakeContext())
             monkeypatch.setattr(fanout, "_FINAL_DRAIN_S", 0.0)
-            monkeypatch.setattr(fanout, "_apply_shard_env", lambda spec: None)
+            monkeypatch.setattr(fanout, "_pin_shard", lambda spec: None)
             monkeypatch.setattr(
                 "lilbee.providers.fleet.child_guard.bind_lifetime_to_parent", lambda pid: None
             )
