@@ -2649,6 +2649,7 @@ def _wait_until(predicate, timeout: float = 5.0) -> bool:
     return predicate()
 
 
+@pytest.mark.fleet_warm_up
 def test_warm_up_pool_starts_swap_off_thread(monkeypatch, tmp_path: Path) -> None:
     # The eager warm-up at TUI mount must not block the caller; it dispatches a
     # background start thread and returns immediately.
@@ -2672,6 +2673,7 @@ def test_warm_up_pool_starts_swap_off_thread(monkeypatch, tmp_path: Path) -> Non
     assert _wait_until(lambda: p._swaps.get(WorkerRole.CHAT) is swap)
 
 
+@pytest.mark.fleet_warm_up
 def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch, tmp_path: Path) -> None:
     starts = {"n": 0}
     in_start = threading.Event()
