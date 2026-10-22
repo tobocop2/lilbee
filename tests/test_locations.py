@@ -791,6 +791,12 @@ class TestAResolverInALongRunningProcess:
 
         assert resolve_source_path("notes/a.md") == tmp_path / "after" / "a.md"
 
+    def test_a_pinned_registry_reports_that_it_was_not_refreshed(self, server):
+        assert settings.refresh_registry(server) is True
+        with settings.pin_registry(server):
+            assert settings.refresh_registry(server) is False
+        assert settings.refresh_registry(server) is True
+
     def test_a_read_that_fails_is_tried_again(self, server, tmp_path):
         from lilbee.data.ingest.discovery import resolve_source_path
 
