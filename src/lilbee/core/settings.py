@@ -229,15 +229,22 @@ def refresh_registry(config: Config) -> bool:
         return True
     try:
         stamp = overlay_stamp(config.data_root)
-        if stamp != watch.stamp:
-            roots = _persisted_roots(config)
+        if stamp == watch.stamp:
+            return True
+        pinned = False
+
+        def swap(roots: Any) -> None:
+            nonlocal pinned
             with watch.lock:
                 if watch.pins:
-                    return False
+                    pinned = True
+                    return
                 if roots is not None:
                     config.linked_roots = roots
                 watch.stamp = stamp
-        return True
+
+        _read_roots(config, swap)
+        return not pinned
     finally:
         watch.reading.release()
 
@@ -266,13 +273,18 @@ def fresh_registry_pinned(config: Config) -> Generator[None, None, None]:
         yield
 
 
-def _persisted_roots(config: Config) -> dict[str, str] | None:
-    """The registry config.toml holds, read under the lock a writer takes; None without one."""
+def _read_roots(config: Config, accept: Callable[[Any], None]) -> None:
+    """Pass *accept* the registry config.toml holds, None without one, under a writer's lock.
+
+    *accept* runs inside the lock, so a writer cannot change the file between the read
+    and the assignment.
+    """
     path = _overlay_file(config.data_root)
     if path is None:
-        return None
+        accept(None)
+        return
     with _config_write_lock(config.data_root):
-        return toml_value(path, "linked_roots")
+        accept(toml_value(path, "linked_roots"))
 
 
 def overlay_persisted_roots(config: Config) -> None:
@@ -282,6 +294,9 @@ def overlay_persisted_roots(config: Config) -> None:
     registry Config refuses, is reported and sets nothing.
     ``LILBEE_SKIP_TOML_CONFIG=1`` disables it.
     """
-    roots = _persisted_roots(config)
-    if roots is not None:
-        config.linked_roots = roots
+
+    def assign(roots: Any) -> None:
+        if roots is not None:
+            config.linked_roots = roots
+
+    _read_roots(config, assign)

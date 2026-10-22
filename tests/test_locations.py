@@ -335,7 +335,7 @@ class TestTheRegistryIsReadAgain:
         store = Store(config)
         store.get_sources()
 
-        with mock.patch.object(settings, "_persisted_roots") as read:
+        with mock.patch.object(settings, "_read_roots") as read:
             store.get_sources()
 
         read.assert_not_called()
@@ -718,7 +718,7 @@ class TestAResolverInALongRunningProcess:
         self._another_process_registers(server, "notes", tmp_path / "read")
         resolve_source_path("notes/a.md")
 
-        with mock.patch.object(settings, "_persisted_roots") as read:
+        with mock.patch.object(settings, "_read_roots") as read:
             resolve_source_path("notes/a.md")
 
         read.assert_not_called()
@@ -745,6 +745,7 @@ class TestAResolverInALongRunningProcess:
             ],
             stdout=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
         )
         try:
             assert holder.stdout is not None
@@ -774,15 +775,17 @@ class TestAResolverInALongRunningProcess:
 
         server.linked_roots = {"notes": str(tmp_path / "before")}
         self._another_process_registers(server, "notes", tmp_path / "after")
-        real = settings._persisted_roots
+        real = settings._read_roots
         pins = contextlib.ExitStack()
 
-        def pin_after_reading(config):
-            roots = real(config)
-            pins.enter_context(settings.pin_registry(config))  # another thread pins mid-read
-            return roots
+        def pin_after_reading(config, accept):
+            def pin_then_accept(roots):
+                pins.enter_context(settings.pin_registry(config))  # another thread pins mid-read
+                accept(roots)
 
-        with mock.patch.object(settings, "_persisted_roots", pin_after_reading):
+            real(config, pin_then_accept)
+
+        with mock.patch.object(settings, "_read_roots", pin_after_reading):
             assert resolve_source_path("notes/a.md") == tmp_path / "before" / "a.md"
         pins.close()
 
@@ -793,7 +796,7 @@ class TestAResolverInALongRunningProcess:
 
         self._another_process_registers(server, "notes", tmp_path / "read")
         with (
-            mock.patch.object(settings, "_persisted_roots", side_effect=OSError),
+            mock.patch.object(settings, "_read_roots", side_effect=OSError),
             pytest.raises(OSError),
         ):
             resolve_source_path("notes/a.md")
