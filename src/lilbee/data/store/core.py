@@ -1064,8 +1064,7 @@ class Store:
 
     def _locations(self) -> SourceLocations:
         """The rule sources are named by: the registry, read again when config.toml changes."""
-        if not settings.registry_is_pinned(self._config):
-            settings.refresh_registry(self._config)
+        if settings.refresh_registry(self._config):
             self._take_registry()
         return self._registry
 

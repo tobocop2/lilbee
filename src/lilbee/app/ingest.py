@@ -13,7 +13,7 @@ from pathlib import Path
 
 from lilbee.app.services import get_services
 from lilbee.core import settings
-from lilbee.core.config import active_config
+from lilbee.core.config import Config, active_config
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.system import DiskSpelling, disk_path
 from lilbee.data.ingest.discovery import (
@@ -342,6 +342,14 @@ def _held_covering(held: Collection[str], paths: list[Path]) -> tuple[set[str], 
     if not held:
         return set(), set()  # nothing to match, so the disk is not asked
     config = active_config()
+    with settings.fresh_registry_pinned(config):
+        return _covering_one_registry(config, held, paths)
+
+
+def _covering_one_registry(
+    config: Config, held: Collection[str], paths: list[Path]
+) -> tuple[set[str], set[str]]:
+    """Match *held* against *paths* while the registry in *config* stays fixed."""
     spelling = DiskSpelling()
     named = [spelling.of(p) for p in paths]
     bases = (config.documents_dir, *map(Path, config.linked_roots.values()))
@@ -482,6 +490,7 @@ def remove_documents_durably(
     if targets is None:
         targets = expand_remove_targets(names, known)
     failed = held_failures()
+    settings.refresh_registry(active_config())
     linked = active_config().linked_roots
     going = [label for label in (name.strip("/") for name in names) if label in linked]
     removable = set(known)
@@ -505,6 +514,7 @@ def forget_roots(names: list[str]) -> list[str]:
     The roots are un-registered even when the records cannot be changed; the
     error is raised after.
     """
+    settings.refresh_registry(active_config())
     roots = active_config().linked_roots
     labels = [label for label in (name.strip("/") for name in names) if label in roots]
     named = [Path(roots[label]) for label in labels]

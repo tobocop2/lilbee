@@ -6,7 +6,7 @@ import tomllib
 import weakref
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Any, TypeVar
 
@@ -182,10 +182,15 @@ def overlay_persisted_settings(root: Path) -> None:
 
 @dataclass
 class _RegistryWatch:
-    """The config.toml state one Config's registry was read at, and how many blocks hold it."""
+    """The config.toml state one Config's registry was read at, and how many blocks hold it.
+
+    ``lock`` makes a read of the file, the stamp it stores, and a change of the pin count
+    one step to every thread.
+    """
 
     stamp: tuple[int, int, int] | None = None
     pins: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class _RegistryWatches:
@@ -207,34 +212,46 @@ class _RegistryWatches:
 _registry_watches = _RegistryWatches()
 
 
-def registry_is_pinned(config: Config) -> bool:
-    """Whether a block holds the registry *config* names sources by."""
-    return _registry_watches.of(config).pins > 0
-
-
-def refresh_registry(config: Config) -> None:
+def refresh_registry(config: Config) -> bool:
     """Read the registry from config.toml again if another process changed the file.
 
-    One stat() when it did not. A pinned registry is left alone.
+    Costs an existence check and one stat() when the file is unchanged. A pinned registry
+    is left alone. Returns False when it is pinned. The stamp is stored after the read, so
+    a thread that finds the stamp new finds the registry read.
     """
     watch = _registry_watches.of(config)
-    if watch.pins:
-        return
-    stamp = overlay_stamp(config.data_root)
-    if stamp != watch.stamp:
-        watch.stamp = stamp
-        overlay_persisted_roots(config)
+    with watch.lock:
+        if watch.pins:
+            return False
+        stamp = overlay_stamp(config.data_root)
+        if stamp != watch.stamp:
+            overlay_persisted_roots(config)
+            watch.stamp = stamp
+        return True
 
 
 @contextmanager
 def pin_registry(config: Config) -> Generator[None, None, None]:
     """Hold the registry *config* has now: ``refresh_registry`` does nothing in the block."""
     watch = _registry_watches.of(config)
-    watch.pins += 1
+    with watch.lock:
+        watch.pins += 1
     try:
         yield
     finally:
-        watch.pins -= 1
+        with watch.lock:
+            watch.pins -= 1
+
+
+@contextmanager
+def fresh_registry_pinned(config: Config) -> Generator[None, None, None]:
+    """Read the registry again if the file changed, then hold it for the block.
+
+    A block that reads the registry and then resolves keys against it sees one registry.
+    """
+    refresh_registry(config)
+    with pin_registry(config):
+        yield
 
 
 def overlay_persisted_roots(config: Config) -> None:

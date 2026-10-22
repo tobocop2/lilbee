@@ -265,11 +265,12 @@ def resolve_source_path_checked(filename: str) -> Path | None:
     stored data.
     """
     config = active_config()
-    resolved = resolve_source_path(filename).resolve(strict=False)
-    roots = [
-        config.documents_dir.resolve(),
-        *(Path(root).resolve() for root in config.linked_roots.values()),
-    ]
+    with settings.fresh_registry_pinned(config):
+        resolved = resolve_source_path(filename).resolve(strict=False)
+        roots = [
+            config.documents_dir.resolve(),
+            *(Path(root).resolve() for root in config.linked_roots.values()),
+        ]
     if any(resolved == root or root in resolved.parents for root in roots):
         return resolved
     return None

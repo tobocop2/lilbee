@@ -671,20 +671,110 @@ class TestAResolverInALongRunningProcess:
 
         assert resolve_source_path("notes/a.md") == tmp_path / "after" / "a.md"
 
-    def test_an_unparsable_file_leaves_the_registry(self, server, tmp_path):
+    def test_an_unparsable_file_leaves_the_registry_it_read_before(self, server, tmp_path):
         from lilbee.data.ingest.discovery import resolve_source_path
 
-        server.linked_roots = {"notes": str(tmp_path / "before")}
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
+
         (server.data_root / "config.toml").write_text("not [valid", encoding="utf-8")
 
-        assert resolve_source_path("notes/a.md") == tmp_path / "before" / "a.md"
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
 
-    def test_a_missing_file_leaves_the_registry(self, server, tmp_path):
+    def test_a_deleted_file_leaves_the_registry_it_read_before(self, server, tmp_path):
         from lilbee.data.ingest.discovery import resolve_source_path
 
-        server.linked_roots = {"notes": str(tmp_path / "before")}
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
 
-        assert resolve_source_path("notes/a.md") == tmp_path / "before" / "a.md"
+        (server.data_root / "config.toml").unlink()
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
+
+    def test_an_unchanged_file_is_not_read_again(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        resolve_source_path("notes/a.md")
+
+        with mock.patch.object(settings, "overlay_persisted_roots") as overlay:
+            resolve_source_path("notes/a.md")
+
+        overlay.assert_not_called()
+
+    def test_a_second_thread_waits_for_the_read_another_began(self, server, tmp_path):
+        import contextvars
+        import threading
+
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        reading, release = threading.Event(), threading.Event()
+        real = settings.overlay_persisted_roots
+
+        def slow(config):
+            reading.set()
+            release.wait(5)
+            real(config)
+
+        seen = {}
+
+        def second():
+            seen["path"] = resolve_source_path("notes/a.md")
+
+        with mock.patch.object(settings, "overlay_persisted_roots", slow):
+            first = threading.Thread(
+                target=contextvars.copy_context().run, args=(resolve_source_path, "notes/a.md")
+            )
+            first.start()
+            assert reading.wait(5)
+            other = threading.Thread(target=contextvars.copy_context().run, args=(second,))
+            other.start()
+            release.set()
+            first.join(5)
+            other.join(5)
+
+        assert seen["path"] == tmp_path / "read" / "a.md"
+
+    def test_a_read_that_fails_is_tried_again(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        with (
+            mock.patch.object(settings, "overlay_persisted_roots", side_effect=OSError),
+            pytest.raises(OSError),
+        ):
+            resolve_source_path("notes/a.md")
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
+
+    def test_a_pin_taken_in_many_threads_is_counted_whole(self, server):
+        import threading
+
+        def pin():
+            for _ in range(200):
+                with settings.pin_registry(server):
+                    pass
+
+        threads = [threading.Thread(target=pin) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert settings._registry_watches.of(server).pins == 0
+
+    def test_held_keys_are_matched_against_one_registry(self, server, tmp_path):
+        from lilbee.app.ingest import _held_covering
+
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        self._another_process_registers(server, "docs", elsewhere)
+
+        covered, inside = _held_covering(["docs/x.md"], [elsewhere])
+
+        assert covered == {"docs/x.md"}
+        assert inside == set()
 
     def test_the_store_names_sources_by_what_a_resolver_read(self, server, tmp_path):
         from lilbee.data.ingest.discovery import resolve_source_path
