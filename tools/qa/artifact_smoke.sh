@@ -3,17 +3,42 @@
 # an installed wheel's entrypoint). Drives the user-facing surface end to end:
 # bundled extras + charset detection (self-check-extras), engine inference
 # (self-check: chat + embedding), document ingest + search, a RAG ask, and an
-# http-mode crawl. Models come from a pre-populated models
+# http-mode crawl, and a browser-mode crawl that proves the frozen binary loads
+# the crawler's native library and starts Chromium. Models come from a pre-populated models
 # directory (the ci-models mirror in CI); nothing here contacts HuggingFace.
 #
 # Reads:
 #   LILBEE_EXE   path to the lilbee entrypoint under test (required)
 #   MODELS_DIR   models dir holding the mirror set (default: platform dir)
-#   SKIP_CRAWL   set to 1 to skip the crawl leg (artifact lacks the crawler extra)
+#   SKIP_CRAWL   set to 1 to skip the crawl legs (artifact lacks the crawler extra)
+#   BROWSER_TIMEOUT  seconds the browser-mode crawl may run, including the
+#                    first-use Chromium download (default: 900)
 
 set -euxo pipefail
 
 exe="${LILBEE_EXE:?LILBEE_EXE is required}"
+
+# Run a command under a hard time limit. macOS runners ship no timeout(1), so
+# fall back to a background watchdog. Exits 124 on a timeout, like timeout(1).
+with_timeout() {  # seconds command...
+  local secs="$1"
+  shift
+  if command -v timeout > /dev/null; then
+    timeout "${secs}" "$@"
+  elif command -v gtimeout > /dev/null; then
+    gtimeout "${secs}" "$@"
+  else
+    local cmd_pid watchdog_pid rc=0
+    "$@" &
+    cmd_pid=$!
+    ( sleep "${secs}"; kill "${cmd_pid}" 2> /dev/null ) &
+    watchdog_pid=$!
+    wait "${cmd_pid}" || rc=$?
+    kill "${watchdog_pid}" 2> /dev/null || true
+    [ "${rc}" -le 128 ] || rc=124
+    return "${rc}"
+  fi
+}
 
 case "$(uname -s)" in
   Darwin) default_models="$HOME/Library/Application Support/lilbee/models" ;;
@@ -85,6 +110,26 @@ if [ "${SKIP_CRAWL:-0}" != "1" ]; then
   echo "${crawl_out}" | grep -qi "example" || { echo "FAIL: crawled page not searchable" >&2; exit 1; }
 fi
 
+# Leg 5: crawl one page in browser mode into a fresh knowledge base. The first
+# crawl downloads Chromium, so the binary must load the crawler's native
+# library, fetch the browser, launch it and render the page. A fresh data dir
+# means the HTTP leg's index cannot satisfy the search below. The hard timeout
+# keeps a hung browser from holding the runner.
+browser=""
+if [ "${SKIP_CRAWL:-0}" != "1" ]; then
+  browser=", browser crawl"
+  browser_data="${work}/browser-data"
+  rc=0
+  LILBEE_CRAWL_RENDER_MODE=browser with_timeout "${BROWSER_TIMEOUT:-900}" \
+    "${exe}" --data-dir "${browser_data}" add "https://example.com" || rc=$?
+  [ "${rc}" -eq 0 ] || { echo "FAIL: browser crawl exited ${rc}" >&2; exit 1; }
+  rc=0
+  browser_out=$("${exe}" --data-dir "${browser_data}" search "domain for use in illustrative examples") || rc=$?
+  echo "${browser_out}"
+  [ "${rc}" -eq 0 ] || { echo "FAIL: browser crawl search exited ${rc}" >&2; exit 1; }
+  echo "${browser_out}" | grep -qi "example" || { echo "FAIL: browser-crawled page not searchable" >&2; exit 1; }
+fi
+
 skipped=""
 [ "${SKIP_CRAWL:-0}" = "1" ] && skipped=" (extras and crawl skipped)"
-echo "ARTIFACT SMOKE PASSED: extras, self-check, ingest, search, ask${skipped}"
+echo "ARTIFACT SMOKE PASSED: extras, self-check, ingest, search, ask${browser}${skipped}"
