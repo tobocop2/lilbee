@@ -6141,15 +6141,10 @@ class TestSelfCheck:
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
         # The Vulkan adapter probe runs in a child that gets 10 seconds, and on a
-        # loaded Windows runner it does not always start inside them. Both the
-        # loader safety step and the sizing device read ask that probe, so stub
-        # the probe itself, and keep the loader safety step's environment writes
-        # out of this process.
+        # loaded Windows runner it does not always start inside them. The sizing
+        # device read asks that probe, so stub the probe itself.
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_select._enumerate_vulkan_devices", lambda: None
-        )
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda *a, **k: None
         )
         fake_swap = mock.MagicMock()
         fake_swap.start.side_effect = RuntimeError("engine died")

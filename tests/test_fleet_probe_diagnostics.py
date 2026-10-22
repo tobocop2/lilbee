@@ -156,10 +156,6 @@ class TestABootTimeEmptyAnswerIsRetried:
             return planning_mod.DeviceReading(devices, EngineBackend.CUDA)
 
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
-        monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
-        )
         monkeypatch.setattr(planning_mod, "_read_devices", _resolve)
         monkeypatch.setattr(planning_mod, "_PROBE_RETRY_DELAY_S", 0.0)
         return calls

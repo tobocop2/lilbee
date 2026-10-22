@@ -12,7 +12,6 @@ line; this file is not touched.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from collections.abc import Sequence
@@ -29,6 +28,7 @@ from lilbee.providers.fleet.gpu_backends import (
 from lilbee.providers.fleet.gpu_backends import (
     intel_util_hint as _detect_intel_util_hint,
 )
+from lilbee.providers.fleet.gpu_env import gpu_environ
 
 
 class DeviceLike(Protocol):
@@ -125,7 +125,7 @@ def _cuda_order_is_reordered() -> bool:
     drift apart: unset means the probe supplies bus order and the two index
     spaces agree, and a preset value is respected there and honoured here.
     """
-    order = os.environ.get(_CUDA_ORDER_VAR, "").strip().upper()
+    order = gpu_environ().get(_CUDA_ORDER_VAR, "").strip().upper()
     return bool(order) and order != _PCI_BUS_ID_ORDER
 
 
@@ -159,8 +159,9 @@ def _physical_index(backend_name: str, fleet_index: int) -> int | None:
     if backend_name == _CUDA_BACKEND and _cuda_order_is_reordered():
         return None
     index = fleet_index
+    env = gpu_environ()
     for var in _BACKEND_VISIBLE_VARS.get(backend_name, ()):
-        raw = os.environ.get(var)
+        raw = env.get(var)
         if not raw:
             continue
         entries = [e.strip() for e in raw.split(",")]

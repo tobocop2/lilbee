@@ -172,6 +172,7 @@ class TestStart:
 
         monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
         monkeypatch.setattr(sm, "spawn_bound_child", _capturing_popen)
+        monkeypatch.setattr(sm, "engine_environ", lambda: {"MARK": "engine-env"})
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
@@ -185,6 +186,9 @@ class TestStart:
         assert getattr(captured["stdout"], "name", None) == str(log_path)
         assert captured["stdout"] is not subprocess.PIPE
         assert captured["stderr"] is subprocess.STDOUT
+        # The engine inherits the pin and loader safety through the spawn env,
+        # because nothing writes them into this process.
+        assert captured["env"] == {"MARK": "engine-env"}
         # shutdown releases the captured handle.
         mgr.shutdown()
         assert mgr._log_file is None

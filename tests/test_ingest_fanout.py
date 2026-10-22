@@ -201,7 +201,7 @@ class TestPlanFanout:
         assert fanout.plan_fanout() == []
 
     def test_a_gpu_devices_pin_is_the_space_the_workers_are_dealt_in(self, monkeypatch):
-        """Counting cards before the pin lands would deal workers cards it excludes."""
+        """The card count runs under the pin, so workers are never dealt a card it excludes."""
         monkeypatch.setattr(cfg, "gpu_devices", "2,3")
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: True)
@@ -210,12 +210,15 @@ class TestPlanFanout:
         def counted():
             import os
 
-            seen["mask"] = os.environ.get("CUDA_VISIBLE_DEVICES")
+            from lilbee.providers.fleet.gpu_env import gpu_environ
+
+            seen["mask"] = gpu_environ().get("CUDA_VISIBLE_DEVICES")
+            seen["process"] = os.environ.get("CUDA_VISIBLE_DEVICES")
             return 2
 
         monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", counted)
         specs = fanout.plan_fanout()
-        assert seen["mask"] == "2,3"
+        assert seen == {"mask": "2,3", "process": None}
         assert [spec.visible_devices["CUDA_VISIBLE_DEVICES"] for spec in specs] == ["2", "3"]
 
     def test_a_big_corpus_on_several_cards_fans_out(self, monkeypatch):

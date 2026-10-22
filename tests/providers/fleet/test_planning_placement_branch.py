@@ -48,8 +48,6 @@ def test_read_device_cache_ttl_zero_always_probes(monkeypatch):
 
 def test_resolve_placement_plan_uses_read_cache(monkeypatch):
     """The read/view path serves repeat plans from the device cache (one probe)."""
-    import lilbee.providers.fleet.cuda_runtime as cuda_runtime
-    import lilbee.providers.fleet.gpu_env as gpu_env
 
     planning.clear_read_device_cache()
     calls = {"n": 0}
@@ -59,8 +57,6 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
         return planning.DeviceReading([], EngineBackend.CPU)
 
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
-    monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
     monkeypatch.setattr(planning, "_read_devices", counting)
     monkeypatch.setattr(
         planning,
@@ -184,13 +180,9 @@ def test_no_saved_spec_is_not_reported_as_applied(monkeypatch):
 
 def test_interactive_resolve_still_raises(monkeypatch):
     """Without the fallback opt-in an unfittable spec raises, so an apply fails loud."""
-    import lilbee.providers.fleet.cuda_runtime as cuda_runtime
-    import lilbee.providers.fleet.gpu_env as gpu_env
 
     planning.clear_read_device_cache()
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
-    monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
     monkeypatch.setattr(
         planning, "_read_devices", lambda _b: planning.DeviceReading([], EngineBackend.CPU)
     )
@@ -213,13 +205,9 @@ def test_interactive_resolve_still_raises(monkeypatch):
 
 def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     """The view path opts into the fallback and marks the spec as not applied."""
-    import lilbee.providers.fleet.cuda_runtime as cuda_runtime
-    import lilbee.providers.fleet.gpu_env as gpu_env
 
     planning.clear_read_device_cache()
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
-    monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
     monkeypatch.setattr(
         planning, "_read_devices", lambda _b: planning.DeviceReading([], EngineBackend.CPU)
     )

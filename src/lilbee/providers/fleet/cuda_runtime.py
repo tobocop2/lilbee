@@ -115,23 +115,13 @@ def cuda_runtime_env(binary: Path | None = None) -> dict[str, str]:
     if not parts and not dirs:
         return {}
     parts += [str(d) for d in dirs]
-    # Drop existing entries that are already wheel dirs so calling this on every
-    # reload pass (apply_cuda_runtime_env) is idempotent instead of accumulating
-    # duplicate copies that get baked into each spawned server's environment.
+    # Drop existing entries that are already wheel dirs so an inherited path that
+    # already carries them does not gain duplicate copies in each spawned server's
+    # environment.
     wheel_dirs = set(parts)
     existing = os.environ.get("LD_LIBRARY_PATH", "")
     parts.extend(entry for entry in existing.split(os.pathsep) if entry and entry not in wheel_dirs)
     return {"LD_LIBRARY_PATH": os.pathsep.join(parts)}
-
-
-def apply_cuda_runtime_env(binary: Path | None = None) -> None:
-    """Put the CUDA-runtime wheel libs on this process's ``LD_LIBRARY_PATH``.
-
-    The device probe and the child servers then resolve the same runtime, so a
-    zero-device probe reflects a genuinely unusable GPU rather than a probe that
-    merely ran without the wheel libraries on its search path.
-    """
-    os.environ.update(cuda_runtime_env(binary))
 
 
 def _linked_cuda_major(ldd_output: str) -> int | None:

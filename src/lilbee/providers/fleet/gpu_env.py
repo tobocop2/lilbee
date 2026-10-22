@@ -1,8 +1,11 @@
-"""Apply GPU-visibility and Vulkan-loader environment before the engine starts.
+"""The environment a fleet child runs in: GPU visibility and Vulkan-loader safety.
 
-Binding-free: sets the backend visible-device env vars (from ``cfg.gpu_devices``
-or Vulkan autodetect) and the dual-vendor Vulkan crash mitigations. These are
-process-wide ``setdefault`` writes, so a child llama-server inherits them.
+Binding-free: composes the backend visible-device env vars (from
+``cfg.gpu_devices``) and the dual-vendor Vulkan crash mitigations over a copy of
+this process's environment. Nothing here writes ``os.environ``: ``setenv``
+reallocates the C ``environ`` array, and a native thread reading it at that moment
+(lancedb's runtime) can fault. A caller passes the returned mapping as ``env=`` at
+spawn, and a reader that needs the effective value reads it from that mapping.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import MutableMapping
 
 log = logging.getLogger(__name__)
 
@@ -57,13 +61,13 @@ _VK_LOADER_LAYERS_DISABLE_GLOBS: tuple[str, ...] = (
 _VK_LOADER_LAYERS_DISABLE_VALUE = ",".join(_VK_LOADER_LAYERS_DISABLE_GLOBS)
 
 
-def _apply_vulkan_loader_safety() -> None:
-    """Disable known-crashing overlay layers and conflicting dual-vendor ICDs.
+def _apply_vulkan_loader_safety(env: MutableMapping[str, str]) -> None:
+    """Disable known-crashing overlay layers and conflicting dual-vendor ICDs in *env*.
 
-    Must precede every ``vkCreateInstance``: the loader loads every ICD and layer
-    at instance creation, before ``GGML_VK_VISIBLE_DEVICES`` is consulted, so
-    device pinning alone cannot stop a buggy second-vendor ICD from corrupting the
-    heap. ``setdefault`` preserves any user-set value.
+    Must reach every child that calls ``vkCreateInstance``: the loader loads every
+    ICD and layer at instance creation, before ``GGML_VK_VISIBLE_DEVICES`` is
+    consulted, so device pinning alone cannot stop a buggy second-vendor ICD from
+    corrupting the heap. A value already in *env* is kept.
     """
     from lilbee.providers.fleet.gpu_select import (
         VulkanIcdEnvVar,
@@ -71,20 +75,20 @@ def _apply_vulkan_loader_safety() -> None:
     )
 
     if sys.platform == "win32" or sys.platform.startswith("linux"):
-        os.environ.setdefault(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, _VK_LOADER_LAYERS_DISABLE_VALUE)
+        env.setdefault(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, _VK_LOADER_LAYERS_DISABLE_VALUE)
     disable_glob = disable_conflicting_vulkan_icds()
     if disable_glob is not None:
-        os.environ.setdefault(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, disable_glob)
+        env.setdefault(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, disable_glob)
         log.info("Disabling conflicting Vulkan ICDs: %s", disable_glob)
 
 
-def _apply_gpu_devices_pin() -> bool:
-    """Apply the user's ``cfg.gpu_devices`` pin to every backend's visible-devices var.
+def _apply_gpu_devices_pin(env: MutableMapping[str, str]) -> bool:
+    """Put the user's ``cfg.gpu_devices`` pin in *env* for every backend's visible-devices var.
 
     Returns ``True`` when a pin was applied (so the caller can skip autodetect).
     The pin goes to all four backend vars because the user is naming indexes
-    that match their own wheel's enumeration. A non-empty env var the caller
-    already set is kept, since that is an equally explicit instruction arriving
+    that match their own wheel's enumeration. A non-empty value *env* already
+    carries is kept, since that is an equally explicit instruction arriving
     closer to the process.
 
     An empty one is replaced. It carries no index to respect, and the pin is the
@@ -97,10 +101,10 @@ def _apply_gpu_devices_pin() -> bool:
 
     if not cfg.gpu_devices:
         return False
-    for name in (*_NON_AMD_VISIBLE_ENV_VARS, amd_visible_var()):
-        if os.environ.get(name, "").strip():
+    for name in (*_NON_AMD_VISIBLE_ENV_VARS, amd_visible_var(env)):
+        if env.get(name, "").strip():
             continue
-        os.environ[name] = cfg.gpu_devices
+        env[name] = cfg.gpu_devices
     return True
 
 
@@ -112,9 +116,10 @@ def shard_visible_devices(device: int) -> dict[str, str]:
     """
     from lilbee.providers.fleet.devices import amd_visible_var
 
+    env = gpu_environ()
     return {
-        name: _mask_entry(os.environ.get(name, ""), device)
-        for name in (*_NON_AMD_VISIBLE_ENV_VARS, amd_visible_var())
+        name: _mask_entry(env.get(name, ""), device)
+        for name in (*_NON_AMD_VISIBLE_ENV_VARS, amd_visible_var(env))
     }
 
 
@@ -126,8 +131,8 @@ def _mask_entry(mask: str, device: int) -> str:
     return entries[device % len(entries)]
 
 
-def _clear_empty_visible_device_vars() -> None:
-    """Drop an empty ``CUDA_VISIBLE_DEVICES`` only when the container runtime contradicts it.
+def _clear_empty_visible_device_vars(env: MutableMapping[str, str]) -> None:
+    """Drop an empty ``CUDA_VISIBLE_DEVICES`` from *env* when the container runtime contradicts it.
 
     An empty visibility variable is not a mistake to be corrected. It is the
     documented way to say "no devices", it is what SLURM and Kubernetes export on
@@ -143,11 +148,11 @@ def _clear_empty_visible_device_vars() -> None:
     CUDA variable is touched; it says nothing about an AMD or Vulkan opt-out, and
     those are always left alone.
     """
-    if not _container_runtime_exposes_a_gpu():
+    if not _container_runtime_exposes_a_gpu(env):
         return
-    if _CUDA_VISIBLE_VAR in os.environ and not os.environ[_CUDA_VISIBLE_VAR].strip():
-        del os.environ[_CUDA_VISIBLE_VAR]
-        log.info(
+    if _CUDA_VISIBLE_VAR in env and not env[_CUDA_VISIBLE_VAR].strip():
+        del env[_CUDA_VISIBLE_VAR]
+        log.debug(
             "%s was empty while %s exposes a GPU; clearing the empty mask so the engine "
             "can see the card the container runtime provided.",
             _CUDA_VISIBLE_VAR,
@@ -155,27 +160,46 @@ def _clear_empty_visible_device_vars() -> None:
         )
 
 
-def _container_runtime_exposes_a_gpu() -> bool:
+def _container_runtime_exposes_a_gpu(env: MutableMapping[str, str]) -> bool:
     """Whether the NVIDIA container runtime says this container was given a GPU.
 
     ``void`` and ``none`` are its own words for "no GPU", so they confirm the
     empty mask rather than contradict it.
     """
-    value = os.environ.get(_NVIDIA_RUNTIME_VISIBLE_VAR, "").strip().casefold()
+    value = env.get(_NVIDIA_RUNTIME_VISIBLE_VAR, "").strip().casefold()
     return bool(value) and value not in _NVIDIA_RUNTIME_NO_GPU_VALUES
 
 
-def apply_fleet_gpu_env() -> None:
-    """Fleet engine bootstrap: loader safety plus the ``cfg.gpu_devices`` pin only.
+def gpu_environ() -> dict[str, str]:
+    """This process's environment with the ``cfg.gpu_devices`` pin and the empty-mask fix applied.
+
+    A copy: the process environment is not touched. Cheap and free of disk reads,
+    so a sampler may call it every second. Anything that reads a visible-devices
+    variable to learn which cards the engine sees reads it here, not from
+    ``os.environ``, because the pin lives only in this mapping.
 
     Nothing here chooses a device. The fleet selects through its own placement,
     and anything pinning ``GGML_VK_VISIBLE_DEVICES`` before ``probe_devices``
     runs would hide every other GPU from it and switch off ggml's own device
     filtering besides. A ``cfg.gpu_devices`` pin is still honored, since there
-    the user is naming their own indexes (the probe inherits this environment).
-    An empty backend visible-devices var from the orchestrator is cleared first so it
-    does not hide a present GPU, and so a pin can replace it rather than be blocked.
+    the user is naming their own indexes. An empty backend visible-devices var from
+    the orchestrator is cleared first so it does not hide a present GPU, and so a
+    pin can replace it rather than be blocked.
     """
-    _apply_vulkan_loader_safety()
-    _clear_empty_visible_device_vars()
-    _apply_gpu_devices_pin()
+    env = dict(os.environ)
+    _clear_empty_visible_device_vars(env)
+    _apply_gpu_devices_pin(env)
+    return env
+
+
+def engine_environ() -> dict[str, str]:
+    """The environment for a child that loads the engine or the Vulkan loader.
+
+    :func:`gpu_environ` plus the Vulkan loader safety. The loader reads its
+    variables when the child creates its first instance, so this must be the
+    ``env=`` of every such spawn. The ICD discovery reads the host's device tree,
+    which is why the sampling readers use :func:`gpu_environ` instead.
+    """
+    env = gpu_environ()
+    _apply_vulkan_loader_safety(env)
+    return env
