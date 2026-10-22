@@ -89,8 +89,9 @@ IPV6_FORM_OF_PUBLIC_IPV4 = "[2002:808:808::]"
 SLOW_PAGES = 40
 SLOW_DELAY_S = 0.3
 CANCEL_BOUND_S = 2.0
-# A request sent just before the crawl stops can reach the site just after it.
-LATE_START_MARGIN_S = 0.1
+# The most requests crawlberg holds open at once in a streamed crawl. A request the site records
+# after the stream stops was either open when it stopped, or started after it.
+STREAM_CONCURRENCY = 3
 SETTLE_S = 1.0
 RETRY_ATTEMPTS = 2
 # The most retries crawlberg 1.11.1 accepts.
@@ -469,6 +470,8 @@ class _Site:
         self.sitemap_authorization = ""
         self.robots_status = HTTPStatus.OK
         self.robots_text = ROBOTS_TXT
+        # How long a slow page's request waits before the site records it, as on a busy runner.
+        self.slow_arrival_delay_s = 0.0
         self._answered: set[str] = set()
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -571,6 +574,8 @@ class _Site:
                 """Silence the access log."""
 
             def do_GET(self) -> None:
+                if self.path.startswith("/slow/p"):
+                    time.sleep(site.slow_arrival_delay_s)
                 with site._lock:
                     site.requests.append((time.monotonic(), self.path))
                     site.agents.append((self.path, self.headers.get("User-Agent", "")))
@@ -764,7 +769,7 @@ def _stream(fetcher: CrawlbergFetcher, url: str, **kwargs):
         depth=kwargs.get("depth", 1),
         max_pages=kwargs.get("max_pages"),
         timeout=10,
-        concurrency=ConcurrencySpec(semaphore_count=3),
+        concurrency=ConcurrencySpec(semaphore_count=STREAM_CONCURRENCY),
         filters=FilterSpec(),
         cancel=kwargs.get("cancel"),
     )
@@ -772,7 +777,11 @@ def _stream(fetcher: CrawlbergFetcher, url: str, **kwargs):
 
 @pytest.mark.usefixtures("allow_loopback")
 class TestCancel:
-    async def test_cancel_stops_the_stream_and_no_request_starts_after_it(self, site):
+    @pytest.mark.parametrize("arrival_delay_s", [0.0, SLOW_DELAY_S], ids=["prompt", "late-arrival"])
+    async def test_cancel_stops_the_stream_and_no_request_starts_after_it(
+        self, site, arrival_delay_s
+    ):
+        site.slow_arrival_delay_s = arrival_delay_s
         cancel = threading.Event()
         received: list[FetchedPage] = []
         fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP)
@@ -785,7 +794,7 @@ class TestCancel:
         stopped_at = time.monotonic()
         assert stopped_at - cancelled_at < CANCEL_BOUND_S
         await asyncio.sleep(SETTLE_S)
-        assert site.paths_since(stopped_at + LATE_START_MARGIN_S, "/slow/p") == []
+        assert len(site.paths_since(stopped_at, "/slow/p")) <= STREAM_CONCURRENCY
         assert site.paths_since(0, "/slow/p")
         assert len(received) <= 4
 
