@@ -851,7 +851,7 @@ def chunks(
     )
     for c in cleaned:
         idx = c.get("chunk_index", "?")
-        chunk_text = strip_control_characters(c.get("chunk", ""))
+        chunk_text = strip_control_characters(c.get("chunk", ""), keep_lines=True)
         preview = chunk_text[:CHUNK_PREVIEW_LEN]
         if len(chunk_text) > CHUNK_PREVIEW_LEN:
             preview += "..."
