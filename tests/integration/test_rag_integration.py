@@ -158,6 +158,13 @@ class TestSearchQuality:
         assert "api-perf.md" in sources, f"api-perf.md not in {sources}"
 
 
+# Every test in these two classes generates text with the real model. On the
+# macOS CPU runners one generation took 48 to 114 s on passing runs and up to
+# 182 s on a slow runner, so the 180 s default cap sits inside the normal range.
+_GENERATION_TIMEOUT_SECONDS = 360
+
+
+@pytest.mark.timeout(_GENERATION_TIMEOUT_SECONDS)
 class TestAnswerGeneration:
     """Answer generation with real LLM (Qwen3 0.6B) and real search."""
 
@@ -167,14 +174,10 @@ class TestAnswerGeneration:
         assert result.answer
         assert len(result.answer) > 0
 
-    @pytest.mark.timeout(360)
     def test_ask_includes_citations(self, rag_pipeline):
         """ask_raw() returns source references from real search.
 
-        Bumped to 360s: the citation block is appended after the full LLM
-        stream completes, so on macOS CPU CI runners (no Metal in the VM
-        pool) Qwen3-0.6B's reasoning + 512-token budget can exhaust the
-        default 180s integration cap before Sources is yielded.
+        The citation block is appended after the full LLM stream completes.
         """
         result = ask_raw("What engine does the Thunderbolt have?", top_k=5)
         assert len(result.sources) > 0
@@ -416,6 +419,7 @@ class TestStructuredQueries:
             reset_provider()
 
 
+@pytest.mark.timeout(_GENERATION_TIMEOUT_SECONDS)
 class TestAskStream:
     """Tests for ask_stream() with real LLM streaming."""
 
@@ -434,12 +438,10 @@ class TestAskStream:
         assert len(tokens) > 0
         assert all(isinstance(t, StreamToken) for t in tokens)
 
-    @pytest.mark.timeout(360)
     def test_stream_ends_with_citations(self, rag_pipeline):
         """The last token from ask_stream() contains source citations.
 
-        Bumped to 360s for the same reason as ``test_ask_includes_citations``:
-        the Sources token is only yielded after the full LLM stream completes.
+        The Sources token is only yielded after the full LLM stream completes.
         """
         from lilbee.retrieval.reasoning import StreamToken
 
