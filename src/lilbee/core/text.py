@@ -14,6 +14,8 @@ _ESCAPE_SEQUENCE_RE = re.compile(
     r"|\x1b[ -~]"
 )
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# The same set without TAB (0x09) and LF (0x0a), for text that spans lines.
+_CONTROL_KEEP_LINES_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
 def collapse_whitespace(text: str) -> str:
@@ -26,9 +28,16 @@ def collapse_whitespace(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
-def strip_control_characters(text: str) -> str:
-    """*text* without terminal escape sequences or any other control character."""
-    return _CONTROL_RE.sub("", _ESCAPE_SEQUENCE_RE.sub("", text))
+def strip_control_characters(text: str, *, keep_lines: bool = False) -> str:
+    """*text* without terminal escape sequences or any other control character.
+
+    A title or label is one line, so by default line breaks and tabs go too. With
+    *keep_lines* the text may span lines: tabs and line feeds stay, and CRLF becomes LF.
+    """
+    stripped = _ESCAPE_SEQUENCE_RE.sub("", text)
+    if keep_lines:
+        return _CONTROL_KEEP_LINES_RE.sub("", stripped.replace("\r\n", "\n"))
+    return _CONTROL_RE.sub("", stripped)
 
 
 # Trailing possessive clitic on an entity surface: 's with a straight or

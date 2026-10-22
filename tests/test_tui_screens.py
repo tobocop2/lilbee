@@ -16228,6 +16228,25 @@ class TestTerminalSafeWikiScreen:
             source = screen.query_one("#wiki-content", Markdown).source
             assert TERMINAL_CONTROL_RE.search(source.replace("\n", "")) is None
 
+    async def test_an_opened_page_keeps_the_lines_of_its_body(self, tmp_path):
+        from textual.widgets import Markdown
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.wiki.browse import WikiPageContent
+
+        body = "# Title\n\n- a\n- b\n\n```py\nx = 1\n```\n"
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        page = WikiPageContent("summaries/a/b", "T", body + "\x1b[31m")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            with patch("lilbee.wiki.browse.read_page", return_value=page):
+                screen._display_page("summaries/a/b")
+            assert screen.query_one("#wiki-content", Markdown).source == body
+
     @pytest.mark.parametrize("text", CONTROL_TITLES)
     async def test_an_opened_page_shows_no_control_character(self, tmp_path, text):
         from textual.widgets import Markdown

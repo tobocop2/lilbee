@@ -254,7 +254,7 @@ def wiki_read(
             }
         )
         return
-    console.print(strip_control_characters(page.content))
+    console.print(strip_control_characters(page.content, keep_lines=True))
 
 
 @wiki_app.command(name="citations")
@@ -345,7 +345,7 @@ def _render_citations(
             Text(rec["citation_key"]),
             Text(strip_control_characters(column_value(rec))),
             rec["claim_type"],
-            Text(strip_control_characters(excerpt)),
+            Text(strip_control_characters(excerpt, keep_lines=True)),
         )
     console.print(table)
 

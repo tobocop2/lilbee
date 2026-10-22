@@ -1780,12 +1780,17 @@ class ChatScreen(Screen[None]):
         """Mount a completed message widget for a resumed turn."""
         log = self._chat_log
         if message.role == MessageRole.USER:
-            log.mount(UserMessage(message.content))
+            log.mount(UserMessage(strip_control_characters(message.content, keep_lines=True)))
             return
         # Constructed complete, not appended-to after mounting: mount() is async,
         # so append_content/finish would both no-op against a content widget that
         # compose has not built yet, and the answer would render empty.
-        log.mount(AssistantMessage(content=message.content, sources=list(message.sources)))
+        log.mount(
+            AssistantMessage(
+                content=strip_control_characters(message.content, keep_lines=True),
+                sources=list(message.sources),
+            )
+        )
 
     @work(thread=True, group=_TURN_WORKER_GROUP)
     def _stream_response(self, turn: _Turn, chunk_type: ChunkType | None) -> None:
