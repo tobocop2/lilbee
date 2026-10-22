@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 from filelock import FileLock, SoftFileLock
 from filelock import Timeout as FileLockTimeout
 
+from lilbee.runtime.shard_process import shard_process
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -65,6 +67,8 @@ def machine_engine_dir() -> Path:
     """The per-OS-user engine slot every lilbee process scans first."""
     from lilbee.core.system import default_state_dir
 
+    if shard_process.engine_dir is not None:
+        return shard_process.engine_dir
     override = os.environ.get(ENGINE_DIR_ENV, "").strip()
     if override:
         return Path(override)

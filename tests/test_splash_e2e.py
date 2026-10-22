@@ -132,4 +132,3 @@ class TestSplashSubprocessLifecycle:
         # Child should exit within a few seconds
         handle.process.wait(timeout=5.0)
         assert handle.process.returncode is not None
-        os.environ.pop("_LILBEE_SPLASH_FD", None)

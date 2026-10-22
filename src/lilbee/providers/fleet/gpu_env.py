@@ -15,6 +15,8 @@ import os
 import sys
 from collections.abc import MutableMapping
 
+from lilbee.runtime.shard_process import shard_process
+
 log = logging.getLogger(__name__)
 
 # Backend env vars set from ``cfg.gpu_devices``. Vulkan, CUDA, and ROCm each read
@@ -187,6 +189,7 @@ def gpu_environ() -> dict[str, str]:
     pin can replace it rather than be blocked.
     """
     env = dict(os.environ)
+    env.update(shard_process.visible_devices)
     _clear_empty_visible_device_vars(env)
     _apply_gpu_devices_pin(env)
     return env

@@ -15,6 +15,7 @@ from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.cli.upgrade_line import UpgradeLine
 from lilbee.core.config import RefusedVariableError, cfg, refuse_environment
+from lilbee.core.config.model import export_download_environment
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.onefile_cache import cleanup_stale_onefile_caches
@@ -84,6 +85,7 @@ def _apply_data_root(root: Path) -> None:
     cfg.lancedb_dir = root / "data" / "lancedb"
     os.environ["LILBEE_DATA"] = str(root)
     overlay_persisted_settings(root)
+    export_download_environment()
 
 
 def _resolve_data_root(data_dir: Path | None, use_global: bool) -> None:

@@ -27,7 +27,6 @@ from lilbee.data.ingest.errors import error_reason
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
-from lilbee.runtime.engine_lock import ENGINE_DIR_ENV
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -36,6 +35,7 @@ from lilbee.runtime.progress import (
     ProgressEvent,
 )
 from lilbee.runtime.progress.columns import literal_text_column
+from lilbee.runtime.shard_process import shard_process
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -51,8 +51,6 @@ log = logging.getLogger(__name__)
 # Per-worker state (engine slots, log) under the parent data root. The index
 # and the ``.lilbeeignore`` are the corpus's, at the parent data root itself.
 SHARDS_DIRNAME = "shards"
-_DATA_ROOT_ENV = "LILBEE_DATA"
-_CPU_QUOTA_ENV = "LILBEE_CPU_QUOTA"
 
 # Below this many files on disk a fan-out costs more than it saves: every worker
 # pays a fresh interpreter and its own engine.
@@ -190,12 +188,13 @@ def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -
     )
 
 
-def _apply_shard_env(spec: ShardSpec) -> None:
-    """Pin this process to the worker's card, engine slot, CPU share and log."""
-    os.environ.update(spec.visible_devices)
-    os.environ[ENGINE_DIR_ENV] = str(spec.engine_dir)
-    os.environ[_DATA_ROOT_ENV] = str(spec.config.data_root)
-    os.environ[_CPU_QUOTA_ENV] = str(spec.cpu_share)
+def _pin_shard(spec: ShardSpec) -> None:
+    """Pin this process to the worker's card, engine slot, CPU share and log.
+
+    Nothing is written to ``os.environ``: the readers take the card, engine dir
+    and CPU share from the process's slice state.
+    """
+    shard_process.bind(spec.engine_dir, spec.cpu_share, spec.visible_devices)
     _redirect_output(spec.config.data_root / WORKER_LOG_NAME)
 
 
@@ -443,7 +442,7 @@ def run_shard(
     from lilbee.providers.fleet.child_guard import bind_lifetime_to_parent
 
     bind_lifetime_to_parent(options.parent_pid)
-    _apply_shard_env(spec)
+    _pin_shard(spec)
     index = spec.shard.index
     reporter = _ShardReporter(index, messages)
     try:

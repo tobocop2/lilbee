@@ -25,6 +25,7 @@ from lilbee.runtime.progress import (
     OcrBackendUsed,
     SyncDoneEvent,
 )
+from lilbee.runtime.shard_process import ShardProcessState
 
 # Far above the drain interval: a run that waits for a worker message fails here, not hangs.
 _CANCEL_BOUND_S = 5.0
@@ -279,19 +280,22 @@ class TestShardSpecs:
 
 
 class TestShardEnvironment:
-    def test_a_worker_pins_its_card_engine_slot_and_cpu_share(self, monkeypatch):
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    def test_a_worker_pins_its_card_engine_slot_and_cpu_share_without_the_environment(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(fanout, "shard_process", ShardProcessState())
         redirected = []
         monkeypatch.setattr(fanout, "_redirect_output", redirected.append)
+        before = dict(os.environ)
         spec = _spec(1, device=3)
 
-        fanout._apply_shard_env(spec)
+        fanout._pin_shard(spec)
 
-        assert os.environ["CUDA_VISIBLE_DEVICES"] == "3"
-        assert os.environ["LILBEE_ENGINE_DIR"] == str(spec.engine_dir)
-        assert os.environ["LILBEE_CPU_QUOTA"] == "4"
-        assert os.environ["LILBEE_DATA"] == str(spec.config.data_root)
+        assert fanout.shard_process.visible_devices["CUDA_VISIBLE_DEVICES"] == "3"
+        assert fanout.shard_process.engine_dir == spec.engine_dir
+        assert fanout.shard_process.cpu_quota == 4
         assert redirected == [spec.config.data_root / fanout.WORKER_LOG_NAME]
+        assert dict(os.environ) == before
 
     def test_a_worker_logs_to_its_own_data_root(self, tmp_path):
         """N workers logging onto the parent's terminal is what the one bar replaces."""
@@ -409,7 +413,7 @@ class TestRunShard:
             return SyncResult(added=["a.txt"])
 
         monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
-        monkeypatch.setattr(fanout, "_apply_shard_env", lambda spec: None)
+        monkeypatch.setattr(fanout, "_pin_shard", lambda spec: None)
         messages = queue_mod.Queue()
         spec = _spec(1)
         fanout.run_shard(
@@ -431,7 +435,7 @@ class TestRunShard:
             raise RuntimeError("no embedding model")
 
         monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
-        monkeypatch.setattr(fanout, "_apply_shard_env", lambda spec: None)
+        monkeypatch.setattr(fanout, "_pin_shard", lambda spec: None)
         messages = queue_mod.Queue()
         fanout.run_shard(
             _spec(0), fanout.ShardOptions(parent_pid=os.getppid()), messages, threading.Event()

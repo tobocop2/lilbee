@@ -20,8 +20,6 @@ from typing import Any
 
 from lilbee.runtime._splash_runner import TAKEOVER_BYTE
 
-_SPLASH_FD_ENV = "_LILBEE_SPLASH_FD"
-
 _SHOW_CURSOR = "\033[?25h"
 
 _STOP_TIMEOUT = 3.0
@@ -93,8 +91,6 @@ def start() -> SplashHandle | None:
 
     os.close(read_fd)
 
-    os.environ[_SPLASH_FD_ENV] = str(write_fd)
-
     handle = SplashHandle(process=proc, write_fd=write_fd)
     _active_handle = handle
 
@@ -118,8 +114,6 @@ def stop(handle: SplashHandle | None) -> None:
         handle.process.kill()
         handle.process.wait(timeout=1.0)
 
-    os.environ.pop(_SPLASH_FD_ENV, None)
-
     _active_handle = None
 
     _restore_cursor()
@@ -136,19 +130,12 @@ def dismiss() -> None:
     """
     global _active_handle
 
-    fd_str = os.environ.pop(_SPLASH_FD_ENV, None)
-    if fd_str is not None:
-        _signal_takeover(int(fd_str))
-        _close_write_fd(int(fd_str))
-
     handle = _active_handle
     if handle is None:
         return
     _active_handle = None
 
-    # Signal and close the write end. This may double-signal/close the same
-    # fd that the env-var path already handled; both helpers suppress
-    # OSError so that is harmless.
+    # Signal and close the write end; both helpers suppress OSError.
     # No _restore_cursor() here: we are inside Textual's alt-screen,
     # where writing cursor-show would produce a visible artifact.
     _signal_takeover(handle.write_fd)

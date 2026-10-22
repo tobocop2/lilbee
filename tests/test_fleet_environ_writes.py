@@ -1,9 +1,12 @@
-"""No fleet thread writes the process environment.
+"""No lilbee thread writes the process environment after startup.
 
 ``setenv`` reallocates the C ``environ`` array. A native thread reading the
 environment at the same moment (lancedb's runtime, the Vulkan loader) can walk
-freed memory and segfault. The GPU variables belong in the environment handed to
-a child at spawn, never in this process's own.
+freed memory and segfault. A value a child needs belongs in the environment
+handed to that child at spawn. A value a library reads in this process is set
+once at startup, on the main thread, before lilbee starts any thread. A library
+can already own native threads then (importing pyarrow starts three), so the set
+of startup writes is small and named.
 """
 
 from __future__ import annotations
@@ -19,9 +22,34 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import cuda_runtime, gpu_env, gpu_select, planning
 
-FLEET_SOURCE = Path(planning.__file__).parent
+SOURCE = Path(planning.__file__).parents[2]
 
-_WRITE_METHODS = {"setdefault", "update", "pop", "popitem", "clear"}
+# Writes allowed at startup: the main thread runs them while lilbee has started
+# no thread of its own. A library may already own native threads (pyarrow starts
+# three when it is imported), which is why a variable that a child reads is set
+# here once and never again. Each entry is a file and the function that holds
+# the write ("<module>" is top-level code), so a new write in the same file
+# fails the scan.
+_STARTUP_WRITES = {
+    ("__init__.py", "<module>"): "import-time default, set on the importing main thread",
+    ("__init__.py", "_disable_xet_where_it_stalls"): "called once at import, main thread",
+    ("__main__.py", "_isolate_vendored_openssl"): "entry-point default before any command runs",
+    ("crawler/__init__.py", "<module>"): "import-time default, importing main thread",
+    ("core/config/model.py", "<module>"): "import-time export of the data root and marks",
+    ("core/config/model.py", "export_download_environment"): "startup export, main thread",
+    ("cli/app.py", "_apply_data_root"): "the CLI callback exports the data root on the main thread",
+}
+
+_WRITE_METHODS = {
+    "setdefault",
+    "update",
+    "pop",
+    "popitem",
+    "clear",
+    "__setitem__",
+    "__delitem__",
+    "__ior__",
+}
 _WRITE_FUNCTIONS = {"putenv", "unsetenv"}
 
 
@@ -54,48 +82,96 @@ class _RecordingEnviron(MutableMapping[str, str]):
 
 
 def _is_environ(node: ast.expr, aliases: set[str]) -> bool:
-    """True for ``os.environ``, a bare imported ``environ``, or a name bound to either."""
+    """True for ``os.environ`` or a name bound to the environment mapping."""
     if isinstance(node, ast.Attribute):
         return node.attr == "environ"
     return isinstance(node, ast.Name) and (node.id == "environ" or node.id in aliases)
 
 
 def _environ_aliases(tree: ast.AST) -> set[str]:
-    """Names assigned the environment mapping itself, such as ``env = os.environ``."""
+    """Names bound to the environment mapping: ``env = os.environ``, ``import environ as e``."""
     aliases: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and _is_environ(node.value, aliases):
             aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            aliases.update(a.asname or a.name for a in node.names if a.name == "environ")
     return aliases
 
 
-def _writes_in(source: str) -> list[int]:
-    """Line numbers where *source* assigns to, deletes from, or mutates the environment."""
+def _is_write(node: ast.AST, aliases: set[str]) -> bool:
+    if isinstance(node, ast.Subscript):
+        return _is_environ(node.value, aliases) and isinstance(node.ctx, ast.Store | ast.Del)
+    if isinstance(node, ast.AugAssign):
+        return _is_environ(node.target, aliases)
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr in _WRITE_FUNCTIONS or (
+            _is_environ(func.value, aliases) and func.attr in _WRITE_METHODS
+        )
+    return isinstance(func, ast.Name) and func.id in _WRITE_FUNCTIONS
+
+
+def _writes_in(source: str) -> list[tuple[int, str]]:
+    """``(line, function)`` for each place *source* mutates the environment.
+
+    The function is the dotted name of the innermost enclosing function, or
+    ``<module>`` for top-level code.
+    """
     tree = ast.parse(source)
     aliases = _environ_aliases(tree)
-    lines: list[int] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Subscript) and _is_environ(node.value, aliases):
-            if isinstance(node.ctx, ast.Store | ast.Del):
-                lines.append(node.lineno)
-        elif isinstance(node, ast.Call):
-            func = node.func
-            if isinstance(func, ast.Attribute):
-                mutates_environ = _is_environ(func.value, aliases) and func.attr in _WRITE_METHODS
-                if mutates_environ or func.attr in _WRITE_FUNCTIONS:
-                    lines.append(node.lineno)
-            elif isinstance(func, ast.Name) and func.id in _WRITE_FUNCTIONS:
-                lines.append(node.lineno)
-    return lines
+    found: list[tuple[int, str]] = []
+
+    def visit(node: ast.AST, scope: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                name = child.name if scope == "<module>" else f"{scope}.{child.name}"
+                visit(child, name)
+                continue
+            if _is_write(child, aliases):
+                found.append((child.lineno, scope))
+            visit(child, scope)
+
+    visit(tree, "<module>")
+    return sorted(found)
 
 
-def test_no_fleet_module_writes_the_process_environment() -> None:
-    offenders = {
-        f"{path.relative_to(FLEET_SOURCE)}:{line}"
-        for path in sorted(FLEET_SOURCE.rglob("*.py"))
-        for line in _writes_in(path.read_text(encoding="utf-8"))
+def _offenders(sources: dict[str, str]) -> set[str]:
+    return {
+        f"{rel}:{line} in {scope}"
+        for rel, text in sources.items()
+        for line, scope in _writes_in(text)
+        if (rel, scope) not in _STARTUP_WRITES
     }
-    assert not offenders, f"fleet code writes os.environ at {sorted(offenders)}"
+
+
+def _tree_sources() -> dict[str, str]:
+    return {
+        str(path.relative_to(SOURCE)): path.read_text(encoding="utf-8")
+        for path in sorted(SOURCE.rglob("*.py"))
+    }
+
+
+def test_no_module_writes_the_process_environment_after_startup() -> None:
+    offenders = _offenders(_tree_sources())
+    assert not offenders, f"code writes os.environ at {sorted(offenders)}"
+
+
+def test_every_startup_write_entry_still_has_a_write() -> None:
+    """A stale entry would let a future write back in unnoticed."""
+    live = {(rel, scope) for rel, text in _tree_sources().items() for _, scope in _writes_in(text)}
+    assert set(_STARTUP_WRITES) <= live
+
+
+def test_a_new_write_in_an_allowed_file_goes_red() -> None:
+    sources = _tree_sources()
+    assert not _offenders(sources)
+    for rel, _scope in _STARTUP_WRITES:
+        probe = dict(sources)
+        probe[rel] += "\n\ndef _from_a_thread() -> None:\n    os.environ['X'] = '1'\n"
+        assert _offenders(probe) == {f"{rel}:{probe[rel].count(chr(10))} in _from_a_thread"}
 
 
 def test_the_scan_sees_each_kind_of_environment_write() -> None:
@@ -116,8 +192,34 @@ def test_the_scan_sees_each_kind_of_environment_write() -> None:
         "env = os.environ\n"
         "env['H'] = '1'\n"
         "env.setdefault('I', '1')\n"
+        "os.environ |= {'J': '1'}\n"
+        "os.environ.__setitem__('K', '1')\n"
+        "from os import environ as aliased\n"
+        "aliased['L'] = '1'\n"
+        "def inner():\n"
+        "    os.environ['M'] = '1'\n"
+        "class C:\n"
+        "    def method(self):\n"
+        "        os.environ['N'] = '1'\n"
     )
-    assert _writes_in(source) == [2, 3, 4, 5, 6, 7, 8, 12, 13, 15, 16]
+    assert _writes_in(source) == [
+        (2, "<module>"),
+        (3, "<module>"),
+        (4, "<module>"),
+        (5, "<module>"),
+        (6, "<module>"),
+        (7, "<module>"),
+        (8, "<module>"),
+        (12, "<module>"),
+        (13, "<module>"),
+        (15, "<module>"),
+        (16, "<module>"),
+        (17, "<module>"),
+        (18, "<module>"),
+        (20, "<module>"),
+        (22, "inner"),
+        (25, "method"),
+    ]
 
 
 def test_planning_on_a_worker_thread_writes_no_environment(
@@ -233,3 +335,45 @@ def test_the_engine_help_run_gets_the_engine_environment(
     assert binary.engine_help(tmp_path / "unique-help-binary") == "usage\n"
     assert seen["env"] == {"MARK": "engine-env"}
     binary.engine_help.cache_clear()
+
+
+def test_a_load_warning_logs_once_without_touching_the_environment(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The warned-once memory lives in the process, not in a variable."""
+    from lilbee.core.config.load_warnings import warn_on_load
+
+    recording = _RecordingEnviron(dict(os.environ))
+    monkeypatch.setattr(os, "environ", recording)
+
+    with caplog.at_level("WARNING"):
+        warn_on_load("bad value")
+        warn_on_load("bad value")
+        warn_on_load("bad value", "v2")
+
+    assert [r.getMessage() for r in caplog.records] == ["bad value", "bad value"]
+    assert recording.writes == []
+
+
+def test_a_shard_worker_is_pinned_without_the_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The readers take the card, the engine dir and the CPU share from the slice state."""
+    from lilbee.runtime import cpu, engine_lock
+    from lilbee.runtime.shard_process import ShardProcessState
+
+    state = ShardProcessState()
+    for module in (cpu, engine_lock, gpu_env):
+        monkeypatch.setattr(module, "shard_process", state)
+    monkeypatch.setenv("LILBEE_CPU_QUOTA", "99")
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "other"))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2")
+    recording = _RecordingEnviron(dict(os.environ))
+    monkeypatch.setattr(os, "environ", recording)
+
+    state.bind(tmp_path / "slot", 4, {"CUDA_VISIBLE_DEVICES": "2"})
+
+    assert cpu.cpu_quota() == 4
+    assert engine_lock.machine_engine_dir() == tmp_path / "slot"
+    assert gpu_env.gpu_environ()["CUDA_VISIBLE_DEVICES"] == "2"
+    assert recording.writes == []
