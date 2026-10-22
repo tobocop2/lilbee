@@ -1215,15 +1215,6 @@ uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,litellm]' --extr
 pip install --pre 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
 ```
 
-**Upgrading from a release that used crawl4ai:** pip keeps the `unclecode-litellm` package from that release. It writes into the litellm package, so remote models fail to load. lilbee stops with a message that names both packages. If you use pip, remove the fork and reinstall litellm:
-
-```bash
-pip uninstall -y unclecode-litellm
-pip install --force-reinstall --no-deps "litellm==$(pip show litellm | sed -n 's/^Version: //p')"
-```
-
-If you use uv, run your `uv tool install` command again with `--reinstall`.
-
 </details>
 
 **NVIDIA users**: the default Vulkan build works, but the CUDA flavour is
