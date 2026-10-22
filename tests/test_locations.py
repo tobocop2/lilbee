@@ -787,6 +787,7 @@ class TestAResolverInALongRunningProcess:
 
         with mock.patch.object(settings, "_read_roots", pin_after_reading):
             assert resolve_source_path("notes/a.md") == tmp_path / "before" / "a.md"
+            assert settings.refresh_registry(server) is False
         pins.close()
 
         assert resolve_source_path("notes/a.md") == tmp_path / "after" / "a.md"
@@ -796,6 +797,41 @@ class TestAResolverInALongRunningProcess:
         with settings.pin_registry(server):
             assert settings.refresh_registry(server) is False
         assert settings.refresh_registry(server) is True
+
+    def test_the_registry_is_assigned_while_the_writer_lock_is_held(self, server, tmp_path):
+        from collections.abc import Mapping
+        from types import MappingProxyType
+
+        from filelock import FileLock, Timeout
+
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        held_during_assignment = []
+
+        class _Probe:
+            data_root = server.data_root
+            _roots: Mapping[str, str] = MappingProxyType({})
+
+            @property
+            def linked_roots(self):
+                return self._roots
+
+            @linked_roots.setter
+            def linked_roots(self, value):
+                probe = FileLock(str(server.data_root / "config.toml.lock"))
+                try:
+                    probe.acquire(timeout=0)
+                except Timeout:
+                    held_during_assignment.append(True)
+                else:
+                    probe.release()
+                    held_during_assignment.append(False)
+                self._roots = value
+
+        probe = _Probe()
+        assert settings.refresh_registry(probe) is True
+
+        assert held_during_assignment == [True]
+        assert probe.linked_roots == {"notes": str(tmp_path / "read")}
 
     def test_a_read_that_fails_is_tried_again(self, server, tmp_path):
         from lilbee.data.ingest.discovery import resolve_source_path

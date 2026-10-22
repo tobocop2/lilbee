@@ -219,8 +219,8 @@ def refresh_registry(config: Config) -> bool:
 
     Costs an existence check and one stat() when the file is unchanged. A pinned registry
     is left alone. Returns False when it is pinned. A caller that finds another caller
-    reading the file does not wait: it uses the registry as it is. The stamp is stored
-    after the registry, so a thread that finds the stamp new finds the registry read.
+    reading the file does not wait: it uses the registry as it is. The registry and the
+    stamp change together under one small lock, inside the lock a writer takes.
     """
     watch = _registry_watches.of(config)
     if watch.pins:
