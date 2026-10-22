@@ -16136,3 +16136,117 @@ async def test_chat_slash_delete_lists_a_name_without_control_characters(mock_sv
             await _pilot.pause()
             mock_notify.assert_called_once()
             assert TERMINAL_CONTROL_RE.search(mock_notify.call_args[0][0].replace("\n", "")) is None
+
+
+class TestTerminalSafeWikiScreen:
+    """A wiki page title or entity label shows in the TUI without a control character."""
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_the_page_header_shows_a_title_without_control_characters(self, title):
+        from lilbee.cli.tui.screens.wiki import _format_page_header
+
+        header = _format_page_header(title, "entity", 1, "2026-01-01", None)
+        assert TERMINAL_CONTROL_RE.search(header.plain) is None
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_the_breadcrumb_shows_a_title_without_control_characters(self, title):
+        from lilbee.cli.tui.screens.wiki import _breadcrumb_for_slug
+
+        assert TERMINAL_CONTROL_RE.search(_breadcrumb_for_slug("a/b/c", title).plain) is None
+
+    @pytest.mark.parametrize("slug", ["rootonly", "a/b/leaf", "a/b/index"])
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    async def test_the_tree_shows_a_title_without_control_characters(self, tmp_path, slug, title):
+        from textual.widgets import Tree
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.wiki.browse import WikiPageInfo
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            tree = screen.query_one("#wiki-page-list", Tree)
+            tree.reset("Wiki")
+            group = tree.root.add("Summaries", expand=True)
+            screen._insert_page(group, WikiPageInfo(slug, title, "summary", 0, ""), {})
+            nodes = [group, *group.children]
+            for node in group.children:
+                nodes.extend(node.children)
+            labels = [node.label.plain for node in nodes]
+            assert any(label.strip() for label in labels[1:])
+            assert all(TERMINAL_CONTROL_RE.search(label) is None for label in labels)
+
+    @pytest.mark.parametrize("label", CONTROL_TITLES)
+    async def test_the_stub_group_shows_a_label_without_control_characters(self, tmp_path, label):
+        from textual.widgets import Tree
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        stub = WikiStub("ford", label, EntityKind.ENTITY, "PERSON", (("a", 1),), (("a", 0),))
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            tree = screen.query_one("#wiki-page-list", Tree)
+            tree.reset("Wiki")
+            screen._add_stub_group(tree, [stub], expand=True)
+            leaf = tree.root.children[0].children[0]
+            assert TERMINAL_CONTROL_RE.search(leaf.label.plain) is None
+
+    @pytest.mark.parametrize("label", CONTROL_TITLES)
+    async def test_the_stub_detail_shows_a_label_without_control_characters(self, tmp_path, label):
+        from textual.widgets import Markdown
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        stub = WikiStub("ford", label, EntityKind.ENTITY, "PERSON", (("a", 1),), (("a", 0),))
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            screen._stubs = {"ford": stub}
+            event = SimpleNamespace(node=SimpleNamespace(data="ford"))
+            with (
+                patch("lilbee.cli.tui.screens.wiki._describe_sources", return_value="a.md"),
+                patch("lilbee.cli.tui.screens.wiki.confirm_stub_generation"),
+            ):
+                screen._on_node_selected(event)
+            source = screen.query_one("#wiki-content", Markdown).source
+            assert TERMINAL_CONTROL_RE.search(source.replace("\n", "")) is None
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    async def test_an_opened_page_shows_no_control_character(self, tmp_path, text):
+        from textual.widgets import Markdown
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.wiki.browse import WikiPageContent
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        page = WikiPageContent("summaries/a/b", text, text)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            with patch("lilbee.wiki.browse.read_page", return_value=page):
+                screen._display_page("summaries/a/b")
+            header = screen.query_one("#wiki-page-header", Static).content.plain
+            crumb = screen.query_one("#wiki-breadcrumb", Static).content.plain
+            body = screen.query_one("#wiki-content", Markdown).source
+            for shown in (header, crumb, body):
+                assert TERMINAL_CONTROL_RE.search(shown.replace("\n", "")) is None

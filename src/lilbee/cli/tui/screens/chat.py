@@ -1611,7 +1611,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.FORK_FAILED.format(error=exc), severity="warning")
             return
         fork = self._load_session(fork_id)
-        self.notify(msg.FORK_DONE.format(title=fork.meta.title))
+        self.notify(msg.FORK_DONE.format(title=strip_control_characters(fork.meta.title)))
         self._set_input("")
         self._enter_insert_mode()
 
@@ -1722,7 +1722,7 @@ class ChatScreen(Screen[None]):
         """Load a saved session into the chat view, make it the active one, and focus the prompt."""
         session = self._load_session(session_id)
         self.focus_prompt()
-        self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
+        self.notify(msg.SESSIONS_RESUMED.format(title=strip_control_characters(session.meta.title)))
 
     def _load_session(self, session_id: str) -> Session:
         """Replace the conversation with a saved session's transcript and summary."""
