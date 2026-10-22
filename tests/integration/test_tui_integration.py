@@ -11,6 +11,7 @@ Run with:
 from __future__ import annotations
 
 import threading
+from unittest import mock
 
 import pytest
 from textual.app import ComposeResult
@@ -91,6 +92,7 @@ def _first_leaf_with_slug(node):
 class TestChatFlow:
     """Real chat with streaming LLM response."""
 
+    @pytest.mark.fleet_warm_up
     async def test_chat_returns_real_answer(self, rag_pipeline) -> None:
         """Type a question about indexed docs, get a real streamed answer."""
         from lilbee.app.services import reset_services
@@ -122,6 +124,9 @@ class TestChatFlow:
             # (llama-cpp segfaults if model is freed while worker thread reads from it)
             for worker in list(app.screen.workers):
                 await worker.wait()
+            for thread in threading.enumerate():
+                if thread.name == "fleet-warm-up":
+                    thread.join(timeout=60)
 
             assert len(app.screen._history) >= 2
             assistant_reply = app.screen._history[-1]["content"]
@@ -279,7 +284,9 @@ class TestModelSwitch:
             app = _IntegrationChatApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                await _submit_slash(pilot, app, "/model ollama/qwen3:0.6b")
+                # The swap would reload and warm the fleet; the test reads the config only.
+                with mock.patch.object(app.screen, "apply_model_change"):
+                    await _submit_slash(pilot, app, "/model ollama/qwen3:0.6b")
 
             assert cfg.chat_model == "ollama/qwen3:0.6b", (
                 f"Expected chat_model='ollama/qwen3:0.6b', got '{cfg.chat_model}'"
