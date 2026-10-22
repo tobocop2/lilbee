@@ -49,18 +49,18 @@ case "${sub}" in
         fail_leg search
         echo "1. smoke-doc.md   blue quartz resonator array"
         ;;
-      *"use in illustrative"*)
+      *"use in documentation"*)
         fail_leg browser-search
         if [ "${SMOKE_BROWSER_URL_ONLY:-0}" = "1" ]; then
           echo "1. https://example.com"
         elif [ "${SMOKE_BROWSER_INDEXED:-1}" = "1" ]; then
-          echo "1. https://example.com   This domain is for use in illustrative examples"
+          echo "1. https://example.com   This domain is for use in documentation examples without needing permission."
         fi
         ;;
-      *examples*)
+      *"use in examples"*)
         fail_leg crawl
         if [ "${SMOKE_CRAWL_INDEXED:-1}" = "1" ]; then
-          echo "1. https://example.com   This domain is for use in illustrative examples"
+          echo "1. https://example.com   This domain is for use in documentation examples without needing permission."
         fi
         ;;
     esac
