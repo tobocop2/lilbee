@@ -47,9 +47,27 @@ git commit -q -m "${message}"
 echo "commit: $(git log -1 --format='%h %s')"
 
 pr=$(gh pr list --head "${branch}" --state open --json number --jq '.[0].number // empty')
+# True when version $1 is older than version $2. A version is major.minor.patch
+# with an optional bN beta suffix, and a beta is older than its release. One
+# that does not parse is never older, so its pull request stays open.
+older_than() {
+  jq -n -e --arg a "$1" --arg b "$2" '
+    def key: capture("^(?<m>[0-9]+)\\.(?<n>[0-9]+)\\.(?<p>[0-9]+)(b(?<b>[0-9]+))?$")
+      | [(.m | tonumber), (.n | tonumber), (.p | tonumber), (if .b then (.b | tonumber) else infinite end)];
+    ($a | key) < ($b | key)' > /dev/null 2>&1
+}
+
 # A version starts with a digit, so lilbee-<v> never matches lilbee-cuda-<v>.
-superseded=$(gh pr list --state open --limit 200 --json number,headRefName \
-  --jq ".[] | select(.headRefName | test(\"^flake-pins/${package}-[0-9]\")) | select(.headRefName != \"${branch}\") | .number")
+# Only older versions are superseded: republishing an old tag leaves a newer pin alone.
+open_pins=$(gh pr list --state open --limit 200 --json number,headRefName \
+  --jq ".[] | select(.headRefName | test(\"^flake-pins/${package}-[0-9]\")) | \"\(.number) \(.headRefName)\"")
+superseded=""
+while read -r n name; do
+  [ -n "${n}" ] || continue
+  if older_than "${name#"flake-pins/${package}-"}" "${version}"; then
+    superseded="${superseded} ${n}"
+  fi
+done <<< "${open_pins}"
 
 if [ "${dry_run}" = "true" ]; then
   git show --stat --format= HEAD

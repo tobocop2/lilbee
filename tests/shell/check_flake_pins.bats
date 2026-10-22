@@ -61,6 +61,16 @@ check() {
   [ "$status" -eq 1 ]
 }
 
+@test "a file that is JSON but not an object is named as such" {
+  for body in '[]' '"pins"' '3' 'null'; do
+    pins sources.json "${body}"
+    run check
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"sources.json: not a JSON object"* ]] || { echo "${body}: ${output}" >&2; return 1; }
+    [[ "$output" != *"not valid JSON"* ]]
+  done
+}
+
 @test "no file to check fails" {
   run bash "${SCRIPT}"
   [ "$status" -eq 2 ]

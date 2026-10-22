@@ -110,3 +110,47 @@ job_needs() {
   [[ "$output" == *"nix flake check --all-systems --no-build"* ]]
   [[ "$output" == *"p.drvPath"* ]]
 }
+
+# The path filter's two groups, read as the YAML the filter action reads.
+path_group() {
+  yq -r '.jobs.changes.steps[] | select(.id == "filter") | .with.filters' "${CI}" | yq -r ".$1[]"
+}
+
+@test "the flake group is exactly the flake's inputs and this workflow" {
+  run path_group flake
+  [ "$status" -eq 0 ]
+  expected=$(printf '%s\n' flake.nix flake.lock sources.json sources-cuda.json sources-rocm.json \
+    sources-compat.json .github/workflows/ci.yml)
+  [ "$output" = "${expected}" ]
+}
+
+@test "the code group covers every tree the code jobs test" {
+  run path_group code
+  [ "$status" -eq 0 ]
+  for p in 'src/**' 'tests/**' pyproject.toml uv.lock Makefile engine-versions.env \
+    scripts/check_style_rules.py 'scripts/*.sh' 'scripts/qa/**' 'tools/qa/**' 'packages/lilbee/**' \
+    'tools/wheel-build/**' 'packaging/tools/**' '.github/workflows/**' '.github/actions/**'; do
+    printf '%s\n' "$output" | grep -qxF -e "${p}" || { echo "code group lost ${p}" >&2; return 1; }
+  done
+}
+
+@test "the path filter defines the code and flake groups and no other" {
+  run bash -c "yq -r '.jobs.changes.steps[] | select(.id == \"filter\") | .with.filters' '${CI}' | yq -r 'keys | join(\",\")'"
+  [ "$output" = "code,flake" ]
+  run yq -r '.jobs.changes.outputs | keys | join(",")' "${CI}"
+  [ "$output" = "code,flake" ]
+}
+
+@test "each job runs on the path group it tests" {
+  run yq -r '.jobs | to_entries | .[] | select(.key != "changes" and .key != "ci-result") | .key + "=" + .value.if' "${CI}"
+  [ "$status" -eq 0 ]
+  expected=$(printf '%s\n' \
+    "lint=needs.changes.outputs.code == 'true'" \
+    "shell=needs.changes.outputs.code == 'true'" \
+    "npm-launcher=needs.changes.outputs.code == 'true'" \
+    "fuzz-smoke=needs.changes.outputs.code == 'true'" \
+    "test=needs.changes.outputs.code == 'true'" \
+    "integration=needs.changes.outputs.code == 'true'" \
+    "flake=needs.changes.outputs.flake == 'true'")
+  [ "$output" = "${expected}" ]
+}
