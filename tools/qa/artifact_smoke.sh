@@ -132,6 +132,10 @@ if [ "${SKIP_CRAWL:-0}" != "1" ]; then
   browser_data="${work}/browser-data"
   browsers_dir="${work}/browsers"
   mkdir -p "${browsers_dir}"
+  # A native Windows executable needs a Windows path in the environment.
+  if command -v cygpath > /dev/null; then
+    browsers_dir=$(cygpath -m "${browsers_dir}")
+  fi
   rc=0
   LILBEE_CRAWL_RENDER_MODE=browser PLAYWRIGHT_BROWSERS_PATH="${browsers_dir}" \
     with_timeout "${BROWSER_TIMEOUT:-900}" \
