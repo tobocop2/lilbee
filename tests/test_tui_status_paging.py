@@ -85,12 +85,17 @@ def _hint(app) -> Static:
     return app.screen.query_one("#docs-more", Static)
 
 
+def _highlight_row(table: DataTable, row: int) -> None:
+    """Send the event a cursor move makes, without the scroll a real move also makes.
+
+    A real move scrolls the table, and the scroll can start the next page by
+    itself; this event leaves the cursor as the only trigger.
+    """
+    table.post_message(DataTable.RowHighlighted(table, row, table.ordered_rows[row].key))
+
+
 async def _loaded(pilot, table: DataTable, rows: int) -> None:
     assert await wait_until(pilot, lambda: table.row_count == rows, timeout=5.0)
-
-
-async def _loaded_at_least(pilot, table: DataTable, rows: int) -> None:
-    assert await wait_until(pilot, lambda: table.row_count >= rows, timeout=5.0)
 
 
 async def test_scrolling_to_the_end_loads_each_page_until_every_source_shows():
@@ -123,11 +128,30 @@ async def test_moving_the_cursor_near_the_end_loads_the_next_page():
         table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
         await _loaded(pilot, table, PAGE)
 
-        table.move_cursor(row=PAGE - 1)
-        # A stale scroll event can start the third page before this wait polls,
-        # so the row count can pass 2 * PAGE without ever equalling it.
-        await _loaded_at_least(pilot, table, 2 * PAGE)
-        assert _names(table) == [r["filename"] for r in library.records[: table.row_count]]
+        _highlight_row(table, PAGE - 1)
+        await _loaded(pilot, table, 2 * PAGE)
+        assert _names(table) == [r["filename"] for r in library.records[: 2 * PAGE]]
+        assert [r["offset"] for r in library.reads] == [0, PAGE]
+
+
+async def test_a_slow_page_read_leaves_the_rows_alone_until_it_lands():
+    library = _Library(TOTAL)
+    library.gate = threading.Event()
+    library.gate_offset = PAGE
+    _install(library)
+    app = _StatusApp()
+    async with app.run_test(size=SIZE) as pilot:
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _loaded(pilot, table, PAGE)
+
+        _highlight_row(table, PAGE - 1)
+        assert await wait_until(pilot, lambda: len(library.reads) >= 2, timeout=5.0)
+        assert library.reads[1] == {"limit": PAGE, "offset": PAGE}
+        assert table.row_count == PAGE
+
+        library.gate.set()
+        await _loaded(pilot, table, 2 * PAGE)
+        assert _names(table) == [r["filename"] for r in library.records[: 2 * PAGE]]
 
 
 async def test_each_load_asks_for_one_page_never_all():
