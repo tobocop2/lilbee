@@ -184,13 +184,15 @@ def overlay_persisted_settings(root: Path) -> None:
 class _RegistryWatch:
     """The config.toml state one Config's registry was read at, and how many blocks hold it.
 
-    ``lock`` makes a read of the file, the stamp it stores, and a change of the pin count
-    one step to every thread.
+    ``lock`` guards the pin count and the swap of the stamp and the registry. It is never
+    held across file IO. ``reading`` is held by the one caller that reads the file; any
+    other caller uses the registry as it is.
     """
 
     stamp: tuple[int, int, int] | None = None
     pins: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
+    reading: threading.Lock = field(default_factory=threading.Lock)
 
 
 class _RegistryWatches:
@@ -216,18 +218,28 @@ def refresh_registry(config: Config) -> bool:
     """Read the registry from config.toml again if another process changed the file.
 
     Costs an existence check and one stat() when the file is unchanged. A pinned registry
-    is left alone. Returns False when it is pinned. The stamp is stored after the read, so
-    a thread that finds the stamp new finds the registry read.
+    is left alone. Returns False when it is pinned. A caller that finds another caller
+    reading the file does not wait: it uses the registry as it is. The stamp is stored
+    after the registry, so a thread that finds the stamp new finds the registry read.
     """
     watch = _registry_watches.of(config)
-    with watch.lock:
-        if watch.pins:
-            return False
+    if watch.pins:
+        return False
+    if not watch.reading.acquire(blocking=False):
+        return True
+    try:
         stamp = overlay_stamp(config.data_root)
         if stamp != watch.stamp:
-            overlay_persisted_roots(config)
-            watch.stamp = stamp
+            roots = _persisted_roots(config)
+            with watch.lock:
+                if watch.pins:
+                    return False
+                if roots is not None:
+                    config.linked_roots = roots
+                watch.stamp = stamp
         return True
+    finally:
+        watch.reading.release()
 
 
 @contextmanager
@@ -254,6 +266,15 @@ def fresh_registry_pinned(config: Config) -> Generator[None, None, None]:
         yield
 
 
+def _persisted_roots(config: Config) -> dict[str, str] | None:
+    """The registry config.toml holds, read under the lock a writer takes; None without one."""
+    path = _overlay_file(config.data_root)
+    if path is None:
+        return None
+    with _config_write_lock(config.data_root):
+        return toml_value(path, "linked_roots")
+
+
 def overlay_persisted_roots(config: Config) -> None:
     """Set on *config* the source registry its config.toml holds, under the lock a writer takes.
 
@@ -261,10 +282,6 @@ def overlay_persisted_roots(config: Config) -> None:
     registry Config refuses, is reported and sets nothing.
     ``LILBEE_SKIP_TOML_CONFIG=1`` disables it.
     """
-    path = _overlay_file(config.data_root)
-    if path is None:
-        return
-    with _config_write_lock(config.data_root):
-        roots = toml_value(path, "linked_roots")
-        if roots is not None:
-            config.linked_roots = roots
+    roots = _persisted_roots(config)
+    if roots is not None:
+        config.linked_roots = roots
