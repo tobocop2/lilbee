@@ -61,6 +61,7 @@ from lilbee.mcp_server import add as mcp_add  # noqa: E402
 from lilbee.mcp_server import crawl as mcp_crawl  # noqa: E402
 from lilbee.runtime.progress import CrawlPageFailedEvent, EventType  # noqa: E402
 from lilbee.server.app import create_app  # noqa: E402
+from tests._browser_launches import record_browser_launches  # noqa: E402
 from tests._crawl_meta import write_crawl_metadata  # noqa: E402
 from tests._private_mode import posix_only  # noqa: E402
 from tests._windows_loop import windows_proactor_loop  # noqa: E402
@@ -1535,16 +1536,6 @@ class TestRefusedEngineOnTheCli:
         assert site.paths_since(0, "/wiki/Home") == []
 
 
-def _logging_shell(directory: Path, log: Path) -> Path:
-    """A script that records its arguments in *log*, then runs the real headless shell."""
-    real = bootstrap.headless_shell_executable()
-    assert real is not None
-    script = directory / "chrome-headless-shell"
-    script.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\nexec "{real}" "$@"\n', encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    return script
-
-
 @full_crawl_only
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestBrowserLaunch:
@@ -1579,44 +1570,38 @@ class TestBrowserLaunch:
         assert "/wiki/Home" in paths[0].read_text(encoding="utf-8")
         assert os.environ["CHROME"] == str(missing)
 
-    @posix_only
+    def _launch(self, site, path: str, depth: int = 0, max_pages: int | None = None):
+        """Crawl *path* and return the pages saved and the browsers the crawl started."""
+        shell = bootstrap.headless_shell_executable()
+        assert shell is not None
+        with record_browser_launches(shell) as launches:
+            paths = self._crawl(site.url(path), depth=depth, max_pages=max_pages)
+        return paths, launches.command_lines
+
     def test_chromium_starts_from_the_shell_lilbee_names_with_the_extra_flags(
         self, site, monkeypatch, tmp_path
     ):
-        log = tmp_path / "launch.log"
-        script = _logging_shell(tmp_path, log)
-        monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: script)
         monkeypatch.setenv("CHROME", str(tmp_path / "no-such-chrome"))
         cfg.crawl_browser_extra_args = ["--lang=fr"]
-        paths = self._crawl(site.url("/wiki/Home"))
+        paths, launches = self._launch(site, "/wiki/Home")
         assert len(paths) == 1
-        launch = log.read_text(encoding="utf-8")
-        assert "--headless" in launch
-        assert "--lang=fr" in launch
-        assert "--lang=en_US" not in launch
+        assert len(launches) == 1
+        assert any(arg.startswith("--headless") for arg in launches[0])
+        assert "--lang=fr" in launches[0]
+        assert "--lang=en_US" not in launches[0]
 
-    @posix_only
-    def test_chromium_starts_with_the_default_flags(self, site, monkeypatch, tmp_path):
-        log = tmp_path / "launch.log"
-        script = _logging_shell(tmp_path, log)
-        monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: script)
+    def test_chromium_starts_with_the_default_flags(self, site):
         cfg.crawl_browser_extra_args = Config().crawl_browser_extra_args
-        paths = self._crawl(site.url("/wiki/Home"))
+        paths, launches = self._launch(site, "/wiki/Home")
         assert len(paths) == 1
-        launch = log.read_text(encoding="utf-8")
+        assert len(launches) == 1
         for flag in DEFAULT_FLAGS:
-            assert flag in launch
+            assert flag in launches[0]
 
-    @posix_only
-    def test_a_recursive_crawl_of_several_pages_starts_chromium_once(
-        self, site, monkeypatch, tmp_path
-    ):
-        log = tmp_path / "launch.log"
-        script = _logging_shell(tmp_path, log)
-        monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: script)
-        paths = self._crawl(site.url("/wide/"), depth=1, max_pages=BROWSER_CRAWL_PAGES)
+    def test_a_recursive_crawl_of_several_pages_starts_chromium_once(self, site):
+        paths, launches = self._launch(site, "/wide/", depth=1, max_pages=BROWSER_CRAWL_PAGES)
         assert len(paths) == BROWSER_CRAWL_PAGES
-        assert len(log.read_text(encoding="utf-8").splitlines()) == 1
+        assert len(launches) == 1
 
     def test_a_single_page_browser_crawl_keeps_hidden_text(self, site):
         _assert_hidden_text_kept(self._crawl(site.url(HIDDEN_PAGE)), 1)
