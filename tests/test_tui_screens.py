@@ -15203,6 +15203,8 @@ class _SyncWorkerApp:
     synchronously so a non-async unit test still exercises the path inline.
     """
 
+    is_running = True
+
     def notify(self, *_args, **_kwargs) -> None:
         pass
 
