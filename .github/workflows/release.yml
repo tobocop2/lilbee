@@ -452,6 +452,19 @@ jobs:
       - name: Restore CI models (inference smoke)
         uses: ./.github/actions/restore-ci-models
 
+      # The smoke runs inside the manylinux container, and the browser-mode
+      # crawl in it launches Playwright's headless Chromium shell. The bare
+      # AlmaLinux image has none of the shared libraries that shell links, so
+      # install them here, next to the run, rather than running the crawl on
+      # the host: the smoke must exercise the binary exactly as built.
+      - name: Install Chromium runtime libraries in the build container
+        if: matrix.container != ''
+        shell: bash
+        run: |
+          dnf install -y nss nspr atk at-spi2-atk cups-libs libdrm libxkbcommon \
+            libXcomposite libXdamage libXfixes libXrandr libXext libX11 libxcb \
+            mesa-libgbm alsa-lib pango cairo
+
       - name: Smoke test
         id: smoke
         # End-to-end: --version, --help, server boot, /api/health version match,

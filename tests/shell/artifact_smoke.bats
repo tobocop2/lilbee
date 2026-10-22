@@ -18,6 +18,7 @@ smoke() {
   LILBEE_EXE="${FIXTURE}/bin/lilbee" MODELS_DIR="${FIXTURE}/models" \
   SMOKE_CALLS="${CALLS}" SMOKE_CRAWL_INDEXED="${SMOKE_CRAWL_INDEXED:-1}" \
   SMOKE_FAIL_LEG="${SMOKE_FAIL_LEG:-}" SMOKE_BROWSER_INDEXED="${SMOKE_BROWSER_INDEXED:-1}" \
+  SMOKE_NO_BROWSER="${SMOKE_NO_BROWSER:-0}" SMOKE_BROWSER_URL_ONLY="${SMOKE_BROWSER_URL_ONLY:-0}" \
   SKIP_CRAWL="${SKIP_CRAWL:-0}" PATH="${FIXTURE}/bin:${PATH}" \
   bash "${SCRIPT}"
 }
@@ -119,6 +120,45 @@ printed_as_output() {
   SMOKE_FAIL_LEG=browser-search run smoke
   [ "$status" -eq 1 ]
   [[ "$output" == *"FAIL: browser crawl search exited 3"* ]]
+}
+
+@test "a browser-mode crawl that installs no Chromium fails the gate" {
+  SMOKE_NO_BROWSER=1 run smoke
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"did not install or launch Chromium"* ]]
+  [[ "$output" != *"ARTIFACT SMOKE PASSED"* ]]
+}
+
+@test "a printed URL alone does not make the browser-crawled page searchable" {
+  SMOKE_BROWSER_URL_ONLY=1 run smoke
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"browser-crawled page not searchable"* ]]
+}
+
+# The watchdog under test, loaded from the script without running any leg.
+load_watchdog() {
+  eval "$(sed -n '/^watchdog_timeout()/,/^}/p' "${SCRIPT}")"
+}
+
+# Count live processes whose command line holds the marker.
+live_with() {
+  pgrep -f "$1" | grep -vx "$$" | wc -l | tr -d ' '
+}
+
+@test "the watchdog leaves no process behind when the command finishes" {
+  load_watchdog
+  watchdog_timeout 31.37 sh -c 'sleep 0.1; true'
+  sleep 0.3
+  [ "$(live_with 'sleep 31\.37')" -eq 0 ]
+}
+
+@test "the watchdog kills the command and its children on a timeout" {
+  load_watchdog
+  rc=0
+  watchdog_timeout 1 sh -c 'sleep 47.5 & sleep 47.6; wait' || rc=$?
+  [ "${rc}" -eq 124 ]
+  sleep 0.3
+  [ "$(live_with 'sleep 47\.[56]')" -eq 0 ]
 }
 
 @test "a missing model gguf fails before any leg runs" {
