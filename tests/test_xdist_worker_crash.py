@@ -21,6 +21,7 @@ _REAP_WAIT_S = 5.0
 _GRANDCHILD_EXIT_WAIT_S = 5.0
 _GRANDCHILD_POLL_S = 0.05
 _GRANDCHILD_SLEEP_S = 600
+_CHILD_START_LIMIT_S = 5.0
 # Coverage flags are irrelevant to the toy suite. --forked moves the test into a child
 # process, so the child dies and the xdist worker does not; the worker is what is under test.
 _DROPPED_FLAG_PREFIXES = ("--cov", "--forked")
@@ -207,25 +208,35 @@ def _is_running(pid: int) -> bool:
 @pytest.mark.skipif(os.name != "posix", reason="only POSIX has a process group to kill")
 def test_a_child_run_that_hits_its_limit_leaves_no_worker_alive(tmp_path: Path) -> None:
     pid_file = tmp_path / "worker.pid"
+    # One interpreter start: the worker is a fork of the child, not a second interpreter.
+    # The pid file is renamed into place, so a reader never sees a half-written pid.
     spawn_worker_then_wait = (
-        "import pathlib, subprocess, sys, time\n"
-        f"sleeper = 'import time; time.sleep({_GRANDCHILD_SLEEP_S})'\n"
-        "worker = subprocess.Popen([sys.executable, '-c', sleeper])\n"
-        f"pathlib.Path({str(pid_file)!r}).write_text(str(worker.pid))\n"
+        "import os, pathlib, time\n"
+        "worker = os.fork()\n"
+        f"if worker == 0:\n    time.sleep({_GRANDCHILD_SLEEP_S})\n    os._exit(0)\n"
+        f"partial = pathlib.Path({str(pid_file) + '.partial'!r})\n"
+        "partial.write_text(str(worker))\n"
+        f"partial.rename({str(pid_file)!r})\n"
         f"time.sleep({_GRANDCHILD_SLEEP_S})\n"
     )
-    with pytest.raises(subprocess.TimeoutExpired):
-        _run_bounded_child(
-            [sys.executable, "-c", spawn_worker_then_wait],
-            cwd=tmp_path,
-            env=dict(os.environ),
-            timeout_s=1.0,
-        )
-    worker_pid = int(pid_file.read_text(encoding="utf-8"))
-    deadline = time.monotonic() + _GRANDCHILD_EXIT_WAIT_S
-    while _is_running(worker_pid) and time.monotonic() < deadline:
-        time.sleep(_GRANDCHILD_POLL_S)
-    assert not _is_running(worker_pid)
+    worker_pid: int | None = None
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            _run_bounded_child(
+                [sys.executable, "-c", spawn_worker_then_wait],
+                cwd=tmp_path,
+                env=dict(os.environ),
+                timeout_s=_CHILD_START_LIMIT_S,
+            )
+        assert pid_file.exists(), "the child did not start its worker before the limit"
+        worker_pid = int(pid_file.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + _GRANDCHILD_EXIT_WAIT_S
+        while _is_running(worker_pid) and time.monotonic() < deadline:
+            time.sleep(_GRANDCHILD_POLL_S)
+        assert not _is_running(worker_pid)
+    finally:
+        if worker_pid is not None and _is_running(worker_pid):
+            psutil.Process(worker_pid).kill()
 
 
 @pytest.mark.timeout(_RUN_BUDGET_S * 2)
