@@ -76,7 +76,11 @@ def test_hung_test_dumps_stacks_to_the_job_log_before_its_timeout(
     result, dump_dir = _run_pytest(tmp_path, _HUNG_TEST, *extra)
     log = result.stdout + result.stderr
 
-    assert "1 failed" in result.stdout
+    assert result.returncode != 0
+    if sys.platform != "win32":
+        # pytest-timeout defaults to its thread method on Windows, which ends the
+        # process after the dump, so no summary line is printed.
+        assert "1 failed" in result.stdout
     assert f"still running after {_TEST_TIMEOUT_S * 0.75:.0f}s" in log
     assert "test_stuck_on_a_lock" in log
     assert "parked_waiter" in log

@@ -149,7 +149,7 @@ def _offenders(sources: dict[str, str]) -> set[str]:
 
 def _tree_sources() -> dict[str, str]:
     return {
-        str(path.relative_to(SOURCE)): path.read_text(encoding="utf-8")
+        path.relative_to(SOURCE).as_posix(): path.read_text(encoding="utf-8")
         for path in sorted(SOURCE.rglob("*.py"))
     }
 
