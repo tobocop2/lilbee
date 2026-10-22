@@ -17,7 +17,7 @@ setup() {
 smoke() {
   LILBEE_EXE="${FIXTURE}/bin/lilbee" MODELS_DIR="${FIXTURE}/models" \
   SMOKE_CALLS="${CALLS}" SMOKE_CRAWL_INDEXED="${SMOKE_CRAWL_INDEXED:-1}" \
-  SMOKE_FAIL_LEG="${SMOKE_FAIL_LEG:-}" \
+  SMOKE_FAIL_LEG="${SMOKE_FAIL_LEG:-}" SMOKE_BROWSER_INDEXED="${SMOKE_BROWSER_INDEXED:-1}" \
   SKIP_CRAWL="${SKIP_CRAWL:-0}" PATH="${FIXTURE}/bin:${PATH}" \
   bash "${SCRIPT}"
 }
@@ -92,6 +92,35 @@ printed_as_output() {
   [[ "$output" == *"FAIL: crawl search exited 3"* ]]
 }
 
+@test "the gate crawls one page in browser mode and only that crawl" {
+  run smoke
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'render=browser' "${CALLS}")" -ge 1 ]
+  [ "$(grep -c '^add https://.*render=browser' "${CALLS}")" -eq 1 ]
+  [[ "$(cat "${CALLS}")" == *"add https://example.com [render=]"* ]]
+  [[ "$output" == *"ARTIFACT SMOKE PASSED: extras, self-check, ingest, search, ask, browser crawl"* ]]
+}
+
+@test "a browser-mode crawl that cannot start fails the gate with its error" {
+  SMOKE_FAIL_LEG=browser run smoke
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not reach the engine"* ]]
+  [[ "$output" == *"FAIL: browser crawl exited 3"* ]]
+  [[ "$output" != *"ARTIFACT SMOKE PASSED"* ]]
+}
+
+@test "a browser-mode page that is not searchable fails the gate" {
+  SMOKE_BROWSER_INDEXED=0 run smoke
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"browser-crawled page not searchable"* ]]
+}
+
+@test "a failing browser-mode search prints the error, then fails" {
+  SMOKE_FAIL_LEG=browser-search run smoke
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"FAIL: browser crawl search exited 3"* ]]
+}
+
 @test "a missing model gguf fails before any leg runs" {
   rm "${FIXTURE}/models/Qwen3-0.6B-Q8_0.gguf"
   run smoke
@@ -105,5 +134,6 @@ printed_as_output() {
   [ "$status" -eq 0 ]
   [[ "$(cat "${CALLS}")" != *"self-check-extras"* ]]
   [[ "$(cat "${CALLS}")" != *"add https://example.com"* ]]
+  [ "$(grep -c 'render=browser' "${CALLS}")" -eq 0 ]
   [[ "$output" == *"(extras and crawl skipped)"* ]]
 }
