@@ -158,7 +158,15 @@ def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:
     return f"chunk_type = '{escaped}'"
 
 
-def _index_registry(table: LanceTable) -> list[IndexConfig] | None:
+def _listed_indices(table: LanceTable) -> list[IndexConfig] | None:
+    """The indexes lancedb lists on *table*, or ``None`` when the listing raises."""
+    try:
+        return list(table.list_indices())
+    except Exception:
+        return None
+
+
+def _index_registry(table: LanceTable, lancedb_dir: Path) -> list[IndexConfig] | None:
     """The indexes registered on *table*, or ``None`` when an FTS index is unusable.
 
     ``None`` means the listing raised, or an FTS index is registered but its
@@ -167,16 +175,20 @@ def _index_registry(table: LanceTable) -> list[IndexConfig] | None:
     means the table has no index. :func:`_dangling_indices` checks scalar
     and vector indexes.
     """
-    try:
-        indices = list(table.list_indices())
-    except Exception:
+    indices = _listed_indices(table)
+    if indices is None:
         return None
-    indices_dir = Path(table.uri) / "_indices"
+    indices_dir = _indices_dir(table, lancedb_dir)
     if any(
         idx.index_type == _FTS_INDEX_TYPE and _index_files_gone(indices_dir, idx) for idx in indices
     ):
         return None
     return indices
+
+
+def _indices_dir(table: LanceTable, lancedb_dir: Path) -> Path:
+    """The ``_indices`` directory of *table* under the store's *lancedb_dir*."""
+    return lancedb_dir / f"{table.name}.lance" / "_indices"
 
 
 def _index_files_gone(indices_dir: Path, idx: IndexConfig) -> bool:
@@ -225,7 +237,7 @@ def _dangling_indices(
     ``optimize()`` and ``index_stats()`` do not notice for scalar and vector
     indexes; only the directory does.
     """
-    indices_dir = lancedb_dir / f"{table.name}.lance" / "_indices"
+    indices_dir = _indices_dir(table, lancedb_dir)
     return [idx for idx in indices if _index_files_gone(indices_dir, idx)]
 
 

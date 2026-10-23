@@ -66,6 +66,7 @@ from .lance_helpers import (
     _has_scalar_index,
     _has_vector_index,
     _index_registry,
+    _listed_indices,
     _safe_delete_unlocked,
     _scalar_index_dangling,
     _vector_index_dangling,
@@ -761,7 +762,7 @@ def _add_held_columns(db: LanceDBConnection) -> None:
 
 def _index_names(table: LanceTable) -> dict[str, list[str]]:
     """The columns of each index of *table*, by index name; none when the listing fails."""
-    return {index.name: index.columns for index in _index_registry(table) or []}
+    return {index.name: index.columns for index in _listed_indices(table) or []}
 
 
 def _key_column(table: LanceTable, column: str, where: str | None) -> pa.ChunkedArray:
@@ -1360,7 +1361,7 @@ class Store:
                 )
             )
         table = self.open_table(CHUNKS_TABLE)
-        indices = _index_registry(table) if table is not None else None
+        indices = _index_registry(table, self._config.lancedb_dir) if table is not None else None
         if table is not None and indices is not None:
             dangling_scalar = _scalar_index_dangling(table, indices, self._config.lancedb_dir)
             if dangling_scalar:
@@ -1643,7 +1644,7 @@ class Store:
         probe = self.open_table(CHUNKS_TABLE)
         if probe is None:
             return
-        indices = _index_registry(probe)
+        indices = _index_registry(probe, self._config.lancedb_dir)
         if indices is not None and _has_fts_index(indices):
             self._fts_ready = True
         try:
@@ -1660,7 +1661,7 @@ class Store:
         if table is None:
             return
         try:
-            indices = _index_registry(table)
+            indices = _index_registry(table, self._config.lancedb_dir)
             if indices is None:
                 self._repair_fts_registry(table)
                 return
@@ -1670,7 +1671,7 @@ class Store:
                     # One optimize folds new rows into every index on the table.
                     table.optimize()
                     log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
-                    if _index_registry(table) is None:
+                    if _index_registry(table, self._config.lancedb_dir) is None:
                         # Suspected producer of an index without files; unconfirmed.
                         self._repair_fts_registry(table)
                         return
@@ -1702,7 +1703,7 @@ class Store:
         Failure never blocks the chunk index: the title arm feature-detects the
         index per query, so a store without it simply searches without titles.
         """
-        indices = _index_registry(table)
+        indices = _index_registry(table, self._config.lancedb_dir)
         if indices is None:
             self._repair_fts_registry(table)
             return
@@ -1733,7 +1734,7 @@ class Store:
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return
-        indices = _index_registry(table)
+        indices = _index_registry(table, self._config.lancedb_dir)
         if indices is not None and _has_fts_index(indices, _TITLE_COLUMN):
             self._title_fts_ready = True
             return
@@ -1795,7 +1796,7 @@ class Store:
                 self._fts_ready = True
             else:
                 self._title_fts_ready = True
-        indices = _index_registry(table)
+        indices = _index_registry(table, self._config.lancedb_dir)
         if indices is None:
             log.warning(
                 "The index registry on '%s' is still unusable after the FTS rebuild; "
@@ -1834,7 +1835,7 @@ class Store:
             if table is None:
                 complete = False
                 continue
-            indices = _index_registry(table)
+            indices = _index_registry(table, self._config.lancedb_dir)
             if indices is None:
                 # The FTS path repairs an unusable registry; check again then.
                 complete = False
@@ -1874,7 +1875,7 @@ class Store:
         table = self.open_table(table_name)
         if table is None:
             return
-        indices = _index_registry(table)
+        indices = _index_registry(table, self._config.lancedb_dir)
         if indices is None:
             return
         names = table.schema.names
@@ -1919,7 +1920,7 @@ class Store:
             table = self.open_table(CHUNKS_TABLE)
             if table is None:
                 return False
-            indices = _index_registry(table)
+            indices = _index_registry(table, self._config.lancedb_dir)
             if indices is None:
                 indices = self._repair_fts_registry(table)
                 if indices is None:
@@ -1929,7 +1930,7 @@ class Store:
             if _has_vector_index(indices):
                 table.optimize()
                 log.debug("Vector index optimized on '%s'", CHUNKS_TABLE)
-                if _index_registry(table) is None:
+                if _index_registry(table, self._config.lancedb_dir) is None:
                     # Repair in the same step when the prune dropped FTS files.
                     self._repair_fts_registry(table)
                 return True
@@ -2168,7 +2169,7 @@ class Store:
         silently starve wiki-only queries whose matches live past the window.
         """
         query = table.search(query_vector).distance_type(_VECTOR_METRIC).limit(limit)
-        indices = _index_registry(table)
+        indices = _index_registry(table, self._config.lancedb_dir)
         if indices is None or _has_vector_index(indices):
             # IVF_PQ is lossy; probe more partitions and refine against full
             # vectors so recall stays close to the exact flat scan. An unusable
@@ -2218,7 +2219,7 @@ class Store:
         title arm must never take down the healthy chunk arm, so its failure
         degrades to no-titles, mirroring ``bm25_probe``.
         """
-        indices = _index_registry(table)
+        indices = _index_registry(table, self._config.lancedb_dir)
         if indices is None or not _has_fts_index(indices, _TITLE_COLUMN):
             return []
         # Every chunk of one document ties on title BM25, so a fixed window can

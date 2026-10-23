@@ -8,6 +8,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -888,7 +889,7 @@ def _remove_index_files(test_config, table_name=CHUNKS_TABLE, *, index_types=Non
 
 def _readable_registry(table):
     """The table's index registry, asserting that lancedb can list it."""
-    indices = _index_registry(table)
+    indices = _index_registry(table, Path(table.uri).parent)
     assert indices is not None
     return indices
 
@@ -1450,13 +1451,15 @@ class TestUnreadableIndexRegistry:
     rebuilds only the FTS indexes; scalar and vector indexes keep their files
     and are left alone."""
 
-    def test_registry_is_empty_without_indexes_and_none_when_listing_raises(self, store):
+    def test_registry_is_empty_without_indexes_and_none_when_listing_raises(
+        self, store, test_config
+    ):
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         assert table is not None
-        assert _index_registry(table) == []
+        assert _index_registry(table, test_config.lancedb_dir) == []
         with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
-            assert _index_registry(table) is None
+            assert _index_registry(table, test_config.lancedb_dir) is None
 
     def test_a_missing_fts_directory_rebuilds_only_the_fts_index(self, store, test_config):
         store.add_chunks(_make_records())
@@ -1464,7 +1467,7 @@ class TestUnreadableIndexRegistry:
         store.ensure_fts_index()
         before = _index_uuids(store)
         _remove_index_files(test_config, index_types={"FTS"})
-        assert _index_registry(store.open_table("chunks")) is None
+        assert _index_registry(store.open_table("chunks"), test_config.lancedb_dir) is None
 
         with _spy_scalar_builds() as builds:
             store.ensure_fts_index()
