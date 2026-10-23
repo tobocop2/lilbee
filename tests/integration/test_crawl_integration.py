@@ -16,6 +16,7 @@ from pytest_httpserver import HTTPServer
 
 crawlberg = pytest.importorskip("crawlberg")
 
+from lilbee.app.services import get_services  # noqa: E402
 from lilbee.core.config import cfg  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
     content_hash,
@@ -23,13 +24,9 @@ from lilbee.crawler import (  # noqa: E402
     validate_crawl_url,
 )
 from lilbee.crawler import url_filter as crawler_url_filter  # noqa: E402
-from lilbee.crawler.save import (  # noqa: E402
-    CrawlRecord,
-    canonical_address,
-    load_crawl_record,
-    save_page,
-)
+from lilbee.crawler.save import canonical_address, save_page  # noqa: E402
 from lilbee.runtime.progress import EventType  # noqa: E402
+from tests._crawl_meta import crawl_record  # noqa: E402
 
 HOME_HTML = """\
 <html><head><title>Home</title></head>
@@ -165,7 +162,7 @@ class TestSinglePageCrawl:
         url = str(test_site.url_for("/"))
         paths = await crawl_and_save(url, depth=0)
         assert len(paths) == 1
-        entry = load_crawl_record().pages[canonical_address(url)]
+        entry = get_services().store.crawl_pages.current(canonical_address(url))
         assert cfg.documents_dir / "_web" / entry.file == paths[0]
         assert entry.content_hash == content_hash(paths[0].read_text(encoding="utf-8"))
 
@@ -232,7 +229,7 @@ class TestContentChangeDetection:
         new_content = paths2[0].read_text(encoding="utf-8")
         assert len(new_content) > 0
 
-        entry = load_crawl_record().pages[canonical_address(url)]
+        entry = get_services().store.crawl_pages.current(canonical_address(url))
         assert entry.content_hash == content_hash(new_content)
 
 
@@ -270,7 +267,7 @@ class TestSecurity:
         from lilbee.crawler import CrawlResult
 
         result = CrawlResult(url="https://evil.com/../../etc/passwd", markdown="# Malicious")
-        path = save_page(result, CrawlRecord(), MagicMock())
+        path = save_page(result, crawl_record(), MagicMock())
         web_dir = cfg.documents_dir / "_web"
         # The address parser resolves ".." segments, so the page MUST be saved
         # at a concrete path under _web/, not rejected.

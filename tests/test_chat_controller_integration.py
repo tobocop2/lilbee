@@ -20,6 +20,7 @@ from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.task_queue import CancelOrigin, TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
 from lilbee.core.config import cfg
+from lilbee.data.store import Store
 from tests._async_wait import poll_until, wait_until
 from tests._lilbee_app_test_host import await_chat, pump_until, ready_services
 
@@ -1766,17 +1767,16 @@ async def test_cmd_crawl_accepts_the_largest_depth_and_page_count() -> None:
 async def test_cancelling_a_tui_crawl_stops_its_sync(tmp_path, monkeypatch) -> None:
     """Cancelling a /crawl task stops the crawl's sync and skips the follow-up sync."""
     import asyncio
-    import threading
     from unittest.mock import AsyncMock
 
     from lilbee.app.services import CrawlerSyncState, get_services
     from lilbee.cli.tui import messages as msg
     from lilbee.core.config.enums import CrawlRenderMode
     from lilbee.crawler.models import CrawlResult
-    from tests._async_wait import wait_until
 
     monkeypatch.setattr(cfg, "documents_dir", tmp_path / "documents")
     monkeypatch.setattr(cfg, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(cfg, "lancedb_dir", tmp_path / "data" / "lancedb")
     monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.HTTP)
     monkeypatch.setattr(cfg, "crawl_sync_interval", 1)
     (tmp_path / "documents").mkdir()
@@ -1804,6 +1804,8 @@ async def test_cancelling_a_tui_crawl_stops_its_sync(tmp_path, monkeypatch) -> N
         services = get_services()
         services.crawler_semaphore = None
         services.crawler_sync_state = CrawlerSyncState()
+        # The crawl records its pages in a real crawl page table.
+        services.store.crawl_pages = Store(cfg).crawl_pages
         notified: list[str] = []
         screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
         with (

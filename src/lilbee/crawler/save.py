@@ -1,10 +1,9 @@
-"""Page addresses and saved names, metadata I/O, and per-page save-to-disk."""
+"""Page addresses and saved names, and the per-page save to disk under the crawl lock."""
 
 from __future__ import annotations
 
 import hashlib
 import ipaddress
-import json
 import logging
 import os
 import re
@@ -18,16 +17,14 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
 from lilbee.core.config import cfg
-from lilbee.core.security import file_lock_or_warn, validate_path_within
+from lilbee.core.security import validate_path_within
 from lilbee.core.web_names import INDEX_STEM, PAGE_HASH_MARK, PAGE_SUFFIX, WEB_DIR
 from lilbee.crawler.models import CrawlResult
 from lilbee.crawler.url_filter import parsed_address, parsed_url
-from lilbee.data.page_record import CrawlMeta, pages_path, read_pages, record_line
+from lilbee.data.store import CrawlPage, CrawlPages, Store
 
 log = logging.getLogger(__name__)
 
-_CRAWL_META_FILE = "crawl_meta.json"
-_RECORD_LOCK_TIMEOUT_S = 10.0
 _NOT_SAVED = "Page %s is not saved: %s holds a file or folder of its own; move or delete it"
 
 # The characters RFC 3986 section 2.3 calls unreserved: an escape of one names the character.
@@ -211,32 +208,6 @@ def web_dir() -> Path:
     return cfg.documents_dir / WEB_DIR
 
 
-def _crawl_meta_path() -> Path:
-    """Path to the crawl metadata sidecar JSON."""
-    return cfg.data_dir / _CRAWL_META_FILE
-
-
-def load_crawl_metadata() -> dict[str, CrawlMeta]:
-    """Load URL→metadata mapping from the JSON sidecar."""
-    path = _crawl_meta_path()
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
-        # A corrupt sidecar means every known URL looks new and gets re-crawled;
-        # surface why rather than silently discarding the whole mapping.
-        log.warning("Discarding unreadable crawl metadata sidecar %s: %s", path, exc)
-        return {}
-    result: dict[str, CrawlMeta] = {}
-    for url, data in raw.items():
-        try:
-            result[url] = CrawlMeta(**data)
-        except (TypeError, KeyError):
-            log.warning("Skipping malformed crawl metadata entry: %s", url)
-    return result
-
-
 def _replace_atomically(path: Path, text: str) -> None:
     """Write *text* to a temporary file beside *path*, sync it, then put it in place of *path*."""
     tmp_name: str | None = None
@@ -279,65 +250,25 @@ def normalize_crawled_markdown(markdown: str) -> str:
 
 @dataclass
 class CrawlRecord:
-    """The pages saved at their names, by address, and the copies an earlier name rule saved."""
+    """The crawl page table one crawl saves into, and the files it warned about."""
 
-    pages: dict[str, CrawlMeta] = field(default_factory=dict)
-    claimed: set[str] = field(default_factory=set)
-    earlier: dict[str, list[CrawlMeta]] = field(default_factory=dict)
-    earlier_by_text: dict[str, list[tuple[str, CrawlMeta]]] = field(default_factory=dict)
+    pages: CrawlPages
     # Files standing where a folder of a page belongs, each warned about once per crawl.
     blocked: set[Path] = field(default_factory=set)
 
-    def add_earlier(self, key: str, entry: CrawlMeta) -> None:
-        """Record *entry*, saved under an earlier name, as a copy of the page *key* names."""
-        address = canonical_address(key)
-        self.earlier.setdefault(address, []).append(entry)
-        self.earlier_by_text.setdefault(entry.content_hash, []).append((address, entry))
 
-    def retire_line(self, address: str, previous: CrawlMeta) -> None:
-        """Make *previous*, the earlier line of the page at *address*, a copy to retire."""
-        self.earlier.setdefault(address, []).append(previous)
-        self.earlier_by_text.setdefault(previous.content_hash, []).append((address, previous))
-        if all(entry.file != previous.file for entry in self.pages.values()):
-            self.claimed.discard(previous.file)
+def load_crawl_record(store: Store) -> CrawlRecord:
+    """The crawl page table of *store*, each earlier copy keyed by its canonical address."""
+    pages = store.crawl_pages
+    with pages.held():
+        pages.rekey(canonical_address, _holds_text)
+    return CrawlRecord(pages)
 
 
-def _load_pages() -> dict[str, CrawlMeta]:
-    """The page record, rewritten with one line per page when it holds more lines than pages."""
-    path = pages_path()
-    if not path.exists():
-        return {}
-    with file_lock_or_warn(path, _RECORD_LOCK_TIMEOUT_S):
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        pages = read_pages(lines)
-        if len(pages) < len(list(filter(None, lines))):
-            text = "".join(f"{record_line(a, e)}\n" for a, e in pages.items())
-            _replace_atomically(path, text)
-    return pages
-
-
-def load_crawl_record() -> CrawlRecord:
-    """The page record, with the earlier crawl metadata as copies to retire."""
-    record = CrawlRecord(pages=_load_pages())
-    for key, entry in load_crawl_metadata().items():
-        record.add_earlier(key, entry)
-    record.claimed = {entry.file for entry in record.pages.values()}
-    return record
-
-
-def _claim(address: str, entry: CrawlMeta, record: CrawlRecord) -> None:
-    """Append *entry* to the page record and sync it to disk; a cut line stays alone."""
-    path = pages_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with file_lock_or_warn(path, _RECORD_LOCK_TIMEOUT_S), path.open("a", encoding="utf-8") as out:
-        out.write(f"\n{record_line(address, entry)}\n")
-        out.flush()
-        os.fsync(out.fileno())
-    previous = record.pages.get(address)
-    record.pages[address] = entry
-    record.claimed.add(entry.file)
-    if previous is not None and previous.file != entry.file:
-        record.retire_line(address, previous)
+def finish_crawl(record: CrawlRecord) -> None:
+    """Fold the commits the crawl's saves made into one version of the table."""
+    with record.pages.held():
+        record.pages.compact()
 
 
 def _same_file(one: str, other: str) -> bool:
@@ -348,21 +279,25 @@ def _same_file(one: str, other: str) -> bool:
         return False
 
 
-def _holds_only(address: str, entry: CrawlMeta, record: CrawlRecord) -> bool:
-    """Whether *entry*'s file holds its page's text, and no page without its own name needs it."""
-    path = web_dir() / entry.file
+def _holds_text(copy: CrawlPage) -> bool:
+    """Whether the file of the earlier *copy* is under ``_web`` and holds the copy's text."""
+    path = web_dir() / copy.file
     try:
         validate_path_within(path, web_dir().resolve())
     except ValueError:
         return False
     if not path.is_file():
         return False
-    if content_hash(path.read_text(encoding="utf-8", errors="replace")) != entry.content_hash:
-        return False
-    twins = record.earlier_by_text.get(entry.content_hash, [])
-    return not any(
-        other != address and other not in record.pages and _same_file(twin.file, entry.file)
-        for other, twin in twins
+    return content_hash(path.read_text(encoding="utf-8", errors="replace")) == copy.content_hash
+
+
+def _needed_by_twin(copy: CrawlPage, pages: CrawlPages) -> bool:
+    """Whether another page, not yet saved at its own name, has the file of *copy* as its copy."""
+    return any(
+        twin.address != copy.address
+        and pages.current(twin.address) is None
+        and _same_file(twin.file, copy.file)
+        for twin in pages.copies_of(copy.content_hash)
     )
 
 
@@ -386,24 +321,25 @@ def _disk_name(name: str) -> str:
 
 
 def _retire_earlier(
-    address: str, record: CrawlRecord, remove_sources: Callable[[list[str]], object]
+    address: str, pages: CrawlPages, remove_sources: Callable[[list[str]], object]
 ) -> None:
     """Delete each earlier copy of the page at *address* that holds its text and no other's.
 
-    The file goes before its index source, so a sync that runs between the two finds no file
-    to index again. Each copy is checked and deleted under the record lock, so two crawls never
-    delete one copy.
+    The caller holds the crawl lock. The file goes before its index source, so a sync
+    flush that runs between the two finds no file and adds no source. The row of a copy
+    goes with its file, or at once when its file is gone, changed, or another page's own.
     """
-    for entry in record.earlier.pop(address, []):
-        if entry.file in record.claimed:
+    for copy in pages.earlier(address):
+        if pages.owners(copy.file) or not _holds_text(copy):
+            pages.forget(copy)
             continue
-        with file_lock_or_warn(pages_path(), _RECORD_LOCK_TIMEOUT_S):
-            if not _holds_only(address, entry, record):
-                continue
-            source = PurePosixPath(WEB_DIR, _disk_name(entry.file)).as_posix()
-            (web_dir() / entry.file).unlink()
-            remove_sources([source])
-            _remove_empty_folders((web_dir() / entry.file).parent)
+        if _needed_by_twin(copy, pages):
+            continue
+        source = PurePosixPath(WEB_DIR, _disk_name(copy.file)).as_posix()
+        (web_dir() / copy.file).unlink()
+        remove_sources([source])
+        _remove_empty_folders((web_dir() / copy.file).parent)
+        pages.forget(copy)
 
 
 def _blocking_file(path: Path) -> Path | None:
@@ -458,34 +394,21 @@ def _held_text(path: Path) -> str | None:
     return content_hash(path.read_text(encoding="utf-8", errors="replace"))
 
 
-def _may_write(address: str, held: str | None, new_hash: str, record: CrawlRecord) -> bool:
-    """Whether the file at the page's name holds nothing, the new text, or a text it recorded."""
-    entry = record.pages.get(address)
-    owned = {new_hash} if entry is None else {new_hash, entry.content_hash, entry.replaces}
+def _may_write(prev: CrawlPage | None, held: str | None, new_hash: str) -> bool:
+    """Whether the file at the page's name holds nothing, the new text, or a text it claimed."""
+    owned = {new_hash} if prev is None else {new_hash, prev.content_hash, prev.replaces}
     return held is None or held in owned
 
 
-def _owns_name(address: str, held: str | None, new_hash: str, record: CrawlRecord) -> bool:
-    """Whether the page may write at its name; a refusal first reads the record from disk again."""
-    if _may_write(address, held, new_hash, record):
-        return True
-    latest = _load_pages().get(address)
-    if latest is None:
-        return False
-    record.pages[address] = latest
-    record.claimed.add(latest.file)
-    return _may_write(address, held, new_hash, record)
-
-
-def _unchanged(prev: CrawlMeta | None, held: str | None, new_hash: str, title: str) -> bool:
-    """Whether the record and the file already hold this text, and the record this title."""
+def _unchanged(prev: CrawlPage | None, held: str | None, new_hash: str, title: str) -> bool:
+    """Whether the row and the file already hold this text, and the row this title."""
     if prev is None or held != new_hash or prev.content_hash != new_hash:
         return False
     return prev.title == title
 
 
-def _kept_title(result: CrawlResult, prev: CrawlMeta | None) -> str:
-    """The title the crawl reports, else the one the record holds; no title never clears one."""
+def _kept_title(result: CrawlResult, prev: CrawlPage | None) -> str:
+    """The title the crawl reports, else the one the row holds; no title never clears one."""
     return result.title or (prev.title if prev is not None else "")
 
 
@@ -495,19 +418,21 @@ def _write(
     path: Path,
     markdown: str,
     held: str | None,
-    record: CrawlRecord,
+    prev: CrawlPage | None,
+    pages: CrawlPages,
 ) -> Path | None:
-    """Record and write *markdown* at *path*, whose file holds *held*; None when it holds it."""
+    """Claim *markdown* for the page, then write it at *path*; None when the file holds it.
+
+    The claim commits before the file is written, so a file exists only after its claim.
+    """
     new_hash = content_hash(markdown)
-    prev = record.pages.get(address)
     title = _kept_title(result, prev)
     if _unchanged(prev, held, new_hash, title):
         log.info("Content unchanged, skipping save: %s", result.url)
         return None
     now = datetime.now(UTC).isoformat()
     replaces = "" if held is None else held
-    entry = CrawlMeta(page_name(address), new_hash, now, replaces, title)
-    _claim(address, entry, record)
+    pages.claim(CrawlPage(address, page_name(address), new_hash, now, replaces, title))
     if held == new_hash:
         log.info("Recorded the page %s at %s, which already holds its text", result.url, path)
         return None
@@ -519,18 +444,27 @@ def _write(
 def save_page(
     result: CrawlResult, record: CrawlRecord, remove_sources: Callable[[list[str]], object]
 ) -> Path | None:
-    """Write one crawled page at its name; the path, or None when nothing was written."""
+    """Write one crawled page at its name; the path, or None when nothing was written.
+
+    The check, the claim, the file write and the retire of earlier copies run under one
+    hold of the crawl lock, so the last claim of a page always describes its file. The
+    save waits for the lock without a deadline: every holder's work is bounded, and a
+    page skipped for a lock timeout would be a page lost.
+    """
     if result.failure_reason() is not None:
         return None
     address = canonical_address(result.url)
-    path = _page_path(result, address, record)
-    if path is None:
-        return None
-    markdown = normalize_crawled_markdown(result.markdown)
-    held = _held_text(path)
-    if not _owns_name(address, held, content_hash(markdown), record):
-        log.warning(_NOT_SAVED, result.url, path)
-        return None
-    written = _write(result, address, path, markdown, held, record)
-    _retire_earlier(address, record, remove_sources)
+    with record.pages.held(timeout=None):
+        path = _page_path(result, address, record)
+        if path is None:
+            return None
+        markdown = normalize_crawled_markdown(result.markdown)
+        held = _held_text(path)
+        prev = record.pages.current(address)
+        if not _may_write(prev, held, content_hash(markdown)):
+            log.warning(_NOT_SAVED, result.url, path)
+            return None
+        written = _write(result, address, path, markdown, held, prev, record.pages)
+        _retire_earlier(address, record.pages, remove_sources)
+        record.pages.compact_when_due()
     return written

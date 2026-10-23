@@ -132,6 +132,9 @@ _AGAIN = {ResetRefusedError: "reset again", LibraryUnlockableError: "try again"}
 
 # In-process write mutex: serializes writers within the same process
 _write_mutex = threading.Lock()
+# In-process mutex of the crawl page table: serializes page saves within the process.
+_crawl_pages_mutex = threading.Lock()
+_CRAWL_PAGES_LOCK_NAME = "crawl_pages.lock"
 
 
 def _lock_path(lancedb_dir: Path | None) -> Path:
@@ -531,8 +534,32 @@ def write_lock(
     so a 30s request cannot stall for roughly twice that. A *timeout* of None
     waits for both without a deadline.
     """
+    with _held(_lock_path(lancedb_dir), _write_mutex, timeout, "write lock"):
+        yield
+
+
+@contextmanager
+def crawl_pages_lock(
+    lancedb_dir: Path, timeout: float | None = LOCK_TIMEOUT
+) -> Generator[None, None, None]:
+    """Hold the lock of the crawl page table in *lancedb_dir*: a file lock, then a mutex.
+
+    It is apart from ``write_lock``, so a page save never waits for a sync batch. A
+    holder may take ``write_lock`` inside it; a holder of ``write_lock`` never takes it.
+    """
+    with _held(lancedb_dir / _CRAWL_PAGES_LOCK_NAME, _crawl_pages_mutex, timeout, "crawl lock"):
+        yield
+
+
+@contextmanager
+def _held(
+    lock_path: Path, mutex: threading.Lock, timeout: float | None, name: str
+) -> Generator[None, None, None]:
+    """Hold the file lock at *lock_path*, then *mutex*, within one *timeout* for both.
+
+    A timeout on the mutex names the lock as *name*.
+    """
     deadline = None if timeout is None else time.monotonic() + timeout
-    lock_path = _lock_path(lancedb_dir)
     # The first write to a per-instance store can run before its data dir exists;
     # the file lock cannot be created in a missing directory.
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -550,12 +577,12 @@ def write_lock(
         remaining = (
             _NO_DEADLINE if deadline is None else max(_MUTEX_MIN_WAIT, deadline - time.monotonic())
         )
-        acquired = _write_mutex.acquire(timeout=remaining)
+        acquired = mutex.acquire(timeout=remaining)
         if not acquired:
-            raise LockTimeoutError("Timed out waiting for write lock")
+            raise LockTimeoutError(f"Timed out waiting for {name}")
         try:
             yield
         finally:
-            _write_mutex.release()
+            mutex.release()
     finally:
         flock.release()

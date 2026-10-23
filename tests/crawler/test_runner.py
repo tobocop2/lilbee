@@ -8,7 +8,9 @@ and auto-sync.
 from __future__ import annotations
 
 import ast
+import gc
 import threading
+import weakref
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -192,10 +194,10 @@ class TestCrawlRecursiveOrchestration:
             events.append((event_type, data))
 
         with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
-            results = await crawl_recursive(
+            count = await crawl_recursive(
                 "https://example.com", max_depth=2, max_pages=10, on_progress=on_progress
             )
-        assert len(results) == 3
+        assert count == 3
         page_events = [d for t, d in events if t == EventType.CRAWL_PAGE]
         assert [e.current for e in page_events] == [1, 2, 3]
 
@@ -228,10 +230,13 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 6)
         ]
         fake = FakeFetcher(pages=pages)
+        seen: list[CrawlResult] = []
         with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
-            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=3)
-        assert len(results) == 3
-        assert [r.url for r in results] == [
+            count = await crawl_recursive(
+                "https://example.com", max_depth=1, max_pages=3, on_result=seen.append
+            )
+        assert count == 3
+        assert [r.url for r in seen] == [
             "https://example.com/p1",
             "https://example.com/p2",
             "https://example.com/p3",
@@ -254,10 +259,10 @@ class TestCrawlRecursiveOrchestration:
 
         fake = _CancelAfterTwo(pages=pages)
         with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
-            results = await crawl_recursive(
+            count = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=10, cancel=cancel
             )
-        assert len(results) == 2
+        assert count == 2
 
     async def test_on_result_callback_invoked_per_page(self):
         pages = [
@@ -285,10 +290,10 @@ class TestCrawlRecursiveOrchestration:
 
         with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             # Should not raise even though the callback errors.
-            results = await crawl_recursive(
+            count = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=5, on_result=flaky
             )
-        assert len(results) == 1
+        assert count == 1
 
     async def test_validates_url_before_opening_fetcher(self):
         with pytest.raises(ValueError, match="http"):
@@ -305,9 +310,9 @@ class TestCrawlRecursiveOrchestration:
         ]
         fake = FakeFetcher(pages=pages)
         with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
-            results = await crawl_recursive("https://example.com", max_depth=None, max_pages=None)
+            count = await crawl_recursive("https://example.com", max_depth=None, max_pages=None)
         assert fake.recursive_calls[0]["max_pages"] == 4
-        assert len(results) == 4
+        assert count == 4
 
     async def test_explicit_request_above_cap_is_honored(self):
         """An explicit caller cap above the safety cap is the user's choice, not clamped."""
@@ -317,9 +322,9 @@ class TestCrawlRecursiveOrchestration:
         ]
         fake = FakeFetcher(pages=pages)
         with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
-            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=100)
+            count = await crawl_recursive("https://example.com", max_depth=1, max_pages=100)
         assert fake.recursive_calls[0]["max_pages"] == 100
-        assert len(results) == 19
+        assert count == 19
 
     async def test_request_below_ceiling_is_respected(self):
         """A caller cap below the safety ceiling wins (the ceiling is only an upper bound)."""
@@ -342,11 +347,11 @@ class TestCrawlRecursiveOrchestration:
         ]
         fake = FakeFetcher(pages=pages)
         with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
-            results = await crawl_recursive(
+            count = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=CRAWL_PAGES_UNLIMITED
             )
         assert fake.recursive_calls[0]["max_pages"] is None
-        assert len(results) == 19
+        assert count == 19
 
     async def test_raises_when_chromium_missing(self, monkeypatch):
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
@@ -377,7 +382,7 @@ class TestCrawlAndSaveOrchestration:
     async def test_depth_nonzero_uses_crawl_recursive(self):
         import inspect as _inspect
 
-        async def fake_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
+        async def fake_recursive(*args: Any, **kwargs: Any) -> int:
             flush = kwargs.get("on_result")
             results = [
                 CrawlResult(url="https://example.com/a", markdown="# A"),
@@ -388,7 +393,7 @@ class TestCrawlAndSaveOrchestration:
                     rv = flush(r)
                     if _inspect.isawaitable(rv):
                         await rv
-            return results
+            return len(results)
 
         with patch("lilbee.crawler.runner.crawl_recursive", side_effect=fake_recursive):
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=5)
@@ -398,8 +403,8 @@ class TestCrawlAndSaveOrchestration:
     async def test_emits_start_and_done_events(self):
         events: list[tuple[EventType, Any]] = []
 
-        async def _noop_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
-            return []
+        async def _noop_recursive(*args: Any, **kwargs: Any) -> int:
+            return 0
 
         with patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive):
             await crawl_and_save(
@@ -421,8 +426,8 @@ class TestCrawlAndSaveOrchestration:
         cancel = threading.Event()
         cancel.set()
 
-        async def _noop_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
-            return []
+        async def _noop_recursive(*args: Any, **kwargs: Any) -> int:
+            return 0
 
         with (
             patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive),
@@ -434,8 +439,8 @@ class TestCrawlAndSaveOrchestration:
         mock_sync.assert_not_awaited()
 
     async def test_success_awaits_periodic_sync(self):
-        async def _noop_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
-            return []
+        async def _noop_recursive(*args: Any, **kwargs: Any) -> int:
+            return 0
 
         with (
             patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive),
@@ -784,3 +789,30 @@ class TestRunnerLogin:
             ("header", "Authorization", LOGIN_TOKEN),
         ]
         assert asked == ([NO_LOGIN, login] if depth else [])
+
+
+class TestDrainKeepsNoPageText:
+    async def test_no_result_outlives_its_flush(self):
+        refs: list[weakref.ref[CrawlResult]] = []
+        alive_during_crawl: list[list[bool]] = []
+
+        async def stream() -> AsyncIterator[FetchedPage]:
+            for i in range(4):
+                gc.collect()
+                # The drain's loop variable holds the last result until the next page.
+                alive_during_crawl.append([ref() is not None for ref in refs[:-1]])
+                yield FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+
+        count = await events_mod._drain_page_stream(
+            stream(),
+            on_progress=None,
+            on_result=lambda result: refs.append(weakref.ref(result)),
+            sitemap_total=0,
+            pages_cap=10,
+            cancel=None,
+            render_mode=CrawlRenderMode.HTTP,
+        )
+        gc.collect()
+        assert count == 4
+        assert alive_during_crawl == [[], [], [False], [False, False]]
+        assert [ref() for ref in refs] == [None, None, None, None]

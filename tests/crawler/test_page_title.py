@@ -1,9 +1,10 @@
-"""A crawled page's own title: read from crawlberg, kept in the page record, read by sync."""
+"""A crawled page's own title: read from crawlberg, kept in the crawl page table, read by sync."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,9 +14,10 @@ from lilbee.crawler.backends.crawlberg import fetcher as fetcher_mod
 from lilbee.crawler.backends.crawlberg.fetcher import CrawlbergFetcher
 from lilbee.crawler.events import _fetched_to_result
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
+from lilbee.data.ingest import pipeline
 from lilbee.data.ingest.pipeline import _title_is_stale
-from lilbee.data.page_record import CrawlMeta, page_titles, pages_path, record_line
-from lilbee.data.store import SourceRecord
+from lilbee.data.store import SourceRecord, Store
+from tests._crawl_meta import CrawlMeta, claim_pages, crawl_store
 from tests._crawlberg_stub import StubCrawlberg, complete, page
 
 SEED = "https://example.com/"
@@ -33,6 +35,7 @@ def data_dir(tmp_path: Path) -> Iterator[Path]:
     snapshot = cfg.model_copy()
     cfg.data_dir = tmp_path / "data"
     cfg.data_dir.mkdir()
+    cfg.lancedb_dir = cfg.data_dir / "lancedb"
     yield cfg.data_dir
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -94,39 +97,42 @@ class TestFetchedTitle:
         assert _fetched_to_result(fetched).title == "x" * 512
 
 
-def _append(*lines: tuple[str, CrawlMeta]) -> None:
-    with pages_path().open("a", encoding="utf-8") as out:
-        out.writelines(f"{record_line(address, entry)}\n" for address, entry in lines)
+def _titles() -> dict[str, str]:
+    return crawl_store().crawl_pages.titles()
 
 
 class TestPageTitles:
-    def test_no_record_gives_no_titles(self, data_dir: Path):
-        assert page_titles() == {}
+    def test_no_table_gives_no_titles(self, data_dir: Path):
+        assert _titles() == {}
 
-    def test_each_page_has_the_title_of_its_last_line(self, data_dir: Path):
-        _append(
-            (SEED + "a", CrawlMeta("example.com/a~1.md", "h", "t", title="Old")),
-            (SEED + "a", CrawlMeta("example.com/a~1.md", "h", "t", title="New")),
-            (SEED + "b", CrawlMeta("example.com/b~2.md", "h", "t")),
+    def test_each_page_has_the_title_of_its_last_claim(self, data_dir: Path):
+        claim_pages({SEED + "a": CrawlMeta("example.com/a~1.md", "h", "t", title="Old")})
+        claim_pages(
+            {
+                SEED + "a": CrawlMeta("example.com/a~1.md", "h", "t", title="New"),
+                SEED + "b": CrawlMeta("example.com/b~2.md", "h", "t"),
+            }
         )
-        assert page_titles() == {"_web/example.com/a~1.md": "New"}
+        assert _titles() == {"_web/example.com/a~1.md": "New"}
 
-    def test_a_line_written_later_is_read(self, data_dir: Path):
-        _append((SEED + "a", CrawlMeta("example.com/a~1.md", "h", "t", title="One")))
-        assert page_titles() == {"_web/example.com/a~1.md": "One"}
-        _append((SEED + "b", CrawlMeta("example.com/b~2.md", "h", "t", title="Two")))
-        assert page_titles() == {
+    def test_a_claim_made_later_is_read_by_the_same_store(self, data_dir: Path):
+        store = crawl_store()
+        claim_pages({SEED + "a": CrawlMeta("example.com/a~1.md", "h", "t", title="One")})
+        assert store.crawl_pages.titles() == {"_web/example.com/a~1.md": "One"}
+        claim_pages({SEED + "b": CrawlMeta("example.com/b~2.md", "h", "t", title="Two")})
+        assert store.crawl_pages.titles() == {
             "_web/example.com/a~1.md": "One",
             "_web/example.com/b~2.md": "Two",
         }
 
-    def test_a_line_from_an_older_lilbee_has_no_title(self, data_dir: Path):
-        pages_path().write_text(
-            '{"url": "https://example.com/a", "file": "example.com/a~1.md",'
-            ' "content_hash": "h", "crawled_at": "t", "replaces": ""}\n',
+    def test_a_page_an_older_lilbee_recorded_has_no_title(self, data_dir: Path):
+        (data_dir / "crawl_meta.json").write_text(
+            '{"https://example.com/a": {"file": "example.com/a~1.md",'
+            ' "content_hash": "h", "crawled_at": "t"}}',
             encoding="utf-8",
         )
-        assert page_titles() == {}
+        assert [row.file for row in crawl_store().crawl_pages.rows()] == ["example.com/a~1.md"]
+        assert _titles() == {}
 
 
 def _row(title: str | None) -> SourceRecord:
@@ -142,25 +148,32 @@ def _row(title: str | None) -> SourceRecord:
 
 class TestTitleIsStale:
     @pytest.fixture(autouse=True)
-    def _record(self, data_dir: Path) -> None:
-        _append((SEED + "a", CrawlMeta("example.com/a~1.md", "h", "t", title="Page A")))
+    def _record(self, data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        claim_pages({SEED + "a": CrawlMeta("example.com/a~1.md", "h", "t", title="Page A")})
+        services = SimpleNamespace(store=Store(cfg))
+        monkeypatch.setattr(pipeline, "get_services", lambda: services)
 
     def test_a_row_with_the_stem_title_is_stale(self):
-        assert _title_is_stale("_web/example.com/a~1.md", _row("a")) is True
+        assert (
+            _title_is_stale("_web/example.com/a~1.md", _row("a"), pipeline._page_titles()) is True
+        )
 
     def test_a_row_with_the_record_title_is_not_stale(self):
-        assert _title_is_stale("_web/example.com/a~1.md", _row("Page A")) is False
+        assert (
+            _title_is_stale("_web/example.com/a~1.md", _row("Page A"), pipeline._page_titles())
+            is False
+        )
 
     def test_a_page_the_record_gives_no_title_is_not_stale(self):
-        assert _title_is_stale("_web/example.com/b~2.md", _row("b")) is False
+        assert (
+            _title_is_stale("_web/example.com/b~2.md", _row("b"), pipeline._page_titles()) is False
+        )
 
     def test_a_local_file_is_never_stale(self):
-        assert _title_is_stale("notes/a.md", _row("a")) is False
+        assert _title_is_stale("notes/a.md", _row("a"), pipeline._page_titles()) is False
 
 
 def test_a_list_with_no_crawled_page_starts_no_services(monkeypatch: pytest.MonkeyPatch):
-    from types import SimpleNamespace
-
     from lilbee.app import titles
 
     started: list[bool] = []

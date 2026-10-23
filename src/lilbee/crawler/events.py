@@ -98,14 +98,13 @@ async def _drain_page_stream(
     pages_cap: float,
     cancel: CancelToken | None,
     render_mode: CrawlRenderMode,
-) -> list[CrawlResult]:
+) -> int:
     """Consume a fetcher's page stream, emitting events and flushing per page.
 
-    Returns the accumulated ``CrawlResult`` list. The stream is closed
-    deterministically by the caller; this helper only iterates. A browser
-    crawl's wait for its first page is bracketed by setup events.
+    Returns the number of pages the stream yielded; no page outlives its flush. The
+    stream is closed deterministically by the caller; this helper only iterates. A
+    browser crawl's wait for its first page is bracketed by setup events.
     """
-    results: list[CrawlResult] = []
     counter = 0
     warm_up_done = _browser_warm_up(on_progress, render_mode)
 
@@ -125,7 +124,6 @@ async def _drain_page_stream(
                 CrawlPageEvent(url=page.url, current=counter, total=sitemap_total),
             )
         new_result = _fetched_to_result(page)
-        results.append(new_result)
         _emit_page_failure(on_progress, new_result)
         await _flush(on_result, new_result)
         # The user-visible count never exceeds the number the caller asked for.
@@ -133,26 +131,12 @@ async def _drain_page_stream(
             break
     if warm_up_done is not None:
         warm_up_done()
-    return results
+    return counter
 
 
-def _handle_crawl_teardown_error(
-    url: str,
-    exc: Exception,
-    *,
-    cancel: CancelToken | None,
-    results: list[CrawlResult],
-) -> None:
-    """Classify a recursive-crawl exception: cancel-teardown vs real failure.
-
-    An error raised while a cancelled crawl tears down is expected, not a
-    failure worth surfacing. Otherwise, log and append a synthetic error result
-    (only when nothing was produced so callers always see at least one entry).
-    """
-    cancelled = cancel is not None and cancel.is_set()
-    if cancelled:
+def _handle_crawl_teardown_error(url: str, exc: Exception, *, cancel: CancelToken | None) -> None:
+    """Log a recursive-crawl exception: at debug during a cancel's teardown, else a warning."""
+    if cancel is not None and cancel.is_set():
         log.debug("Recursive crawl of %s ended during cancel teardown: %s", url, exc)
         return
     log.warning("Recursive crawl of %s failed: %s", url, exc)
-    if not results:
-        results.append(CrawlResult(url=url, success=False, error=str(exc)))

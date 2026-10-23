@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .core import Store
+from .crawl_pages import CrawlPage, CrawlPages
 from .lance_helpers import (
     agent_recall_predicate,
     ensure_table,
@@ -66,6 +67,8 @@ __all__ = [
     "ChunkWrite",
     "CitationRecord",
     "ConceptRecords",
+    "CrawlPage",
+    "CrawlPages",
     "EmbeddingModelMismatchError",
     "HeldOut",
     "HeldRecord",

@@ -39,6 +39,7 @@ import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -47,7 +48,13 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from lilbee.app.services import set_services
-from lilbee.core.config import CHUNKS_TABLE, CITATIONS_TABLE, SOURCES_TABLE, cfg
+from lilbee.core.config import (
+    CHUNKS_TABLE,
+    CITATIONS_TABLE,
+    CRAWL_PAGES_TABLE,
+    SOURCES_TABLE,
+    cfg,
+)
 from lilbee.crawler import (
     CrawlResult,
     content_hash,
@@ -56,12 +63,11 @@ from lilbee.crawler import (
     url_to_filename,
 )
 from lilbee.data.ingest import sync
-from lilbee.data.page_record import CrawlMeta
-from lilbee.data.store import Store
+from lilbee.data.store import CrawlPage, Store
 from lilbee.retrieval.query.formatting import source_label
 from lilbee.wiki.entity_extractor import EntityKind
 from lilbee.wiki.stubs import WikiStub, load_stub_index, save_stub_index
-from tests._crawl_meta import write_crawl_metadata
+from tests._crawl_meta import CrawlMeta, crawl_store, write_crawl_metadata
 from tests.conftest import make_citation, make_mock_services
 from tests.test_store import _axis_record, _citation, _early_source
 
@@ -523,10 +529,10 @@ async def _recrawl(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
         CrawlResult(url=_SITE + path, markdown=_text(path, version)) for path, _ in _EARLIER_LIBRARY
     ]
 
-    async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+    async def crawl(url: str, **kwargs: object) -> int:
         for result in results:
             await kwargs["on_result"](result)  # type: ignore[operator]
-        return results
+        return len(results)
 
     monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
     await crawl_and_save(_SITE, depth=1)
@@ -595,9 +601,9 @@ async def _recrawl_guide(monkeypatch: pytest.MonkeyPatch) -> None:
     """Crawl the guide page again, the crawler reporting a changed text."""
     result = CrawlResult(url=_SITE + _GUIDE, markdown=_text(_GUIDE, "2"))
 
-    async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+    async def crawl(url: str, **kwargs: object) -> int:
         await kwargs["on_result"](result)  # type: ignore[operator]
-        return [result]
+        return 1
 
     monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
     await crawl_and_save(_SITE + _GUIDE, depth=1)
@@ -705,49 +711,40 @@ class TestRecrawlForgetsInWikiIndex:
         assert sorted(load_stub_index()) == ["notes"]
 
 
-class _CountingMeta(dict):
-    """Crawl metadata that counts each pass over all of its entries."""
-
-    passes = 0
-
-    def __iter__(self):
-        type(self).passes += 1
-        return super().__iter__()
-
-    def items(self):
-        type(self).passes += 1
-        return super().items()
-
-    def values(self):
-        type(self).passes += 1
-        return super().values()
-
-
 @pytest.mark.parametrize("pages", [5, 40])
-async def test_saving_a_page_does_not_read_the_whole_metadata(
+async def test_a_crawl_reads_the_crawl_page_table_once_whatever_its_pages(
     library: Store, monkeypatch: pytest.MonkeyPatch, pages: int
 ):
+    from lancedb.table import LanceTable
+
     paths = [f"p{n}" for n in range(pages)]
     others = {
-        f"http://other.test/{n}": CrawlMeta(f"other.test/{n}/index.md", "h", "t")
+        f"http://other.test/{n}": {"file": f"other.test/{n}/index.md", "content_hash": "h"}
         for n in range(2000)
     }
-    stored = {_SITE + p: CrawlMeta(f"site.test/s/{p}/old.md", "old", "t") for p in paths}
-    _CountingMeta.passes = 0
-    monkeypatch.setattr(
-        "lilbee.crawler.save.load_crawl_metadata", lambda: _CountingMeta(others | stored)
-    )
+    stored = {_SITE + p: {"file": f"site.test/s/{p}/old.md", "content_hash": "old"} for p in paths}
+    meta = {key: {**entry, "crawled_at": "t"} for key, entry in (others | stored).items()}
+    (cfg.data_dir / "crawl_meta.json").write_text(_json.dumps(meta), encoding="utf-8")
+    reads: list[int] = []
+    read = LanceTable.to_arrow
+
+    def counted(table: LanceTable) -> Any:
+        if table.name == CRAWL_PAGES_TABLE:
+            reads.append(1)
+        return read(table)
+
+    monkeypatch.setattr(LanceTable, "to_arrow", counted)
     results = [CrawlResult(url=_SITE + p, markdown=_text(p, "2")) for p in paths]
 
-    async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+    async def crawl(url: str, **kwargs: object) -> int:
         for result in results:
             await kwargs["on_result"](result)  # type: ignore[operator]
-        return results
+        return len(results)
 
     monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
     await crawl_and_save(_SITE, depth=1)
-    passes = _CountingMeta.passes
-    assert passes <= 3, f"{passes} passes over the metadata for {pages} pages"
+    # The import of the older files, then the crawl's first hold.
+    assert len(reads) == 2, f"{len(reads)} reads of the table for {pages} pages"
 
 
 # Each library below is written as main (90573e72c) leaves it: every file under the name main's
@@ -768,20 +765,18 @@ def _body(site: str, path: str, version: str) -> str:
 
 
 def _plant(pages: list[tuple[str, str, str, bool]]) -> None:
-    """Write (address, file, text, recorded) as main does: the file, and an entry if recorded."""
+    """Write (address, file, text, recorded) as main does: the file, and an entry if recorded.
+
+    Each entry is the earlier copy main's crawl metadata leaves, keyed by the address as crawled.
+    """
     web = cfg.documents_dir / "_web"
-    meta_path = cfg.data_dir / "crawl_meta.json"
-    meta = _json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    meta = {}
     for address, rel, text, recorded in pages:
         (web / rel).parent.mkdir(parents=True, exist_ok=True)
         (web / rel).write_text(text, encoding="utf-8")
         if recorded:
-            meta[address] = {
-                "file": rel,
-                "content_hash": content_hash(text),
-                "crawled_at": "2026-01-01T00:00:00+00:00",
-            }
-    meta_path.write_text(_json.dumps(meta, indent=2), encoding="utf-8")
+            meta[address] = CrawlMeta(rel, content_hash(text), "2026-01-01T00:00:00+00:00")
+    write_crawl_metadata(meta)
 
 
 async def _crawl_pages(
@@ -790,7 +785,7 @@ async def _crawl_pages(
     """Crawl *site*, the crawler reporting each of *paths* with the text of *version*."""
     results = [CrawlResult(url=site + p, markdown=_body(site, p, version)) for p in paths]
 
-    async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+    async def crawl(url: str, **kwargs: object) -> int:
         for result in results:
             try:  # as the crawler's page stream does around each save (crawler/events.py)
                 await kwargs["on_result"](result)  # type: ignore[operator]
@@ -798,7 +793,7 @@ async def _crawl_pages(
                 _logging.getLogger("lilbee.crawler.events").exception(
                     "Flush failed: %s", result.url
                 )
-        return results
+        return len(results)
 
     monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
     await crawl_and_save(site, depth=1)
@@ -828,18 +823,11 @@ def _pages_on_disk(pages: list[str]) -> dict[str, int]:
 
 
 def _recorded_files() -> dict[str, str]:
-    """Every file a crawl record names, with the key that names it, from every record file."""
-    named: dict[str, str] = {}
-    meta_path = cfg.data_dir / "crawl_meta.json"
-    if meta_path.exists():
-        for key, entry in _json.loads(meta_path.read_text(encoding="utf-8")).items():
-            named[f"{key} (meta)"] = entry["file"]
-    for record in sorted(cfg.data_dir.glob("crawl_pages*")):
-        for line in record.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                entry = _json.loads(line)
-                named[f"{entry['url']} (pages)"] = entry["file"]
-    return named
+    """Every file a row of the crawl page table names, with the address and kind of its row."""
+    return {
+        f"{row.address} ({'current' if row.current else 'earlier'} {row.file})": row.file
+        for row in crawl_store().crawl_pages.rows()
+    }
 
 
 def _misattributed(pages: list[str]) -> list[str]:
@@ -1071,10 +1059,10 @@ class TestRev912eRows:
         second = ["a_b", "x_y", "doc;v=2"]
         results = [CrawlResult(url=_SITE + p, markdown=_text(p, "2")) for p in first]
 
-        async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+        async def crawl(url: str, **kwargs: object) -> int:
             for result in results:
                 await kwargs["on_result"](result)  # type: ignore[operator]
-            return results
+            return len(results)
 
         monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
         await crawl_and_save(_SITE, depth=1)
@@ -1086,12 +1074,10 @@ class TestRev912eRows:
 
 def _library_state(store: Store, versions: dict[str, str]) -> dict[str, object]:
     """Files, index entries and page record, against pages *versions* (address -> version)."""
-    from lilbee.crawler.save import load_crawl_record
-
     files = sorted(f"_web/{rel}" for rel in _texts())
     sources = sorted(s["filename"] for s in store.get_sources())
     texts = _texts().values()
-    recorded = {f"_web/{entry.file}" for entry in load_crawl_record().pages.values()}
+    recorded = {f"_web/{row.file}" for row in crawl_store().crawl_pages.rows() if row.current}
     web = cfg.documents_dir / "_web"
     return {
         "files": len(files),
@@ -1248,7 +1234,7 @@ class TestEarlierLibraries:
         }
 
     @pytest.mark.timeout(300)
-    async def test_a_save_cut_after_its_record_line_writes_the_page_on_the_next_crawl(
+    async def test_a_save_cut_after_its_claim_writes_the_page_on_the_next_crawl(
         self, rev_library: Store, monkeypatch: pytest.MonkeyPatch
     ):
         pages = _plant_site(_NEWER, _NEWER_ROWS)
@@ -1300,9 +1286,9 @@ async def _crawl_text(
     """Crawl the page at *path* with the text *markdown* and the page title *title*."""
     result = CrawlResult(url=_TITLE_SITE + path, markdown=markdown, title=title)
 
-    async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+    async def crawl(url: str, **kwargs: object) -> int:
         await kwargs["on_result"](result)  # type: ignore[operator]
-        return [result]
+        return 1
 
     monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
     await crawl_and_save(_TITLE_SITE + path, depth=1)
@@ -1368,11 +1354,11 @@ class TestPageTitle:
 
         await _crawl_titled(monkeypatch, "tokyo", "1", "Tokyo")
         await sync(quiet=True)
-        lines = save.pages_path().read_text(encoding="utf-8")
+        rows = set(crawl_store().crawl_pages.rows())
         embedded = get_services().embedder.embed_batch.call_count
         await _crawl_titled(monkeypatch, "tokyo", "1", "Tokyo")
         await sync(quiet=True)
-        assert save.pages_path().read_text(encoding="utf-8") == lines
+        assert set(crawl_store().crawl_pages.rows()) == rows
         assert get_services().embedder.embed_batch.call_count == embedded
 
     @pytest.mark.timeout(120)
@@ -1385,9 +1371,10 @@ class TestPageTitle:
         path = cfg.documents_dir / source
         path.parent.mkdir(parents=True)
         path.write_bytes(_plain_text("1").replace("\n", line_end).encode("utf-8"))
-        older = {"url": _TITLE_SITE + _FORUM, "file": source.removeprefix("_web/")}
-        older |= {"content_hash": content_hash(_plain_text("1")), "crawled_at": "t"}
-        save.pages_path().write_text(_json.dumps(older) + "\n", encoding="utf-8")
+        older = {"file": source.removeprefix("_web/"), "crawled_at": "t"}
+        older |= {"content_hash": content_hash(_plain_text("1"))}
+        meta = {_TITLE_SITE + _FORUM: older}
+        (cfg.data_dir / "crawl_meta.json").write_text(_json.dumps(meta), encoding="utf-8")
         await sync(quiet=True)
         stem_title = _titles(library, source)
         assert stem_title[0] == Path(source).name.rpartition("~")[0].replace("-", " ")
@@ -1430,10 +1417,10 @@ class TestPageTitle:
     ):
         await _crawl_titled(monkeypatch, "tokyo", "1", "Tokyo")
         await sync(quiet=True)
-        lines = save.pages_path().read_text(encoding="utf-8")
+        rows = set(crawl_store().crawl_pages.rows())
         await _crawl_titled(monkeypatch, "tokyo", "1", "")
         await sync(quiet=True)
-        assert save.pages_path().read_text(encoding="utf-8") == lines
+        assert set(crawl_store().crawl_pages.rows()) == rows
         assert _titles(library, _source("tokyo")) == ("Tokyo", {"Tokyo"})
 
     @pytest.mark.timeout(120)
@@ -1553,3 +1540,40 @@ class TestEverySurfaceShowsTheStoredTitle:
         await sync(quiet=True)
         assert library.source_ids(["notes.md"], None)
         assert library.web_titles([source, "notes.md"]) == {source: _FORUM_TITLE}
+
+
+class TestTheCrawlPageTableOutlivesTheIndex:
+    """A rebuild, a re-embed and a clear of the index keep which files the crawl owns."""
+
+    async def _crawled(self, library: Store, monkeypatch: pytest.MonkeyPatch) -> set[CrawlPage]:
+        await _crawl_titled(monkeypatch, _FORUM, "1", _FORUM_TITLE)
+        await sync(quiet=True)
+        rows = set(library.crawl_pages.rows())
+        assert [row.title for row in rows] == [_FORUM_TITLE]
+        return rows
+
+    async def test_a_rebuild_keeps_the_rows(self, library: Store, monkeypatch: pytest.MonkeyPatch):
+        rows = await self._crawled(library, monkeypatch)
+        result = await sync(force_rebuild=True, quiet=True)
+        assert result.added == [_source(_FORUM)]
+        assert set(library.crawl_pages.rows()) == rows
+
+    async def test_a_re_embed_under_another_model_keeps_the_rows(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        rows = await self._crawled(library, monkeypatch)
+        cfg.embedding_model = "ollama/other-embedder"
+        assert library.index_mismatch() is not None
+        await sync(force_rebuild=True, quiet=True)
+        assert library.index_mismatch() is None
+        assert set(library.crawl_pages.rows()) == rows
+
+    async def test_clearing_a_rebuild_cut_short_keeps_the_rows(
+        self, library: Store, monkeypatch: pytest.MonkeyPatch
+    ):
+        rows = await self._crawled(library, monkeypatch)
+        library.get_db().drop_table(SOURCES_TABLE)
+        result = await sync(quiet=True)
+        assert result.added == [_source(_FORUM)]
+        assert CHUNKS_TABLE in library.get_db().table_names()
+        assert set(library.crawl_pages.rows()) == rows

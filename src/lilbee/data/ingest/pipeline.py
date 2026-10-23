@@ -36,6 +36,7 @@ from rich.progress import (
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import Config, active_config
+from lilbee.core.web_names import is_web_source
 from lilbee.data.extract.chunk import ChunkLimitError
 from lilbee.data.extract.document import (
     extract_batching,
@@ -84,7 +85,6 @@ from lilbee.data.offload import (
     to_executor,
     to_ingest_thread,
 )
-from lilbee.data.page_record import page_titles
 from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
     ChunkWrite,
@@ -350,9 +350,16 @@ class _FileChangeVerdict:
     held: bool = False
 
 
-def _title_is_stale(name: str, record: SourceRecord) -> bool:
-    """Whether the page record gives the crawled page *name* a title its source row lacks."""
-    title = page_titles().get(name)
+def _page_titles() -> dict[str, str]:
+    """The title of each crawled page, read once for a whole plan pass."""
+    return get_services().store.crawl_pages.titles()
+
+
+def _title_is_stale(name: str, record: SourceRecord, titles: Mapping[str, str]) -> bool:
+    """Whether the crawl page table gives the crawled page *name* a title its source row lacks."""
+    if not is_web_source(name):
+        return False
+    title = titles.get(name)
     return title is not None and record.get("title") != title
 
 
@@ -361,6 +368,7 @@ def _classify_file_change(
     path: Path,
     record: SourceRecord | None,
     held_hashes: dict[str, str],
+    titles: Mapping[str, str],
 ) -> _FileChangeVerdict:
     """Decide one file's verdict: stat-unchanged, hash-unchanged, held out, or process."""
     content_type = classify_file(path)
@@ -368,7 +376,7 @@ def _classify_file_change(
         raise ValueError(f"Unsupported file slipped through discovery: {name}")
     stored_stat = source_stat(record) if record is not None else None
     current_stat = _disk_stat(path)
-    stale = record is not None and _title_is_stale(name, record)
+    stale = record is not None and _title_is_stale(name, record, titles)
     if (
         record is not None
         and not stale
@@ -501,6 +509,7 @@ def _classify_changes(
     items: list[tuple[str, Path]],
     existing_sources: dict[str, SourceRecord],
     held_hashes: dict[str, str],
+    titles: Mapping[str, str],
     cancel: CancelSignal | None,
     *,
     progress: _PlanProgress | None = None,
@@ -518,7 +527,7 @@ def _classify_changes(
     """
 
     def _classify(name: str, path: Path) -> _FileChangeVerdict:
-        return _classify_file_change(name, path, existing_sources.get(name), held_hashes)
+        return _classify_file_change(name, path, existing_sources.get(name), held_hashes, titles)
 
     total = len(items)
     progress = progress or _PlanProgress(total)
@@ -544,7 +553,9 @@ def _plan_file_changes(
     held_hashes: dict[str, str] | None = None,
 ) -> FileChangePlan:
     """Diff every disk file against the store in one pass (see :func:`_plan_items`)."""
-    return _plan_items(sorted(disk_files.items()), existing_sources, cancel, held_hashes or {})
+    return _plan_items(
+        sorted(disk_files.items()), existing_sources, cancel, held_hashes or {}, _page_titles()
+    )
 
 
 def _plan_items(
@@ -552,6 +563,7 @@ def _plan_items(
     existing_sources: dict[str, SourceRecord],
     cancel: CancelSignal | None,
     held_hashes: dict[str, str],
+    titles: Mapping[str, str],
     *,
     progress: _PlanProgress | None = None,
     pool: ThreadPoolExecutor | None = None,
@@ -572,7 +584,7 @@ def _plan_items(
     shorter one when cancelled mid-pass.
     """
     verdicts = _classify_changes(
-        items, existing_sources, held_hashes, cancel, progress=progress, pool=pool
+        items, existing_sources, held_hashes, titles, cancel, progress=progress, pool=pool
     )
 
     files_to_process: list[FileToProcess] = []
@@ -907,6 +919,7 @@ async def _plan_batches(
     feeds. Empty batches are not yielded, so the first yield means there is work.
     """
     items = sorted(disk_files.items())
+    titles = await to_ingest_thread(_page_titles)
     progress = _PlanProgress(len(items))
     stop = _StreamStop(cancel)
     workers = _plan_workers()
@@ -919,6 +932,7 @@ async def _plan_batches(
             existing_sources,
             stop,
             held_hashes,
+            titles,
             progress=progress,
             pool=hashers if workers > 1 else None,
         )
@@ -2302,7 +2316,9 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
     after the cleanup delete (which clears the source's old page-text rows) and
     before the source row: a page-text failure leaves the row stale and the file
     replans next sync instead of losing its pages forever behind the stat
-    short-circuit. The write retries once on a lock timeout.
+    short-circuit. The write retries once on a lock timeout. A file that is
+    gone when the write takes the lock is left out, its concepts and entities
+    with it: a crawl that retired it after this sync read it removed its source.
     """
     store = get_services().store
     items: list[ChunkWrite] = []
@@ -2327,9 +2343,22 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
         stale.extend(n for n in store.member_sources(r.name) if n not in current)
     if stale:
         store.remove_documents(stale)
-    _retry_after_lock_timeout(lambda: store.write_chunks_batch(items))
-    _flush_concept_records(buffer)
-    _flush_entity_rows(buffer)
+    paths = {r.name: r.path for r in buffer}
+    paths.update((m.name, r.path) for r in buffer for m in r.members or [])
+    gone: set[str] = set()
+
+    def present(name: str) -> bool:
+        if paths[name].is_file():
+            return True
+        gone.add(name)
+        return False
+
+    _retry_after_lock_timeout(lambda: store.write_chunks_batch(items, present))
+    if gone:
+        log.info("Not indexed, the file is gone: %s", ", ".join(sorted(gone)))
+    kept = [r for r in buffer if r.name not in gone]
+    _flush_concept_records(kept)
+    _flush_entity_rows(kept)
 
 
 def _member_write(member: MemberRecords, digest: str, stat: SourceStat | None) -> ChunkWrite:

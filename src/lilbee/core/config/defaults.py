@@ -59,6 +59,8 @@ CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
 CITATIONS_TABLE = "_citations"
 MEMORIES_TABLE = "_memories"
+# Which file each crawled page owns; kept, like memories, through a rebuild.
+CRAWL_PAGES_TABLE = "_crawl_pages"
 META_TABLE = "_meta"
 PAGE_TEXTS_TABLE = "_page_texts"
 CONCEPT_NODES_TABLE = "concept_nodes"
