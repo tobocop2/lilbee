@@ -1446,7 +1446,7 @@ def _index_uuids(store, table_name=CHUNKS_TABLE):
     return {idx.name: idx.index_uuid for idx in _readable_registry(store.open_table(table_name))}
 
 
-class TestUnreadableIndexRegistry:
+class TestUnusableIndexRegistry:
     """A missing FTS directory makes the registry read as ``None``. The store
     rebuilds only the FTS indexes; scalar and vector indexes keep their files
     and are left alone."""
@@ -1509,7 +1509,7 @@ class TestUnreadableIndexRegistry:
         assert fresh._title_fts_ready is False
         assert fresh.bm25_probe("plain body words")
 
-    def test_a_listing_that_stays_unreadable_warns_once_and_rebuilds_nothing_else(
+    def test_a_listing_that_stays_unusable_warns_once_and_rebuilds_nothing_else(
         self, store, test_config, caplog
     ):
         """The FTS rebuild latches keyword readiness, so later queries do not
@@ -1545,7 +1545,7 @@ class TestUnreadableIndexRegistry:
         assert caplog.text.count("still unusable after the FTS rebuild") == 1
         assert fresh._scalar_ready is False
 
-    def test_scalar_build_skips_a_table_whose_listing_is_unreadable(self, store):
+    def test_scalar_build_skips_a_table_whose_listing_is_unusable(self, store):
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         with (
@@ -1555,7 +1555,7 @@ class TestUnreadableIndexRegistry:
             store._ensure_scalar_index_on("chunks", (("source_id", "BTREE"),))
         assert builds == []
 
-    def test_title_index_build_repairs_an_unreadable_registry(self, store, test_config):
+    def test_title_index_build_repairs_an_unusable_registry(self, store, test_config):
         test_config.title_search = True
         store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
         store.ensure_fts_index()
@@ -1706,7 +1706,7 @@ class TestEnsureVectorIndex:
 
         assert "Could not rebuild the vector index" in caplog.text
 
-    def test_unreadable_registry_below_threshold_builds_no_vector_index(self, store, test_config):
+    def test_unusable_registry_below_threshold_builds_no_vector_index(self, store, test_config):
         store.add_chunks(_make_records())  # 3 rows, threshold defaults to 50_000
         store.ensure_fts_index()
         _remove_index_files(test_config)
@@ -1717,7 +1717,7 @@ class TestEnsureVectorIndex:
         assert _has_fts_index(indices)
         assert not _has_vector_index(indices)
 
-    def test_forced_build_on_an_unreadable_registry_repairs_then_builds(self, store, test_config):
+    def test_forced_build_on_an_unusable_registry_repairs_then_builds(self, store, test_config):
         test_config.ann_index_threshold = 1_000_000
         store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
         store.ensure_fts_index()
@@ -1729,7 +1729,7 @@ class TestEnsureVectorIndex:
         assert _has_fts_index(indices)
         assert _has_vector_index(indices)
 
-    def test_registry_that_stays_unreadable_builds_nothing(self, store):
+    def test_registry_that_stays_unusable_builds_nothing(self, store):
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         with (
