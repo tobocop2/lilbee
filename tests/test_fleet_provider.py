@@ -3054,6 +3054,22 @@ def test_preload_roles_warms_each_role_and_fires_listeners(monkeypatch) -> None:
     assert set(spawned) == {WorkerRole.CHAT, WorkerRole.EMBED}
 
 
+def test_preload_roles_without_clients_for_requested_roles_starts_nothing(monkeypatch) -> None:
+    embed = _fake_client()
+    p = _provider_with_clients({WorkerRole.EMBED: [embed]})
+    spawning: list[WorkerRole] = []
+    p.add_spawn_listener(on_spawning=spawning.append)
+    started: list[object] = []
+    monkeypatch.setattr(prov_mod, "DaemonCall", lambda *a, **kw: started.append((a, kw)))
+    ensure = MagicMock()
+    monkeypatch.setattr(p, "_ensure_fleet", ensure)
+    p._preload_roles(frozenset({WorkerRole.CHAT, WorkerRole.RERANK}))
+    assert started == []  # no warm-up thread
+    ensure.assert_not_called()  # no engine spawned
+    assert spawning == []
+    embed.embed.assert_not_called()
+
+
 def test_preload_roles_skips_failing_role(monkeypatch) -> None:
     embed = _fake_client()
     embed.embed.side_effect = RuntimeError("not loaded")
