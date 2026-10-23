@@ -168,10 +168,10 @@ def test_every_startup_write_entry_still_has_a_write() -> None:
 def test_a_new_write_in_an_allowed_file_goes_red() -> None:
     sources = _tree_sources()
     assert not _offenders(sources)
+    # The rest of the tree is clean (asserted above), so only the probed file is rescanned.
     for rel, _scope in _STARTUP_WRITES:
-        probe = dict(sources)
-        probe[rel] += "\n\ndef _from_a_thread() -> None:\n    os.environ['X'] = '1'\n"
-        assert _offenders(probe) == {f"{rel}:{probe[rel].count(chr(10))} in _from_a_thread"}
+        probed = sources[rel] + "\n\ndef _from_a_thread() -> None:\n    os.environ['X'] = '1'\n"
+        assert _offenders({rel: probed}) == {f"{rel}:{probed.count(chr(10))} in _from_a_thread"}
 
 
 def test_the_scan_sees_each_kind_of_environment_write() -> None:
