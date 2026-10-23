@@ -5287,6 +5287,23 @@ class TestOpenTimeMigration:
             ("source_id_idx", ("source_id",)),
         }
 
+    def test_a_key_index_is_added_when_an_fts_index_has_lost_its_files(self, test_config):
+        import lancedb
+        from lancedb.index import FTS, BTree
+
+        db = lancedb.connect(str(test_config.lancedb_dir))
+        for name, rows in _path_keyed_tables(test_config).items():
+            db.create_table(name, rows)
+        chunks = db.open_table("chunks")
+        chunks.create_index("source", config=BTree())
+        chunks.create_index("chunk", config=FTS(with_position=False))
+        _remove_index_files(test_config, index_types={"FTS"})
+
+        db = Store(test_config).get_db()
+
+        indexes = {(i.name, tuple(i.columns)) for i in db.open_table("chunks").list_indices()}
+        assert ("source_id_idx", ("source_id",)) in indexes
+
     @pytest.mark.parametrize(("stamped", "after"), [(2, 3), (1, 1)])
     def test_a_migrated_library_reads_schema_version_three(self, test_config, stamped, after):
         tables = _path_keyed_tables(test_config)
