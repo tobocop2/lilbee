@@ -64,6 +64,18 @@ class TestBuildLock:
             assert missing.is_dir()
 
 
+def _refuse_unlink(monkeypatch: pytest.MonkeyPatch, target: Path) -> None:
+    """Make deleting *target* fail the way Windows does while another handle is open."""
+    real_unlink = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == target:
+            raise PermissionError(32, "The process cannot access the file", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
 class TestUserLocks:
     def test_sole_holder_is_last_out(self, tmp_path: Path):
         hold = hold_user_lock(tmp_path)
@@ -87,6 +99,29 @@ class TestUserLocks:
         hold = hold_user_lock(tmp_path)
         assert hold.release_and_check_last() is True
         assert hold.release_and_check_last() is True
+
+    def test_release_survives_a_lock_file_that_cannot_be_deleted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        hold = hold_user_lock(tmp_path, pid=444_444)
+        _refuse_unlink(monkeypatch, hold.path)
+        assert hold.release_and_check_last() is True
+        monkeypatch.undo()
+        assert live_users_exist(tmp_path) is False
+        assert not hold.path.exists()
+
+    def test_probe_survives_a_dead_lock_file_that_cannot_be_deleted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        dead = tmp_path / "engine-users" / "555555.lock"
+        dead.parent.mkdir(parents=True, exist_ok=True)
+        dead.touch()
+        _refuse_unlink(monkeypatch, dead)
+        assert live_users_exist(tmp_path) is False
+        assert dead.exists()
+        monkeypatch.undo()
+        assert live_users_exist(tmp_path) is False
+        assert not dead.exists()
 
     def test_own_lock_file_is_removed_on_release(self, tmp_path: Path):
         hold = hold_user_lock(tmp_path, pid=333_333)

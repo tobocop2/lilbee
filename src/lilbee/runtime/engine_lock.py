@@ -12,7 +12,7 @@ import hashlib
 import logging
 import math
 import os
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -226,6 +226,16 @@ def clear_keep_warm(engine_dir: Path) -> None:
         marker.unlink(missing_ok=True)
 
 
+def _unlink_best_effort(path: Path) -> None:
+    """Delete a released user lock file; a leftover is harmless.
+
+    Windows refuses to delete a file another handle has open (WinError 32),
+    for example a concurrent probe. The next probe deletes the leftover.
+    """
+    with suppress(OSError):
+        path.unlink(missing_ok=True)
+
+
 def _user_lock_path(engine_dir: Path, pid: int) -> Path:
     return _users_dir(engine_dir) / f"{pid}{_USER_LOCK_SUFFIX}"
 
@@ -248,7 +258,7 @@ class UserLockHold:
         if self._lock.is_locked:
             self._lock.release()
             if not self._lock.is_locked:
-                self.path.unlink(missing_ok=True)
+                _unlink_best_effort(self.path)
         return not live_users_exist(self.engine_dir)
 
 
@@ -289,7 +299,7 @@ def live_users_exist(engine_dir: Path) -> bool:
         except FileLockTimeout:
             return True
         probe.release()
-        path.unlink(missing_ok=True)
+        _unlink_best_effort(path)
     return False
 
 
