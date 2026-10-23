@@ -589,6 +589,29 @@ class TestEnsureFtsIndex:
         create_spy.assert_not_called()
         optimize_spy.assert_called_once()
 
+    def test_a_healthy_fts_index_is_not_rebuilt(self, store, test_config):
+        """A fresh store over a real, intact FTS index keeps that index.
+
+        The index files are checked on disk; a check that reported every index
+        as gone would rebuild it and change its uuid."""
+        from lancedb.table import LanceTable
+
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        before = _index_uuids(store)
+        assert before
+        real = LanceTable.create_index
+        fresh = Store(test_config)
+
+        with mock.patch.object(
+            LanceTable, "create_index", autospec=True, side_effect=real
+        ) as create_spy:
+            fresh.ensure_fts_index()
+
+        create_spy.assert_not_called()
+        assert _index_uuids(fresh) == before
+        assert fresh.bm25_probe("chunk number 1")
+
     def test_optimize_that_drops_index_files_repairs_the_registry(self, store, test_config):
         """An index whose files are gone right after optimize() is rebuilt in the same step.
 
