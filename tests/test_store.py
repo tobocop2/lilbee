@@ -1446,9 +1446,9 @@ def _index_uuids(store, table_name=CHUNKS_TABLE):
 
 
 class TestUnreadableIndexRegistry:
-    """lancedb opens FTS index files while it lists indexes, so a missing FTS
-    directory makes the listing raise. The store rebuilds only the FTS indexes;
-    scalar and vector indexes keep their files and are left alone."""
+    """A missing FTS directory makes the registry read as ``None``. The store
+    rebuilds only the FTS indexes; scalar and vector indexes keep their files
+    and are left alone."""
 
     def test_registry_is_empty_without_indexes_and_none_when_listing_raises(self, store):
         store.add_chunks(_make_records())
@@ -1539,7 +1539,7 @@ class TestUnreadableIndexRegistry:
 
         assert rebuilt == ["chunk"]
         assert scalar_builds == []
-        assert caplog.text.count("still unreadable after the FTS rebuild") == 1
+        assert caplog.text.count("still unusable after the FTS rebuild") == 1
         assert fresh._scalar_ready is False
 
     def test_scalar_build_skips_a_table_whose_listing_is_unreadable(self, store):

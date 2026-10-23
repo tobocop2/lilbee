@@ -1637,7 +1637,7 @@ class Store:
         ``blocking=False`` (the search path) marks an existing index ready
         without the lock and skips maintenance when another process holds it
         or the filesystem cannot lock, so a long concurrent ingest cannot stall
-        or fail a query. An unreadable
+        or fail a query. An unusable
         index registry never counts as an existing index.
         """
         probe = self.open_table(CHUNKS_TABLE)
@@ -1764,17 +1764,16 @@ class Store:
             )
 
     def _repair_fts_registry(self, table: LanceTable) -> list[IndexConfig] | None:
-        """Rebuild the chunks FTS indexes after the index listing raised. Caller holds the lock.
+        """Rebuild the chunks FTS indexes when the registry is ``None``. Caller holds the lock.
 
-        lancedb opens each FTS index's files while it lists the indexes, so an
-        FTS index without its files makes the listing raise; scalar and vector
-        indexes do not. Each FTS index (chunk text, plus title when the title
-        arm is on) is rebuilt with ``replace=True`` in its own try. The listing
-        is then read once more; the directory check on a readable listing
-        decides whether a scalar or vector index needs its own rebuild.
+        ``None`` means the listing raised or an FTS index lost its files.
+        Each FTS index (chunk text, plus title when the title arm is on) is
+        rebuilt with ``replace=True`` in its own try. The registry is then
+        read once more; the directory check on a readable listing decides
+        whether a scalar or vector index needs its own rebuild.
 
-        Returns the listing after the rebuild, ``None`` (logged once) when it
-        is still unreadable.
+        Returns the registry after the rebuild, ``None`` (logged once) when
+        it is still unusable.
         """
         columns = [_CHUNK_COLUMN]
         if self._config.title_search and _TITLE_COLUMN in table.schema.names:
@@ -1788,7 +1787,7 @@ class Store:
                 )
                 continue
             log.warning(
-                "Rebuilt the FTS index on '%s.%s' because the index listing is unreadable",
+                "Rebuilt the FTS index on '%s.%s' because an FTS index is unusable",
                 table.name,
                 column,
             )
@@ -1799,7 +1798,7 @@ class Store:
         indices = _index_registry(table)
         if indices is None:
             log.warning(
-                "The index listing on '%s' is still unreadable after the FTS rebuild; "
+                "The index registry on '%s' is still unusable after the FTS rebuild; "
                 "run `lilbee rebuild` to rebuild the search index",
                 table.name,
             )
@@ -1822,8 +1821,8 @@ class Store:
         created later (chunk_concepts under serve ordering) still gets its
         index on a following call. A table whose scalar index lost its files
         counts as pending, so the build step replaces it. A table whose index
-        listing is unreadable keeps readiness unlatched until the FTS path
-        repairs the listing. The lock is taken only
+        registry is unusable keeps readiness unlatched until the FTS path
+        repairs it. The lock is taken only
         when there is something to build; ``blocking=False`` (the search path)
         skips the build when another process holds it or the filesystem cannot
         lock, instead of stalling or failing the query.
@@ -1837,7 +1836,7 @@ class Store:
                 continue
             indices = _index_registry(table)
             if indices is None:
-                # The FTS path repairs an unreadable listing; check again then.
+                # The FTS path repairs an unusable registry; check again then.
                 complete = False
                 continue
             names = table.schema.names
@@ -1867,7 +1866,7 @@ class Store:
         """Build the given (column, index_type) scalar indexes on *table_name*.
 
         Caller holds ``write_lock()``. A registered index whose files are gone
-        is replaced; nothing is built while the index listing is unreadable.
+        is replaced; nothing is built while the index registry is unusable.
         Each column gets its own try so one failure does not skip the rest; a
         failure on a populated table warns (the prefilter speedup is silently
         lost) while an empty table's is debug.
@@ -1911,7 +1910,7 @@ class Store:
         flat search, which is faster and exact for small vaults and is all a
         laptop needs. Once an index exists, ``optimize()`` folds new rows in.
         Pass ``force=True`` to build regardless of the threshold (publish flow).
-        An unreadable index listing gets its FTS repair first, and a registered
+        An unusable index registry gets its FTS repair first, and a registered
         index whose files are gone is rebuilt instead of optimized. Returns
         True when an index was created, refreshed, or rebuilt.
         """
@@ -2172,7 +2171,7 @@ class Store:
         indices = _index_registry(table)
         if indices is None or _has_vector_index(indices):
             # IVF_PQ is lossy; probe more partitions and refine against full
-            # vectors so recall stays close to the exact flat scan. An unreadable
+            # vectors so recall stays close to the exact flat scan. An unusable
             # registry may hide the index, and the tuning is harmless on a flat scan.
             query = query.nprobes(_ann_nprobes(table.count_rows()))
             query = query.refine_factor(_ANN_REFINE_FACTOR)
@@ -2214,7 +2213,7 @@ class Store:
         document by title surfaces its chunks" holds as one stable row per doc.
 
         Empty when the store predates the title column or its FTS index (old
-        indexes keep working), when the index registry is unreadable, and on
+        indexes keep working), when the index registry is unusable, and on
         any query-time failure: the optional
         title arm must never take down the healthy chunk arm, so its failure
         degrades to no-titles, mirroring ``bm25_probe``.
