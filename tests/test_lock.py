@@ -131,6 +131,19 @@ class TestWriteLock:
         finally:
             _write_mutex.release()
 
+    def test_crawl_lock_mutex_timeout_names_the_crawl_lock(self, tmp_path):
+        from lilbee.runtime.lock import _crawl_pages_mutex, crawl_pages_lock
+
+        _crawl_pages_mutex.acquire()
+        try:
+            with (
+                pytest.raises(LockTimeoutError, match="crawl lock"),
+                crawl_pages_lock(tmp_path, timeout=0.05),
+            ):
+                pass
+        finally:
+            _crawl_pages_mutex.release()
+
     def test_lock_file_created(self):
         """Lock file is created at the expected path."""
         expected = _lock_path(None)

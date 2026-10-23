@@ -171,8 +171,8 @@ async def crawl_recursive(
     on_result: Callable[[CrawlResult], Any] | None = None,
     render_mode: CrawlRenderMode = CrawlRenderMode.BROWSER,
     login: CrawlLogin = NO_LOGIN,
-) -> list[CrawlResult]:
-    """Crawl a URL recursively using BFS, streaming per-page progress.
+) -> int:
+    """Crawl a URL recursively using BFS, streaming per-page progress; the pages it yielded.
 
     The *login* goes to the seed host only, in the crawl and in the sitemap lookup.
 
@@ -191,7 +191,8 @@ async def crawl_recursive(
     Pass ``include_subdomains=True`` to broaden scope from the exact host to the
     host plus any subdomains. If ``on_result`` is provided, it's called for each
     streamed ``CrawlResult`` the moment it arrives so callers can flush pages to
-    disk incrementally and keep partial output across cancellation.
+    disk incrementally and keep partial output across cancellation. The crawl keeps
+    no page after its ``on_result`` call returns.
     """
     validate_crawl_url(url)
     # ``_run_crawl`` already resolved the depth ceiling (and routed a seed-only
@@ -223,7 +224,7 @@ async def crawl_recursive(
     concurrency = build_concurrency_spec()
     filters = build_filter_spec(include_subdomains=include_subdomains)
 
-    results: list[CrawlResult] = []
+    pages_seen = 0
     try:
         async with fetcher_from_config(render_mode, login) as fetcher:
             # The explicit reference lets the stream close, and the crawl stop,
@@ -238,7 +239,7 @@ async def crawl_recursive(
                 cancel=cancel,
             )
             try:
-                results = await _drain_page_stream(
+                pages_seen = await _drain_page_stream(
                     page_stream,
                     on_progress=on_progress,
                     on_result=on_result,
@@ -252,9 +253,9 @@ async def crawl_recursive(
     except (CrawlerBrowserError, CrawlEngineRefusedError):
         raise
     except Exception as exc:
-        _handle_crawl_teardown_error(without_userinfo(url), exc, cancel=cancel, results=results)
+        _handle_crawl_teardown_error(without_userinfo(url), exc, cancel=cancel)
 
-    return results
+    return pages_seen
 
 
 async def _maybe_periodic_sync(tasks: set[asyncio.Task[None]], cancel: CancelToken | None) -> None:
@@ -306,6 +307,14 @@ def _make_flush_page(
         return paths
 
     return flush_page
+
+
+def _compact_pages(record: CrawlRecord) -> None:
+    """Fold the crawl's commits to the page table into one version; a failure only warns."""
+    try:
+        save.finish_crawl(record)
+    except Exception:
+        log.warning("Compacting the crawl page table failed", exc_info=True)
 
 
 def _require_valid_exclude_patterns() -> None:
@@ -371,7 +380,7 @@ async def _run_crawl(
             on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=shown, current=1, total=1))
         _emit_page_failure(on_progress, result)
         return 1
-    results = await crawl_recursive(
+    return await crawl_recursive(
         url,
         max_depth=depth,
         max_pages=max_pages,
@@ -382,7 +391,6 @@ async def _run_crawl(
         render_mode=render_mode,
         login=login,
     )
-    return len(results)
 
 
 async def crawl_and_save(
@@ -429,7 +437,7 @@ async def crawl_and_save(
             start = CrawlStartEvent(url=without_userinfo(url), depth=start_depth)
             on_progress(EventType.CRAWL_START, start)
 
-        record = await asyncio.to_thread(save.load_crawl_record)
+        record = await asyncio.to_thread(save.load_crawl_record, get_services().store)
         written_paths: list[Path] = []
         flush_page = _make_flush_page(record, written_paths)
 
@@ -444,6 +452,7 @@ async def crawl_and_save(
             render_mode=mode,
             login=login,
         )
+        await asyncio.to_thread(_compact_pages, record)
 
         cancelled = cancel is not None and cancel.is_set()
         if not cancelled:

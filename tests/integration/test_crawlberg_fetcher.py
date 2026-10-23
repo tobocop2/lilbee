@@ -56,13 +56,12 @@ from lilbee.crawler.bootstrap import CrawlEngineRefusedError  # noqa: E402
 from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE  # noqa: E402
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402
 from lilbee.crawler.task import CrawlTask, TaskStatus, get_task, run_crawl  # noqa: E402
-from lilbee.data.page_record import CrawlMeta, page_titles  # noqa: E402
 from lilbee.mcp_server import add as mcp_add  # noqa: E402
 from lilbee.mcp_server import crawl as mcp_crawl  # noqa: E402
 from lilbee.runtime.progress import CrawlPageFailedEvent, EventType  # noqa: E402
 from lilbee.server.app import create_app  # noqa: E402
 from tests._browser_launches import record_browser_launches  # noqa: E402
-from tests._crawl_meta import write_crawl_metadata  # noqa: E402
+from tests._crawl_meta import CrawlMeta, crawl_store, recorded, write_crawl_metadata  # noqa: E402
 from tests._private_mode import posix_only  # noqa: E402
 from tests._windows_loop import windows_proactor_loop  # noqa: E402
 from tests.integration._crawl_site import (  # noqa: E402
@@ -831,7 +830,7 @@ class TestCrawlAndSave:
         with windows_proactor_loop():
             paths = asyncio.run(crawl_and_save(site.url("/query/"), depth=0, render_mode=mode))
         assert len(paths) == 1
-        assert list(page_titles().values()) == ["Listing"]
+        assert list(crawl_store().crawl_pages.titles().values()) == ["Listing"]
 
     async def test_max_pages_saves_exactly_that_many_pages(self, site):
         paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=5)
@@ -1163,7 +1162,7 @@ def _assert_each_pair_is_two_pages(site: _Site, library: list[tuple[Path, Path]]
         for link in pair
         if (cfg.documents_dir / "_web" / save.url_to_filename(site.url(link))).is_file()
     ]
-    assert set(save.load_crawl_record().pages) == {
+    assert set(recorded()) == {
         save.canonical_address(site.url("/pair/")),
         *(save.canonical_address(site.url(link)) for link in saved),
     }
@@ -1180,7 +1179,7 @@ def _own_pages(pair: tuple[str, str], texts: tuple[str, str]) -> bool:
 def _assert_saved_in_readable_folders(site: _Site) -> None:
     """The ``/spell/`` pages are stored as crawlberg requested them and saved in SPELL_FOLDERS."""
     assert set(site.paths_since(0, "/spell/")) == {"/spell/", *SPELL_REQUESTS}
-    meta = save.load_crawl_record().pages
+    meta = recorded()
     stored = [save.canonical_address(site.url(path)) for path in SPELL_REQUESTS]
     assert set(meta) == {save.canonical_address(site.url("/spell/")), *stored}
     web = cfg.documents_dir / "_web"
@@ -1200,7 +1199,7 @@ class TestStoredSpellingOfAnAddress:
         page = cfg.documents_dir / "_web" / save.url_to_filename(stored)
         assert f"{FRESH_TEXT} {EQUIVALENT_LINK}." in page.read_text(encoding="utf-8")
         assert not copy.exists()
-        pages = save.load_crawl_record().pages
+        pages = recorded()
         assert set(pages) == {save.canonical_address(url) for url in (site.url("/same/"), stored)}
         assert len(list((cfg.documents_dir / "_web").rglob("*.md"))) == len(pages)
 
@@ -1214,7 +1213,7 @@ class TestStoredSpellingOfAnAddress:
         assert f"{FRESH_TEXT} {EQUIVALENT_LINK}." in page.read_text(encoding="utf-8")
         assert not plain_copy.exists()
         assert other_copy.read_text(encoding="utf-8") == f"{STALE_TEXT} of {other}"
-        pages = save.load_crawl_record().pages
+        pages = recorded()
         assert set(pages) == {save.canonical_address(url) for url in (site.url("/same/"), stored)}
 
     async def test_two_stored_pages_stay_two_pages_after_an_http_recrawl(self, site):
@@ -1230,7 +1229,7 @@ class TestStoredSpellingOfAnAddress:
         for listing in ORDER_LISTINGS:
             await crawl_and_save(site.url(listing), depth=1, max_pages=0)
         assert site.paths_since(0, "/twice/na").count("/twice/na%C3%AFve") == len(ORDER_LISTINGS)
-        meta = save.load_crawl_record().pages
+        meta = recorded()
         assert set(meta) == {
             *(save.canonical_address(site.url(listing)) for listing in ORDER_LISTINGS),
             save.canonical_address(site.url("/twice/na%C3%AFve")),

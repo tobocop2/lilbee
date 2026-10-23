@@ -25,6 +25,7 @@ from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
     CHUNKS_TABLE,
     CITATIONS_TABLE,
+    CRAWL_PAGES_TABLE,
     ENTITIES_TABLE,
     ENTITY_SCHEMA_TABLE,
     MEMORIES_TABLE,
@@ -55,6 +56,7 @@ from lilbee.runtime.progress import (
     noop_callback,
 )
 
+from .crawl_pages import CrawlPages, import_legacy_crawl_files, legacy_crawl_files
 from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
 from .held_import import legacy_files, read_legacy_records, remove_legacy_files
 from .lance_helpers import (
@@ -1043,6 +1045,7 @@ class Store:
         self._registry = SourceLocations({})
         self._registry_stamp: tuple[int, int, int] | None = None
         self._registry_pins = 0
+        self.crawl_pages = CrawlPages(self.get_db, config.lancedb_dir)
 
     def _fts_config(self) -> FTS:
         """Shared FTS index config: positionless (with_position=True overflows
@@ -1509,6 +1512,7 @@ class Store:
             _upgrade_pending(db)
             or _held_unmigrated(db, self._config.data_root)
             or _holds_label_keys(db, self._locations())
+            or bool(legacy_crawl_files(self._config.data_dir))
         )
 
     def _upgrade_library(self, db: LanceDBConnection) -> None:
@@ -1540,6 +1544,8 @@ class Store:
             self._migrate_unlocked(db)
         if held:
             self._import_held_unlocked(db)
+        if legacy_crawl_files(self._config.data_dir):
+            import_legacy_crawl_files(db, self._config.data_dir)
         _fill_locations(db, self._locations())
 
     def _report_upgrade(self, phase: UpgradePhase, step: _TableStep | None = None) -> None:
@@ -3078,7 +3084,9 @@ class Store:
             except Exception:
                 log.debug("Sources table optimize failed", exc_info=True)
 
-    def write_chunks_batch(self, items: list[ChunkWrite]) -> int:
+    def write_chunks_batch(
+        self, items: list[ChunkWrite], present: Callable[[str], bool] | None = None
+    ) -> int:
         """Write several documents' chunks in one locked transaction. Returns chunks added.
 
         One ``write_lock`` acquisition covers the batch's cleanup deletes, page
@@ -3088,11 +3096,18 @@ class Store:
         replan next sync; a document with no chunks still persists its page
         texts and source row. The embedding-identity gate and per-vector
         dimension check mirror ``add_chunks``; a dimension mismatch raises and
-        the whole batch is rejected.
+        the whole batch is rejected. Under the lock, an item whose source
+        *present* says is gone is left out: a crawl that retired the file after
+        the sync read it removes its source under this lock, so the source never
+        comes back.
         """
         if not items:
             return 0
         with self._write_lock(timeout=BATCH_LOCK_TIMEOUT):
+            if present is not None:
+                items = [it for it in items if present(it.source)]
+                if not items:
+                    return 0
             embedding_model = self._config.embedding_model
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
@@ -3800,11 +3815,12 @@ class Store:
         self._scalar_ready = False
 
     def drop_all(self) -> None:
-        """Drop every table except ``_memories`` -- used by rebuild.
+        """Drop every table except ``_memories`` and ``_crawl_pages`` -- used by rebuild.
 
         Memory is user-authored data with no on-disk source, not derived from
-        documents, so a rebuild preserves it. Only a factory reset (which deletes
-        the data directory) clears it.
+        documents, so a rebuild preserves it. The crawl page table says which files
+        under ``_web`` a crawl owns, which no document holds. Only a factory reset
+        (which deletes the data directory) clears them.
         """
         with self._write_lock():
             self._fts_ready = False
@@ -3813,7 +3829,8 @@ class Store:
             db = self.get_db()
             # Before the tables: a record that outlives them would describe the next ones.
             self.forget_wiki_refreshed()
-            dropped = [name for name in table_names(db) if name != MEMORIES_TABLE]
+            kept = {MEMORIES_TABLE, CRAWL_PAGES_TABLE}
+            dropped = [name for name in table_names(db) if name not in kept]
             # The source rows go first: a drop that stops part way leaves no file unchanged.
             for name in sorted(dropped, key=lambda name: name != SOURCES_TABLE):
                 db.drop_table(name)

@@ -602,9 +602,9 @@ class TestAStoppedSync:
         elif moment == "in_a_write":
             real_write = Store.write_chunks_batch
 
-            def _write(store, items):
+            def _write(store, items, present=None):
                 cancel.set()
-                return real_write(store, items)
+                return real_write(store, items, present)
 
             monkeypatch.setattr(Store, "write_chunks_batch", _write)
         else:
@@ -1063,9 +1063,9 @@ class TestAMovedFileInTheWiki:
         cancel = threading.Event()
         real_write = Store.write_chunks_batch
 
-        def _write(store, items):
+        def _write(store, items, present=None):
             cancel.set()
-            return real_write(store, items)
+            return real_write(store, items, present)
 
         with monkeypatch.context() as patch:
             patch.setattr(Store, "write_chunks_batch", _write)
@@ -1308,19 +1308,19 @@ class TestTheWikiIndex:
             index_written.set()
             assert files_written.wait(_STEP_WAIT_S)
 
-        def _write_inside_the_other_pass(store, items):
+        def _write_inside_the_other_pass(store, items, present=None):
             if not files_written.is_set():
                 with ThreadPoolExecutor(max_workers=1) as other_sync:
                     other_pass = other_sync.submit(
                         asyncio.run, pipeline_mod._update_wiki(set(others), cfg)
                     )
                     assert index_written.wait(_STEP_WAIT_S)
-                    written = real_write(store, items)
+                    written = real_write(store, items, present)
                     files_written.set()
                     other_pass.result()
                 cancel.set()
                 return written
-            return real_write(store, items)
+            return real_write(store, items, present)
 
         with monkeypatch.context() as patch:
             patch.setattr(Store, "write_chunks_batch", _write_inside_the_other_pass)

@@ -28,7 +28,6 @@ from lilbee.crawler.runner import (
 )
 from lilbee.crawler.save import (
     content_hash,
-    load_crawl_metadata,
     url_to_filename,
 )
 from lilbee.crawler.url_filter import (
@@ -59,7 +58,6 @@ __all__ = [
     "crawler_browsers_path",
     "get_blocked_networks",
     "is_url",
-    "load_crawl_metadata",
     "require_valid_crawl_url",
     "url_to_filename",
     "validate_crawl_url",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
@@ -27,7 +28,8 @@ def ingesting_services() -> tuple[Services, dict[str, dict[str, Any]]]:
             "source_type": source_type,
         }
 
-    def _write_batch(items: list[Any]) -> int:
+    def _write_batch(items: list[Any], present: Callable[[str], bool] | None = None) -> int:
+        items = [item for item in items if present is None or present(item.source)]
         for item in items:
             _upsert(item.source, item.file_hash, len(item.records))
         return sum(len(item.records) for item in items)
@@ -35,6 +37,7 @@ def ingesting_services() -> tuple[Services, dict[str, dict[str, Any]]]:
     store.upsert_source.side_effect = _upsert
     store.write_chunks_batch.side_effect = _write_batch
     store.index_mismatch.return_value = None
+    store.crawl_pages.titles.return_value = {}
     store.get_meta.return_value = None
     store.search.return_value = []
     store.bm25_probe.return_value = []
