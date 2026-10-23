@@ -17,6 +17,15 @@ the interpreter's thread states without the GIL. If a native call holds the GIL
 the worker hangs until the job's ``timeout-minutes``. The backstop dumps the
 stacks and ``_exit``\\s the worker so the run fails fast.
 
+Both timers guard a test only from its setup to its teardown, and only in
+the process that runs it. Under xdist the controller runs no test, so a run
+that stalls outside a test's window, for example while a session fixture
+tears down after the last test, hangs until ``timeout-minutes`` with every
+dump file empty. The controller therefore re-arms a stall timer on every test
+report it receives. When no report arrives for ``_STALL_FACTOR`` times the
+backstop, it signals each worker to dump its stacks to its own file, then
+dumps its own stacks and ``_exit``\\s, so the run fails with every stack.
+
 Unset or ``0`` is a no-op, so local runs are untouched. Dumps go to
 ``LILBEE_TEST_HANG_DUMP_DIR/hang-<workerid>.txt`` (default: the pytest rootdir)
 for a CI step to print after the test step. The next test's setup truncates
@@ -27,11 +36,13 @@ from __future__ import annotations
 
 import faulthandler
 import os
+import signal
 import sys
 import threading
 from pathlib import Path
 from typing import TextIO
 
+import psutil
 import pytest
 
 _ENV_SECONDS = "LILBEE_TEST_HANG_DUMP_S"
@@ -40,6 +51,13 @@ _ENV_DIR = "LILBEE_TEST_HANG_DUMP_DIR"
 # The early dump fires at this share of the test's own timeout.
 _EARLY_SHARE = 0.75
 _FD_SCAN_LIMIT = 1024
+# The controller stall limit, as a multiple of the per-test backstop.
+_STALL_FACTOR = 4
+# The workers dump before the controller exits, so their stacks are on disk.
+_STALL_EXIT_GRACE_S = 5.0
+# A worker dumps its stacks on this signal. Windows has no SIGUSR1.
+_WORKER_DUMP_SIGNAL: signal.Signals | None = getattr(signal, "SIGUSR1", None)
+_XDIST_CONTROLLER_PLUGIN = "dsession"
 
 # The open dump-file handle. faulthandler writes to its raw fd from a C thread,
 # so it must outlive every test; keep a module reference so it is not closed.
@@ -47,6 +65,8 @@ _dump_handle: TextIO | None = None
 _timeout_s = 0.0
 _early_timer: threading.Timer | None = None
 _early_fired = threading.Event()
+_stall_s = 0.0
+_stall_timer: threading.Timer | None = None
 
 
 def _worker_id(config: pytest.Config) -> str:
@@ -132,6 +152,46 @@ def _early_dump(config: pytest.Config, nodeid: str, delay: float) -> None:
         pass  # The file already holds the dump; a closed stderr must not mask the hang.
 
 
+def _signal_workers(last_report: str) -> None:
+    """Ask every worker to dump its stacks; the controller's children are the workers."""
+    handle = _dump_handle
+    if handle is None:
+        return
+    handle.write(f"no test report for {_stall_s:.0f}s after {last_report}; dumping stacks\n")
+    handle.flush()
+    if _WORKER_DUMP_SIGNAL is None:
+        return
+    for child in psutil.Process().children():
+        try:
+            os.kill(child.pid, _WORKER_DUMP_SIGNAL)
+        except OSError:
+            continue  # The worker exited between the listing and the signal.
+
+
+def _arm_stall(last_report: str) -> None:
+    """Restart the controller's stall timers from now."""
+    global _stall_timer
+    handle = _dump_handle
+    if handle is None:
+        return
+    if _stall_timer is not None:
+        _stall_timer.cancel()
+    _stall_timer = threading.Timer(_stall_s, _signal_workers, (last_report,))
+    _stall_timer.daemon = True
+    _stall_timer.start()
+    faulthandler.dump_traceback_later(_stall_s + _STALL_EXIT_GRACE_S, file=handle, exit=True)
+
+
+def _cancel_stall() -> None:
+    global _stall_s, _stall_timer
+    if _stall_timer is not None:
+        _stall_timer.cancel()
+        _stall_timer = None
+    if _stall_s > 0:
+        faulthandler.cancel_dump_traceback_later()
+        _stall_s = 0.0
+
+
 def pytest_configure(config: pytest.Config) -> None:
     global _dump_handle, _timeout_s
     raw = os.environ.get(_ENV_SECONDS, "").strip()
@@ -142,6 +202,28 @@ def pytest_configure(config: pytest.Config) -> None:
     dump_dir.mkdir(parents=True, exist_ok=True)
     # One file per worker: xdist workers share a rootdir but not a process.
     _dump_handle = (dump_dir / f"hang-{_worker_id(config)}.txt").open("w")
+    if hasattr(config, "workerinput") and _WORKER_DUMP_SIGNAL is not None:
+        faulthandler.register(_WORKER_DUMP_SIGNAL, file=_dump_handle, all_threads=True)
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    global _stall_s
+    if _dump_handle is None or not session.config.pluginmanager.has_plugin(
+        _XDIST_CONTROLLER_PLUGIN
+    ):
+        return
+    _stall_s = _timeout_s * _STALL_FACTOR
+    _arm_stall("session start")
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    if _stall_s > 0:
+        _arm_stall(f"{report.nodeid} ({report.when})")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    _cancel_stall()
 
 
 def pytest_runtest_setup(item: pytest.Item) -> None:
@@ -184,6 +266,9 @@ def pytest_runtest_teardown(item: pytest.Item) -> None:
 def pytest_unconfigure(config: pytest.Config) -> None:
     global _dump_handle
     if _dump_handle is not None:
+        _cancel_stall()
         faulthandler.cancel_dump_traceback_later()
+        if hasattr(config, "workerinput") and _WORKER_DUMP_SIGNAL is not None:
+            faulthandler.unregister(_WORKER_DUMP_SIGNAL)
         _dump_handle.close()
         _dump_handle = None

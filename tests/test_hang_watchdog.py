@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -27,17 +28,37 @@ def test_stuck_on_a_lock():
     threading.Thread(target=parked_waiter, name="parked-waiter", daemon=True).start()
     time.sleep(60)
 """
+# The worker stalls after its last test's watchdog is cancelled: pytest-timeout is
+# off, so only the controller's stall watchdog can end the run.
+_STALLED_TEARDOWN = """
+import time
+
+import pytest
+
+
+@pytest.fixture(scope="session")
+def slow_to_close():
+    yield
+    time.sleep(_STALL_SLEEP_S)
+
+
+def test_last(slow_to_close):
+    pass
+"""
+_STALL_BACKSTOP_S = 1
+_STALL_SLEEP_S = 30
+_STALL_ENDS_WITHIN_S = 20
 
 
 def _run_pytest(
-    tmp_path: Path, source: str, *extra: str
+    tmp_path: Path, source: str, *extra: str, backstop_s: int = _BACKSTOP_S
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     test_file = tmp_path / "test_case.py"
     test_file.write_text(source, encoding="utf-8")
     dump_dir = tmp_path / "dumps"
     env = {
         **{k: v for k, v in os.environ.items() if not k.startswith(_PARENT_ENV_PREFIXES)},
-        "LILBEE_TEST_HANG_DUMP_S": str(_BACKSTOP_S),
+        "LILBEE_TEST_HANG_DUMP_S": str(backstop_s),
         "LILBEE_TEST_HANG_DUMP_DIR": str(dump_dir),
         "PYTHONPATH": str(_TESTS_DIR),
     }
@@ -97,3 +118,30 @@ def test_quiet_test_leaves_no_dump(tmp_path: Path) -> None:
 
     assert "1 passed" in result.stdout
     assert all(f.stat().st_size == 0 for f in dump_dir.glob("hang-*.txt"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no signal to make a worker dump")
+def test_a_stall_outside_any_test_ends_the_run_with_every_stack(tmp_path: Path) -> None:
+    source = _STALLED_TEARDOWN.replace("_STALL_SLEEP_S", str(_STALL_SLEEP_S))
+    started = time.monotonic()
+    result, dump_dir = _run_pytest(
+        tmp_path, source, "-n", "1", "--timeout=0", backstop_s=_STALL_BACKSTOP_S
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode != 0
+    assert elapsed < _STALL_ENDS_WITHIN_S, result.stdout + result.stderr
+    controller = (dump_dir / "hang-master.txt").read_text(encoding="utf-8")
+    assert "no test report for 4s after test_case.py::test_last (call)" in controller
+    assert "Thread" in controller
+    worker = (dump_dir / "hang-gw0.txt").read_text(encoding="utf-8")
+    assert "slow_to_close" in worker
+
+
+def test_a_single_process_run_arms_no_stall_watchdog(tmp_path: Path) -> None:
+    result, dump_dir = _run_pytest(
+        tmp_path, "def test_ok():\n    assert True\n", backstop_s=_STALL_BACKSTOP_S
+    )
+
+    assert "1 passed" in result.stdout
+    assert (dump_dir / "hang-master.txt").read_text(encoding="utf-8") == ""
