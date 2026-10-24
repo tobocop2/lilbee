@@ -8,6 +8,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -588,6 +589,29 @@ class TestEnsureFtsIndex:
         create_spy.assert_not_called()
         optimize_spy.assert_called_once()
 
+    def test_a_healthy_fts_index_is_not_rebuilt(self, store, test_config):
+        """A fresh store over a real, intact FTS index keeps that index.
+
+        The index files are checked on disk; a check that reported every index
+        as gone would rebuild it and change its uuid."""
+        from lancedb.table import LanceTable
+
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        before = _index_uuids(store)
+        assert before
+        real = LanceTable.create_index
+        fresh = Store(test_config)
+
+        with mock.patch.object(
+            LanceTable, "create_index", autospec=True, side_effect=real
+        ) as create_spy:
+            fresh.ensure_fts_index()
+
+        create_spy.assert_not_called()
+        assert _index_uuids(fresh) == before
+        assert fresh.bm25_probe("chunk number 1")
+
     def test_optimize_that_drops_index_files_repairs_the_registry(self, store, test_config):
         """An index whose files are gone right after optimize() is rebuilt in the same step.
 
@@ -888,7 +912,7 @@ def _remove_index_files(test_config, table_name=CHUNKS_TABLE, *, index_types=Non
 
 def _readable_registry(table):
     """The table's index registry, asserting that lancedb can list it."""
-    indices = _index_registry(table)
+    indices = _index_registry(table, Path(table.uri).parent)
     assert indices is not None
     return indices
 
@@ -1445,18 +1469,20 @@ def _index_uuids(store, table_name=CHUNKS_TABLE):
     return {idx.name: idx.index_uuid for idx in _readable_registry(store.open_table(table_name))}
 
 
-class TestUnreadableIndexRegistry:
-    """lancedb opens FTS index files while it lists indexes, so a missing FTS
-    directory makes the listing raise. The store rebuilds only the FTS indexes;
-    scalar and vector indexes keep their files and are left alone."""
+class TestUnusableIndexRegistry:
+    """A missing FTS directory makes the registry read as ``None``. The store
+    rebuilds only the FTS indexes; scalar and vector indexes keep their files
+    and are left alone."""
 
-    def test_registry_is_empty_without_indexes_and_none_when_listing_raises(self, store):
+    def test_registry_is_empty_without_indexes_and_none_when_listing_raises(
+        self, store, test_config
+    ):
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         assert table is not None
-        assert _index_registry(table) == []
+        assert _index_registry(table, test_config.lancedb_dir) == []
         with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
-            assert _index_registry(table) is None
+            assert _index_registry(table, test_config.lancedb_dir) is None
 
     def test_a_missing_fts_directory_rebuilds_only_the_fts_index(self, store, test_config):
         store.add_chunks(_make_records())
@@ -1464,7 +1490,7 @@ class TestUnreadableIndexRegistry:
         store.ensure_fts_index()
         before = _index_uuids(store)
         _remove_index_files(test_config, index_types={"FTS"})
-        assert _index_registry(store.open_table("chunks")) is None
+        assert _index_registry(store.open_table("chunks"), test_config.lancedb_dir) is None
 
         with _spy_scalar_builds() as builds:
             store.ensure_fts_index()
@@ -1506,7 +1532,7 @@ class TestUnreadableIndexRegistry:
         assert fresh._title_fts_ready is False
         assert fresh.bm25_probe("plain body words")
 
-    def test_a_listing_that_stays_unreadable_warns_once_and_rebuilds_nothing_else(
+    def test_a_listing_that_stays_unusable_warns_once_and_rebuilds_nothing_else(
         self, store, test_config, caplog
     ):
         """The FTS rebuild latches keyword readiness, so later queries do not
@@ -1539,10 +1565,10 @@ class TestUnreadableIndexRegistry:
 
         assert rebuilt == ["chunk"]
         assert scalar_builds == []
-        assert caplog.text.count("still unreadable after the FTS rebuild") == 1
+        assert caplog.text.count("still unusable after the FTS rebuild") == 1
         assert fresh._scalar_ready is False
 
-    def test_scalar_build_skips_a_table_whose_listing_is_unreadable(self, store):
+    def test_scalar_build_skips_a_table_whose_listing_is_unusable(self, store):
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         with (
@@ -1552,7 +1578,7 @@ class TestUnreadableIndexRegistry:
             store._ensure_scalar_index_on("chunks", (("source_id", "BTREE"),))
         assert builds == []
 
-    def test_title_index_build_repairs_an_unreadable_registry(self, store, test_config):
+    def test_title_index_build_repairs_an_unusable_registry(self, store, test_config):
         test_config.title_search = True
         store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
         store.ensure_fts_index()
@@ -1703,7 +1729,7 @@ class TestEnsureVectorIndex:
 
         assert "Could not rebuild the vector index" in caplog.text
 
-    def test_unreadable_registry_below_threshold_builds_no_vector_index(self, store, test_config):
+    def test_unusable_registry_below_threshold_builds_no_vector_index(self, store, test_config):
         store.add_chunks(_make_records())  # 3 rows, threshold defaults to 50_000
         store.ensure_fts_index()
         _remove_index_files(test_config)
@@ -1714,7 +1740,7 @@ class TestEnsureVectorIndex:
         assert _has_fts_index(indices)
         assert not _has_vector_index(indices)
 
-    def test_forced_build_on_an_unreadable_registry_repairs_then_builds(self, store, test_config):
+    def test_forced_build_on_an_unusable_registry_repairs_then_builds(self, store, test_config):
         test_config.ann_index_threshold = 1_000_000
         store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
         store.ensure_fts_index()
@@ -1726,7 +1752,7 @@ class TestEnsureVectorIndex:
         assert _has_fts_index(indices)
         assert _has_vector_index(indices)
 
-    def test_registry_that_stays_unreadable_builds_nothing(self, store):
+    def test_registry_that_stays_unusable_builds_nothing(self, store):
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         with (
@@ -5260,6 +5286,23 @@ class TestOpenTimeMigration:
             ("path_idx", ("path",)),
             ("source_id_idx", ("source_id",)),
         }
+
+    def test_a_key_index_is_added_when_an_fts_index_has_lost_its_files(self, test_config):
+        import lancedb
+        from lancedb.index import FTS, BTree
+
+        db = lancedb.connect(str(test_config.lancedb_dir))
+        for name, rows in _path_keyed_tables(test_config).items():
+            db.create_table(name, rows)
+        chunks = db.open_table("chunks")
+        chunks.create_index("source", config=BTree())
+        chunks.create_index("chunk", config=FTS(with_position=False))
+        _remove_index_files(test_config, index_types={"FTS"})
+
+        db = Store(test_config).get_db()
+
+        indexes = {(i.name, tuple(i.columns)) for i in db.open_table("chunks").list_indices()}
+        assert ("source_id_idx", ("source_id",)) in indexes
 
     @pytest.mark.parametrize(("stamped", "after"), [(2, 3), (1, 1)])
     def test_a_migrated_library_reads_schema_version_three(self, test_config, stamped, after):

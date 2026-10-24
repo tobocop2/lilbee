@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lilbee.catalog.refs import hf_repo_from_ref
@@ -12,8 +13,6 @@ from lilbee.runtime.lock import write_lock
 from .types import LOCAL_OWNER, ChunkType
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pyarrow as pa
     from lancedb.db import LanceDBConnection
     from lancedb.index import IndexConfig
@@ -159,19 +158,45 @@ def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:
     return f"chunk_type = '{escaped}'"
 
 
-def _index_registry(table: LanceTable) -> list[IndexConfig] | None:
-    """The indexes registered on *table*, or ``None`` when the registry is unreadable.
-
-    lancedb opens each FTS index's files while it lists the indexes, so the
-    listing raises when an FTS index has lost its files. ``None`` reports
-    that state; an empty list means the table has no index. The listing does
-    not open scalar or vector index files, so :func:`_dangling_indices` checks
-    those.
-    """
+def _listed_indices(table: LanceTable) -> list[IndexConfig] | None:
+    """The indexes lancedb lists on *table*, or ``None`` when the listing raises."""
     try:
         return list(table.list_indices())
     except Exception:
         return None
+
+
+def _index_registry(table: LanceTable, lancedb_dir: Path) -> list[IndexConfig] | None:
+    """The indexes registered on *table*, or ``None`` when an FTS index is unusable.
+
+    ``None`` means the listing raised, or an FTS index is registered but its
+    directory under ``_indices`` is gone. lancedb lists such an index, and
+    every keyword query through it fails on a missing file. An empty list
+    means the table has no index. :func:`_dangling_indices` checks scalar
+    and vector indexes.
+    """
+    indices = _listed_indices(table)
+    if indices is None:
+        return None
+    indices_dir = _indices_dir(table, lancedb_dir)
+    if any(
+        idx.index_type == _FTS_INDEX_TYPE and _index_files_gone(indices_dir, idx) for idx in indices
+    ):
+        return None
+    return indices
+
+
+def _indices_dir(table: LanceTable, lancedb_dir: Path) -> Path:
+    """The ``_indices`` directory of *table* under the store's *lancedb_dir*."""
+    return lancedb_dir / f"{table.name}.lance" / "_indices"
+
+
+def _index_files_gone(indices_dir: Path, idx: IndexConfig) -> bool:
+    """True when *idx* is registered but its directory under *indices_dir* is gone.
+
+    An index without a uuid has no directory to check.
+    """
+    return idx.index_uuid is not None and not (indices_dir / idx.index_uuid).is_dir()
 
 
 def _has_fts_index(indices: list[IndexConfig], column: str = _CHUNK_COLUMN) -> bool:
@@ -212,13 +237,8 @@ def _dangling_indices(
     ``optimize()`` and ``index_stats()`` do not notice for scalar and vector
     indexes; only the directory does.
     """
-    indices_dir = lancedb_dir / f"{table.name}.lance" / "_indices"
-    # An index without a uuid has no directory under _indices to check.
-    return [
-        idx
-        for idx in indices
-        if idx.index_uuid is not None and not (indices_dir / idx.index_uuid).is_dir()
-    ]
+    indices_dir = _indices_dir(table, lancedb_dir)
+    return [idx for idx in indices if _index_files_gone(indices_dir, idx)]
 
 
 def _scalar_index_dangling(
