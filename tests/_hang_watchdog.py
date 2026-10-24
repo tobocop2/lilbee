@@ -17,9 +17,11 @@ the interpreter's thread states without the GIL. If a native call holds the GIL
 the worker hangs until the job's ``timeout-minutes``. The backstop dumps the
 stacks and ``_exit``\\s the worker so the run fails fast.
 
-Both timers guard a test only from its setup to its teardown, and only in
-the process that runs it. Under xdist the controller runs no test, so a run
-that stalls outside a test's window, for example while a session fixture
+Both timers guard a test from its setup to the start of its teardown, and
+only in the process that runs it. A failed setup or call stops pytest-timeout,
+so the backstop is armed again for the teardown of that test until its
+finalizers return. Under xdist the controller runs no test, so a run that
+stalls outside a test's window, for example while a session fixture
 tears down after the last test, hangs until ``timeout-minutes`` with every
 dump file empty. The controller therefore re-arms a stall timer on every test
 report it receives. When no report arrives for ``_STALL_FACTOR`` times the
@@ -39,6 +41,7 @@ import os
 import signal
 import sys
 import threading
+from collections.abc import Generator
 from pathlib import Path
 from typing import TextIO
 
@@ -58,6 +61,8 @@ _STALL_EXIT_GRACE_S = 5.0
 # A worker dumps its stacks on this signal. Windows has no SIGUSR1.
 _WORKER_DUMP_SIGNAL: signal.Signals | None = getattr(signal, "SIGUSR1", None)
 _XDIST_CONTROLLER_PLUGIN = "dsession"
+# Set on a node once one of its phases fails.
+_PHASE_FAILED = pytest.StashKey[bool]()
 
 # The open dump-file handle. faulthandler writes to its raw fd from a C thread,
 # so it must outlive every test; keep a module reference so it is not closed.
@@ -247,10 +252,9 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     faulthandler.dump_traceback_later(_timeout_s, file=_dump_handle, exit=True)
 
 
-def pytest_runtest_teardown(item: pytest.Item) -> None:
+def _disarm_test(handle: TextIO) -> None:
+    """Cancel the test's timers and clear its dump unless the early dump fired."""
     global _early_timer
-    if _dump_handle is None:
-        return
     faulthandler.cancel_dump_traceback_later()
     if _early_timer is not None:
         _early_timer.cancel()
@@ -258,9 +262,31 @@ def pytest_runtest_teardown(item: pytest.Item) -> None:
     if _early_fired.is_set():
         return  # The test ran long enough to dump; keep the evidence for the CI step.
     # The test finished, so its armed dump is stale; clear it.
-    _dump_handle.seek(0)
-    _dump_handle.truncate()
+    handle.seek(0)
+    handle.truncate()
+    handle.flush()
+
+
+def pytest_exception_interact(node: pytest.Item | pytest.Collector) -> None:
+    node.stash[_PHASE_FAILED] = True
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item: pytest.Item) -> Generator[None, None, None]:
+    if _dump_handle is None:
+        return (yield)
+    _disarm_test(_dump_handle)
+    if not item.stash.get(_PHASE_FAILED, False):
+        return (yield)
+    # pytest-timeout and the faulthandler plugin stop at a failed phase, so only
+    # the backstop guards the fixture finalizers of a failed test.
+    _dump_handle.write(f"hang watchdog armed for the teardown of {item.nodeid}\n")
     _dump_handle.flush()
+    faulthandler.dump_traceback_later(_timeout_s, file=_dump_handle, exit=True)
+    try:
+        return (yield)
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
