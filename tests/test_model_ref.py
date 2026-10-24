@@ -362,6 +362,16 @@ class TestTranslateOptions:
         assert "num_ctx" not in result
         assert "top_k" not in result
 
+    @pytest.mark.parametrize("raw", ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514"])
+    def test_api_ref_sends_no_local_only_option(self, raw: str) -> None:
+        """A hosted body rejects keys it does not know, so the local-only three never travel."""
+        opts = {"temperature": 0.7, "num_ctx": 4096, "top_k": 40, "repeat_penalty": 1.1}
+        assert translate_options(opts, parse_model_ref(raw)) == {"temperature": 0.7}
+
+    def test_local_ref_keeps_all_three_local_only_options(self) -> None:
+        opts = {"num_ctx": 4096, "top_k": 40, "repeat_penalty": 1.1}
+        assert translate_options(opts, parse_model_ref("ollama/llama3.2:1b")) == opts
+
     def test_local_model_keeps_options(self) -> None:
         ref = parse_model_ref(_LOCAL_REF)
         opts = {"temperature": 0.7, "num_predict": 1024, "num_ctx": 4096}
@@ -448,7 +458,7 @@ class TestChatOptionTranslationParity:
 
     Pins the intentional divergence so the two paths can't silently drift:
     the local llama-server path keeps top_k/repeat_penalty and renames
-    num_predict->max_tokens; the API path additionally strips top_k/num_ctx.
+    num_predict->max_tokens; the API path additionally strips top_k/repeat_penalty/num_ctx.
     Both rename num_predict consistently and neither leaks a key its backend
     would reject.
     """

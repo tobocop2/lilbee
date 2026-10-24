@@ -171,8 +171,8 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
 
     A local ref forced through the SDK keeps the raw filtered options; an API ref
     gets the shared per-call mapping (``num_predict`` -> ``max_tokens``, drop
-    ``num_ctx``) plus a ``top_k`` drop: hosted APIs ignore ``top_k``, so dropping it
-    keeps the wire request clean.
+    ``num_ctx``) plus a ``top_k`` and ``repeat_penalty`` drop: hosted APIs do not
+    take either, so dropping them keeps the wire request clean.
     """
     if not ref.is_api:
         filtered = filter_options(options)
@@ -184,5 +184,6 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
         return filtered
     api_options = normalize_generation_options(options)
     api_options.pop("top_k", None)
+    api_options.pop("repeat_penalty", None)
     api_options.pop("think", None)
     return api_options

@@ -27,12 +27,13 @@ def _route_model(ref: ProviderModelRef, api_base: str | None) -> str:
 
 
 def _wire_base_url(api_base: str | None) -> str | None:
-    """Return the OpenAI-compatible endpoint root for a local server, or ``None``.
+    """Return the ``/v1`` base URL for a local server, or ``None``.
 
-    liter-llm posts to ``{base_url}/chat/completions`` for an OpenAI-compatible
-    server, and LM Studio serves that route under ``/v1``. A base that already
-    ends in ``/v1`` is kept as it is. The Ollama route strips one trailing
-    ``/v1`` before it appends ``/api/chat``, so the same base works there.
+    Both routes accept the ``/v1`` form. liter-llm posts to
+    ``{base_url}/chat/completions`` for an OpenAI-compatible server such as
+    LM Studio, which serves that route under ``/v1``. For Ollama, liter-llm
+    strips one trailing ``/v1`` and appends ``/api/chat``. A base that
+    already ends in ``/v1`` is kept as it is.
     """
     if not api_base:
         return None

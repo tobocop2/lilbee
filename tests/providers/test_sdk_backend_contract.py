@@ -254,7 +254,7 @@ class TestCompleteStream:
 class TestRequestFields:
     """What the adapter puts on the request it hands to liter-llm."""
 
-    def test_local_ref_is_prefixed_and_pointed_at_the_v1_route(
+    def test_local_ref_is_prefixed_and_gets_the_v1_base_the_ollama_route_strips(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
     ) -> None:
         sdk.chat_result = fakes.text_response("ok")

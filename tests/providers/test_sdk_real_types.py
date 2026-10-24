@@ -3,7 +3,8 @@
 ``_fake_sdk`` stands in for the library where the extra is absent. These tests run
 wherever the extra is installed and feed the adapter the real typed objects, so a
 value the library wraps (message text, finish reason) cannot reach lilbee unconverted.
-The bodies are the shapes Ollama 0.40.6 answered on ``/v1/chat/completions``.
+The bodies are OpenAI-compatible wire bodies (the shape LM Studio answers). Ollama's
+native route is covered by the integration suite.
 """
 
 from __future__ import annotations

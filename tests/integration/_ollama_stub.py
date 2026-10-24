@@ -3,7 +3,8 @@
 
 Parses ``--port`` from argv and serves the subset of the Ollama API the
 provider calls: ``GET /api/tags``, ``POST /api/show``, ``POST /api/chat`` (plain
-and streaming NDJSON) and ``POST /api/embed``.
+and streaming NDJSON) and ``POST /api/embed``. ``GET /_last_chat`` (not part of Ollama) returns the
+body of the last ``/api/chat`` request so tests can assert what reached the wire.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 _STUB_CHAT_TEXT = "stub-chat"
 _STUB_EMBEDDING = [0.5, 0.5]
 _STUB_MODELS = ["qwen3:0.6b", "nomic-embed-text"]
+_last_chat: dict[str, object] = {}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -24,6 +26,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/api/tags":
             self._send_json({"models": [{"name": name} for name in _STUB_MODELS]})
+        elif self.path == "/_last_chat":
+            self._send_json(_last_chat)
         elif self.path == "/api/version":
             self._send_json({"version": "stub"})
         else:
@@ -33,6 +37,8 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
         if self.path == "/api/chat":
+            _last_chat.clear()
+            _last_chat.update(body)
             model = body.get("model", "qwen3:0.6b")
             if body.get("stream", True):
                 self._send_ndjson(

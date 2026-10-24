@@ -12,6 +12,7 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 import numpy as np
@@ -157,6 +158,34 @@ class TestSdkChat:
 
         assert isinstance(result, ChatResult)
         assert len(result.text) > 0
+
+
+class TestSdkChatWireBody:
+    """What lilbee puts on the Ollama native route, read back from the stub."""
+
+    @staticmethod
+    def _last_chat(base: str) -> dict[str, Any]:
+        return httpx.get(f"{base}/_last_chat", timeout=5.0).json()
+
+    def test_generation_options_travel_under_options(self, ollama_stub_base: str) -> None:
+        cfg.chat_model = OLLAMA_MODEL
+        provider = SdkLLMProvider(LiterLlmBackend())
+        provider.chat(
+            [{"role": "user", "content": "hi"}],
+            options={"num_ctx": 4096, "top_k": 40, "repeat_penalty": 1.1},
+        )
+
+        options = self._last_chat(ollama_stub_base)["options"]
+        assert options["num_ctx"] == 4096
+        assert options["top_k"] == 40
+        assert options["repeat_penalty"] == 1.1
+
+    def test_thinking_off_sends_think_false(self, ollama_stub_base: str) -> None:
+        cfg.chat_model = OLLAMA_MODEL
+        provider = SdkLLMProvider(LiterLlmBackend())
+        provider.chat([{"role": "user", "content": "hi"}], options={"think": False})
+
+        assert self._last_chat(ollama_stub_base)["think"] is False
 
 
 class TestSdkModelManagement:
