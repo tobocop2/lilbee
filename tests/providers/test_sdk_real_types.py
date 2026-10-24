@@ -386,9 +386,7 @@ class TestCatalogOnRealTypes:
         monkeypatch.setattr(liter_llm, "list_catalog_models", lambda _provider=None: entries)
         assert LiterLlmBackend().list_chat_models("openai") == ["a-chat", "b-chat"]
 
-    @pytest.mark.parametrize(
-        "provider", ["openai", "anthropic", "gemini", "mistral", "deepseek", "openrouter"]
-    )
+    @pytest.mark.parametrize("provider", ["openai", "anthropic", "gemini", "mistral", "deepseek"])
     def test_embedded_catalog_lists_chat_models_for_each_keyed_provider(
         self, provider: str
     ) -> None:
@@ -396,12 +394,14 @@ class TestCatalogOnRealTypes:
         assert names
         assert not any(name.startswith(f"{provider}/") for name in names)
 
-    def test_embedded_catalog_nested_names_round_trip_through_routing(self) -> None:
+    def test_embedded_catalog_openrouter_names_round_trip_through_routing(self) -> None:
+        """OpenRouter ids are nested, and its own meta models start with ``openrouter/``."""
         names = LiterLlmBackend().list_chat_models("openrouter")
-        nested = "aion-labs/aion-2.0"
-        assert nested in names
-        ref = parse_model_ref(format_remote_ref(nested, "openrouter"))
-        assert (ref.provider, ref.name) == ("openrouter", nested)
+        assert "aion-labs/aion-2.0" in names
+        assert "openrouter/free" in names
+        for name in names:
+            ref = parse_model_ref(format_remote_ref(name, "openrouter"))
+            assert (ref.provider, ref.name) == ("openrouter", name)
 
     def test_embedded_catalog_leaves_embedding_models_out(self) -> None:
         assert not [n for n in LiterLlmBackend().list_chat_models("openai") if "embedding" in n]

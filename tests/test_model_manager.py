@@ -1291,9 +1291,8 @@ class TestDiscoverApiModels:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        with inject_modules({SDK_MODULE: None}):
-            result = discover_api_models()
-        assert result == {}
+        monkeypatch.setattr("lilbee.providers.availability.provider_sdk_available", lambda: False)
+        assert discover_api_models() == {}
 
     def test_backend_lists_no_models_so_no_group_appears(
         self, monkeypatch: pytest.MonkeyPatch
