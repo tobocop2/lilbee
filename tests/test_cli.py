@@ -63,7 +63,12 @@ from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
 from tests._mock_effects import repeat_last
-from tests.conftest import make_mock_services, reset_held_on_a_thread, summary_of
+from tests.conftest import (
+    make_mock_services,
+    read_takes_hooked,
+    reset_held_on_a_thread,
+    summary_of,
+)
 
 runner = CliRunner()
 # How long a held reset lasts when a test hangs; no test waits for it.
@@ -71,7 +76,7 @@ _HANG_LIMIT_S = 30.0
 
 _SYNC_NOOP = SyncResult()
 # A terminal reads these as commands: C0 and C1 controls other than tab and newline, and DEL.
-_CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _LINK_CODE_RE = re.compile("\x1b\\]8;[^\x1b]*\x1b\\\\")
 
 
@@ -7929,13 +7934,13 @@ class TestSyncCancelledExit:
         (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
         assert threading.current_thread() is threading.main_thread()
         interrupts: list[str] = []
-        real_acquire = ReadWriteLock.acquire_read
 
-        def _ctrl_c_once(lock: ReadWriteLock, *args, **kwargs) -> None:
+        @contextlib.contextmanager
+        def _ctrl_c_once(_lock, _timeout):
             if not interrupts:
                 interrupts.append("ctrl-c")
                 _thread.interrupt_main()
-            real_acquire(lock, *args, **kwargs)
+            yield
 
         def _library() -> list[str]:
             """Every path of the data root but the files of the sync lock itself."""
@@ -7949,7 +7954,7 @@ class TestSyncCancelledExit:
         # The reset holds until this block ends; its own limit only ends a test that hangs.
         with reset_held_on_a_thread(cfg.data_root, ends_after_s=_HANG_LIMIT_S) as resetter:
             before = _library()
-            with mock.patch.object(ReadWriteLock, "acquire_read", _ctrl_c_once):
+            with read_takes_hooked(_ctrl_c_once):
                 result = runner.invoke(app, command)
             reset_still_held = resetter.is_alive()
 

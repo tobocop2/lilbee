@@ -6,10 +6,10 @@ import _thread
 import errno
 import json
 import threading
+from contextlib import contextmanager
 from unittest import mock
 
 import pytest
-from filelock import ReadWriteLock
 from typer.testing import CliRunner
 
 from lilbee.app import services as svc_mod
@@ -17,7 +17,7 @@ from lilbee.cli import app
 from lilbee.core.config import active_config, cfg
 from lilbee.data.store import Store
 from lilbee.runtime.lock import ResetRefusedError, _no_sync_running
-from tests.conftest import make_mock_services, reset_held_on_a_thread
+from tests.conftest import make_mock_services, read_takes_hooked, reset_held_on_a_thread
 
 runner = CliRunner()
 # How long a held reset lasts when a test hangs; no test waits for it.
@@ -188,18 +188,18 @@ class TestImportCommand:
         assert threading.current_thread() is threading.main_thread()
         assert active_config().data_root == data_root
         interrupts: list[str] = []
-        real_acquire = ReadWriteLock.acquire_read
 
-        def _ctrl_c_once(lock: ReadWriteLock, *args, **kwargs) -> None:
+        @contextmanager
+        def _ctrl_c_once(_lock, _timeout):
             if not interrupts:
                 interrupts.append("ctrl-c")
                 _thread.interrupt_main()
-            real_acquire(lock, *args, **kwargs)
+            yield
 
         # The reset holds until this block ends; its own limit only ends a test that hangs.
         with (
             reset_held_on_a_thread(data_root, ends_after_s=_HANG_LIMIT_S) as resetter,
-            mock.patch.object(ReadWriteLock, "acquire_read", _ctrl_c_once),
+            read_takes_hooked(_ctrl_c_once),
         ):
             result = runner.invoke(app, ["import", str(out)])
             reset_still_held = resetter.is_alive()
