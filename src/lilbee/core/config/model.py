@@ -741,7 +741,7 @@ class Config(BaseSettings):
     # Seconds between periodic syncs during crawl. 0 = sync only at end.
     crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
 
-    # Per-request delay + jitter, seconds, at most one hour.
+    # Delay + jitter each concurrent request waits, seconds, at most one hour.
     crawl_mean_delay: float = ConfigField(
         default=0.5, ge=0.0, le=MAX_CRAWL_WAIT_SECONDS, writable=True
     )

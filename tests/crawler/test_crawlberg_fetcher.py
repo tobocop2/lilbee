@@ -249,7 +249,7 @@ class TestCrawlConfig:
         stub = StubCrawlberg()
         with stub.installed():
             await _recursive(_http(), concurrency=pacing)
-        assert stub.config["rate_limit_ms"] == 750
+        assert stub.config["rate_limit_ms"] == 375  # two requests share the 0.75 s delay
         assert stub.config["rate_limit_jitter_ratio"] == 0.0
         assert stub.config["retry_count"] == 5
         assert stub.config["retry_codes"] == [429, 503]
@@ -272,6 +272,16 @@ class TestCrawlConfig:
         assert ratio == pytest.approx(jitter_ratio)
         assert delay * (1 - ratio) == pytest.approx(mean_delay * 1000)
         assert delay * (1 + ratio) == pytest.approx((mean_delay + delay_range) * 1000)
+
+    @pytest.mark.parametrize(("requests", "rate_limit_ms"), [(1, 750), (3, 250), (8, 94)])
+    async def test_each_concurrent_request_waits_the_delay(self, requests: int, rate_limit_ms: int):
+        """N requests that each wait the delay reach a site N times per delay, as in crawl4ai."""
+        pacing = ConcurrencySpec(semaphore_count=requests, mean_delay=0.5, max_delay_range=0.5)
+        stub = StubCrawlberg()
+        with stub.installed():
+            await _recursive(_http(), concurrency=pacing)
+        assert stub.config["rate_limit_ms"] == rate_limit_ms
+        assert stub.config["rate_limit_jitter_ratio"] == pytest.approx(1 / 3)
 
     async def test_retry_backoff_starts_mid_range_and_stops_at_the_max_backoff(self):
         pacing = ConcurrencySpec(

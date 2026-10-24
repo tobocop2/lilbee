@@ -187,6 +187,8 @@ class _Pacing:
 
     crawlberg scales the delay by a factor in ``[1 - ratio, 1 + ratio]``, so the delay is
     the middle of that span and the ratio is half the range over it.
+    Each concurrent request waits that delay, so crawlberg's one gap per domain is the
+    delay over the request count.
     """
 
     rate_limit_ms: int
@@ -196,7 +198,8 @@ class _Pacing:
     def of(cls, spec: ConcurrencySpec) -> _Pacing:
         half_range = spec.max_delay_range / 2
         middle = spec.mean_delay + half_range
-        return cls(_ms(middle), half_range / middle if middle > 0 else 0.0)
+        ratio = half_range / middle if middle > 0 else 0.0
+        return cls(_ms(middle / spec.semaphore_count), ratio)
 
 
 def _retry_count(spec: ConcurrencySpec) -> int:

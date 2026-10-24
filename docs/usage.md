@@ -1349,7 +1349,7 @@ export LILBEE_CRAWL_MAX_DEPTH=3          # cap link-following depth
 export LILBEE_CRAWL_MAX_PAGES=1000       # cap total pages
 
 # Pacing within a single crawl.
-export LILBEE_CRAWL_MEAN_DELAY=0.5       # seconds between requests
+export LILBEE_CRAWL_MEAN_DELAY=0.5       # seconds each concurrent request waits
 export LILBEE_CRAWL_MAX_DELAY_RANGE=0.5  # random jitter on top
 export LILBEE_CRAWL_CONCURRENT_REQUESTS=3
 
