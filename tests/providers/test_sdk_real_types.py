@@ -363,3 +363,39 @@ class TestFakeMatchesTheLibrary:
         fake = fakes.Usage(31, 4)
         for usage in (real, fake):
             assert (usage.prompt_tokens, usage.completion_tokens) == (31, 4)
+
+
+class TestCatalogOnRealTypes:
+    """The listing against the library's own ``CatalogModel`` and its embedded catalog."""
+
+    def test_fake_entry_has_the_fields_the_adapter_reads(self) -> None:
+        real = liter_llm.CatalogModel(provider="openai", model="gpt-4o", mode="chat")
+        fake = fakes.catalog_model("openai", "gpt-4o")
+        for field in ("key", "provider", "model", "mode"):
+            assert hasattr(real, field)
+            assert hasattr(fake, field)
+        assert type(real.mode) is type(fake.mode) is str
+
+    def test_adapter_reads_a_real_entry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        entries = [
+            liter_llm.CatalogModel(provider="openai", model="b-chat", mode="chat"),
+            liter_llm.CatalogModel(provider="openai", model="a-chat", mode="chat"),
+            liter_llm.CatalogModel(provider="openai", model="embed", mode="embedding"),
+            liter_llm.CatalogModel(provider="openai", model="unknown"),
+        ]
+        monkeypatch.setattr(liter_llm, "list_catalog_models", lambda _provider=None: entries)
+        assert LiterLlmBackend().list_chat_models("openai") == ["a-chat", "b-chat"]
+
+    @pytest.mark.parametrize("provider", ["openai", "anthropic", "gemini", "mistral", "deepseek"])
+    def test_embedded_catalog_lists_chat_models_for_each_keyed_provider(
+        self, provider: str
+    ) -> None:
+        names = LiterLlmBackend().list_chat_models(provider)
+        assert names
+        assert not any(name.startswith(f"{provider}/") for name in names)
+
+    def test_embedded_catalog_leaves_embedding_models_out(self) -> None:
+        assert not [n for n in LiterLlmBackend().list_chat_models("openai") if "embedding" in n]
+
+    def test_an_unknown_provider_lists_nothing(self) -> None:
+        assert LiterLlmBackend().list_chat_models("no-such-provider") == []

@@ -148,6 +148,11 @@ class Usage:
         self.total_tokens = prompt_tokens + completion_tokens
 
 
+def catalog_model(provider: str, model: str, mode: str | None = "chat") -> Any:
+    """A catalog entry with the fields of the library's ``CatalogModel``."""
+    return _ns(key=f"{provider}/{model}", provider=provider, model=model, mode=mode)
+
+
 def text_response(
     content: str | None,
     *,
@@ -275,6 +280,7 @@ class FakeSdk:
     embed_error: BaseException | None = None
     rerank_result: Any = None
     rerank_error: BaseException | None = None
+    catalog: list[Any] = field(default_factory=list)
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     clients: list[dict[str, Any]] = field(default_factory=list)
     _module: types.ModuleType | None = field(default=None, repr=False)
@@ -299,6 +305,7 @@ class FakeSdk:
         mod.chat_stream = self._chat_stream  # type: ignore[attr-defined]
         mod.embed = self._embed  # type: ignore[attr-defined]
         mod.rerank = self._rerank  # type: ignore[attr-defined]
+        mod.list_catalog_models = self._list_catalog_models  # type: ignore[attr-defined]
         return mod
 
     def _create_client(self, options: Any) -> Any:
@@ -338,6 +345,11 @@ class FakeSdk:
         if self.rerank_error is not None:
             raise self.rerank_error
         return self.rerank_result
+
+    def _list_catalog_models(self, provider: str | None = None) -> list[Any]:
+        """Like the library: exact provider id, every provider when absent or empty."""
+        self.calls.append(("list_catalog_models", {"provider": provider}))
+        return [m for m in self.catalog if not provider or m.provider == provider]
 
     def error(self, name: str, message: str = "boom") -> BaseException:
         """Build an instance of the fake module's exception class *name*."""

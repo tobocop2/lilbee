@@ -44,6 +44,12 @@ from lilbee.runtime import asyncio_loop
 
 log = logging.getLogger(__name__)
 
+# The catalog's ``mode`` value for a chat model; embedding, image and audio models carry others.
+_CHAT_MODE = "chat"
+# lilbee provider key -> catalog provider id, where the two differ. The routing key
+# ``gemini`` is the catalog's ``google``. Every other lilbee provider uses the same id.
+_CATALOG_PROVIDER = {"gemini": "google"}
+
 
 class LiterLlmBackend:
     """``LlmSdkBackend`` adapter backed by the ``liter-llm`` SDK."""
@@ -219,14 +225,15 @@ class LiterLlmBackend:
         return self._list_openai_models(clean_base, api_key)
 
     def list_chat_models(self, provider: str) -> list[str]:
-        """Return no models: the frontier model picker has no source wired yet.
+        """Return the bare chat-model names liter-llm's built-in catalog holds for *provider*.
 
-        liter-llm 2.4.0 lists its built-in catalog with ``list_catalog_models``.
-        The picker needs that listing mapped to lilbee's provider ids and model
-        names before it can replace this empty answer.
+        The catalog is embedded, so the call needs no network and no key. Names
+        come back without the ``provider/`` prefix, sorted; the routing layer adds
+        the prefix back. A provider the catalog does not hold gives an empty list.
         """
-        log.debug("No hosted chat-model listing wired; no chat models for %s", provider)
-        return []
+        catalog_id = _CATALOG_PROVIDER.get(provider, provider)
+        models = _require_sdk().list_catalog_models(catalog_id)
+        return sorted({m.model for m in models if m.mode == _CHAT_MODE})
 
     @staticmethod
     def _list_ollama_models(base_url: str) -> list[str]:

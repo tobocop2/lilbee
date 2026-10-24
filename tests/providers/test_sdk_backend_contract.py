@@ -17,7 +17,7 @@ import pytest
 
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     EmbeddingRequest,
@@ -579,10 +579,64 @@ class TestShowModel:
 
 
 class TestListChatModels:
-    def test_returns_nothing_until_the_catalog_listing_is_wired(
-        self, backend: LlmSdkBackend
+    @pytest.fixture
+    def catalog(self, sdk: fakes.FakeSdk) -> fakes.FakeSdk:
+        sdk.catalog = [
+            fakes.catalog_model("openai", "gpt-4o"),
+            fakes.catalog_model("openai", "gpt-4o-mini"),
+            fakes.catalog_model("openai", "text-embedding-3-small", "embedding"),
+            fakes.catalog_model("openai", "gpt-image-1", "image_generation"),
+            fakes.catalog_model("openai", "tts-1", "audio_speech"),
+            fakes.catalog_model("openai", "unclassified", None),
+            fakes.catalog_model("google", "gemini-2.5-pro"),
+            fakes.catalog_model("openrouter", "anthropic/claude-sonnet"),
+            fakes.catalog_model("anthropic", "claude-haiku"),
+        ]
+        return sdk
+
+    def test_lists_chat_models_without_the_provider_prefix(
+        self, backend: LlmSdkBackend, catalog: fakes.FakeSdk
     ) -> None:
-        assert backend.list_chat_models("openai") == []
+        assert backend.list_chat_models("openai") == ["gpt-4o", "gpt-4o-mini"]
+
+    def test_excludes_embedding_image_audio_and_unclassified_models(
+        self, backend: LlmSdkBackend, catalog: fakes.FakeSdk
+    ) -> None:
+        names = backend.list_chat_models("openai")
+        assert not {"text-embedding-3-small", "gpt-image-1", "tts-1", "unclassified"} & set(names)
+
+    def test_gemini_reads_the_catalog_entries_of_google(
+        self, backend: LlmSdkBackend, catalog: fakes.FakeSdk
+    ) -> None:
+        assert backend.list_chat_models("gemini") == ["gemini-2.5-pro"]
+        assert catalog.last("list_catalog_models") == {"provider": "google"}
+
+    def test_a_provider_the_catalog_lacks_lists_nothing(
+        self, backend: LlmSdkBackend, catalog: fakes.FakeSdk
+    ) -> None:
+        assert backend.list_chat_models("no-such-provider") == []
+
+    def test_every_listing_is_for_one_provider(
+        self, backend: LlmSdkBackend, catalog: fakes.FakeSdk
+    ) -> None:
+        backend.list_chat_models("anthropic")
+        assert catalog.last("list_catalog_models") == {"provider": "anthropic"}
+
+    @pytest.mark.parametrize(
+        ("provider", "name"),
+        [
+            ("openai", "gpt-4o"),
+            ("gemini", "gemini-2.5-pro"),
+            ("openrouter", "anthropic/claude-sonnet"),
+        ],
+    )
+    def test_names_route_back_to_the_provider(
+        self, backend: LlmSdkBackend, catalog: fakes.FakeSdk, provider: str, name: str
+    ) -> None:
+        assert name in backend.list_chat_models(provider)
+        ref = parse_model_ref(format_remote_ref(name, provider))
+        assert (ref.provider, ref.name) == (provider, name)
+        assert ref.for_openai_prefix() == f"{provider}/{name}"
 
 
 class TestPullModel:
