@@ -20,11 +20,11 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
     {
         # Runtime endpoints.
         "huggingface.co",  # model catalog + hub downloads
-        "localhost",  # default Ollama / litellm backend (user-configurable)
+        "localhost",  # default Ollama / remote backend (user-configurable)
         "127.0.0.1",  # lilbee serve default bind address, used in agent-config output
         # API-key checks in providers/key_check.py: one authenticated GET per
-        # configured key to the provider lilbee already chats with through litellm.
-        # litellm has no key check that reports a rejection apart from other errors.
+        # configured key to the provider lilbee already chats with through the SDK.
+        # The SDK has no key check that reports a rejection apart from other errors.
         "openrouter.ai",  # OpenRouter key record (its model list needs no key)
         "generativelanguage.googleapis.com",  # Gemini model list
         "api.anthropic.com",  # Anthropic model list

@@ -363,7 +363,7 @@ def test_unknown_key_does_not_touch_fleet():
         _restore_services()
 
 
-def test_protocol_default_is_safe_for_litellm_provider():
+def test_protocol_default_is_safe_for_remote_provider():
     """A backend that subclasses LLMProvider but doesn't override
     invalidate_load_cache gets the Protocol's no-op default body."""
 

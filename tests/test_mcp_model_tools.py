@@ -152,7 +152,7 @@ class TestMcpPull:
         assert result == final.model_dump()
 
     @pytest.mark.asyncio
-    async def test_pull_litellm_source(self):
+    async def test_pull_remote_source(self):
         captured: list[ModelSource] = []
         final = PullResult(model="llama3:latest", source="remote", status=PullStatus.OK)
 

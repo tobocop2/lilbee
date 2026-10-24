@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Minimal stand-in for an Ollama daemon, used by the litellm integration tests.
+"""Minimal stand-in for an Ollama daemon, used by the SDK integration tests.
 
 Parses ``--port`` from argv and serves the subset of the Ollama API the
-litellm SDK calls: ``GET /api/tags``, ``POST /api/generate`` (plain and
-streaming NDJSON), ``POST /api/embed``, and ``POST /api/show``. Chat goes
-through ``/api/generate`` because litellm routes the ``ollama/`` prefix to
-its completion handler, not its chat handler.
+provider calls: ``GET /api/tags``, ``POST /api/show``, ``POST /api/chat`` (plain
+and streaming NDJSON) and ``POST /api/embed``. ``GET /_last_chat`` (not part of Ollama) returns the
+body of the last ``/api/chat`` request so tests can assert what reached the wire.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 _STUB_CHAT_TEXT = "stub-chat"
 _STUB_EMBEDDING = [0.5, 0.5]
 _STUB_MODELS = ["qwen3:0.6b", "nomic-embed-text"]
+_last_chat: dict[str, object] = {}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -26,6 +26,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/api/tags":
             self._send_json({"models": [{"name": name} for name in _STUB_MODELS]})
+        elif self.path == "/_last_chat":
+            self._send_json(_last_chat)
         elif self.path == "/api/version":
             self._send_json({"version": "stub"})
         else:
@@ -34,32 +36,29 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
-        if self.path == "/api/generate":
+        if self.path == "/api/chat":
+            _last_chat.clear()
+            _last_chat.update(body)
             model = body.get("model", "qwen3:0.6b")
-            if body.get("stream"):
+            if body.get("stream", True):
                 self._send_ndjson(
                     [
-                        {"model": model, "response": "stub-", "done": False},
-                        {"model": model, "response": "chat", "done": False},
-                        {"model": model, "response": "", "done": True},
+                        self._chat_line(model, "stub-", done=False),
+                        self._chat_line(model, "chat", done=False),
+                        self._chat_line(model, "", done=True),
                     ]
                 )
             else:
-                self._send_json(
-                    {
-                        "model": model,
-                        "response": _STUB_CHAT_TEXT,
-                        "done": True,
-                        "done_reason": "stop",
-                    }
-                )
+                self._send_json(self._chat_line(model, _STUB_CHAT_TEXT, done=True))
         elif self.path == "/api/embed":
             inputs = body.get("input", [])
             count = len(inputs) if isinstance(inputs, list) else 1
-            # prompt_eval_count is required: without it litellm calls a
-            # logging method its own Logging object does not have.
             self._send_json(
-                {"embeddings": [_STUB_EMBEDDING for _ in range(count)], "prompt_eval_count": 8}
+                {
+                    "model": body.get("model", "nomic-embed-text"),
+                    "embeddings": [_STUB_EMBEDDING for _ in range(count)],
+                    "prompt_eval_count": 8,
+                }
             )
         elif self.path == "/api/show":
             self._send_json({"parameters": "stub-params", "capabilities": ["completion"]})
@@ -74,12 +73,24 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_ndjson(self, chunks: list[dict[str, object]]) -> None:
+    @staticmethod
+    def _chat_line(model: str, content: str, *, done: bool) -> dict[str, object]:
+        line: dict[str, object] = {
+            "model": model,
+            "created_at": "2026-01-01T00:00:00Z",
+            "message": {"role": "assistant", "content": content},
+            "done": done,
+        }
+        if done:
+            line.update({"done_reason": "stop", "prompt_eval_count": 1, "eval_count": 1})
+        return line
+
+    def _send_ndjson(self, lines: list[dict[str, object]]) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.end_headers()
-        for chunk in chunks:
-            self.wfile.write((json.dumps(chunk) + "\n").encode())
+        for line in lines:
+            self.wfile.write(f"{json.dumps(line)}\n".encode())
 
 
 def _port_from_argv(argv: list[str]) -> int:

@@ -206,6 +206,7 @@ class SdkLLMProvider(LLMProvider):
                 ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in result.tool_calls
             ),
             finish_reason=FinishReason.coerce(result.finish_reason),
+            usage=result.usage,
         )
 
     def supports_tools(self, model_ref: str) -> bool:
@@ -262,6 +263,8 @@ class SdkLLMProvider(LLMProvider):
                     # The closing chunk's finish_reason lets the dispatch report
                     # length/stop, matching the non-streaming path.
                     yield StreamFinish(reason=FinishReason.coerce(chunk.finish_reason))
+                if chunk.usage is not None:
+                    yield chunk.usage
         except ProviderError:
             raise
         except Exception as exc:

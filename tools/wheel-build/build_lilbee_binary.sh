@@ -126,10 +126,6 @@ CHILD_MODULE_FLAGS=(
 ONEFILE_BUILD_KEY=${ASSET_NAME#lilbee-}
 ONEFILE_BUILD_KEY=${ONEFILE_BUILD_KEY%.exe}
 
-# litellm.proxy is not trimmable, despite nothing in lilbee importing it:
-# litellm/__init__.py pulls in 9 of its modules on a bare import, so
-# --nofollow-import-to=litellm.proxy is an ImportError at startup.
-#
 # hf_xet is included explicitly so the package configuration's hf_xet metadata
 # is emitted: Nuitka only ships metadata for a distribution whose top-level
 # module it actually compiled.
@@ -155,7 +151,7 @@ uv run --no-sync python -m nuitka \
     --include-package=tiktoken_ext       --include-package-data=tiktoken_ext \
     --include-package-data=numpy \
     --include-package=xberg          --include-package-data=xberg \
-    --include-package=litellm            --include-package=litellm.llms      --include-package-data=litellm \
+    --include-package=liter_llm          --include-package-data=liter_llm \
     --include-package=crawlberg          --include-package-data=crawlberg \
     --include-package=ada_url            --include-package-data=ada_url \
     --include-package=chardet            --include-package-data=chardet \
@@ -171,7 +167,7 @@ uv run --no-sync python -m nuitka \
     --include-package=mcp                --include-package-data=mcp \
     --include-package=hf_xet \
     --include-distribution-metadata=lilbee \
-    --include-distribution-metadata=litellm \
+    --include-distribution-metadata=liter-llm \
     --include-distribution-metadata=spacy \
     --include-distribution-metadata=en_core_web_sm \
     --include-distribution-metadata=catalogue \

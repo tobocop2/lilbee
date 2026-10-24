@@ -13,8 +13,8 @@ def test_default_kind_is_unknown() -> None:
 
 
 def test_kind_and_provider_are_carried() -> None:
-    err = ProviderError("rate limited", provider="litellm", kind=ProviderErrorKind.RATE_LIMIT)
+    err = ProviderError("rate limited", provider="remote", kind=ProviderErrorKind.RATE_LIMIT)
     assert err.kind == ProviderErrorKind.RATE_LIMIT
-    assert err.provider == "litellm"
+    assert err.provider == "remote"
     # The message is unchanged; kind is metadata, not appended to str().
     assert str(err) == "rate limited"

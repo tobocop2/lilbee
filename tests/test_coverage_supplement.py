@@ -288,17 +288,17 @@ class TestSettingsFeatureGating:
         groups = group_settings()
         assert "Wiki" in groups
 
-    def test_api_keys_group_hidden_without_litellm(self) -> None:
+    def test_api_keys_group_hidden_without_providers(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
-        with mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=False):
+        with mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=False):
             groups = settings_mod.group_settings()
         assert "API-Keys" not in groups
 
-    def test_api_keys_group_visible_with_litellm(self) -> None:
+    def test_api_keys_group_visible_with_providers(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
-        with mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True):
+        with mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=True):
             groups = settings_mod.group_settings()
         assert "API-Keys" in groups
 
@@ -616,14 +616,14 @@ class TestAppCanonicalizeFallbackNotice:
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.core.config import cfg
         from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
-        from lilbee.modelhub.model_manager.validation import REASON_LITELLM_MISSING
+        from lilbee.modelhub.model_manager.validation import REASON_PROVIDERS_MISSING
 
         app = LilbeeApp()
         embed_canon = CanonicalRef(
             original="ollama/nomic-embed-text:latest",
             effective="ollama/nomic-embed-text:latest",
             status=ValidationResult.UNKNOWN,
-            reason=REASON_LITELLM_MISSING,
+            reason=REASON_PROVIDERS_MISSING,
         )
         ok_canon = CanonicalRef(
             original="ok/model", effective="ok/model", status=ValidationResult.OK
@@ -654,7 +654,7 @@ class TestAppCanonicalizeFallbackNotice:
                 mock_apply.assert_not_called()
             assert cfg.embedding_model == snapshot_embed, "an un-fallbackable ref is left intact"
             assert not notifications, "no toast: the catalog routing is the single voice"
-            assert any("litellm" in r.getMessage() for r in caplog.records), (
+            assert any("providers" in r.getMessage() for r in caplog.records), (
                 "the reason must still be logged at WARNING as a breadcrumb"
             )
         finally:
@@ -1433,10 +1433,9 @@ class TestSyncSkippedMessageBranches:
 
 
 class TestChattyDependencyFilters:
-    """Each lib's substring filter lives next to that lib's adapter module
-    and installs on import (catalog/hf_client.py for HF,
-    providers/litellm_sdk.py for LiteLLM). Importing the adapter module is
-    what attaches the filter to the upstream logger.
+    """The HF substring filter lives next to its adapter module (catalog/hf_client.py).
+
+    Importing the adapter module attaches the filter to the upstream logger.
     """
 
     @staticmethod
@@ -1458,40 +1457,6 @@ class TestChattyDependencyFilters:
         hf_logger = logging.getLogger("huggingface_hub.utils._http")
         keep = self._record(hf_logger.name, "Downloaded model.gguf in 12s")
         assert all(f.filter(keep) is True for f in hf_logger.filters)
-
-    def test_litellm_cost_map_warning_is_dropped(self) -> None:
-        import lilbee.providers.litellm_sdk  # noqa: F401  -- import for filter install
-
-        litellm_logger = logging.getLogger("LiteLLM")
-        noisy = self._record(
-            litellm_logger.name, "Failed to fetch remote model cost map. Using local copy."
-        )
-        assert any(f.filter(noisy) is False for f in litellm_logger.filters)
-
-    @pytest.mark.parametrize(
-        "aws_message",
-        [
-            "Missing boto3 to call bedrock. Run 'pip install boto3'.",
-            "Could not load response stream shape: botocore not available",
-            "sagemaker-runtime endpoint unreachable",
-            "bedrock invoke failed",
-        ],
-    )
-    def test_litellm_aws_messages_are_dropped(self, aws_message: str) -> None:
-        """AWS-related LiteLLM advisories are filtered: lilbee never supports AWS."""
-        import lilbee.providers.litellm_sdk  # noqa: F401  -- import for filter install
-
-        litellm_logger = logging.getLogger("LiteLLM")
-        noisy = self._record(litellm_logger.name, aws_message)
-        assert any(f.filter(noisy) is False for f in litellm_logger.filters)
-
-    def test_litellm_unrelated_message_passes_through(self) -> None:
-        """Filter is targeted: a generic LiteLLM warning still surfaces."""
-        import lilbee.providers.litellm_sdk  # noqa: F401  -- import for filter install
-
-        litellm_logger = logging.getLogger("LiteLLM")
-        keep = self._record(litellm_logger.name, "Rate limit hit, retrying in 5s")
-        assert all(f.filter(keep) is True for f in litellm_logger.filters)
 
 
 class TestWikiEmptyStateSpacyBranches:

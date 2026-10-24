@@ -18,8 +18,7 @@ _DECODER = json.JSONDecoder()
 def json_reply_format() -> dict[str, str]:
     """Provider option asking for a bare JSON value rather than JSON in prose.
 
-    llama.cpp's server and OpenAI-compatible remotes both honour it; providers
-    that do not drop it rather than refusing (see the litellm adapter). Returns
+    llama.cpp's server and OpenAI-compatible remotes both honour it. Returns
     a fresh dict per call because it is handed to a third-party SDK that is free
     to mutate the request it is given. The scans below stay the fallback: a
     provider can ignore the request and a model can comply imperfectly, and

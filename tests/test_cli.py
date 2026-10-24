@@ -7522,7 +7522,7 @@ class TestSelfCheckExtras:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload == {
             "ok": True,
-            "litellm": True,
+            "providers": True,
             "crawlberg": True,
             "ada_url": True,
             "spacy": True,
@@ -7535,7 +7535,7 @@ class TestSelfCheckExtras:
         chardet.models import that frozen builds have shipped broken.
 
         Calls the probe directly rather than the command: the unmocked
-        command imports the known-heavy extras (crawlberg, litellm, spacy),
+        command imports the known-heavy extras (crawlberg, providers, spacy),
         and a real crawlberg import leaves it in sys.modules, which breaks the
         crawler tests' module injection.
         """
@@ -7613,11 +7613,32 @@ class TestSelfCheckExtras:
         assert result.exit_code == 1, result.output
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload["ok"] is False
-        assert payload["litellm"] is True
+        assert payload["providers"] is True
         assert payload["crawlberg"] is False
         assert "crawlberg_error" in payload
         assert payload["spacy"] is True
         assert payload["graspologic_native"] is True
+
+    def test_providers_extra_is_probed_by_its_importable_module(self) -> None:
+        from lilbee.providers.factory import sdk_library
+
+        sdk_module = sdk_library().module
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._probe_charset_detection",
+                return_value=None,
+            ),
+            mock.patch(
+                "lilbee.cli.commands.setup.importlib.import_module",
+                side_effect=self._import_module_stub(missing={sdk_module}),
+            ),
+        ):
+            result = runner.invoke(app, ["--json", "self-check-extras"])
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["providers"] is False
+        assert payload["crawlberg"] is True
+        assert sdk_module in payload["providers_error"]
 
     def test_one_extra_missing_human_mode_reports_failure(self) -> None:
         with (

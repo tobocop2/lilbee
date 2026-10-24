@@ -153,12 +153,12 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add remote (Ollama / OpenAI-compatible) models, prefixed for routing.
 
-    Skipped when the litellm extra is not installed -- surfacing a model
+    Skipped when the providers extra is not installed -- surfacing a model
     the SDK cannot route is a guaranteed runtime error.
     """
-    from lilbee.providers.litellm_sdk import litellm_available
+    from lilbee.providers import availability
 
-    if not litellm_available():
+    if not availability.provider_sdk_available():
         return
     try:
         from lilbee.modelhub.model_manager import classify_all_remote_models
@@ -182,10 +182,10 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
 
 def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add frontier API chat models. Skipped without litellm (cannot route)."""
-    from lilbee.providers.litellm_sdk import litellm_available
+    """Add frontier API chat models. Skipped without the providers extra (cannot route)."""
+    from lilbee.providers import availability
 
-    if not litellm_available():
+    if not availability.provider_sdk_available():
         return
     try:
         from lilbee.modelhub.model_manager import discover_api_models

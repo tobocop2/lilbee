@@ -96,7 +96,7 @@ def test_readiness_skips_the_native_probe_for_usable_remote_models(isolated_data
 
     The native resolver only knows about GGUFs, so a usable remote ref
     must not be sent through resolve_model_path. Usability is decided by
-    ``validate_persisted_model`` (litellm present, server live, key set).
+    ``validate_persisted_model`` (providers extra present, server live, key set).
     """
     from lilbee.modelhub.model_manager import ValidationResult
 
@@ -114,7 +114,7 @@ def test_readiness_skips_the_native_probe_for_usable_remote_models(isolated_data
 
 
 def test_not_ready_when_a_remote_ref_is_unusable(isolated_data_dir):
-    """An unusable remote ref (litellm missing, server down, no key) is not ready.
+    """An unusable remote ref (providers extra missing, server down, no key) is not ready.
 
     Regression: this used to be skipped on the assumption that remote refs
     always resolve at call time, leaving a user with an unservable

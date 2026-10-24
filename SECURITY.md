@@ -27,8 +27,8 @@ Instead, use one of these methods:
 
 ## Dependency advisories
 
-### LiteLLM (`lilbee[litellm]` extra)
+### Provider client (`lilbee[providers]` extra)
 
-lilbee uses `litellm` **only as a client SDK** — `litellm.completion()` / `litellm.embedding()` calls to hosted model providers, routed through a single adapter (`src/lilbee/providers/litellm_sdk.py`, the only module that imports `litellm`). lilbee does **not** run the LiteLLM Proxy server, does not expose any of its admin or test endpoints (`/guardrails/test_custom_code`, `/prompts/test`, the proxy key-verification path, the MCP stdio test endpoints), and does not configure LiteLLM guardrails or custom guardrail code.
+lilbee reaches hosted model providers through a client library, used **only as a client SDK** inside one adapter package (`src/lilbee/providers/backends/`, the only package that imports it). lilbee does **not** run a proxy server.
 
-Consequently, advisories in the LiteLLM **Proxy server** — e.g. GHSA-xqmj-j6mv-4862, GHSA-r75f-5x8p-qvmc, GHSA-v4p8-mg3p-g94g, GHSA-wxxx-gvqv-xp7p (CVE-2026-40217) — do not affect lilbee, and are dismissed in this repository's Dependabot alerts as "vulnerable code not used". An advisory that affects the LiteLLM *client SDK* path (completion/embedding request handling) would be in scope and patched.
+Earlier releases used LiteLLM for this role. LiteLLM is no longer a dependency, so its Proxy server advisories (GHSA-xqmj-j6mv-4862, GHSA-r75f-5x8p-qvmc, GHSA-v4p8-mg3p-g94g, GHSA-wxxx-gvqv-xp7p) do not apply to current releases. An advisory that affects the client library's request handling is in scope and patched.

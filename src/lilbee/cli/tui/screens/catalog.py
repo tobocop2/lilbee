@@ -907,7 +907,7 @@ class CatalogScreen(Screen[None]):
     def _fetch_frontier_models(self) -> list[FrontierCatalogRow]:
         """Discover cloud chat models off the UI thread.
 
-        ``discover_api_model_groups`` imports litellm (heavy, >50ms) and
+        ``discover_api_model_groups`` imports the SDK (heavy, >50ms) and
         checks every configured provider key over the network. Running it on
         the main thread froze the catalog on mount and on every
         signal-driven refresh; the worker keeps the screen responsive."""
@@ -1247,7 +1247,7 @@ class CatalogScreen(Screen[None]):
         """Filter the cached frontier rows against the active search.
 
         The discovery itself runs in :meth:`_fetch_frontier_models` (a
-        worker) because litellm import + key probing blocks the UI
+        worker) because the SDK import + key probing blocks the UI
         thread. Renderers call this synchronously to read the
         already-discovered rows, so no I/O happens here.
         """

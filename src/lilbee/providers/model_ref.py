@@ -13,7 +13,12 @@ from typing import Any
 
 from lilbee.catalog.refs import GGUF_SUFFIX, NATIVE_GGUF_REF_MIN_SLASHES
 from lilbee.catalog.types import ModelSource
-from lilbee.providers.base import filter_options, normalize_generation_options
+from lilbee.providers.base import (
+    ProviderError,
+    ProviderErrorKind,
+    filter_options,
+    normalize_generation_options,
+)
 from lilbee.providers.local_servers import (
     LOCAL_SERVER_KEYS,
     local_server_for_key,
@@ -166,24 +171,45 @@ def default_first(refs: list[str], default_ref: str) -> list[str]:
     return [default_ref, *(ref for ref in refs if ref != default_ref)]
 
 
+# Samplers the Anthropic API has no field for.
+_ANTHROPIC_UNSUPPORTED = ("seed", "frequency_penalty", "presence_penalty")
+
+
+def _refuse_unsupported(
+    options: dict[str, Any], ref: ProviderModelRef, unsupported: tuple[str, ...]
+) -> None:
+    """Raise a bad-request error when *options* sets a name in *unsupported*."""
+    refused = [name for name in unsupported if options.get(name) is not None]
+    if refused:
+        raise ProviderError(
+            f"The provider rejected the request for {ref.raw}. "
+            f"It does not support {', '.join(refused)}. Remove the setting and try again.",
+            provider=ModelSource.REMOTE,
+            kind=ProviderErrorKind.BAD_REQUEST,
+        )
+
+
 def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[str, Any]:
     """Translate generation options for the target provider.
 
     A local ref forced through the SDK keeps the raw filtered options; an API ref
     gets the shared per-call mapping (``num_predict`` -> ``max_tokens``, drop
-    ``num_ctx``) plus a ``top_k`` drop: litellm would forward ``top_k`` (into
-    ``extra_body`` for OpenAI-compatible) without erroring, but hosted APIs ignore
-    it, so dropping it keeps the wire request clean.
+    ``num_ctx``) plus a ``top_k`` and ``repeat_penalty`` drop: hosted APIs do not
+    take either, so dropping them keeps the wire request clean. An Anthropic ref
+    refuses ``seed`` and the two penalties with a bad-request error.
     """
     if not ref.is_api:
         filtered = filter_options(options)
         think = filtered.pop("think", None)
         if think is False and ref.provider == ModelSource.OLLAMA:
-            # litellm maps reasoning_effort onto Ollama's think field; any value
+            # Ollama maps reasoning_effort onto its think field; any value
             # outside low/medium/high turns thinking off.
             filtered["reasoning_effort"] = OLLAMA_NO_THINKING
         return filtered
     api_options = normalize_generation_options(options)
+    if ref.provider == "anthropic":
+        _refuse_unsupported(api_options, ref, _ANTHROPIC_UNSUPPORTED)
     api_options.pop("top_k", None)
+    api_options.pop("repeat_penalty", None)
     api_options.pop("think", None)
     return api_options

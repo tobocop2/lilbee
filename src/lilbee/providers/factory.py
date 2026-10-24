@@ -2,14 +2,49 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, assert_never
 
 from lilbee.core.config.enums import LlmProvider
+from lilbee.providers import availability
 from lilbee.providers.base import ProviderError
 
 if TYPE_CHECKING:
     from lilbee.core.config import Config
     from lilbee.providers.base import LLMProvider
+    from lilbee.providers.sdk_backend import LlmSdkBackend
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+__all__ = ["SdkLibrary", "create_provider", "create_sdk_provider", "sdk_library"]
+
+
+@dataclass(frozen=True)
+class SdkLibrary:
+    """The client library behind the SDK backend."""
+
+    dist: str
+    """Distribution name, as package metadata lists it."""
+    module: str
+    """Top-level import name."""
+    create_backend: Callable[[], LlmSdkBackend]
+    """Builds a new backend over the library."""
+
+
+def sdk_library() -> SdkLibrary:
+    """Return the client library's names and backend builder, importing nothing heavy."""
+    # heavy: setup.py imports this module at CLI startup; the backend package
+    # defers its backend module and the library to create_backend
+    from lilbee.providers.backends.liter_llm import SDK_DIST, SDK_MODULE, create_sdk_backend
+
+    return SdkLibrary(dist=SDK_DIST, module=SDK_MODULE, create_backend=create_sdk_backend)
+
+
+def create_sdk_provider() -> SdkLLMProvider:
+    """Return a new provider over the SDK backend, for remote and API models."""
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+    return SdkLLMProvider(sdk_library().create_backend())
 
 
 def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
@@ -23,22 +58,14 @@ def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
     """
     match config.llm_provider:
         case LlmProvider.AUTO:
-            # heavy: routing_provider eagerly imports litellm_sdk (>50ms; litellm fanout)
+            # circular: routing_provider -> factory via create_sdk_provider
             from lilbee.providers.routing_provider import RoutingProvider
 
             return RoutingProvider(hold_warm=hold_warm)
 
         case LlmProvider.REMOTE:
-            # THIS is the swap line: the single import that changes when
-            # migrating to a different SDK. Replace LitellmSdkBackend here
-            # with the new adapter and the rest of lilbee is untouched.
-            # heavy: litellm_sdk loads litellm provider fanout (>50ms)
-            from lilbee.providers.litellm_sdk import LITELLM_MISSING_MSG, LitellmSdkBackend
-            from lilbee.providers.sdk_llm_provider import SdkLLMProvider
-
-            backend = LitellmSdkBackend()
-            if not backend.available():
-                raise ProviderError(LITELLM_MISSING_MSG)
-            return SdkLLMProvider(backend)  # pragma: no cover
+            if not availability.provider_sdk_available():
+                raise ProviderError(availability.PROVIDER_SDK_MISSING_MESSAGE)
+            return create_sdk_provider()
 
     assert_never(config.llm_provider)  # pragma: no cover

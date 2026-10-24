@@ -1,7 +1,7 @@
 """Local OpenAI-compatible model servers (Ollama, LM Studio).
 
 One :class:`LocalServerSpec` per server (``ollama``, ``lm_studio``) describes
-its routing key, litellm wire prefix, default base URL, identifying URL
+its routing key, SDK wire prefix, default base URL, identifying URL
 substrings, model source, and which catalog operations it supports. Imports
 stay light for the routing layer; the HTTP behaviour (discovery, listing)
 lives in the modelhub layer, dispatched off the spec.
