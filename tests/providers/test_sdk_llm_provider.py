@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     CompletionResult,
@@ -323,6 +323,20 @@ class TestChatNonStream:
         )
         req = backend.complete_calls[-1]
         assert req.options == {"max_tokens": 100, "temperature": 0.5}
+
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_anthropic_seed_is_refused_before_any_request(self, stream: bool) -> None:
+        backend = FakeBackend()
+        provider = SdkLLMProvider(backend)
+        with pytest.raises(ProviderError, match="seed") as caught:
+            provider.chat(
+                [{"role": "user", "content": "hi"}],
+                model="anthropic/claude-sonnet-4-20250514",
+                options={"seed": 1},
+                stream=stream,
+            )
+        assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+        assert backend.complete_calls == []
 
     def test_wraps_unexpected_errors_in_provider_error(self) -> None:
         backend = FakeBackend(raise_complete=RuntimeError("boom"))
