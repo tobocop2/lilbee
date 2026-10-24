@@ -120,7 +120,6 @@ class StubCrawlberg:
         module.CrawlConfig = Recorded  # type: ignore[attr-defined]
         module.ContentConfig = Recorded  # type: ignore[attr-defined]
         module.BrowserConfig = Recorded  # type: ignore[attr-defined]
-        module.BrowserWait = types.SimpleNamespace(SELECTOR="selector")  # type: ignore[attr-defined]
         module.SsrfPolicy = Recorded  # type: ignore[attr-defined]
         module.AuthConfig = types.SimpleNamespace(  # type: ignore[attr-defined]
             basic=lambda username, password: ("basic", username, password),

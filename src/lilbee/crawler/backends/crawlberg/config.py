@@ -6,7 +6,7 @@ import ipaddress
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap, url_filter
@@ -84,8 +84,6 @@ _TRACKING_PARAMS = (
 # A browser fetch as a whole (launch, navigation, render, close) may take this many page timeouts.
 _BROWSER_OVERALL_TIMEOUTS = 2
 _BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
-# The root element, which every loaded document has, SVG, XML and frameset pages included.
-_READY_SELECTOR = ":root"
 _RATE_LIMIT_STATUSES = (429, 503)
 # The most retries crawlberg 1.12.0 accepts; it refuses a config with more.
 _MAX_RETRIES = 20
@@ -227,19 +225,13 @@ def _browser_config(
 ) -> crawlberg.BrowserConfig:
     """The browser settings, with a deadline on each whole browser fetch.
 
-    Only browser mode names a Chrome binary, launch flags and the waits after a page loads.
+    Only browser mode names a Chrome binary, launch flags and the extra wait after a page loads.
     The deadline adds the extra wait, which crawlberg counts inside it.
     """
     import crawlberg
 
     browser = render_mode is CrawlRenderMode.BROWSER
     extra_wait = extra_wait_ms if browser else None
-    # Crawlberg's default wait sleeps 500 ms on every page. Waiting for the root element,
-    # which a loaded page already has, ends it at once; the extra wait is then the whole wait.
-    page_wait: dict[str, Any] = {
-        "wait": crawlberg.BrowserWait.SELECTOR,
-        "wait_selector": _READY_SELECTOR,
-    }
     return crawlberg.BrowserConfig(
         mode=_BROWSER_MODES[render_mode],
         timeout=timeout_ms,
@@ -248,7 +240,6 @@ def _browser_config(
         chrome_path=_headless_shell() if browser else None,
         chrome_args=list(chrome_args) if browser else [],
         extra_wait=extra_wait,
-        **(page_wait if browser else {}),
     )
 
 

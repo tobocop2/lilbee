@@ -631,13 +631,13 @@ class TestMemoryTuningSettingsMap:
         assert "crawl_respect_robots_txt" in WRITABLE_CONFIG_FIELDS
         assert get_default("crawl_respect_robots_txt") is True
 
-    def test_extra_wait_is_a_writable_crawl_setting_of_two_tenths_of_a_second(self):
+    def test_extra_wait_is_a_writable_crawl_setting_off_by_default(self):
         wait = SETTINGS_MAP["crawl_browser_extra_wait_ms"]
         assert wait.writable is True
         assert wait.type is int
         assert wait.group is SettingGroup.CRAWLING
         assert "crawl_browser_extra_wait_ms" in WRITABLE_CONFIG_FIELDS
-        assert get_default("crawl_browser_extra_wait_ms") == 200
+        assert get_default("crawl_browser_extra_wait_ms") == 0
 
     def test_extra_wait_persists_and_reloads(self, tmp_path, monkeypatch):
         from lilbee.app import settings as appset

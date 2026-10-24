@@ -256,7 +256,7 @@ NO_BODY_TIMEOUT_S = 12
 CONTENT_TYPES = {SVG_PAGE: "image/svg+xml"}
 LATE_HEADING = "Harbor timetable"
 LATE_TEXT = "The ferry leaves at noon"
-# Within the default extra wait (200 ms) of the load, and a text later than it.
+# Within crawlberg's quiet window after the load (150 ms), and a text later than it.
 LATE_DELAY_MS = 100
 LATER_DELAY_MS = 600
 LATER_WAIT_MS = 1000

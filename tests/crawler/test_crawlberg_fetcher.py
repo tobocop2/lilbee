@@ -360,9 +360,17 @@ class TestBrowserMode:
             "chrome_path": str(shell),
             "chrome_args": FLAGS,
             "extra_wait": 0,
-            "wait": "selector",
-            "wait_selector": ":root",
         }
+
+    async def test_browser_mode_keeps_crawlberg_s_own_page_wait(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            config_mod.bootstrap, "headless_shell_executable", lambda: tmp_path / "shell"
+        )
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await _browser().fetch_single(SEED, timeout=5, concurrency=NO_PACING)
+        assert "wait" not in stub.config["browser"].kwargs
+        assert "wait_selector" not in stub.config["browser"].kwargs
 
     @pytest.mark.parametrize("wait_ms", [0, 2500])
     async def test_each_crawl_shape_passes_the_extra_wait_to_crawlberg(

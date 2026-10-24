@@ -787,8 +787,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text=(
-            "Browser mode: milliseconds to wait after a page loads before reading it, "
-            "for sites that draw their text late. Raise it when a page's text is missing; "
+            "Browser mode: milliseconds to wait after a page has loaded and stopped changing, "
+            "for sites that draw their text later. Raise it when a page's text is missing; "
             "0 = no extra wait, at most 600000 (ten minutes). http mode ignores it."
         ),
     ),
