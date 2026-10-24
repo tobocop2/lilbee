@@ -1722,7 +1722,7 @@ All settings are configurable in `config.toml`. All except `linked_roots` are al
 | `LILBEE_CRAWL_TIMEOUT` | `30` | Per-page fetch timeout in seconds | Applies to the HTTP request and to browser page loads |
 | `LILBEE_CRAWL_MAX_CONCURRENT` | CPU count | Max simultaneous crawl operations (top-level) | Limits parallel `crawl_and_save` invocations. Per-crawl concurrency is `crawl_concurrent_requests`. |
 | `LILBEE_CRAWL_SYNC_INTERVAL` | `30` | Seconds between periodic syncs during crawl | 0 = sync only after crawl completes. Lower = documents searchable sooner |
-| `LILBEE_CRAWL_MEAN_DELAY` | `0.5` | Seconds between requests to the same domain within a single crawl | Tune up for rate-sensitive sites. |
+| `LILBEE_CRAWL_MEAN_DELAY` | `0.5` | Seconds each concurrent request waits before its next request to the same domain | With `crawl_concurrent_requests` at N, the domain gets about N requests per delay. Tune up for rate-sensitive sites. |
 | `LILBEE_CRAWL_MAX_DELAY_RANGE` | `0.5` | Random additional delay on top of mean_delay | Each wait falls between mean_delay and mean_delay + max_delay_range. |
 | `LILBEE_CRAWL_CONCURRENT_REQUESTS` | `3` | Concurrent in-flight URLs within one crawl |  |
 | `LILBEE_CRAWL_RETRY_ON_RATE_LIMIT` | `true` | Retry pages that answer HTTP 429 or 503 | Other server errors and timeouts are not retried. Set to `false` to disable. |

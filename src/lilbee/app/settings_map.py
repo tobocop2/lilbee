@@ -844,7 +844,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Seconds between in-flight requests within a single crawl, 0 to 3600",
+        help_text="Seconds each concurrent request waits between requests to a site, 0 to 3600",
     ),
     "crawl_max_delay_range": SettingDef(
         float,
