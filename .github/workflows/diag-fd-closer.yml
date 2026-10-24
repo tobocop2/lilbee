@@ -5,6 +5,14 @@ name: Diagnose closed lock descriptor
 # ubuntu with Python 3.13 under strace, with the conftest rules that hide a
 # closed descriptor removed on this branch. Six replicas raise the chance that
 # the rare failure happens in one of them.
+#
+# A zero is read only after three controls pass in the same job:
+#   1. Canary: a test that closes a descriptor it does not own runs on two xdist
+#      workers under the full strace flags. The summary must print FDC-FOREIGN
+#      with both stacks for each worker, or the job fails.
+#   2. Fast run: the whole suite under strace without stacks. strace -k costs
+#      about 30 ms per call and kept the first diagnostic run inside collection.
+#   3. Tests ran: each pytest run must report a floor of passed tests.
 
 on:
   push:
@@ -46,41 +54,91 @@ jobs:
           strace -k -e trace=close -o "${{ runner.temp }}/probe.txt" true
           grep -c ' > ' "${{ runner.temp }}/probe.txt" || true
 
-      - name: Run unit tests under strace
+      - name: Canary under the full trace (must show FDC-FOREIGN on two workers)
+        shell: bash
+        run: |
+          mkdir -p "${{ runner.temp }}/canary"
+          set +e
+          strace -f -tt -y -k --seccomp-bpf --decode-pids=comm \
+            -e trace=close,flock,clone,clone3,fork,vfork -e signal=none \
+            -o "${{ runner.temp }}/canary/strace.txt" \
+            uv run pytest tests/test_fd_canary.py -n 2 --dist each --no-cov -p no:cacheprovider -q \
+            2>&1 | tee "${{ runner.temp }}/canary/pytest.txt"
+          python3 .github/diag/fd_tests_ran.py "${{ runner.temp }}/canary/pytest.txt" canary 8 || exit 1
+          python3 .github/diag/fd_closer_summary.py "${{ runner.temp }}/canary/strace.txt" --expect-canary 2 \
+            | tee "${{ runner.temp }}/canary/summary.txt"
+          test "${PIPESTATUS[0]}" -eq 0 || { echo "FDC-CANARY the trace has no power; do not read the zero"; exit 1; }
+          grep -E '^FDC-(CANARY|RESULT (canary|traced))' "${{ runner.temp }}/canary/summary.txt" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run unit tests under strace without stacks
         id: tests
         continue-on-error: true
         shell: bash
         run: |
           mkdir -p "${{ runner.temp }}/trace"
-          strace -f -tt -y -k --seccomp-bpf --decode-pids=comm \
+          set +e
+          strace -f -tt -y --seccomp-bpf --decode-pids=comm \
             -e trace=close,flock,clone,clone3,fork,vfork -e signal=none \
             -o "${{ runner.temp }}/trace/strace.txt" \
-            make test-ci
+            make test-ci 2>&1 | tee "${{ runner.temp }}/trace/pytest.txt"
+          rc="${PIPESTATUS[0]}"
+          python3 .github/diag/fd_tests_ran.py "${{ runner.temp }}/trace/pytest.txt" suite 3000 | tee -a "${{ runner.temp }}/trace/summary.txt"
+          ctl="${PIPESTATUS[0]}"
+          if [ "$ctl" -ne 0 ]; then exit "$ctl"; fi
+          exit "$rc"
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_TEST_HANG_DUMP_S: "90"
           LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
 
+      - name: Run the lock tests under the full trace
+        id: stacks
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p "${{ runner.temp }}/stacks"
+          set +e
+          strace -f -tt -y -k --seccomp-bpf --decode-pids=comm \
+            -e trace=close,flock,clone,clone3,fork,vfork -e signal=none \
+            -o "${{ runner.temp }}/stacks/strace.txt" \
+            uv run pytest tests/test_fleet_provider.py tests/test_ingest.py tests/test_engine_lock.py \
+              tests/test_engine_reaper.py tests/test_lock.py tests/test_lock_order.py \
+              -n 2 --timeout=900 --no-cov -p no:cacheprovider -q \
+            2>&1 | tee "${{ runner.temp }}/stacks/pytest.txt"
+          rc="${PIPESTATUS[0]}"
+          python3 .github/diag/fd_tests_ran.py "${{ runner.temp }}/stacks/pytest.txt" stacks 300 | tee -a "${{ runner.temp }}/stacks/summary.txt"
+          ctl="${PIPESTATUS[0]}"
+          if [ "$ctl" -ne 0 ]; then exit "$ctl"; fi
+          exit "$rc"
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee-stacks
+
       - name: Name the closer of a failing descriptor
         if: always()
         shell: bash
         run: |
-          ls -l "${{ runner.temp }}/trace/strace.txt"
-          python3 .github/diag/fd_closer_summary.py "${{ runner.temp }}/trace/strace.txt" \
-            | tee "${{ runner.temp }}/trace/summary.txt"
-          grep -E '^FDC-RESULT (events|ebadf|lock_closes)' "${{ runner.temp }}/trace/summary.txt" >> "$GITHUB_STEP_SUMMARY" || true
-          echo "tests step outcome: ${{ steps.tests.outcome }}"
+          for run in trace stacks; do
+            echo "== $run"
+            ls -l "${{ runner.temp }}/$run/strace.txt"
+            python3 .github/diag/fd_closer_summary.py "${{ runner.temp }}/$run/strace.txt" \
+              | tee -a "${{ runner.temp }}/$run/summary.txt"
+            grep -E '^(FDC-RESULT (events|ebadf|lock_closes|traced)|FDC-TESTS)' "${{ runner.temp }}/$run/summary.txt" >> "$GITHUB_STEP_SUMMARY" || true
+          done
+          echo "suite outcome: ${{ steps.tests.outcome }}; stacks outcome: ${{ steps.stacks.outcome }}"
 
-      - name: Keep the summary and the compressed trace
+      - name: Keep the summaries and the compressed traces
         if: always()
         shell: bash
-        run: gzip -f "${{ runner.temp }}/trace/strace.txt" || true
+        run: gzip -f "${{ runner.temp }}/trace/strace.txt" "${{ runner.temp }}/stacks/strace.txt" "${{ runner.temp }}/canary/strace.txt" || true
 
       - name: Upload trace
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: fd-closer-trace-${{ matrix.replica }}
-          path: ${{ runner.temp }}/trace/
+          path: |
+            ${{ runner.temp }}/trace/
+            ${{ runner.temp }}/stacks/
+            ${{ runner.temp }}/canary/
           retention-days: 7
           if-no-files-found: ignore

@@ -1,6 +1,6 @@
 """Summarize a strace log of close and flock calls: who closed a descriptor that a failing call used.
 
-Usage: fd_closer_summary.py TRACE [--max-failures N]
+Usage: fd_closer_summary.py TRACE [--max-failures N] [--expect-canary N]
 
 The trace comes from ``strace -f -tt -y -k --decode-pids=comm -e trace=close,flock,clone,clone3,fork,vfork``.
 Every output line starts with a ``FDC-`` marker so one grep reads the result from the job log.
@@ -19,6 +19,7 @@ FD = re.compile(r"^(?P<fd>\d+)(?:<(?P<path>[^>]*)>)?")
 RET = re.compile(r"\)\s+=\s+(?P<ret>-?\d+|\?)(?P<err>\s+[A-Z]+)?")
 FRAME_LIMIT = 14
 LOCKS = ("lock",)
+CANARY = re.compile(r"fd-canary-(?P<pid>\d+)\.lock")
 
 
 @dataclass
@@ -129,6 +130,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("trace")
     parser.add_argument("--max-failures", type=int, default=25)
+    parser.add_argument(
+        "--expect-canary",
+        type=int,
+        default=0,
+        help="Exit 3 unless FDC-FOREIGN names this many distinct canary processes with both stacks.",
+    )
     options = parser.parse_args()
     events = parse(options.trace)
     group = thread_groups(events)
@@ -160,16 +167,39 @@ def main() -> int:
             emit_stack("FDC-PRIOR-STACK", prior)
 
     foreign = 0
+    canary_pids: set[int] = set()
     for event in events:
         if event.name != "close" or event.fd is None or not any(w in event.path for w in LOCKS):
             continue
         key = (group.get(event.tid, event.tid), event.fd)
         if lockers[key] and event.tid not in lockers[key]:
             foreign += 1
+            owner = next(
+                (
+                    e
+                    for e in by_fd[key]
+                    if e.name == "flock" and e.err == "" and e.tid in lockers[key] and e.index < event.index
+                ),
+                None,
+            )
+            if owner is None:
+                continue
             if foreign <= options.max_failures:
                 print(f"FDC-FOREIGN {show(event, group)}")
                 emit_stack("FDC-FOREIGN-STACK", event)
+                print(f"FDC-FOREIGN-OWNER {show(owner, group)}")
+                emit_stack("FDC-FOREIGN-OWNER-STACK", owner)
+            match = CANARY.search(event.path)
+            if match is not None and int(match["pid"]) == key[0] and event.stack and owner.stack:
+                canary_pids.add(key[0])
     print(f"FDC-RESULT lock_closes_by_other_thread={foreign}")
+    print(f"FDC-RESULT traced_processes={len(set(group.values()))} python_processes={len({group[e.tid] for e in events if e.comm == 'python'})}")
+    print(f"FDC-RESULT canary_processes={len(canary_pids)}")
+    if options.expect_canary and len(canary_pids) < options.expect_canary:
+        print(f"FDC-CANARY MISSING expected={options.expect_canary} seen={len(canary_pids)}")
+        return 3
+    if options.expect_canary:
+        print(f"FDC-CANARY OK processes={sorted(canary_pids)}")
     return 0
 
 
