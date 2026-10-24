@@ -46,8 +46,10 @@ def test_last(slow_to_close):
     pass
 """
 _STALL_BACKSTOP_S = 1
-_STALL_SLEEP_S = 30
-_STALL_ENDS_WITHIN_S = 20
+# The watchdog ends the run about 9s after the last report. The bound adds the start-up
+# of two interpreters, which a loaded runner stretches, and stays below the sleep.
+_STALL_SLEEP_S = 120
+_STALL_ENDS_WITHIN_S = 50
 
 
 def _run_pytest(
