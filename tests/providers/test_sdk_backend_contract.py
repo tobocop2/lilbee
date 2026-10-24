@@ -616,6 +616,11 @@ class TestListChatModels:
     ) -> None:
         assert backend.list_chat_models("no-such-provider") == []
 
+    def test_an_empty_provider_lists_nothing(
+        self, backend: LlmSdkBackend, catalog: fakes.FakeSdk
+    ) -> None:
+        assert backend.list_chat_models("") == []
+
     def test_every_listing_is_for_one_provider(
         self, backend: LlmSdkBackend, catalog: fakes.FakeSdk
     ) -> None:

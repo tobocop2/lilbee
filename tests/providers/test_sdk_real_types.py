@@ -18,7 +18,7 @@ import pytest
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.backends.liter_llm.client import _client
 from lilbee.providers.factory import sdk_library
-from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import CompletionRequest, EmbeddingRequest, RerankRequest
 from tests import _fake_sdk as fakes
 
@@ -386,13 +386,22 @@ class TestCatalogOnRealTypes:
         monkeypatch.setattr(liter_llm, "list_catalog_models", lambda _provider=None: entries)
         assert LiterLlmBackend().list_chat_models("openai") == ["a-chat", "b-chat"]
 
-    @pytest.mark.parametrize("provider", ["openai", "anthropic", "gemini", "mistral", "deepseek"])
+    @pytest.mark.parametrize(
+        "provider", ["openai", "anthropic", "gemini", "mistral", "deepseek", "openrouter"]
+    )
     def test_embedded_catalog_lists_chat_models_for_each_keyed_provider(
         self, provider: str
     ) -> None:
         names = LiterLlmBackend().list_chat_models(provider)
         assert names
         assert not any(name.startswith(f"{provider}/") for name in names)
+
+    def test_embedded_catalog_nested_names_round_trip_through_routing(self) -> None:
+        names = LiterLlmBackend().list_chat_models("openrouter")
+        nested = "aion-labs/aion-2.0"
+        assert nested in names
+        ref = parse_model_ref(format_remote_ref(nested, "openrouter"))
+        assert (ref.provider, ref.name) == ("openrouter", nested)
 
     def test_embedded_catalog_leaves_embedding_models_out(self) -> None:
         assert not [n for n in LiterLlmBackend().list_chat_models("openai") if "embedding" in n]

@@ -229,9 +229,12 @@ class LiterLlmBackend:
 
         The catalog is embedded, so the call needs no network and no key. Names
         come back without the ``provider/`` prefix, sorted; the routing layer adds
-        the prefix back. A provider the catalog does not hold gives an empty list.
+        the prefix back. A provider the catalog does not hold, or an empty one,
+        gives an empty list: the library reads an empty id as "every provider".
         """
         catalog_id = _CATALOG_PROVIDER.get(provider, provider)
+        if not catalog_id:
+            return []
         models = _require_sdk().list_catalog_models(catalog_id)
         return sorted({m.model for m in models if m.mode == _CHAT_MODE})
 
