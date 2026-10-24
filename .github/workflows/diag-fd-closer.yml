@@ -1,0 +1,86 @@
+name: Diagnose closed lock descriptor
+
+# Diagnostic run for a closed lock descriptor in the test suite. It starts only
+# on a push to diag/fd-closer and never reaches main. The unit tests run on
+# ubuntu with Python 3.13 under strace, with the conftest rules that hide a
+# closed descriptor removed on this branch. Six replicas raise the chance that
+# the rare failure happens in one of them.
+
+on:
+  push:
+    branches: [diag/fd-closer]
+
+concurrency:
+  group: diag-fd-closer
+  cancel-in-progress: true
+
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Install strace
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq strace
+          strace -V | head -1
+          # Probe the stack option: a build without it fails here, not after an hour.
+          strace -k -e trace=close -o "${{ runner.temp }}/probe.txt" true
+          grep -c ' > ' "${{ runner.temp }}/probe.txt" || true
+
+      - name: Run unit tests under strace
+        id: tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p "${{ runner.temp }}/trace"
+          strace -f -tt -y -k --seccomp-bpf --decode-pids=comm \
+            -e trace=close,flock,clone,clone3,fork,vfork -e signal=none \
+            -o "${{ runner.temp }}/trace/strace.txt" \
+            make test-ci
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
+          LILBEE_TEST_HANG_DUMP_S: "90"
+          LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
+
+      - name: Name the closer of a failing descriptor
+        if: always()
+        shell: bash
+        run: |
+          ls -l "${{ runner.temp }}/trace/strace.txt"
+          python3 .github/diag/fd_closer_summary.py "${{ runner.temp }}/trace/strace.txt" \
+            | tee "${{ runner.temp }}/trace/summary.txt"
+          grep -E '^FDC-RESULT (events|ebadf|lock_closes)' "${{ runner.temp }}/trace/summary.txt" >> "$GITHUB_STEP_SUMMARY" || true
+          echo "tests step outcome: ${{ steps.tests.outcome }}"
+
+      - name: Keep the summary and the compressed trace
+        if: always()
+        shell: bash
+        run: gzip -f "${{ runner.temp }}/trace/strace.txt" || true
+
+      - name: Upload trace
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fd-closer-trace-${{ matrix.replica }}
+          path: ${{ runner.temp }}/trace/
+          retention-days: 7
+          if-no-files-found: ignore
