@@ -2,16 +2,19 @@ name: Diagnose closed lock descriptor
 
 # Diagnostic run for a closed lock descriptor in the test suite. It starts only
 # on a push to diag/fd-closer and never reaches main. The unit tests run on
-# ubuntu with Python 3.13 under strace, with the conftest rules that hide a
-# closed descriptor removed on this branch. Six replicas raise the chance that
-# the rare failure happens in one of them.
+# ubuntu with Python 3.13 under a bpftrace probe, with the conftest rules that
+# hide a closed descriptor removed on this branch.
 #
-# A zero is read only after three controls pass in the same job:
+# The probe pays its cost only on a descriptor that holds a flock: the kernel
+# keeps a map of held descriptors, reports a close of one, and signals the
+# closing process, whose faulthandler dumps the closer's Python stack. The test
+# plugin records the owner's Python stack at each flock.
+#
+# A zero is read only after these controls pass in the same job:
 #   1. Canary: a test that closes a descriptor it does not own runs on two xdist
-#      workers under the full strace flags. The summary must print FDC-FOREIGN
-#      with both stacks for each worker, or the job fails.
-#   2. Fast run: the whole suite under strace without stacks. strace -k costs
-#      about 30 ms per call and kept the first diagnostic run inside collection.
+#      workers under the probe. The summary must print FDC-FOREIGN with the
+#      closer and owner stacks for each worker, or the job fails.
+#   2. Speed: the canary runs without and with the probe; FDC-TIME prints both.
 #   3. Tests ran: each pytest run must report a floor of passed tests.
 
 on:
@@ -23,9 +26,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  trace:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -45,44 +48,47 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
 
-      - name: Install strace
+      - name: Install bpftrace
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq strace
-          strace -V | head -1
-          # Probe the stack option: a build without it fails here, not after an hour.
-          strace -k -e trace=close -o "${{ runner.temp }}/probe.txt" true
-          grep -c ' > ' "${{ runner.temp }}/probe.txt" || true
+          sudo apt-get install -y -qq bpftrace
+          bpftrace --version
+          sudo bpftrace -e 'BEGIN { printf("FDC-PROBE bpftrace runs\n"); exit(); }'
 
-      - name: Canary under the full trace (must show FDC-FOREIGN on two workers)
+      - name: Canary without and with the probe (must show FDC-FOREIGN on two workers)
         shell: bash
         run: |
-          mkdir -p "${{ runner.temp }}/canary"
           set +e
-          strace -f -tt -y -k --seccomp-bpf --decode-pids=comm \
-            -e trace=close,flock,clone,clone3,fork,vfork -e signal=none \
-            -o "${{ runner.temp }}/canary/strace.txt" \
-            uv run pytest tests/test_fd_canary.py -n 2 --dist each --no-cov -p no:cacheprovider -q \
-            2>&1 | tee "${{ runner.temp }}/canary/pytest.txt"
-          python3 .github/diag/fd_tests_ran.py "${{ runner.temp }}/canary/pytest.txt" canary 8 || exit 1
-          python3 .github/diag/fd_closer_summary.py "${{ runner.temp }}/canary/strace.txt" --expect-canary 2 \
-            | tee "${{ runner.temp }}/canary/summary.txt"
-          test "${PIPESTATUS[0]}" -eq 0 || { echo "FDC-CANARY the trace has no power; do not read the zero"; exit 1; }
-          grep -E '^FDC-(CANARY|RESULT (canary|traced))' "${{ runner.temp }}/canary/summary.txt" >> "$GITHUB_STEP_SUMMARY"
+          canary=(uv run pytest tests/test_fd_canary.py -n 2 --dist each --no-cov -p no:cacheprovider -q)
+          for i in 1 2 3; do
+            out="${{ runner.temp }}/canary-plain-$i.txt"
+            start=$(date +%s.%N)
+            "${canary[@]}" > "$out" 2>&1
+            rc=$?
+            end=$(date +%s.%N)
+            echo "FDC-TIME plain run=$i rc=$rc seconds=$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f", b - a }') $(grep -E 'passed|failed' "$out" | tail -1)"
+          done
+          for i in 1 2 3; do
+            dir="${{ runner.temp }}/canary-$i"
+            bash .github/diag/fd_probe.sh "$dir" "${canary[@]}" > "${{ runner.temp }}/canary-$i.log" 2>&1
+            echo "probed run=$i rc=$?"
+            grep -E '^FDC-|passed|failed' "${{ runner.temp }}/canary-$i.log"
+            python3 .github/diag/fd_tests_ran.py "${{ runner.temp }}/canary-$i.log" canary 8 || exit 1
+            python3 .github/diag/fd_probe_summary.py "$dir" --expect-canary 2 > "$dir/summary.txt"
+            ok=$?
+            grep -E '^FDC-(RESULT|CANARY|DUMP)' "$dir/summary.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+            grep -m 1 -A 40 '^FDC-FOREIGN ' "$dir/summary.txt"
+            test "$ok" -eq 0 || { echo "FDC-CANARY the probe has no power; do not read the zero"; exit 1; }
+          done
 
-      - name: Run unit tests under strace without stacks
-        id: tests
-        continue-on-error: true
+      - name: Run unit tests under the probe
         shell: bash
         run: |
-          mkdir -p "${{ runner.temp }}/trace"
           set +e
-          strace -f -tt -y --seccomp-bpf --decode-pids=comm \
-            -e trace=close,flock,clone,clone3,fork,vfork -e signal=none \
-            -o "${{ runner.temp }}/trace/strace.txt" \
-            make test-ci 2>&1 | tee "${{ runner.temp }}/trace/pytest.txt"
+          dir="${{ runner.temp }}/suite"
+          bash .github/diag/fd_probe.sh "$dir" make test-ci 2>&1 | tee "${{ runner.temp }}/suite.log"
           rc="${PIPESTATUS[0]}"
-          python3 .github/diag/fd_tests_ran.py "${{ runner.temp }}/trace/pytest.txt" suite 3000 | tee -a "${{ runner.temp }}/trace/summary.txt"
+          python3 .github/diag/fd_tests_ran.py "${{ runner.temp }}/suite.log" suite 3000 | tee -a "$GITHUB_STEP_SUMMARY"
           ctl="${PIPESTATUS[0]}"
           if [ "$ctl" -ne 0 ]; then exit "$ctl"; fi
           exit "$rc"
@@ -91,54 +97,24 @@ jobs:
           LILBEE_TEST_HANG_DUMP_S: "90"
           LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
 
-      - name: Run the lock tests under the full trace
-        id: stacks
-        continue-on-error: true
-        shell: bash
-        run: |
-          mkdir -p "${{ runner.temp }}/stacks"
-          set +e
-          strace -f -tt -y -k --seccomp-bpf --decode-pids=comm \
-            -e trace=close,flock,clone,clone3,fork,vfork -e signal=none \
-            -o "${{ runner.temp }}/stacks/strace.txt" \
-            uv run pytest tests/test_fleet_provider.py tests/test_ingest.py tests/test_engine_lock.py \
-              tests/test_engine_reaper.py tests/test_lock.py tests/test_lock_order.py \
-              -n 2 --timeout=900 --no-cov -p no:cacheprovider -q \
-            2>&1 | tee "${{ runner.temp }}/stacks/pytest.txt"
-          rc="${PIPESTATUS[0]}"
-          python3 .github/diag/fd_tests_ran.py "${{ runner.temp }}/stacks/pytest.txt" stacks 300 | tee -a "${{ runner.temp }}/stacks/summary.txt"
-          ctl="${PIPESTATUS[0]}"
-          if [ "$ctl" -ne 0 ]; then exit "$ctl"; fi
-          exit "$rc"
-        env:
-          LILBEE_DATA: ${{ runner.temp }}/lilbee-stacks
-
-      - name: Name the closer of a failing descriptor
+      - name: Name the closer of a held lock descriptor
         if: always()
         shell: bash
         run: |
-          for run in trace stacks; do
-            echo "== $run"
-            ls -l "${{ runner.temp }}/$run/strace.txt"
-            python3 .github/diag/fd_closer_summary.py "${{ runner.temp }}/$run/strace.txt" \
-              | tee -a "${{ runner.temp }}/$run/summary.txt"
-            grep -E '^(FDC-RESULT (events|ebadf|lock_closes|traced)|FDC-TESTS)' "${{ runner.temp }}/$run/summary.txt" >> "$GITHUB_STEP_SUMMARY" || true
-          done
-          echo "suite outcome: ${{ steps.tests.outcome }}; stacks outcome: ${{ steps.stacks.outcome }}"
+          dir="${{ runner.temp }}/suite"
+          test -f "$dir/bpftrace.txt" || { echo "FDC-RESULT no suite trace"; exit 0; }
+          python3 .github/diag/fd_probe_summary.py "$dir" > "$dir/summary.txt"
+          grep -E '^FDC-' "$dir/summary.txt" | head -400
+          grep -E '^FDC-(RESULT|DUMP)' "$dir/summary.txt" >> "$GITHUB_STEP_SUMMARY" || true
 
-      - name: Keep the summaries and the compressed traces
-        if: always()
-        shell: bash
-        run: gzip -f "${{ runner.temp }}/trace/strace.txt" "${{ runner.temp }}/stacks/strace.txt" "${{ runner.temp }}/canary/strace.txt" || true
-
-      - name: Upload trace
+      - name: Upload probe output
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: fd-closer-trace-${{ matrix.replica }}
+          name: fd-probe-${{ matrix.replica }}
           path: |
-            ${{ runner.temp }}/trace/
-            ${{ runner.temp }}/stacks/
-            ${{ runner.temp }}/canary/
+            ${{ runner.temp }}/suite/
+            ${{ runner.temp }}/canary-*/
+            ${{ runner.temp }}/hang-dumps/
           retention-days: 7
           if-no-files-found: ignore

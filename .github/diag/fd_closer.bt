@@ -1,0 +1,107 @@
+// Report every close of a descriptor that holds a flock, and make the closer dump its Python stack.
+// Branch diag/fd-closer only. Run with: bpftrace --unsafe -o OUT fd_closer.bt
+// A probed test process arms itself by closing ARM_FD; only armed processes get SIGUSR2.
+
+BEGIN
+{
+	printf("FDB-READY\n");
+}
+
+tracepoint:syscalls:sys_enter_flock
+{
+	@flock_fd[tid] = (int64)args->fd + 1;
+	@flock_op[tid] = (int64)args->cmd;
+}
+
+tracepoint:syscalls:sys_exit_flock
+/@flock_fd[tid]/
+{
+	$fd = @flock_fd[tid] - 1;
+	$op = @flock_op[tid];
+	delete(@flock_fd[tid]);
+	delete(@flock_op[tid]);
+	if (args->ret == -9) {
+		printf("FDB-EBADF pid=%d tid=%d comm=%s call=flock fd=%d op=%d ns=%lu\n", pid, tid, comm, $fd, $op, nsecs);
+	}
+	if (args->ret == 0 && ($op & 8)) {
+		if (@held[pid, $fd]) {
+			delete(@held[pid, $fd]);
+			@held_count[pid]--;
+		}
+	} else if (args->ret == 0 && ($op & 3)) {
+		if (!@held[pid, $fd]) {
+			@held_count[pid]++;
+		}
+		@held[pid, $fd] = (int64)tid;
+		printf("FDB-LOCK pid=%d tid=%d fd=%d op=%d ns=%lu\n", pid, tid, $fd, $op, nsecs);
+	}
+}
+
+tracepoint:syscalls:sys_enter_close
+/args->fd == 1070596096/
+{
+	@armed[pid] = 1;
+	printf("FDB-ARMED pid=%d tid=%d comm=%s\n", pid, tid, comm);
+}
+
+tracepoint:syscalls:sys_enter_close
+/args->fd != 1070596096/
+{
+	$fd = (int64)args->fd;
+	@close_fd[tid] = $fd + 1;
+	if (@held[pid, $fd]) {
+		printf("FDB-HELDCLOSE pid=%d tid=%d comm=%s call=close fd=%d owner_tid=%d armed=%d ns=%lu\n",
+		       pid, tid, comm, $fd, @held[pid, $fd], @armed[pid], nsecs);
+		printf("FDB-NATIVE-BEGIN%sFDB-NATIVE-END\n", ustack(perf, 12));
+		delete(@held[pid, $fd]);
+		@held_count[pid]--;
+		if (@armed[pid]) {
+			signal("SIGUSR2");
+		}
+	}
+}
+
+tracepoint:syscalls:sys_exit_close
+/@close_fd[tid]/
+{
+	if (args->ret == -9) {
+		printf("FDB-EBADF pid=%d tid=%d comm=%s call=close fd=%d op=0 ns=%lu\n", pid, tid, comm, @close_fd[tid] - 1, nsecs);
+	}
+	delete(@close_fd[tid]);
+}
+
+tracepoint:syscalls:sys_enter_dup3
+{
+	$fd = (int64)args->newfd;
+	if (@held[pid, $fd]) {
+		printf("FDB-HELDCLOSE pid=%d tid=%d comm=%s call=dup3 fd=%d owner_tid=%d armed=%d ns=%lu\n",
+		       pid, tid, comm, $fd, @held[pid, $fd], @armed[pid], nsecs);
+		printf("FDB-NATIVE-BEGIN%sFDB-NATIVE-END\n", ustack(perf, 12));
+		delete(@held[pid, $fd]);
+		@held_count[pid]--;
+		if (@armed[pid]) {
+			signal("SIGUSR2");
+		}
+	}
+}
+
+tracepoint:syscalls:sys_enter_close_range
+/@held_count[pid] > 0/
+{
+	printf("FDB-RANGE pid=%d tid=%d comm=%s first=%u last=%u armed=%d ns=%lu\n",
+	       pid, tid, comm, args->fd, args->max_fd, @armed[pid], nsecs);
+	if (@armed[pid]) {
+		signal("SIGUSR2");
+	}
+}
+
+END
+{
+	printf("FDB-END\n");
+	clear(@flock_fd);
+	clear(@flock_op);
+	clear(@close_fd);
+	clear(@held);
+	clear(@held_count);
+	clear(@armed);
+}
