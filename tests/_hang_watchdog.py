@@ -20,9 +20,10 @@ stacks and ``_exit``\\s the worker so the run fails fast.
 Both timers guard a test from its setup to the start of its teardown, and
 only in the process that runs it. A failed setup or call stops pytest-timeout,
 so the backstop is armed again for the teardown of that test until its
-finalizers return. Under xdist the controller runs no test, so a run that
-stalls outside a test's window, for example while a session fixture
-tears down after the last test, hangs until ``timeout-minutes`` with every
+finalizers return, and the header it writes is cut from the file then.
+Under xdist the controller runs no test, so a run that stalls outside a
+test's window, for example while a session fixture tears down after the
+last test, hangs until ``timeout-minutes`` with every
 dump file empty. The controller therefore re-arms a stall timer on every test
 report it receives. When no report arrives for ``_STALL_FACTOR`` times the
 backstop, it signals each worker to dump its stacks to its own file, then
@@ -262,7 +263,12 @@ def _disarm_test(handle: TextIO) -> None:
     if _early_fired.is_set():
         return  # The test ran long enough to dump; keep the evidence for the CI step.
     # The test finished, so its armed dump is stale; clear it.
-    handle.seek(0)
+    _cut_dump(handle, 0)
+
+
+def _cut_dump(handle: TextIO, size: int) -> None:
+    """Cut the dump file back to the position ``size``."""
+    handle.seek(size)
     handle.truncate()
     handle.flush()
 
@@ -280,6 +286,7 @@ def pytest_runtest_teardown(item: pytest.Item) -> Generator[None, None, None]:
         return (yield)
     # pytest-timeout and the faulthandler plugin stop at a failed phase, so only
     # the backstop guards the fixture finalizers of a failed test.
+    before_header = _dump_handle.tell()
     _dump_handle.write(f"hang watchdog armed for the teardown of {item.nodeid}\n")
     _dump_handle.flush()
     faulthandler.dump_traceback_later(_timeout_s, file=_dump_handle, exit=True)
@@ -287,6 +294,7 @@ def pytest_runtest_teardown(item: pytest.Item) -> Generator[None, None, None]:
         return (yield)
     finally:
         faulthandler.cancel_dump_traceback_later()
+        _cut_dump(_dump_handle, before_header)
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:

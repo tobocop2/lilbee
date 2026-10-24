@@ -66,6 +66,15 @@ def test_fails(wedged_teardown):
 """
 # The controller stall limit is four times this, so the worker backstop fires first.
 _TEARDOWN_BACKSTOP_S = 2
+_FAILED_FAST = "def test_fails():\n    assert False\n"
+# The session ends after the failed test's teardown, slower than the backstop.
+_SLOW_SESSION_FINISH = f"""
+import time
+
+
+def pytest_sessionfinish(session):
+    time.sleep({_TEARDOWN_BACKSTOP_S * 2})
+"""
 
 
 def _run_pytest(
@@ -149,6 +158,27 @@ def test_a_failed_test_whose_teardown_blocks_ends_at_the_backstop(
     assert "wedged_teardown" in dump
     controller = (dump_dir / "hang-master.txt").read_text(encoding="utf-8")
     assert "no test report for" not in controller
+
+
+@pytest.mark.parametrize("extra", [(), ("-n", "1")], ids=["single-process", "xdist-worker"])
+def test_a_failed_test_with_a_fast_teardown_leaves_no_dump(
+    tmp_path: Path, extra: tuple[str, ...]
+) -> None:
+    result, dump_dir = _run_pytest(tmp_path, _FAILED_FAST, *extra)
+
+    assert "1 failed" in result.stdout
+    dumps = {f.name: f.read_text(encoding="utf-8") for f in dump_dir.glob("hang-*.txt")}
+    assert dumps
+    assert all(text == "" for text in dumps.values()), dumps
+
+
+def test_a_failed_test_does_not_arm_the_backstop_past_its_teardown(tmp_path: Path) -> None:
+    (tmp_path / "conftest.py").write_text(_SLOW_SESSION_FINISH, encoding="utf-8")
+    result, dump_dir = _run_pytest(tmp_path, _FAILED_FAST, backstop_s=_TEARDOWN_BACKSTOP_S)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 failed" in result.stdout
+    assert (dump_dir / "hang-master.txt").read_text(encoding="utf-8") == ""
 
 
 def test_quiet_test_leaves_no_dump(tmp_path: Path) -> None:
