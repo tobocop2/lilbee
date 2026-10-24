@@ -48,6 +48,33 @@ def test_last(slow_to_close):
 _STALL_BACKSTOP_S = 1
 _STALL_SLEEP_S = 30
 _STALL_ENDS_WITHIN_S = 20
+# The test fails, which stops pytest-timeout, then its teardown never returns.
+_FAILED_THEN_WEDGED = """
+import threading
+
+import pytest
+
+
+@pytest.fixture
+def wedged_teardown():
+    yield
+    threading.Event().wait()
+
+
+def test_fails(wedged_teardown):
+    assert False
+"""
+# The controller stall limit is four times this, so the worker backstop fires first.
+_TEARDOWN_BACKSTOP_S = 2
+_FAILED_FAST = "def test_fails():\n    assert False\n"
+# The session ends after the failed test's teardown, slower than the backstop.
+_SLOW_SESSION_FINISH = f"""
+import time
+
+
+def pytest_sessionfinish(session):
+    time.sleep({_TEARDOWN_BACKSTOP_S * 2})
+"""
 
 
 def _run_pytest(
@@ -111,6 +138,47 @@ def test_hung_test_dumps_stacks_to_the_job_log_before_its_timeout(
     assert any("parked_waiter" in f.read_text(encoding="utf-8") for f in dump_files), (
         "the dump file is lost when the test ends"
     )
+
+
+@pytest.mark.parametrize(
+    ("extra", "dump_name"),
+    [((), "hang-master.txt"), (("-n", "1"), "hang-gw0.txt")],
+    ids=["single-process", "xdist-worker"],
+)
+def test_a_failed_test_whose_teardown_blocks_ends_at_the_backstop(
+    tmp_path: Path, extra: tuple[str, ...], dump_name: str
+) -> None:
+    result, dump_dir = _run_pytest(
+        tmp_path, _FAILED_THEN_WEDGED, *extra, backstop_s=_TEARDOWN_BACKSTOP_S
+    )
+
+    assert result.returncode != 0
+    dump = (dump_dir / dump_name).read_text(encoding="utf-8")
+    assert "hang watchdog armed for the teardown of test_case.py::test_fails" in dump
+    assert "wedged_teardown" in dump
+    controller = (dump_dir / "hang-master.txt").read_text(encoding="utf-8")
+    assert "no test report for" not in controller
+
+
+@pytest.mark.parametrize("extra", [(), ("-n", "1")], ids=["single-process", "xdist-worker"])
+def test_a_failed_test_with_a_fast_teardown_leaves_no_dump(
+    tmp_path: Path, extra: tuple[str, ...]
+) -> None:
+    result, dump_dir = _run_pytest(tmp_path, _FAILED_FAST, *extra)
+
+    assert "1 failed" in result.stdout
+    dumps = {f.name: f.read_text(encoding="utf-8") for f in dump_dir.glob("hang-*.txt")}
+    assert dumps
+    assert all(text == "" for text in dumps.values()), dumps
+
+
+def test_a_failed_test_does_not_arm_the_backstop_past_its_teardown(tmp_path: Path) -> None:
+    (tmp_path / "conftest.py").write_text(_SLOW_SESSION_FINISH, encoding="utf-8")
+    result, dump_dir = _run_pytest(tmp_path, _FAILED_FAST, backstop_s=_TEARDOWN_BACKSTOP_S)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 failed" in result.stdout
+    assert (dump_dir / "hang-master.txt").read_text(encoding="utf-8") == ""
 
 
 def test_quiet_test_leaves_no_dump(tmp_path: Path) -> None:
