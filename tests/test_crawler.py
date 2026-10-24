@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import types
@@ -4168,3 +4169,26 @@ class TestChromiumBootstrapTermination:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert proc.terminated  # the orphaned install was terminated
+
+
+class TestLanceDbStaysOffTheImportPath:
+    """Starting a crawl from the CLI must not import ``lancedb`` at import time.
+
+    The ``lancedb`` import costs more than a second, so the store imports it
+    only when it opens its database. A crawl pays it once, when it reads its
+    page table, and a command that never opens the store does not pay it.
+    """
+
+    def test_importing_the_cli_and_the_crawler_does_not_import_lancedb(self) -> None:
+        """Run in a fresh interpreter: this session imported ``lancedb`` long ago."""
+        probe = (
+            "import sys, lilbee.cli, lilbee.crawler.runner, lilbee.crawler.save; "
+            "print('lancedb' in sys.modules)"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+        )
+        assert result.stdout.strip() == "False"
