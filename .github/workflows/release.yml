@@ -10,6 +10,10 @@ on:
         description: "Build the executables even if the test job fails (re-run past a known-flaky test)."
         type: boolean
         default: false
+      only_asset:
+        description: "Build only the cell for this asset, e.g. lilbee-windows-x86_64.exe (empty = every cell)."
+        type: string
+        default: ""
   workflow_call:
     inputs:
       ref:
@@ -22,6 +26,10 @@ on:
         default: false
       release_tag:
         description: "GH release tag to eagerly attach each built executable to (empty = artifacts only)."
+        type: string
+        default: ""
+      only_asset:
+        description: "Build only the cell for this asset, e.g. lilbee-linux-x86_64 (empty = every cell). A narrowed run is a check: it skips lint and test and publishes nothing."
         type: string
         default: ""
 
@@ -45,9 +53,26 @@ jobs:
           REF: ${{ inputs.ref || github.ref_name }}
         run: bash scripts/release_ci_passed.sh "${GITHUB_REPOSITORY}" "${REF}" >> "$GITHUB_OUTPUT"
 
+  # Reads the build cells from .github/release-cells.yml. A caller that sets
+  # only_asset gets that one cell, which is how a pull request builds a single
+  # executable without copying this job.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      cells: ${{ steps.plan.outputs.cells }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Select the build cells
+        id: plan
+        env:
+          ONLY_ASSET: ${{ inputs.only_asset }}
+        run: echo "cells=$(bash scripts/release_plan_cells.sh "${ONLY_ASSET}")" >> "$GITHUB_OUTPUT"
+
   lint:
     needs: [gate]
-    if: needs.gate.outputs.ci_passed != 'true'
+    if: needs.gate.outputs.ci_passed != 'true' && inputs.only_asset == ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -64,7 +89,7 @@ jobs:
 
   test:
     needs: [gate]
-    if: needs.gate.outputs.ci_passed != 'true'
+    if: needs.gate.outputs.ci_passed != 'true' && inputs.only_asset == ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -80,7 +105,7 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
   build:
-    needs: [gate, lint, test]
+    needs: [gate, plan, lint, test]
     # Build if CI already passed on this commit (lint/test skipped), or lint+test
     # pass here, or skip_tests was set after eyeballing a flaky failure. lint
     # always gates -- a real lint failure isn't bypassable. always() so the if:
@@ -88,80 +113,21 @@ jobs:
     if: |
       always()
       && needs.gate.result == 'success'
+      && needs.plan.result == 'success'
       && needs.lint.result != 'failure' && needs.lint.result != 'cancelled'
-      && (needs.gate.outputs.ci_passed == 'true' || needs.test.result == 'success' || inputs.skip_tests)
+      && (needs.gate.outputs.ci_passed == 'true' || needs.test.result == 'success' || inputs.skip_tests || inputs.only_asset != '')
     # Windows Nuitka has no ccache and was hitting 180m; 300m gives it room.
     timeout-minutes: 300
     # Only soft cells (the pre-Haswell compat builds) may fail without failing the
     # release; every default binary stays hard-required. `soft` is the one
-    # definition of that, read by scripts/release_required_assets.sh, so a cell
-    # cannot be droppable for one gate and required by another.
+    # definition of that, set in .github/release-cells.yml and read by
+    # scripts/release_required_assets.sh, so a cell cannot be droppable for one
+    # gate and required by another.
     continue-on-error: ${{ matrix.soft == true }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            container: quay.io/pypa/manylinux_2_34_x86_64
-            asset_name: lilbee-linux-x86_64
-            backend: vulkan
-          # Pre-Haswell-safe Linux build: the same Vulkan binary with the stock
-          # lancedb swapped for the +compat wheel and the launcher held to an
-          # x86-64-v2 baseline, so it runs on Sandy Bridge / Bulldozer CPUs. Soft and
-          # self-contained -- no pyproject/uv.lock footprint, and a failure (until the
-          # wheel index is live) never blocks the release. This is the binary the CPU
-          # package channels (AUR/snap/flatpak/nix/homebrew) would carry as a -compat.
-          - os: ubuntu-latest
-            container: quay.io/pypa/manylinux_2_34_x86_64
-            asset_name: lilbee-compat-linux-x86_64
-            backend: vulkan
-            compat: true
-            soft: true
-            march: x86-64-v2
-          # macos_floor is the OS this asset actually runs on, and every bundled
-          # dylib is checked against it. `uv sync` resolves wheels for the runner,
-          # so numpy/scipy arrive as macosx_14_0 and 14.0 is the honest floor here.
-          - os: macos-latest
-            asset_name: lilbee-macos-arm64
-            backend: metal
-            macos_floor: "14.0"
-          # Intel Mac: built natively on macos-15-intel, GitHub's Intel image
-          # (Nuitka can't cross-compile arch from the arm64 runner). Required: the
-          # default Homebrew formula carries an Intel url, and Homebrew refuses to
-          # load a formula that has no url for the host architecture, so a release
-          # without this asset breaks `brew install lilbee` on every Intel Mac.
-          # The install below pins wheel resolution to the x86_64 target rather than
-          # the runner, so the deps come in at their oldest macOS build (pyarrow's
-          # 12.0 is the binding one) and reach every Ivy Bridge / Haswell Mac, which
-          # cap at macOS 12. The engine picks its CPU variant at runtime (see
-          # cmake_args.sh).
-          - os: macos-15-intel
-            asset_name: lilbee-macos-x86_64
-            backend: cpu
-            macos_floor: "12.0"
-          # Pre-Haswell-safe Intel Mac build: same self-contained model as the
-          # linux/windows compat cells (stock lancedb swapped for +compat, launcher
-          # held to x86-64-v2). Covers the AVX-but-no-AVX2 tail (e.g. 2013 Mac Pro)
-          # and guards against an AVX2-baselined stock lancedb SIGILL.
-          - os: macos-15-intel
-            asset_name: lilbee-compat-macos-x86_64
-            backend: cpu
-            compat: true
-            soft: true
-            march: x86-64-v2
-            macos_floor: "12.0"
-          - os: windows-latest
-            asset_name: lilbee-windows-x86_64.exe
-            backend: vulkan
-          # Pre-Haswell-safe Windows build. The lilbee-compat Scoop manifest in
-          # tobocop2/scoop-lilbee pins it.
-          # Same soft, self-contained model as the Linux compat cell; MSVC's default
-          # baseline is already conservative, so no -march override is needed here.
-          - os: windows-latest
-            asset_name: lilbee-compat-windows-x86_64.exe
-            backend: vulkan
-            compat: true
-            soft: true
+        include: ${{ fromJSON(needs.plan.outputs.cells) }}
 
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
@@ -297,7 +263,7 @@ jobs:
 
       - name: Install dependencies
         if: matrix.os != 'macos-15-intel'
-        run: uv sync --extra release && uv pip install 'nuitka[onefile]==4.2.2' pip
+        run: uv sync --extra release && uv pip install 'nuitka[onefile]==4.3.1' pip
 
       # Intel Mac: `uv sync` can't run here -- stock lancedb 0.39.0 ships no
       # macosx_x86_64 wheel. One install resolves the whole cell: lancedb comes
@@ -333,7 +299,7 @@ jobs:
           uv pip install --python-platform x86_64-apple-darwin \
             --constraint intel-constraints.txt \
             --extra-index-url https://lilbee.sh/compat/ \
-            lancedb==0.39.0+compat '.[release]' 'nuitka[onefile]==4.2.2' pip
+            lancedb==0.39.0+compat '.[release]' 'nuitka[onefile]==4.3.1' pip
 
       - name: Verify extras installed in build venv
         shell: bash
@@ -362,6 +328,9 @@ jobs:
           # Containerized cells build against the container's glibc; keep their
           # engine cache separate from bare-runner builds.
           cache-env: ${{ matrix.container || matrix.os }}
+          # A narrowed run is a check. An empty tag makes the action skip the
+          # engine mirror, so the run cannot create or write the release.
+          asset-release-tag: ${{ inputs.only_asset == '' && 'engine-binaries' || '' }}
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_floor }}
 
@@ -416,7 +385,7 @@ jobs:
       # own errors, but mktemp and wc run under set -euo pipefail and can still
       # hard-exit; on a soft cell that would go green with the asset missing.
       - name: Publish the Nuitka cache to the mirror
-        if: success() && runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true'
+        if: success() && runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true' && inputs.only_asset == ''
         continue-on-error: true
         uses: ./.github/actions/nuitka-object-cache
         with:
@@ -622,7 +591,7 @@ jobs:
       # Eager attach: release-candidate creates the pre-release shell before
       # calling, so the asset shows up as soon as this cell finishes.
       - name: Attach binary to the GH pre-release
-        if: inputs.release_tag != ''
+        if: inputs.release_tag != '' && inputs.only_asset == ''
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

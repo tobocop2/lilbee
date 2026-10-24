@@ -2245,8 +2245,6 @@ class FleetProvider:
                 launch for launches in self._launches.values() for launch in launches
             )
 
-        if not pools:
-            return
         listeners = (on_spawning, on_spawned)
         calls = [
             DaemonCall(

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
 import platform
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
+
+from lilbee.providers.fleet.gpu_env import gpu_environ
 
 log = logging.getLogger(__name__)
 
@@ -301,7 +302,7 @@ def _apply_cuda_visible_mask(devices: list[tuple[str, int]]) -> list[tuple[str, 
     first entry that names no device, and so does this, which is what makes
     ``0,9,1`` on a two-card host mean one card rather than two.
     """
-    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    raw = gpu_environ().get("CUDA_VISIBLE_DEVICES")
     if raw is None:
         return devices
     visible: list[tuple[str, int]] = []

@@ -2560,9 +2560,12 @@ class TestChatSlashCommands:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen._handle_slash("/model ollama/slash-test:latest")
-            await pilot.pause()
+            # The swap would reload and warm the fleet; the test reads the config only.
+            with mock.patch.object(app.screen, "apply_model_change") as mock_apply:
+                app.screen._handle_slash("/model ollama/slash-test:latest")
+                await pilot.pause()
             assert "slash-test" in cfg.chat_model
+            mock_apply.assert_called_once()
 
     async def test_cmd_model_cancels_stream_when_streaming(self, _mock_resolve):
         """/model <name> cancels stream and resets services when streaming."""

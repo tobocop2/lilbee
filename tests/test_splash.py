@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,7 +18,6 @@ from lilbee.runtime._splash_runner import (
     render_frame,
 )
 from lilbee.runtime.splash import (
-    _SPLASH_FD_ENV,
     _should_skip,
     dismiss,
     start,
@@ -66,85 +65,91 @@ class TestStartStop:
         stop(None)
 
     def test_start_and_stop(self) -> None:
+        env_before = dict(os.environ)
         with patch("lilbee.runtime.splash._should_skip", return_value=False):
             handle = start()
             assert handle is not None
             assert handle.process.poll() is None  # still running
-            assert _SPLASH_FD_ENV in os.environ
+            assert dict(os.environ) == env_before
             stop(handle)
             assert handle.process.poll() is not None  # exited
-            assert _SPLASH_FD_ENV not in os.environ
+            assert dict(os.environ) == env_before
 
-    def test_start_sets_env_var(self) -> None:
-        with patch("lilbee.runtime.splash._should_skip", return_value=False):
-            handle = start()
-            assert handle is not None
-            assert _SPLASH_FD_ENV in os.environ
-            fd_str = os.environ[_SPLASH_FD_ENV]
-            assert int(fd_str) == handle.write_fd
-            stop(handle)
+
+def _arm(handle: object) -> object:
+    """Make *handle* the active splash and return the previous one."""
+    import lilbee.runtime.splash as splash_mod
+
+    original = splash_mod._active_handle
+    splash_mod._active_handle = handle  # type: ignore[assignment]
+    return original
 
 
 class TestDismiss:
-    def test_dismiss_no_env_var_no_handle(self) -> None:
-        import lilbee.runtime.splash as splash_mod
-
-        original = splash_mod._active_handle
-        splash_mod._active_handle = None
+    def test_dismiss_no_handle(self) -> None:
+        original = _arm(None)
         try:
-            with patch.dict(os.environ, {}, clear=True):
-                dismiss()  # should not raise
+            dismiss()  # should not raise
         finally:
-            splash_mod._active_handle = original
+            _arm(original)
 
-    def test_dismiss_closes_fd_and_clears_env(self) -> None:
+    def test_dismiss_closes_fd_and_clears_handle(self) -> None:
+        import lilbee.runtime.splash as splash_mod
+        from lilbee.runtime.splash import SplashHandle
+
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
-        os.environ[_SPLASH_FD_ENV] = str(write_fd)
-        import lilbee.runtime.splash as splash_mod
-
-        original = splash_mod._active_handle
-        splash_mod._active_handle = None
+        proc = MagicMock()
+        original = _arm(SplashHandle(process=proc, write_fd=write_fd))
         try:
             dismiss()
-            assert _SPLASH_FD_ENV not in os.environ
+            assert splash_mod._active_handle is None
             with pytest.raises(OSError):
                 os.close(write_fd)  # already closed
         finally:
-            splash_mod._active_handle = original
+            _arm(original)
 
     def test_dismiss_sends_takeover_byte_before_closing(self) -> None:
         """dismiss() tells the child the TUI owns the terminal, then EOFs."""
         from lilbee.runtime._splash_runner import TAKEOVER_BYTE
+        from lilbee.runtime.splash import SplashHandle
 
         read_fd, write_fd = os.pipe()
-        os.environ[_SPLASH_FD_ENV] = str(write_fd)
-        import lilbee.runtime.splash as splash_mod
-
-        original = splash_mod._active_handle
-        splash_mod._active_handle = None
+        original = _arm(SplashHandle(process=MagicMock(), write_fd=write_fd))
         try:
             dismiss()
             assert os.read(read_fd, 2) == TAKEOVER_BYTE
             assert os.read(read_fd, 1) == b""  # write end closed after the byte
         finally:
             os.close(read_fd)
-            splash_mod._active_handle = original
+            _arm(original)
 
     def test_dismiss_tolerates_already_closed_fd(self) -> None:
+        import lilbee.runtime.splash as splash_mod
+        from lilbee.runtime.splash import SplashHandle
+
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
         os.close(write_fd)
-        os.environ[_SPLASH_FD_ENV] = str(write_fd)
-        import lilbee.runtime.splash as splash_mod
-
-        original = splash_mod._active_handle
-        splash_mod._active_handle = None
+        original = _arm(SplashHandle(process=MagicMock(), write_fd=write_fd))
         try:
             dismiss()  # should not raise
-            assert _SPLASH_FD_ENV not in os.environ
+            assert splash_mod._active_handle is None
         finally:
-            splash_mod._active_handle = original
+            _arm(original)
+
+    def test_dismiss_writes_no_environment(self) -> None:
+        from lilbee.runtime.splash import SplashHandle
+
+        env_before = dict(os.environ)
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        original = _arm(SplashHandle(process=MagicMock(), write_fd=write_fd))
+        try:
+            dismiss()
+            assert dict(os.environ) == env_before
+        finally:
+            _arm(original)
 
     def test_dismiss_waits_for_process_and_clears_handle(self) -> None:
         """dismiss() waits for the subprocess and clears _active_handle
@@ -158,7 +163,6 @@ class TestDismiss:
                 handle = start()
                 assert handle is not None
                 splash_mod._active_handle = handle
-                os.environ[_SPLASH_FD_ENV] = str(handle.write_fd)
 
                 dismiss()
 
@@ -166,12 +170,10 @@ class TestDismiss:
                 assert handle.process.poll() is not None  # exited
         finally:
             splash_mod._active_handle = original
-            os.environ.pop(_SPLASH_FD_ENV, None)
 
     def test_dismiss_kills_on_timeout(self) -> None:
         """dismiss() kills the subprocess when it doesn't exit within timeout."""
         import subprocess
-        from unittest.mock import MagicMock
 
         import lilbee.runtime.splash as splash_mod
         from lilbee.runtime.splash import SplashHandle
@@ -182,8 +184,7 @@ class TestDismiss:
         handle = SplashHandle(process=mock_proc, write_fd=-1)
         splash_mod._active_handle = handle
         try:
-            with patch.dict(os.environ, {}, clear=True):
-                dismiss()
+            dismiss()
             mock_proc.kill.assert_called_once()
             assert splash_mod._active_handle is None
         finally:

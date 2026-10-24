@@ -1487,10 +1487,6 @@ def ocr_gated_engine(monkeypatch, tmp_path: Path):
     ocr_client.chat_abortable.return_value = "ocr text"
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: ocr_client)
     monkeypatch.setattr(planning_mod, "plan_all_launches", _real_plan_all_launches)
-    monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(
-        "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
-    )
     monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
     monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary: [])
     monkeypatch.setattr(planning_mod, "plan_launches", _plan)
@@ -2649,6 +2645,7 @@ def _wait_until(predicate, timeout: float = 5.0) -> bool:
     return predicate()
 
 
+@pytest.mark.fleet_warm_up
 def test_warm_up_pool_starts_swap_off_thread(monkeypatch, tmp_path: Path) -> None:
     # The eager warm-up at TUI mount must not block the caller; it dispatches a
     # background start thread and returns immediately.
@@ -2672,6 +2669,7 @@ def test_warm_up_pool_starts_swap_off_thread(monkeypatch, tmp_path: Path) -> Non
     assert _wait_until(lambda: p._swaps.get(WorkerRole.CHAT) is swap)
 
 
+@pytest.mark.fleet_warm_up
 def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch, tmp_path: Path) -> None:
     starts = {"n": 0}
     in_start = threading.Event()
@@ -3056,6 +3054,22 @@ def test_preload_roles_warms_each_role_and_fires_listeners(monkeypatch) -> None:
     assert set(spawned) == {WorkerRole.CHAT, WorkerRole.EMBED}
 
 
+def test_preload_roles_without_clients_for_requested_roles_starts_nothing(monkeypatch) -> None:
+    embed = _fake_client()
+    p = _provider_with_clients({WorkerRole.EMBED: [embed]})
+    spawning: list[WorkerRole] = []
+    p.add_spawn_listener(on_spawning=spawning.append)
+    started: list[object] = []
+    monkeypatch.setattr(prov_mod, "DaemonCall", lambda *a, **kw: started.append((a, kw)))
+    ensure = MagicMock()
+    monkeypatch.setattr(p, "_ensure_fleet", ensure)
+    p._preload_roles(frozenset({WorkerRole.CHAT, WorkerRole.RERANK}))
+    assert started == []  # no warm-up thread
+    ensure.assert_not_called()  # no engine spawned
+    assert spawning == []
+    embed.embed.assert_not_called()
+
+
 def test_preload_roles_skips_failing_role(monkeypatch) -> None:
     embed = _fake_client()
     embed.embed.side_effect = RuntimeError("not loaded")
@@ -3391,109 +3405,91 @@ def test_drop_loaded_models_async_noop_without_swap() -> None:
     assert p._swaps == {}
 
 
-def test_apply_fleet_gpu_env_honors_gpu_devices_pin(monkeypatch) -> None:
-    from lilbee.providers.fleet import gpu_env
+def _clear_visible_vars(monkeypatch) -> None:
     from lilbee.providers.fleet.gpu_env import _GPU_VISIBLE_ENV_VARS
 
     for name in _GPU_VISIBLE_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+def test_gpu_environ_honors_gpu_devices_pin_without_touching_the_process(monkeypatch) -> None:
+    from lilbee.providers.fleet import gpu_env
+    from lilbee.providers.fleet.gpu_env import _GPU_VISIBLE_ENV_VARS
+
+    _clear_visible_vars(monkeypatch)
     monkeypatch.setattr(cfg, "gpu_devices", "0")
-    # apply_fleet_gpu_env writes these vars in place; monkeypatch.delenv does not
-    # track app-side additions, so restore the pre-apply snapshot to avoid leaking
-    # the pin (CUDA_VISIBLE_DEVICES=0) into later tests that read os.environ.
-    snapshot = {name: os.environ.get(name) for name in _GPU_VISIBLE_ENV_VARS}
-    try:
-        gpu_env.apply_fleet_gpu_env()
-        # Every backend except the AMD pair, which is written to one var only:
-        # ROCr filters before HIP re-indexes within the survivors.
-        for name in _GPU_VISIBLE_ENV_VARS:
-            if name == "ROCR_VISIBLE_DEVICES":
-                assert name not in os.environ
-                continue
-            assert os.environ[name] == "0"
-    finally:
-        for name, value in snapshot.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
+    env = gpu_env.gpu_environ()
+    # Every backend except the AMD pair, which is written to one var only:
+    # ROCr filters before HIP re-indexes within the survivors.
+    for name in _GPU_VISIBLE_ENV_VARS:
+        if name == "ROCR_VISIBLE_DEVICES":
+            assert name not in env
+            continue
+        assert env[name] == "0"
+    assert not any(name in os.environ for name in _GPU_VISIBLE_ENV_VARS)
 
 
-def test_apply_fleet_gpu_env_clears_empty_cuda_visible_devices(monkeypatch) -> None:
+def test_gpu_environ_clears_empty_cuda_visible_devices(monkeypatch) -> None:
     # SkyPilot / Docker GPU setups expose the GPU via NVIDIA_VISIBLE_DEVICES but export an
     # empty CUDA_VISIBLE_DEVICES, which hides the GPU from CUDA ("no CUDA-capable device").
     # The runtime's marker is what makes the empty value a contradiction rather than an
     # instruction, so the test has to set it: without it, an empty mask means CPU.
     from lilbee.providers.fleet import gpu_env
-    from lilbee.providers.fleet.gpu_env import _GPU_VISIBLE_ENV_VARS
 
-    for name in _GPU_VISIBLE_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+    _clear_visible_vars(monkeypatch)
     monkeypatch.setattr(cfg, "gpu_devices", None)
     monkeypatch.setenv("NVIDIA_VISIBLE_DEVICES", "all")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-    gpu_env.apply_fleet_gpu_env()
-    assert "CUDA_VISIBLE_DEVICES" not in os.environ
+    assert "CUDA_VISIBLE_DEVICES" not in gpu_env.gpu_environ()
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == ""
 
 
-def test_apply_fleet_gpu_env_keeps_another_vendors_empty_visible_devices(monkeypatch) -> None:
+def test_gpu_environ_keeps_another_vendors_empty_visible_devices(monkeypatch) -> None:
     # The NVIDIA container runtime's marker speaks for NVIDIA only. An empty Vulkan
     # or AMD mask is somebody fencing that backend off, and clearing it on the
     # strength of an unrelated vendor's marker overrides a deliberate choice.
     from lilbee.providers.fleet import gpu_env
-    from lilbee.providers.fleet.gpu_env import _GPU_VISIBLE_ENV_VARS
 
-    for name in _GPU_VISIBLE_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+    _clear_visible_vars(monkeypatch)
     monkeypatch.setattr(cfg, "gpu_devices", None)
     monkeypatch.setenv("NVIDIA_VISIBLE_DEVICES", "all")
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "")
-    gpu_env.apply_fleet_gpu_env()
-    assert os.environ["GGML_VK_VISIBLE_DEVICES"] == ""
+    assert gpu_env.gpu_environ()["GGML_VK_VISIBLE_DEVICES"] == ""
 
 
-def test_apply_fleet_gpu_env_keeps_nonempty_cuda_visible_devices(monkeypatch) -> None:
+def test_gpu_environ_keeps_nonempty_cuda_visible_devices(monkeypatch) -> None:
     # An explicit index pin (and the conventional "-1" CPU opt-out) is user intent, not an
     # orchestration artifact: leave it alone.
     from lilbee.providers.fleet import gpu_env
-    from lilbee.providers.fleet.gpu_env import _GPU_VISIBLE_ENV_VARS
 
-    for name in _GPU_VISIBLE_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+    _clear_visible_vars(monkeypatch)
     monkeypatch.setattr(cfg, "gpu_devices", None)
     monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
-    gpu_env.apply_fleet_gpu_env()
-    assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
+    assert gpu_env.gpu_environ()["CUDA_VISIBLE_DEVICES"] == "1"
 
 
-def test_apply_fleet_gpu_env_pin_replaces_empty_cuda_visible_devices(monkeypatch) -> None:
+def test_gpu_environ_pin_replaces_empty_cuda_visible_devices(monkeypatch) -> None:
     # Clearing the empty var before the pin runs is what lets a cfg.gpu_devices pin take
     # effect: setdefault would otherwise treat the present-but-empty value as already set.
     from lilbee.providers.fleet import gpu_env
-    from lilbee.providers.fleet.gpu_env import _GPU_VISIBLE_ENV_VARS
 
-    for name in _GPU_VISIBLE_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+    _clear_visible_vars(monkeypatch)
     monkeypatch.setattr(cfg, "gpu_devices", "0")
     monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-    gpu_env.apply_fleet_gpu_env()
-    assert os.environ["CUDA_VISIBLE_DEVICES"] == "0"
+    assert gpu_env.gpu_environ()["CUDA_VISIBLE_DEVICES"] == "0"
 
 
-def test_apply_fleet_gpu_env_keeps_empty_cuda_visible_devices_without_gpu(monkeypatch) -> None:
+def test_gpu_environ_keeps_empty_cuda_visible_devices_without_gpu(monkeypatch) -> None:
     # With no GPU present, an empty CUDA_VISIBLE_DEVICES is honored as genuine CPU intent.
     from lilbee.providers.fleet import gpu_env
-    from lilbee.providers.fleet.gpu_env import _GPU_VISIBLE_ENV_VARS
 
-    for name in _GPU_VISIBLE_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+    _clear_visible_vars(monkeypatch)
     monkeypatch.setattr(cfg, "gpu_devices", None)
     monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-    gpu_env.apply_fleet_gpu_env()
-    assert os.environ.get("CUDA_VISIBLE_DEVICES") == ""
+    assert gpu_env.gpu_environ().get("CUDA_VISIBLE_DEVICES") == ""
 
 
 def test_routing_provider_local_engine_is_fleet() -> None:

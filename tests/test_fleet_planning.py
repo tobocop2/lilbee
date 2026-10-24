@@ -2451,10 +2451,6 @@ class TestPlanProbe:
 
     def _capture(self, monkeypatch, *, total_vram: int, free_vram: int, free_ram: int) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
-        monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
-        )
         # The capture takes devices and the all-refused fact from one probe run.
         monkeypatch.setattr(
             planning_mod,
@@ -2720,10 +2716,6 @@ class TestPlacementChargesAgainstFreeMemory:
     def _snapshot(monkeypatch, devices: list[FleetDevice]) -> None:
         """Capture the clean-box snapshot, where free bytes exclude only other tenants."""
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
-        monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
-        )
         monkeypatch.setattr(planning_mod, "_read_devices", lambda _b: _reading(devices))
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 64 * _GB)
         planning_mod.capture_plan_probe()
@@ -2893,10 +2885,6 @@ class TestSizingBudgetComesFromTheDevice:
     def _capture(monkeypatch, devices: list[FleetDevice], *, host_ram: int) -> None:
         """Snapshot *devices* on a host with *host_ram* bytes of system RAM."""
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
-        monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
-        )
         monkeypatch.setattr(planning_mod, "_read_devices", lambda _b: _reading(devices))
         monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: host_ram)
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: host_ram)
@@ -3454,7 +3442,6 @@ def test_placeable_total_vram_zero_when_unprobeable(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError
 
     monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
-    monkeypatch.setattr(planning_mod, "apply_fleet_gpu_env", lambda: None, raising=False)
 
     def _boom(*_a, **_k):
         raise ProviderError("no binary", provider="llama-server")
@@ -3801,10 +3788,6 @@ def test_capturing_the_plan_snapshot_probes_the_engine_once(monkeypatch) -> None
         )
 
     monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
-    monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(
-        "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
-    )
     monkeypatch.setattr(
         "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
     )

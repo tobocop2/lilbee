@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -206,8 +205,18 @@ def test_probe_timeout_raises_and_kills_the_child(tmp_path: Path) -> None:
         probe_devices(script, timeout_s=0.2)
 
 
+@pytest.fixture
+def _quiet_probe_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the probe env independent of this host's Vulkan ICDs and CUDA wheels."""
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.gpu_select.disable_conflicting_vulkan_icds", lambda: None
+    )
+    monkeypatch.setattr("lilbee.providers.fleet.cuda_runtime._cuda_wheel_lib_dirs", lambda: [])
+
+
+@pytest.mark.usefixtures("_quiet_probe_env")
 def test_probe_env_sets_pci_bus_order() -> None:
-    assert dev_mod._probe_env()["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    assert dev_mod._probe_env(Path("/bin/srv"))["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
 
 
 def test_visible_env_cuda_pins_by_index_and_pins_order() -> None:
@@ -277,15 +286,17 @@ class TestPresetVisibleDeviceComposition:
         env = visible_env((FleetDevice("CUDA", 0, "", 0, 0), FleetDevice("CUDA", 1, "", 0, 0)))
         assert env == {"CUDA_VISIBLE_DEVICES": "0,1", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
 
+    @pytest.mark.usefixtures("_quiet_probe_env")
     def test_preset_cuda_device_order_is_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
-        assert dev_mod._probe_env()["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
+        assert dev_mod._probe_env(Path("/bin/srv"))["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
         env = visible_env((FleetDevice("CUDA", 0, "", 0, 0),))
         assert env["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"  # same order the probe used
 
+    @pytest.mark.usefixtures("_quiet_probe_env")
     def test_probe_env_defaults_order_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
-        assert dev_mod._probe_env()["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+        assert dev_mod._probe_env(Path("/bin/srv"))["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
 
     def test_rocm_rocr_only_parent_emits_rocr_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Parent restricted via ROCR only: emit ROCR composed against it, and do
@@ -499,31 +510,14 @@ class TestAmdPinNeverSetsBothVars:
     ROCr, and HIP then asks for index 1 of a one-device list.
     """
 
-    @pytest.fixture(autouse=True)
-    def _restore_env(self) -> Iterator[None]:
-        # The pin writes os.environ in place, which monkeypatch does not track;
-        # without this the pin leaks into every later test that reads the env.
-        from lilbee.providers.fleet import gpu_env
-
-        snapshot = {name: os.environ.get(name) for name in gpu_env._GPU_VISIBLE_ENV_VARS}
-        try:
-            yield
-        finally:
-            for name, value in snapshot.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
-
     def _pin(self, monkeypatch: pytest.MonkeyPatch, value: str) -> dict[str, str]:
         from lilbee.core.config import cfg
         from lilbee.providers.fleet import gpu_env
 
         monkeypatch.setattr(cfg, "gpu_devices", value)
-        assert gpu_env._apply_gpu_devices_pin() is True
-        return {
-            name: os.environ[name] for name in gpu_env._GPU_VISIBLE_ENV_VARS if name in os.environ
-        }
+        env = dict(os.environ)
+        assert gpu_env._apply_gpu_devices_pin(env) is True
+        return {name: env[name] for name in gpu_env._GPU_VISIBLE_ENV_VARS if name in env}
 
     def test_a_clean_environment_gets_hip_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.providers.fleet import gpu_env

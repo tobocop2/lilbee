@@ -3108,9 +3108,9 @@ class TestTransferProgressStream:
         assert calls[-1] == (40, 100)
 
 
-class TestXetIsLeftEnabled:
-    def test_import_does_not_force_the_http_path(self) -> None:
-        """Importing lilbee must leave huggingface_hub's xet default alone."""
+class TestXetDefaultAtImport:
+    def test_import_sets_the_xet_default_for_the_platform(self) -> None:
+        """Importing lilbee leaves xet on; only Windows, where it stalls, gets the plain path."""
         import subprocess
         import sys
 
@@ -3126,7 +3126,7 @@ class TestXetIsLeftEnabled:
             env=env,
             check=True,
         )
-        assert out.stdout.strip() == "None"
+        assert out.stdout.strip() == ("1" if sys.platform == "win32" else "None")
 
 
 class TestRegisterDownloadedModel:

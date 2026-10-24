@@ -2544,6 +2544,27 @@ class TestLoadWarningsAreLoggedOncePerProcessTree:
         assert done.stdout.split() == ["1", "321", "1", "321", "''"]
         assert done.stderr.splitlines() == [self._WARNING]
 
+    def test_the_import_exports_the_logged_marks_for_a_child(self, tmp_path):
+        """Running the module again, as an import does, publishes the marks it logged."""
+        import importlib.util
+
+        from lilbee.core.config import model
+        from lilbee.core.config.load_warnings import SHOWN_ENV_VAR, shown_marks, warn_on_load
+
+        warn_on_load(self._WARNING)
+        env = {**clean_env(tmp_path), "LILBEE_NO_SPLASH": "1"}
+        name = "lilbee.core.config.model_again"
+        spec = importlib.util.spec_from_file_location(name, model.__file__)
+        assert spec is not None and spec.loader is not None
+        again = importlib.util.module_from_spec(spec)
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.dict(sys.modules, {name: again}),
+        ):
+            spec.loader.exec_module(again)
+            assert os.environ[SHOWN_ENV_VAR] == shown_marks()
+        assert shown_marks()
+
     @pytest.mark.parametrize("args", [("status",), ("--json", "status")])
     def test_a_real_command_prints_the_warning_once(self, tmp_path, args):
         """The command reads its own config.toml twice, at import and when it sets the root."""

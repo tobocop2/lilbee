@@ -360,6 +360,39 @@ def _reset_services_after_test():
 
 
 @pytest.fixture(autouse=True)
+def _no_unmarked_fleet_warm_up(request, monkeypatch):
+    """Fail the test that runs a real fleet warm-up thread without declaring it.
+
+    ``get_services()`` builds a real provider and, with ``worker_pool_eager_start``
+    on, starts ``fleet-warm-up`` as a side effect, so a test that only reads the
+    store ends up planning and launching an engine on a second thread. That
+    thread reads ``os.environ`` and loads the Vulkan loader while the test body
+    and its teardown change the environment and the engine lock. On a CI host
+    with a GPU stack it killed the worker with a segmentation fault. A test that
+    means to exercise the warm-up carries ``@pytest.mark.fleet_warm_up``.
+    """
+    from lilbee.providers.fleet.provider import FleetProvider
+
+    started: list[str] = []
+    real = FleetProvider._warm_up_blocking
+
+    def recording(self):
+        name = threading.current_thread().name
+        if name == "fleet-warm-up":
+            started.append(name)
+        return real(self)
+
+    monkeypatch.setattr(FleetProvider, "_warm_up_blocking", recording)
+    yield
+    if started and "fleet_warm_up" not in {m.name for m in request.node.iter_markers()}:
+        pytest.fail(
+            "Test ran a real fleet warm-up thread without @pytest.mark.fleet_warm_up: "
+            "it plans and launches an engine beside the test body. Keep "
+            "cfg.worker_pool_eager_start off or mock the provider's warm_up_pool."
+        )
+
+
+@pytest.fixture(autouse=True)
 def _join_fleet_background_threads():
     """Retire the fleet's background threads after each test.
 
@@ -405,9 +438,11 @@ def _ignore_user_global_config(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _forget_shown_load_warnings(monkeypatch):
-    """Start each test with no load warning marked as already logged by this process tree."""
-    monkeypatch.delenv("LILBEE_LOAD_WARNINGS_SHOWN", raising=False)
+def _forget_shown_load_warnings():
+    """Start each test with no load warning marked as already logged by this process."""
+    from lilbee.core.config.load_warnings import forget_shown
+
+    forget_shown()
 
 
 @pytest.fixture(scope="session")
@@ -666,6 +701,9 @@ def _isolate_cfg(tmp_path, request):
         setattr(cfg, field, "")
     if "integration" not in request.node.nodeid.split("/"):
         cfg.documents_dir = tmp_path / "documents"
+    # get_services() would otherwise start a real fleet warm-up thread in any test
+    # that only reads the store; tests of the warm-up turn it on themselves.
+    cfg.worker_pool_eager_start = False
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

@@ -13,6 +13,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import NamedTuple
 
+from lilbee.core import settings
 from lilbee.core.config import active_config
 from lilbee.core.system import is_ignored_dir
 from lilbee.data.extract.code_chunker import is_code_file
@@ -225,6 +226,7 @@ def resolve_source_path(filename: str) -> Path:
     (registering a label that shadows an existing owned entry).
     """
     config = active_config()
+    settings.refresh_registry(config)
     first, _, rest = filename.partition("/")
     root = config.linked_roots.get(first)
     if root is not None:
@@ -242,6 +244,7 @@ def resolve_source_root(filename: str) -> tuple[Path, Path] | None:
     it and no pattern applies.
     """
     config = active_config()
+    settings.refresh_registry(config)
     first, _, rest = filename.partition("/")
     root = config.linked_roots.get(first)
     if root is None:
@@ -262,11 +265,12 @@ def resolve_source_path_checked(filename: str) -> Path | None:
     stored data.
     """
     config = active_config()
-    resolved = resolve_source_path(filename).resolve(strict=False)
-    roots = [
-        config.documents_dir.resolve(),
-        *(Path(root).resolve() for root in config.linked_roots.values()),
-    ]
+    with settings.fresh_registry_pinned(config):
+        resolved = resolve_source_path(filename).resolve(strict=False)
+        roots = [
+            config.documents_dir.resolve(),
+            *(Path(root).resolve() for root in config.linked_roots.values()),
+        ]
     if any(resolved == root or root in resolved.parents for root in roots):
         return resolved
     return None

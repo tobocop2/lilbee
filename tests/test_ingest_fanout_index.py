@@ -59,7 +59,7 @@ def workers_as_threads(monkeypatch):
     monkeypatch.setattr(fanout, "_MIN_FILES_FOR_FANOUT", 1)
     monkeypatch.setattr(fanout.multiprocessing, "get_context", lambda _kind: FakeContext())
     monkeypatch.setattr(fanout, "_FINAL_DRAIN_S", 0.0)
-    monkeypatch.setattr(fanout, "_apply_shard_env", lambda spec: None)
+    monkeypatch.setattr(fanout, "_pin_shard", lambda spec: None)
     monkeypatch.setattr(
         "lilbee.providers.fleet.child_guard.bind_lifetime_to_parent", lambda pid: None
     )

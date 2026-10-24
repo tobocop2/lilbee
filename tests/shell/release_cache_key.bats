@@ -43,7 +43,8 @@ strip() {  # source destination
   [ "$status" -eq 0 ]
   [ "$(wc -l < "${FIXTURE}/uv.lock")" -eq 20 ]
   [ "$(wc -l < "${FIXTURE}/deps.lock")" -eq 19 ]
-  ! grep -q '0.6.90b442' "${FIXTURE}/deps.lock"
+  run grep -q '0.6.90b442' "${FIXTURE}/deps.lock"
+  [ "$status" -eq 1 ]
   grep -q '^version = "3.14.3"$' "${FIXTURE}/deps.lock"
   grep -q '^version = "1.22.0"$' "${FIXTURE}/deps.lock"
 }
@@ -76,14 +77,16 @@ strip() {  # source destination
   [ "$status" -eq 0 ]
   own=$(awk -F'"' '/^version *= */ { print $2; exit }' "${REPO_ROOT}/pyproject.toml")
   grep -q "^version = \"${own}\"\$" "${REPO_ROOT}/uv.lock"
-  ! grep -q "^version = \"${own}\"\$" "${FIXTURE}/real.lock"
+  run grep -q "^version = \"${own}\"\$" "${FIXTURE}/real.lock"
+  [ "$status" -eq 1 ]
 }
 
 @test "a lock checked out with CRLF line endings still normalizes" {
   sed 's/$/\r/' "${FIXTURE}/uv.lock" > "${FIXTURE}/crlf.lock"
   run strip "${FIXTURE}/crlf.lock" "${FIXTURE}/deps.lock"
   [ "$status" -eq 0 ]
-  ! grep -q '0.6.90b442' "${FIXTURE}/deps.lock"
+  run grep -q '0.6.90b442' "${FIXTURE}/deps.lock"
+  [ "$status" -eq 1 ]
   grep -q '3.14.3' "${FIXTURE}/deps.lock"
 }
 
@@ -98,5 +101,6 @@ strip() {  # source destination
   printf '%s' "$(cat "${FIXTURE}/uv.lock")" > "${FIXTURE}/nonewline.lock"
   run strip "${FIXTURE}/nonewline.lock" "${FIXTURE}/deps.lock"
   [ "$status" -eq 0 ]
-  ! grep -q '0.6.90b442' "${FIXTURE}/deps.lock"
+  run grep -q '0.6.90b442' "${FIXTURE}/deps.lock"
+  [ "$status" -eq 1 ]
 }

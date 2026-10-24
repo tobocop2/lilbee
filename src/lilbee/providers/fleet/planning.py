@@ -1460,10 +1460,8 @@ def placeable_total_vram() -> int:
     if probe is not None:
         return sum(d.total_bytes for d in probe.devices)
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
 
     try:
-        apply_fleet_gpu_env()
         return sum(d.total_bytes for d in resolve_devices(resolve_llama_server()))
     except (ProviderError, OSError):
         return 0
@@ -1799,12 +1797,7 @@ def build_single_role_launch(role: WorkerRole, model_path: Path) -> InstanceLaun
     Placement is the planner's, on the devices the plan snapshot holds, so the
     check runs on the card the role would really land on.
     """
-    from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
-    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
-
-    apply_fleet_gpu_env()
     binary = resolve_llama_server()
-    apply_cuda_runtime_env(binary)
     with _one_engine_per_pass():
         devices = _plan_devices(binary)
         by_index = {d.index: d for d in devices}
@@ -2309,19 +2302,14 @@ def clear_ctx_downshift(role: WorkerRole | None = None) -> None:
 
 
 def _probe_engine_devices() -> DeviceReading:
-    """Apply the fleet GPU/CUDA env, resolve the binary, and enumerate devices.
+    """Resolve the binary and enumerate devices.
 
     This is the wedge point: a missing binary raises NOT_FOUND, and a CUDA build
     that cannot init a GPU (a broken-runtime host) raises loud from resolve_devices
     rather than silently degrading. Device enumeration reads no residency, so it is
     safe to run while an incumbent engine is still up.
     """
-    from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
-    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
-
-    apply_fleet_gpu_env()
     binary = resolve_llama_server()
-    apply_cuda_runtime_env(binary)
     reading = _read_devices(binary)
     if reading.devices:
         return reading
@@ -2933,12 +2921,7 @@ def resolve_placement_plan(
     than the plan snapshot, so borrowing the snapshot's backend would pair a live
     device list with a backend read at fleet build.
     """
-    from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
-    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
-
-    apply_fleet_gpu_env()
     binary = resolve_llama_server()
-    apply_cuda_runtime_env(binary)
     reading = _read_device_cache.get(binary)
     devices = reading.devices
     unified_budget = _unified_memory_budget(devices)
@@ -3167,19 +3150,12 @@ def _launched_roles() -> tuple[WorkerRole, ...]:
 
 
 def plan_all_launches() -> FleetPlan:
-    """Apply GPU env, probe devices, and plan launches for the configured roles.
+    """Probe devices and plan launches for the configured roles.
 
-    Disables crash-prone Vulkan layers / dual-vendor ICDs and applies any
-    ``cfg.gpu_devices`` pin before the probe and plan (both inherit the env).
+    Writes no environment: the probe child carries the Vulkan loader safety and any
+    ``cfg.gpu_devices`` pin in its own env, and the plan reads the pin from there.
     """
-    from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
-    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
-
-    apply_fleet_gpu_env()
     binary = resolve_llama_server()
-    # Put the CUDA-runtime wheels on the process path so the device probe sees the
-    # same runtime the servers will, before resolve_devices enumerates GPUs.
-    apply_cuda_runtime_env()
     with _one_engine_per_pass():
         devices = _plan_devices(binary)
         by_index = {d.index: d for d in devices}

@@ -23,7 +23,11 @@ from textual.widgets import Footer
 
 from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
-from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
+from lilbee.cli.tui.widgets.task_bar_controller import (
+    ProgressReporter,
+    TaskBarController,
+    TaskOutcome,
+)
 from lilbee.runtime.cancellation import TaskCancelledError
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, ready_services
@@ -147,6 +151,28 @@ async def test_start_task_cancelled_marks_cancelled() -> None:
         task = controller.queue.get_task(task_id)
         assert task is not None
         assert task.status == TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_worker_finishing_after_app_exit_does_not_block() -> None:
+    """A worker that ends once the app has stopped must return, not wait on the dead loop.
+
+    The slow-runner case: the cancel check fires after the test left ``run_test``.
+    The loop stays open but nobody drives it, as during the leak guard's join, so a
+    worker that waits for the app to run its finalize call never returns.
+    """
+    app = _Host()
+    async with app.run_test():
+        controller = TaskBarController(app)
+    worker = threading.Thread(
+        target=controller._post_finalize,
+        args=("gone", TaskOutcome.CANCELLED, "", None),
+        daemon=True,
+    )
+    worker.start()
+    # A blocking join: the loop is not driven meanwhile, as in the guard's join.
+    worker.join(timeout=1.0)
+    assert not worker.is_alive()
 
 
 @pytest.mark.asyncio

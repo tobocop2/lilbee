@@ -9,9 +9,9 @@
 # until someone re-runs the job by hand.
 #
 # Only safe for text files that different jobs touch independently (a formula, a
-# manifest, a flake source). A repository whose content is regenerated wholesale --
-# the flatpak OSTree repo -- must serialize its writers instead: rebasing a commit
-# that rewrites `summary` and the static deltas would drop whatever the sibling
+# manifest). A repository whose content is regenerated wholesale -- the flatpak
+# OSTree repo -- must serialize its writers instead: rebasing a commit that
+# rewrites `summary` and the static deltas would drop whatever the sibling
 # published.
 #
 # Reads:

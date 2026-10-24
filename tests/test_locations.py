@@ -335,10 +335,10 @@ class TestTheRegistryIsReadAgain:
         store = Store(config)
         store.get_sources()
 
-        with mock.patch.object(settings, "overlay_persisted_roots") as overlay:
+        with mock.patch.object(settings, "_read_roots") as read:
             store.get_sources()
 
-        overlay.assert_not_called()
+        read.assert_not_called()
 
     def test_a_config_toml_deleted_before_its_stamp_is_read_has_none(self, tmp_path):
         with mock.patch.object(settings, "_overlay_file", return_value=tmp_path / "gone.toml"):
@@ -601,3 +601,317 @@ class TestTheFillInBatches:
 
         assert _dump(reopened) == _dump(whole)
         assert "_fill_pairs" not in table_names(reopened.get_db())
+
+
+_HOLD_THE_LOCK = """
+import sys, time
+from filelock import FileLock
+lock = FileLock(sys.argv[1])
+lock.acquire()
+print("held", flush=True)
+time.sleep(60)
+"""
+
+
+def _in_scope(config, fn):
+    """*fn* run in a thread that names *config* as the active one."""
+    from lilbee.core.config import config_scope
+
+    def run(*args):
+        with config_scope(config):
+            fn(*args)
+
+    return run
+
+
+class TestAResolverInALongRunningProcess:
+    """A server that ran no store call still names a root another process registered."""
+
+    @pytest.fixture()
+    def server(self, config, overlay_reads_config_toml):
+        from lilbee.core.config import config_scope
+
+        with config_scope(config):
+            yield config
+
+    def _another_process_registers(self, config, label, root):
+        settings.set_value(config.data_root, "linked_roots", {label: str(root)})
+
+    def test_a_label_added_since_resolves_to_its_root(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        assert resolve_source_path("notes/a.md") == server.documents_dir / "notes" / "a.md"
+
+        self._another_process_registers(server, "notes", tmp_path / "elsewhere")
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "elsewhere" / "a.md"
+
+    def test_the_walked_root_follows_the_file(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_root
+
+        assert resolve_source_root("notes/a.md") == (
+            server.documents_dir,
+            server.documents_dir / "notes" / "a.md",
+        )
+
+        self._another_process_registers(server, "notes", tmp_path / "elsewhere")
+
+        assert resolve_source_root("notes/a.md") == (
+            tmp_path / "elsewhere",
+            tmp_path / "elsewhere" / "a.md",
+        )
+
+    def test_the_checked_resolver_accepts_a_new_label(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path_checked
+
+        elsewhere = tmp_path / "elsewhere"
+        assert resolve_source_path_checked("notes/a.md") is not None
+        assert resolve_source_path_checked("notes/../../x") is None
+        self._another_process_registers(server, "notes", elsewhere)
+
+        assert resolve_source_path_checked("notes/a.md") == (elsewhere / "a.md").resolve()
+        assert resolve_source_path_checked("notes/../../x") is None
+
+    def test_a_file_in_a_new_root_is_found_on_disk(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        live = tmp_path / "elsewhere" / "a.md"
+        live.parent.mkdir()
+        live.write_text("x", encoding="utf-8")
+        self._another_process_registers(server, "notes", tmp_path / "elsewhere")
+
+        assert resolve_source_path("notes/a.md").exists()
+
+    def test_a_pinned_registry_ignores_the_file(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        server.linked_roots = {"notes": str(tmp_path / "before")}
+        with settings.pin_registry(server):
+            self._another_process_registers(server, "notes", tmp_path / "after")
+            assert resolve_source_path("notes/a.md") == tmp_path / "before" / "a.md"
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "after" / "a.md"
+
+    def test_an_unparsable_file_leaves_the_registry_it_read_before(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
+
+        (server.data_root / "config.toml").write_text("not [valid", encoding="utf-8")
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
+
+    def test_a_deleted_file_leaves_the_registry_it_read_before(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
+
+        (server.data_root / "config.toml").unlink()
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
+
+    def test_an_unchanged_file_is_not_read_again(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        resolve_source_path("notes/a.md")
+
+        with mock.patch.object(settings, "_read_roots") as read:
+            resolve_source_path("notes/a.md")
+
+        read.assert_not_called()
+
+    def test_a_caller_does_not_wait_for_a_read_another_process_blocks(self, server, tmp_path):
+        import subprocess
+        import sys
+        import threading
+        import time
+
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
+        self._another_process_registers(server, "notes", tmp_path / "next")
+
+        holder = subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                _HOLD_THE_LOCK,
+                str(server.data_root / "config.toml.lock"),
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        try:
+            assert holder.stdout is not None
+            assert holder.stdout.readline().strip() == "held"
+            first = threading.Thread(
+                target=_in_scope(server, resolve_source_path), args=("notes/a.md",)
+            )
+            first.start()
+            time.sleep(0.2)  # the first caller is in the file-lock wait
+
+            started = time.monotonic()
+            second = resolve_source_path("notes/a.md")
+            waited = time.monotonic() - started
+        finally:
+            holder.terminate()
+            holder.wait(5)
+        first.join(15)
+
+        assert waited < 0.5
+        assert second == tmp_path / "read" / "a.md"
+        assert resolve_source_path("notes/a.md") == tmp_path / "next" / "a.md"
+
+    def test_a_pin_taken_during_a_read_keeps_the_registry_it_holds(self, server, tmp_path):
+        import contextlib
+
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        server.linked_roots = {"notes": str(tmp_path / "before")}
+        self._another_process_registers(server, "notes", tmp_path / "after")
+        real = settings._read_roots
+        pins = contextlib.ExitStack()
+
+        def pin_after_reading(config, accept):
+            def pin_then_accept(roots):
+                pins.enter_context(settings.pin_registry(config))  # another thread pins mid-read
+                accept(roots)
+
+            real(config, pin_then_accept)
+
+        with mock.patch.object(settings, "_read_roots", pin_after_reading):
+            assert resolve_source_path("notes/a.md") == tmp_path / "before" / "a.md"
+            assert settings.refresh_registry(server) is False
+        pins.close()
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "after" / "a.md"
+
+    def test_a_pinned_registry_reports_that_it_was_not_refreshed(self, server):
+        assert settings.refresh_registry(server) is True
+        with settings.pin_registry(server):
+            assert settings.refresh_registry(server) is False
+        assert settings.refresh_registry(server) is True
+
+    def test_the_registry_is_assigned_while_the_writer_lock_is_held(self, server, tmp_path):
+        from collections.abc import Mapping
+        from types import MappingProxyType
+
+        from filelock import FileLock, Timeout
+
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        held_during_assignment = []
+
+        class _Probe:
+            data_root = server.data_root
+            _roots: Mapping[str, str] = MappingProxyType({})
+
+            @property
+            def linked_roots(self):
+                return self._roots
+
+            @linked_roots.setter
+            def linked_roots(self, value):
+                probe = FileLock(str(server.data_root / "config.toml.lock"))
+                try:
+                    probe.acquire(timeout=0)
+                except Timeout:
+                    held_during_assignment.append(True)
+                else:
+                    probe.release()
+                    held_during_assignment.append(False)
+                self._roots = value
+
+        probe = _Probe()
+        assert settings.refresh_registry(probe) is True
+
+        assert held_during_assignment == [True]
+        assert probe.linked_roots == {"notes": str(tmp_path / "read")}
+
+    def test_a_read_that_fails_is_tried_again(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        self._another_process_registers(server, "notes", tmp_path / "read")
+        with (
+            mock.patch.object(settings, "_read_roots", side_effect=OSError),
+            pytest.raises(OSError),
+        ):
+            resolve_source_path("notes/a.md")
+
+        assert resolve_source_path("notes/a.md") == tmp_path / "read" / "a.md"
+
+    def test_the_checked_resolver_holds_one_registry(self, server, tmp_path):
+        from lilbee.data.ingest import discovery
+
+        self._another_process_registers(server, "notes", tmp_path / "first")
+        real = discovery.resolve_source_path
+
+        def resolve_then_another_thread_refreshes(filename):
+            resolved = real(filename)
+            self._another_process_registers(server, "notes", tmp_path / "second")
+            settings.refresh_registry(server)  # a pinned registry ignores it
+            return resolved
+
+        with mock.patch.object(
+            discovery, "resolve_source_path", resolve_then_another_thread_refreshes
+        ):
+            checked = discovery.resolve_source_path_checked("notes/a.md")
+
+        assert checked == (tmp_path / "first" / "a.md").resolve()
+
+    def test_a_removal_reads_the_roots_another_process_registered(self, server, tmp_path):
+        from lilbee.app import ingest
+
+        self._another_process_registers(server, "notes", tmp_path / "elsewhere")
+        with (
+            mock.patch.object(ingest, "get_services"),
+            mock.patch.object(ingest, "removable_names", return_value=[]),
+            mock.patch.object(ingest, "held_failures", return_value={}),
+            mock.patch.object(ingest, "forget_roots", return_value=[]),
+            mock.patch.object(ingest, "forget_removed_from_wiki_index"),
+            mock.patch.object(ingest, "_removal_holds", return_value=[]) as holds,
+        ):
+            ingest.remove_documents_durably(["notes"], targets=[])
+
+        assert holds.call_args.args[1] == ["notes"]
+
+    def test_forgetting_a_root_reads_the_roots_another_process_registered(self, server, tmp_path):
+        from lilbee.app import ingest
+
+        self._another_process_registers(server, "notes", tmp_path / "elsewhere")
+        with (
+            mock.patch.object(ingest, "get_services"),
+            mock.patch.object(ingest, "unmark_sources_under") as unmark,
+            mock.patch.object(ingest, "unregister_roots", return_value=["notes"]),
+        ):
+            assert ingest.forget_roots(["notes"]) == ["notes"]
+
+        assert unmark.call_args.args[0] == [tmp_path / "elsewhere"]
+
+    def test_held_keys_are_matched_against_one_registry(self, server, tmp_path):
+        from lilbee.app.ingest import _held_covering
+
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        self._another_process_registers(server, "docs", elsewhere)
+
+        covered, inside = _held_covering(["docs/x.md"], [elsewhere])
+
+        assert covered == {"docs/x.md"}
+        assert inside == set()
+
+    def test_the_store_names_sources_by_what_a_resolver_read(self, server, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        store = Store(server)
+        _seed_source(store, "notes/a.md")
+        self._another_process_registers(server, "notes", tmp_path / "elsewhere")
+        resolve_source_path("notes/a.md")
+
+        assert _names(store) == ["notes/a.md"]
+        assert server.linked_roots == {"notes": str(tmp_path / "elsewhere")}

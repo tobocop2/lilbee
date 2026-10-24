@@ -40,6 +40,11 @@ def call_from_thread(node: DOMNode, fn: Any, *args: Any, **kwargs: Any) -> None:
     except (AttributeError, RuntimeError) as exc:
         log.debug("call_from_thread found no app for %s: %s", getattr(fn, "__name__", fn), exc)
         return
+    # A stopped app keeps its event loop object, and Textual then queues the call
+    # on a loop nobody runs and waits on it with no limit. Drop it here instead.
+    if not app.is_running:
+        log.debug("call_from_thread dropped %s: app has stopped", getattr(fn, "__name__", fn))
+        return
     try:
         app.call_from_thread(fn, *args, **kwargs)
     except (OSError, RuntimeError) as exc:

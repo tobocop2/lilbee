@@ -42,7 +42,13 @@ from .enums import (
     TableModel,
     WikiEntityMode,
 )
-from .load_warnings import collecting, refuse_variable, warn_on_load
+from .load_warnings import (
+    SHOWN_ENV_VAR,
+    collecting,
+    refuse_variable,
+    shown_marks,
+    warn_on_load,
+)
 from .parsing import parse_bool
 from .validators import ConfigField
 
@@ -1750,8 +1756,28 @@ def _build_cfg() -> tuple[Config, tuple[str, ...]]:
 # The config.toml that cfg is built from; a later read of it reports only what is new.
 loaded_config_file = _config_file()
 cfg, load_warnings = _build_cfg()
+# Once, at import on the main thread: a later warning stays in this process, because
+# a write from a loading thread would race native readers of the environment.
+if shown := shown_marks():
+    os.environ[SHOWN_ENV_VAR] = shown
 
 # Canonicalize LILBEE_DATA at the cfg.data_root resolution boundary so
 # spawn-context worker subprocesses inherit the same data root.
 # ``setdefault`` preserves a user-set value.
 os.environ.setdefault("LILBEE_DATA", str(cfg.data_root))
+
+
+def export_download_environment() -> None:
+    """Publish ``fast_model_downloads`` to hf_xet, which reads it from the environment.
+
+    Call once at startup on the main thread: hf_xet caches the value when its
+    session is built, so a later change lands on restart, and a write from a
+    download thread would race native readers of the environment.
+    """
+    if cfg.fast_model_downloads:
+        os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+    else:
+        os.environ.pop("HF_XET_HIGH_PERFORMANCE", None)
+
+
+export_download_environment()

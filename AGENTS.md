@@ -500,9 +500,11 @@ closure. These rules exist because each one shipped a broken artifact once.
   cancelled soft cell skips `attach-prerelease` and every dispatch job behind
   it. `attach-prerelease` therefore carries `!cancelled()`, keeps its build
   `needs` for ordering, and calls `scripts/assert_required_binaries.sh`, which
-  derives the required assets from the cells in `release.yml` that carry no
-  `soft: true`. A new required cell needs nothing added: drop `soft` and the
-  gate picks it up.
+  derives the required assets from the cells in `.github/release-cells.yml`
+  that carry no `soft: true`. A new required cell needs nothing added: drop `soft` and the
+  gate picks it up. `release.yml` reads the same file for its build matrix, and
+  `executable-check.yml` narrows it to one cell with `only_asset` so a pull request that
+  changes dependencies builds an executable.
 - **A failed publish leg is retried once too.** `release-watch.yml` runs
   `scripts/release_watch.sh` after every Release candidate, waits for the seven
   dispatched legs plus `verify-release` (which fires on the candidate's

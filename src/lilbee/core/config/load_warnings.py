@@ -5,16 +5,24 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
 log = logging.getLogger(__name__)
 
-# Marks of the warnings this process tree already logged; a child inherits it.
+_MARK_LENGTH = 12
+
+# A child inherits the marks the startup load logged, so it does not log them again.
 SHOWN_ENV_VAR = "LILBEE_LOAD_WARNINGS_SHOWN"
 _MARK_SEPARATOR = ","
-_MARK_LENGTH = 12
+
+# Marks of the warnings this process already logged, seeded from the parent's.
+_shown: set[str] = {
+    mark for mark in os.environ.get(SHOWN_ENV_VAR, "").split(_MARK_SEPARATOR) if mark
+}
+_shown_lock = threading.Lock()
 
 _collected: ContextVar[list[str] | None] = ContextVar("lilbee_load_warnings", default=None)
 
@@ -29,7 +37,7 @@ def _mark(message: str) -> str:
 
 
 def warn_on_load(message: str, version: str = "") -> None:
-    """Log *message* unless this process tree already did, and keep it for a collecting load.
+    """Log *message* unless this process already did, and keep it for a collecting load.
 
     With *version*, the state of the file the message is about, a message that
     was logged for another state of that file is logged again.
@@ -37,12 +45,24 @@ def warn_on_load(message: str, version: str = "") -> None:
     found = _collected.get()
     if found is not None and message not in found:
         found.append(message)
-    shown = [mark for mark in os.environ.get(SHOWN_ENV_VAR, "").split(_MARK_SEPARATOR) if mark]
     mark = _mark(message + version)
-    if mark in shown:
-        return
+    with _shown_lock:
+        if mark in _shown:
+            return
+        _shown.add(mark)
     log.warning("%s", message)
-    os.environ[SHOWN_ENV_VAR] = _MARK_SEPARATOR.join([*shown, mark])
+
+
+def shown_marks() -> str:
+    """The marks logged so far, as the value a child inherits in ``SHOWN_ENV_VAR``."""
+    with _shown_lock:
+        return _MARK_SEPARATOR.join(sorted(_shown))
+
+
+def forget_shown() -> None:
+    """Forget which warnings this process logged, so the next one logs again."""
+    with _shown_lock:
+        _shown.clear()
 
 
 def refuse_variable(message: str) -> None:

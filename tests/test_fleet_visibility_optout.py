@@ -27,27 +27,25 @@ class TestADeliberateCpuOptOutSurvives:
     un-hides hardware the caller was told not to have."""
 
     def test_an_empty_mask_with_no_orchestrator_marker_is_kept(self, monkeypatch) -> None:
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-        gpu_env._clear_empty_visible_device_vars()
-        assert gpu_env.os.environ["CUDA_VISIBLE_DEVICES"] == ""
+        env = {"CUDA_VISIBLE_DEVICES": ""}
+        gpu_env._clear_empty_visible_device_vars(env)
+        assert env["CUDA_VISIBLE_DEVICES"] == ""
 
     def test_an_empty_mask_is_cleared_when_the_runtime_says_a_gpu_is_exposed(
         self, monkeypatch, caplog
     ) -> None:
         # The case this was written for: the NVIDIA container runtime exposes the
         # card through its own variable while leaving CUDA_VISIBLE_DEVICES empty.
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-        monkeypatch.setenv("NVIDIA_VISIBLE_DEVICES", "all")
-        with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.gpu_env"):
-            gpu_env._clear_empty_visible_device_vars()
-        assert "CUDA_VISIBLE_DEVICES" not in gpu_env.os.environ
+        env = {"CUDA_VISIBLE_DEVICES": "", "NVIDIA_VISIBLE_DEVICES": "all"}
+        with caplog.at_level(logging.DEBUG, logger="lilbee.providers.fleet.gpu_env"):
+            gpu_env._clear_empty_visible_device_vars(env)
+        assert "CUDA_VISIBLE_DEVICES" not in env
 
     def test_a_void_runtime_marker_is_not_a_gpu(self, monkeypatch) -> None:
         # "void" and "none" are the container runtime's own words for no GPU.
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-        monkeypatch.setenv("NVIDIA_VISIBLE_DEVICES", "void")
-        gpu_env._clear_empty_visible_device_vars()
-        assert gpu_env.os.environ["CUDA_VISIBLE_DEVICES"] == ""
+        env = {"CUDA_VISIBLE_DEVICES": "", "NVIDIA_VISIBLE_DEVICES": "void"}
+        gpu_env._clear_empty_visible_device_vars(env)
+        assert env["CUDA_VISIBLE_DEVICES"] == ""
 
     @pytest.mark.parametrize(
         "var",
@@ -56,10 +54,9 @@ class TestADeliberateCpuOptOutSurvives:
     def test_another_vendors_opt_out_is_never_touched(self, monkeypatch, var: str) -> None:
         # The NVIDIA container runtime says nothing about AMD or Vulkan, so its
         # marker cannot justify un-hiding those.
-        monkeypatch.setenv(var, "")
-        monkeypatch.setenv("NVIDIA_VISIBLE_DEVICES", "all")
-        gpu_env._clear_empty_visible_device_vars()
-        assert gpu_env.os.environ[var] == ""
+        env = {var: "", "NVIDIA_VISIBLE_DEVICES": "all"}
+        gpu_env._clear_empty_visible_device_vars(env)
+        assert env[var] == ""
 
 
 class TestTheConfiguredPinAndTheInheritedMask:
@@ -71,15 +68,15 @@ class TestTheConfiguredPinAndTheInheritedMask:
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "gpu_devices", "0")
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-        assert gpu_env._apply_gpu_devices_pin() is True
-        assert gpu_env.os.environ["CUDA_VISIBLE_DEVICES"] == "0"
+        env = {"CUDA_VISIBLE_DEVICES": ""}
+        assert gpu_env._apply_gpu_devices_pin(env) is True
+        assert env["CUDA_VISIBLE_DEVICES"] == "0"
 
     def test_a_pin_yields_to_a_mask_that_names_devices(self, monkeypatch) -> None:
         # Equally explicit, and arriving closer to the process.
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "gpu_devices", "0")
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
-        assert gpu_env._apply_gpu_devices_pin() is True
-        assert gpu_env.os.environ["CUDA_VISIBLE_DEVICES"] == "3"
+        env = {"CUDA_VISIBLE_DEVICES": "3"}
+        assert gpu_env._apply_gpu_devices_pin(env) is True
+        assert env["CUDA_VISIBLE_DEVICES"] == "3"

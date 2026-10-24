@@ -293,7 +293,7 @@ class TestResolveVisionCtx:
         assert ep.resolve_vision_ctx(model) == 4096  # _VISION_FALLBACK_N_CTX
 
 
-def test_apply_vulkan_loader_safety_disables_layers_and_icds(monkeypatch) -> None:
+def test_vulkan_loader_safety_disables_layers_and_icds(monkeypatch) -> None:
     from lilbee.providers.fleet import gpu_env
     from lilbee.providers.fleet.gpu_select import VulkanIcdEnvVar
 
@@ -305,13 +305,12 @@ def test_apply_vulkan_loader_safety_disables_layers_and_icds(monkeypatch) -> Non
     monkeypatch.delenv(gpu_env._VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)
     monkeypatch.delenv(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, raising=False)
 
-    gpu_env._apply_vulkan_loader_safety()
+    env: dict[str, str] = {}
+    gpu_env._apply_vulkan_loader_safety(env)
 
-    assert (
-        os.environ[gpu_env._VK_LOADER_LAYERS_DISABLE_ENV_VAR]
-        == gpu_env._VK_LOADER_LAYERS_DISABLE_VALUE
-    )
-    assert os.environ[VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE] == "/etc/vulkan/icd.d/other.json"
+    assert env[gpu_env._VK_LOADER_LAYERS_DISABLE_ENV_VAR] == gpu_env._VK_LOADER_LAYERS_DISABLE_VALUE
+    assert env[VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE] == "/etc/vulkan/icd.d/other.json"
+    assert gpu_env._VK_LOADER_LAYERS_DISABLE_ENV_VAR not in os.environ
 
 
 class TestEmbedTokenCap:

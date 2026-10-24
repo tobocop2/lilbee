@@ -1,0 +1,68 @@
+# The executable build cells for release.yml. The `plan` job in that workflow
+# reads this file and hands the cells to the `build` job as its matrix, so a
+# caller can narrow a run to one cell (the `only_asset` input).
+#
+# `soft: true` marks a droppable cell. It is read by `continue-on-error` in
+# release.yml and by scripts/release_required_assets.sh, so a cell cannot be
+# droppable for one gate and required by another.
+- os: ubuntu-latest
+  container: quay.io/pypa/manylinux_2_34_x86_64
+  asset_name: lilbee-linux-x86_64
+  backend: vulkan
+# Pre-Haswell-safe Linux build: the same Vulkan binary with the stock
+# lancedb swapped for the +compat wheel and the launcher held to an
+# x86-64-v2 baseline, so it runs on Sandy Bridge / Bulldozer CPUs. Soft and
+# self-contained -- no pyproject/uv.lock footprint, and a failure (until the
+# wheel index is live) never blocks the release. This is the binary the CPU
+# package channels (AUR/snap/flatpak/nix/homebrew) would carry as a -compat.
+- os: ubuntu-latest
+  container: quay.io/pypa/manylinux_2_34_x86_64
+  asset_name: lilbee-compat-linux-x86_64
+  backend: vulkan
+  compat: true
+  soft: true
+  march: x86-64-v2
+# macos_floor is the OS this asset actually runs on, and every bundled
+# dylib is checked against it. `uv sync` resolves wheels for the runner,
+# so numpy/scipy arrive as macosx_14_0 and 14.0 is the honest floor here.
+- os: macos-latest
+  asset_name: lilbee-macos-arm64
+  backend: metal
+  macos_floor: "14.0"
+# Intel Mac: built natively on macos-15-intel, GitHub's Intel image
+# (Nuitka can't cross-compile arch from the arm64 runner). Required: the
+# default Homebrew formula carries an Intel url, and Homebrew refuses to
+# load a formula that has no url for the host architecture, so a release
+# without this asset breaks `brew install lilbee` on every Intel Mac.
+# The install below pins wheel resolution to the x86_64 target rather than
+# the runner, so the deps come in at their oldest macOS build (pyarrow's
+# 12.0 is the binding one) and reach every Ivy Bridge / Haswell Mac, which
+# cap at macOS 12. The engine picks its CPU variant at runtime (see
+# cmake_args.sh).
+- os: macos-15-intel
+  asset_name: lilbee-macos-x86_64
+  backend: cpu
+  macos_floor: "12.0"
+# Pre-Haswell-safe Intel Mac build: same self-contained model as the
+# linux/windows compat cells (stock lancedb swapped for +compat, launcher
+# held to x86-64-v2). Covers the AVX-but-no-AVX2 tail (e.g. 2013 Mac Pro)
+# and guards against an AVX2-baselined stock lancedb SIGILL.
+- os: macos-15-intel
+  asset_name: lilbee-compat-macos-x86_64
+  backend: cpu
+  compat: true
+  soft: true
+  march: x86-64-v2
+  macos_floor: "12.0"
+- os: windows-latest
+  asset_name: lilbee-windows-x86_64.exe
+  backend: vulkan
+# Pre-Haswell-safe Windows build. The lilbee-compat Scoop manifest in
+# tobocop2/scoop-lilbee pins it.
+# Same soft, self-contained model as the Linux compat cell; MSVC's default
+# baseline is already conservative, so no -march override is needed here.
+- os: windows-latest
+  asset_name: lilbee-compat-windows-x86_64.exe
+  backend: vulkan
+  compat: true
+  soft: true

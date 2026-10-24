@@ -241,9 +241,12 @@ def engine_help(binary: Path) -> str:
     Empty when the binary cannot run or answer in time: every caller reads an
     absent flag as unsupported, so a launch never carries a flag it did not see.
     """
+    from lilbee.providers.fleet.gpu_env import engine_environ
+
     try:
         done = subprocess.run(  # noqa: S603 - argv is the resolved engine binary and a literal
             [str(binary), "--help"],
+            env=engine_environ(),
             capture_output=True,
             encoding="utf-8",
             errors="replace",
