@@ -417,9 +417,7 @@ class TestTranslateOptions:
         ref = parse_model_ref("ollama/llama3.2:1b")
         assert "reasoning_effort" not in translate_options({"think": True}, ref)
 
-    @pytest.mark.parametrize(
-        "option", ["seed", "frequency_penalty", "presence_penalty"], ids=str
-    )
+    @pytest.mark.parametrize("option", ["seed", "frequency_penalty", "presence_penalty"], ids=str)
     def test_anthropic_refuses_an_option_it_cannot_take(self, option: str) -> None:
         """Anthropic has no such sampler; the request is refused before any call."""
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
