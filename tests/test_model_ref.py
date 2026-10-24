@@ -426,6 +426,18 @@ class TestTranslateOptions:
         assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
         assert caught.value.provider == "remote"
 
+    @pytest.mark.parametrize(
+        ("option", "zero"),
+        [("seed", 0), ("frequency_penalty", 0.0), ("presence_penalty", 0.0)],
+        ids=str,
+    )
+    def test_anthropic_refuses_a_zero_value_too(self, option: str, zero: float) -> None:
+        """A zero is a value the caller set; only None means unset."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        with pytest.raises(ProviderError, match=option) as caught:
+            translate_options({option: zero}, ref)
+        assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+
     def test_anthropic_refusal_names_every_option_set(self) -> None:
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
         with pytest.raises(ProviderError) as caught:
