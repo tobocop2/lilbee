@@ -171,6 +171,8 @@ ORDER_LISTINGS = {
     "/twice/again": ("/twice/na%C3%AFve", "/twice/naïve"),
 }
 # A link with an escaped hyphen, and the equivalent address a library holds for it.
+# The site answers these paths with a permanent redirect to a fixed target.
+REDIRECTS = {"/moved": "/query/target"}
 EQUIVALENT_LINK = "/same/x%2Dy"
 EQUIVALENT_STORED = "/same/x-y"
 # How the text of a stored copy starts before a crawl, and how a served page names its request.
@@ -423,7 +425,6 @@ def _fixed_pages(filler: str, robots_status: int, robots_text: str) -> dict[str,
             HTTPStatus.OK,
             f"<html><body><h1>Index</h1>{defaults}{filler}</body></html>",
         ),
-        "/moved": (HTTPStatus.MOVED_PERMANENTLY, "/query/target"),
         "/robots.txt": (robots_status, robots_text),
         ROBOTS_LISTING: (
             HTTPStatus.OK,
@@ -603,13 +604,14 @@ class _Site:
                     site.cookies.append((self.path, self.headers.get("Cookie", "")))
                     authorization = self.headers.get("Authorization", "")
                     site.authorizations.append((self.path, authorization))
-                status, body = site.reply(self.path, self.headers.get("Cookie", ""), authorization)
-                if status == HTTPStatus.MOVED_PERMANENTLY:
-                    self.send_response(status)
-                    self.send_header("Location", body)
+                target = REDIRECTS.get(self.path)
+                if target is not None:
+                    self.send_response(HTTPStatus.MOVED_PERMANENTLY)
+                    self.send_header("Location", target)
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
+                status, body = site.reply(self.path, self.headers.get("Cookie", ""), authorization)
                 data = body.encode()
                 self.send_response(status)
                 self.send_header("Content-Type", CONTENT_TYPES.get(self.path, "text/html"))
@@ -658,6 +660,7 @@ def _self_signed_context(folder: Path) -> ssl.SSLContext:
         )
     )
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(cert_path, key_path)
     return context
 

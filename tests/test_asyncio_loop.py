@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from unittest import mock
 
 import pytest
-from filelock import ReadWriteLock
 
 from lilbee.runtime import asyncio_loop
 from lilbee.runtime.lock import ResetRefusedError, _no_sync_running, sync_running
-from tests.conftest import reset_held_on_a_thread
+from tests.conftest import read_takes_hooked, reset_held_on_a_thread
 
 
 @pytest.fixture(autouse=True)
@@ -138,11 +137,11 @@ def test_shutdown_cancels_pending_tasks() -> None:
 
 def test_shutdown_does_not_wait_for_the_reset_a_sync_waits_for(tmp_path: Path) -> None:
     waiting = threading.Event()
-    real_acquire = ReadWriteLock.acquire_read
 
-    def _acquire(lock: ReadWriteLock, *args, **kwargs) -> None:
+    @contextmanager
+    def _acquire(_lock, _timeout):
         waiting.set()
-        real_acquire(lock, *args, **kwargs)
+        yield
 
     async def _sync() -> None:
         async with sync_running(tmp_path):
@@ -150,7 +149,7 @@ def test_shutdown_does_not_wait_for_the_reset_a_sync_waits_for(tmp_path: Path) -
 
     with (
         reset_held_on_a_thread(tmp_path),
-        mock.patch.object(ReadWriteLock, "acquire_read", _acquire),
+        read_takes_hooked(_acquire),
     ):
         sync = asyncio.run_coroutine_threadsafe(_sync(), asyncio_loop.get_loop())
         assert waiting.wait(5)

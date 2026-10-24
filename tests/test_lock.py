@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
-from filelock import FileLock, ReadWriteLock
+from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import cfg
@@ -40,7 +40,11 @@ from lilbee.runtime.lock import (
     sync_running,
     write_lock,
 )
-from tests.conftest import cancel_set_when_the_sync_lock_is_granted, reset_held_on_a_thread
+from tests.conftest import (
+    cancel_set_when_the_sync_lock_is_granted,
+    read_takes_hooked,
+    reset_held_on_a_thread,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -377,17 +381,17 @@ def _sync_lock_close_refused() -> Generator[None, None, None]:
 def _sync_take_that_ends_busy() -> Generator[threading.Event, None, None]:
     """Yield an event that is set when a take of the read side of a sync lock ends busy."""
     ended_busy = threading.Event()
-    real_take = ReadWriteLock.acquire_read
 
-    def _take(lock: ReadWriteLock, *args: object, **kwargs: object) -> object:
+    @contextmanager
+    def _take(lock: ReadWriteLock | AsyncReadWriteLock, _timeout: float | None):
         try:
-            return real_take(lock, *args, **kwargs)
+            yield
         except FileLockTimeout:
             if Path(lock.lock_file).name == "sync.lock":
                 ended_busy.set()
             raise
 
-    with mock.patch.object(ReadWriteLock, "acquire_read", _take):
+    with read_takes_hooked(_take):
         yield ended_busy
 
 
@@ -421,14 +425,15 @@ def _recorded_read_takes() -> Generator[tuple[list[float], threading.Event], Non
     """
     waits: list[float] = []
     first_take = threading.Event()
-    real_acquire = ReadWriteLock.acquire_read
 
-    def _acquire(lock: ReadWriteLock, timeout: float = -1, *, blocking: bool = True) -> None:
+    @contextmanager
+    def _acquire(_lock: ReadWriteLock | AsyncReadWriteLock, timeout: float | None):
+        assert timeout is not None
         waits.append(timeout)
         first_take.set()
-        real_acquire(lock, timeout, blocking=blocking)
+        yield
 
-    with mock.patch.object(ReadWriteLock, "acquire_read", _acquire):
+    with read_takes_hooked(_acquire):
         yield waits, first_take
 
 
@@ -821,16 +826,16 @@ class TestSyncMark:
     async def test_a_sync_cancelled_as_its_take_succeeds_frees_the_mark(
         self, tmp_path: Path
     ) -> None:
-        still_referenced: list[ReadWriteLock] = []
+        still_referenced: list[AsyncReadWriteLock] = []
         taken = threading.Event()
         proceed = threading.Event()
-        real_acquire = ReadWriteLock.acquire_read
+        real_acquire = AsyncReadWriteLock.acquire_read
 
-        def _acquire(lock: ReadWriteLock, *args, **kwargs) -> None:
+        async def _acquire(lock: AsyncReadWriteLock, *args, **kwargs) -> None:
             still_referenced.append(lock)
-            real_acquire(lock, *args, **kwargs)
+            await real_acquire(lock, *args, **kwargs)
             taken.set()
-            proceed.wait(5)
+            await asyncio.to_thread(proceed.wait, 5)
 
         entered = []
 
@@ -838,7 +843,7 @@ class TestSyncMark:
             async with sync_running(tmp_path):
                 entered.append("sync")
 
-        with mock.patch.object(ReadWriteLock, "acquire_read", _acquire):
+        with mock.patch.object(AsyncReadWriteLock, "acquire_read", _acquire):
             sync_task = asyncio.create_task(_sync())
             assert await asyncio.to_thread(taken.wait, 5)
             sync_task.cancel()
@@ -857,9 +862,9 @@ class TestSyncMark:
         taking = threading.Event()
         proceed = threading.Event()
 
-        def _refused(lock: ReadWriteLock, *args, **kwargs) -> None:
+        async def _refused(lock: AsyncReadWriteLock, *args, **kwargs) -> None:
             taking.set()
-            proceed.wait(5)
+            await asyncio.to_thread(proceed.wait, 5)
             raise sqlite3.OperationalError("disk I/O error")
 
         entered = []
@@ -869,7 +874,7 @@ class TestSyncMark:
                 entered.append("sync")
 
         with (
-            mock.patch.object(ReadWriteLock, "acquire_read", _refused),
+            mock.patch.object(AsyncReadWriteLock, "acquire_read", _refused),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
         ):
             sync_task = asyncio.create_task(_sync())
@@ -893,24 +898,29 @@ class TestSyncMark:
     async def test_the_mark_is_free_at_the_end_of_the_block_not_at_garbage_collection(
         self, tmp_path: Path, side: str
     ) -> None:
-        still_referenced: list[ReadWriteLock] = []
-        real_acquire = {
-            "acquire_read": ReadWriteLock.acquire_read,
-            "acquire_write": ReadWriteLock.acquire_write,
-        }[side]
+        still_referenced: list[ReadWriteLock | AsyncReadWriteLock] = []
+        real_acquire_write = ReadWriteLock.acquire_write
 
-        def _acquire(lock: ReadWriteLock, *args, **kwargs) -> None:
+        @contextmanager
+        def _referenced(lock: ReadWriteLock | AsyncReadWriteLock, _timeout: float | None):
             if Path(lock.lock_file).name == "sync.lock":
                 still_referenced.append(lock)
-            real_acquire(lock, *args, **kwargs)
+            yield
 
-        with mock.patch.object(ReadWriteLock, side, _acquire):
-            if side == "acquire_read":
+        def _acquire_write(lock: ReadWriteLock, *args, **kwargs) -> None:
+            with _referenced(lock, None):
+                real_acquire_write(lock, *args, **kwargs)
+
+        if side == "acquire_read":
+            with read_takes_hooked(_referenced):
                 async with sync_running(tmp_path):
                     pass
-            else:
-                with _no_sync_running(tmp_path):
-                    pass
+        else:
+            with (
+                mock.patch.object(ReadWriteLock, "acquire_write", _acquire_write),
+                _no_sync_running(tmp_path),
+            ):
+                pass
 
         assert len(still_referenced) == 1
         with _no_sync_running(tmp_path):
@@ -1119,10 +1129,15 @@ class TestSyncMark:
                 return
             raise sqlite3.OperationalError("disk I/O error")
 
+        @contextmanager
+        def _read_refused(_lock: ReadWriteLock | AsyncReadWriteLock, _timeout: float | None):
+            raise sqlite3.OperationalError("disk I/O error")
+            yield
+
         before = set(threading.enumerate())
         ran = []
         with (
-            mock.patch.object(ReadWriteLock, "acquire_read", _refused),
+            read_takes_hooked(_read_refused),
             mock.patch.object(ReadWriteLock, "acquire_write", _refused),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
         ):
@@ -1271,6 +1286,9 @@ class TestSyncMark:
         def _no_link(src: str, dst: str, **_kwargs: object) -> None:
             raise OSError(errno.ENOTSUP, "Operation not supported", str(src), None, str(dst))
 
+        # filelock links the lock only in a directory other accounts can write; a disk with
+        # no permissions, such as exFAT, reports every directory that way.
+        tmp_path.chmod(0o777)
         ran = []
         with (
             mock.patch.object(os, "link", _no_link),
