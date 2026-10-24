@@ -7,6 +7,7 @@ import pytest
 from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.core.config import Config
 from lilbee.modelhub.model_manager.types import RemoteModel
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import (
     format_remote_ref,
     is_native_gguf_ref,
@@ -415,6 +416,29 @@ class TestTranslateOptions:
     def test_think_left_on_sends_no_reasoning_effort(self) -> None:
         ref = parse_model_ref("ollama/llama3.2:1b")
         assert "reasoning_effort" not in translate_options({"think": True}, ref)
+
+    @pytest.mark.parametrize(
+        "option", ["seed", "frequency_penalty", "presence_penalty"], ids=str
+    )
+    def test_anthropic_refuses_an_option_it_cannot_take(self, option: str) -> None:
+        """Anthropic has no such sampler; the request is refused before any call."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        with pytest.raises(ProviderError, match=option) as caught:
+            translate_options({"temperature": 0.5, option: 1}, ref)
+        assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+        assert caught.value.provider == "remote"
+
+    def test_anthropic_refusal_names_every_option_set(self) -> None:
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        with pytest.raises(ProviderError) as caught:
+            translate_options({"seed": 1, "presence_penalty": 0.5}, ref)
+        assert "seed" in str(caught.value)
+        assert "presence_penalty" in str(caught.value)
+
+    @pytest.mark.parametrize("raw", ["openai/gpt-4o", "ollama/llama3.2:1b"])
+    def test_other_refs_keep_seed_and_penalties(self, raw: str) -> None:
+        opts = {"seed": 7, "frequency_penalty": 0.1, "presence_penalty": 0.2}
+        assert translate_options(opts, parse_model_ref(raw)) == opts
 
 
 class TestChatOptionsThink:
