@@ -8,6 +8,17 @@ and general system prompts, and the CORS allow-origin regex.
 
 from __future__ import annotations
 
+from typing import Any
+from urllib.parse import quote
+
+from lilbee.core.config import mediawiki_namespaces as wiki_namespaces
+
+# Upper bounds for the numbers lilbee passes to the crawl engine, shared by every entry point.
+MAX_CRAWL_DEPTH = 100
+MAX_CRAWL_PAGES = 10_000_000
+MAX_CRAWL_WAIT_SECONDS = 3600.0
+MAX_CRAWL_CONCURRENCY = 256
+
 DEFAULT_IGNORE_DIRS = frozenset(
     {
         "node_modules",
@@ -48,6 +59,8 @@ CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
 CITATIONS_TABLE = "_citations"
 MEMORIES_TABLE = "_memories"
+# Which file each crawled page owns; kept, like memories, through a rebuild.
+CRAWL_PAGES_TABLE = "_crawl_pages"
 META_TABLE = "_meta"
 PAGE_TEXTS_TABLE = "_page_texts"
 CONCEPT_NODES_TABLE = "concept_nodes"
@@ -116,18 +129,20 @@ _ATTACHMENT_EXCLUDE: tuple[str, ...] = (
     r"\?attachment_id=",
 )
 
-# Regexes against the whole URL, not globs, so a bare prefix also matches
-# longer words: /cart excluded /cartography. Require a segment boundary.
+# Regexes against the whole URL, not globs. A generic name matches only as the
+# whole first path segment of a site: /cart and /cart/items, but neither
+# /cartography nor /docs/payments/cart.
+_SITE_ROOT = r"^https?://[^/?#]+"
 _PATH_BOUNDARY = r"(?:/|\?|#|$)"
 
 
-def _whole_segments(*paths: str) -> tuple[str, ...]:
-    """Anchor each path prefix so it matches a whole segment, not a word."""
-    return tuple(path + _PATH_BOUNDARY for path in paths)
+def _first_segments(*paths: str) -> tuple[str, ...]:
+    """Anchor each path so it matches only the whole first path segment of a site."""
+    return tuple(_SITE_ROOT + path + _PATH_BOUNDARY for path in paths)
 
 
 # Auth and account flows (generic across CMSes and e-commerce platforms).
-_AUTH_EXCLUDE: tuple[str, ...] = _whole_segments(
+_AUTH_EXCLUDE: tuple[str, ...] = _first_segments(
     r"/login",
     r"/logout",
     r"/register",
@@ -141,7 +156,7 @@ _AUTH_EXCLUDE: tuple[str, ...] = _whole_segments(
 _AUTH_EXCLUDE = (*_AUTH_EXCLUDE, r"/my-account/")
 
 # E-commerce transactional flows (cart / checkout / compare / etc.).
-_ECOMMERCE_EXCLUDE: tuple[str, ...] = _whole_segments(
+_ECOMMERCE_EXCLUDE: tuple[str, ...] = _first_segments(
     r"/cart",
     r"/checkout",
     r"/wishlist",
@@ -154,32 +169,6 @@ _ECOMMERCE_EXCLUDE = (
     r"/collections/.+/products/.+\?page=",
 )
 
-# Marketing / tracking query parameters (utm_*, fbclid, gclid, etc.).
-# Vendor campaign tokens only. Dropping ?utm_source= is free (the canonical
-# URL is in the frontier too), but ?ref= and ?share= are ordinary content
-# links on docs and forum platforms.
-_TRACKING_EXCLUDE: tuple[str, ...] = (
-    (
-        r"[?&]("
-        r"utm_[a-z_]+"
-        r"|fbclid|gclid|msclkid|yclid"
-        r"|mc_cid|mc_eid"
-        r"|_hsenc|_hsmi|hsCtaTracking"
-        r"|mkt_tok|mkt_[a-z_]+"
-        r"|trk|trkInfo"
-        r"|dm_i"
-        r"|vero_id|vero_conv"
-        r"|oly_anon_id|oly_enc_id"
-        r"|igshid"
-        r"|pk_campaign|pk_source|pk_medium|pk_[a-z_]+"
-        r"|_ga"
-        r"|affiliate|aff_id|aff_ref|aff|partner"
-        r"|srsltid"
-        r"|replytocom"
-        r")="
-    ),
-)
-
 # Site-meta URLs and non-HTML resources; skipped before fetch.
 _META_EXCLUDE: tuple[str, ...] = (
     r"/sitemap[^/]*\.xml",
@@ -190,23 +179,47 @@ _META_EXCLUDE: tuple[str, ...] = (
     r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp3|mp4|webm|ogg|ttf|woff2?|css|js|map|json|xml)(\?.*)?$",
 )
 
-# Mediawiki/Wikipedia navlinks that dominate BFS before the article body.
+
+def _namespace_pattern(names: tuple[str, ...]) -> str:
+    """The pattern for a wiki address in one of the namespaces *names*, in any language.
+
+    crawlberg matches a pattern against the address with every character outside ASCII
+    percent-encoded as UTF-8, so the pattern holds each name in that form.
+    """
+    return rf"/wiki/(?:{'|'.join(dict.fromkeys(quote(name) for name in names))}):"
+
+
+# Mediawiki/Wikipedia navlinks that dominate BFS before the article body. A wiki shows each
+# namespace under its own language, so each pattern lists the names of the largest Wikipedias.
+# A pattern needs the namespace name before the first colon: an article title that holds a
+# colon, such as Re:Zero or Mission:_Impossible, is content and is crawled.
+# Help: is a content namespace and is crawled.
 _MEDIAWIKI_EXCLUDE: tuple[str, ...] = (
     r"/wiki/Main_Page$",
-    r"/wiki/Wikipedia:",
-    r"/wiki/Portal:",
-    r"/wiki/Help:",
-    r"/wiki/Special:",
-    r"/wiki/Category:",
-    r"/wiki/Template:",
-    r"/wiki/Template_talk:",
-    r"/wiki/Talk:",
-    r"/wiki/File:",
-    r"/wiki/File_talk:",
-    r"/wiki/User:",
-    r"/wiki/User_talk:",
+    _namespace_pattern(wiki_namespaces.PROJECT),
+    _namespace_pattern(wiki_namespaces.PORTAL),
+    _namespace_pattern(wiki_namespaces.SPECIAL),
+    _namespace_pattern(wiki_namespaces.CATEGORY),
+    _namespace_pattern(wiki_namespaces.TEMPLATE),
+    _namespace_pattern(wiki_namespaces.TEMPLATE_TALK),
+    _namespace_pattern(wiki_namespaces.TALK),
+    _namespace_pattern(wiki_namespaces.FILE),
+    _namespace_pattern(wiki_namespaces.FILE_TALK),
+    _namespace_pattern(wiki_namespaces.USER),
+    _namespace_pattern(wiki_namespaces.USER_TALK),
     r"/w/index\.php",
 )
+
+
+def exclude_pattern_lines(value: Any) -> Any:
+    """The patterns in *value*: a string is one pattern per line, any other value passes through.
+
+    Regex uses commas (``{2,4}``) and pipes (alternation), so a newline is the only separator.
+    """
+    if isinstance(value, str):
+        return [line.strip() for line in value.splitlines() if line.strip()]
+    return value
+
 
 DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
     *_WP_EXCLUDE,
@@ -216,7 +229,6 @@ DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
     *_ATTACHMENT_EXCLUDE,
     *_AUTH_EXCLUDE,
     *_ECOMMERCE_EXCLUDE,
-    *_TRACKING_EXCLUDE,
     *_META_EXCLUDE,
     *_MEDIAWIKI_EXCLUDE,
 )

@@ -81,6 +81,27 @@ MAX_DEFAULT_CHARS = 48
 # are registered so the scan below stays green, but stay out of the document:
 # they are test hooks and process plumbing, not settings anyone should set.
 ENV_ONLY: dict[str, tuple[str, bool]] = {
+    "LILBEE_CRAWL_AUTHORIZATION": (
+        "Authorization header value `lilbee add` sends to the host `LILBEE_CRAWL_LOGIN_HOST` "
+        "names; the same as `--authorization`, kept out of shell history",
+        False,
+    ),
+    "LILBEE_CRAWL_PASSWORD": (
+        "Basic-auth password `lilbee add` sends with `--username` to the host "
+        "`LILBEE_CRAWL_LOGIN_HOST` names; the same as `--password`, kept out of shell history",
+        False,
+    ),
+    "LILBEE_CRAWL_COOKIE": (
+        "Cookie header value `lilbee add` sends to the host `LILBEE_CRAWL_LOGIN_HOST` names; "
+        "the same as `--cookie`, kept out of shell history",
+        False,
+    ),
+    "LILBEE_CRAWL_LOGIN_HOST": (
+        "The one host that gets the login in the other `LILBEE_CRAWL_*` login variables. "
+        "The match ignores the scheme and the port. "
+        "Unset, or a command that crawls another host, sends none of them",
+        False,
+    ),
     "LILBEE_DATA": (
         "Data directory for this library, the same value as `data_root`. The "
         "older and more common spelling; `--data-dir` overrides it",

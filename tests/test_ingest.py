@@ -68,9 +68,10 @@ class _FakeIndex:
             "source_type": source_type,
         }
 
-    def write_batch(self, items):
+    def write_batch(self, items, present=None):
         # Each batched doc upserts a source record so multi-sync tests see it via
         # get_sources(); the new row holds nothing out.
+        items = [it for it in items if present is None or present(it.source)]
         for it in items:
             self.upsert(it.source, it.file_hash, len(it.records))
             self.held.pop(it.source, None)
@@ -209,9 +210,13 @@ def _real_ingest_result(name, *, file_hash, page_text="page one of a.pdf", stat=
             "vector": [0.1] * cfg.embedding_dim,
         }
     ]
+    # The flush indexes only a file that is still there.
+    path = cfg.documents_dir / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(page_text, encoding="utf-8")
     return _IngestResult(
         name=name,
-        path=Path(name),
+        path=path,
         chunk_count=1,
         error=None,
         file_hash=file_hash,
@@ -2869,11 +2874,11 @@ class TestStatShortCircuit:
         original = pipeline._classify_file_change
         seen = {"n": 0}
 
-        def _spy(name, path, record, markers):
+        def _spy(name, path, record, markers, titles):
             seen["n"] += 1
             if seen["n"] >= 3:
                 cancel.set()  # trip cancel partway through the pass
-            return original(name, path, record, markers)
+            return original(name, path, record, markers, titles)
 
         monkeypatch.setattr(pipeline, "_classify_file_change", _spy)
         plan = pipeline._plan_file_changes(disk, {}, cancel=cancel)
@@ -4099,9 +4104,9 @@ class TestStreamedPlan:
         classified: list[str] = []
         real_classify = pipeline._classify_file_change
 
-        def _spy_classify(name, path, record, markers):
+        def _spy_classify(name, path, record, markers, titles):
             classified.append(name)
-            return real_classify(name, path, record, markers)
+            return real_classify(name, path, record, markers, titles)
 
         def _extract(*_args, **_kwargs):
             cancel.set()
@@ -5403,6 +5408,16 @@ class TestIngestMarkdownEdgeCases:
         with mock.patch("lilbee.data.extract.document.chunk_text", return_value=[]):
             result, _ = await ingest_markdown(md, "blank.md")
         assert result == []
+
+    async def test_crawled_page_without_heading_is_titled_by_its_readable_name(self, isolated_env):
+        from lilbee.data.ingest import ingest_markdown
+
+        md = isolated_env / "Cannabis~25c17501722158ba.md"
+        md.write_text(
+            "[Home](/) [About](/about)\n\n# Heading after the nav\n\nBody.\n", encoding="utf-8"
+        )
+        _, meta = await ingest_markdown(md, "_web/en.wikipedia.org/wiki/" + md.name)
+        assert meta.title == "Cannabis"
 
     async def test_frontmatter_only_produces_chunks(self, isolated_env):
         from lilbee.data.ingest import ingest_markdown
@@ -8590,6 +8605,24 @@ class TestFlushArchiveMembers:
         assert items[1].page_texts == member.page_texts
         assert items[1].meta == member.meta
         assert items[0].records == []
+
+
+class TestFlushAGoneFile:
+    def test_a_file_gone_at_the_write_is_left_out_with_its_entities(self, mock_svc, caplog):
+        from lilbee.data.ingest import pipeline
+
+        kept = _real_ingest_result("kept.pdf", file_hash="k")
+        gone = _real_ingest_result("gone.pdf", file_hash="g")
+        kept.entity_rows = [{"source": "kept.pdf", "name": "a"}]
+        gone.entity_rows = [{"source": "gone.pdf", "name": "b"}]
+        gone.path.unlink()
+
+        with caplog.at_level("INFO", logger="lilbee.data.ingest.pipeline"):
+            pipeline._flush_batch([kept, gone])
+
+        assert [row["filename"] for row in mock_svc.store.get_sources()] == ["kept.pdf"]
+        mock_svc.store.add_entities.assert_called_once_with(kept.entity_rows)
+        assert any("the file is gone: gone.pdf" in r.getMessage() for r in caplog.records)
 
 
 class TestArchiveResult:

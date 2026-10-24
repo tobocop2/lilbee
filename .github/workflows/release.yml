@@ -304,7 +304,7 @@ jobs:
       - name: Verify extras installed in build venv
         shell: bash
         # --no-sync is load-bearing: re-syncing reinstalls python-multipart and shadows the shim.
-        run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
+        run: uv run --no-sync python -c "import crawlberg, ada_url, litellm, spacy, graspologic_native; print('extras OK')"
 
       # compat cell only: swap the synced stock lancedb for the pre-Haswell build.
       # --no-deps leaves the rest of the venv intact, so nothing leaves this cell.
@@ -420,6 +420,19 @@ jobs:
 
       - name: Restore CI models (inference smoke)
         uses: ./.github/actions/restore-ci-models
+
+      # The smoke runs inside the manylinux container, and the browser-mode
+      # crawl in it launches Playwright's headless Chromium shell. The bare
+      # AlmaLinux image has none of the shared libraries that shell links, so
+      # install them here, next to the run, rather than running the crawl on
+      # the host: the smoke must exercise the binary exactly as built.
+      - name: Install Chromium runtime libraries in the build container
+        if: matrix.container != ''
+        shell: bash
+        run: |
+          dnf install -y nss nspr atk at-spi2-atk cups-libs libdrm libxkbcommon \
+            libXcomposite libXdamage libXfixes libXrandr libXext libX11 libxcb \
+            mesa-libgbm alsa-lib pango cairo
 
       - name: Smoke test
         id: smoke
@@ -558,8 +571,8 @@ jobs:
           echo "SMOKE TEST PASSED: --version, --help, server, /api/health all green"
 
           # Core-functionality sweep: real engine inference (chat + embedding),
-          # ingest, search, RAG ask, and an http-mode crawl. This is what keeps
-          # a binary whose bundled engine cannot start from ever attaching.
+          # ingest, search, RAG ask, an http-mode crawl and a browser-mode crawl.
+          # This is what keeps a binary whose bundled engine cannot start from ever attaching.
           kill $SERVER_PID 2>/dev/null || true
           wait $SERVER_PID 2>/dev/null || true
           trap - EXIT

@@ -1,29 +1,32 @@
-"""Integration tests for web crawling: real crawl4ai against a local HTTP server.
+"""Integration tests for web crawling: real crawlberg against a local HTTP server.
 
-These tests exercise the full pipeline: crawl4ai fetches real HTML from a local
+These tests exercise the full pipeline: crawlberg fetches real HTML from a local
 pytest-httpserver, saves as markdown, and verifies the files land correctly.
 Only the embedding model is faked (existing test pattern).
 
-Requires: crawl4ai + Playwright browser binaries.
-Skipped automatically when crawl4ai is not installed.
+Skipped automatically when the crawler extra is not installed.
 """
 
 import ipaddress
 import time
+from unittest.mock import MagicMock
 
 import pytest
+from pytest_httpserver import HTTPServer
 
-crawl4ai = pytest.importorskip("crawl4ai")
+crawlberg = pytest.importorskip("crawlberg")
 
+from lilbee.app.services import get_services  # noqa: E402
 from lilbee.core.config import cfg  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
+    content_hash,
     crawl_and_save,
-    load_crawl_metadata,
     validate_crawl_url,
 )
 from lilbee.crawler import url_filter as crawler_url_filter  # noqa: E402
-from lilbee.crawler.save import _save_single_result  # noqa: E402
+from lilbee.crawler.save import canonical_address, save_page  # noqa: E402
 from lilbee.runtime.progress import EventType  # noqa: E402
+from tests._crawl_meta import crawl_record  # noqa: E402
 
 HOME_HTML = """\
 <html><head><title>Home</title></head>
@@ -79,6 +82,20 @@ def isolated_env(tmp_path):
     reset_services()
 
 
+def _serve_no_robots_txt(server: HTTPServer) -> None:
+    """Answer robots.txt with 404, as a site with no robots.txt does.
+
+    The server answers any other unexpected request with 500, which a crawl that honours
+    robots.txt reads as a robots.txt it cannot read, so it would crawl no page.
+    """
+    server.expect_request("/robots.txt").respond_with_data("Not Found", status=404)
+
+
+@pytest.fixture(autouse=True)
+def no_robots_txt(httpserver):
+    _serve_no_robots_txt(httpserver)
+
+
 @pytest.fixture()
 def allow_localhost(monkeypatch):
     """Temporarily allow crawling localhost by removing loopback from blocked_networks."""
@@ -118,7 +135,7 @@ def test_site_with_404(httpserver):
 
 class TestSinglePageCrawl:
     async def test_crawl_single_page_saves_markdown(self, test_site, allow_localhost):
-        """Real crawl4ai fetches a page and saves as .md."""
+        """Real crawlberg fetches a page and saves as .md."""
         url = test_site.url_for("/")
         paths = await crawl_and_save(str(url), depth=0)
         assert len(paths) == 1
@@ -128,11 +145,7 @@ class TestSinglePageCrawl:
         assert len(content) > 0
 
     async def test_crawl_resolves_links_against_a_base_href(self, httpserver, allow_localhost):
-        """A ``<base href>`` page's relative links resolve against the base in the saved markdown.
-
-        lilbee silences crawl4ai's own converter and re-derives the base URL, so this proves
-        the silenced path resolves links the way an un-silenced crawl would.
-        """
+        """A ``<base href>`` page's relative links resolve against the base in the markdown."""
         page = (
             "<html><head><base href='https://based.example/docs/'></head>"
             "<body><h1>Guide</h1><a href='guide'>Read the guide</a></body></html>"
@@ -144,15 +157,14 @@ class TestSinglePageCrawl:
         content = paths[0].read_text(encoding="utf-8")
         assert "https://based.example/docs/guide" in content
 
-    async def test_crawl_saves_metadata(self, test_site, allow_localhost):
-        """Crawl metadata records the URL and content hash."""
+    async def test_crawl_records_the_page(self, test_site, allow_localhost):
+        """The page record names the saved file and the hash of its text."""
         url = str(test_site.url_for("/"))
         paths = await crawl_and_save(url, depth=0)
         assert len(paths) == 1
-        meta = load_crawl_metadata()
-        assert url in meta
-        assert meta[url].content_hash != ""
-        assert meta[url].file != ""
+        entry = get_services().store.crawl_pages.current(canonical_address(url))
+        assert cfg.documents_dir / "_web" / entry.file == paths[0]
+        assert entry.content_hash == content_hash(paths[0].read_text(encoding="utf-8"))
 
     async def test_crawl_progress_events_fire(self, test_site, allow_localhost):
         """Progress callback receives events in correct order."""
@@ -175,7 +187,7 @@ class TestRecursiveCrawl:
         """Recursive crawl with depth=1 fetches linked pages."""
         url = str(test_site.url_for("/"))
         paths = await crawl_and_save(url, depth=1)
-        # Should get at least the home page; may get about page too depending on crawl4ai
+        # Should get at least the home page; may get about page too depending on the backend
         assert len(paths) >= 1
         all_content = " ".join(p.read_text(encoding="utf-8") for p in paths)
         assert len(all_content) > 0
@@ -209,6 +221,7 @@ class TestContentChangeDetection:
 
         # Change the server content
         httpserver.clear()
+        _serve_no_robots_txt(httpserver)
         v2 = "<html><body><h1>Version 2</h1><p>New content.</p></body></html>"
         httpserver.expect_request("/changing").respond_with_data(v2, content_type="text/html")
         paths2 = await crawl_and_save(url, depth=0)
@@ -216,9 +229,8 @@ class TestContentChangeDetection:
         new_content = paths2[0].read_text(encoding="utf-8")
         assert len(new_content) > 0
 
-        # Metadata updated
-        meta = load_crawl_metadata()
-        assert url in meta
+        entry = get_services().store.crawl_pages.current(canonical_address(url))
+        assert entry.content_hash == content_hash(new_content)
 
 
 class TestSecurity:
@@ -252,18 +264,15 @@ class TestSecurity:
 
     def test_path_traversal_contained(self, isolated_env):
         """Path traversal in URL stays contained within _web/."""
-        from lilbee.crawler import CrawlMeta, CrawlResult
+        from lilbee.crawler import CrawlResult
 
         result = CrawlResult(url="https://evil.com/../../etc/passwd", markdown="# Malicious")
-        meta: dict[str, CrawlMeta] = {}
-        outcome = _save_single_result(result, meta)
+        path = save_page(result, crawl_record(), MagicMock())
         web_dir = cfg.documents_dir / "_web"
-        # url_to_filename neutralizes ".." segments, so the result MUST be a
-        # concrete path under _web/. A None return would indicate the helper
-        # started rejecting the request at the hash/exists short-circuit, which
-        # is the class of refactor we want to catch.
-        assert outcome is not None
-        assert outcome.path.resolve().is_relative_to(web_dir.resolve())
+        # The address parser resolves ".." segments, so the page MUST be saved
+        # at a concrete path under _web/, not rejected.
+        assert path is not None
+        assert path.resolve().is_relative_to(web_dir.resolve())
 
     async def test_max_pages_enforced(self, httpserver, allow_localhost):
         """Max pages config caps the crawl."""
@@ -285,10 +294,10 @@ class TestErrors:
         """A 404 page produces an empty or error result, doesn't crash."""
         httpserver.expect_request("/notfound").respond_with_data("Not Found", status=404)
         url = str(httpserver.url_for("/notfound"))
-        # crawl4ai may return success=False or empty markdown for 404s
+        # The backend may report a failure or empty markdown for a 404
         # Either way, crawl_and_save should not raise
         paths = await crawl_and_save(url, depth=0)
-        # May be 0 (failed) or 1 (crawl4ai returned something): just verify no crash
+        # May be 0 (failed) or 1 (the backend returned something): just verify no crash
         assert isinstance(paths, list)
 
     async def test_crawl_unreachable_host(self):

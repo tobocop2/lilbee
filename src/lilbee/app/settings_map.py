@@ -180,15 +180,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             " one daemon serves before retrieval calls queue"
         ),
     ),
-    "crawl_convert_workers": SettingDef(
-        int,
-        nullable=False,
-        group=SettingGroup.CRAWLING,
-        help_text=(
-            "Crawled pages converted to markdown on worker threads at once, so a crawl"
-            " does not block request handling; 0 converts on the event loop"
-        ),
-    ),
     "auto_sync": SettingDef(
         bool,
         nullable=False,
@@ -770,7 +761,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=True,
         group=SettingGroup.CRAWLING,
-        help_text="Optional recursion-depth cap (blank = no cap; per-crawl values win)",
+        help_text="Optional recursion-depth cap, 0 to 100 (blank = no cap; per-crawl values win)",
     ),
     "crawl_render_mode": SettingDef(
         str,
@@ -782,15 +773,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "JavaScript enabled for client-rendered sites, at much higher memory cost."
         ),
     ),
-    "crawl_browser_recycle_pages": SettingDef(
-        int,
-        nullable=False,
-        group=SettingGroup.CRAWLING,
-        help_text=(
-            "Browser mode: recycle the Chromium process every N pages to cap memory "
-            "growth on long crawls (0 = never recycle)."
-        ),
-    ),
     "crawl_browser_extra_args": SettingDef(
         list,
         nullable=False,
@@ -800,25 +782,57 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Defaults trim shared-memory and GPU use."
         ),
     ),
+    "crawl_browser_extra_wait_ms": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Browser mode: milliseconds to wait after a page has loaded and stopped changing, "
+            "for sites that draw their text later. Raise it when a page's text is missing; "
+            "0 = no extra wait, at most 600000 (ten minutes). http mode ignores it."
+        ),
+    ),
+    "crawl_user_agent": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "User agent of every crawl request, for a site that answers some clients "
+            "differently. Blank = no override: browser mode sends Chrome's own, "
+            "http mode sends crawlberg's, and the sitemap lookup sends its HTTP "
+            "client's. A Chrome user agent also sets the matching "
+            "client hints in browser mode."
+        ),
+    ),
+    "crawl_respect_robots_txt": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Skip the pages a site's robots.txt disallows, and every page of a site "
+            "whose robots.txt cannot be read (a server error, a rate limit or no answer). Turn off "
+            "to crawl a site you own or have permission to crawl in full."
+        ),
+    ),
     "crawl_max_pages": SettingDef(
         int,
         nullable=True,
         group=SettingGroup.CRAWLING,
-        help_text="Optional global cap on total pages per crawl (blank = no cap).",
+        help_text="Optional global cap on total pages per crawl, 1 to 10000000 (blank = no cap).",
     ),
     "crawl_safety_max_pages": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text="Default page bound for an unbounded crawl, so a hostile site cannot "
-        "exhaust the disk. An explicit max-pages overrides it; raise this to crawl "
-        "larger sites unbounded.",
+        "exhaust the disk, 1 to 10000000. An explicit max-pages overrides it; raise this "
+        "to crawl larger sites unbounded.",
     ),
     "crawl_timeout": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Per-page fetch timeout in seconds",
+        help_text="Per-page fetch timeout in seconds, 1 to 3600",
     ),
     "crawl_sync_interval": SettingDef(
         int,
@@ -830,49 +844,55 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Seconds between in-flight requests within a single crawl",
+        help_text="Seconds between in-flight requests within a single crawl, 0 to 3600",
     ),
     "crawl_max_delay_range": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Random jitter (seconds) added on top of mean delay",
+        help_text="Random jitter (seconds) added on top of mean delay, 0 to 3600",
     ),
     "crawl_concurrent_requests": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Concurrent in-flight URLs within one crawl",
+        help_text="Concurrent in-flight URLs within one crawl, 1 to 256",
     ),
     "crawl_retry_on_rate_limit": SettingDef(
         bool,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Enable per-domain backoff and retries on HTTP 429/503",
+        help_text="Retry a page that answers HTTP 429 or 503. Off: no retries",
     ),
     "crawl_retry_base_delay_min": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Minimum base-delay (seconds) on rate-limit responses",
+        help_text=(
+            "Base delay range, low end (seconds, 0 to 3600). The first retry waits halfway"
+            " between the low and high end, and each later retry waits twice as long"
+        ),
     ),
     "crawl_retry_base_delay_max": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Maximum base-delay (seconds) on rate-limit responses",
+        help_text=(
+            "Base delay range, high end (seconds, 0 to 3600). The first retry waits halfway"
+            " between the low and high end, and each later retry waits twice as long"
+        ),
     ),
     "crawl_retry_max_backoff": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Upper bound on any single backoff wait (seconds)",
+        help_text="Upper bound on any single backoff wait (seconds, 0 to 3600)",
     ),
     "crawl_retry_max_attempts": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Retry count per URL when a rate-limit code comes back",
+        help_text="Retries per page. A crawl makes at most 20, whatever the value",
     ),
     "crawl_exclude_patterns": SettingDef(
         list,

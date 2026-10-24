@@ -62,8 +62,16 @@ from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
-from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.crawler import (
+    CRAWLER_MISSING_MESSAGE,
+    crawler_available,
+    is_url,
+    require_valid_crawl_url,
+)
+from lilbee.crawler.bootstrap import CrawlEngineRefusedError
+from lilbee.crawler.models import CrawlLogin, crawl_limit_error
 from lilbee.crawler.task import get_task, start_crawl
+from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
     DOCUMENTS_PAGE_DEFAULT,
     DOCUMENTS_PAGE_MAX,
@@ -77,7 +85,13 @@ from lilbee.data.store import (
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.runtime.lock import ResetRefusedError
-from lilbee.runtime.progress import UPGRADE_HEADLINE
+from lilbee.runtime.progress import (
+    UPGRADE_HEADLINE,
+    CrawlPageFailedEvent,
+    EmbedEvent,
+    EventType,
+    ProgressEvent,
+)
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -391,16 +405,28 @@ async def _crawl_add_urls(
 
     crawled_count = 0
     errors: list[str] = []
+
+    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+        # The callback receives every crawl event; only a failed page carries a reason.
+        if isinstance(data, CrawlPageFailedEvent):
+            errors.append(f"{data.url}: {data.reason}")
+
     for url in urls:
         try:
             # URL validation resolves the host (blocking DNS); run it off the
             # event loop like the sibling crawl tool does.
             await anyio.to_thread.run_sync(require_valid_crawl_url, url)
         except ValueError as exc:
-            errors.append(f"{url}: {exc}")
+            errors.append(f"{without_userinfo(url)}: {exc}")
             continue
         # add fetches single pages (depth=0); site crawls go through the crawl tool
-        crawled_paths = await crawl_and_save(url, depth=0, render_mode=render_mode)
+        try:
+            crawled_paths = await crawl_and_save(
+                url, depth=0, render_mode=render_mode, on_progress=on_progress
+            )
+        except CrawlEngineRefusedError as exc:
+            errors.append(f"{without_userinfo(url)}: {exc}")
+            continue
         crawled_count += len(crawled_paths)
     return crawled_count, errors
 
@@ -447,10 +473,8 @@ async def add(
     # Crawl URLs
     crawled_count = 0
     if urls:
-        from lilbee.crawler import crawler_available
-
         if not crawler_available():
-            return _error("Web crawling requires: pip install 'lilbee[crawler]'")
+            return _error(CRAWLER_MISSING_MESSAGE)
         crawled_count, url_errors = await _crawl_add_urls(urls, render_mode)
         errors.extend(url_errors)
 
@@ -492,20 +516,24 @@ async def crawl(
     max_pages: int | None = None,
     render_mode: CrawlRenderMode | None = None,
     include_subdomains: bool = False,
+    authorization: str = "",
+    username: str = "",
+    password: str = "",
+    cookie: str = "",
 ) -> dict[str, Any]:
     """Start a non-blocking crawl; poll via ``crawl_status(task_id)``.
     ``depth=0`` (default) = single URL, ``N`` = follow links N levels,
-    ``null`` = whole site. ``render_mode``: "http"/"browser"."""
-    from lilbee.crawler import crawler_available
-
+    ``null`` = whole site. ``render_mode``: "http"/"browser".
+    ``authorization`` (a whole Authorization header value) or ``username`` and
+    ``password``, and ``cookie`` (a Cookie header value), log in to the seed host only."""
     if not crawler_available():
-        return _error("Web crawling requires: pip install 'lilbee[crawler]'")
-    # Mirror the REST CrawlRequest bounds so a negative value is a clean error,
-    # not an unbounded crawl.
-    if depth is not None and depth < 0:
-        return _error("depth must be 0 or greater (pass depth=null to crawl the whole site)")
-    if max_pages is not None and max_pages < 0:
-        return _error("max_pages must be 0 or greater (0 = unlimited, omit for the safety cap)")
+        return _error(CRAWLER_MISSING_MESSAGE)
+    if (too_large := crawl_limit_error(depth, max_pages)) is not None:
+        return _error(too_large)
+    try:
+        login = CrawlLogin(authorization, username, password, cookie)
+    except ValueError as exc:
+        return _error(str(exc))
     try:
         # URL validation resolves the host (blocking DNS), so it runs off the loop.
         # The crawl itself must be scheduled ON the loop: start_crawl uses
@@ -520,8 +548,9 @@ async def crawl(
         max_pages=max_pages,
         render_mode=render_mode,
         include_subdomains=include_subdomains,
+        login=login,
     )
-    return {"status": "started", "task_id": task_id, "url": url}
+    return {"status": "started", "task_id": task_id, "url": without_userinfo(url)}
 
 
 @_tool_if(crawler_available)
@@ -532,7 +561,7 @@ def crawl_status(task_id: str) -> dict[str, Any]:
         return _error(f"No task found with id: {task_id}")
     return {
         "task_id": task.task_id,
-        "url": task.url,
+        "url": task.shown_url,
         "status": task.status.value,
         "pages_crawled": task.pages_crawled,
         "pages_total": task.pages_total,
@@ -793,7 +822,6 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
     """
     from lilbee.app.dataset import DatasetError, import_from_path
     from lilbee.app.ingest import LIBRARY_REFUSALS
-    from lilbee.runtime.progress import EmbedEvent, EventType, ProgressEvent
 
     loop = asyncio.get_running_loop()
 

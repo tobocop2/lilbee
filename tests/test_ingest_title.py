@@ -2,6 +2,8 @@
 
 from xberg import Metadata
 
+from lilbee.core.web_names import WEB_PREFIX
+from lilbee.crawler import url_to_filename
 from lilbee.data.title import derive_title, source_meta_from_extraction
 
 
@@ -28,6 +30,17 @@ class TestDeriveTitle:
 
     def test_mixed_separators_collapse(self):
         assert derive_title("a_b-c  d.txt") == "a b c d"
+
+    def test_crawled_page_source_drops_the_address_hash(self):
+        assert derive_title("_web/en.wikipedia.org/wiki/Cannabis~25c17501722158ba.md") == "Cannabis"
+        assert derive_title("_web/docs.python.org/3/tutorial/index~a17e5b24c217aa80.md") == "index"
+
+    def test_a_crawled_page_named_for_an_account_keeps_its_at_sign(self):
+        url = "https://forum.example.com/@forum.growweedeasy.com/"
+        assert derive_title(WEB_PREFIX + url_to_filename(url)) == "@forum.growweedeasy"
+
+    def test_a_local_note_keeps_a_tilde_in_its_stem(self):
+        assert derive_title("notes/plan~draft.md") == "plan~draft"
 
 
 class TestSourceMetaFromExtraction:
@@ -89,6 +102,35 @@ class TestJunkStems:
             "x.md",
         ]:
             assert derive_title(name) == "", name
+
+    def test_a_crawled_page_named_by_a_bare_number_takes_it_as_title(self):
+        assert derive_title("_web/forum.example.com/thread/12345~25c17501722158ba.md") == "12345"
+        assert derive_title("_web/forum.example.com/thread/7~25c17501722158ba.md") == "7"
+
+    def test_a_crawled_page_named_by_a_hex_string_takes_it_as_title(self):
+        assert derive_title("_web/example.com/c/a1b2c3d4e5f6~25c17501722158ba.md") == "a1b2c3d4e5f6"
+        assert derive_title("_web/example.com/c/DEADBEEF~25c17501722158ba.md") == "DEADBEEF"
+
+    def test_other_junk_stems_of_a_crawled_page_stay_untitled(self):
+        for name in [
+            "IMG_1234",
+            "scan_001",
+            "2024-03-15",
+            "2024 03 15",
+            "doc42",
+            "x",
+            "ab",
+            "a1b2c3d4-e5f6-a7b8",
+            "1.5",
+        ]:
+            assert derive_title(f"_web/example.com/p/{name}~25c17501722158ba.md") == "", name
+
+    def test_a_local_file_named_by_a_number_stays_untitled(self):
+        assert derive_title("filings/12345.pdf") == ""
+
+    def test_extracted_title_beats_a_numeric_page_name(self):
+        name = "_web/forum.example.com/thread/12345~25c17501722158ba.md"
+        assert derive_title(name, "Help with setup") == "Help with setup"
 
     def test_real_stems_survive(self):
         assert derive_title("project_falcon_notes.pdf") == "project falcon notes"

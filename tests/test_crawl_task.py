@@ -169,20 +169,36 @@ class TestRunCrawl:
         assert "network error" in task.error
         assert task.finished_at != ""
 
+    @pytest.mark.parametrize("fails", [True, False], ids=["failed", "complete"])
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
+    async def test_the_log_names_a_credentialed_seed_without_its_password(
+        self, mock_crawl, caplog, fails
+    ):
+        mock_crawl.side_effect = RuntimeError("network error") if fails else None
+        mock_crawl.return_value = []
+        url = "https://alice:hunter2@example.com/"
+        task = CrawlTask(task_id="t1", url=url, depth=0, max_pages=10)
+        with (
+            patch("lilbee.data.ingest.sync", new_callable=AsyncMock),
+            caplog.at_level(logging.INFO, logger="lilbee.crawler.task"),
+        ):
+            await run_crawl(task)
+        assert mock_crawl.call_args.args == (url,)
+        assert "https://example.com/" in caplog.text
+        assert "hunter2" not in caplog.text
+
     @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
     async def test_crawler_backend_missing_surfaces_actionable_error(self, mock_crawl):
         """When the crawler extra isn't installed, the task.error reaches the
-        client with the ``uv sync --extra crawler`` hint, not a raw stack trace."""
-        from lilbee.crawler import CrawlerBackendError
+        client with the install hint, not a raw stack trace."""
+        from lilbee.crawler import CRAWLER_MISSING_MESSAGE, CrawlerBackendError
 
-        mock_crawl.side_effect = CrawlerBackendError(
-            "Web crawling is not available. Run `uv sync --extra crawler` to enable it."
-        )
+        mock_crawl.side_effect = CrawlerBackendError(CRAWLER_MISSING_MESSAGE)
         task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
 
         await run_crawl(task)
         assert task.status == TaskStatus.FAILED
-        assert "uv sync --extra crawler" in task.error
+        assert task.error == CRAWLER_MISSING_MESSAGE
         assert task.finished_at != ""
 
     @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())

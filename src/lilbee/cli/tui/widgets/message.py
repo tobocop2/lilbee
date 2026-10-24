@@ -44,6 +44,22 @@ def _answer_markdown_parser() -> MarkdownIt:
     return _AnswerMarkdownIt("gfm-like")
 
 
+def _markdown_source(text: str) -> str:
+    """*text* as the markdown the widget renders: its Sources labels shown as written."""
+    # Lazy: formatting transitively imports the store stack, which widget
+    # import must not pay at TUI startup.
+    from lilbee.retrieval.query.formatting import markdown_sources_block, terminal_sources_block
+
+    return markdown_sources_block(terminal_sources_block(text))
+
+
+def _plain_source(text: str) -> str:
+    """*text* with the Sources labels it ends in made safe for a terminal."""
+    from lilbee.retrieval.query.formatting import terminal_sources_block
+
+    return terminal_sources_block(text)
+
+
 _REASONING_BLOCK_CLASS = "reasoning-block"
 _REASONING_STREAMING_CLASS = "-streaming"
 
@@ -91,9 +107,10 @@ class AssistantMessage(Vertical):
         if content and sources:
             # Lazy: formatting transitively imports the store stack, which widget
             # import must not pay at TUI startup.
+            from lilbee.app.titles import stored_web_titles
             from lilbee.retrieval.query.formatting import with_sources_block
 
-            content = with_sources_block(content, sources)
+            content = with_sources_block(content, sources, stored_web_titles)
         self._content_parts: list[str] = [content] if content else []
         # A restored turn is finished by definition: it must not raise a spinner.
         self._finished = bool(content)
@@ -137,12 +154,12 @@ class AssistantMessage(Vertical):
         """
         if self._use_markdown:
             return Markdown(
-                text,
+                _markdown_source(text),
                 classes="response-md",
                 parser_factory=_answer_markdown_parser,
                 open_links=False,
             )
-        return Static(Content(text), classes="response-md")
+        return Static(Content(_plain_source(text)), classes="response-md")
 
     @property
     def use_markdown(self) -> bool:
@@ -168,9 +185,9 @@ class AssistantMessage(Vertical):
         option like ``[/path]``) raises MarkupError and crashes the whole TUI.
         """
         if isinstance(widget, Markdown):
-            widget.update(text)
+            widget.update(_markdown_source(text))
         else:
-            widget.update(Content(text))
+            widget.update(Content(_plain_source(text)))
 
     def append_reasoning(self, text: str) -> None:
         """Append a reasoning token; debounced at ``_MD_UPDATE_INTERVAL``."""
@@ -212,9 +229,10 @@ class AssistantMessage(Vertical):
         if sources and self._content_parts:
             # Lazy: formatting transitively imports the store stack, which widget
             # import must not pay at TUI startup.
+            from lilbee.app.titles import stored_web_titles
             from lilbee.retrieval.query.formatting import with_sources_block
 
-            joined = with_sources_block("".join(self._content_parts), sources)
+            joined = with_sources_block("".join(self._content_parts), sources, stored_web_titles)
             self._content_parts = [joined]
         if self._content_widget is not None and self._content_parts:
             self._set_content(self._content_widget, "".join(self._content_parts))

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
@@ -373,13 +372,11 @@ class SettingsScreen(Screen[None]):
 
     @staticmethod
     def _validate_regex_list(lines: list[str]) -> tuple[int, str] | None:
-        """Return the 1-indexed line number and error for the first bad regex, or None."""
-        for i, line in enumerate(lines, 1):
-            try:
-                re.compile(line)
-            except re.error as exc:
-                return (i, str(exc))
-        return None
+        """Return the 1-indexed line number and reason for the first pattern the crawler refuses."""
+        from lilbee.core.crawl_patterns import refused_exclude_patterns
+
+        refused = refused_exclude_patterns(lines)
+        return (refused[0][0] + 1, refused[0][1]) if refused else None
 
     @on(ListTextArea.Blurred, ".setting-list-editor")
     def _on_list_blur_save(self, event: ListTextArea.Blurred) -> None:

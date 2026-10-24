@@ -1,37 +1,44 @@
 """Orchestration-layer tests backed by an inline ``FakeFetcher``.
 
 Covers the contract that the runner exposes to lilbee callers without
-pulling in crawl4ai: progress events, cancel tokens, per-page flush,
-metadata batching, and auto-sync.
-
-These tests sit alongside (not replace) ``tests/test_crawler.py``.
-That file exercises the same functions via a ``sys.modules["crawl4ai"]``
-mock so the ``Crawl4aiFetcher`` adapter is covered end-to-end. The tests
-here pin the orchestrator's behaviour independently of any backend.
+pulling in a fetch backend: progress events, cancel tokens, per-page flush,
+and auto-sync.
 """
 
 from __future__ import annotations
 
+import ast
+import gc
 import threading
+import weakref
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import lilbee
 from lilbee.core.config import cfg
-from lilbee.crawler import crawl4ai_fetcher as crawl4ai_fetcher_mod
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import discovery as discovery_mod
 from lilbee.crawler import events as events_mod
 from lilbee.crawler import runner as runner_mod
+from lilbee.crawler import sitemap as sitemap_mod
+from lilbee.crawler.backends.crawlberg import config as crawlberg_config_mod
+from lilbee.crawler.bootstrap import CrawlEngineRefusedError
 from lilbee.crawler.models import (
+    NO_LOGIN,
     ConcurrencySpec,
+    CrawlLogin,
     CrawlResult,
     FetchedPage,
     FilterSpec,
 )
 from lilbee.crawler.runner import crawl_and_save, crawl_recursive
 from lilbee.runtime.progress import CrawlDoneEvent, CrawlStartEvent, EventType
+from tests._crawlberg_stub import StubCrawlberg, complete, refusing_patterns
+from tests._crawlberg_stub import page as crawlberg_page
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +62,7 @@ def isolated_env(tmp_path, monkeypatch):
     # Both the SDK façade (used by callers) and the impl (used by tests that
     # import directly) are patched so the value is consistent across import paths.
     monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: True)
-    monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: True)
+    monkeypatch.setattr("lilbee.crawler.availability.crawler_available", lambda: True)
     # Periodic sync off: at the 30s default, a fresh services container (every
     # test on the forked CI lane) fires a REAL ingest sync inside crawl_and_save,
     # and that native work inside a forked child can deadlock past the 60s test
@@ -86,7 +93,7 @@ class FakeFetcher:
 
     Feeds a pre-recorded list of ``FetchedPage`` objects to the orchestrator
     so tests can pin per-page flush / cancel / progress behaviour without
-    touching crawl4ai at all.
+    touching a fetch backend at all.
     """
 
     def __init__(
@@ -97,7 +104,7 @@ class FakeFetcher:
     ) -> None:
         self._pages = pages or []
         self._cancel_on_iter = cancel_on_iter
-        self.single_calls: list[tuple[str, float]] = []
+        self.single_calls: list[tuple[str, float, ConcurrencySpec]] = []
         self.recursive_calls: list[dict[str, Any]] = []
         self.closed = False
 
@@ -107,8 +114,10 @@ class FakeFetcher:
     async def __aexit__(self, *args: Any) -> None:
         self.closed = True
 
-    async def fetch_single(self, url: str, *, timeout: float) -> FetchedPage:
-        self.single_calls.append((url, timeout))
+    async def fetch_single(
+        self, url: str, *, timeout: float, concurrency: ConcurrencySpec
+    ) -> FetchedPage:
+        self.single_calls.append((url, timeout, concurrency))
         if self._pages:
             return self._pages[0]
         return FetchedPage(url=url, markdown="# Fake", success=True)
@@ -151,7 +160,7 @@ class TestCrawlRecursiveOrchestration:
         cfg.crawl_retry_on_rate_limit = True
         cfg.crawl_retry_base_delay_min = 1.0
         fake = FakeFetcher(pages=[])
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert fake.recursive_calls
         spec: ConcurrencySpec = fake.recursive_calls[0]["concurrency"]
@@ -163,7 +172,7 @@ class TestCrawlRecursiveOrchestration:
     async def test_builds_filter_spec_from_cfg_and_flag(self):
         cfg.crawl_exclude_patterns = ["/tag/", "/page/\\d+"]
         fake = FakeFetcher(pages=[])
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             await crawl_recursive(
                 "https://example.com",
                 max_depth=1,
@@ -184,11 +193,11 @@ class TestCrawlRecursiveOrchestration:
         def on_progress(event_type: EventType, data: Any) -> None:
             events.append((event_type, data))
 
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
-            results = await crawl_recursive(
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
+            count = await crawl_recursive(
                 "https://example.com", max_depth=2, max_pages=10, on_progress=on_progress
             )
-        assert len(results) == 3
+        assert count == 3
         page_events = [d for t, d in events if t == EventType.CRAWL_PAGE]
         assert [e.current for e in page_events] == [1, 2, 3]
 
@@ -202,7 +211,7 @@ class TestCrawlRecursiveOrchestration:
         ]
         fake = FakeFetcher(pages=pages)
         events: list[tuple[EventType, Any]] = []
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             await crawl_recursive(
                 "https://example.com",
                 max_depth=1,
@@ -221,10 +230,13 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 6)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
-            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=3)
-        assert len(results) == 3
-        assert [r.url for r in results] == [
+        seen: list[CrawlResult] = []
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
+            count = await crawl_recursive(
+                "https://example.com", max_depth=1, max_pages=3, on_result=seen.append
+            )
+        assert count == 3
+        assert [r.url for r in seen] == [
             "https://example.com/p1",
             "https://example.com/p2",
             "https://example.com/p3",
@@ -246,11 +258,11 @@ class TestCrawlRecursiveOrchestration:
                         cancel.set()
 
         fake = _CancelAfterTwo(pages=pages)
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
-            results = await crawl_recursive(
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
+            count = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=10, cancel=cancel
             )
-        assert len(results) == 2
+        assert count == 2
 
     async def test_on_result_callback_invoked_per_page(self):
         pages = [
@@ -259,7 +271,7 @@ class TestCrawlRecursiveOrchestration:
         ]
         fake = FakeFetcher(pages=pages)
         observed: list[str] = []
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             await crawl_recursive(
                 "https://example.com",
                 max_depth=1,
@@ -276,12 +288,12 @@ class TestCrawlRecursiveOrchestration:
         def flaky(result: CrawlResult) -> None:
             raise OSError("disk full")
 
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             # Should not raise even though the callback errors.
-            results = await crawl_recursive(
+            count = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=5, on_result=flaky
             )
-        assert len(results) == 1
+        assert count == 1
 
     async def test_validates_url_before_opening_fetcher(self):
         with pytest.raises(ValueError, match="http"):
@@ -297,10 +309,10 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 50)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
-            results = await crawl_recursive("https://example.com", max_depth=None, max_pages=None)
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
+            count = await crawl_recursive("https://example.com", max_depth=None, max_pages=None)
         assert fake.recursive_calls[0]["max_pages"] == 4
-        assert len(results) == 4
+        assert count == 4
 
     async def test_explicit_request_above_cap_is_honored(self):
         """An explicit caller cap above the safety cap is the user's choice, not clamped."""
@@ -309,10 +321,10 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 20)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
-            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=100)
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
+            count = await crawl_recursive("https://example.com", max_depth=1, max_pages=100)
         assert fake.recursive_calls[0]["max_pages"] == 100
-        assert len(results) == 19
+        assert count == 19
 
     async def test_request_below_ceiling_is_respected(self):
         """A caller cap below the safety ceiling wins (the ceiling is only an upper bound)."""
@@ -321,7 +333,7 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 20)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert fake.recursive_calls[0]["max_pages"] == 5
 
@@ -334,12 +346,12 @@ class TestCrawlRecursiveOrchestration:
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 20)
         ]
         fake = FakeFetcher(pages=pages)
-        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
-            results = await crawl_recursive(
+        with patch.object(runner_mod, "fetcher_from_config", return_value=fake):
+            count = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=CRAWL_PAGES_UNLIMITED
             )
         assert fake.recursive_calls[0]["max_pages"] is None
-        assert len(results) == 19
+        assert count == 19
 
     async def test_raises_when_chromium_missing(self, monkeypatch):
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
@@ -370,7 +382,7 @@ class TestCrawlAndSaveOrchestration:
     async def test_depth_nonzero_uses_crawl_recursive(self):
         import inspect as _inspect
 
-        async def fake_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
+        async def fake_recursive(*args: Any, **kwargs: Any) -> int:
             flush = kwargs.get("on_result")
             results = [
                 CrawlResult(url="https://example.com/a", markdown="# A"),
@@ -381,7 +393,7 @@ class TestCrawlAndSaveOrchestration:
                     rv = flush(r)
                     if _inspect.isawaitable(rv):
                         await rv
-            return results
+            return len(results)
 
         with patch("lilbee.crawler.runner.crawl_recursive", side_effect=fake_recursive):
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=5)
@@ -391,8 +403,8 @@ class TestCrawlAndSaveOrchestration:
     async def test_emits_start_and_done_events(self):
         events: list[tuple[EventType, Any]] = []
 
-        async def _noop_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
-            return []
+        async def _noop_recursive(*args: Any, **kwargs: Any) -> int:
+            return 0
 
         with patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive):
             await crawl_and_save(
@@ -414,8 +426,8 @@ class TestCrawlAndSaveOrchestration:
         cancel = threading.Event()
         cancel.set()
 
-        async def _noop_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
-            return []
+        async def _noop_recursive(*args: Any, **kwargs: Any) -> int:
+            return 0
 
         with (
             patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive),
@@ -427,8 +439,8 @@ class TestCrawlAndSaveOrchestration:
         mock_sync.assert_not_awaited()
 
     async def test_success_awaits_periodic_sync(self):
-        async def _noop_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
-            return []
+        async def _noop_recursive(*args: Any, **kwargs: Any) -> int:
+            return 0
 
         with (
             patch("lilbee.crawler.runner.crawl_recursive", side_effect=_noop_recursive),
@@ -553,24 +565,254 @@ class TestResolveDepth:
             runner_mod._resolve_depth(-1, None)
 
 
-class TestFetcherModuleNotDirectlyImported:
-    """Sanity guard: nothing outside ``crawl4ai_fetcher`` imports crawl4ai.
+class TestRobotsSetting:
+    """``crawl_respect_robots_txt`` reaches crawlberg from every crawl shape."""
 
-    Enforced structurally so a reviewer doesn't have to grep. If this
-    fails, someone added ``import crawl4ai`` to a module that should
-    stay backend-neutral.
-    """
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single", "site"])
+    @pytest.mark.parametrize("respect", [True, False])
+    async def test_the_setting_reaches_crawlberg(self, depth: int, respect: bool):
+        cfg.crawl_respect_robots_txt = respect
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save("https://example.com/", depth=depth, max_pages=5)
+        assert [config.kwargs["respect_robots_txt"] for config in stub.configs] == [respect]
 
-    def test_runner_module_has_no_crawl4ai_import(self):
-        source = (runner_mod.__file__ or "").strip()
-        assert source, "runner module must have a __file__"
-        with open(source, encoding="utf-8") as fh:
-            text = fh.read()
-        assert "import crawl4ai" not in text
-        assert "from crawl4ai" not in text
 
-    def test_crawl4ai_fetcher_is_the_sole_importer(self):
-        adapter_source = (crawl4ai_fetcher_mod.__file__ or "").strip()
-        with open(adapter_source, encoding="utf-8") as fh:
-            adapter_text = fh.read()
-        assert "crawl4ai" in adapter_text
+class TestSitemapRobotsSetting:
+    """``crawl_respect_robots_txt`` reaches the sitemap request of a recursive crawl."""
+
+    @pytest.mark.parametrize("respect", [True, False])
+    async def test_the_robots_setting_reaches_the_sitemap_request(self, monkeypatch, respect: bool):
+        asked: list[dict[str, object]] = []
+
+        def count(url: str, **kwargs: object) -> int:
+            asked.append(kwargs)
+            return -1
+
+        monkeypatch.setattr("lilbee.crawler.sitemap._count_sitemap_urls", count)
+        cfg.crawl_respect_robots_txt = respect
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save("https://example.com/", depth=1, max_pages=5)
+        assert [call["respect_robots_txt"] for call in asked] == [respect]
+
+
+class TestUserAgentSetting:
+    """``crawl_user_agent`` reaches crawlberg and the sitemap request from every crawl shape."""
+
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single", "site"])
+    @pytest.mark.parametrize("agent", ["", "Probe/1.0"], ids=["blank", "override"])
+    async def test_the_setting_reaches_crawlberg(self, depth: int, agent: str):
+        cfg.crawl_user_agent = agent
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save("https://example.com/", depth=depth, max_pages=5)
+        assert [config.kwargs["user_agent"] for config in stub.configs] == [agent or None]
+
+    @pytest.mark.parametrize("agent", ["", "Probe/1.0"], ids=["blank", "override"])
+    async def test_the_setting_reaches_the_sitemap_request(self, monkeypatch, agent: str):
+        asked: list[dict[str, object]] = []
+
+        def count(url: str, **kwargs: object) -> int:
+            asked.append(kwargs)
+            return -1
+
+        monkeypatch.setattr("lilbee.crawler.sitemap._count_sitemap_urls", count)
+        cfg.crawl_user_agent = agent
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save("https://example.com/", depth=1, max_pages=5)
+        assert [call["user_agent"] for call in asked] == [agent]
+
+
+class TestExtraWaitSetting:
+    """``crawl_browser_extra_wait_ms`` reaches crawlberg from every browser crawl shape."""
+
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single", "site"])
+    @pytest.mark.parametrize("wait_ms", [0, 2500])
+    async def test_the_setting_reaches_crawlberg_in_browser_mode(
+        self, monkeypatch, tmp_path, depth: int, wait_ms: int
+    ):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(
+            crawlberg_config_mod.bootstrap, "headless_shell_executable", lambda: shell
+        )
+        cfg.crawl_browser_extra_wait_ms = wait_ms
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save(
+                "https://example.com/",
+                depth=depth,
+                max_pages=5,
+                render_mode=CrawlRenderMode.BROWSER,
+            )
+        assert [config.kwargs["browser"].kwargs["extra_wait"] for config in stub.configs] == [
+            wait_ms
+        ]
+
+    async def test_http_mode_sends_no_extra_wait(self):
+        cfg.crawl_browser_extra_wait_ms = 2500
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save(
+                "https://example.com/", depth=1, max_pages=5, render_mode=CrawlRenderMode.HTTP
+            )
+        assert [config.kwargs["browser"].kwargs["extra_wait"] for config in stub.configs] == [None]
+
+
+CRAWLBERG = "crawlberg"
+# Every module of lilbee that imports crawlberg, as a path under src/lilbee. A new importer
+# is added here on purpose, with its import kept inside the function that needs it.
+CRAWLBERG_IMPORTERS = frozenset(
+    {
+        "core/crawl_patterns.py",
+        "crawler/backends/crawlberg/config.py",
+        "crawler/backends/crawlberg/events.py",
+    }
+)
+
+
+def _imports_crawlberg(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            alias.name.split(".")[0] == CRAWLBERG for alias in node.names
+        ):
+            return True
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == CRAWLBERG:
+            return True
+    return False
+
+
+class TestCrawlbergImporters:
+    def test_only_the_listed_modules_import_crawlberg(self):
+        root = Path(lilbee.__file__).parent
+        found = {
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*.py")
+            if _imports_crawlberg(ast.parse(path.read_text(encoding="utf-8")))
+        }
+        assert found == CRAWLBERG_IMPORTERS
+
+    @pytest.mark.parametrize(
+        ("source", "imports"),
+        [
+            ("import crawlberg", True),
+            ("import crawlberg.errors as errors", True),
+            ("def f():\n    from crawlberg import CrawlConfig", True),
+            ("from crawlberg.config import x", True),
+            ("import crawlberg_extras", False),
+            ("from . import crawlberg", False),
+            ("import os", False),
+        ],
+    )
+    def test_the_import_finder_reads_every_import_form(self, source: str, imports: bool):
+        assert _imports_crawlberg(ast.parse(source)) is imports
+
+
+BAD_EXCLUDE = r"\Z"
+SEED = "https://example.com/"
+
+
+class TestBadExcludePatternRefusedBeforeSetup:
+    @pytest.fixture
+    def bootstrapped(self, monkeypatch) -> list[bool]:
+        calls: list[bool] = []
+
+        async def bootstrap(on_progress=None):
+            calls.append(True)
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: bool(calls))
+        monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", bootstrap)
+        monkeypatch.setattr(
+            "lilbee.crawler.bootstrap.headless_shell_executable", lambda: Path("/browser/shell")
+        )
+        cfg.crawl_exclude_patterns = ["/ok/", BAD_EXCLUDE]
+        return calls
+
+    @pytest.mark.parametrize("depth", [0, None], ids=["single", "recursive"])
+    @pytest.mark.parametrize("mode", list(CrawlRenderMode))
+    async def test_a_crawl_names_the_setting_before_any_browser_setup(
+        self, bootstrapped, depth, mode
+    ):
+        stub = StubCrawlberg(
+            [crawlberg_page(SEED, "# A", depth=0), complete(1)],
+            refuse=refusing_patterns(BAD_EXCLUDE),
+        )
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(SEED, depth=depth, render_mode=mode)
+        assert str(refused.value).startswith("invalid regex in crawl_exclude_patterns: [1] ")
+        assert bootstrapped == []
+        assert stub.seeds == []
+
+    async def test_a_good_list_starts_the_browser_setup(self, bootstrapped):
+        cfg.crawl_exclude_patterns = ["/ok/"]
+        stub = StubCrawlberg([crawlberg_page(SEED, "# A", depth=0), complete(1)])
+        with stub.installed():
+            await crawl_and_save(SEED, depth=0, render_mode=CrawlRenderMode.BROWSER)
+        assert bootstrapped == [True]
+
+
+LOGIN_SEED = "https://example.com/"
+LOGIN_TOKEN = "Bearer tok-5Qz"
+LOGIN_COOKIE = "sid=ck-8Wm"
+
+
+class TestRunnerLogin:
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single", "site"])
+    async def test_crawl_and_save_sends_the_login_to_crawlberg_and_the_sitemap(
+        self, monkeypatch, depth: int
+    ):
+        asked: list[Any] = []
+
+        def count(url: str, **kwargs: Any) -> int:
+            asked.append(kwargs["login"])
+            return -1
+
+        monkeypatch.setattr(sitemap_mod, "_count_sitemap_urls", count)
+        login = CrawlLogin(authorization=LOGIN_TOKEN, cookie=LOGIN_COOKIE)
+        stub = StubCrawlberg([crawlberg_page(LOGIN_SEED, "# Home", depth=0), complete(1)])
+        with stub.installed():
+            await crawl_and_save(
+                LOGIN_SEED, depth=depth, max_pages=5, render_mode=CrawlRenderMode.HTTP
+            )
+            await crawl_and_save(
+                LOGIN_SEED, depth=depth, max_pages=5, render_mode=CrawlRenderMode.HTTP, login=login
+            )
+        assert [config.kwargs["auth"] for config in stub.configs] == [
+            None,
+            ("header", "Authorization", LOGIN_TOKEN),
+        ]
+        assert asked == ([NO_LOGIN, login] if depth else [])
+
+
+class TestDrainKeepsNoPageText:
+    async def test_no_result_outlives_its_flush(self):
+        refs: list[weakref.ref[CrawlResult]] = []
+        alive_during_crawl: list[list[bool]] = []
+
+        async def stream() -> AsyncIterator[FetchedPage]:
+            for i in range(4):
+                gc.collect()
+                # The drain's loop variable holds the last result until the next page.
+                alive_during_crawl.append([ref() is not None for ref in refs[:-1]])
+                yield FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+
+        count = await events_mod._drain_page_stream(
+            stream(),
+            on_progress=None,
+            on_result=lambda result: refs.append(weakref.ref(result)),
+            sitemap_total=0,
+            pages_cap=10,
+            cancel=None,
+            render_mode=CrawlRenderMode.HTTP,
+        )
+        gc.collect()
+        assert count == 4
+        assert alive_during_crawl == [[], [], [False], [False, False]]
+        assert [ref() for ref in refs] == [None, None, None, None]

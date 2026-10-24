@@ -6,6 +6,16 @@ import re
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")
 _WHITESPACE_RE = re.compile(r"\s+")
+# ECMA-48 escape sequences: CSI, string commands (OSC and the like) up to their terminator,
+# and two-character escapes. A C1 byte stands for its ESC form.
+_ESCAPE_SEQUENCE_RE = re.compile(
+    r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]"
+    r"|(?:\x1b[\]PX^_]|[\x90\x98\x9d\x9e\x9f])[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)?"
+    r"|\x1b[ -~]"
+)
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# The same set without TAB (0x09) and LF (0x0a), for text that spans lines.
+_CONTROL_KEEP_LINES_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
 def collapse_whitespace(text: str) -> str:
@@ -16,6 +26,18 @@ def collapse_whitespace(text: str) -> str:
     before anything downstream sees it.
     """
     return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def strip_control_characters(text: str, *, keep_lines: bool = False) -> str:
+    """*text* without terminal escape sequences or any other control character.
+
+    A title or label is one line, so by default line breaks and tabs go too. With
+    *keep_lines* the text may span lines: tabs and line feeds stay, and CRLF becomes LF.
+    """
+    stripped = _ESCAPE_SEQUENCE_RE.sub("", text)
+    if keep_lines:
+        return _CONTROL_KEEP_LINES_RE.sub("", stripped.replace("\r\n", "\n"))
+    return _CONTROL_RE.sub("", stripped)
 
 
 # Trailing possessive clitic on an entity surface: 's with a straight or

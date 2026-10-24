@@ -23,6 +23,7 @@ from lilbee.core.config.keys import (
 )
 from lilbee.core.config.model import written_value
 from lilbee.core.config.schema import field_type_name
+from lilbee.core.crawl_patterns import exclude_patterns_refusal
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
 
@@ -229,6 +230,9 @@ def _validate(updates: dict[str, Any]) -> None:
         _refuse_unsettable(key)
         if value is None and not _is_nullable(key):
             raise ValueError(f"Setting '{key}' does not accept null")
+    refusal = exclude_patterns_refusal(updates.get("crawl_exclude_patterns"))
+    if refusal is not None:
+        raise ValueError(refusal)
     new_ttl = _as_int_setting(updates.get("engine_idle_ttl_minutes"))
     if new_ttl is not None and new_ttl < 0:
         raise ValueError("engine_idle_ttl_minutes must be >= 0 (0 keeps weights loaded)")

@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
-from urllib.parse import urlparse
+from typing import TYPE_CHECKING
+from urllib.parse import ParseResult, urlparse
+
+# ada-url is in the optional ``crawler`` extra, so each function that needs it imports it on call.
+if TYPE_CHECKING:
+    import ada_url
 
 _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("0.0.0.0/8"),  # "this host" range; 0.0.0.0 routes to localhost
@@ -14,6 +20,7 @@ _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("100.64.0.0/10"),  # RFC 6598 shared / CGNAT
+    ipaddress.ip_network("240.0.0.0/4"),  # RFC 1112 reserved; holds broadcast 255.255.255.255
     ipaddress.ip_network("::/128"),  # IPv6 unspecified
     ipaddress.ip_network("::1/128"),
     ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
@@ -24,6 +31,17 @@ _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
 
 _NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 _IPV4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")  # RFC 6052 SIIT
+# The mark that ends a username and password in the host part of an address.
+_USERINFO_END = "@"
+# A WHATWG parser escapes a raw "^" in a path; the url crate 2.5.8 crawlberg 1.12.0 uses keeps it.
+_CARET = "^"
+_CARET_ESCAPE = "%5E"
+_CARET_ESCAPE_LOWER = "%5e"
+_ANY_CARET_ESCAPE = re.compile(_CARET_ESCAPE, re.IGNORECASE)
+# What is shown for an address with an ``@`` that does not parse: where a password ends is unknown.
+UNPARSED_ADDRESS = "(an address that does not parse)"
+# The refusal of a port that is not a number; the port text can hold part of a password.
+INVALID_PORT_MESSAGE = "URL has an invalid port"
 
 
 def get_blocked_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
@@ -57,6 +75,50 @@ def is_url(value: str) -> bool:
     return value.startswith(("http://", "https://"))
 
 
+def parsed_url(url: str) -> ada_url.URL | None:
+    """*url* parsed by the WHATWG URL standard, or None when it does not parse."""
+    import ada_url
+
+    try:
+        return ada_url.URL(url)
+    except ValueError:
+        return None
+
+
+def parsed_address(url: str) -> str | None:
+    """*url* without its fragment as crawlberg 1.12.0's URL parser writes it; None if it fails."""
+    parsed = parsed_url(_ANY_CARET_ESCAPE.sub(_CARET_ESCAPE_LOWER, url))
+    if parsed is None:
+        return None
+    parsed.hash = ""
+    return parsed.href.replace(_CARET_ESCAPE, _CARET)
+
+
+def without_userinfo(url: str) -> str:
+    """*url* without the username and password of its host part, as the URL standard reads it.
+
+    An address with an ``@`` that does not parse is shown as ``UNPARSED_ADDRESS``.
+    """
+    if _USERINFO_END not in url:
+        return url
+    parsed = parsed_url(url)
+    if parsed is None:
+        return UNPARSED_ADDRESS
+    if not parsed.username and not parsed.password:
+        return url
+    parsed.username = ""
+    parsed.password = ""
+    return parsed.href
+
+
+def _checked_port(parsed: ParseResult) -> int | None:
+    """The port of *parsed*; a ValueError naming no part of the address when it is no number."""
+    try:
+        return parsed.port
+    except ValueError as exc:
+        raise ValueError(INVALID_PORT_MESSAGE) from exc
+
+
 def validate_crawl_url(url: str) -> None:
     """Validate a URL for crawling. Raises ValueError for unsafe URLs.
     Rejects private IPs, loopback, link-local, and non-HTTP schemes.
@@ -69,6 +131,7 @@ def validate_crawl_url(url: str) -> None:
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("URL has no hostname")
+    _checked_port(parsed)
 
     try:
         addr_infos = socket.getaddrinfo(hostname, None)

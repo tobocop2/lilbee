@@ -160,6 +160,13 @@ class TestBlockedNetworks:
         networks = get_blocked_networks()
         assert any(_ip.ip_address("10.1.2.3") in n for n in networks)
 
+    @pytest.mark.parametrize("addr", ["240.0.0.1", "255.255.255.255"])
+    def test_contains_ipv4_reserved_range(self, addr):
+        import ipaddress as _ip
+
+        networks = get_blocked_networks()
+        assert any(_ip.ip_address(addr) in n for n in networks)
+
     @pytest.mark.parametrize(
         "addr",
         [
@@ -213,18 +220,77 @@ class TestSitemapFetch:
             raise httpx.ConnectError("boom")
 
         monkeypatch.setattr("httpx.get", _raise)
-        assert _fetch_sitemap_text("https://example.com/start") is None
+        assert _fetch_sitemap_text("https://example.com/start", respect_robots_txt=False) is None
 
     def test_returns_none_on_4xx(self, monkeypatch):
         fake = MagicMock(status_code=404, text="")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
-        assert _fetch_sitemap_text("https://example.com/start") is None
+        assert _fetch_sitemap_text("https://example.com/start", respect_robots_txt=False) is None
 
     def test_returns_body_on_success(self, monkeypatch):
         fake = MagicMock(status_code=200, text="<urlset></urlset>")
         fake.url = "https://example.com/sitemap.xml"
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
-        assert _fetch_sitemap_text("https://example.com/start") == "<urlset></urlset>"
+        assert (
+            _fetch_sitemap_text("https://example.com/start", respect_robots_txt=False)
+            == "<urlset></urlset>"
+        )
+
+    @pytest.mark.parametrize(
+        ("user_agent", "headers"),
+        [("Probe/1.0", {"User-Agent": "Probe/1.0"}), ("", None)],
+        ids=["override", "blank"],
+    )
+    def test_the_request_names_the_crawl_user_agent(self, monkeypatch, user_agent, headers):
+        sent: list[object] = []
+
+        def _get(url: str, **kwargs: object) -> MagicMock:
+            sent.append(kwargs["headers"])
+            return MagicMock(status_code=404, text="")
+
+        monkeypatch.setattr("httpx.get", _get)
+        _count_sitemap_urls(
+            "https://example.com/start",
+            include_subdomains=False,
+            respect_robots_txt=False,
+            user_agent=user_agent,
+        )
+        assert sent == [headers]
+
+    @pytest.mark.parametrize(
+        ("seed", "sent_url", "auth"),
+        [
+            (
+                "https://alice:s3%3Acr%40t@example.com/start",
+                "https://example.com/sitemap.xml",
+                ("alice", "s3:cr@t"),
+            ),
+            ("https://alice@example.com/start", "https://example.com/sitemap.xml", ("alice", "")),
+            ("http://example.com:8080/start", "http://example.com:8080/sitemap.xml", None),
+        ],
+        ids=["username-and-password", "username-only", "no-userinfo"],
+    )
+    def test_the_seed_credentials_go_as_basic_auth_never_in_the_url(
+        self, monkeypatch, seed, sent_url, auth
+    ):
+        sent: list[tuple[str, object]] = []
+
+        def _get(url: str, **kwargs: object) -> MagicMock:
+            sent.append((url, kwargs["auth"]))
+            return MagicMock(status_code=200, text="<urlset></urlset>")
+
+        monkeypatch.setattr("httpx.get", _get)
+        assert _fetch_sitemap_text(seed, respect_robots_txt=False) == "<urlset></urlset>"
+        assert sent == [(sent_url, auth)]
+
+    def test_a_seed_that_does_not_parse_makes_no_request(self, monkeypatch):
+        called: list[int] = []
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: called.append(1))
+        assert (
+            _fetch_sitemap_text("http://alice:se/cret@example.com/start", respect_robots_txt=False)
+            is None
+        )
+        assert called == []
 
     def test_does_not_follow_redirects(self, monkeypatch):
         """A 30x is not followed; an unfollowed redirect yields no sitemap (SSRF-safe)."""
@@ -236,7 +302,7 @@ class TestSitemapFetch:
             return fake
 
         monkeypatch.setattr("httpx.get", _get)
-        assert _fetch_sitemap_text("https://example.com/start") is None
+        assert _fetch_sitemap_text("https://example.com/start", respect_robots_txt=False) is None
         assert captured.get("follow_redirects") is False
 
     def test_validates_seed_before_any_fetch(self, monkeypatch):
@@ -247,18 +313,167 @@ class TestSitemapFetch:
         )
         called = []
         monkeypatch.setattr("httpx.get", lambda *a, **kw: called.append(1))
-        assert _fetch_sitemap_text("http://metadata.internal/start") is None
+        assert (
+            _fetch_sitemap_text("http://metadata.internal/start", respect_robots_txt=False) is None
+        )
         assert called == []
+
+
+ROBOTS_URL = "https://example.com/robots.txt"
+SITEMAP_URL = "https://example.com/sitemap.xml"
+SITEMAP_BODY = "<urlset><url><loc>https://example.com/a</loc></url></urlset>"
+
+
+def _serve(monkeypatch, answers: dict[str, MagicMock]) -> list[str]:
+    """Route httpx.get to *answers* by URL; a URL not listed raises a connection error."""
+    import httpx
+
+    asked: list[str] = []
+
+    def _get(url: str, **kwargs: object) -> MagicMock:
+        asked.append(url)
+        if url not in answers:
+            raise httpx.ConnectError("refused")
+        return answers[url]
+
+    monkeypatch.setattr("httpx.get", _get)
+    return asked
+
+
+class TestSitemapRobots:
+    def test_a_disallow_all_robots_txt_stops_the_sitemap_request(self, monkeypatch):
+        robots = MagicMock(status_code=200, text="User-agent: *\nDisallow: /\n")
+        asked = _serve(monkeypatch, {ROBOTS_URL: robots})
+        assert _fetch_sitemap_text("https://example.com/start", respect_robots_txt=True) is None
+        assert asked == [ROBOTS_URL]
+
+    def test_an_allowing_robots_txt_lets_the_sitemap_through(self, monkeypatch):
+        robots = MagicMock(status_code=200, text="User-agent: *\nDisallow: /private/\n")
+        sitemap = MagicMock(status_code=200, text=SITEMAP_BODY)
+        asked = _serve(monkeypatch, {ROBOTS_URL: robots, SITEMAP_URL: sitemap})
+        assert (
+            _fetch_sitemap_text("https://example.com/start", respect_robots_txt=True)
+            == SITEMAP_BODY
+        )
+        assert asked == [ROBOTS_URL, SITEMAP_URL]
+
+    @pytest.mark.parametrize(
+        ("rules", "allowed"),
+        [
+            ("User-agent: *\nDisallow: /sitemap.xml\n", False),
+            ("User-agent: *\nDisallow: /start\n", True),
+        ],
+        ids=["sitemap-path-disallowed", "seed-path-disallowed"],
+    )
+    def test_robots_txt_is_checked_against_the_sitemap_path(self, monkeypatch, rules, allowed):
+        robots = MagicMock(status_code=200, text=rules)
+        sitemap = MagicMock(status_code=200, text=SITEMAP_BODY)
+        _serve(monkeypatch, {ROBOTS_URL: robots, SITEMAP_URL: sitemap})
+        fetched = _fetch_sitemap_text("https://example.com/start", respect_robots_txt=True)
+        assert fetched == (SITEMAP_BODY if allowed else None)
+
+    @pytest.mark.parametrize("status", [404, 410])
+    def test_a_missing_robots_txt_lets_the_sitemap_through(self, monkeypatch, status):
+        robots = MagicMock(status_code=status, text="Not Found")
+        sitemap = MagicMock(status_code=200, text=SITEMAP_BODY)
+        asked = _serve(monkeypatch, {ROBOTS_URL: robots, SITEMAP_URL: sitemap})
+        assert (
+            _fetch_sitemap_text("https://example.com/start", respect_robots_txt=True)
+            == SITEMAP_BODY
+        )
+        assert asked == [ROBOTS_URL, SITEMAP_URL]
+
+    @pytest.mark.parametrize("status", [301, 401, 403, 429, 500, 503])
+    def test_a_robots_txt_that_answers_with_an_error_stops_the_sitemap_request(
+        self, monkeypatch, status
+    ):
+        robots = MagicMock(status_code=status, text="User-agent: *\nAllow: /\n")
+        sitemap = MagicMock(status_code=200, text=SITEMAP_BODY)
+        asked = _serve(monkeypatch, {ROBOTS_URL: robots, SITEMAP_URL: sitemap})
+        assert _fetch_sitemap_text("https://example.com/start", respect_robots_txt=True) is None
+        assert asked == [ROBOTS_URL]
+
+    def test_a_robots_txt_that_cannot_be_reached_stops_the_sitemap_request(self, monkeypatch):
+        sitemap = MagicMock(status_code=200, text=SITEMAP_BODY)
+        asked = _serve(monkeypatch, {SITEMAP_URL: sitemap})
+        assert _fetch_sitemap_text("https://example.com/start", respect_robots_txt=True) is None
+        assert asked == [ROBOTS_URL]
+
+    def test_with_the_setting_off_robots_txt_is_never_requested(self, monkeypatch):
+        robots = MagicMock(status_code=200, text="User-agent: *\nDisallow: /\n")
+        sitemap = MagicMock(status_code=200, text=SITEMAP_BODY)
+        asked = _serve(monkeypatch, {ROBOTS_URL: robots, SITEMAP_URL: sitemap})
+        assert (
+            _fetch_sitemap_text("https://example.com/start", respect_robots_txt=False)
+            == SITEMAP_BODY
+        )
+        assert asked == [SITEMAP_URL]
+
+    def test_the_user_agent_picks_the_robots_txt_group(self, monkeypatch):
+        rules = "User-agent: *\nAllow: /\n\nUser-agent: probebot\nDisallow: /\n"
+        robots = MagicMock(status_code=200, text=rules)
+        sitemap = MagicMock(status_code=200, text=SITEMAP_BODY)
+        _serve(monkeypatch, {ROBOTS_URL: robots, SITEMAP_URL: sitemap})
+        assert (
+            _fetch_sitemap_text(
+                "https://example.com/start", user_agent="probebot/1.0", respect_robots_txt=True
+            )
+            is None
+        )
+        assert (
+            _fetch_sitemap_text("https://example.com/start", respect_robots_txt=True)
+            == SITEMAP_BODY
+        )
+
+    def test_the_robots_request_carries_the_credentials_and_the_user_agent(self, monkeypatch):
+        sent: list[tuple[str, object, object]] = []
+
+        def _get(url: str, **kwargs: object) -> MagicMock:
+            sent.append((url, kwargs["auth"], kwargs["headers"]))
+            return MagicMock(status_code=404, text="")
+
+        monkeypatch.setattr("httpx.get", _get)
+        _fetch_sitemap_text(
+            "https://alice:pw@example.com/start", user_agent="Probe/1.0", respect_robots_txt=True
+        )
+        assert sent[0] == (ROBOTS_URL, ("alice", "pw"), {"User-Agent": "Probe/1.0"})
+
+    def test_the_robots_request_does_not_follow_redirects(self, monkeypatch):
+        captured: list[object] = []
+
+        def _get(url: str, **kwargs: object) -> MagicMock:
+            captured.append(kwargs["follow_redirects"])
+            return MagicMock(status_code=301, text="")
+
+        monkeypatch.setattr("httpx.get", _get)
+        assert _fetch_sitemap_text("https://example.com/start", respect_robots_txt=True) is None
+        assert captured == [False]
+
+    def test_a_private_seed_makes_no_robots_request(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("169.254.169.254", 0))],
+        )
+        asked = _serve(monkeypatch, {})
+        assert (
+            _fetch_sitemap_text("http://metadata.internal/start", respect_robots_txt=True) is None
+        )
+        assert asked == []
 
 
 class TestSitemapCount:
     def test_missing_host_short_circuits(self):
-        assert _count_sitemap_urls("file:///foo", include_subdomains=False) == CRAWL_TOTAL_UNKNOWN
+        assert (
+            _count_sitemap_urls("file:///foo", include_subdomains=False, respect_robots_txt=False)
+            == CRAWL_TOTAL_UNKNOWN
+        )
 
     def test_missing_body_returns_unknown(self, monkeypatch):
         monkeypatch.setattr("httpx.get", lambda *a, **kw: MagicMock(status_code=500, text=""))
         assert (
-            _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+            _count_sitemap_urls(
+                "https://example.com/start", include_subdomains=False, respect_robots_txt=False
+            )
             == CRAWL_TOTAL_UNKNOWN
         )
 
@@ -276,7 +491,9 @@ class TestSitemapCount:
                 status_code=200, text=body, url="https://example.com/sitemap.xml"
             ),
         )
-        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        count = _count_sitemap_urls(
+            "https://example.com/start", include_subdomains=False, respect_robots_txt=False
+        )
         assert count == 2
 
     def test_include_subdomains_counts_children(self, monkeypatch):
@@ -292,14 +509,18 @@ class TestSitemapCount:
                 status_code=200, text=body, url="https://example.com/sitemap.xml"
             ),
         )
-        count = _count_sitemap_urls("https://example.com/start", include_subdomains=True)
+        count = _count_sitemap_urls(
+            "https://example.com/start", include_subdomains=True, respect_robots_txt=False
+        )
         assert count == 2
 
     def test_no_matching_entries_returns_unknown(self, monkeypatch):
         body = "<urlset><url><loc>https://other.com/a</loc></url></urlset>"
         monkeypatch.setattr("httpx.get", lambda *a, **kw: MagicMock(status_code=200, text=body))
         assert (
-            _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+            _count_sitemap_urls(
+                "https://example.com/start", include_subdomains=False, respect_robots_txt=False
+            )
             == CRAWL_TOTAL_UNKNOWN
         )
 
@@ -317,5 +538,7 @@ class TestSitemapCount:
                 url="https://example.com/sitemap.xml",
             ),
         )
-        count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
+        count = _count_sitemap_urls(
+            "https://example.com/start", include_subdomains=False, respect_robots_txt=False
+        )
         assert count == 2

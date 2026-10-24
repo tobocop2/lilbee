@@ -41,10 +41,11 @@ from lilbee.cli.helpers import (
 )
 from lilbee.cli.log_routing import route_diagnostics_to_log_file
 from lilbee.core.config import cfg
+from lilbee.core.text import strip_control_characters
 from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
 from lilbee.providers.roles import WorkerRole
-from lilbee.retrieval.query.formatting import FILE_LINK_RE
+from lilbee.retrieval.query.formatting import FILE_LINK_RE, terminal_sources_text
 from lilbee.runtime.console import PlainConsole, styled
 
 # How many top concepts to show inline before truncating with a ``+N more`` tail.
@@ -179,6 +180,7 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
 
 def _print_sources_block(block: str) -> None:
     """Render the Sources block, turning ``[label](file://...)`` into terminal links."""
+    block = terminal_sources_text(block)
     if not console.is_terminal or console.legacy_windows:
         console.print(block, highlight=False)
         return
@@ -260,11 +262,15 @@ def search(
     table.add_column(score_label, justify="right", style=theme.MUTED)
 
     for r in cleaned:
-        chunk_text = r["chunk"]
+        chunk_text = strip_control_characters(r["chunk"], keep_lines=True)
         preview = chunk_text[:CHUNK_PREVIEW_LEN]
         if len(chunk_text) > CHUNK_PREVIEW_LEN:
             preview += "..."
-        table.add_row(Text(r["source"]), Text(preview), f"{_display_score(r):.4f}")
+        table.add_row(
+            Text(strip_control_characters(r["source"])),
+            Text(preview),
+            f"{_display_score(r):.4f}",
+        )
     console.print(table)
 
 
@@ -503,5 +509,5 @@ def _topics_overview(top_k: int) -> None:
         preview = ", ".join(comm.concepts[:_TOPIC_PREVIEW_LIMIT])
         if len(comm.concepts) > _TOPIC_PREVIEW_LIMIT:
             preview += f" (+{len(comm.concepts) - _TOPIC_PREVIEW_LIMIT} more)"
-        table.add_row(str(comm.cluster_id), str(comm.size), Text(preview))
+        table.add_row(str(comm.cluster_id), str(comm.size), Text(strip_control_characters(preview)))
     console.print(table)

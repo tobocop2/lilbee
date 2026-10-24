@@ -18,6 +18,7 @@ from lilbee.app.settings import SCANNED_PAGES_LABEL
 from lilbee.app.status import StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
+from lilbee.core.text import strip_control_characters
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.lock import LibraryUnlockableError
 
@@ -140,7 +141,7 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         held.add_column("File", style=theme.ACCENT)
         held.add_column("Reason", style=theme.MUTED)
         for skipped in status.skipped:
-            held.add_row(Text(skipped.filename), Text(skipped.reason))
+            held.add_row(Text(strip_control_characters(skipped.filename)), Text(skipped.reason))
         yield held
         hidden = status.skipped_total - len(status.skipped)
         more = f" ({hidden} more not shown)" if hidden > 0 else ""
@@ -162,7 +163,12 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     table.add_column("Chunks", justify="right")
     table.add_column("Ingested", style=theme.MUTED)
     for s in status.sources:
-        table.add_row(Text(s.filename), s.file_hash, str(s.chunk_count), s.ingested_at)
+        table.add_row(
+            Text(strip_control_characters(s.filename)),
+            s.file_hash,
+            str(s.chunk_count),
+            s.ingested_at,
+        )
     yield table
     yield styled(
         "\n",
@@ -185,7 +191,7 @@ def print_source_listing() -> None:
     from lilbee.app.services import get_services
 
     for head in get_services().store.iter_source_heads():
-        print(json.dumps(head) if cfg.json_mode else head["filename"])
+        print(json.dumps(head) if cfg.json_mode else strip_control_characters(head["filename"]))
 
 
 def render_status(con: PlainConsole) -> None:

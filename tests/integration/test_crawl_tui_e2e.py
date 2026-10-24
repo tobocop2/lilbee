@@ -58,6 +58,10 @@ SEED_ONLY_DEPTH = 0
 CONFIG_MAX_DEPTH = 1
 FAILED_PAGE_COUNT = 2
 TIMEOUT_S = 2
+# A pattern Python's ``re`` compiles and crawlberg refuses. The setting's own check refuses it
+# too, so the test sets it past that check to reach the refusal every crawl makes before it
+# starts.
+REFUSED_PATTERN = "(?P<n>a)(?(n)b|c)"
 
 
 class _CrawlApp(_IntegrationChatApp):
@@ -191,15 +195,15 @@ async def _run_crawl(root: Path, url: str, submit: Submit) -> tuple[_CrawlApp, d
 async def test_single_page_crawl_saves_only_the_seed(root: Path, crawl_site: CrawlSite) -> None:
     url = crawl_site.url("/")
     _app, pages = await _run_crawl(root, url, _dialog(url, recursive=False))
-    assert set(pages) == {"index.md"}
-    assert site_mod.HOME_TEXT in pages["index.md"]
+    assert set(pages) == {"index"}
+    assert site_mod.HOME_TEXT in pages["index"]
 
 
 async def test_recursive_crawl_saves_the_linked_pages(root: Path, crawl_site: CrawlSite) -> None:
     url = crawl_site.url("/rel/child.html")
     _app, pages = await _run_crawl(root, url, _dialog(url, recursive=True))
-    assert set(pages) == {"rel/child.md", "rel/sibling.md"}
-    assert site_mod.SIBLING_TEXT in pages["rel/sibling.md"]
+    assert set(pages) == {"rel/child", "rel/sibling"}
+    assert site_mod.SIBLING_TEXT in pages["rel/sibling"]
 
 
 async def test_browser_mode_crawl_saves_the_linked_pages(
@@ -208,8 +212,8 @@ async def test_browser_mode_crawl_saves_the_linked_pages(
     require_chromium()
     url = crawl_site.url("/rel/child.html")
     _app, pages = await _run_crawl(browser_root, url, _dialog(url, recursive=True, browser=True))
-    assert set(pages) == {"rel/child.md", "rel/sibling.md"}
-    assert site_mod.SIBLING_TEXT in pages["rel/sibling.md"]
+    assert set(pages) == {"rel/child", "rel/sibling"}
+    assert site_mod.SIBLING_TEXT in pages["rel/sibling"]
 
 
 async def test_cancel_stops_the_crawl(root: Path, crawl_site: CrawlSite) -> None:
@@ -241,7 +245,7 @@ async def test_cancel_stops_the_crawl(root: Path, crawl_site: CrawlSite) -> None
 async def test_typed_crawl_command_honours_its_depth(root: Path, crawl_site: CrawlSite) -> None:
     url = crawl_site.url("/a/")
     _app, pages = await _run_crawl(root, url, _slash(f"/crawl {url} --depth {SLASH_DEPTH}"))
-    assert set(pages) == {"a/index.md", "a/b/index.md"}
+    assert set(pages) == {"a", "a/b"}
 
 
 async def test_typed_crawl_command_honours_its_max_pages(root: Path, crawl_site: CrawlSite) -> None:
@@ -259,7 +263,7 @@ async def test_typed_render_flag_selects_browser_mode(
     url = crawl_site.url("/js/")
     command = f"/crawl {url} --depth {SEED_ONLY_DEPTH} --render {CrawlRenderMode.BROWSER.value}"
     _app, pages = await _run_crawl(browser_root, url, _slash(command))
-    assert site_mod.SCRIPT_TEXT in pages["js/index.md"]
+    assert site_mod.SCRIPT_TEXT in pages["js"]
 
 
 @needs_named_hosts
@@ -269,7 +273,7 @@ async def test_typed_include_subdomains_flag_follows_the_subdomain(
     url = crawl_site.url("/", host=NAMED_HOST)
     command = f"/crawl {url} --depth {SLASH_DEPTH} --include-subdomains"
     await _run_crawl(root, url, _slash(command))
-    assert site_mod.SUB_TEXT in saved_pages(root, SUB_HOST)["index.md"]
+    assert site_mod.SUB_TEXT in saved_pages(root, SUB_HOST)["index"]
 
 
 async def test_typed_crawl_command_rejects_a_private_address(root: Path) -> None:
@@ -289,7 +293,7 @@ async def test_config_max_depth_applies_without_a_flag(root: Path, crawl_site: C
     cfg.crawl_max_depth = CONFIG_MAX_DEPTH
     url = crawl_site.url("/a/")
     _app, pages = await _run_crawl(root, url, _slash(f"/crawl {url}"))
-    assert set(pages) == {"a/index.md", "a/b/index.md"}
+    assert set(pages) == {"a", "a/b"}
 
 
 async def test_config_render_mode_applies_without_a_flag(
@@ -301,7 +305,27 @@ async def test_config_render_mode_applies_without_a_flag(
     _app, pages = await _run_crawl(
         browser_root, url, _slash(f"/crawl {url} --depth {SEED_ONLY_DEPTH}")
     )
-    assert site_mod.SCRIPT_TEXT in pages["js/index.md"]
+    assert site_mod.SCRIPT_TEXT in pages["js"]
+
+
+async def test_a_crawl_crawlberg_refuses_ends_as_a_failed_task_with_the_reason(
+    root: Path, crawl_site: CrawlSite
+) -> None:
+    object.__setattr__(cfg, "crawl_exclude_patterns", [REFUSED_PATTERN])
+    url = crawl_site.url("/rel/child.html")
+    app = _CrawlApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _dialog(url, recursive=True)(pilot, app)
+        assert await _wait_for(pilot, lambda: _crawl_finished(app), _CRAWL_WAIT_S)
+        task = _crawl_task(app)
+        assert task is not None
+        assert task.status is TaskStatus.FAILED
+        assert task.detail.startswith("invalid regex in crawl_exclude_patterns: [0] ")
+        assert REFUSED_PATTERN in task.detail
+        assert await _wait_for(pilot, _workers_idle, _CRAWL_WAIT_S)
+    assert msg.CMD_CRAWL_SUCCESS.format(count=0, url=url) not in app.messages
+    assert saved_pages(root) == {}
 
 
 async def test_failed_pages_are_reported_and_the_crawl_completes(
@@ -310,6 +334,6 @@ async def test_failed_pages_are_reported_and_the_crawl_completes(
     cfg.crawl_timeout = TIMEOUT_S
     url = crawl_site.url("/timeout/")
     app, pages = await _run_crawl(root, url, _slash(f"/crawl {url} --depth {RECURSIVE_DEPTH}"))
-    assert set(pages) == {"timeout/index.md", "timeout/fast-a/index.md", "timeout/fast-b/index.md"}
+    assert set(pages) == {"timeout", "timeout/fast-a", "timeout/fast-b"}
     notice = msg.CMD_CRAWL_PAGES_FAILED.format(count=FAILED_PAGE_COUNT, reason="")
     assert any(message.startswith(notice) for message in app.messages), app.messages

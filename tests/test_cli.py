@@ -6,6 +6,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import sys
@@ -14,10 +15,12 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
+import click
 import numpy as np
 import pytest
 from filelock import ReadWriteLock
 from filelock import Timeout as FileLockTimeout
+from rich.progress import Progress
 from rich.text import Text
 from typer.testing import CliRunner
 
@@ -25,10 +28,13 @@ import lilbee.app.services as svc_mod
 from lilbee.app.search import clean_result
 from lilbee.app.version import get_version
 from lilbee.cli import app
+from lilbee.cli.commands.ingest_sync import _CrawlOutcome, _FailedSource
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.security import PathTraversalError
+from lilbee.crawler.bootstrap import CrawlEngineRefusedError, CrawlerBrowserError
+from lilbee.crawler.url_filter import UNPARSED_ADDRESS
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk, SourceSummary
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
@@ -36,6 +42,7 @@ from lilbee.modelhub.models import list_installed_models
 from lilbee.runtime.lock import _no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
+    CrawlPageFailedEvent,
     EventType,
     FileStartEvent,
     WikiPageEvent,
@@ -45,6 +52,15 @@ from lilbee.runtime.progress import (
 )
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
+from tests._crafted_titles import (
+    CONTROL_TITLES,
+    CRAFTED_SOURCE,
+    CRAFTED_TITLES,
+    PLAIN_NAMES,
+    crafted_label,
+)
+from tests._crawlberg_stub import StubCrawlberg, complete
+from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
 from tests._mock_effects import repeat_last
 from tests.conftest import make_mock_services, reset_held_on_a_thread, summary_of
@@ -54,6 +70,9 @@ runner = CliRunner()
 _HANG_LIMIT_S = 30.0
 
 _SYNC_NOOP = SyncResult()
+# A terminal reads these as commands: C0 and C1 controls other than tab and newline, and DEL.
+_CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_LINK_CODE_RE = re.compile("\x1b\\]8;[^\x1b]*\x1b\\\\")
 
 
 def _stub_build_summary(paths: list[str], count: int) -> dict:
@@ -66,6 +85,11 @@ def _install_real_store() -> None:
     from lilbee.data.store import Store
 
     svc_mod.set_services(make_mock_services(store=Store(cfg)))
+
+
+def _without_link_codes(output: str) -> str:
+    """*output* without the OSC 8 hyperlink codes Rich writes for a link."""
+    return _LINK_CODE_RE.sub("", output)
 
 
 def _mock_stream(*texts: str):
@@ -3320,6 +3344,99 @@ class TestEnsureChatModelWiring:
         assert "](file:///" not in out
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_label_shaped_like_a_link_is_one_hyperlink_shown_as_typed(self, mock_sync, mock_svc):
+        from rich.console import Console
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer",
+            "\n\nSources:\n",
+            "1. [a · x](file:///etc/passwd) [y](file:///kb/a.md)",
+        )
+        term = Console(force_terminal=True, legacy_windows=False, width=200)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        out = cap.get()
+        assert "a · x](file:///etc/passwd) [y" in out
+        assert "file:///kb/a.md" in out
+        assert out.count("\x1b]8;id=") == 1
+
+    @pytest.mark.parametrize("name", PLAIN_NAMES)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_piped_ask_prints_a_name_as_typed(self, mock_sync, mock_svc, name):
+        from lilbee.retrieval.query.formatting import source_markdown_link
+        from lilbee.runtime.console import PlainConsole
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer",
+            "\n\nSources:\n",
+            f"1. {source_markdown_link(name)}\n2. {source_markdown_link(CRAFTED_SOURCE, name)}",
+        )
+        pipe = PlainConsole(force_terminal=False, width=400)
+        with mock.patch("lilbee.cli.commands.search_chat.console", pipe), pipe.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        out = cap.get()
+        assert f"1. [{name}](file://" in out
+        assert f"2. [{crafted_label(name)}](file://" in out
+        assert "\\" not in out
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_terminal_ask_writes_no_control_character_of_a_label(
+        self, mock_sync, mock_svc, title
+    ):
+        from rich.console import Console
+
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n", f"1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        )
+        term = Console(force_terminal=True, legacy_windows=False, width=400)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert _CONTROL_RE.search(_without_link_codes(cap.get())) is None
+        assert "evil.example" not in cap.get()
+        assert cap.get().count("\x1b]8;id=") == 1
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_piped_ask_writes_no_control_character_of_a_label(self, mock_sync, mock_svc, title):
+        from lilbee.retrieval.query.formatting import source_markdown_link
+        from lilbee.runtime.console import PlainConsole
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n", f"1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        )
+        pipe = PlainConsole(force_terminal=False, width=400)
+        with mock.patch("lilbee.cli.commands.search_chat.console", pipe), pipe.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        assert _CONTROL_RE.search(cap.get()) is None
+        assert "1. [" in cap.get()
+
+    @pytest.mark.parametrize("title", CRAFTED_TITLES)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_page_title_is_shown_as_typed_in_one_hyperlink(self, mock_sync, mock_svc, title):
+        from rich.console import Console
+
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        link = source_markdown_link(CRAFTED_SOURCE, title)
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n", f"1. {link}"
+        )
+        term = Console(force_terminal=True, legacy_windows=False, width=400)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        out = cap.get()
+        assert "1. \x1b]8;id=" in out and crafted_label(title) in out
+        assert out.count("\x1b]8;id=") == 1
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_a_citation_line_with_a_bracket_is_not_part_of_a_link(self, mock_sync, mock_svc):
         from rich.console import Console
 
@@ -3721,7 +3838,9 @@ class TestAddWithUrls:
     """Tests for URL crawling through the add CLI command."""
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_triggers_crawl(self, mock_sync, mock_crawl, mock_avail):
         """Adding a URL calls the crawler instead of copying files."""
@@ -3732,7 +3851,9 @@ class TestAddWithUrls:
         assert args[0][0] == ["https://example.com"]
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_with_crawl_flag(self, mock_sync, mock_crawl, mock_avail):
         """--crawl flag is passed through to the crawler."""
@@ -3741,7 +3862,9 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["crawl"] is True
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_with_depth(self, mock_sync, mock_crawl, mock_avail):
         """--depth is passed through to the crawler."""
@@ -3750,7 +3873,9 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["depth"] == 3
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_with_max_pages(self, mock_sync, mock_crawl, mock_avail):
         """--max-pages is passed through to the crawler."""
@@ -3758,8 +3883,67 @@ class TestAddWithUrls:
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["max_pages"] == 10
 
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [
+            ("--depth", "-1"),
+            ("--depth", "-5"),
+            ("--max-pages", "-1"),
+            ("--max-pages", "-5"),
+            ("--depth", "101"),
+            ("--depth", str(2**64)),
+            ("--max-pages", "10000001"),
+            ("--max-pages", str(2**64)),
+        ],
+    )
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    def test_add_url_refuses_a_depth_or_page_count_the_engine_cannot_hold(
+        self, mock_crawl, mock_avail, flag, value
+    ):
+        result = runner.invoke(app, ["add", "--crawl", flag, value, "https://example.com"])
+        assert result.exit_code != 0
+        assert flag in click.unstyle(result.output)
+        mock_crawl.assert_not_called()
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_accepts_the_lowest_depth_and_page_count(
+        self, mock_sync, mock_crawl, mock_avail
+    ):
+        args = ["add", "--crawl", "--depth", "0", "--max-pages", "0", "https://example.com"]
+        assert runner.invoke(app, args).exit_code == 0
+        assert mock_crawl.call_args[1]["depth"] == 0
+        assert mock_crawl.call_args[1]["max_pages"] == 0
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_accepts_the_largest_depth_and_page_count(
+        self, mock_sync, mock_crawl, mock_avail
+    ):
+        args = [
+            "add",
+            "--crawl",
+            "--depth",
+            "100",
+            "--max-pages",
+            "10000000",
+            "https://example.com",
+        ]
+        assert runner.invoke(app, args).exit_code == 0
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_defaults_include_subdomains_false(self, mock_sync, mock_crawl, mock_avail):
         """default scope is the starting host only, no subdomains."""
@@ -3768,7 +3952,9 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["include_subdomains"] is False
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_opt_in_include_subdomains(self, mock_sync, mock_crawl, mock_avail):
         """--include-subdomains broadens scope to sibling subdomains."""
@@ -3779,13 +3965,131 @@ class TestAddWithUrls:
         assert mock_crawl.call_args[1]["include_subdomains"] is True
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_sends_the_login_flags_and_reads_secrets_from_the_environment(
+        self, mock_sync, mock_crawl, mock_avail
+    ):
+        from lilbee.crawler.models import CrawlLogin
+
+        result = runner.invoke(
+            app,
+            ["add", "--crawl", "--username", "alice", "--cookie", "sid=1", "https://example.com"],
+            env={"LILBEE_CRAWL_PASSWORD": "pw-env", "LILBEE_CRAWL_LOGIN_HOST": "Example.COM"},
+        )
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["login"] == CrawlLogin(
+            username="alice", password="pw-env", cookie="sid=1"
+        )
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @pytest.mark.parametrize(
+        "urls",
+        [
+            ["https://private.example/a", "https://other.example/b"],
+            ["https://other.example\\@private.example/", "https://private.example/a"],
+            ["https://private.example/a", "https://private.example:99999/"],
+            ["https://one.example:99999/", "https://two.example:99999/"],
+        ],
+        ids=["two-hosts", "parser-trick", "unparsed", "two-unparsed"],
+    )
+    def test_add_url_refuses_a_typed_login_for_urls_on_several_hosts(
+        self, mock_sync, mock_crawl, mock_avail, urls
+    ):
+        result = runner.invoke(app, ["add", *urls, "--cookie", "sid=Ck-9Lq"])
+        assert result.exit_code != 0
+        assert "login goes to one host" in result.output
+        assert "Ck-9Lq" not in result.output
+        mock_crawl.assert_not_called()
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_sends_a_typed_login_to_several_urls_on_one_host(
+        self, mock_sync, mock_crawl, mock_avail
+    ):
+        from lilbee.crawler.models import CrawlLogin
+
+        urls = ["https://private.example/a", "https://PRIVATE.example:8443/b"]
+        result = runner.invoke(app, ["add", *urls, "--cookie", "sid=1"])
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["login"] == CrawlLogin(cookie="sid=1")
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @pytest.mark.parametrize(
+        ("login_host", "urls"),
+        [
+            (None, ["https://other.example/"]),
+            ("private.example", ["https://other.example/"]),
+            ("private.example", ["https://private.example/", "https://other.example/"]),
+            ("private example", ["https://private.example/"]),
+        ],
+        ids=["no-login-host", "another-host", "several-hosts", "unparsed-login-host"],
+    )
+    def test_add_url_sends_no_environment_login_to_a_host_it_does_not_name(
+        self, mock_sync, mock_crawl, mock_avail, login_host, urls
+    ):
+        from lilbee.crawler.models import NO_LOGIN
+
+        env = {"LILBEE_CRAWL_COOKIE": "sid=Ck-env-3Tz", "LILBEE_CRAWL_AUTHORIZATION": "Bearer t"}
+        if login_host is not None:
+            env["LILBEE_CRAWL_LOGIN_HOST"] = login_host
+        result = runner.invoke(app, ["add", *urls], env=env)
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["login"] == NO_LOGIN
+        assert "LILBEE_CRAWL_LOGIN_HOST" in result.output
+        assert "Ck-env-3Tz" not in result.output
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_sends_the_environment_login_to_the_host_it_names(
+        self, mock_sync, mock_crawl, mock_avail
+    ):
+        from lilbee.crawler.models import CrawlLogin
+
+        env = {
+            "LILBEE_CRAWL_COOKIE": "sid=env",
+            "LILBEE_CRAWL_AUTHORIZATION": "Bearer env",
+            "LILBEE_CRAWL_LOGIN_HOST": "BÜCHER.example",
+        }
+        result = runner.invoke(
+            app, ["add", "https://xn--bcher-kva.example/", "--cookie", "sid=typed"], env=env
+        )
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["login"] == CrawlLogin(
+            authorization="Bearer env", cookie="sid=typed"
+        )
+        assert "LILBEE_CRAWL_LOGIN_HOST" not in result.output
+
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
+    def test_add_url_refuses_a_password_without_a_username_before_crawling(self, mock_crawl):
+        result = runner.invoke(app, ["add", "--password", "pw-9Tx", "https://example.com"])
+        assert result.exit_code != 0
+        assert "password needs a username" in result.output
+        assert "pw-9Tx" not in result.output
+        mock_crawl.assert_not_called()
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_json_mode(self, mock_sync, mock_crawl, mock_avail, isolated_env):
         """URL add in JSON mode returns structured output."""
         from pathlib import Path
 
-        mock_crawl.return_value = [Path("a.md")]
+        mock_crawl.return_value = _CrawlOutcome(saved=[Path("a.md")])
         result = runner.invoke(app, ["--json", "add", "https://example.com"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -3796,10 +4100,10 @@ class TestAddWithUrls:
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_json_output_is_clean(self, mock_sync, mock_crawl, mock_avail, isolated_env):
-        """--json add with a URL produces clean JSON with no crawl4ai prefix text."""
+        """--json add with a URL produces clean JSON with no crawler prefix text."""
         from pathlib import Path
 
-        mock_crawl.return_value = [Path("a.md")]
+        mock_crawl.return_value = _CrawlOutcome(saved=[Path("a.md")])
         result = runner.invoke(app, ["--json", "add", "https://example.com"])
         assert result.exit_code == 0
         raw = result.output.strip()
@@ -3809,7 +4113,9 @@ class TestAddWithUrls:
         assert data["command"] == "add"
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=[])
+    @mock.patch(
+        "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
+    )
     def test_add_mixed_urls_and_files(
         self, mock_crawl, mock_avail, isolated_env, tmp_path, mock_svc
     ):
@@ -3836,18 +4142,458 @@ class TestAddWithUrls:
         register_sources([holder])
         taken = tmp_path / "b" / "corpus"
         taken.mkdir(parents=True)
-        mock_crawl.return_value = [Path("page.md")] * pages
+        mock_crawl.return_value = _CrawlOutcome(saved=[Path("page.md")] * pages)
         result = runner.invoke(app, [*flags, "add", str(taken), "https://example.com"])
         assert result.exit_code == 0, result.output
         assert mock_sync.await_count == pages  # no page and no file: nothing new to index
         assert cfg.linked_roots == {"corpus": str(holder.resolve())}
 
     def test_add_url_without_crawler_installed(self):
-        """Adding a URL when crawl4ai is not installed shows install message."""
+        """Adding a URL when the crawler extra is not installed shows install message."""
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
             result = runner.invoke(app, ["add", "https://example.com"])
             assert result.exit_code == 1
             assert "pip install 'lilbee[crawler]'" in result.output
+
+    def test_json_add_url_without_crawler_installed_prints_a_json_error(self):
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            result = runner.invoke(app, ["--json", "add", "https://example.com", "--crawl"])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["error"] == (
+            "Web crawling requires: pip install 'lilbee[crawler]'"
+        )
+
+    @pytest.mark.parametrize("json_mode", [True, False])
+    def test_a_refused_crawl_address_prints_its_error_without_a_traceback(self, json_mode):
+        refusal = ValueError("Crawling private/reserved IP 127.0.0.1 is not allowed")
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch(
+                "lilbee.crawler.crawl_and_save", new_callable=AsyncMock, side_effect=refusal
+            ),
+        ):
+            result = runner.invoke(app, [*flags, "add", "http://127.0.0.1:9/", "--crawl"])
+        assert result.exit_code == 1
+        assert not isinstance(result.exception, ValueError)
+        named = f"http://127.0.0.1:9/: {refusal}"
+        if json_mode:
+            assert json.loads(result.stdout)["error"] == named
+        else:
+            assert named in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False])
+    def test_a_crawl_that_saves_no_page_prints_each_reason_and_exits_1(self, json_mode):
+        seed = "https://example.com/"
+        reason = "The site's robots.txt could not be read"
+
+        async def refused(url, *, on_progress, **_kwargs):
+            on_progress(EventType.CRAWL_PAGE_FAILED, CrawlPageFailedEvent(url=url, reason=reason))
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=1, files_written=0))
+            return []
+
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=refused),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as sync,
+        ):
+            result = runner.invoke(app, [*flags, "add", seed, "--crawl"])
+        assert result.exit_code == 1
+        sync.assert_not_awaited()
+        if json_mode:
+            data = json.loads(result.stdout)
+            assert data["error"] == f"{seed}: {reason}"
+            assert data["failed"] == [{"url": seed, "reason": f"{seed}: {reason}"}]
+            assert data["crawled"] == 0
+        else:
+            assert f"{seed}: {reason}" in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False])
+    def test_a_file_named_beside_a_dead_url_is_added_and_the_command_exits_1(
+        self, json_mode, tmp_path
+    ):
+        note = tmp_path / "source" / "note.md"
+        note.parent.mkdir()
+        note.write_text("my note", encoding="utf-8")
+        dead = "https://example.com/dead"
+
+        async def gone(url, *, on_progress, **_kwargs):
+            on_progress(EventType.CRAWL_PAGE_FAILED, CrawlPageFailedEvent(url=url, reason="gone"))
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=1, files_written=0))
+            return []
+
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=gone),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, [*flags, "add", str(note), dead])
+        assert result.exit_code == 1, result.output
+        assert cfg.linked_roots == {"note.md": str(note.resolve())}
+        if json_mode:
+            data = json.loads(result.stdout)
+            assert data["copied"] == ["note.md"]
+            assert data["error"] == f"{dead}: gone"
+        else:
+            assert f"{dead}: gone" in result.output
+
+    def test_a_file_named_beside_a_refused_address_is_added_and_the_command_exits_1(self, tmp_path):
+        note = tmp_path / "source" / "note.md"
+        note.parent.mkdir()
+        note.write_text("my note", encoding="utf-8")
+        refusal = ValueError("Crawling private/reserved IP 127.0.0.1 is not allowed")
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch(
+                "lilbee.crawler.crawl_and_save", new_callable=AsyncMock, side_effect=refusal
+            ),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["--json", "add", str(note), "http://127.0.0.1:9/"])
+        assert result.exit_code == 1, result.output
+        data = json.loads(result.stdout)
+        assert data["copied"] == ["note.md"]
+        reason = f"http://127.0.0.1:9/: {refusal}"
+        assert data["failed"] == [{"url": "http://127.0.0.1:9/", "reason": reason}]
+
+    @pytest.mark.parametrize("json_mode", [True, False])
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            CrawlEngineRefusedError("The crawl_browser_extra_args setting holds a refused flag"),
+            CrawlerBrowserError("The browser cannot start"),
+        ],
+        ids=["engine-refused", "browser-cannot-start"],
+    )
+    def test_a_file_named_beside_a_crawl_that_cannot_start_is_added_and_the_command_exits_1(
+        self, json_mode, refusal, tmp_path
+    ):
+        note = tmp_path / "source" / "note.md"
+        note.parent.mkdir()
+        note.write_text("my note", encoding="utf-8")
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch(
+                "lilbee.crawler.crawl_and_save", new_callable=AsyncMock, side_effect=refusal
+            ),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, [*flags, "add", str(note), "https://example.com/"])
+        assert result.exit_code == 1, result.output
+        assert cfg.linked_roots == {"note.md": str(note.resolve())}
+        reason = f"https://example.com/: {refusal}"
+        if json_mode:
+            data = json.loads(result.stdout)
+            assert data["copied"] == ["note.md"]
+            assert data["failed"] == [{"url": "https://example.com/", "reason": reason}]
+        else:
+            assert reason in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False])
+    def test_a_file_named_beside_a_missing_crawler_extra_is_added_and_the_command_exits_1(
+        self, json_mode, tmp_path
+    ):
+        note = tmp_path / "source" / "note.md"
+        note.parent.mkdir()
+        note.write_text("my note", encoding="utf-8")
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=False),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, [*flags, "add", str(note), "https://example.com/"])
+        assert result.exit_code == 1, result.output
+        assert cfg.linked_roots == {"note.md": str(note.resolve())}
+        if json_mode:
+            assert json.loads(result.stdout)["copied"] == ["note.md"]
+        assert "pip install 'lilbee[crawler]'" in result.output
+
+    def test_two_urls_without_the_crawler_extra_fail_with_the_install_message_once(self):
+        message = "Web crawling requires: pip install 'lilbee[crawler]'"
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            result = runner.invoke(
+                app, ["--json", "add", "https://example.com/a", "https://example.com/b"]
+            )
+        assert result.exit_code == 1, result.output
+        data = json.loads(result.stdout)
+        assert data["error"] == message
+        assert [entry["url"] for entry in data["failed"]] == [
+            "https://example.com/a",
+            "https://example.com/b",
+        ]
+
+    def test_a_refused_address_does_not_stop_the_next_url(self, tmp_path):
+        saved = tmp_path / "page.md"
+
+        async def refuse_the_first(url, **_kwargs):
+            if url == "http://127.0.0.1:9/":
+                raise ValueError("Crawling private/reserved IP 127.0.0.1 is not allowed")
+            return [saved]
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=refuse_the_first),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(
+                app, ["--json", "add", "http://127.0.0.1:9/", "https://example.com/"]
+            )
+        assert result.exit_code == 1, result.output
+        data = json.loads(result.stdout)
+        assert data["crawled"] == 1
+        assert [entry["url"] for entry in data["failed"]] == ["http://127.0.0.1:9/"]
+
+    @pytest.mark.parametrize("pages", [0, 1])
+    def test_a_url_only_add_syncs_only_when_a_page_was_saved(self, tmp_path, pages):
+        async def crawl(url, **_kwargs):
+            return [tmp_path / "page.md"] * pages
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=crawl),
+            mock.patch(
+                "lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP
+            ) as sync,
+        ):
+            result = runner.invoke(app, ["add", "https://example.com/"])
+        assert result.exit_code == 0, result.output
+        assert sync.await_count == pages
+
+    def test_a_crawl_that_saves_and_fails_nothing_exits_0(self):
+        async def left_out(url, *, on_progress, **_kwargs):
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=0, files_written=0))
+            return []
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=left_out),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["--json", "add", "https://example.com/", "--crawl"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        assert "error" not in data and "failed" not in data
+
+    @pytest.mark.parametrize("dead_first", [True, False], ids=["dead-first", "dead-last"])
+    @pytest.mark.parametrize("good_saves", [0, 1], ids=["good-unchanged", "good-saves"])
+    def test_a_dead_url_beside_a_good_one_is_named_and_the_command_exits_1(
+        self, tmp_path, dead_first, good_saves
+    ):
+        dead = "https://dead.example/"
+        good = "https://good.example/"
+        saved = tmp_path / "page.md"
+
+        async def crawl(url, *, on_progress, **_kwargs):
+            if url == dead:
+                failed = CrawlPageFailedEvent(url=url, reason="not_found: HTTP 404")
+                on_progress(EventType.CRAWL_PAGE_FAILED, failed)
+                on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=1, files_written=0))
+                return []
+            done = CrawlDoneEvent(pages_crawled=2, files_written=good_saves)
+            on_progress(EventType.CRAWL_DONE, done)
+            return [saved] * good_saves
+
+        urls = [dead, good] if dead_first else [good, dead]
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=crawl),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["--json", "add", *urls, "--crawl"])
+        assert result.exit_code == 1, result.output
+        data = json.loads(result.stdout)
+        assert data["crawled"] == good_saves
+        assert data["failed"] == [{"url": dead, "reason": f"{dead}: not_found: HTTP 404"}]
+        assert data["error"] == f"{dead}: not_found: HTTP 404"
+
+    def test_a_refused_seed_prints_no_username_or_password(self):
+        seed = "http://user:secret@example.com:80a/"
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+        ):
+            result = runner.invoke(app, ["--json", "add", seed])
+        assert result.exit_code == 1
+        assert "secret" not in result.stdout
+        data = json.loads(result.stdout)
+        assert data["failed"] == [
+            {
+                "url": UNPARSED_ADDRESS,
+                "reason": f"{UNPARSED_ADDRESS}: URL has an invalid port",
+            }
+        ]
+
+    @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
+    def test_a_seed_whose_host_does_not_parse_is_refused_by_name(self, json_mode):
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+        ):
+            result = runner.invoke(app, [*flags, "add", "http://alice:cret@[::1/a"])
+        assert result.exit_code == 1
+        assert f"{UNPARSED_ADDRESS}: Invalid IPv6 URL" in result.output
+        assert "cret" not in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
+    def test_a_refused_seed_is_named_without_its_userinfo(self, json_mode):
+        seed = "http://alice:se/cret@example.com/"
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+        ):
+            result = runner.invoke(app, [*flags, "add", seed])
+        assert result.exit_code == 1
+        assert f"{UNPARSED_ADDRESS}: URL has an invalid port" in result.output
+        assert "alice" not in result.output
+        assert "cret" not in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
+    def test_a_refused_seed_is_never_named_by_a_host_in_its_query(self, json_mode):
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+        ):
+            result = runner.invoke(
+                app, [*flags, "add", "http://example.com:80a/?next=a@evil.example"]
+            )
+        assert result.exit_code == 1
+        assert f"{UNPARSED_ADDRESS}: URL has an invalid port" in result.output
+        assert "evil.example" not in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
+    def test_a_credentialed_seed_whose_page_fails_prints_no_password(self, json_mode, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+        shown = "https://dead.example/page"
+        reason = f"not_found: HTTP 404 for {shown}"
+        flags = ["--json"] if json_mode else []
+        stub = StubCrawlberg([crawlberg_error(shown, reason), complete(0)])
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+            stub.installed(),
+        ):
+            result = runner.invoke(
+                app, [*flags, "add", "https://alice:s3cr%3At!@dead.example/page"]
+            )
+        assert stub.seeds == ["https://alice:s3cr%3At!@dead.example/page"]
+        assert result.exit_code == 1
+        assert f"{shown}: {reason}" in result.output
+        assert "s3cr" not in result.output
+        assert "alice" not in result.output
+        if json_mode:
+            data = json.loads(result.stdout)
+            assert data["failed"] == [{"url": shown, "reason": f"{shown}: {reason}"}]
+
+    def test_the_add_progress_lines_name_no_password(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+        descriptions: list[str] = []
+        real_add_task, real_update = Progress.add_task, Progress.update
+
+        def add_task(progress: Progress, description: str, *args, **kwargs):
+            descriptions.append(description)
+            return real_add_task(progress, description, *args, **kwargs)
+
+        def update(progress: Progress, task_id, *args, **kwargs):
+            descriptions.append(kwargs.get("description") or "")
+            return real_update(progress, task_id, *args, **kwargs)
+
+        async def crawl(url, *, on_progress, **_kwargs):
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=1, files_written=1))
+            return [tmp_path / "page.md"]
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=crawl),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+            mock.patch.object(Progress, "add_task", add_task),
+            mock.patch.object(Progress, "update", update),
+        ):
+            result = runner.invoke(app, ["add", "https://alice:s3cr%3At!@example.com/page"])
+        assert result.exit_code == 0, result.output
+        assert "Crawling https://example.com/page..." in descriptions
+        assert "Done: https://example.com/page (1 pages)" in descriptions
+        assert not [line for line in descriptions if "s3cr" in line or "alice" in line]
+
+    def test_two_dead_urls_each_carry_only_their_own_reasons(self):
+        first = "https://one.example/"
+        second = "https://two.example/"
+
+        async def dead(url, *, on_progress, **_kwargs):
+            failed = CrawlPageFailedEvent(url=url, reason="not_found: HTTP 404")
+            on_progress(EventType.CRAWL_PAGE_FAILED, failed)
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=1, files_written=0))
+            return []
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=dead),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["--json", "add", first, second])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["failed"] == [
+            {"url": first, "reason": f"{first}: not_found: HTTP 404"},
+            {"url": second, "reason": f"{second}: not_found: HTTP 404"},
+        ]
+
+    def test_a_crawl_that_saves_a_page_and_fails_another_exits_0(self, tmp_path):
+        saved = tmp_path / "page.md"
+
+        async def one_failed(url, *, on_progress, **_kwargs):
+            failed = CrawlPageFailedEvent(url=f"{url}b", reason="forbidden")
+            on_progress(EventType.CRAWL_PAGE_FAILED, failed)
+            return [saved]
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=one_failed),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["--json", "add", "https://example.com/", "--crawl"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["crawled"] == 1
+
+    def test_a_crawl_whose_pages_are_unchanged_and_one_failed_exits_0(self):
+        async def unchanged_and_one_failed(url, *, on_progress, **_kwargs):
+            failed = CrawlPageFailedEvent(url=f"{url}gone", reason="not_found: not found")
+            on_progress(EventType.CRAWL_PAGE_FAILED, failed)
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=2, files_written=0))
+            return []
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=unchanged_and_one_failed),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["--json", "add", "https://example.com/", "--crawl"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["crawled"] == 0
+
+    @pytest.mark.parametrize("crawl", [[], ["--crawl"]], ids=["one-page", "site"])
+    def test_a_seed_with_a_backslash_after_the_port_is_refused_by_name(self, crawl):
+        seed = "http://example.com:8080\\path"
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+        ):
+            result = runner.invoke(app, ["--json", "add", seed, *crawl])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["error"] == (
+            "http://example.com:8080\\path: URL has an invalid port"
+        )
 
     def test_add_nonexistent_path_fails(self, tmp_path):
         """Adding a nonexistent file path fails with error."""
@@ -3860,6 +4606,37 @@ class TestAddWithUrls:
             app, ["--json", "add", str(tmp_path / "nonexistent_crawl_test_xyz.txt")]
         )
         assert result.exit_code != 0
+
+    @pytest.mark.parametrize("json_flag", [False, True])
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("Ingest needs an embedding model"),
+    )
+    def test_a_failing_sync_still_names_the_refused_url(
+        self, mock_sync, mock_avail, isolated_env, tmp_path, json_flag
+    ):
+        note = tmp_path / "source" / "note.txt"
+        note.parent.mkdir()
+        note.write_text("content", encoding="utf-8")
+        url = "http://127.0.0.1/private"
+        reason = f"{url}: address refused"
+        outcome = _CrawlOutcome(failed=[_FailedSource(url, reason)])
+        args = ["--json"] if json_flag else []
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=outcome
+        ):
+            result = runner.invoke(app, [*args, "add", str(note), url])
+        assert result.exit_code == 1
+        if json_flag:
+            data = json.loads(result.output.strip())
+            assert data["error"] == "Ingest needs an embedding model"
+            assert data["failed"] == [{"url": url, "reason": reason}]
+            return
+        output = click.unstyle(result.output)
+        assert reason in output
+        assert output.index(reason) < output.index("Ingest needs an embedding model")
 
 
 class TestIsUrl:
@@ -3931,7 +4708,7 @@ class TestCrawlUrlsBlocking:
             max_pages=None,
             cancel_event=threading.Event(),
         )
-        assert len(result) == 1
+        assert len(result.saved) == 1
         mock_crawl.assert_called_once()
 
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
@@ -3964,23 +4741,6 @@ class TestCrawlUrlsBlocking:
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["depth"] == 5
         assert call_kwargs["max_pages"] == 20
-
-    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
-    def test_json_mode_passes_quiet(self, mock_crawl, isolated_env):
-        """In JSON mode, quiet=True is passed to crawl_and_save."""
-        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
-
-        mock_crawl.return_value = []
-        cfg.json_mode = True
-        _crawl_urls_blocking(
-            ["https://example.com"],
-            crawl=False,
-            depth=None,
-            max_pages=None,
-            cancel_event=threading.Event(),
-        )
-        call_kwargs = mock_crawl.call_args[1]
-        assert call_kwargs["quiet"] is True
 
     def test_ctrl_c_during_the_first_url_exits_130_and_skips_the_next(self, isolated_env):
 
@@ -6763,7 +7523,8 @@ class TestSelfCheckExtras:
         assert payload == {
             "ok": True,
             "litellm": True,
-            "crawl4ai": True,
+            "crawlberg": True,
+            "ada_url": True,
             "spacy": True,
             "graspologic_native": True,
             "charset_detection": True,
@@ -6774,9 +7535,9 @@ class TestSelfCheckExtras:
         chardet.models import that frozen builds have shipped broken.
 
         Calls the probe directly rather than the command: the unmocked
-        command imports the known-heavy extras (crawl4ai, litellm, spacy),
-        and a real crawl4ai import leaves its submodules in sys.modules,
-        which breaks the crawler tests' top-level-only module injection.
+        command imports the known-heavy extras (crawlberg, litellm, spacy),
+        and a real crawlberg import leaves it in sys.modules, which breaks the
+        crawler tests' module injection.
         """
         from lilbee.cli.commands import setup as setup_module
 
@@ -6845,7 +7606,7 @@ class TestSelfCheckExtras:
             ),
             mock.patch(
                 "lilbee.cli.commands.setup.importlib.import_module",
-                side_effect=self._import_module_stub(missing={"crawl4ai"}),
+                side_effect=self._import_module_stub(missing={"crawlberg"}),
             ),
         ):
             result = runner.invoke(app, ["--json", "self-check-extras"])
@@ -6853,8 +7614,8 @@ class TestSelfCheckExtras:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload["ok"] is False
         assert payload["litellm"] is True
-        assert payload["crawl4ai"] is False
-        assert "crawl4ai_error" in payload
+        assert payload["crawlberg"] is False
+        assert "crawlberg_error" in payload
         assert payload["spacy"] is True
         assert payload["graspologic_native"] is True
 
@@ -7619,7 +8380,7 @@ class TestSyncCancelledExit:
     def _ctrl_c_then_the_write_fails(events: list[threading.Event]):
         """A store write the Ctrl+C lands in, which then fails."""
 
-        def _write(_items):
+        def _write(_items, _present=None):
             # The write runs on a pool thread; the handler's effect is set here directly.
             events[0].set()
             raise OSError("disk full")
@@ -7884,3 +8645,283 @@ class TestSyncCancelledExit:
         assert json.loads(result.output) == {"error": "Sync cancelled."}
         assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
         mock_svc.searcher.ask_raw.assert_not_called()
+
+
+class TestTerminalSafeSourceNames:
+    """A stored source name reaches the terminal without a control character."""
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_the_search_table_writes_no_control_character_of_a_source(self, mock_svc, name):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})
+        ]
+        result = runner.invoke(app, ["search", "engine oil"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_search_json_keeps_the_source_as_stored(self, mock_svc, name):
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})
+        ]
+        result = runner.invoke(app, ["--json", "search", "engine oil"])
+        assert json.loads(result.output.strip())["results"][0]["source"] == name
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_the_status_table_writes_no_control_character_of_a_filename(
+        self, isolated_env, mock_svc, name
+    ):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.source_summary.return_value = summary_of(
+            [{"filename": name, "file_hash": "h", "chunk_count": 1, "ingested_at": "t"}]
+        )
+        result = runner.invoke(app, ["status"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_the_source_listing_writes_no_control_character_of_a_name(self, mock_svc, name):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.iter_source_heads.return_value = iter([{"filename": name}])
+        result = runner.invoke(app, ["status", "--list-sources"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_the_wiki_citation_table_writes_no_control_character_of_a_source(self, mock_svc, name):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.get_citations_for_wiki.return_value = [_citation_row(source_filename=name)]
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_remove_writes_no_control_character_of_a_name(self, isolated_env, mock_svc, name):
+        from lilbee.data.store import RemoveResult
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(removed=[name], not_found=[])
+        result = runner.invoke(app, ["remove", name])
+        assert result.exit_code == 0, result.output
+        assert "Removed" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_chunks_writes_no_control_character_of_the_source(self, isolated_env, mock_svc, name):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.get_sources.return_value = [{"filename": name, "source": name}]
+        mock_svc.store.get_chunks_by_source.return_value = []
+        result = runner.invoke(app, ["chunks", name])
+        assert result.exit_code == 0, result.output
+        assert "0 chunks from" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+
+class TestTerminalSafeStoredText:
+    """Stored text reaches the terminal without a control character or escape sequence.
+
+    Each test feeds one surface a crafted value and checks the output. The matching
+    ``--json`` tests check that the stored value is unchanged.
+    """
+
+    @staticmethod
+    def _chunk(text: str, source: str = "test.txt") -> SearchChunk:
+        return SearchChunk(
+            source=source,
+            content_type="text",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk=text,
+            chunk_index=0,
+            vector=[0.1] * 768,
+        )
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_the_search_table_writes_no_control_character_of_a_preview(self, mock_svc, text):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})
+        ]
+        result = runner.invoke(app, ["search", "engine oil"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_search_json_keeps_the_chunk_as_stored(self, mock_svc, text):
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})
+        ]
+        result = runner.invoke(app, ["--json", "search", "engine oil"])
+        assert json.loads(result.output.strip())["results"][0]["chunk"] == text
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_chunks_writes_no_control_character_of_a_preview(self, isolated_env, mock_svc, text):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.get_sources.return_value = [{"filename": "test.txt", "source": "test.txt"}]
+        mock_svc.store.get_chunks_by_source.return_value = [self._chunk(text)]
+        result = runner.invoke(app, ["chunks", "test.txt"])
+        assert result.exit_code == 0, result.output
+        assert "1 chunks from" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_chunks_json_keeps_the_chunk_as_stored(self, isolated_env, mock_svc, text):
+        mock_svc.store.get_sources.return_value = [{"filename": "test.txt", "source": "test.txt"}]
+        mock_svc.store.get_chunks_by_source.return_value = [self._chunk(text)]
+        result = runner.invoke(app, ["--json", "chunks", "test.txt"])
+        assert json.loads(result.output)["chunks"][0]["chunk"] == text
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_wiki_list_writes_no_control_character_of_a_title(
+        self, mock_svc, isolated_env, monkeypatch, title
+    ):
+        from lilbee.wiki.browse import WikiPageInfo
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        pages = [WikiPageInfo("entities/x", title, "entity", 1, "2026-01-01")]
+        monkeypatch.setattr("lilbee.wiki.browse.list_pages", lambda root: pages)
+        result = runner.invoke(app, ["wiki", "list"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_wiki_list_json_keeps_the_title_as_stored(
+        self, mock_svc, isolated_env, monkeypatch, title
+    ):
+        from lilbee.wiki.browse import WikiPageInfo
+
+        pages = [WikiPageInfo("entities/x", title, "entity", 1, "2026-01-01")]
+        monkeypatch.setattr("lilbee.wiki.browse.list_pages", lambda root: pages)
+        result = runner.invoke(app, ["--json", "wiki", "list"])
+        assert json.loads(result.output)["pages"][0]["title"] == title
+
+    @pytest.mark.parametrize("body", CONTROL_TITLES)
+    def test_wiki_read_writes_no_control_character_of_the_body(
+        self, mock_svc, isolated_env, monkeypatch, body
+    ):
+        from lilbee.wiki.browse import WikiPageContent
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        page = WikiPageContent("entities/x", "X", body)
+        monkeypatch.setattr("lilbee.wiki.browse.read_page", lambda root, slug: page)
+        result = runner.invoke(app, ["wiki", "read", "entities/x"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    def test_wiki_read_keeps_the_lines_of_a_markdown_body(
+        self, mock_svc, isolated_env, monkeypatch
+    ):
+        body = "# Title\n\n- a\n- b\n\n```py\nx = 1\n```\n"
+        from lilbee.wiki.browse import WikiPageContent
+
+        page = WikiPageContent("entities/x", "X", body + "\x1b[31m")
+        monkeypatch.setattr("lilbee.wiki.browse.read_page", lambda root, slug: page)
+        result = runner.invoke(app, ["wiki", "read", "entities/x"])
+        assert result.exit_code == 0, result.output
+        assert result.output == body + "\n"
+
+    def test_the_search_table_keeps_the_lines_of_a_preview(self, mock_svc):
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "alpha\nbeta\x1b[31m"})
+        ]
+        result = runner.invoke(app, ["search", "engine oil"])
+        assert result.exit_code == 0, result.output
+        assert "alpha" in result.output and "beta" in result.output
+        assert "alphabeta" not in result.output.replace(" ", "").replace("\n", "|")
+
+    def test_chunks_keeps_the_lines_of_a_preview(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [{"filename": "test.txt", "source": "test.txt"}]
+        mock_svc.store.get_chunks_by_source.return_value = [self._chunk("alpha\nbeta\x1b[31m")]
+        result = runner.invoke(app, ["chunks", "test.txt"])
+        assert result.exit_code == 0, result.output
+        lines = [line.strip() for line in result.output.splitlines()]
+        assert "[0] alpha" in lines and "beta" in lines
+
+    @pytest.mark.parametrize("body", CONTROL_TITLES)
+    def test_wiki_read_json_keeps_the_body_as_stored(
+        self, mock_svc, isolated_env, monkeypatch, body
+    ):
+        from lilbee.wiki.browse import WikiPageContent
+
+        page = WikiPageContent("entities/x", "X", body)
+        monkeypatch.setattr("lilbee.wiki.browse.read_page", lambda root, slug: page)
+        result = runner.invoke(app, ["--json", "wiki", "read", "entities/x"])
+        assert json.loads(result.output)["content"] == body
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_the_wiki_citation_table_writes_no_control_character_of_an_excerpt(
+        self, mock_svc, text
+    ):
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        mock_svc.store.get_citations_for_wiki.return_value = [_citation_row(excerpt=text)]
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    def test_the_wiki_prune_table_writes_no_control_character(self, mock_svc, isolated_env, text):
+        from lilbee.wiki.prune import PruneAction, PruneRecord, PruneReport
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        report = PruneReport(records=[PruneRecord(text, PruneAction.FLAGGED, text)])
+        with mock.patch("lilbee.wiki.prune.prune_wiki", return_value=report):
+            result = runner.invoke(app, ["wiki", "prune"])
+        assert result.exit_code == 0, result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @pytest.mark.parametrize("name", CONTROL_TITLES)
+    def test_the_wiki_dry_run_table_writes_no_control_character_of_a_source(
+        self, mock_svc, isolated_env, monkeypatch, name
+    ):
+        from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
+        from lilbee.wiki.entity_extractor.base import ChunkRef
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        cfg.wiki = True
+        mock_svc.store.get_sources.return_value = []
+        extractor = MagicMock()
+        extractor.extract.return_value = [
+            ExtractedEntity(
+                slug="chevrolet",
+                kind=EntityKind.ENTITY,
+                label="Chevrolet",
+                type_hint="ORG",
+                chunk_refs=(ChunkRef(source=name, chunk_index=0),),
+            ),
+        ]
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.get_entity_extractor", lambda *a, **kw: extractor
+        )
+        result = runner.invoke(app, ["wiki", "build", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "chevrolet" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None
+
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
+    @pytest.mark.parametrize("concept", CONTROL_TITLES)
+    def test_topics_writes_no_control_character_of_a_concept(self, _avail, mock_svc, concept):
+        from lilbee.retrieval.concepts import Community
+        from tests._crafted_titles import TERMINAL_CONTROL_RE
+
+        cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.top_communities.return_value = [
+            Community(cluster_id=0, size=2, concepts=[concept, "plain"]),
+        ]
+        result = runner.invoke(app, ["topics"])
+        assert result.exit_code == 0, result.output
+        assert "plain" in result.output
+        assert TERMINAL_CONTROL_RE.search(result.output) is None

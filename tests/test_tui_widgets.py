@@ -24,6 +24,14 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.core.config import cfg
+from tests._crafted_titles import (
+    CONTROL_TITLES,
+    CRAFTED_SOURCE,
+    CRAFTED_TITLES,
+    TERMINAL_CONTROL_RE,
+    crafted_label,
+    shown_inline,
+)
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
@@ -65,6 +73,20 @@ class _MsgApp(LilbeeAppHost):
 
         yield UserMessage("hello")
         self._am = AssistantMessage()
+        yield self._am
+
+
+class _RestoredApp(LilbeeAppHost):
+    """Hosts one assistant turn restored with *content*."""
+
+    def __init__(self, content: str) -> None:
+        super().__init__()
+        self._restored = content
+
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        self._am = AssistantMessage(content=self._restored)
         yield self._am
 
 
@@ -137,6 +159,65 @@ class TestAssistantMessageAsync:
         restored = AssistantMessage(content="Try:\n\n```python\nx = 1", sources=("manual.md",))
         joined = "".join(restored._content_parts)
         assert "```python\nx = 1\n```\n\nSources:\n\n1. [manual.md](" in joined
+
+    @pytest.mark.parametrize("title", CRAFTED_TITLES)
+    async def test_a_restored_turn_renders_a_page_title_as_text(self, title: str) -> None:
+        """The widget's markdown escapes the Sources labels; the turn's text stays raw."""
+        from textual.widgets import Markdown
+
+        from lilbee.cli.tui.widgets.message import _answer_markdown_parser
+        from lilbee.retrieval.query.formatting import FILE_LINK_RE, source_markdown_link
+
+        content = f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        app = _RestoredApp(content)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert isinstance(am._content_widget, Markdown)
+            assert "".join(am._content_parts) == content
+            line = am._content_widget.source.rpartition("\n1. ")[2]
+            hrefs, shown = shown_inline(_answer_markdown_parser(), line)
+            assert hrefs == [FILE_LINK_RE.search(content)["url"]]
+            assert shown == crafted_label(title)
+
+    @pytest.mark.parametrize("title", CRAFTED_TITLES)
+    async def test_a_live_turn_renders_a_page_title_as_text(self, title: str) -> None:
+        from textual.widgets import Markdown
+
+        from lilbee.cli.tui.widgets.message import _answer_markdown_parser
+        from lilbee.retrieval.query.formatting import FILE_LINK_RE, source_markdown_link
+
+        block = f"\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("x [1]")
+            am.append_content(block)
+            am.finish()
+            await pilot.pause()
+            assert isinstance(am._content_widget, Markdown)
+            assert "".join(am._content_parts) == f"x [1]{block}"
+            line = am._content_widget.source.rpartition("\n1. ")[2]
+            hrefs, shown = shown_inline(_answer_markdown_parser(), line)
+            assert hrefs == [FILE_LINK_RE.search(block)["url"]]
+            assert shown == crafted_label(title)
+
+    async def test_rebuilding_the_markdown_widget_escapes_the_sources_again(self) -> None:
+        from textual.widgets import Markdown
+
+        content = "x [1]\n\nSources:\n\n1. [my_notes.md](file:///kb/my_notes.md)"
+        app = _RestoredApp(content)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            await am.rebuild_content_widget(use_markdown=False)
+            assert isinstance(am._content_widget, Static)
+            assert "1. [my_notes.md](file:///kb/my_notes.md)" in am._content_widget.content.plain
+            await am.rebuild_content_widget(use_markdown=True)
+            await pilot.pause()
+            assert isinstance(am._content_widget, Markdown)
+            assert "1. [my\\_notes.md](file:///kb/my_notes.md)" in am._content_widget.source
 
     def test_finishing_a_never_mounted_message_does_not_crash(self) -> None:
         """A turn can end before its bubble reaches the screen; finish() must
@@ -5759,6 +5840,66 @@ async def test_crawl_dialog_submit_valid():
     assert result.max_pages == 10
 
 
+@pytest.mark.parametrize(
+    ("depth", "pages", "name"),
+    [
+        ("-1", "10", "Depth cap"),
+        ("-5", "10", "Depth cap"),
+        ("2", "-1", "Max pages"),
+        ("2", "-5", "Max pages"),
+        ("101", "10", "depth"),
+        ("2", "10000001", "max_pages"),
+        ("2", str(2**64), "max_pages"),
+    ],
+)
+async def test_crawl_dialog_refuses_a_depth_or_page_count_the_engine_cannot_hold(
+    depth, pages, name
+):
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#crawl-url-input").value = "https://example.com"
+        app.screen.query_one("#crawl-depth-input").value = depth
+        app.screen.query_one("#crawl-max-pages-input").value = pages
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            result = app.screen._validate()
+        assert isinstance(result, str)
+        assert name in result
+
+
+async def test_crawl_dialog_accepts_the_lowest_depth_and_page_count():
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#crawl-url-input").value = "https://example.com"
+        app.screen.query_one("#crawl-depth-input").value = "0"
+        app.screen.query_one("#crawl-max-pages-input").value = "1"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            params = app.screen._validate()
+    assert isinstance(params, CrawlParams)
+    assert (params.depth, params.max_pages) == (0, 1)
+
+
+async def test_crawl_dialog_accepts_the_largest_depth_and_page_count():
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#crawl-url-input").value = "https://example.com"
+        app.screen.query_one("#crawl-depth-input").value = "100"
+        app.screen.query_one("#crawl-max-pages-input").value = "10000000"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            params = app.screen._validate()
+    assert isinstance(params, CrawlParams)
+    assert (params.depth, params.max_pages) == (100, 10_000_000)
+
+
 async def test_crawl_dialog_browser_checkbox_sets_browser_mode(monkeypatch):
     """Checking the browser checkbox returns CrawlParams with render_mode=browser."""
     from textual.widgets import Checkbox
@@ -7562,3 +7703,58 @@ async def test_warm_line_names_the_model_being_loaded() -> None:
         assert warm is not None
         assert "chat ·" not in warm  # not the fallback name
         assert "warming up " in warm
+
+
+class TestTerminalSafeSourcesList:
+    """The Sources list a widget renders holds no control character of a stored label."""
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    async def test_a_restored_turn_renders_a_title_without_control_characters(
+        self, title: str
+    ) -> None:
+        from textual.widgets import Markdown
+
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        content = f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        app = _RestoredApp(content)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert isinstance(am._content_widget, Markdown)
+            assert TERMINAL_CONTROL_RE.search(am._content_widget.source.replace("\n", "")) is None
+            assert "".join(am._content_parts) == content
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    async def test_a_live_turn_renders_a_title_without_control_characters(self, title: str) -> None:
+        from textual.widgets import Markdown
+
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        block = f"\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("x [1]")
+            am.append_content(block)
+            am.finish()
+            await pilot.pause()
+            assert isinstance(am._content_widget, Markdown)
+            assert TERMINAL_CONTROL_RE.search(am._content_widget.source.replace("\n", "")) is None
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    async def test_the_plain_text_view_shows_a_title_without_control_characters(
+        self, title: str
+    ) -> None:
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        content = f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        app = _RestoredApp(content)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            await am.rebuild_content_widget(use_markdown=False)
+            assert isinstance(am._content_widget, Static)
+            plain = am._content_widget.content.plain
+            assert TERMINAL_CONTROL_RE.search(plain.replace("\n", "")) is None

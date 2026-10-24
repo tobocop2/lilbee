@@ -1201,7 +1201,7 @@ pip install --pre 'lilbee[litellm]'    # remote providers: connect to any SDK-ba
 
 # uv tool
 uv tool install --prerelease=allow 'lilbee[graph]'
-uv tool install --prerelease=allow 'lilbee[crawler]' --excludes https://lilbee.sh/uv-excludes.txt
+uv tool install --prerelease=allow 'lilbee[crawler]'
 uv tool install --prerelease=allow 'lilbee[litellm]'
 ```
 
@@ -1209,15 +1209,11 @@ Install several at once, engine included:
 
 ```bash
 # uv tool
-uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/ --excludes https://lilbee.sh/uv-excludes.txt
+uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
 
 # pip
 pip install --pre 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
-pip uninstall -y unclecode-litellm
-pip install --force-reinstall --no-deps "litellm==$(pip show litellm | sed -n 's/^Version: //p')"
 ```
-
-Add `--excludes https://lilbee.sh/uv-excludes.txt` to any uv install that has `crawler` in the extras list; on uv 0.10.8 or later, `uv tool upgrade` keeps it. With pip, run the two commands above after a `pip install` that has both `crawler` and `litellm`.
 
 </details>
 
@@ -1288,8 +1284,8 @@ Based on: Microsoft Research's LazyGraphRAG technique, Church & Hanks 1990
 Index web pages alongside your local documents. Crawl single pages or follow
 links recursively.
 
-**What it does:** Fetches web pages using a headless browser (Playwright),
-extracts markdown content, and indexes it. Supports recursive crawling with
+**What it does:** Fetches web pages over HTTP, or through a headless Chromium
+for pages that need JavaScript, extracts markdown content, and indexes it. Supports recursive crawling with
 configurable depth, concurrent fetching, live progress, cancel, per-domain
 rate-limit + retries on HTTP 429/503, and SSRF protection against internal
 network access.
@@ -1320,6 +1316,30 @@ lilbee add https://docs.example.com https://wiki.example.com
 Also available via MCP (`crawl`), REST API (`POST /api/crawl`), and TUI
 (`/crawl`). The MCP tool defaults to a single page (`depth=0`); agents pass a
 depth, or `depth=null` for the whole site.
+
+**Sites that need a login:** `lilbee add` takes `--authorization`, `--username`,
+`--password` and `--cookie`. The REST body takes a `login` object with the same
+four fields. The MCP `crawl` tool takes them as four parameters. A login goes to
+one host only: the host of the URL, and never to a host a page links or
+redirects to. If one `lilbee add` command has a login and URLs on more than one
+host, lilbee refuses the command. Add the URLs of each host in their own
+command. The login is never saved to `config.toml` or the crawl record. The TUI
+`/crawl` command and the MCP `add` tool do not take a login.
+
+To keep a secret out of shell history, export it as `LILBEE_CRAWL_AUTHORIZATION`,
+`LILBEE_CRAWL_PASSWORD` or `LILBEE_CRAWL_COOKIE`, and name its host in
+`LILBEE_CRAWL_LOGIN_HOST`. lilbee sends these variables only to a command whose
+URLs are all on that host. The match ignores the scheme and the port, as
+crawlberg does, so the login also goes to `http://` URLs and to other ports of
+that host. For any other command, lilbee sends none of them and
+prints a note. A flag on the command line wins over the variable of the same
+field.
+
+```bash
+export LILBEE_CRAWL_LOGIN_HOST=wiki.example.com
+export LILBEE_CRAWL_COOKIE='session=<id>'
+lilbee add https://wiki.example.com/space --crawl
+```
 
 **Configuration (all optional):**
 

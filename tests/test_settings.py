@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.app.settings_map import SETTINGS_MAP, get_default
+from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup, get_default
 from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
 
@@ -579,16 +579,111 @@ class TestMemoryTuningSettingsMap:
         # field must be writable through the HTTP / MCP / programmatic contract.
         assert "crawl_render_mode" in WRITABLE_CONFIG_FIELDS
 
-    def test_browser_memory_levers_in_settings_map(self):
+    def test_list_default_comes_from_its_factory(self):
+        from lilbee.core.config.defaults import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
-        recycle = SETTINGS_MAP["crawl_browser_recycle_pages"]
-        assert recycle.writable is True
-        assert recycle.type is int
-        assert get_default("crawl_browser_recycle_pages") == 50
+        assert get_default("crawl_exclude_patterns") == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
 
+    def test_removed_crawler_settings_are_not_offered(self):
+        for name in ("crawl_browser_recycle_pages", "crawl_convert_workers"):
+            assert name not in SETTINGS_MAP
+            assert name not in WRITABLE_CONFIG_FIELDS
+
+    def test_browser_launch_flags_persist_and_reload(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "crawl_browser_extra_args", [])
+        appset.apply_settings_update({"crawl_browser_extra_args": ["--lang=fr", "--mute-audio"]})
+        assert settings.load(tmp_path)["crawl_browser_extra_args"] == "--lang=fr\n--mute-audio"
+
+        appset.cfg.crawl_browser_extra_args = []
+        settings.overlay_persisted_settings(tmp_path)
+        assert appset.cfg.crawl_browser_extra_args == ["--lang=fr", "--mute-audio"]
+
+    def test_a_flag_crawlberg_refuses_persists_and_reloads(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "crawl_browser_extra_args", [])
+        appset.apply_settings_update({"crawl_browser_extra_args": ["--headless=new", "gpu"]})
+        assert settings.load(tmp_path)["crawl_browser_extra_args"] == "--headless=new\ngpu"
+
+        appset.cfg.crawl_browser_extra_args = []
+        settings.overlay_persisted_settings(tmp_path)
+        assert appset.cfg.crawl_browser_extra_args == ["--headless=new", "gpu"]
+
+    def test_the_user_agent_is_a_writable_crawl_setting_with_no_override_by_default(self):
+        user_agent = SETTINGS_MAP["crawl_user_agent"]
+        assert user_agent.writable is True
+        assert user_agent.type is str
+        assert user_agent.group is SettingGroup.CRAWLING
+        assert "crawl_user_agent" in WRITABLE_CONFIG_FIELDS
+        assert get_default("crawl_user_agent") == ""
+
+    def test_robots_txt_is_a_writable_crawl_setting_honoured_by_default(self):
+        robots = SETTINGS_MAP["crawl_respect_robots_txt"]
+        assert robots.writable is True
+        assert robots.type is bool
+        assert robots.group is SettingGroup.CRAWLING
+        assert "crawl_respect_robots_txt" in WRITABLE_CONFIG_FIELDS
+        assert get_default("crawl_respect_robots_txt") is True
+
+    def test_extra_wait_is_a_writable_crawl_setting_off_by_default(self):
+        wait = SETTINGS_MAP["crawl_browser_extra_wait_ms"]
+        assert wait.writable is True
+        assert wait.type is int
+        assert wait.group is SettingGroup.CRAWLING
+        assert "crawl_browser_extra_wait_ms" in WRITABLE_CONFIG_FIELDS
+        assert get_default("crawl_browser_extra_wait_ms") == 0
+
+    def test_extra_wait_persists_and_reloads(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "crawl_browser_extra_wait_ms", 1000)
+        appset.apply_settings_update({"crawl_browser_extra_wait_ms": 0})
+        assert settings.load(tmp_path)["crawl_browser_extra_wait_ms"] == 0
+
+        appset.cfg.crawl_browser_extra_wait_ms = 1000
+        settings.overlay_persisted_settings(tmp_path)
+        assert appset.cfg.crawl_browser_extra_wait_ms == 0
+
+    def test_robots_txt_off_persists_and_reloads(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "crawl_respect_robots_txt", True)
+        appset.apply_settings_update({"crawl_respect_robots_txt": False})
+        assert settings.load(tmp_path)["crawl_respect_robots_txt"] is False
+
+        appset.cfg.crawl_respect_robots_txt = True
+        settings.overlay_persisted_settings(tmp_path)
+        assert appset.cfg.crawl_respect_robots_txt is False
+
+    def test_the_user_agent_persists_and_reloads(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "crawl_user_agent", "")
+        appset.apply_settings_update({"crawl_user_agent": "Probe/1.0"})
+        assert settings.load(tmp_path)["crawl_user_agent"] == "Probe/1.0"
+
+        appset.cfg.crawl_user_agent = ""
+        settings.overlay_persisted_settings(tmp_path)
+        assert appset.cfg.crawl_user_agent == "Probe/1.0"
+
+    def test_browser_launch_flags_are_a_writable_list_setting(self):
         extra = SETTINGS_MAP["crawl_browser_extra_args"]
         assert extra.writable is True
         assert extra.type is list
+        assert extra.validate_regex is False
+        assert "crawl_browser_extra_args" in WRITABLE_CONFIG_FIELDS
         assert get_default("crawl_browser_extra_args") == [
             "--disable-dev-shm-usage",
             "--disable-gpu",
@@ -621,13 +716,6 @@ class TestCrawlRenderModeConfig:
             match=r"^LILBEE_CRAWL_RENDER_MODE = 'bogus' is not one of http, browser$",
         ):
             Config()
-
-    def test_browser_memory_lever_defaults(self):
-        from lilbee.core.config.model import Config
-
-        c = Config()
-        assert c.crawl_browser_recycle_pages == 50
-        assert c.crawl_browser_extra_args == ["--disable-dev-shm-usage", "--disable-gpu"]
 
 
 class TestOverlayPersistedSettings:
@@ -1009,8 +1097,8 @@ class TestListSettingRegexMarker:
     def test_only_regex_list_validates_as_regex(self):
 
         assert SETTINGS_MAP["crawl_exclude_patterns"].validate_regex is True
-        # Chromium flag list must not be regex-validated.
-        assert SETTINGS_MAP["crawl_browser_extra_args"].validate_regex is False
+        # A list of plain values must not be regex-validated.
+        assert SETTINGS_MAP["ocr_language"].validate_regex is False
 
 
 class TestUtf8RoundTrip:

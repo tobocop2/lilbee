@@ -12,6 +12,7 @@ import yaml
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
+from lilbee.app.services import set_services
 from lilbee.app.session_export import (
     _HTML_HEADING_RE,
     SLUG_MAX_LEN,
@@ -24,6 +25,8 @@ from lilbee.app.session_export import (
 )
 from lilbee.retrieval.query.formatting import source_markdown_link
 from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
+from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, crafted_label, shown_inline
+from tests.conftest import make_mock_services
 
 _ID = "3f2a1b2c-0000-4000-8000-000000000000"
 
@@ -119,10 +122,13 @@ def test_structured_sources_become_a_numbered_list_of_plain_names():
     [
         ("_web/www.example.com/guide.md", "example.com · guide"),
         ("memory:m1", "memory:m1"),
-        ("notes [draft].md", "notes [draft].md"),
+        ("notes [draft].md", "notes \\[draft\\].md"),
+        ("my_notes.md", "my\\_notes.md"),
+        ("R&D plan_v2.md", "R\\&D plan\\_v2.md"),
     ],
 )
-def test_every_kind_of_source_is_named_as_the_live_answer_labels_it(source, name):
+def test_every_kind_of_source_is_named_as_markdown_that_shows_its_label(source, name):
+    set_services(make_mock_services())
     markdown = session_markdown(_session(_assistant("x [1]", sources=(source,))))
     assert markdown.endswith(f"Sources:\n\n1. {name}\n")
 
@@ -138,8 +144,29 @@ def test_a_stored_sources_list_keeps_its_names_and_locations_but_no_links():
     markdown = session_markdown(_session(_assistant(content, sources=("manual.pdf",))))
     assert "file:" not in markdown
     assert markdown.endswith(
-        "Sources:\n\n1. manual.pdf, page 3\n2. src/brake.py, lines 4-9\n3. notes [draft] (v2).md\n"
+        "Sources:\n\n1. manual.pdf, page 3\n2. src/brake.py, lines 4-9\n"
+        "3. notes \\[draft\\] (v2).md\n"
     )
+
+
+@pytest.mark.parametrize("stored", [False, True])
+@pytest.mark.parametrize("title", CRAFTED_TITLES)
+def test_a_page_title_shows_as_text_in_the_export(title, stored):
+    services = make_mock_services()
+    services.store.web_titles.return_value = {CRAFTED_SOURCE: title}
+    set_services(services)
+    if stored:
+        answer = _assistant(
+            f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+        )
+    else:
+        answer = _assistant("x [1]", sources=(CRAFTED_SOURCE,))
+    markdown = session_markdown(_session(answer))
+    _, marker, line = markdown.rpartition("Sources:\n\n1. ")
+    assert marker and line.count("\n") == 1
+    hrefs, shown = shown_inline(MarkdownIt("commonmark"), line.rstrip("\n"))
+    assert hrefs == []
+    assert shown == crafted_label(title)
 
 
 @pytest.mark.parametrize(
@@ -148,7 +175,7 @@ def test_a_stored_sources_list_keeps_its_names_and_locations_but_no_links():
         ("# hash.md", "\\# hash.md"),
         ("- dash.md", "\\- dash.md"),
         ("> quote.md", "\\> quote.md"),
-        ("[ref]: x.md", "\\[ref]: x.md"),
+        ("[ref]: x.md", "\\[ref\\]: x.md"),
         ("2. two.md", "2\\. two.md"),
         ("3) three.md", "3\\) three.md"),
         ("2024.pdf", "2024.pdf"),

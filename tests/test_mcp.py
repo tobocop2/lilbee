@@ -8,6 +8,8 @@ import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
+from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,7 +21,9 @@ import lilbee.app.services as svc_mod
 from conftest import clean_env
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
+from lilbee.crawler.models import CrawlLogin
 from lilbee.crawler.task import clear_tasks, get_task
+from lilbee.crawler.url_filter import UNPARSED_ADDRESS
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.discovery import ExclusionReason
 from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX, SearchChunk, Store
@@ -58,8 +62,16 @@ from lilbee.mcp_server import (
     wiki_update,
     wiki_wipe,
 )
-from lilbee.runtime.progress import EmbedEvent, EventType, FileStartEvent, noop_callback
+from lilbee.runtime.progress import (
+    CrawlPageFailedEvent,
+    EmbedEvent,
+    EventType,
+    FileStartEvent,
+    noop_callback,
+)
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
+from tests._crawlberg_stub import StubCrawlberg, complete
+from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
 from tests._mcp_client import mcp_client
 from tests.conftest import summary_of
@@ -1272,13 +1284,13 @@ class TestMcpProcessSignals:
 
 class TestAddWithUrls:
     async def test_add_url_without_crawler(self, isolated_env):
-        """Adding URLs when crawl4ai not installed returns error."""
-        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+        """Adding URLs when the crawler extra is not installed returns error."""
+        with mock.patch("lilbee.mcp_server.crawler_available", return_value=False):
             result = await add(paths=["https://example.com"])
             assert "error" in result
             assert "pip install" in result["error"].lower()
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_url(self, mock_crawl, mock_sync, _mock_avail, isolated_env):
@@ -1290,7 +1302,7 @@ class TestAddWithUrls:
         assert result["crawled"] == 1
         mock_crawl.assert_awaited_once()
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_url_fetches_single_page(
@@ -1301,7 +1313,47 @@ class TestAddWithUrls:
         await add(paths=["https://example.com"])
         assert mock_crawl.call_args.kwargs["depth"] == 0
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_a_page_the_crawl_refuses_answers_with_the_crawls_reason(
+        self, mock_crawl, mock_sync, _mock_avail, isolated_env
+    ):
+        """A page the crawl saves nothing for gives the reason the crawl reported for it."""
+        from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE
+
+        async def refused(url: str, **kwargs: Any) -> list[Path]:
+            kwargs["on_progress"](
+                EventType.CRAWL_PAGE_FAILED,
+                CrawlPageFailedEvent(url=url, reason=ROBOTS_REFUSED_MESSAGE),
+            )
+            return []
+
+        mock_crawl.side_effect = refused
+        result = await add(paths=["https://example.com/private"])
+        assert result["error"] == (
+            f"add indexed nothing. https://example.com/private: {ROBOTS_REFUSED_MESSAGE}"
+        )
+        assert "crawl_respect_robots_txt" in result["error"]
+        mock_sync.assert_not_awaited()
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_a_crawl_refused_before_it_starts_answers_with_the_reason(
+        self, mock_crawl, mock_sync, _mock_avail, isolated_env
+    ):
+        """A refusal before the crawl starts is an error answer that names the page and why."""
+        from lilbee.crawler.bootstrap import CrawlEngineRefusedError
+
+        reason = "invalid regex in crawl_exclude_patterns: [0] '(a': unclosed group"
+        mock_crawl.side_effect = CrawlEngineRefusedError(reason)
+        result = await add(paths=["https://user:secret@example.com/page"])
+        assert result["error"] == f"add indexed nothing. https://example.com/page: {reason}"
+        assert "secret" not in str(result)
+        mock_sync.assert_not_awaited()
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_mixed_urls_and_paths(self, mock_crawl, mock_sync, _mock_avail, isolated_env):
@@ -1318,11 +1370,11 @@ class TestAddWithUrls:
         """ocr applies to the sync after a URL add and leaves the setting alone."""
         mock_crawl.return_value = []
         cfg.ocr = OcrMode.AUTO
-        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+        with mock.patch("lilbee.mcp_server.crawler_available", return_value=True):
             await add(paths=["https://example.com"], ocr=OcrMode.OFF)
         assert cfg.ocr is OcrMode.AUTO
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_url_ssrf_rejected(self, mock_sync, _mock_avail, isolated_env):
         """Private IP URLs are rejected with an error, not crawled."""
@@ -1334,9 +1386,40 @@ class TestAddWithUrls:
         assert result.get("error")
         assert "evil.test" in str(result)
 
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_a_refused_credentialed_seed_is_named_without_its_password(
+        self, mock_sync, _mock_avail, isolated_env
+    ):
+        result = await add(paths=["http://alice:hunter2@example.com:80a/"])
+        assert f"{UNPARSED_ADDRESS}: URL has an invalid port" in result["error"]
+        assert "hunter2" not in str(result)
+        assert "alice" not in str(result)
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_a_credentialed_seed_whose_page_fails_names_no_password(
+        self, mock_sync, _mock_avail, isolated_env
+    ):
+        shown = "https://dead.example/page"
+        reason = f"not_found: HTTP 404 for {shown}"
+        stub = StubCrawlberg([crawlberg_error(shown, reason), complete(0)])
+        with (
+            mock.patch(
+                "lilbee.crawler.url_filter.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+            ),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+            stub.installed(),
+        ):
+            result = await add(paths=["https://alice:hunter2@dead.example/page"])
+        assert stub.seeds == ["https://alice:hunter2@dead.example/page"]
+        assert result["error"] == f"add indexed nothing. {shown}: {reason}"
+        assert "hunter2" not in str(result)
+
 
 class TestCrawl:
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
     async def test_returns_task_id(self, mock_start, _mock_dns, _mock_avail, isolated_env):
@@ -1351,9 +1434,43 @@ class TestCrawl:
             max_pages=None,
             render_mode=None,
             include_subdomains=False,
+            login=CrawlLogin(),
         )
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
+    async def test_the_login_reaches_the_crawl_and_not_the_answer(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env
+    ):
+        result = await crawl(url="https://example.com", authorization="Bearer t-1", cookie="s=2")
+        assert mock_start.call_args.kwargs["login"] == CrawlLogin(
+            authorization="Bearer t-1", cookie="s=2"
+        )
+        assert result["status"] == "started"
+        assert "t-1" not in str(result)
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
+    async def test_a_login_with_a_header_and_a_username_is_refused(
+        self, mock_start, _mock_avail, isolated_env
+    ):
+        result = await crawl(url="https://example.com", authorization="Bearer t-1", username="a")
+        assert "not both" in result["error"]
+        assert "t-1" not in str(result)
+        mock_start.assert_not_called()
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
+    async def test_a_credentialed_seed_is_crawled_with_and_shown_without_its_password(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env
+    ):
+        result = await crawl(url="https://alice:hunter2@example.com/")
+        assert result["url"] == "https://example.com/"
+        assert mock_start.call_args.args == ("https://alice:hunter2@example.com/",)
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
     async def test_default_depth_is_single_page(
@@ -1363,7 +1480,7 @@ class TestCrawl:
         await crawl(url="https://en.wikipedia.org/wiki/Sauna")
         assert mock_start.call_args.kwargs["depth"] == 0
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
     async def test_explicit_null_depth_crawls_whole_site(
@@ -1373,7 +1490,7 @@ class TestCrawl:
         await crawl(url="https://example.com", depth=None)
         assert mock_start.call_args.kwargs["depth"] is None
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="def456")
     async def test_passes_depth_and_max_pages(
@@ -1388,9 +1505,10 @@ class TestCrawl:
             max_pages=10,
             render_mode=None,
             include_subdomains=False,
+            login=CrawlLogin(),
         )
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.mcp_server.start_crawl")
     async def test_rejects_negative_depth(self, mock_start, _mock_avail, isolated_env):
         """A negative depth is a clean error, not an unbounded crawl (REST parity)."""
@@ -1398,7 +1516,49 @@ class TestCrawl:
         assert "error" in result
         mock_start.assert_not_called()
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @pytest.mark.parametrize(
+        ("kwargs", "name"),
+        [
+            ({"depth": -1}, "depth"),
+            ({"depth": -5}, "depth"),
+            ({"max_pages": -1}, "max_pages"),
+            ({"max_pages": -5}, "max_pages"),
+            ({"depth": 101}, "depth"),
+            ({"depth": 2**64}, "depth"),
+            ({"max_pages": 10_000_001}, "max_pages"),
+            ({"max_pages": 2**64}, "max_pages"),
+        ],
+    )
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.start_crawl")
+    async def test_rejects_a_depth_or_page_count_the_engine_cannot_hold(
+        self, mock_start, _mock_avail, isolated_env, kwargs, name
+    ):
+        result = await crawl(url="https://example.com", **kwargs)
+        assert name in result["error"]
+        mock_start.assert_not_called()
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.require_valid_crawl_url")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="t1")
+    async def test_accepts_the_lowest_depth_and_page_count(
+        self, mock_start, _mock_valid, _mock_avail, isolated_env
+    ):
+        result = await crawl(url="https://example.com", depth=0, max_pages=0)
+        assert result["status"] == "started"
+        mock_start.assert_called_once()
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.require_valid_crawl_url")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="t1")
+    async def test_accepts_the_largest_depth_and_page_count(
+        self, mock_start, _mock_valid, _mock_avail, isolated_env
+    ):
+        result = await crawl(url="https://example.com", depth=100, max_pages=10_000_000)
+        assert result["status"] == "started"
+        mock_start.assert_called_once()
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.mcp_server.start_crawl")
     async def test_rejects_negative_max_pages(self, mock_start, _mock_avail, isolated_env):
         """A negative max_pages is a clean error (0 = unlimited, REST parity)."""
@@ -1406,7 +1566,7 @@ class TestCrawl:
         assert "error" in result
         mock_start.assert_not_called()
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="sub123")
     async def test_forwards_include_subdomains(
@@ -1416,7 +1576,7 @@ class TestCrawl:
         await crawl(url="https://example.com", include_subdomains=True)
         assert mock_start.call_args.kwargs["include_subdomains"] is True
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="ghi789")
     async def test_passes_render_mode(self, mock_start, _mock_dns, _mock_avail, isolated_env):
@@ -1430,16 +1590,17 @@ class TestCrawl:
             max_pages=None,
             render_mode=CrawlRenderMode.BROWSER,
             include_subdomains=False,
+            login=CrawlLogin(),
         )
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     async def test_rejects_invalid_url(self, _mock_avail):
         result = await crawl(url="ftp://bad.com")
         assert "error" in result
 
     async def test_crawler_not_installed(self):
-        """Returns error when crawl4ai is not installed."""
-        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+        """Returns error when the crawler extra is not installed."""
+        with mock.patch("lilbee.mcp_server.crawler_available", return_value=False):
             result = await crawl(url="https://example.com")
             assert "error" in result
             assert "pip install" in result["error"].lower()
@@ -1452,7 +1613,7 @@ class TestCrawl:
 
         assert inspect.iscoroutinefunction(crawl)
 
-    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     async def test_schedules_crawl_task_on_running_loop(self, _mock_dns, _mock_avail, isolated_env):
         """Regression (bb-ziks.3): with the real start_crawl the create_task must
@@ -1485,6 +1646,15 @@ class TestCrawlStatus:
         assert result["url"] == "https://example.com"
         assert result["status"] == "running"
         assert result["pages_crawled"] == 3
+
+    @mock.patch("lilbee.mcp_server.get_task")
+    def test_a_credentialed_seed_is_shown_without_its_password(self, mock_get_task, isolated_env):
+        from lilbee.crawler.task import CrawlTask
+
+        mock_get_task.return_value = CrawlTask(
+            task_id="abc123", url="https://alice:hunter2@example.com/", depth=0, max_pages=None
+        )
+        assert crawl_status("abc123")["url"] == "https://example.com/"
 
     @mock.patch("lilbee.mcp_server.get_task")
     def test_reports_page_failures(self, mock_get_task, isolated_env):
@@ -2154,6 +2324,66 @@ class TestSettingsMcp:
         assert "top_k" in persisted
         assert "chunk_size" in persisted
 
+    def test_settings_set_stores_browser_launch_flags(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"crawl_browser_extra_args": ["--lang=fr", "--mute-audio"]})
+        assert result["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--lang=fr", "--mute-audio"]
+
+    def test_settings_set_stores_the_crawl_user_agent(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"crawl_user_agent": "Probe/1.0"})
+        assert result["updated"] == ["crawl_user_agent"]
+        assert cfg.crawl_user_agent == "Probe/1.0"
+
+    def test_settings_set_turns_off_robots_txt(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.crawl_respect_robots_txt = True
+        result = settings_set({"crawl_respect_robots_txt": False})
+        assert result["updated"] == ["crawl_respect_robots_txt"]
+        assert cfg.crawl_respect_robots_txt is False
+
+    def test_settings_set_stores_the_extra_browser_wait(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.crawl_browser_extra_wait_ms = 1000
+        result = settings_set({"crawl_browser_extra_wait_ms": 0})
+        assert result["updated"] == ["crawl_browser_extra_wait_ms"]
+        assert cfg.crawl_browser_extra_wait_ms == 0
+
+    def test_settings_set_refuses_a_negative_extra_browser_wait(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.crawl_browser_extra_wait_ms = 1000
+        result = settings_set({"crawl_browser_extra_wait_ms": -1})
+        assert "crawl_browser_extra_wait_ms" in result["error"]
+        assert cfg.crawl_browser_extra_wait_ms == 1000
+
+    def test_settings_set_refuses_an_extra_browser_wait_the_engine_cannot_hold(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.crawl_browser_extra_wait_ms = 1000
+        result = settings_set({"crawl_browser_extra_wait_ms": 2**64})
+        assert "crawl_browser_extra_wait_ms" in result["error"]
+        assert cfg.crawl_browser_extra_wait_ms == 1000
+
+    def test_settings_set_refuses_a_crawl_delay_the_engine_cannot_hold(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.crawl_mean_delay = 0.5
+        result = settings_set({"crawl_mean_delay": 1e300})
+        assert "crawl_mean_delay" in result["error"]
+        assert cfg.crawl_mean_delay == 0.5
+
+    def test_settings_set_refuses_a_crawl_user_agent_with_a_control_character(self, isolated_env):
+        cfg.data_root = isolated_env
+        before = cfg.crawl_user_agent
+        result = settings_set({"crawl_user_agent": "Probe\n1.0"})
+        assert "crawl_user_agent" in result["error"]
+        assert cfg.crawl_user_agent == before
+
+    def test_settings_set_stores_a_flag_crawlberg_refuses(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"crawl_browser_extra_args": ["--user-data-dir=/tmp/profile"]})
+        assert result["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--user-data-dir=/tmp/profile"]
+
     def test_settings_set_blank_optional_number_clears_it(self, isolated_env):
         """A blank over MCP reaches Config as unset, and the file drops the entry."""
         cfg.data_root = isolated_env
@@ -2750,7 +2980,7 @@ class TestCatalogBrowseMcp:
 
 # Tool families whose registration depends on ambient state: ``wiki_`` on
 # ``cfg.wiki``, ``memory_`` on ``cfg.memory_enabled``, ``session`` on
-# ``cfg.mcp_sessions_enabled``, ``crawl`` on whether the crawl4ai extra is
+# ``cfg.mcp_sessions_enabled``, ``crawl`` on whether the crawler extra is
 # installed. They are excluded from the budget so it measures
 # one fixed surface. Counting them made the same commit measure 9672 bytes in
 # the docs-site job and 10143 on a developer box, which is how a schema

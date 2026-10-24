@@ -8,7 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, PropertyMock, call, patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -49,6 +49,7 @@ from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.crawler import CRAWLER_MISSING_MESSAGE
 from lilbee.data.store import Store
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.runtime.cancellation import TaskCancelledError
@@ -56,6 +57,8 @@ from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPha
 from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 from tests._async_wait import wait_for_widget, wait_until
+from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
+from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
@@ -145,7 +148,7 @@ def _settings_gates_open():
             return_value=True,
         ),
         patch(
-            "lilbee.crawler.crawler_available",
+            "lilbee.cli.tui.screens.settings_widgets.crawler_available",
             return_value=True,
         ),
     ):
@@ -1262,28 +1265,136 @@ async def test_settings_list_editor_strips_blanks():
         assert cfg.crawl_exclude_patterns == ["a", "b"]
 
 
-async def test_settings_list_editor_invalid_regex_blocks_save():
-    """An invalid regex shows an error and does not mutate cfg."""
+async def test_settings_list_editor_refused_pattern_blocks_save():
+    """A pattern crawlberg refuses shows its line and reason and does not mutate cfg."""
     from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    refused = r"\Z"
+    stub = StubCrawlberg(refuse=refusing_patterns(refused))
+    app = SettingsTestApp()
+    with stub.installed():
+        async with app.run_test(size=(120, 40)) as pilot:
+            cfg.crawl_exclude_patterns = ["keep"]
+            ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+            ta.focus()
+            await pilot.pause()
+            ta.load_text(f"/ok\n{refused}")
+            ta.blur()
+            err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
+            # Focus change → blur handler → check → error widget class toggle are all
+            # async. Single pilot.pause is not enough on slower runners; poll until
+            # the -visible class lands.
+            await pump_until(pilot, lambda: err.has_class("-visible"))
+            shown = str(err.render())
+            assert "line 2" in shown
+            assert "unrecognized escape sequence" in shown
+            assert cfg.crawl_exclude_patterns == ["keep"]
+
+
+async def test_settings_list_editor_saves_a_pattern_only_crawlberg_compiles():
+    """Python's re refuses this pattern; crawlberg compiles it, so the screen saves it."""
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    pattern = r"/wiki/\p{L}+:"
+    stub = StubCrawlberg(refuse=refusing_patterns(r"\Z"))
+    app = SettingsTestApp()
+    with stub.installed():
+        async with app.run_test(size=(120, 40)) as pilot:
+            cfg.crawl_exclude_patterns = ["keep"]
+            ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+            ta.focus()
+            await pilot.pause()
+            ta.load_text(pattern)
+            ta.blur()
+            await pump_until(pilot, lambda: cfg.crawl_exclude_patterns == [pattern])
+            assert cfg.crawl_exclude_patterns == [pattern]
+
+
+async def test_settings_browser_flags_editor_saves_on_blur():
+    """The launch-flag list editor stores each line as one flag."""
+    from textual.widgets import Collapsible
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        cfg.crawl_exclude_patterns = ["keep"]
-        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+        ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
         ta.focus()
         await pilot.pause()
-        ta.load_text("[")
+        ta.load_text("--lang=fr\n--mute-audio\n--disable-gpu")
         ta.blur()
-        err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
-        # Focus change → blur handler → regex validation → error widget
-        # class toggle are all async. Single pilot.pause is not enough on
-        # slower runners; poll until the -visible class lands.
-        await pump_until(pilot, lambda: err.has_class("-visible"))
-        assert err.has_class("-visible")
-        assert "line 1" in str(err.render())
-        assert cfg.crawl_exclude_patterns == ["keep"]
+        flags = ["--lang=fr", "--mute-audio", "--disable-gpu"]
+        await pump_until(pilot, lambda: cfg.crawl_browser_extra_args == flags)
+        assert cfg.crawl_browser_extra_args == flags
+        title = app.screen.query_one("#collapsible-crawl_browser_extra_args", Collapsible).title
+        assert "(3 lines)" in title
+
+
+async def test_settings_browser_flags_editor_stores_a_flag_crawlberg_refuses():
+    """The editor stores every line and counts it; crawlberg checks the flags at crawl time."""
+    from textual.widgets import Collapsible
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_browser_extra_args = ["--lang=fr"]
+        ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("--lang=fr\n--headless=new\nmute-audio")
+        ta.blur()
+        flags = ["--lang=fr", "--headless=new", "mute-audio"]
+        await pump_until(pilot, lambda: cfg.crawl_browser_extra_args == flags)
+        assert cfg.crawl_browser_extra_args == flags
+        title = app.screen.query_one("#collapsible-crawl_browser_extra_args", Collapsible).title
+        assert "(3 lines)" in title
+
+
+async def test_settings_crawl_user_agent_editor_saves_the_override():
+    """The crawl user agent editor stores the text it holds."""
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_user_agent = ""
+        editor = app.screen.query_one("#ed-crawl_user_agent", Input)
+        editor.focus()
+        editor.value = "Probe/1.0"
+        await pilot.press("enter")
+        await pump_until(pilot, lambda: cfg.crawl_user_agent == "Probe/1.0")
+        assert cfg.crawl_user_agent == "Probe/1.0"
+
+
+async def test_settings_extra_browser_wait_editor_saves_the_wait():
+    """The extra browser wait editor stores the milliseconds it holds."""
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_browser_extra_wait_ms = 1000
+        editor = app.screen.query_one("#ed-crawl_browser_extra_wait_ms", Input)
+        editor.focus()
+        editor.value = "2500"
+        await pilot.press("enter")
+        await pump_until(pilot, lambda: cfg.crawl_browser_extra_wait_ms == 2500)
+        assert cfg.crawl_browser_extra_wait_ms == 2500
+
+
+async def test_settings_robots_txt_checkbox_turns_the_setting_off():
+    """The robots.txt checkbox starts ticked and unticking it stores off."""
+    from textual.widgets import Checkbox
+
+    cfg.crawl_respect_robots_txt = True
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        checkbox = app.screen.query_one("#ed-crawl_respect_robots_txt", Checkbox)
+        assert checkbox.value is True
+        checkbox.toggle()
+        await pump_until(pilot, lambda: cfg.crawl_respect_robots_txt is False)
+        assert cfg.crawl_respect_robots_txt is False
 
 
 async def test_settings_list_editor_restore_defaults():
@@ -3292,6 +3403,16 @@ async def test_chat_slash_reset_confirm_executes():
             mock_reset.assert_called_once()
 
 
+# A bound that only stops a broken test from hanging; release is always set first.
+_HANG_GUARD_S = 60
+
+
+def _reset_decided(notify: MagicMock, clear: MagicMock) -> bool:
+    """Whether the confirmed reset was refused or ran, so the blocked task may finish."""
+    refused = call(_RESET_REFUSED_MID_SYNC, severity="warning")
+    return clear.called or refused in notify.call_args_list
+
+
 async def test_chat_slash_reset_refused_while_a_sync_runs():
     """A reset confirmed mid-sync is refused, so the sync cannot write its records back after it."""
     import asyncio
@@ -3306,7 +3427,7 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
     @_marks_sync_running
     async def _blocked_sync(**_kwargs):
         started.set()
-        await asyncio.to_thread(release.wait, 5)
+        await asyncio.to_thread(release.wait, _HANG_GUARD_S)
         return SyncResult()
 
     app = ChatTestApp()
@@ -3321,8 +3442,9 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
             app.screen._handle_slash("/reset")
             await _pilot.pause()
             await _pilot.press("y")
-            await _pilot.pause()
+            decided = await pump_until(_pilot, lambda: _reset_decided(mock_notify, mock_clear))
             release.set()
+            assert decided
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
         mock_clear.assert_not_called()
         mock_notify.assert_any_call(_RESET_REFUSED_MID_SYNC, severity="warning")
@@ -3347,7 +3469,7 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
 
     async def _blocked_import(_store, rows, **_kwargs):
         started.set()
-        await asyncio.to_thread(release.wait, 5)
+        await asyncio.to_thread(release.wait, _HANG_GUARD_S)
         return ImportResult(sources=["doc.pdf"], pages=len(rows), chunks=1)
 
     app = ChatTestApp()
@@ -3363,8 +3485,9 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
             app.screen._handle_slash("/reset")
             await _pilot.pause()
             await _pilot.press("y")
-            await _pilot.pause()
+            decided = await pump_until(_pilot, lambda: _reset_decided(mock_notify, mock_clear))
             release.set()
+            assert decided
             task = await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
         assert task.status == TaskStatus.DONE
         mock_clear.assert_not_called()
@@ -7773,9 +7896,13 @@ async def test_chat_slash_crawl_unavailable():
     """_cmd_crawl notifies when crawler is not installed."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=False):
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=False),
+            patch.object(app.screen, "notify") as notify,
+        ):
             app.screen._cmd_crawl("https://example.com")
             assert app.screen.is_current
+        notify.assert_called_once_with(CRAWLER_MISSING_MESSAGE, severity="error")
 
 
 async def test_chat_slash_crawl_no_args():
@@ -7831,10 +7958,12 @@ class TestParseCrawlFlags:
             None,
         )
 
-    def test_invalid_values(self):
+    @pytest.mark.parametrize("value", ["abc", "1e300", "inf", "nan"])
+    def test_invalid_values(self, value):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (None, None, False, None)
+        with pytest.raises(ValueError, match="--depth"):
+            ChatScreen._parse_crawl_flags(["--depth", value])
 
     def test_missing_value(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -15908,27 +16037,31 @@ async def test_settings_leaves_non_credentials_visible():
 
 
 async def test_settings_invalid_regex_error_shows_brackets_as_written():
-    """The regex error quotes the typed pattern; ``[/x]`` must not parse as a tag."""
+    """The refusal quotes text with brackets; ``[/x]`` must not parse as a tag."""
     from textual.widgets import Static
 
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.screens.settings_widgets import LIST_ERROR_ID_PREFIX
 
+    def refuse(config):
+        return "invalid_config: invalid exclude_path regex\nerror: bad group name '[/x]'"
+
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        screen.populate_all_panes()
-        await pilot.pause()
-        event = MagicMock()
-        event.control.name = "crawl_exclude_patterns"
-        event.control.text = "(?P<[/x]>a)"
-        with patch.object(screen, "_persist_value"):
-            screen._on_list_blur_save(event)
-        await pilot.pause()
-        error = screen.query_one(f"#{LIST_ERROR_ID_PREFIX}crawl_exclude_patterns", Static)
-        rendered = str(error.render())
-    assert "bad character in group name '[/x]'" in rendered
+    with StubCrawlberg(refuse=refuse).installed():
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            assert isinstance(screen, SettingsScreen)
+            screen.populate_all_panes()
+            await pilot.pause()
+            event = MagicMock()
+            event.control.name = "crawl_exclude_patterns"
+            event.control.text = "(?P<[/x]>a)"
+            with patch.object(screen, "_persist_value"):
+                screen._on_list_blur_save(event)
+            await pilot.pause()
+            error = screen.query_one(f"#{LIST_ERROR_ID_PREFIX}crawl_exclude_patterns", Static)
+            rendered = str(error.render())
+    assert "bad group name '[/x]'" in rendered
 
 
 async def test_a_choice_select_offers_no_blank_when_the_setting_is_not_nullable():
@@ -15976,3 +16109,176 @@ async def test_blanking_a_select_hands_the_save_an_empty_value():
             select.value = Select.NULL
             assert await pump_until(pilot, lambda: len(saved) == 2)
         assert saved == ["chat", ""]
+
+
+@pytest.mark.parametrize("name", CONTROL_TITLES)
+async def test_status_screen_tables_show_a_name_without_control_characters(
+    mock_svc, monkeypatch, name
+):
+    from textual.widgets import DataTable
+    from textual.widgets._data_table import default_cell_formatter
+
+    from lilbee.cli.tui.screens import status as status_screen
+    from lilbee.data.types import SkippedSource
+
+    _serve_sources(mock_svc, name)
+    held = [SkippedSource(filename=name, reason="bad header")]
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held, 1))
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        held_table = await wait_for_widget(pilot, app, "#held-out-table", DataTable)
+        docs_table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _wait_for_row_count(pilot, held_table, 1)
+        await _wait_for_row_count(pilot, docs_table, 1)
+        shown = [
+            default_cell_formatter(held_table.get_row_at(0)[0]).plain,
+            default_cell_formatter(docs_table.get_row_at(0)[0]).plain,
+        ]
+    assert all(TERMINAL_CONTROL_RE.search(cell) is None for cell in shown)
+
+
+@pytest.mark.parametrize("name", CONTROL_TITLES)
+async def test_chat_slash_delete_lists_a_name_without_control_characters(mock_svc, name):
+    mock_svc.store.get_sources.return_value = [{"filename": name, "source": name}]
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            mock_notify.assert_called_once()
+            assert TERMINAL_CONTROL_RE.search(mock_notify.call_args[0][0].replace("\n", "")) is None
+
+
+class TestTerminalSafeWikiScreen:
+    """A wiki page title or entity label shows in the TUI without a control character."""
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_the_page_header_shows_a_title_without_control_characters(self, title):
+        from lilbee.cli.tui.screens.wiki import _format_page_header
+
+        header = _format_page_header(title, "entity", 1, "2026-01-01", None)
+        assert TERMINAL_CONTROL_RE.search(header.plain) is None
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_the_breadcrumb_shows_a_title_without_control_characters(self, title):
+        from lilbee.cli.tui.screens.wiki import _breadcrumb_for_slug
+
+        assert TERMINAL_CONTROL_RE.search(_breadcrumb_for_slug("a/b/c", title).plain) is None
+
+    @pytest.mark.parametrize("slug", ["rootonly", "a/b/leaf", "a/b/index"])
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    async def test_the_tree_shows_a_title_without_control_characters(self, tmp_path, slug, title):
+        from textual.widgets import Tree
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.wiki.browse import WikiPageInfo
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            tree = screen.query_one("#wiki-page-list", Tree)
+            tree.reset("Wiki")
+            group = tree.root.add("Summaries", expand=True)
+            screen._insert_page(group, WikiPageInfo(slug, title, "summary", 0, ""), {})
+            nodes = [group, *group.children]
+            for node in group.children:
+                nodes.extend(node.children)
+            labels = [node.label.plain for node in nodes]
+            assert any(label.strip() for label in labels[1:])
+            assert all(TERMINAL_CONTROL_RE.search(label) is None for label in labels)
+
+    @pytest.mark.parametrize("label", CONTROL_TITLES)
+    async def test_the_stub_group_shows_a_label_without_control_characters(self, tmp_path, label):
+        from textual.widgets import Tree
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        stub = WikiStub("ford", label, EntityKind.ENTITY, "PERSON", (("a", 1),), (("a", 0),))
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            tree = screen.query_one("#wiki-page-list", Tree)
+            tree.reset("Wiki")
+            screen._add_stub_group(tree, [stub], expand=True)
+            leaf = tree.root.children[0].children[0]
+            assert TERMINAL_CONTROL_RE.search(leaf.label.plain) is None
+
+    @pytest.mark.parametrize("label", CONTROL_TITLES)
+    async def test_the_stub_detail_shows_a_label_without_control_characters(self, tmp_path, label):
+        from textual.widgets import Markdown
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.wiki.entity_extractor import EntityKind
+        from lilbee.wiki.stubs import WikiStub
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        stub = WikiStub("ford", label, EntityKind.ENTITY, "PERSON", (("a", 1),), (("a", 0),))
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            screen._stubs = {"ford": stub}
+            event = SimpleNamespace(node=SimpleNamespace(data="ford"))
+            with (
+                patch("lilbee.cli.tui.screens.wiki._describe_sources", return_value="a.md"),
+                patch("lilbee.cli.tui.screens.wiki.confirm_stub_generation"),
+            ):
+                screen._on_node_selected(event)
+            source = screen.query_one("#wiki-content", Markdown).source
+            assert TERMINAL_CONTROL_RE.search(source.replace("\n", "")) is None
+
+    async def test_an_opened_page_keeps_the_lines_of_its_body(self, tmp_path):
+        from textual.widgets import Markdown
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.wiki.browse import WikiPageContent
+
+        body = "# Title\n\n- a\n- b\n\n```py\nx = 1\n```\n"
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        page = WikiPageContent("summaries/a/b", "T", body + "\x1b[31m")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            with patch("lilbee.wiki.browse.read_page", return_value=page):
+                screen._display_page("summaries/a/b")
+            assert screen.query_one("#wiki-content", Markdown).source == body
+
+    @pytest.mark.parametrize("text", CONTROL_TITLES)
+    async def test_an_opened_page_shows_no_control_character(self, tmp_path, text):
+        from textual.widgets import Markdown
+
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+        from lilbee.wiki.browse import WikiPageContent
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        (cfg.data_root / cfg.wiki_dir).mkdir(parents=True)
+        page = WikiPageContent("summaries/a/b", text, text)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            with patch("lilbee.wiki.browse.read_page", return_value=page):
+                screen._display_page("summaries/a/b")
+            header = screen.query_one("#wiki-page-header", Static).content.plain
+            crumb = screen.query_one("#wiki-breadcrumb", Static).content.plain
+            body = screen.query_one("#wiki-content", Markdown).source
+            for shown in (header, crumb, body):
+                assert TERMINAL_CONTROL_RE.search(shown.replace("\n", "")) is None

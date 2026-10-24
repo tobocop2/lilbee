@@ -422,6 +422,20 @@ class TestMarkdownChunking:
     def test_empty_markdown(self):
         assert chunk_text("", mime_type="text/markdown", heading_context=True) == []
 
+    def test_saved_reference_links_keep_their_brackets(self):
+        """A crawled page's ``[[1]](url)`` references index as ``word[1][2]``."""
+        from lilbee.crawler.save import normalize_crawled_markdown
+
+        raw = (
+            "# Page\n\nThe build workflow[[1]](https://w.org/a#cite_note-1)"
+            "[[2]](https://w.org/a#cite_note-2) runs nightly."
+        )
+        md = normalize_crawled_markdown(raw)
+        chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
+        joined = " ".join(chunks)
+        assert "workflow[1][2] runs nightly" in joined
+        assert "cite_note" not in joined
+
 
 @pytest.mark.xdist_group("tree_sitter")
 class TestCodeChunker:

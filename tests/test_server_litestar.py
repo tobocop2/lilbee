@@ -18,6 +18,7 @@ from lilbee.core.config.model import _TAKES_DEFAULT_WHEN_REFUSED, _refusals
 from lilbee.data.store import SourceType
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.runtime.progress import EmbedEvent, EventType
+from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests.server.conftest import parse_sse_events
 
 
@@ -1301,9 +1302,11 @@ class TestConfigUpdateRoute:
         _inner()
 
     def test_crawl_exclude_patterns_rejects_invalid_regex(self, client):
-        # Invalid character class: `p-a` is a backwards range; should be rejected
-        # at PATCH time rather than crashing the next crawl with an opaque error.
-        resp = client.patch("/api/config", json={"crawl_exclude_patterns": ["[wp-a]"]})
+        # crawlberg refuses a pattern its regex rules cannot compile; the PATCH answers 400
+        # rather than crashing the next crawl with an opaque error.
+        stub = StubCrawlberg(refuse=refusing_patterns("[wp-a]"))
+        with stub.installed():
+            resp = client.patch("/api/config", json={"crawl_exclude_patterns": ["[wp-a]"]})
         assert resp.status_code == 400
         body = resp.text
         assert "crawl_exclude_patterns" in body or "regex" in body or "[0]" in body
@@ -1341,6 +1344,76 @@ class TestConfigUpdateRoute:
         before = cfg.top_k
         resp = client.patch("/api/config", json={"top_k": "many"})
         assert (resp.status_code, cfg.top_k) == (400, before)
+
+    def test_crawl_browser_extra_args_stores_a_flag_crawlberg_refuses(self, client):
+        resp = client.patch("/api/config", json={"crawl_browser_extra_args": ["--headless=new"]})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--headless=new"]
+
+    def test_crawl_user_agent_is_stored(self, client):
+        resp = client.patch("/api/config", json={"crawl_user_agent": "Probe/1.0"})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_user_agent"]
+        assert cfg.crawl_user_agent == "Probe/1.0"
+
+    def test_crawl_respect_robots_txt_is_stored(self, client):
+        cfg.crawl_respect_robots_txt = True
+        resp = client.patch("/api/config", json={"crawl_respect_robots_txt": False})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_respect_robots_txt"]
+        assert cfg.crawl_respect_robots_txt is False
+
+    def test_crawl_browser_extra_wait_ms_is_stored(self, client):
+        cfg.crawl_browser_extra_wait_ms = 1000
+        resp = client.patch("/api/config", json={"crawl_browser_extra_wait_ms": 0})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_browser_extra_wait_ms"]
+        assert cfg.crawl_browser_extra_wait_ms == 0
+
+    def test_a_negative_crawl_browser_extra_wait_ms_is_refused(self, client):
+        cfg.crawl_browser_extra_wait_ms = 1000
+        resp = client.patch("/api/config", json={"crawl_browser_extra_wait_ms": -1})
+        assert (resp.status_code, cfg.crawl_browser_extra_wait_ms) == (400, 1000)
+        assert "crawl_browser_extra_wait_ms" in resp.text
+
+    def test_a_crawl_browser_extra_wait_ms_the_engine_cannot_hold_is_refused(self, client):
+        cfg.crawl_browser_extra_wait_ms = 1000
+        resp = client.patch("/api/config", json={"crawl_browser_extra_wait_ms": 2**64})
+        assert (resp.status_code, cfg.crawl_browser_extra_wait_ms) == (400, 1000)
+        assert "crawl_browser_extra_wait_ms" in resp.text
+
+    def test_a_crawl_max_pages_the_engine_cannot_hold_is_refused(self, client):
+        cfg.crawl_max_pages = None
+        resp = client.patch("/api/config", json={"crawl_max_pages": 2**64})
+        assert (resp.status_code, cfg.crawl_max_pages) == (400, None)
+        assert "crawl_max_pages" in resp.text
+
+    @pytest.mark.parametrize("name", ["crawl_max_depth", "crawl_max_pages"])
+    @pytest.mark.parametrize("value", [-1, -5])
+    def test_a_negative_crawl_limit_is_refused(self, client, name, value):
+        setattr(cfg, name, None)
+        resp = client.patch("/api/config", json={name: value})
+        assert (resp.status_code, getattr(cfg, name)) == (400, None)
+        assert name in resp.text
+
+    @pytest.mark.parametrize(("name", "lowest"), [("crawl_max_depth", 0), ("crawl_max_pages", 1)])
+    def test_the_lowest_crawl_limit_is_accepted(self, client, name, lowest):
+        setattr(cfg, name, None)
+        assert client.patch("/api/config", json={name: lowest}).status_code == 200
+        assert getattr(cfg, name) == lowest
+
+    def test_crawl_user_agent_with_a_control_character_is_refused(self, client):
+        before = cfg.crawl_user_agent
+        resp = client.patch("/api/config", json={"crawl_user_agent": "Probe\n1.0"})
+        assert (resp.status_code, cfg.crawl_user_agent) == (400, before)
+        assert "crawl_user_agent" in resp.text
+
+    def test_crawl_browser_extra_args_accepts_launch_flags(self, client):
+        resp = client.patch("/api/config", json={"crawl_browser_extra_args": ["--lang=fr"]})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--lang=fr"]
 
     def test_crawl_exclude_patterns_accepts_valid_regex(self, client):
         resp = client.patch(
@@ -1714,6 +1787,26 @@ class TestCorsDefaultRegex:
 
 class TestCrawlRoute:
     @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_passes_the_login_to_the_crawl(self, mock_stream, client):
+        from lilbee.crawler.models import CrawlLogin
+
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        login = {"username": "alice", "password": "pw-4Rv", "cookie": "sid=3"}
+        resp = client.post("/api/crawl", json={"url": "https://example.com", "login": login})
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs["login"] == CrawlLogin(**login)
+        assert b"pw-4Rv" not in resp.content
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_refuses_a_bad_login_without_echoing_it(self, mock_stream, client):
+        login = {"authorization": "Bearer t-7Hn", "username": "alice"}
+        resp = client.post("/api/crawl", json={"url": "https://example.com", "login": login})
+        assert resp.status_code == 400
+        assert "not both" in resp.text
+        assert "t-7Hn" not in resp.text
+        mock_stream.assert_not_called()
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
     def test_post_crawl_streams_sse(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen(
             "event: crawl_start\ndata: {}\n\n",
@@ -1810,6 +1903,33 @@ class TestCrawlRoute:
         """A negative max_pages is still a validation error."""
         resp = client.post("/api/crawl", json={"url": "https://example.com", "max_pages": -1})
         assert resp.status_code == 400
+
+    @pytest.mark.parametrize("body", [{"depth": -1}, {"depth": -5}, {"max_pages": -5}])
+    def test_post_crawl_rejects_a_negative_depth_or_page_count_naming_it(self, client, body):
+        resp = client.post("/api/crawl", json={"url": "https://example.com", **body})
+        assert resp.status_code == 400
+        assert next(iter(body)) in resp.text
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_accepts_zero_depth(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        body = {"url": "https://example.com", "depth": 0, "max_pages": 0}
+        assert client.post("/api/crawl", json=body).status_code == 201
+
+    @pytest.mark.parametrize(
+        "body",
+        [{"depth": 101}, {"depth": 2**64}, {"max_pages": 10_000_001}, {"max_pages": 2**64}],
+    )
+    def test_post_crawl_rejects_a_depth_or_page_count_the_engine_cannot_hold(self, client, body):
+        resp = client.post("/api/crawl", json={"url": "https://example.com", **body})
+        assert resp.status_code == 400
+        assert next(iter(body)) in resp.text
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_accepts_the_largest_depth_and_page_count(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        body = {"url": "https://example.com", "depth": 100, "max_pages": 10_000_000}
+        assert client.post("/api/crawl", json=body).status_code == 201
 
 
 class TestSetupCrawlerRoutes:

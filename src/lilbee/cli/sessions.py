@@ -15,6 +15,7 @@ from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
+from lilbee.core.text import strip_control_characters
 from lilbee.runtime.console import styled
 from lilbee.sessions import (
     SESSIONS_DISABLED_HINT,
@@ -102,7 +103,7 @@ def list_cmd(
     for meta in metas:
         table.add_row(
             meta.id[:8],
-            Text(meta.title),
+            Text(strip_control_characters(meta.title)),
             str(meta.message_count),
             Text(meta.model_ref),
             meta.origin.value,
@@ -136,10 +137,17 @@ def show_cmd(
             }
         )
         return
-    console.print(Text(session.meta.title, style=theme.ACCENT), soft_wrap=True)
+    console.print(
+        Text(strip_control_characters(session.meta.title), style=theme.ACCENT), soft_wrap=True
+    )
     for message in session.messages:
         console.print(
-            Text.assemble((message.role.value, "bold"), ": ", message.content), soft_wrap=True
+            Text.assemble(
+                (message.role.value, "bold"),
+                ": ",
+                strip_control_characters(message.content, keep_lines=True),
+            ),
+            soft_wrap=True,
         )
 
 
@@ -164,7 +172,11 @@ def fork_cmd(
         json_output({"meta": asdict(meta)})
         return
     console.print(
-        Text.assemble("Forked to ", (meta.title, theme.ACCENT), f" ({fork_id[:8]})."),
+        Text.assemble(
+            "Forked to ",
+            (strip_control_characters(meta.title), theme.ACCENT),
+            f" ({fork_id[:8]}).",
+        ),
         soft_wrap=True,
     )
 

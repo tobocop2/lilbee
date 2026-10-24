@@ -4830,6 +4830,7 @@ class TestCrawlStream:
             cancel=None,
             include_subdomains=False,
             render_mode=None,
+            login=None,
         ):
             from lilbee.runtime.progress import CrawlDoneEvent, CrawlPageEvent, CrawlStartEvent
 
@@ -4869,6 +4870,7 @@ class TestCrawlStream:
             cancel=None,
             include_subdomains=False,
             render_mode=None,
+            login=None,
         ):
             from lilbee.runtime.progress import CrawlStartEvent
 
@@ -5613,6 +5615,26 @@ class TestSourceContentRoute:
         assert payload["markdown"].index("page one") < payload["markdown"].index("page two")
         assert payload["content_type"] == "text/markdown"
         assert payload["title"] == "Imported"
+
+    async def test_a_crawled_page_is_titled_with_its_stored_title(self, isolated_env):
+        from litestar.testing import AsyncTestClient
+
+        import lilbee.app.services as svc_mod
+        from lilbee.server.app import create_app
+
+        page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
+        (cfg.documents_dir / page).parent.mkdir(parents=True)
+        (cfg.documents_dir / page).write_text("# How to grow\n\nBody.\n", encoding="utf-8")
+        titles = {page: "How to grow tomatoes indoors | The Growers Forum"}
+        svc_mod.get_services().store.web_titles.side_effect = lambda names: {
+            name: titles[name] for name in names if name in titles
+        }
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": page}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 200
+        assert resp.json()["title"] == titles[page]
 
     async def test_imported_source_raw_returns_text_bytes(self, isolated_env):
         """``raw=1`` on an imported source returns its page text as bytes."""

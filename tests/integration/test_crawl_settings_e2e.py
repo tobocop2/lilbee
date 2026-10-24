@@ -37,6 +37,8 @@ JITTER_RANGE_S = 2.0
 # Four uniform(0, 2 s) waits sum below this with a probability of about 1e-4.
 JITTER_MIN_TOTAL_S = 0.5
 CONCURRENT_PREFIXES = ("/pool/", "/paced/")
+# Paces both crawls so each lasts far longer than the gap between their first requests.
+CONCURRENT_DELAY_S = 0.3
 USER_EXCLUDES = [r"drop-me\.html$", r"\?lang=\d+"]
 
 
@@ -79,7 +81,7 @@ class TestPageAndDepthLimits:
         with crawl_sandbox(tmp_path) as root:
             cfg.crawl_max_depth = CONFIG_MAX_DEPTH
             run = run_add(root, crawl_site.url("/a/"), "--crawl")
-        assert set(run.pages) == {"a/index.md", "a/b/index.md"}
+        assert set(run.pages) == {"a", "a/b"}
 
     @pytest.mark.parametrize("setting", ["crawl_max_pages", "crawl_safety_max_pages"])
     def test_config_page_cap_applies_without_a_flag(
@@ -97,7 +99,7 @@ class TestRenderMode:
     ) -> None:
         with crawl_sandbox(tmp_path) as root:
             run = run_add(root, crawl_site.url("/js/"))
-        assert site_mod.SCRIPT_TEXT not in run.pages["js/index.md"]
+        assert site_mod.SCRIPT_TEXT not in run.pages["js"]
 
 
 class TestTimeout:
@@ -108,9 +110,9 @@ class TestTimeout:
             cfg.crawl_timeout = TIMEOUT_S
             run = run_add(root, crawl_site.url("/timeout/"), *ONE_LEVEL)
         assert set(run.pages) == {
-            "timeout/index.md",
-            "timeout/fast-a/index.md",
-            "timeout/fast-b/index.md",
+            "timeout",
+            "timeout/fast-a",
+            "timeout/fast-b",
         }
         assert run.report["crawled"] == len(run.pages)
 
@@ -181,6 +183,8 @@ class TestConcurrentCrawls:
     ) -> None:
         with crawl_sandbox(tmp_path):
             cfg.crawl_max_concurrent = limit
+            cfg.crawl_mean_delay = CONCURRENT_DELAY_S
+            cfg.crawl_max_delay_range = 0.0
             reset_services()
             started = time.monotonic()
             await asyncio.gather(

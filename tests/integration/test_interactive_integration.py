@@ -3,7 +3,7 @@
 Exercises the full CLI pipeline with real llama-server inference:
 - nomic-embed-text for embeddings
 - Qwen3 0.6B for chat
-- crawl4ai against pytest-httpserver
+- crawlberg against pytest-httpserver
 
 Models are downloaded once per module (~800 MB first run) and cached
 in ~/.lilbee/models/ for subsequent runs.
@@ -373,7 +373,7 @@ class TestCodeSearch:
 
 class TestCrawl:
     def test_crawl_then_search(self, isolated_env):
-        pytest.importorskip("crawl4ai")
+        pytest.importorskip("crawlberg")
         pytest.importorskip("pytest_httpserver")
 
         from pytest_httpserver import HTTPServer
@@ -391,6 +391,8 @@ class TestCrawl:
 
         server = HTTPServer(host="127.0.0.1")
         server.expect_request("/quantum").respond_with_data(page_html, content_type="text/html")
+        # The server answers an unexpected request with 500, a robots.txt a crawl cannot read.
+        server.expect_request("/robots.txt").respond_with_data("Not Found", status=404)
         server.start()
 
         loopback_v4 = ipaddress.ip_network("127.0.0.0/8")

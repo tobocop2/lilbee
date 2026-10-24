@@ -22,6 +22,7 @@ from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.core.text import strip_control_characters
 from lilbee.runtime.cancellation import sigint_cancel
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhaseEvent
@@ -215,7 +216,7 @@ def wiki_list(
     for page in pages:
         table.add_row(
             Text(page.slug),
-            Text(page.title),
+            Text(strip_control_characters(page.title)),
             page.page_type,
             str(page.source_count),
             page.created_at,
@@ -253,7 +254,7 @@ def wiki_read(
             }
         )
         return
-    console.print(page.content)
+    console.print(strip_control_characters(page.content, keep_lines=True))
 
 
 @wiki_app.command(name="citations")
@@ -341,7 +342,10 @@ def _render_citations(
             else rec["excerpt"]
         )
         table.add_row(
-            Text(rec["citation_key"]), Text(column_value(rec)), rec["claim_type"], Text(excerpt)
+            Text(rec["citation_key"]),
+            Text(strip_control_characters(column_value(rec))),
+            rec["claim_type"],
+            Text(strip_control_characters(excerpt, keep_lines=True)),
         )
     console.print(table)
 
@@ -481,7 +485,11 @@ def wiki_prune(
     for rec in report.records:
         action_style = theme.ERROR if rec.action.value == "archived" else theme.WARNING
         action_text = Text.assemble((rec.action.value, action_style))
-        table.add_row(Text(rec.wiki_source), action_text, Text(rec.reason))
+        table.add_row(
+            Text(strip_control_characters(rec.wiki_source)),
+            action_text,
+            Text(strip_control_characters(rec.reason)),
+        )
     console.print(table)
 
 
@@ -684,7 +692,7 @@ def _wiki_build_dry_run_output(rows: list[WikiEntityCandidate]) -> None:
             str(row["kind"]),
             Text(str(row["type_hint"])),
             str(row["mentions"]),
-            Text(sources_preview),
+            Text(strip_control_characters(sources_preview)),
         )
     console.print(table)
     console.print(

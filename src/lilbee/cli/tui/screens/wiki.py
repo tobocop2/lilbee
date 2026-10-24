@@ -31,6 +31,7 @@ from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
+from lilbee.core.text import strip_control_characters
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhaseEvent
 from lilbee.wiki.stubs import WikiStub, load_stub_index, shown_sources, ungenerated_stubs
 
@@ -85,7 +86,10 @@ def _format_page_header(
     faithfulness: float | None,
 ) -> Content:
     """Build the header line for the content pane, with the title as literal text."""
-    parts: list[tuple[str, str]] = [(title, "bold"), (f"  {page_type}", "dim")]
+    parts: list[tuple[str, str]] = [
+        (strip_control_characters(title), "bold"),
+        (f"  {page_type}", "dim"),
+    ]
     if source_count > 0:
         parts.append((f"  {source_count} sources", "dim"))
     if created_at:
@@ -106,7 +110,7 @@ def _breadcrumb_for_slug(slug: str, title: str) -> Content:
     if len(parts) <= 1:
         return Content("")
     display_parts = [Content(_short_label(p)) for p in parts[:-1]]
-    display_parts.append(Content(title))
+    display_parts.append(Content(strip_control_characters(title)))
     return Content.assemble(" ", Content.styled(">", "dim"), " ").join(display_parts)
 
 
@@ -304,7 +308,11 @@ class WikiScreen(Screen[None]):
             return
         group = tree.root.add(msg.WIKI_STUBS_HEADING, expand=expand)
         for stub in stubs:
-            label = Text.assemble((stub.label, "dim"), " ", (msg.WIKI_STUB_SUFFIX, "dim italic"))
+            label = Text.assemble(
+                (strip_control_characters(stub.label), "dim"),
+                " ",
+                (msg.WIKI_STUB_SUFFIX, "dim italic"),
+            )
             group.add_leaf(label, data=stub.wiki_slug)
             self._page_slugs.append(stub.wiki_slug)
 
@@ -323,7 +331,7 @@ class WikiScreen(Screen[None]):
         """
         parts = page.slug.split("/")
         if len(parts) <= 1:
-            group_node.add_leaf(Text(page.title), data=page.slug)
+            group_node.add_leaf(Text(strip_control_characters(page.title)), data=page.slug)
             return
 
         # Skip the leading page-type component since the group node represents it.
@@ -336,12 +344,12 @@ class WikiScreen(Screen[None]):
 
         if leaf_part == _INDEX_STEM:
             # An inner-node index.md file: show its title on the enclosing branch.
-            node.label = Text(page.title)
+            node.label = Text(strip_control_characters(page.title))
             node.data = page.slug
             return
 
         label = _short_label(leaf_part)
-        node.add_leaf(Text(page.title or label), data=page.slug)
+        node.add_leaf(Text(strip_control_characters(page.title) or label), data=page.slug)
 
     def _show_detail(self, markdown: str) -> None:
         """Clear the breadcrumb and header rows, then render *markdown* alone."""
@@ -361,12 +369,15 @@ class WikiScreen(Screen[None]):
             return
         stub = self._stubs.get(slug)
         if stub is not None:
+            shown_label = strip_control_characters(stub.label)
             # Opening a stub asks rather than generating. The detail pane
             # explains the page either way, so dismissing the dialog leaves
             # the reader looking at why the page is blank.
             self._show_detail(
                 msg.WIKI_STUB_DETAIL.format(
-                    title=stub.label, label=stub.label, sources=_describe_sources(stub)
+                    title=shown_label,
+                    label=shown_label,
+                    sources=_describe_sources(stub),
                 )
             )
             confirm_stub_generation(self.app, stub)
@@ -406,7 +417,9 @@ class WikiScreen(Screen[None]):
         )
         self.query_one("#wiki-breadcrumb", Static).update(_breadcrumb_for_slug(slug, page.title))
         self.query_one("#wiki-page-header", Static).update(header_text)
-        self.query_one("#wiki-content", Markdown).update(page.content)
+        self.query_one("#wiki-content", Markdown).update(
+            strip_control_characters(page.content, keep_lines=True)
+        )
 
     @on(Input.Changed, "#wiki-search")
     def _on_search_changed(self, event: Input.Changed) -> None:

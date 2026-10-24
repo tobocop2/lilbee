@@ -21,6 +21,7 @@ from lilbee.retrieval.query import (
 )
 from lilbee.retrieval.query.dedup import _relevance_weight
 from lilbee.retrieval.query.formatting import (
+    FILE_LINK_RE,
     StreamingCitationFilter,
     _extract_cited_indices,
     _format_citation,
@@ -34,6 +35,15 @@ from lilbee.retrieval.query.searcher import (
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
     QueryMode,
+)
+from tests._crafted_titles import (
+    CONTROL_TITLES,
+    CRAFTED_SOURCE,
+    CRAFTED_TITLES,
+    PLAIN_NAMES,
+    TERMINAL_CONTROL_RE,
+    crafted_label,
+    shown_inline,
 )
 from tests.conftest import make_citation
 
@@ -241,14 +251,27 @@ class TestFormatSource:
         assert result.startswith("[notes/readme.md](file://")
         assert result.endswith(".md)")
 
-    def test_web_source_gets_a_readable_host_slug_label(self):
-        r = _make_result(source="_web/www.example.com/how-to-foo/index.md", content_type="text")
-        assert format_source(r).startswith("[example.com · how-to-foo](file://")
+    @pytest.mark.parametrize(
+        ("source", "label"),
+        [
+            ("_web/www.example.com/how-to-foo~0123456789abcdef.md", "example.com · how-to-foo"),
+            (
+                "_web/www.example.com/how-to-foo/index~0123456789abcdef.md",
+                "example.com · how-to-foo",
+            ),
+            ("_web/www.example.com/index~0123456789abcdef.md", "example.com"),
+            ("_web/example.com/guide.html.md", "example.com · guide.html"),
+        ],
+        ids=["page", "index-shows-folder", "host-root", "no-hash"],
+    )
+    def test_web_source_gets_a_readable_host_slug_label(self, source: str, label: str):
+        r = _make_result(source=source, content_type="text")
+        assert format_source(r).startswith(f"[{label}](file://")
 
     def test_degenerate_web_path_keeps_raw_source_label(self):
-        # Nothing left after dropping index.md: fall back to the stored path.
-        r = _make_result(source="_web/index.md", content_type="text")
-        assert format_source(r).startswith("[_web/index.md](file://")
+        # Nothing left after dropping the index page: fall back to the stored path.
+        r = _make_result(source="_web/index~0123456789abcdef.md", content_type="text")
+        assert format_source(r).startswith("[_web/index~0123456789abcdef.md](file://")
 
     def test_unresolvable_path_renders_plain_label_without_link(self, monkeypatch):
         # A source that can't resolve to a file URL degrades to bare text. The
@@ -277,6 +300,97 @@ class TestFormatSource:
         link = source_markdown_link("a\nb\r\nc.md")
         assert link.startswith("[a b c.md](file://")
 
+    def test_a_crawled_page_is_labelled_with_its_stored_title(self):
+        source = "_web/forum.example/how-to-grow-tomatoes~0123456789abcdef.md"
+        r = _make_result(source=source, content_type="text")
+        title = "How to grow tomatoes indoors | The Growers Forum"
+        assert format_source(r, title=title).startswith(f"[forum.example · {title}](file://")
+
+    def test_a_local_file_keeps_its_path_whatever_its_title(self):
+        r = _make_result(source="notes/a.md", content_type="text")
+        assert format_source(r, title="A note").startswith("[notes/a.md](file://")
+
+    @pytest.mark.parametrize("surface", ["link", "answer", "restored"])
+    @pytest.mark.parametrize("name", PLAIN_NAMES)
+    def test_a_raw_label_names_a_local_file_as_typed(self, name, surface):
+        line = _raw_sources_line(surface, name, "")
+        match = FILE_LINK_RE.search(line)
+        assert match is not None
+        assert match["label"] == name
+        assert f"[{name}](file://" in line
+
+    @pytest.mark.parametrize("surface", ["link", "answer", "restored"])
+    @pytest.mark.parametrize("title", [*PLAIN_NAMES, *CRAFTED_TITLES])
+    def test_a_raw_label_holds_a_page_title_as_typed(self, title, surface):
+        line = _raw_sources_line(surface, CRAFTED_SOURCE, title)
+        match = FILE_LINK_RE.search(line)
+        assert match is not None
+        assert match["label"] == crafted_label(title)
+        assert match["url"].startswith("file://")
+        assert line.endswith(")")
+
+    @pytest.mark.parametrize("surface", ["link", "answer", "restored"])
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_a_raw_label_keeps_the_control_characters_of_a_title(self, title, surface):
+        match = FILE_LINK_RE.search(_raw_sources_line(surface, CRAFTED_SOURCE, title))
+        assert match is not None
+        assert match["label"] == crafted_label(title)
+        assert "\x1b" in match["label"] or "\x07" in match["label"] or "\x9b" in match["label"]
+
+    @pytest.mark.parametrize("surface", ["answer", "restored"])
+    @pytest.mark.parametrize("title", CRAFTED_TITLES)
+    def test_a_title_cannot_add_markup_of_its_own_when_rendered(self, title, surface):
+        from lilbee.cli.tui.widgets.message import _answer_markdown_parser
+        from lilbee.retrieval.query.formatting import markdown_sources_block
+
+        raw = _raw_sources_line(surface, CRAFTED_SOURCE, title)
+        line = markdown_sources_block(raw).rpartition("\n1. ")[2]
+        hrefs, shown = shown_inline(_answer_markdown_parser(), line)
+        assert len(hrefs) == 1 and hrefs[0].startswith("file://")
+        assert shown == crafted_label(title)
+        assert FILE_LINK_RE.search(raw)["url"] == hrefs[0]
+
+
+def _raw_sources_line(surface: str, source: str, title: str) -> str:
+    """The raw text that names *source*, titled *title*, on *surface*."""
+    from lilbee.retrieval.query.formatting import source_markdown_link, with_sources_block
+
+    if surface == "link":
+        return source_markdown_link(source, title)
+    if surface == "answer":
+        return format_sources_block(
+            [_make_result(source=source, content_type="text")], {source: title}
+        )
+    return with_sources_block("x [1]", [source], lambda names: {source: title})
+
+
+class TestMarkdownSourcesBlock:
+    def test_text_without_a_sources_list_is_unchanged(self):
+        from lilbee.retrieval.query.formatting import markdown_sources_block
+
+        text = "see [my_notes.md](file:///kb/my_notes.md) and `a_b`"
+        assert markdown_sources_block(text) == text
+
+    def test_only_the_labels_of_the_list_are_escaped(self):
+        from lilbee.retrieval.query.formatting import markdown_sources_block
+
+        text = "use my_notes.md [1]\n\nSources:\n\n1. [my_notes.md](file:///kb/my_notes.md), page 2"
+        assert markdown_sources_block(text) == (
+            "use my_notes.md [1]\n\nSources:\n\n1. [my\\_notes.md](file:///kb/my_notes.md), page 2"
+        )
+
+    def test_a_list_quoted_in_a_closed_code_block_is_left_as_written(self):
+        from lilbee.retrieval.query.formatting import markdown_sources_block
+
+        text = "look:\n\n```\nold\n\nSources:\n\n1. [a_b.md](file:///kb/a_b.md)\n```"
+        assert markdown_sources_block(text) == text
+
+    def test_a_list_after_a_cut_off_code_block_is_escaped(self):
+        from lilbee.retrieval.query.formatting import markdown_sources_block
+
+        text = "Try:\n\n```python\nx = 1\n\nSources:\n\n1. [a_b.md](file:///kb/a_b.md)"
+        assert markdown_sources_block(text).endswith("1. [a\\_b.md](file:///kb/a_b.md)")
+
 
 class TestUniqueSources:
     def test_first_chunk_per_distinct_source_in_order(self):
@@ -296,7 +410,7 @@ class TestFormatSourcesBlock:
             _make_result(source="a.md", content_type="text"),
             _make_result(source="b.md", content_type="text"),
         ]
-        block = format_sources_block(results)
+        block = format_sources_block(results, {})
         assert block.startswith("\n\nSources:\n\n")
         assert "1. [a.md](file://" in block
         assert "2. [b.md](file://" in block
@@ -307,13 +421,13 @@ class TestFormatSourcesBlock:
             _make_result(source="a.md", content_type="text"),
             _make_result(source="b.md", content_type="text"),
         ]
-        block = format_sources_block(results)
+        block = format_sources_block(results, {})
         assert "1. [a.md](file://" in block
         assert "2. [b.md](file://" in block
         assert "3." not in block
 
     def test_empty_when_no_sources(self):
-        assert format_sources_block([]) == ""
+        assert format_sources_block([], {}) == ""
 
 
 class TestSortByRelevance:
@@ -979,6 +1093,33 @@ class TestCitedSources:
         answer = get_services().searcher.ask("q")
         assert "1. [a.pdf](file://" in answer
         assert "2. [b.pdf](file://" in answer
+
+    def test_ask_labels_a_crawled_page_with_its_stored_title(self, mock_svc):
+        page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
+        mock_svc.store.search.return_value = [_make_result(source=page, chunk="alpha")]
+        mock_svc.store.web_titles.return_value = {page: "How to grow tomatoes indoors"}
+        mock_svc.provider.chat.return_value = _text_result("From [1].")
+        answer = get_services().searcher.ask("q")
+        assert "1. [forum.example · How to grow tomatoes indoors](file://" in answer
+
+    @pytest.mark.parametrize("title", PLAIN_NAMES)
+    def test_ask_keeps_a_stored_title_as_typed(self, mock_svc, title):
+        """The answer a session stores, and MCP and REST return, names the page as typed."""
+        page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
+        mock_svc.store.search.return_value = [_make_result(source=page, chunk="alpha")]
+        mock_svc.store.web_titles.return_value = {page: title}
+        mock_svc.provider.chat.return_value = _text_result("From [1].")
+        answer = get_services().searcher.ask("q")
+        assert f"1. [forum.example · {title}](file://" in answer
+
+    def test_ask_stream_labels_a_crawled_page_with_its_stored_title(self, mock_svc):
+        page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
+        mock_svc.store.search.return_value = [_make_result(source=page, chunk="alpha")]
+        mock_svc.store.web_titles.return_value = {page: "How to grow tomatoes indoors"}
+        mock_svc.provider.chat.return_value = iter(["From ", "[1]."])
+        tokens = list(get_services().searcher.ask_stream("q"))
+        combined = "".join(token.content for token in tokens)
+        assert "1. [forum.example · How to grow tomatoes indoors](file://" in combined
 
     def test_ask_closes_a_cut_off_code_block_before_the_sources(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(source="a.pdf")]
@@ -4441,3 +4582,46 @@ class TestNearDuplicateSuppression:
         a = _make_result(source="a.md", chunk="first passage", score=0.9)
         b = _make_result(source="b.md", chunk="second passage", score=0.8)
         assert len(prepare_results([a, b])) == 2
+
+
+class TestTerminalSourcesBlock:
+    """The one function that makes a Sources list safe to write to a terminal."""
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_a_label_loses_every_control_character_and_keeps_its_link(self, title):
+        from lilbee.retrieval.query.formatting import (
+            source_markdown_link,
+            terminal_sources_block,
+        )
+
+        line = source_markdown_link(CRAFTED_SOURCE, title)
+        block = terminal_sources_block(f"\n\nSources:\n\n1. {line}\n2. [b.md](file:///kb/b.md)")
+        assert TERMINAL_CONTROL_RE.search(block.replace("\n", "")) is None
+        assert FILE_LINK_RE.search(line)["url"] in block
+        assert "2. [b.md](file:///kb/b.md)" in block
+
+    @pytest.mark.parametrize("title", CONTROL_TITLES)
+    def test_a_label_with_no_link_loses_its_control_characters_too(self, title):
+        from lilbee.retrieval.query.formatting import terminal_sources_block
+
+        block = terminal_sources_block(f"\n\nSources:\n\n1. forum.example · {title}")
+        assert TERMINAL_CONTROL_RE.search(block.replace("\n", "")) is None
+
+    def test_the_answer_above_the_list_is_left_alone(self):
+        from lilbee.retrieval.query.formatting import terminal_sources_block
+
+        text = "colour \x1b[31mred\x1b[0m [1]"
+        assert terminal_sources_block(f"{text}\n\nSources:\n\n1. a.md").startswith(text)
+
+    def test_a_list_quoted_in_a_code_block_is_left_alone(self):
+        from lilbee.retrieval.query.formatting import terminal_sources_block
+
+        quoted = "```\nSources:\n\n1. \x1b[31mx\n```\n"
+        assert terminal_sources_block(quoted) == quoted
+
+    def test_a_plain_name_is_unchanged(self):
+        from lilbee.retrieval.query.formatting import terminal_sources_block
+
+        for name in PLAIN_NAMES:
+            block = f"\n\nSources:\n\n1. {name}"
+            assert terminal_sources_block(block) == block

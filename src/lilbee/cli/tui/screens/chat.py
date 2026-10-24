@@ -89,7 +89,16 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
-from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.core.text import strip_control_characters
+from lilbee.crawler import (
+    CRAWLER_MISSING_MESSAGE,
+    crawler_available,
+    is_url,
+    require_valid_crawl_url,
+)
+from lilbee.crawler.events import BROWSER_SETUP_COMPONENT
+from lilbee.crawler.models import crawl_limit_error
+from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
     ChunkType,
     EmbeddingModelMismatchError,
@@ -116,6 +125,7 @@ from lilbee.runtime.lock import ResetRefusedError
 from lilbee.runtime.progress import (
     EventType,
     ProgressEvent,
+    SetupStartEvent,
 )
 from lilbee.sessions import (
     MessageRole,
@@ -965,7 +975,7 @@ class ChatScreen(Screen[None]):
 
     def _cmd_crawl(self, args: str) -> None:
         if not crawler_available():
-            self.notify(msg.CMD_CRAWL_UNAVAILABLE, severity="error")
+            self.notify(CRAWLER_MISSING_MESSAGE, severity="error")
             return
         if not args:
             self._open_crawl_dialog()
@@ -979,7 +989,14 @@ class ChatScreen(Screen[None]):
         except ValueError as exc:
             self.notify(str(exc), severity="error")
             return
-        depth, max_pages, include_subdomains, render_mode = self._parse_crawl_flags(parts[1:])
+        try:
+            depth, max_pages, include_subdomains, render_mode = self._parse_crawl_flags(parts[1:])
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if (too_large := crawl_limit_error(depth, max_pages)) is not None:
+            self.notify(too_large, severity="error")
+            return
         self._start_crawl(
             url,
             depth,
@@ -1023,9 +1040,11 @@ class ChatScreen(Screen[None]):
         if render_mode is not None and render_mode is not cfg.crawl_render_mode:
             self._persist_crawl_render_mode(render_mode)
 
+        shown = without_userinfo(url)
+
         def _kick_off_crawl() -> None:
             self._task_bar.start_task(
-                msg.TASK_NAME_CRAWL.format(url=url),
+                msg.TASK_NAME_CRAWL.format(url=shown),
                 TaskType.CRAWL,
                 lambda reporter: self._do_crawl(
                     url,
@@ -1038,7 +1057,7 @@ class ChatScreen(Screen[None]):
                 on_success=lambda: call_from_thread(self, self._run_sync),
             )
 
-        self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
+        self.notify(msg.CMD_CRAWL_STARTED.format(url=shown))
         if mode is CrawlRenderMode.BROWSER:
             self._task_bar.ensure_chromium(_kick_off_crawl)
         else:
@@ -1060,7 +1079,8 @@ class ChatScreen(Screen[None]):
         """Extract --depth, --max-pages, --include-subdomains, --render from tokens.
 
         Numeric flags return None when absent so the caller inherits
-        crawl_and_save's unbounded-by-default semantics. The boolean
+        crawl_and_save's unbounded-by-default semantics. A numeric flag whose
+        value is not a whole number raises ValueError naming the flag. The boolean
         ``--include-subdomains`` flag defaults to False (exact-host scope).
         ``--render http|browser`` returns None when absent so the caller
         inherits ``cfg.crawl_render_mode``; an unrecognized value is ignored.
@@ -1082,8 +1102,11 @@ class ChatScreen(Screen[None]):
                 continue
             key = flag_map.get(tokens[i])
             if key and i + 1 < len(tokens):
-                with contextlib.suppress(ValueError):
+                try:
                     parsed[key] = int(tokens[i + 1])
+                except ValueError:
+                    message = msg.CMD_CRAWL_FLAG_NOT_A_NUMBER.format(flag=tokens[i])
+                    raise ValueError(message) from None
                 i += 2
             else:
                 i += 1
@@ -1103,12 +1126,14 @@ class ChatScreen(Screen[None]):
         from lilbee.crawler import crawl_and_save
         from lilbee.runtime.progress import CrawlPageEvent, CrawlPageFailedEvent, SetupProgressEvent
 
-        reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=url))
+        shown = without_userinfo(url)
+        reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=shown))
         failures: list[str] = []
+        setup_labels = {BROWSER_SETUP_COMPONENT: msg.SETUP_BROWSER_WARM_UP}
 
         def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-            if event_type == EventType.SETUP_START:
-                reporter.update(0, msg.SETUP_CHROMIUM_NAME)
+            if event_type == EventType.SETUP_START and isinstance(data, SetupStartEvent):
+                reporter.update(0, setup_labels.get(data.component, msg.SETUP_CHROMIUM_NAME))
             elif event_type == EventType.SETUP_PROGRESS and isinstance(data, SetupProgressEvent):
                 if data.total_bytes:
                     pct = int(data.downloaded_bytes * 100 / data.total_bytes)
@@ -1154,13 +1179,14 @@ class ChatScreen(Screen[None]):
                 max_pages=max_pages,
                 on_progress=on_progress,
                 cancel=reporter,
-                quiet=True,
                 include_subdomains=include_subdomains,
                 render_mode=render_mode,
             )
         )
         reporter.check_cancelled()
-        call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
+        call_from_thread(
+            self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=shown)
+        )
         if failures:
             call_from_thread(
                 self,
@@ -1199,7 +1225,8 @@ class ChatScreen(Screen[None]):
             return
 
         if not name:
-            usage = msg.CMD_DELETE_USAGE.format(names=", ".join(sorted(known)))
+            names = ", ".join(strip_control_characters(n) for n in sorted(known))
+            usage = msg.CMD_DELETE_USAGE.format(names=names)
             call_from_thread(self, self.notify, usage)
             return
 
@@ -1207,7 +1234,8 @@ class ChatScreen(Screen[None]):
             message = msg.CMD_DELETE_NOT_FOUND.format(name=name)
             suggestion = _closest_source(name, known)
             if suggestion is not None:
-                message = f"{message}. {msg.CMD_DELETE_SUGGESTION.format(name=suggestion)}"
+                hint = msg.CMD_DELETE_SUGGESTION.format(name=strip_control_characters(suggestion))
+                message = f"{message}. {hint}"
             call_from_thread(self, self.notify, message, severity="error")
             return
 
@@ -1583,7 +1611,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.FORK_FAILED.format(error=exc), severity="warning")
             return
         fork = self._load_session(fork_id)
-        self.notify(msg.FORK_DONE.format(title=fork.meta.title))
+        self.notify(msg.FORK_DONE.format(title=strip_control_characters(fork.meta.title)))
         self._set_input("")
         self._enter_insert_mode()
 
@@ -1694,7 +1722,7 @@ class ChatScreen(Screen[None]):
         """Load a saved session into the chat view, make it the active one, and focus the prompt."""
         session = self._load_session(session_id)
         self.focus_prompt()
-        self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
+        self.notify(msg.SESSIONS_RESUMED.format(title=strip_control_characters(session.meta.title)))
 
     def _load_session(self, session_id: str) -> Session:
         """Replace the conversation with a saved session's transcript and summary."""
@@ -1752,12 +1780,17 @@ class ChatScreen(Screen[None]):
         """Mount a completed message widget for a resumed turn."""
         log = self._chat_log
         if message.role == MessageRole.USER:
-            log.mount(UserMessage(message.content))
+            log.mount(UserMessage(strip_control_characters(message.content, keep_lines=True)))
             return
         # Constructed complete, not appended-to after mounting: mount() is async,
         # so append_content/finish would both no-op against a content widget that
         # compose has not built yet, and the answer would render empty.
-        log.mount(AssistantMessage(content=message.content, sources=list(message.sources)))
+        log.mount(
+            AssistantMessage(
+                content=strip_control_characters(message.content, keep_lines=True),
+                sources=list(message.sources),
+            )
+        )
 
     @work(thread=True, group=_TURN_WORKER_GROUP)
     def _stream_response(self, turn: _Turn, chunk_type: ChunkType | None) -> None:

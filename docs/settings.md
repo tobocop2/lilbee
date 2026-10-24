@@ -217,23 +217,24 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Description |
 |---|---|---|---|---|---|---|---|---|
 | `crawl_browser_extra_args` | `LILBEE_CRAWL_BROWSER_EXTRA_ARGS` | `list` | `--disable-dev-shm-usage, --disable-gpu` | yes | yes | yes | no | Browser mode: extra Chromium launch flags, one per line. Defaults trim shared-memory and GPU use. |
-| `crawl_browser_recycle_pages` | `LILBEE_CRAWL_BROWSER_RECYCLE_PAGES` | `int` | `50` | yes | yes | yes | no | Browser mode: recycle the Chromium process every N pages to cap memory growth on long crawls (0 = never recycle). |
-| `crawl_concurrent_requests` | `LILBEE_CRAWL_CONCURRENT_REQUESTS` | `int` | `3` | yes | yes | yes | no | Concurrent in-flight URLs within one crawl. |
-| `crawl_convert_workers` | `LILBEE_CRAWL_CONVERT_WORKERS` | `int` | `2` | yes | yes | yes | no | Crawled pages converted to markdown on worker threads at once, so a crawl does not block request handling; 0 converts on the event loop. |
+| `crawl_browser_extra_wait_ms` | `LILBEE_CRAWL_BROWSER_EXTRA_WAIT_MS` | `int` | `0` | yes | yes | yes | no | Browser mode: milliseconds to wait after a page has loaded and stopped changing, for sites that draw their text later. Raise it when a page's text is missing; 0 = no extra wait, at most 600000 (ten minutes). http mode ignores it. |
+| `crawl_concurrent_requests` | `LILBEE_CRAWL_CONCURRENT_REQUESTS` | `int` | `3` | yes | yes | yes | no | Concurrent in-flight URLs within one crawl, 1 to 256. |
 | `crawl_exclude_patterns` | `LILBEE_CRAWL_EXCLUDE_PATTERNS` | `list` | *(built-in list)* | yes | yes | yes | no | Regex patterns that skip URLs at link-discovery time during recursive crawls. One per line. |
-| `crawl_max_delay_range` | `LILBEE_CRAWL_MAX_DELAY_RANGE` | `float` | `0.5` | yes | yes | yes | no | Random jitter (seconds) added on top of mean delay. |
-| `crawl_max_depth` | `LILBEE_CRAWL_MAX_DEPTH` | `int|null` | *(none)* | yes | yes | yes | no | Optional recursion-depth cap (blank = no cap; per-crawl values win). |
-| `crawl_max_pages` | `LILBEE_CRAWL_MAX_PAGES` | `int|null` | *(none)* | yes | yes | yes | no | Optional global cap on total pages per crawl (blank = no cap). |
-| `crawl_mean_delay` | `LILBEE_CRAWL_MEAN_DELAY` | `float` | `0.5` | yes | yes | yes | no | Seconds between in-flight requests within a single crawl. |
+| `crawl_max_delay_range` | `LILBEE_CRAWL_MAX_DELAY_RANGE` | `float` | `0.5` | yes | yes | yes | no | Random jitter (seconds) added on top of mean delay, 0 to 3600. |
+| `crawl_max_depth` | `LILBEE_CRAWL_MAX_DEPTH` | `int|null` | *(none)* | yes | yes | yes | no | Optional recursion-depth cap, 0 to 100 (blank = no cap; per-crawl values win). |
+| `crawl_max_pages` | `LILBEE_CRAWL_MAX_PAGES` | `int|null` | *(none)* | yes | yes | yes | no | Optional global cap on total pages per crawl, 1 to 10000000 (blank = no cap). |
+| `crawl_mean_delay` | `LILBEE_CRAWL_MEAN_DELAY` | `float` | `0.5` | yes | yes | yes | no | Seconds between in-flight requests within a single crawl, 0 to 3600. |
 | `crawl_render_mode` | `LILBEE_CRAWL_RENDER_MODE` | `str` | `http` | yes | yes | yes | no | How crawls fetch pages. http = lightweight, no browser (default, best for static and server-rendered sites). browser = Chromium with JavaScript enabled for client-rendered sites, at much higher memory cost. One of `http`, `browser`. |
-| `crawl_retry_base_delay_max` | `LILBEE_CRAWL_RETRY_BASE_DELAY_MAX` | `float` | `3.0` | yes | yes | yes | no | Maximum base-delay (seconds) on rate-limit responses. |
-| `crawl_retry_base_delay_min` | `LILBEE_CRAWL_RETRY_BASE_DELAY_MIN` | `float` | `1.0` | yes | yes | yes | no | Minimum base-delay (seconds) on rate-limit responses. |
-| `crawl_retry_max_attempts` | `LILBEE_CRAWL_RETRY_MAX_ATTEMPTS` | `int` | `3` | yes | yes | yes | no | Retry count per URL when a rate-limit code comes back. |
-| `crawl_retry_max_backoff` | `LILBEE_CRAWL_RETRY_MAX_BACKOFF` | `float` | `30.0` | yes | yes | yes | no | Upper bound on any single backoff wait (seconds). |
-| `crawl_retry_on_rate_limit` | `LILBEE_CRAWL_RETRY_ON_RATE_LIMIT` | `bool` | `true` | yes | yes | yes | no | Enable per-domain backoff and retries on HTTP 429/503. |
-| `crawl_safety_max_pages` | `LILBEE_CRAWL_SAFETY_MAX_PAGES` | `int` | `5000` | yes | yes | yes | no | Default page bound for an unbounded crawl, so a hostile site cannot exhaust the disk. An explicit max-pages overrides it; raise this to crawl larger sites unbounded. |
+| `crawl_respect_robots_txt` | `LILBEE_CRAWL_RESPECT_ROBOTS_TXT` | `bool` | `true` | yes | yes | yes | no | Skip the pages a site's robots.txt disallows, and every page of a site whose robots.txt cannot be read (a server error, a rate limit or no answer). Turn off to crawl a site you own or have permission to crawl in full. |
+| `crawl_retry_base_delay_max` | `LILBEE_CRAWL_RETRY_BASE_DELAY_MAX` | `float` | `3.0` | yes | yes | yes | no | Base delay range, high end (seconds, 0 to 3600). The first retry waits halfway between the low and high end, and each later retry waits twice as long. |
+| `crawl_retry_base_delay_min` | `LILBEE_CRAWL_RETRY_BASE_DELAY_MIN` | `float` | `1.0` | yes | yes | yes | no | Base delay range, low end (seconds, 0 to 3600). The first retry waits halfway between the low and high end, and each later retry waits twice as long. |
+| `crawl_retry_max_attempts` | `LILBEE_CRAWL_RETRY_MAX_ATTEMPTS` | `int` | `3` | yes | yes | yes | no | Retries per page. A crawl makes at most 20, whatever the value. |
+| `crawl_retry_max_backoff` | `LILBEE_CRAWL_RETRY_MAX_BACKOFF` | `float` | `30.0` | yes | yes | yes | no | Upper bound on any single backoff wait (seconds, 0 to 3600). |
+| `crawl_retry_on_rate_limit` | `LILBEE_CRAWL_RETRY_ON_RATE_LIMIT` | `bool` | `true` | yes | yes | yes | no | Retry a page that answers HTTP 429 or 503. Off: no retries. |
+| `crawl_safety_max_pages` | `LILBEE_CRAWL_SAFETY_MAX_PAGES` | `int` | `5000` | yes | yes | yes | no | Default page bound for an unbounded crawl, so a hostile site cannot exhaust the disk, 1 to 10000000. An explicit max-pages overrides it; raise this to crawl larger sites unbounded. |
 | `crawl_sync_interval` | `LILBEE_CRAWL_SYNC_INTERVAL` | `int` | `30` | yes | yes | yes | no | Seconds between periodic re-syncs during a crawl (0 = sync only at end). |
-| `crawl_timeout` | `LILBEE_CRAWL_TIMEOUT` | `int` | `30` | yes | yes | yes | no | Per-page fetch timeout in seconds. |
+| `crawl_timeout` | `LILBEE_CRAWL_TIMEOUT` | `int` | `30` | yes | yes | yes | no | Per-page fetch timeout in seconds, 1 to 3600. |
+| `crawl_user_agent` | `LILBEE_CRAWL_USER_AGENT` | `str` | *(empty)* | yes | yes | yes | no | User agent of every crawl request, for a site that answers some clients differently. Blank = no override: browser mode sends Chrome's own, http mode sends crawlberg's, and the sitemap lookup sends its HTTP client's. A Chrome user agent also sets the matching client hints in browser mode. |
 
 ## Local-Servers
 
@@ -316,6 +317,10 @@ These are not configuration fields, so they have no row above and `config.toml` 
 |---|---|
 | `LILBEE_AGENT_ID` | Owner namespace for an MCP agent's memories and sessions. An explicit `agent_id` tool argument wins over it |
 | `LILBEE_CPU_QUOTA` | CPU concurrency cap. Defaults to half the available cores; a non-positive or unparseable value falls back to that default |
+| `LILBEE_CRAWL_AUTHORIZATION` | Authorization header value `lilbee add` sends to the host `LILBEE_CRAWL_LOGIN_HOST` names; the same as `--authorization`, kept out of shell history |
+| `LILBEE_CRAWL_COOKIE` | Cookie header value `lilbee add` sends to the host `LILBEE_CRAWL_LOGIN_HOST` names; the same as `--cookie`, kept out of shell history |
+| `LILBEE_CRAWL_LOGIN_HOST` | The one host that gets the login in the other `LILBEE_CRAWL_*` login variables. The match ignores the scheme and the port. Unset, or a command that crawls another host, sends none of them |
+| `LILBEE_CRAWL_PASSWORD` | Basic-auth password `lilbee add` sends with `--username` to the host `LILBEE_CRAWL_LOGIN_HOST` names; the same as `--password`, kept out of shell history |
 | `LILBEE_DATA` | Data directory for this library, the same value as `data_root`. The older and more common spelling; `--data-dir` overrides it |
 | `LILBEE_ENGINE_DIR` | Directory holding the llama-server engine binaries. Set it to run against an engine build other than the bundled one |
 | `LILBEE_EXCLUSIVE_SCOPE` | A directory that at most one server may serve at a time, for a plugin's shared root |

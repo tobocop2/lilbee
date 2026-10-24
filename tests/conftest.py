@@ -249,7 +249,7 @@ def _only_real_litellm_installed(dist: str) -> str:
 
 @pytest.fixture(autouse=True)
 def _seal_litellm_distributions(monkeypatch):
-    """Report real litellm installed and no fork, instead of the host's packages."""
+    """Report litellm installed, instead of the host's packages."""
     monkeypatch.setattr("lilbee.providers.litellm_sdk._dist_version", _only_real_litellm_installed)
     _real_litellm_available.cache_clear()
     yield
@@ -756,6 +756,7 @@ def _default_store_mock():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
+    store.web_titles.return_value = {}
     store.source_summary.return_value = SourceSummary(0, 0, {}, [])
     store.count_sources.return_value = 0
     store.get_page_texts.return_value = []
