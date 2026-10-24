@@ -235,17 +235,20 @@ def content_hash(text: str) -> str:
 # treat ``[[...]]`` as a wikilink (Obsidian) mis-parse it as a broken wikilink
 # followed by the literal URL.
 _REFERENCE_LINK_RE = re.compile(r"\[\[([^\]]*)\]\]\(([^)]*)\)")
+# The same link with its inner brackets escaped: ``[\[1\]](url)``.
+_ESCAPED_REFERENCE_LINK = r"[\\[\1\\]](\2)"
 
 
 def normalize_crawled_markdown(markdown: str) -> str:
-    """Give the page LF line ends and collapse ``[[N]](url)`` links to plain ``[N](url)``.
+    """Give the page LF line ends and escape the inner brackets of ``[[N]](url)`` links.
 
     LF line ends keep the saved bytes equal to the text a universal-newline read
-    gives back. The link collapse fixes the double-bracket/wikilink collision
-    without dropping the link text or URL; ordinary single-bracket links stay.
+    gives back. ``[[N]](url)`` becomes ``[\\[N\\]](url)``: no ``[[`` is left for a
+    wikilink reader, and the link text still reads ``[N]``, so "word[1]" does not
+    index as "word1". Ordinary single-bracket links stay.
     """
     lf = markdown.replace("\r\n", "\n").replace("\r", "\n")
-    return _REFERENCE_LINK_RE.sub(r"[\1](\2)", lf)
+    return _REFERENCE_LINK_RE.sub(_ESCAPED_REFERENCE_LINK, lf)
 
 
 @dataclass

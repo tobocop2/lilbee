@@ -49,6 +49,7 @@ from lilbee.crawler.url_filter import UNPARSED_ADDRESS, without_userinfo
 from lilbee.data.ingest.discovery import discover_files
 from lilbee.data.store import CrawlPage
 from lilbee.runtime.progress import EventType
+from lilbee.wiki.grammar import WIKI_LINK_RE
 from tests import _crawlberg_stub as cb
 from tests._crawl_meta import (
     CrawlMeta,
@@ -3047,21 +3048,24 @@ class TestSavePage:
         assert crawl_store().crawl_pages.owners(name) == [entry]
         assert recorded() == {"https://example.com/new": entry}
 
-    def test_normalize_crawled_markdown_collapses_reference_links(self):
-        ref = "[[2]](https://en.wikipedia.org/wiki/Foo#cite_note-2)"
-        md = f"Car of the Year.{ref} Production ended."
-        # Double brackets collapse to single; text and URL are preserved.
-        expected = (
-            "Car of the Year.[2](https://en.wikipedia.org/wiki/Foo#cite_note-2) Production ended."
-        )
+    def test_normalize_crawled_markdown_escapes_reference_brackets(self):
+        one = "https://en.wikipedia.org/wiki/Foo#cite_note-1"
+        two = "https://en.wikipedia.org/wiki/Foo#cite_note-2"
+        md = f"the workflow[[1]]({one})[[2]]({two}) ended."
+        # The brackets stay as escaped link text, so no ``[[`` forms a wikilink.
+        expected = f"the workflow[\\[1\\]]({one})[\\[2\\]]({two}) ended."
         assert normalize_crawled_markdown(md) == expected
+        assert "[[" not in expected
+        assert WIKI_LINK_RE.search(expected) is None
         # Ordinary single-bracket links are left untouched.
         keep = 'See the [trim package](https://en.wikipedia.org/wiki/Trim "title") here.'
         assert normalize_crawled_markdown(keep) == keep
 
     def test_writes_normalized_markdown(self, isolated_env):
         raw = "9C1[[1]](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
-        expected = "9C1[1](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
+        expected = (
+            "9C1[\\[1\\]](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
+        )
         record = crawl_record()
         result = CrawlResult(url="https://example.com/ref", markdown=raw)
         path = save_page(result, record, MagicMock())
