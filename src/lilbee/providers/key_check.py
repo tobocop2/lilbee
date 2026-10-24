@@ -69,7 +69,7 @@ class _KeyProbe:
     rejected: Callable[[httpx.Response], bool] = _auth_rejected
 
 
-# Not litellm: get_models raises untyped errors; check_valid_key and get_valid_models hide them.
+# Plain HTTP probes: an SDK's model-list call hides the status code the check needs.
 # OpenRouter's model list is public, so its probe reads the key's own record instead.
 _PROBES: dict[str, _KeyProbe] = {
     "openrouter": _KeyProbe("https://openrouter.ai/api/v1/key", _bearer),

@@ -133,7 +133,7 @@ def lilbee_env_with_ollama(
 
 # Every ollama-backed test pays the same two gates: xfail on the bundled
 # binary (bb-m234 startup segfault on ollama/* chat models) and skip when
-# the artifact doesn't ship the [remote] extra. Wrap once so the
+# the artifact doesn't ship the providers extra. Wrap once so the
 # decorators don't drift between tests.
 _xfail_on_binary_segfault = pytest.mark.xfail(
     current_lane_name() is LaneName.L2_BINARY,
@@ -142,14 +142,16 @@ _xfail_on_binary_segfault = pytest.mark.xfail(
 )
 
 
-def _skip_without_litellm(lane: Lane, lilbee_data: Path) -> None:
-    """Skip when the lilbee under test doesn't have the ``[remote]`` extra wired."""
+def _skip_without_providers(lane: Lane, lilbee_data: Path) -> None:
+    """Skip when the lilbee under test doesn't have the ``providers`` extra wired."""
     import importlib.util
 
-    if importlib.util.find_spec("litellm") is None:
+    from lilbee.providers.factory import sdk_library
+
+    if importlib.util.find_spec(sdk_library().module) is None:
         if _ollama_required():
-            pytest.fail("litellm not importable in a lane that requires the ollama path")
-        pytest.skip("litellm not importable; ollama provider path not available")
+            pytest.fail("provider SDK not importable in a lane that requires the ollama path")
+        pytest.skip("provider SDK not importable; ollama provider path not available")
 
 
 def _assert_no_segfault(result: subprocess.CompletedProcess[str], context: str) -> None:
@@ -176,7 +178,7 @@ def test_status_with_ollama_backend_returns_chat_model(
     "no signal kill" and "config payload renders chat_model" so the test
     catches a silent regression where the path runs but drops the value.
     """
-    _skip_without_litellm(lane, lilbee_data)
+    _skip_without_providers(lane, lilbee_data)
 
     result = run_lilbee_with_env(
         lane, ["--json", "status"], env=lilbee_env_with_ollama, timeout=STATUS_TIMEOUT
@@ -199,7 +201,7 @@ def test_model_list_includes_ollama_model(
     ollama_chat_model: str,
 ) -> None:
     """`lilbee --json model list` surfaces ollama-installed models with source=remote."""
-    _skip_without_litellm(lane, lilbee_data)
+    _skip_without_providers(lane, lilbee_data)
 
     result = run_lilbee_with_env(
         lane,
@@ -232,7 +234,7 @@ def test_ask_via_ollama_backend_completes(
     Without a corpus this is a generic chat (no retrieval); we only assert
     that the provider stack rendered tokens and exited cleanly.
     """
-    _skip_without_litellm(lane, lilbee_data)
+    _skip_without_providers(lane, lilbee_data)
 
     result = run_lilbee_with_env(
         lane,

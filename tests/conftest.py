@@ -49,9 +49,12 @@ from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SourceSummary
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+from lilbee.providers.availability import provider_sdk_available as _real_provider_sdk_available
+from lilbee.providers.factory import sdk_library
 from lilbee.providers.fleet.binary import EngineTool
-from lilbee.providers.litellm_sdk import litellm_available as _real_litellm_available
 from lilbee.runtime.lock import _no_sync_running
+
+SDK_DIST = sdk_library().dist
 
 # Pristine extraction entry points, captured before any test can patch them.
 _PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
@@ -213,7 +216,7 @@ def _suppress_model_scan(request, monkeypatch):
     """Prevent ModelBar._scan_models from doing real work in tests.
 
     ModelBar.on_mount spawns a @work(thread=True) scan that does registry
-    scans, HTTP calls, and litellm imports. Mocking the classify function it
+    scans, HTTP calls, and SDK imports. Mocking the classify function it
     imports to return empty results makes the worker complete instantly,
     avoiding thread accumulation and per-test join overhead.
 
@@ -227,33 +230,33 @@ def _suppress_model_scan(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _assume_litellm_available(request, monkeypatch):
+def _assume_provider_sdk_available(request, monkeypatch):
     """Assume the SDK extra is installed for unit tests.
 
-    Production code now gates remote-model discovery on
-    ``litellm_available()``. Dev environments without ``lilbee[litellm]``
-    would otherwise short-circuit every remote-discovery test. Tests
-    that cover the missing-extra path skip this fixture with
-    ``@pytest.mark.real_litellm_probe``.
+    Production code gates remote-model discovery on ``provider_sdk_available()``.
+    Dev environments without ``lilbee[providers]`` would otherwise
+    short-circuit every remote-discovery test. Tests that cover the
+    missing-extra path skip this fixture with
+    ``@pytest.mark.real_provider_sdk_probe``.
     """
-    if "real_litellm_probe" in {m.name for m in request.node.iter_markers()}:
+    if "real_provider_sdk_probe" in {m.name for m in request.node.iter_markers()}:
         return
-    monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: True)
+    monkeypatch.setattr("lilbee.providers.availability.provider_sdk_available", lambda: True)
 
 
-def _only_real_litellm_installed(dist: str) -> str:
-    if dist == "litellm":
-        return "1.98.0"
+def _only_providers_installed(dist: str) -> str:
+    if dist == SDK_DIST:
+        return "2.4.0"
     raise PackageNotFoundError(dist)
 
 
 @pytest.fixture(autouse=True)
-def _seal_litellm_distributions(monkeypatch):
-    """Report litellm installed, instead of the host's packages."""
-    monkeypatch.setattr("lilbee.providers.litellm_sdk._dist_version", _only_real_litellm_installed)
-    _real_litellm_available.cache_clear()
+def _seal_provider_sdk_distribution(monkeypatch):
+    """Report the SDK installed, instead of the host's packages."""
+    monkeypatch.setattr("lilbee.providers.availability._dist_version", _only_providers_installed)
+    _real_provider_sdk_available.cache_clear()
     yield
-    _real_litellm_available.cache_clear()
+    _real_provider_sdk_available.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -628,7 +631,7 @@ def _drain_textual_threads():
     A non-daemon thread still alive after the join is the precondition for the
     Windows xdist wedge: it survives loop teardown and keeps posting to the
     closing loop's self-pipe. Warn (naming the test and the threads) rather than
-    fail: several suites -- ingest workers, litellm's executor -- legitimately
+    fail: several suites -- ingest workers, the background loop -- legitimately
     leave such threads, so a hard failure would just be noise. The warning makes
     the leakers greppable in CI so a real wedge can be traced to its owner.
     """

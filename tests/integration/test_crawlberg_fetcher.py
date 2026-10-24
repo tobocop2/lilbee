@@ -1739,7 +1739,7 @@ def server_log(isolated_env) -> Iterator[Path]:
     root = logging.getLogger()
     root_level = root.level
     handler_levels = [(handler, handler.level) for handler in root.handlers]
-    # Importing litellm raises the httpx logger to WARNING; the test reads its request line.
+    # Other tests can leave the httpx logger at WARNING; this test reads its request line.
     httpx_logger = logging.getLogger("httpx")
     httpx_level = httpx_logger.level
     httpx_logger.setLevel(logging.INFO)

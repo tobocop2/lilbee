@@ -19,7 +19,7 @@ class LocalServerSpec:
 
     key: str  # routing key, ref-prefix stem, and ModelSource value ("ollama")
     display_name: BackendName  # human-facing backend name
-    wire_prefix: str  # litellm provider/ prefix ("ollama/")
+    wire_prefix: str  # SDK provider/ prefix ("ollama/")
     default_base_url: str  # URL the server listens on out of the box
     url_patterns: tuple[str, ...]  # lowercase substrings that identify it in a URL
     appends_latest_tag: bool  # bare name gets a ":latest" tag (Ollama)

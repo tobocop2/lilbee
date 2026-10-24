@@ -144,7 +144,7 @@ def _settings_gates_open():
     installed in the test environment."""
     with (
         patch(
-            "lilbee.providers.litellm_sdk.litellm_available",
+            "lilbee.providers.availability.provider_sdk_available",
             return_value=True,
         ),
         patch(
@@ -405,7 +405,7 @@ class TestBackendField:
 
     Native (llama-server fleet) models have backend="" because they are
     managed by lilbee itself. Only externally-managed models (ollama,
-    litellm) show a backend pill so users know lilbee cannot
+    remote) show a backend pill so users know lilbee cannot
     install/delete them.
     """
 
@@ -12998,7 +12998,7 @@ def test_settings_make_select_value_matches_choice():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings_widgets import make_select
 
-    defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
+    defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "remote"))
     sel = make_select("test_key", defn, "auto")
     # When value matches, the Select is created with value= kwarg
     assert sel.name == "test_key"
@@ -13010,7 +13010,7 @@ def test_settings_make_select_value_no_match():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings_widgets import make_select
 
-    defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
+    defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "remote"))
     sel = make_select("test_key", defn, "unknown")
     assert sel.name == "test_key"
     assert sel.id == "ed-test_key"
@@ -14092,7 +14092,7 @@ def test_make_editor_with_choices():
         "lilbee.cli.tui.screens.settings_widgets.effective_value",
         return_value="auto",
     ):
-        defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
+        defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "remote"))
         widget = make_editor("test_key", defn)
     assert isinstance(widget, Select)
 

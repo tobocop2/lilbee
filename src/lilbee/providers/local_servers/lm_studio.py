@@ -3,9 +3,8 @@
 from lilbee.providers.backend_names import BackendName
 from lilbee.providers.local_servers.spec import LocalServerSpec
 
-# litellm's lm_studio provider posts to {api_base}/chat/completions, so the
-# base URL must carry /v1 (what LM Studio's server panel shows). It injects a
-# placeholder key, so no API key is required.
+# The SDK posts to {api_base}/chat/completions, so the base URL must carry /v1
+# (what LM Studio's server panel shows). No API key is required.
 LM_STUDIO = LocalServerSpec(
     key="lm_studio",
     display_name=BackendName.LM_STUDIO,

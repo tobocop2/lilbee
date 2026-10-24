@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal stand-in for an Ollama daemon, used by the litellm integration tests.
+"""Minimal stand-in for an Ollama daemon, used by the SDK integration tests.
 
 Parses ``--port`` from argv and serves the subset of the Ollama API the
-litellm SDK calls: ``GET /api/tags``, ``POST /api/generate`` (plain and
-streaming NDJSON), ``POST /api/embed``, and ``POST /api/show``. Chat goes
-through ``/api/generate`` because litellm routes the ``ollama/`` prefix to
-its completion handler, not its chat handler.
+provider calls: ``GET /api/tags``, ``POST /api/show``, and the OpenAI-compatible
+``POST /v1/chat/completions`` (plain and streaming SSE) and ``POST /v1/embeddings``.
 """
 
 from __future__ import annotations
@@ -34,32 +32,46 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
-        if self.path == "/api/generate":
+        if self.path == "/v1/chat/completions":
             model = body.get("model", "qwen3:0.6b")
             if body.get("stream"):
-                self._send_ndjson(
+                self._send_sse(
                     [
-                        {"model": model, "response": "stub-", "done": False},
-                        {"model": model, "response": "chat", "done": False},
-                        {"model": model, "response": "", "done": True},
+                        self._chunk(model, {"role": "assistant", "content": "stub-"}, None),
+                        self._chunk(model, {"content": "chat"}, None),
+                        self._chunk(model, {}, "stop"),
                     ]
                 )
             else:
                 self._send_json(
                     {
+                        "id": "stub",
+                        "object": "chat.completion",
+                        "created": 0,
                         "model": model,
-                        "response": _STUB_CHAT_TEXT,
-                        "done": True,
-                        "done_reason": "stop",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": _STUB_CHAT_TEXT},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
                     }
                 )
-        elif self.path == "/api/embed":
+        elif self.path == "/v1/embeddings":
             inputs = body.get("input", [])
             count = len(inputs) if isinstance(inputs, list) else 1
-            # prompt_eval_count is required: without it litellm calls a
-            # logging method its own Logging object does not have.
             self._send_json(
-                {"embeddings": [_STUB_EMBEDDING for _ in range(count)], "prompt_eval_count": 8}
+                {
+                    "object": "list",
+                    "model": body.get("model", "nomic-embed-text"),
+                    "data": [
+                        {"object": "embedding", "index": i, "embedding": _STUB_EMBEDDING}
+                        for i in range(count)
+                    ],
+                    "usage": {"prompt_tokens": 8, "total_tokens": 8},
+                }
             )
         elif self.path == "/api/show":
             self._send_json({"parameters": "stub-params", "capabilities": ["completion"]})
@@ -74,12 +86,23 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_ndjson(self, chunks: list[dict[str, object]]) -> None:
+    @staticmethod
+    def _chunk(model: str, delta: dict[str, object], finish: str | None) -> dict[str, object]:
+        return {
+            "id": "stub",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+
+    def _send_sse(self, chunks: list[dict[str, object]]) -> None:
         self.send_response(200)
-        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         for chunk in chunks:
-            self.wfile.write((json.dumps(chunk) + "\n").encode())
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
 
 
 def _port_from_argv(argv: list[str]) -> int:

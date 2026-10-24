@@ -17,10 +17,14 @@ from lilbee.modelhub.model_manager import (
     RemoteModel,
     discover_api_models,
 )
+from lilbee.providers.factory import sdk_library
+from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.sdk_backend import detect_backend_name
+from tests import _fake_sdk
 from tests._sys_modules import inject_modules
 from tests._unreadable import POSIX_DENIES_READS, unreadable
 
+SDK_MODULE = sdk_library().module
 _NATIVE_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
 
 
@@ -264,7 +268,7 @@ class TestModelManagerListInstalled:
         mgr = ModelManager(models_dir)
         assert mgr.list_installed(ModelSource.NATIVE) == []
 
-    def test_litellm_lists_models(self) -> None:
+    def test_remote_lists_models(self) -> None:
         mock_response = mock.Mock()
         mock_response.json.return_value = {
             "models": [
@@ -285,7 +289,7 @@ class TestModelManagerListInstalled:
         assert "http://localhost:11434/api/tags" in called_urls
         assert set(result) == {"llama3:latest", "nomic-embed-text:latest"}
 
-    def test_litellm_connection_error(self) -> None:
+    def test_remote_connection_error(self) -> None:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get",
             side_effect=httpx.ConnectError("Connection refused"),
@@ -295,7 +299,7 @@ class TestModelManagerListInstalled:
 
         assert result == []
 
-    def test_litellm_empty_response(self) -> None:
+    def test_remote_empty_response(self) -> None:
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
@@ -546,7 +550,7 @@ class TestModelManagerIsInstalled:
         mgr = ModelManager(models_dir)
         assert mgr.is_installed("missing.gguf", ModelSource.NATIVE) is False
 
-    def test_litellm_installed(self) -> None:
+    def test_providers_installed(self) -> None:
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
@@ -559,7 +563,7 @@ class TestModelManagerIsInstalled:
 
         assert result is True
 
-    def test_litellm_not_installed(self) -> None:
+    def test_remote_not_installed(self) -> None:
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
@@ -976,8 +980,8 @@ class TestServicesIntegration:
         assert mgr1 is not mgr2
 
 
-class TestLitellmEdgeCases:
-    def test_litellm_http_error(self, tmp_path: Path) -> None:
+class TestRemoteEdgeCases:
+    def test_remote_http_error(self, tmp_path: Path) -> None:
         mock_response = mock.Mock()
         mock_response.status_code = 500
         mock_response.text = "Internal Server Error"
@@ -993,7 +997,7 @@ class TestLitellmEdgeCases:
 
         assert result == []
 
-    def test_litellm_timeout(self, tmp_path: Path) -> None:
+    def test_remote_timeout(self, tmp_path: Path) -> None:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get",
             side_effect=httpx.TimeoutException("timeout"),
@@ -1272,7 +1276,7 @@ class TestDiscoverApiModels:
         # discover_api_models() calls get_services().provider.list_chat_models.
         # FleetProvider.list_chat_models hard-codes []; only RoutingProvider
         # (cfg.llm_provider == "auto") delegates to the SDK backend where the
-        # sys.modules["litellm"] patch these tests rely on can take effect.
+        # patch of list_chat_models these tests rely on can take effect.
         # Developers whose config.toml pins llm_provider="remote" would
         # otherwise see these tests fail locally while passing in CI.
         from lilbee.app.services import reset_services
@@ -1283,24 +1287,24 @@ class TestDiscoverApiModels:
         yield
         reset_services()
 
-    def test_returns_empty_when_litellm_not_installed(
+    def test_returns_empty_when_providers_not_installed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        with inject_modules({"litellm": None}):
+        with inject_modules({SDK_MODULE: None}):
             result = discover_api_models()
         assert result == {}
 
+    def test_backend_lists_no_models_so_no_group_appears(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SDK cannot list a provider's catalog, so a keyed provider yields no group."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        with inject_modules({SDK_MODULE: _fake_sdk.FakeSdk().module()}):
+            assert discover_api_models() == {}
+
     def test_returns_models_for_configured_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_litellm = mock.MagicMock()
-        mock_litellm.models_by_provider = {
-            "openai": {"gpt-4o", "gpt-4o-mini", "dall-e-3"},
-        }
-        mock_litellm.model_cost = {
-            "gpt-4o": {"mode": "chat"},
-            "gpt-4o-mini": {"mode": "chat"},
-            "dall-e-3": {"mode": "image_generation"},
-        }
+        catalog = {"openai": ["gpt-4o", "gpt-4o-mini"]}
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -1309,25 +1313,18 @@ class TestDiscoverApiModels:
         cfg.anthropic_api_key = ""
         cfg.gemini_api_key = ""
 
-        with inject_modules({"litellm": mock_litellm}):
+        with mock.patch.object(
+            RoutingProvider, "list_chat_models", side_effect=lambda prov: catalog.get(prov, [])
+        ):
             result = discover_api_models()
 
         assert "OpenAI" in result
         names = [m.name for m in result["OpenAI"]]
         assert "gpt-4o" in names
         assert "gpt-4o-mini" in names
-        assert "dall-e-3" not in names
 
     def test_skips_providers_without_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_litellm = mock.MagicMock()
-        mock_litellm.models_by_provider = {
-            "openai": {"gpt-4o"},
-            "anthropic": {"claude-sonnet-4-6"},
-        }
-        mock_litellm.model_cost = {
-            "gpt-4o": {"mode": "chat"},
-            "claude-sonnet-4-6": {"mode": "chat"},
-        }
+        catalog = {"openai": ["gpt-4o"], "anthropic": ["claude-sonnet-4-6"]}
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -1337,21 +1334,15 @@ class TestDiscoverApiModels:
         cfg.anthropic_api_key = ""
         cfg.gemini_api_key = ""
 
-        with inject_modules({"litellm": mock_litellm}):
+        with mock.patch.object(
+            RoutingProvider, "list_chat_models", side_effect=lambda prov: catalog.get(prov, [])
+        ):
             result = discover_api_models()
 
         assert result == {}
 
     def test_multiple_providers(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_litellm = mock.MagicMock()
-        mock_litellm.models_by_provider = {
-            "openai": {"gpt-4o"},
-            "anthropic": {"claude-sonnet-4-6"},
-        }
-        mock_litellm.model_cost = {
-            "gpt-4o": {"mode": "chat"},
-            "claude-sonnet-4-6": {"mode": "chat"},
-        }
+        catalog = {"openai": ["gpt-4o"], "anthropic": ["claude-sonnet-4-6"]}
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -1359,7 +1350,9 @@ class TestDiscoverApiModels:
 
         cfg.gemini_api_key = ""
 
-        with inject_modules({"litellm": mock_litellm}):
+        with mock.patch.object(
+            RoutingProvider, "list_chat_models", side_effect=lambda prov: catalog.get(prov, [])
+        ):
             # Test arbitrary upstream ids; pin  so curation
             # doesn't filter them.
             result = discover_api_models()
@@ -1369,9 +1362,7 @@ class TestDiscoverApiModels:
         assert all(m.task == ModelTask.CHAT for models in result.values() for m in models)
 
     def test_remote_model_has_correct_provider_label(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_litellm = mock.MagicMock()
-        mock_litellm.models_by_provider = {"anthropic": {"claude-sonnet-4-6"}}
-        mock_litellm.model_cost = {"claude-sonnet-4-6": {"mode": "chat"}}
+        catalog = {"anthropic": ["claude-sonnet-4-6"]}
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -1380,7 +1371,9 @@ class TestDiscoverApiModels:
         cfg.openai_api_key = ""
         cfg.gemini_api_key = ""
 
-        with inject_modules({"litellm": mock_litellm}):
+        with mock.patch.object(
+            RoutingProvider, "list_chat_models", side_effect=lambda prov: catalog.get(prov, [])
+        ):
             result = discover_api_models()
 
         model = result["Anthropic"][0]

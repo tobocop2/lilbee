@@ -1,7 +1,7 @@
 """Tests for ``SdkLLMProvider``. The SDK-agnostic semantic layer.
 
 These tests inject an inline ``FakeBackend`` satisfying the
-``LlmSdkBackend`` Protocol, so they never touch ``litellm`` or any
+``LlmSdkBackend`` Protocol, so they never touch the SDK or any
 other third-party SDK. They verify message formatting, the API key each
 request carries, option translation, error wrapping, streaming, and the
 "optional method returns not-supported" paths.
@@ -158,6 +158,17 @@ class TestChatNonStream:
         assert isinstance(result, ChatResult)
         assert result.text == "hi"
         assert result.finish_reason == FinishReason.STOP
+
+    def test_chat_result_carries_the_reported_usage(self) -> None:
+        from lilbee.providers.base import TokenUsage
+
+        backend = FakeBackend(
+            complete_result=CompletionResult(
+                content="hi", usage=TokenUsage(prompt_tokens=11, completion_tokens=5)
+            )
+        )
+        result = SdkLLMProvider(backend).chat([{"role": "user", "content": "hey"}])
+        assert result.usage == TokenUsage(prompt_tokens=11, completion_tokens=5)
 
     def test_tool_calls_surface_in_chat_result(self) -> None:
         from lilbee.providers.base import ChatResult, FinishReason
@@ -431,6 +442,19 @@ class TestChatStream:
         items = list(provider.chat([{"role": "user", "content": "hi"}], stream=True))
         assert items == ["hi", StreamFinish(reason=FinishReason.LENGTH)]
 
+    def test_yields_the_usage_a_chunk_reports(self) -> None:
+        from lilbee.providers.base import TokenUsage
+
+        backend = FakeBackend(
+            stream_chunks=[
+                StreamChunk(content="hi"),
+                StreamChunk(content="", usage=TokenUsage(prompt_tokens=7, completion_tokens=3)),
+            ]
+        )
+        provider = SdkLLMProvider(backend)
+        items = list(provider.chat([{"role": "user", "content": "hi"}], stream=True))
+        assert items == ["hi", TokenUsage(prompt_tokens=7, completion_tokens=3)]
+
     def test_wraps_errors_when_opening_stream(self) -> None:
         backend = FakeBackend(raise_complete=RuntimeError("stream boom"))
         provider = SdkLLMProvider(backend)
@@ -586,7 +610,7 @@ class TestListChatModels:
 
     def test_initializes_backend_before_query(self) -> None:
         # The provider must apply cfg.json_mode suppression before the
-        # catalog call, otherwise the litellm banner can leak.
+        # catalog call, otherwise the SDK banner can leak.
         cfg.json_mode = True
         backend = FakeBackend(list_chat_models_result=["m"])
         provider = SdkLLMProvider(backend)

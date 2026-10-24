@@ -196,7 +196,7 @@ def _resolve_via_provider_key(model: str) -> str | None:
 
     Frontier models surface through ``discover_api_models``, not the default
     ``list_models()``, so they never appear in *available*. With a usable key,
-    litellm routes the ref (and validates the model name at call time).
+    the SDK routes the ref (and validates the model name at call time).
     """
     try:
         parsed = parse_model_ref(model)

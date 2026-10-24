@@ -15,7 +15,7 @@ WORK_DIR="${HOME}/lilbee"
 cd "${WORK_DIR}"
 git fetch origin "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
-uv sync --extra remote --extra crawler --extra graph
+uv sync --extra providers --extra crawler --extra graph
 # The CUDA llama-server built by cloud-setup.sh lives in the engine wheel's
 # bin/ (untracked, so it survives the reset --hard). Rebuild via cloud-setup.sh
 # if it's missing; verify it still runs before kicking off the matrix.

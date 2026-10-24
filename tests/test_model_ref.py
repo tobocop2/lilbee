@@ -487,19 +487,3 @@ class TestChatOptionTranslationParity:
         """Every emitted key is one the llama-server request builder accepts."""
         translated = self._local()
         assert set(translated) <= _LOCAL_CHAT_OPTION_KEYS
-
-    def test_api_translation_does_not_error_in_litellm(self) -> None:
-        """litellm accepts the API-translated kwargs without raising.
-
-        Confirms the audit finding empirically: litellm 1.x forwards
-        repeat_penalty (into extra_body for OpenAI-compatible providers)
-        rather than rejecting it, so keeping it is not a correctness bug.
-        """
-        litellm = pytest.importorskip("litellm")
-        translated = self._api()
-        params = litellm.utils.get_optional_params(
-            model="gpt-4o", custom_llm_provider="openai", **translated
-        )
-        assert params["max_tokens"] == 1024
-        # repeat_penalty is forwarded, not dropped or errored on.
-        assert params.get("extra_body", {}).get("repeat_penalty") == 1.1

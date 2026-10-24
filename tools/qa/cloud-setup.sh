@@ -47,8 +47,8 @@ git fetch origin "${BRANCH}"
 git checkout "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 
-# 5. Install lilbee with the [remote] + [crawler] + [graph] extras.
-uv sync --extra remote --extra crawler --extra graph
+# 5. Install lilbee with the [providers] + [crawler] + [graph] extras.
+uv sync --extra providers --extra crawler --extra graph
 
 # 5b. Build the CUDA engine. On a source checkout the lilbee-engine path
 # dependency ships an empty bin/, so build llama-server (CUDA) plus the
