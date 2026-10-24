@@ -247,6 +247,7 @@ INLINE_IMAGE_PAYLOAD = (
 HIDDEN_PAGE = "/hidden/"
 LATE_PAGE = "/late/"
 LATER_PAGE = "/later/"
+LATEST_PAGE = "/latest/"
 LATE_NEXT_PAGE = "/late/next"
 # Documents with no body element: an SVG image and a frameset page.
 SVG_PAGE = "/chart.svg"
@@ -256,10 +257,17 @@ NO_BODY_TIMEOUT_S = 12
 CONTENT_TYPES = {SVG_PAGE: "image/svg+xml"}
 LATE_HEADING = "Harbor timetable"
 LATE_TEXT = "The ferry leaves at noon"
-# Within crawlberg's quiet window after the load (150 ms), and a text later than it.
+# crawlberg's default wait returns once the page is quiet for 150 ms, and gives up after 4 s.
+# LATE_DELAY_MS is inside the quiet window, so the text is kept at any runner speed: a slow
+# runner only starts the check later. LATER_DELAY_MS is past it. It is kept because the extra
+# wait (LATER_WAIT_MS) runs on after the default wait, which lasts at least 150 ms: the wait
+# ends 1150 ms or more after the load, 550 ms past the write, and a slow runner only moves
+# it later.
+# LATEST_DELAY_MS is past the 4 s cap by 2 s, so the text is missing at any runner speed.
 LATE_DELAY_MS = 100
 LATER_DELAY_MS = 600
 LATER_WAIT_MS = 1000
+LATEST_DELAY_MS = 6000
 # A page timeout and a wait that alone outlasts two page timeouts.
 LONG_WAIT_TIMEOUT_S = 3
 LONG_WAIT_MS = 6300
@@ -429,6 +437,7 @@ def _fixed_pages(filler: str, robots_status: int, robots_text: str) -> dict[str,
         LATE_PAGE: (HTTPStatus.OK, _late_page(f'<a href="{LATE_NEXT_PAGE}">next</a>')),
         LATE_NEXT_PAGE: (HTTPStatus.OK, _late_page("")),
         LATER_PAGE: (HTTPStatus.OK, _late_page("", LATER_DELAY_MS)),
+        LATEST_PAGE: (HTTPStatus.OK, _late_page("", LATEST_DELAY_MS)),
         SVG_PAGE: (
             HTTPStatus.OK,
             '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="60">'
@@ -1632,7 +1641,7 @@ class TestBrowserLaunch:
 
     def test_with_no_extra_wait_text_written_after_the_default_wait_is_missing(self, site):
         cfg.crawl_browser_extra_wait_ms = 0
-        _assert_late_text(self._crawl(site.url(LATER_PAGE)), 1, kept=False)
+        _assert_late_text(self._crawl(site.url(LATEST_PAGE)), 1, kept=False)
 
     @pytest.mark.parametrize("page", [SVG_PAGE, FRAMESET_PAGE])
     def test_a_page_with_no_body_ends_before_the_page_timeout(self, site, page):
