@@ -1571,8 +1571,9 @@ async def test_list_text_area_posts_blurred():
         ta.focus()
         await pilot.pause()
         app.query_one("#other", Input).focus()
-        await pilot.pause()
-        assert captured, "Expected a Blurred message from ListTextArea"
+        assert await wait_until(pilot, lambda: bool(captured)), (
+            "Expected a Blurred message from ListTextArea"
+        )
         assert captured[0].control is ta
 
 
