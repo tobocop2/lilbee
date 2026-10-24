@@ -48,7 +48,9 @@ class AssistantContent:
     """Mirrors ``liter_llm.AssistantContent``: a text reply or a parts reply.
 
     ``text`` is a ``str`` for a text reply and ``None`` for a parts reply; ``parts`` is the
-    reverse. Like the library's stub, it declares no ``__str__`` and is not a ``str``.
+    reverse. Each part is a dict with ``type`` and a key named for it, as the library's
+    stub declares. Like the library's stub, the reply declares no ``__str__`` and is not a
+    ``str``.
     """
 
     def __init__(self, text: str | None, parts: list[Any] | None) -> None:
@@ -61,7 +63,7 @@ class AssistantContent:
 
     @staticmethod
     def from_parts(value: list[tuple[str, str]]) -> AssistantContent:
-        return AssistantContent(None, [_ns(type=kind, text=text) for kind, text in value])
+        return AssistantContent(None, [{"type": kind, kind: text} for kind, text in value])
 
 
 class _Enum:

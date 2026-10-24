@@ -45,7 +45,7 @@ def _text(content: Any) -> str:
     if text is not None:
         return text
     if content.parts is not None:
-        return "".join(part.text for part in content.parts if part.type == "text")
+        return "".join(part["text"] for part in content.parts if part["type"] == "text")
     return ""
 
 
