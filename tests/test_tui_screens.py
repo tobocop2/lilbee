@@ -60,7 +60,12 @@ from tests._async_wait import wait_for_widget, wait_until
 from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
-from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
+from tests._lilbee_app_test_host import (
+    LilbeeAppHost,
+    await_chat,
+    pump_until,
+    saved_setting,
+)
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 _RESET_REFUSED_MID_SYNC = (
@@ -742,6 +747,7 @@ async def test_settings_persist_on_change():
 
         editor = app.screen.query_one("#ed-top_k", Input)
         editor.focus()
+        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
         editor.value = "20"
         await pilot.press("enter")
         await pilot.pause()
@@ -963,6 +969,7 @@ async def test_settings_persist_value_does_not_toast_on_success():
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-top_k", Input)
         editor.focus()
+        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
         editor.value = "21"
         with patch.object(app.screen, "notify") as mock_notify:
             await pilot.press("enter")
@@ -1124,6 +1131,7 @@ async def test_settings_wiki_clusterer_k_persists():
 
         editor = app.screen.query_one("#ed-wiki_clusterer_k", Input)
         editor.focus()
+        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
         editor.value = "8"
         await pilot.press("enter")
         await pilot.pause()
@@ -1133,16 +1141,13 @@ async def test_settings_wiki_clusterer_k_persists():
 async def test_settings_checkbox_persist():
     """Toggling a checkbox persists the boolean value."""
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40)):
         from textual.widgets import Checkbox
 
         cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
         original = cfg.show_reasoning
-        cb.toggle()
-        # Windows CI runners tick the textual event loop slower than one
-        # pilot.pause() can drain. Poll for the setattr from the event
-        # handler rather than asserting after a single pause.
-        await pump_until(pilot, lambda: cfg.show_reasoning != original)
+        async with saved_setting(app, "show_reasoning"):
+            cb.toggle()
         assert cfg.show_reasoning != original
 
 
@@ -1168,8 +1173,8 @@ async def test_settings_tab_reaches_checkbox_and_space_toggles():
             if app.focused is cb:
                 break
         assert app.focused is cb, "Tab failed to reach show_reasoning checkbox"
-        await pilot.press("space")
-        await pump_until(pilot, lambda: cfg.show_reasoning != original)
+        async with saved_setting(app, "show_reasoning"):
+            await pilot.press("space")
         assert cfg.show_reasoning != original
 
 
@@ -1242,10 +1247,10 @@ async def test_settings_list_editor_saves_on_blur():
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         ta.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
         ta.load_text("foo\nbar")
-        ta.blur()
-        await pump_until(pilot, lambda: cfg.crawl_exclude_patterns == ["foo", "bar"])
+        async with saved_setting(app, "crawl_exclude_patterns"):
+            ta.blur()
         assert cfg.crawl_exclude_patterns == ["foo", "bar"]
 
 
@@ -1258,10 +1263,10 @@ async def test_settings_list_editor_strips_blanks():
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         ta.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
         ta.load_text("a\n\nb\n")
-        ta.blur()
-        await pump_until(pilot, lambda: cfg.crawl_exclude_patterns == ["a", "b"])
+        async with saved_setting(app, "crawl_exclude_patterns"):
+            ta.blur()
         assert cfg.crawl_exclude_patterns == ["a", "b"]
 
 
@@ -1279,7 +1284,7 @@ async def test_settings_list_editor_refused_pattern_blocks_save():
             cfg.crawl_exclude_patterns = ["keep"]
             ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
             ta.focus()
-            await pilot.pause()
+            assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
             ta.load_text(f"/ok\n{refused}")
             ta.blur()
             err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
@@ -1305,10 +1310,10 @@ async def test_settings_list_editor_saves_a_pattern_only_crawlberg_compiles():
             cfg.crawl_exclude_patterns = ["keep"]
             ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
             ta.focus()
-            await pilot.pause()
+            assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
             ta.load_text(pattern)
-            ta.blur()
-            await pump_until(pilot, lambda: cfg.crawl_exclude_patterns == [pattern])
+            async with saved_setting(app, "crawl_exclude_patterns"):
+                ta.blur()
             assert cfg.crawl_exclude_patterns == [pattern]
 
 
@@ -1322,11 +1327,11 @@ async def test_settings_browser_flags_editor_saves_on_blur():
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
         ta.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
         ta.load_text("--lang=fr\n--mute-audio\n--disable-gpu")
-        ta.blur()
+        async with saved_setting(app, "crawl_browser_extra_args"):
+            ta.blur()
         flags = ["--lang=fr", "--mute-audio", "--disable-gpu"]
-        await pump_until(pilot, lambda: cfg.crawl_browser_extra_args == flags)
         assert cfg.crawl_browser_extra_args == flags
         title = app.screen.query_one("#collapsible-crawl_browser_extra_args", Collapsible).title
         assert "(3 lines)" in title
@@ -1343,11 +1348,11 @@ async def test_settings_browser_flags_editor_stores_a_flag_crawlberg_refuses():
         cfg.crawl_browser_extra_args = ["--lang=fr"]
         ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
         ta.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
         ta.load_text("--lang=fr\n--headless=new\nmute-audio")
-        ta.blur()
+        async with saved_setting(app, "crawl_browser_extra_args"):
+            ta.blur()
         flags = ["--lang=fr", "--headless=new", "mute-audio"]
-        await pump_until(pilot, lambda: cfg.crawl_browser_extra_args == flags)
         assert cfg.crawl_browser_extra_args == flags
         title = app.screen.query_one("#collapsible-crawl_browser_extra_args", Collapsible).title
         assert "(3 lines)" in title
@@ -1362,9 +1367,10 @@ async def test_settings_crawl_user_agent_editor_saves_the_override():
         cfg.crawl_user_agent = ""
         editor = app.screen.query_one("#ed-crawl_user_agent", Input)
         editor.focus()
+        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
         editor.value = "Probe/1.0"
-        await pilot.press("enter")
-        await pump_until(pilot, lambda: cfg.crawl_user_agent == "Probe/1.0")
+        async with saved_setting(app, "crawl_user_agent"):
+            await pilot.press("enter")
         assert cfg.crawl_user_agent == "Probe/1.0"
 
 
@@ -1377,9 +1383,10 @@ async def test_settings_extra_browser_wait_editor_saves_the_wait():
         cfg.crawl_browser_extra_wait_ms = 1000
         editor = app.screen.query_one("#ed-crawl_browser_extra_wait_ms", Input)
         editor.focus()
+        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
         editor.value = "2500"
-        await pilot.press("enter")
-        await pump_until(pilot, lambda: cfg.crawl_browser_extra_wait_ms == 2500)
+        async with saved_setting(app, "crawl_browser_extra_wait_ms"):
+            await pilot.press("enter")
         assert cfg.crawl_browser_extra_wait_ms == 2500
 
 
@@ -1389,11 +1396,11 @@ async def test_settings_robots_txt_checkbox_turns_the_setting_off():
 
     cfg.crawl_respect_robots_txt = True
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40)):
         checkbox = app.screen.query_one("#ed-crawl_respect_robots_txt", Checkbox)
         assert checkbox.value is True
-        checkbox.toggle()
-        await pump_until(pilot, lambda: cfg.crawl_respect_robots_txt is False)
+        async with saved_setting(app, "crawl_respect_robots_txt"):
+            checkbox.toggle()
         assert cfg.crawl_respect_robots_txt is False
 
 
@@ -1405,16 +1412,11 @@ async def test_settings_list_editor_restore_defaults():
     from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40)):
         cfg.crawl_exclude_patterns = ["old"]
         btn = app.screen.query_one("#list-restore-crawl_exclude_patterns", Button)
-        btn.press()
-        # Button.Pressed flows through Textual's async message bus; poll until
-        # the handler updates cfg. A single pilot.pause is not enough on
-        # slower runners (Windows, in particular).
-        await pump_until(
-            pilot, lambda: cfg.crawl_exclude_patterns == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
-        )
+        async with saved_setting(app, "crawl_exclude_patterns"):
+            btn.press()
         assert cfg.crawl_exclude_patterns == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
         ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         assert ta.text == "\n".join(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
@@ -1450,15 +1452,12 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         ta.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
         ta.load_text("pat-a\npat-b")
-        ta.blur()
         # The blur handler posts Blurred, the screen handles it, and only then
-        # is the value written, so wait for the write rather than one pause.
-        landed = await pump_until(
-            pilot, lambda: "crawl_exclude_patterns" in settings.load(tmp_path)
-        )
-        assert landed, "the blur never reached the settings store"
+        # is the value written and the change published.
+        async with saved_setting(app, "crawl_exclude_patterns"):
+            ta.blur()
 
     # Raw TOML value is a newline-joined string (not Python repr of the list).
     reloaded = settings.load(tmp_path)
@@ -1507,11 +1506,10 @@ async def test_settings_ocr_language_round_trips_through_the_list_editor(tmp_pat
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-ocr_language", ListTextArea)
         ta.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
         ta.load_text("eng\ndeu")
-        ta.blur()
-        landed = await pump_until(pilot, lambda: "ocr_language" in settings.load(tmp_path))
-        assert landed, "the blur never reached the settings store"
+        async with saved_setting(app, "ocr_language"):
+            ta.blur()
     assert cfg.ocr_language == ["eng", "deu"]
     assert settings.load(tmp_path)["ocr_language"] == "eng\ndeu"
 
@@ -1528,11 +1526,10 @@ async def test_settings_force_ocr_pages_round_trips_through_the_list_editor(tmp_
         ta = app.screen.query_one("#ed-force_ocr_pages", ListTextArea)
         assert ta.text == "1\n3"
         ta.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
         ta.load_text("5\n2")
-        ta.blur()
-        landed = await pump_until(pilot, lambda: "force_ocr_pages" in settings.load(tmp_path))
-        assert landed, "the blur never reached the settings store"
+        async with saved_setting(app, "force_ocr_pages"):
+            ta.blur()
     assert cfg.force_ocr_pages == [2, 5]
     assert settings.load(tmp_path)["force_ocr_pages"] == "2\n5"
 
@@ -1675,6 +1672,7 @@ async def test_settings_persist_invalid_int():
         original = cfg.top_k
         editor = app.screen.query_one("#ed-top_k", Input)
         editor.focus()
+        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
         editor.value = "abc"
         await pilot.press("enter")
         await pilot.pause()
@@ -1756,11 +1754,11 @@ async def test_reset_button_resets_scalar():
 
     cfg.wiki_clusterer_k = 99
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40)):
         button = app.screen.query_one("#reset-wiki_clusterer_k", Button)
-        button.press()
+        async with saved_setting(app, "wiki_clusterer_k"):
+            button.press()
         target = get_default("wiki_clusterer_k")
-        await pump_until(pilot, lambda: cfg.wiki_clusterer_k == target)
         assert cfg.wiki_clusterer_k == target
         editor = app.screen.query_one("#ed-wiki_clusterer_k", Input)
         assert editor.value == str(target)
@@ -1786,7 +1784,7 @@ async def test_ctrl_r_resets_focused_row():
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-top_k", Input)
         editor.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
         await pilot.press("ctrl+r")
         await pilot.pause()
         assert cfg.top_k == get_default("top_k")
@@ -1843,8 +1841,8 @@ async def test_refresh_editor_updates_checkbox():
         from textual.widgets import Button
 
         button = app.screen.query_one("#reset-show_reasoning", Button)
-        button.press()
-        await pump_until(pilot, lambda: cfg.show_reasoning == default)
+        async with saved_setting(app, "show_reasoning"):
+            button.press()
         assert cfg.show_reasoning == default
         assert checkbox.value == default
 
@@ -1855,10 +1853,10 @@ async def test_reset_nullable_to_none():
 
     cfg.seed = 42
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40)):
         button = app.screen.query_one("#reset-seed", Button)
-        button.press()
-        await pump_until(pilot, lambda: cfg.seed is None)
+        async with saved_setting(app, "seed"):
+            button.press()
         assert cfg.seed is None
         editor = app.screen.query_one("#ed-seed", Input)
         assert editor.value == ""
