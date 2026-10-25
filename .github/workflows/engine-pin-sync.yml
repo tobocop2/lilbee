@@ -6,8 +6,8 @@ name: engine-pin-sync
 # bumps ENGINE_LLAMA_CPP_REF to it, regenerates the arch table that must
 # follow the pin, and opens or refreshes ONE rolling pull request for review.
 # The branch pushes use a deploy key (ENGINE_PIN_SYNC_KEY secret) so the PR's
-# CI runs; events from the built-in GITHUB_TOKEN would not trigger it. A new PR
-# gets a second deploy-key push, because its first push came before the PR.
+# CI runs; events from the built-in GITHUB_TOKEN do not reliably trigger it. A
+# new PR gets a second deploy-key push, because its first push came before the PR.
 on:
   schedule:
     - cron: "0 10 * * 1" # Mondays, two hours after the fork sync
@@ -75,7 +75,7 @@ jobs:
           git config user.email "engine-pin-sync@users.noreply.github.com"
           git checkout -B chore/engine-pin-sync
           git commit -am "Bump the bundled llama.cpp engine to ${TAG}"
-          git push -f origin chore/engine-pin-sync
+          bash scripts/ci_retry.sh 3 git push -f origin chore/engine-pin-sync
 
       - name: Open or refresh the rolling PR
         if: steps.fork.outputs.changed == 'true'
@@ -90,11 +90,12 @@ jobs:
           if [ -z "$pr" ]; then
             gh pr create --base main --head chore/engine-pin-sync \
               --title "$title" --body "$body" --reviewer tobocop2
-            # The pull request is opened with GH_TOKEN, whose events start no CI,
-            # and the branch push came before the pull request existed. One more
-            # push with the deploy key makes CI run on the new pull request.
+            # The pull request is opened with GH_TOKEN. The run its opening event
+            # starts is sometimes held for approval or missing, and the branch push
+            # came before the pull request existed. One more push with the deploy
+            # key starts a run that is not held.
             git commit -q --allow-empty -m "Run CI on the engine pin bump"
-            git push origin chore/engine-pin-sync
+            bash scripts/ci_retry.sh 3 git push origin chore/engine-pin-sync
           else
             gh pr edit "$pr" --title "$title" --body "$body"
             gh pr comment "$pr" --body "@tobocop2 refreshed: the pin now points at \`${TAG}\`."
