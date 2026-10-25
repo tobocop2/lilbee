@@ -693,8 +693,14 @@ async def test_enter_uses_the_filter_text_before_the_list_has_caught_up(sessions
         field = drawer.query_one("#sessions-filter", Input)
         with field.prevent(Input.Changed):
             field.value = "Gamma"
+        panel = drawer.query_one(SessionListPanel)
         await pilot.press("enter")
-        assert await wait_until(pilot, lambda: chat.session_id == wanted)
+        resumed = await wait_until(pilot, lambda: chat.session_id == wanted)
+        assert resumed, (
+            f"Enter never resumed {wanted!r}: chat.session_id={chat.session_id!r}, "
+            f"focused={app.focused!r}, query={panel._query!r}, "
+            f"shown={[m.id for m in panel._shown]!r}"
+        )
 
 
 async def test_enter_resumes_after_filtering(sessions):
