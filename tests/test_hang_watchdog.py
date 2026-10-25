@@ -36,13 +36,22 @@ def test_stuck_on_a_lock():
 # that exits did not wait for the worker.
 _STALLED_TEARDOWN = """
 import os
+import threading
 
 import pytest
+
+
+def parked_sibling_wait(release):
+    release.wait()
 
 
 @pytest.fixture(scope="session")
 def slow_to_close():
     yield
+    sibling = threading.Event()
+    threading.Thread(
+        target=parked_sibling_wait, args=(sibling,), name="parked-sibling", daemon=True
+    ).start()
     with open(os.environ["ENTERED"], "w", encoding="utf-8") as marker:
         marker.write(str(os.getpid()))
     with open(os.environ["RELEASE"], "rb") as fifo:
@@ -241,9 +250,13 @@ def test_a_stall_outside_any_test_ends_the_run_with_every_stack(tmp_path: Path) 
     assert entered
     controller = (dump_dir / "hang-master.txt").read_text(encoding="utf-8")
     assert "no test report for 4s after test_case.py::test_last (call)" in controller
-    assert "Thread" in controller
+    # The main thread waits in the xdist loop and a second thread reads the worker pipe.
+    assert "loop_once" in controller
+    assert "_thread_receiver" in controller
     worker = (dump_dir / "hang-gw0.txt").read_text(encoding="utf-8")
     assert "slow_to_close" in worker
+    # A dump of the current thread alone would miss the thread parked beside it.
+    assert "parked_sibling_wait" in worker
 
 
 def _release_stalled_worker(fifo: Path) -> None:
