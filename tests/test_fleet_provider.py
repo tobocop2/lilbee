@@ -30,6 +30,7 @@ from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
 from lilbee.providers.fleet.swap_manager import EngineLifetime
 from lilbee.providers.roles import RerankMode, WorkerRole
 from tests._exit_probe import assert_probe_exits
+from tests._prior_run import request_keep_warm_in_prior_run
 
 _GB = 1024**3
 _real_plan_all_launches = planning_mod.plan_all_launches
@@ -5261,18 +5262,12 @@ def test_a_prior_runs_keep_warm_is_reclaimed_when_the_setting_goes_off(
     warm forever. The opt-in is keyed by config root precisely so a restart can
     reach its own prior mark.
     """
-    from lilbee.runtime.engine_lock import request_keep_warm
-
     _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     # An earlier run of this same installation opted in, then exited.
-    request_keep_warm(machine, prov_mod.cfg.data_root, 5)
-    # A restarted run binds and releases under one pid, so the patch covers the
-    # whole run. filelock 3.30+ no-ops release() when the pid moved mid-hold.
-    restarted_pid = os.getpid() + 4242
-    monkeypatch.setattr(os, "getpid", lambda: restarted_pid)  # this run is a new process
+    request_keep_warm_in_prior_run(machine, prov_mod.cfg.data_root, 5)
     p = FleetProvider()
     assert p._ensure_fleet() is True
     p.shutdown()
