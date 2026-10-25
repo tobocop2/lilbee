@@ -29,6 +29,4 @@ Instead, use one of these methods:
 
 ### Provider client (`lilbee[providers]` extra)
 
-lilbee reaches hosted model providers through a client library, used **only as a client SDK** inside one adapter package (`src/lilbee/providers/backends/`, the only package that imports it). lilbee does **not** run a proxy server.
-
-Earlier releases used LiteLLM for this role. LiteLLM is no longer a dependency, so its Proxy server advisories (GHSA-xqmj-j6mv-4862, GHSA-r75f-5x8p-qvmc, GHSA-v4p8-mg3p-g94g, GHSA-wxxx-gvqv-xp7p) do not apply to current releases. An advisory that affects the client library's request handling is in scope and patched.
+lilbee reaches hosted model providers through a client library, used **only as a client SDK** inside one adapter package (`src/lilbee/providers/backends/`, the only package that imports it). lilbee does **not** run a proxy server. An advisory that affects the client library's request handling is in scope and patched.
