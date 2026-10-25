@@ -78,19 +78,23 @@ def start() -> SplashHandle | None:
         return None
 
     read_fd, write_fd = os.pipe()
-    pipe_ref, spawn_kwargs = _spawn_args(read_fd)
+    try:
+        pipe_ref, spawn_kwargs = _spawn_args(read_fd)
 
-    # Trusted: sys.executable is this interpreter, module path is static,
-    # the one runtime value (pipe_ref) derives from an int from os.pipe().
-    proc = subprocess.Popen(  # noqa: S603
-        [sys.executable, "-m", "lilbee.runtime._splash_runner", pipe_ref],
-        stderr=None,
-        stdout=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        **spawn_kwargs,
-    )
-
-    os.close(read_fd)
+        # Trusted: sys.executable is this interpreter, module path is static,
+        # the one runtime value (pipe_ref) derives from an int from os.pipe().
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", "lilbee.runtime._splash_runner", pipe_ref],
+            stderr=None,
+            stdout=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            **spawn_kwargs,
+        )
+    except BaseException:
+        os.close(write_fd)
+        raise
+    finally:
+        os.close(read_fd)
 
     handle = SplashHandle(process=proc, pipe=io.FileIO(write_fd, "wb"))
     _active_handle = handle

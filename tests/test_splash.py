@@ -6,6 +6,8 @@ import io
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import lilbee.runtime.splash as splash_mod
 from lilbee.runtime._splash_runner import (
     BEE_LINES,
@@ -19,12 +21,13 @@ from lilbee.runtime._splash_runner import (
 )
 from lilbee.runtime.splash import (
     SplashHandle,
+    _atexit_cleanup,
+    _restore_cursor,
     _should_skip,
     dismiss,
     start,
     stop,
 )
-from tests._pipe_eof import pipe_reaches_eof
 
 
 class TestShouldSkip:
@@ -77,11 +80,31 @@ class TestStartStop:
             assert handle.process.poll() is not None  # exited
             assert dict(os.environ) == env_before
 
+    def test_failed_start_closes_both_pipe_ends(self) -> None:
+        """A start whose child cannot launch leaves neither pipe end open."""
+        real_pipe = os.pipe
+        pipe_ends: list[int] = []
+
+        def recording_pipe() -> tuple[int, int]:
+            ends = real_pipe()
+            pipe_ends.extend(ends)
+            return ends
+
+        with (
+            patch("lilbee.runtime.splash._should_skip", return_value=False),
+            patch("lilbee.runtime.splash.os.pipe", side_effect=recording_pipe),
+            patch("lilbee.runtime.splash.subprocess.Popen", side_effect=OSError("no spawn")),
+            pytest.raises(OSError, match="no spawn"),
+        ):
+            start()
+        assert len(pipe_ends) == 2
+        for fd in pipe_ends:
+            with pytest.raises(OSError):
+                os.fstat(fd)
+
 
 def _arm(handle: object) -> object:
     """Make *handle* the active splash and return the previous one."""
-    import lilbee.runtime.splash as splash_mod
-
     original = splash_mod._active_handle
     splash_mod._active_handle = handle  # type: ignore[assignment]
     return original
@@ -124,7 +147,8 @@ class TestDismiss:
         try:
             dismiss()
             assert splash_mod._active_handle is None
-            assert pipe_reaches_eof(read_fd)
+            with pytest.raises(OSError):
+                os.fstat(write_fd)  # EBADF: dismiss closed the write end
         finally:
             pipe.close()
             os.close(read_fd)
@@ -145,7 +169,6 @@ class TestDismiss:
             _arm(original)
 
     def test_dismiss_tolerates_an_already_closed_pipe(self) -> None:
-        import lilbee.runtime.splash as splash_mod
 
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
@@ -175,7 +198,6 @@ class TestDismiss:
                 os.close(fd)
 
     def test_dismiss_writes_no_environment(self) -> None:
-
         env_before = dict(os.environ)
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
@@ -190,7 +212,6 @@ class TestDismiss:
         """dismiss() waits for the subprocess and clears _active_handle
         so atexit does not re-run stop() while Textual owns the terminal.
         """
-        import lilbee.runtime.splash as splash_mod
 
         original = splash_mod._active_handle
         try:
@@ -209,8 +230,6 @@ class TestDismiss:
     def test_dismiss_kills_on_timeout(self) -> None:
         """dismiss() kills the subprocess when it doesn't exit within timeout."""
         import subprocess
-
-        import lilbee.runtime.splash as splash_mod
 
         original = splash_mod._active_handle
         mock_proc = MagicMock()
@@ -341,7 +360,6 @@ class TestStopTimeout:
     def test_stop_kills_on_timeout(self) -> None:
         """stop() kills the process when it doesn't exit within timeout."""
         import subprocess
-        from unittest.mock import MagicMock
 
         mock_proc = MagicMock()
         mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 3), None]
@@ -356,7 +374,6 @@ class TestStopTimeout:
 class TestRestoreCursor:
     def test_restore_cursor_oserror(self) -> None:
         """_restore_cursor handles OSError from stderr."""
-        from lilbee.runtime.splash import _restore_cursor
 
         with patch("sys.stderr") as mock_stderr:
             mock_stderr.write.side_effect = OSError("broken pipe")
@@ -366,8 +383,6 @@ class TestRestoreCursor:
 class TestAtexitCleanup:
     def test_atexit_calls_stop(self) -> None:
         """_atexit_cleanup calls stop when handle is active."""
-        import lilbee.runtime.splash as splash_mod
-        from lilbee.runtime.splash import _atexit_cleanup
 
         mock_handle = object()
         original = splash_mod._active_handle
@@ -381,8 +396,6 @@ class TestAtexitCleanup:
 
     def test_atexit_noop_when_none(self) -> None:
         """_atexit_cleanup is a no-op when no active handle."""
-        import lilbee.runtime.splash as splash_mod
-        from lilbee.runtime.splash import _atexit_cleanup
 
         original = splash_mod._active_handle
         splash_mod._active_handle = None

@@ -64,7 +64,6 @@ from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
-from tests._pipe_eof import pipe_reaches_eof
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 _RESET_REFUSED_MID_SYNC = (
@@ -13600,7 +13599,8 @@ async def test_chat_on_show_dismiss_with_fd():
             await _pilot.pause()
             app.screen.on_show()
             assert splash_mod._active_handle is None
-            assert pipe_reaches_eof(read_fd)
+            with pytest.raises(OSError):
+                os.fstat(write_fd)  # EBADF: dismiss closed the write end
     finally:
         pipe.close()
         os.close(read_fd)
