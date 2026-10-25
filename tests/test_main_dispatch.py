@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -249,8 +251,61 @@ class TestDispatchModuleInvocation:
         assert captured["argv_at_call"] == ["lilbee.runtime._splash_runner", "999"]
 
 
+_TRACKER_PID = "import multiprocessing.resource_tracker as rt; "
+
+_FAKE_TEXTUAL_STDERR = """
+import io, sys
+
+class _NoFd(io.StringIO):
+    def fileno(self):
+        return -1
+
+{prestart}
+sys.stderr = _NoFd()
+import multiprocessing
+try:
+    multiprocessing.get_context("spawn").Event()
+except ValueError as exc:
+    print("CRASH", exc)
+else:
+    print("OK")
+"""
+
+
+class TestImportStartsNoProcess:
+    """Importing the package leaves the multiprocessing resource tracker unstarted."""
+
+    def test_import_leaves_tracker_pid_none(self) -> None:
+        code = (
+            _TRACKER_PID
+            + "before = rt._resource_tracker._pid; import lilbee; "
+            + "print(before, rt._resource_tracker._pid)"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+            timeout=120,
+        )
+        assert out.stdout.strip() == "None None"
+
+    def test_tracker_pid_probe_sees_a_started_tracker(self) -> None:
+        code = _TRACKER_PID + "rt.ensure_running(); print(rt._resource_tracker._pid is not None)"
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+            timeout=120,
+        )
+        assert out.stdout.strip() == "True"
+
+
 class TestPrestartMpResourceTracker:
-    """The package-import prestart must run on POSIX, including frozen Nuitka builds."""
+    """The TUI start path prestarts the tracker on POSIX, including frozen Nuitka builds."""
 
     def test_prestarts_under_nuitka_without_sys_frozen(self) -> None:
         # Regression (the chat "bad value(s) in fds_to_keep" crash): the prestart
@@ -260,8 +315,8 @@ class TestPrestartMpResourceTracker:
         # by __main__._dispatch_frozen_child.
         from multiprocessing import resource_tracker
 
-        import lilbee
         from lilbee import _frozen
+        from lilbee.cli import tui
 
         called: list[int] = []
         with (
@@ -270,32 +325,86 @@ class TestPrestartMpResourceTracker:
             mock.patch.object(main_mod.sys, "platform", "linux"),
             mock.patch.object(resource_tracker, "ensure_running", lambda: called.append(1)),
         ):
-            lilbee._prestart_mp_resource_tracker()
+            tui._prestart_mp_resource_tracker()
         assert called == [1]
 
-    def test_prestarts_on_posix_when_not_frozen(self) -> None:
+    def test_prestarts_on_posix_when_frozen(self) -> None:
         from multiprocessing import resource_tracker
 
-        import lilbee
+        from lilbee.cli import tui
 
         called: list[int] = []
         with (
-            mock.patch.object(main_mod.sys, "frozen", False, create=True),
+            mock.patch.object(main_mod.sys, "frozen", True, create=True),
             mock.patch.object(main_mod.sys, "platform", "linux"),
             mock.patch.object(resource_tracker, "ensure_running", lambda: called.append(1)),
         ):
-            lilbee._prestart_mp_resource_tracker()
+            tui._prestart_mp_resource_tracker()
         assert called == [1]
 
     def test_skips_on_windows(self) -> None:
         from multiprocessing import resource_tracker
 
-        import lilbee
+        from lilbee.cli import tui
 
         called: list[int] = []
         with (
             mock.patch.object(main_mod.sys, "platform", "win32"),
             mock.patch.object(resource_tracker, "ensure_running", lambda: called.append(1)),
         ):
-            lilbee._prestart_mp_resource_tracker()
+            tui._prestart_mp_resource_tracker()
         assert called == []
+
+    def test_a_tracker_that_cannot_start_is_left_alone(self) -> None:
+        from multiprocessing import resource_tracker
+
+        from lilbee.cli import tui
+
+        with (
+            mock.patch.object(main_mod.sys, "platform", "linux"),
+            mock.patch.object(
+                resource_tracker, "ensure_running", side_effect=RuntimeError("simulated crash")
+            ),
+        ):
+            tui._prestart_mp_resource_tracker()
+
+    def test_run_tui_prestarts_before_stderr_is_redirected_and_the_app_runs(self) -> None:
+        from lilbee.cli import tui
+        from lilbee.cli.tui.app import LilbeeApp
+
+        events: list[str] = []
+        with (
+            mock.patch.object(
+                tui, "_prestart_mp_resource_tracker", lambda: events.append("prestart")
+            ),
+            mock.patch.object(
+                tui, "_redirect_native_stderr_to", lambda _p: events.append("redirect")
+            ),
+            mock.patch.object(LilbeeApp, "run", lambda _self: events.append("run")),
+            mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
+            mock.patch.object(LilbeeApp, "task_bar", create=True),
+            mock.patch.object(tui, "_restore_native_stderr"),
+            mock.patch("lilbee.cli.sync.shutdown_executor"),
+            mock.patch.object(tui, "reset_services_on_exit"),
+            mock.patch.object(tui, "exit_when_stragglers_would_hang"),
+        ):
+            tui.run_tui()
+        assert events == ["prestart", "redirect", "run"]
+
+    def test_spawn_primitive_survives_a_stderr_without_a_descriptor(self, tmp_path: Path) -> None:
+        # Control: with no prestart the same stream crashes the tracker launch.
+        def _run(prestart: str) -> str:
+            script = tmp_path / "child.py"
+            script.write_text(_FAKE_TEXTUAL_STDERR.format(prestart=prestart), encoding="utf-8")
+            done = subprocess.run(
+                [sys.executable, str(script)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+                timeout=120,
+            )
+            return done.stdout.strip()
+
+        assert _run("pass").startswith("CRASH bad value(s) in fds_to_keep")
+        assert _run("from lilbee.cli.tui import _prestart_mp_resource_tracker as p; p()") == "OK"

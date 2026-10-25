@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -279,58 +278,6 @@ class TestInitDefensiveBranches:
 
         monkeypatch.setattr(builtins, "__import__", fake_import)
         _install_thread_only_tqdm_lock()  # must not raise
-
-    def test_prestart_resource_tracker_swallows_runtime_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import sys
-
-        from lilbee import _prestart_mp_resource_tracker
-
-        monkeypatch.setattr(sys, "platform", "linux")
-        with mock.patch(
-            "multiprocessing.resource_tracker.ensure_running",
-            side_effect=RuntimeError("simulated crash"),
-        ):
-            _prestart_mp_resource_tracker()  # must not raise
-
-    def test_prestart_resource_tracker_noop_on_windows(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Windows has no ``_posixsubprocess``; the prestart must short-circuit
-        so `import _posixsubprocess` inside multiprocessing is never reached.
-        """
-        import sys
-
-        from lilbee import _prestart_mp_resource_tracker
-
-        monkeypatch.setattr(sys, "platform", "win32")
-        with mock.patch(
-            "multiprocessing.resource_tracker.ensure_running",
-            side_effect=AssertionError("must not be called on win32"),
-        ) as called:
-            _prestart_mp_resource_tracker()
-        called.assert_not_called()
-
-    def test_prestart_resource_tracker_runs_when_frozen(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The prestart must run in frozen builds too. Disabling it there let the
-        tracker launch lazily under Textual's swapped stderr (fileno -1), crashing
-        chat with "bad value(s) in fds_to_keep". The tracker's -c reinvocation is
-        handled by __main__._dispatch_frozen_child, so launching it here is safe.
-        """
-        import sys
-
-        from lilbee import _prestart_mp_resource_tracker
-
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr(sys, "frozen", True, raising=False)
-        with mock.patch(
-            "multiprocessing.resource_tracker.ensure_running",
-        ) as called:
-            _prestart_mp_resource_tracker()
-        called.assert_called_once_with()
 
 
 class TestDownloadModelProgressChain:
