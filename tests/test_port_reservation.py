@@ -14,6 +14,24 @@ import os
 from lilbee.providers.fleet import swap_manager as sm
 
 
+class _OsAsPid:
+    """The swap manager's view of ``os`` with one pid, so only that module sees the fake."""
+
+    def __init__(self, pid: int) -> None:
+        self._pid = pid
+
+    def getpid(self) -> int:
+        return self._pid
+
+    def __getattr__(self, name: str):
+        return getattr(os, name)
+
+
+def _act_as_pid(monkeypatch, pid: int) -> None:
+    """Make the swap manager read ``pid``; the global ``os.getpid`` stays real."""
+    monkeypatch.setattr(sm, "os", _OsAsPid(pid))
+
+
 class TestConsecutivePicksDoNotOverlap:
     def test_two_groups_started_in_a_row_get_different_ports(self) -> None:
         first = sm._pick_free_ports(3)
@@ -71,14 +89,14 @@ def test_separate_processes_do_not_start_at_the_same_offset(monkeypatch) -> None
     # spread by pid instead of every process scanning from the same floor.
     starts = set()
     for pid in (1000, 1001, 1002, 1003):
-        monkeypatch.setattr(sm, "_block_owner_pid", lambda p=pid: p)
+        _act_as_pid(monkeypatch, pid)
         starts.add(sm._search_start((32768, 60999)))
     assert len(starts) > 1
 
 
 def _pick_as_pid(monkeypatch, pid: int, count: int) -> list[int]:
     """One process's allocation: its own pid, its own empty reserved set."""
-    monkeypatch.setattr(sm, "_block_owner_pid", lambda p=pid: p)
+    _act_as_pid(monkeypatch, pid)
     monkeypatch.setattr(sm, "_reserved_ports", set())
     return sm._pick_free_ports(count)
 
@@ -89,9 +107,9 @@ def test_a_block_holds_a_whole_fleet(monkeypatch) -> None:
     widest_real_fleet = 1 + 2 * 16 + 2  # 16-GPU host: proxy, embed+vision, two singles
     assert widest_real_fleet <= sm._PORT_BLOCK
     starts = [sm._search_start((32768, 60999)) for _ in (0, 1)]
-    monkeypatch.setattr(sm, "_block_owner_pid", lambda: 4001)
+    _act_as_pid(monkeypatch, 4001)
     next_start = sm._search_start((32768, 60999))
-    monkeypatch.setattr(sm, "_block_owner_pid", lambda: 4000)
+    _act_as_pid(monkeypatch, 4000)
     assert next_start - sm._search_start((32768, 60999)) == sm._PORT_BLOCK
     assert len(set(starts)) == 1  # same pid, same block, every time
 
