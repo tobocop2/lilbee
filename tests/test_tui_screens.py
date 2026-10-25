@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import io
 import logging
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -52,6 +54,7 @@ from lilbee.core.config.enums import CrawlRenderMode, OcrMode
 from lilbee.crawler import CRAWLER_MISSING_MESSAGE
 from lilbee.data.store import Store
 from lilbee.modelhub.model_manager import RemoteModel
+from lilbee.runtime import splash as splash_mod
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.wiki.drafts import StaleDraftError
@@ -13586,15 +13589,10 @@ def test_run_tui_exception_during_shutdown_propagates():
 
 async def test_chat_on_show_dismiss_with_fd():
     """on_show calls dismiss which closes the splash pipe fd."""
-    import os
-    from unittest.mock import MagicMock
-
-    import lilbee.runtime.splash as splash_mod
-
     read_fd, write_fd = os.pipe()
-    os.close(read_fd)
     original = splash_mod._active_handle
-    splash_mod._active_handle = splash_mod.SplashHandle(process=MagicMock(), write_fd=write_fd)
+    pipe = io.FileIO(write_fd, "wb")  # held here, so garbage collection cannot close it
+    splash_mod._active_handle = splash_mod.SplashHandle(process=MagicMock(), pipe=pipe)
     try:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
@@ -13602,8 +13600,10 @@ async def test_chat_on_show_dismiss_with_fd():
             app.screen.on_show()
             assert splash_mod._active_handle is None
             with pytest.raises(OSError):
-                os.close(write_fd)
+                os.fstat(write_fd)  # EBADF: dismiss closed the write end
     finally:
+        pipe.close()
+        os.close(read_fd)
         splash_mod._active_handle = original
 
 
