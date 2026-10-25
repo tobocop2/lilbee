@@ -685,6 +685,11 @@ def _window_span(ceiling: tuple[int, int]) -> int:
     return max(1, min(ceiling[0], _PORT_SEARCH_FLOOR + _PORT_WINDOW_SPAN) - _PORT_SEARCH_FLOOR)
 
 
+def _block_owner_pid() -> int:
+    """The pid that selects this process's port block; tests replace it to play a peer."""
+    return os.getpid()
+
+
 def _search_start(ceiling: tuple[int, int]) -> int:
     """First port of the block this process owns.
 
@@ -693,7 +698,7 @@ def _search_start(ceiling: tuple[int, int]) -> int:
     on all but one port.
     """
     blocks = max(1, _window_span(ceiling) // _PORT_BLOCK)
-    return _PORT_SEARCH_FLOOR + (os.getpid() % blocks) * _PORT_BLOCK
+    return _PORT_SEARCH_FLOOR + (_block_owner_pid() % blocks) * _PORT_BLOCK
 
 
 def _pick_free_ports(count: int) -> list[int]:
