@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import io
 import os
 import subprocess
 import sys
@@ -30,7 +31,7 @@ class SplashHandle:
     """Opaque handle returned by ``start()`` for use with ``stop()``."""
 
     process: subprocess.Popen[bytes]
-    write_fd: int
+    pipe: io.FileIO
 
 
 _active_handle: SplashHandle | None = None
@@ -91,7 +92,7 @@ def start() -> SplashHandle | None:
 
     os.close(read_fd)
 
-    handle = SplashHandle(process=proc, write_fd=write_fd)
+    handle = SplashHandle(process=proc, pipe=io.FileIO(write_fd, "wb"))
     _active_handle = handle
 
     atexit.register(_atexit_cleanup)
@@ -106,7 +107,7 @@ def stop(handle: SplashHandle | None) -> None:
     if handle is None:
         return
 
-    _close_write_fd(handle.write_fd)
+    handle.pipe.close()
 
     try:
         handle.process.wait(timeout=_STOP_TIMEOUT)
@@ -135,11 +136,11 @@ def dismiss() -> None:
         return
     _active_handle = None
 
-    # Signal and close the write end; both helpers suppress OSError.
+    # Closing the owned file is idempotent, so a repeat dismiss closes nothing.
     # No _restore_cursor() here: we are inside Textual's alt-screen,
     # where writing cursor-show would produce a visible artifact.
-    _signal_takeover(handle.write_fd)
-    _close_write_fd(handle.write_fd)
+    _signal_takeover(handle.pipe)
+    handle.pipe.close()
     try:
         handle.process.wait(timeout=_STOP_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -147,16 +148,10 @@ def dismiss() -> None:
         handle.process.wait(timeout=1.0)
 
 
-def _close_write_fd(fd: int) -> None:
-    """Close a pipe write fd, ignoring errors if already closed."""
-    with contextlib.suppress(OSError):
-        os.close(fd)
-
-
-def _signal_takeover(fd: int) -> None:
-    """Send the TUI-takeover byte, ignoring errors if the pipe is gone."""
-    with contextlib.suppress(OSError):
-        os.write(fd, TAKEOVER_BYTE)
+def _signal_takeover(pipe: io.FileIO) -> None:
+    """Send the TUI-takeover byte, ignoring a pipe that is gone or closed."""
+    with contextlib.suppress(OSError, ValueError):
+        pipe.write(TAKEOVER_BYTE)
 
 
 def _restore_cursor() -> None:

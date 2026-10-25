@@ -13,6 +13,9 @@ from unittest.mock import patch
 
 import pytest
 
+import lilbee.runtime.splash as splash_mod
+from lilbee.runtime.splash import start, stop
+
 
 def _run_lilbee(
     *args: str, env_extra: dict[str, str] | None = None
@@ -121,14 +124,13 @@ class TestSplashSubprocessLifecycle:
     @patch("lilbee.runtime.splash._should_skip", return_value=False)
     def test_child_exits_on_parent_fd_close(self, _mock_skip: object) -> None:
         """Child should exit when the parent's write fd is closed."""
-        from lilbee.runtime.splash import start
-
         handle = start()
         assert handle is not None
+        try:
+            handle.pipe.close()
 
-        # Close the write fd directly (simulating dismiss/crash)
-        os.close(handle.write_fd)
-
-        # Child should exit within a few seconds
-        handle.process.wait(timeout=5.0)
-        assert handle.process.returncode is not None
+            handle.process.wait(timeout=5.0)
+            assert handle.process.returncode is not None
+        finally:
+            stop(handle)
+        assert splash_mod._active_handle is None

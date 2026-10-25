@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import os
 from unittest.mock import MagicMock, patch
 
-import pytest
-
+import lilbee.runtime.splash as splash_mod
 from lilbee.runtime._splash_runner import (
     BEE_LINES,
     LOGO_WIDTH,
@@ -18,11 +18,13 @@ from lilbee.runtime._splash_runner import (
     render_frame,
 )
 from lilbee.runtime.splash import (
+    SplashHandle,
     _should_skip,
     dismiss,
     start,
     stop,
 )
+from tests._pipe_eof import pipe_reaches_eof
 
 
 class TestShouldSkip:
@@ -85,6 +87,28 @@ def _arm(handle: object) -> object:
     return original
 
 
+def _start_with_known_write_fd() -> tuple[SplashHandle, int]:
+    """Start a splash with no child process and return it with its write-end number."""
+    real_pipe = os.pipe
+    pipe_ends: list[int] = []
+
+    def recording_pipe() -> tuple[int, int]:
+        ends = real_pipe()
+        pipe_ends.extend(ends)
+        return ends
+
+    with (
+        patch("lilbee.runtime.splash._should_skip", return_value=False),
+        patch("lilbee.runtime.splash.subprocess.Popen"),
+        patch("lilbee.runtime.splash.atexit.register"),
+        patch("lilbee.runtime.splash.os.pipe", side_effect=recording_pipe),
+    ):
+        handle = start()
+    assert handle is not None
+    _, write_fd = pipe_ends
+    return handle, write_fd
+
+
 class TestDismiss:
     def test_dismiss_no_handle(self) -> None:
         original = _arm(None)
@@ -94,28 +118,24 @@ class TestDismiss:
             _arm(original)
 
     def test_dismiss_closes_fd_and_clears_handle(self) -> None:
-        import lilbee.runtime.splash as splash_mod
-        from lilbee.runtime.splash import SplashHandle
-
         read_fd, write_fd = os.pipe()
-        os.close(read_fd)
-        proc = MagicMock()
-        original = _arm(SplashHandle(process=proc, write_fd=write_fd))
+        pipe = io.FileIO(write_fd, "wb")  # held here, so garbage collection cannot close it
+        original = _arm(SplashHandle(process=MagicMock(), pipe=pipe))
         try:
             dismiss()
             assert splash_mod._active_handle is None
-            with pytest.raises(OSError):
-                os.close(write_fd)  # already closed
+            assert pipe_reaches_eof(read_fd)
         finally:
+            pipe.close()
+            os.close(read_fd)
             _arm(original)
 
     def test_dismiss_sends_takeover_byte_before_closing(self) -> None:
         """dismiss() tells the child the TUI owns the terminal, then EOFs."""
         from lilbee.runtime._splash_runner import TAKEOVER_BYTE
-        from lilbee.runtime.splash import SplashHandle
 
         read_fd, write_fd = os.pipe()
-        original = _arm(SplashHandle(process=MagicMock(), write_fd=write_fd))
+        original = _arm(SplashHandle(process=MagicMock(), pipe=io.FileIO(write_fd, "wb")))
         try:
             dismiss()
             assert os.read(read_fd, 2) == TAKEOVER_BYTE
@@ -124,27 +144,42 @@ class TestDismiss:
             os.close(read_fd)
             _arm(original)
 
-    def test_dismiss_tolerates_already_closed_fd(self) -> None:
+    def test_dismiss_tolerates_an_already_closed_pipe(self) -> None:
         import lilbee.runtime.splash as splash_mod
-        from lilbee.runtime.splash import SplashHandle
 
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
-        os.close(write_fd)
-        original = _arm(SplashHandle(process=MagicMock(), write_fd=write_fd))
+        pipe = io.FileIO(write_fd, "wb")
+        pipe.close()
+        original = _arm(SplashHandle(process=MagicMock(), pipe=pipe))
         try:
             dismiss()  # should not raise
             assert splash_mod._active_handle is None
         finally:
             _arm(original)
 
+    def test_second_dismiss_leaves_a_reused_descriptor_open(self) -> None:
+        """A dismiss after the pipe is closed never closes the number's next owner."""
+        handle, splash_write_fd = _start_with_known_write_fd()
+        new_read, new_write = os.pipe()
+        original = _arm(handle)
+        try:
+            dismiss()
+            os.dup2(new_read, splash_write_fd)
+            _arm(handle)
+            dismiss()
+            os.fstat(splash_write_fd)  # raises EBADF if dismiss closed it
+        finally:
+            _arm(original)
+            for fd in (splash_write_fd, new_read, new_write):
+                os.close(fd)
+
     def test_dismiss_writes_no_environment(self) -> None:
-        from lilbee.runtime.splash import SplashHandle
 
         env_before = dict(os.environ)
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
-        original = _arm(SplashHandle(process=MagicMock(), write_fd=write_fd))
+        original = _arm(SplashHandle(process=MagicMock(), pipe=io.FileIO(write_fd, "wb")))
         try:
             dismiss()
             assert dict(os.environ) == env_before
@@ -176,12 +211,11 @@ class TestDismiss:
         import subprocess
 
         import lilbee.runtime.splash as splash_mod
-        from lilbee.runtime.splash import SplashHandle
 
         original = splash_mod._active_handle
         mock_proc = MagicMock()
         mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 3), None]
-        handle = SplashHandle(process=mock_proc, write_fd=-1)
+        handle = SplashHandle(process=mock_proc, pipe=MagicMock())
         splash_mod._active_handle = handle
         try:
             dismiss()
@@ -289,19 +323,31 @@ class TestBeeLines:
 
 
 class TestStopTimeout:
+    def test_second_stop_leaves_a_reused_descriptor_open(self) -> None:
+        """A stop after the pipe is closed never closes the number's next owner."""
+        original = splash_mod._active_handle
+        handle, splash_write_fd = _start_with_known_write_fd()
+        new_read, new_write = os.pipe()
+        try:
+            stop(handle)
+            os.dup2(new_read, splash_write_fd)
+            stop(handle)
+            os.fstat(splash_write_fd)  # raises EBADF if stop closed it
+        finally:
+            splash_mod._active_handle = original
+            for fd in (splash_write_fd, new_read, new_write):
+                os.close(fd)
+
     def test_stop_kills_on_timeout(self) -> None:
         """stop() kills the process when it doesn't exit within timeout."""
         import subprocess
         from unittest.mock import MagicMock
 
-        from lilbee.runtime.splash import SplashHandle, stop
-
         mock_proc = MagicMock()
         mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 3), None]
-        handle = SplashHandle(process=mock_proc, write_fd=-1)
+        handle = SplashHandle(process=mock_proc, pipe=MagicMock())
 
-        with patch("lilbee.runtime.splash._close_write_fd"):
-            stop(handle)
+        stop(handle)
 
         mock_proc.kill.assert_called_once()
         assert mock_proc.wait.call_count == 2
