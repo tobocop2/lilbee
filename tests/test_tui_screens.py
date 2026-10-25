@@ -1569,10 +1569,14 @@ async def test_list_text_area_posts_blurred():
     async with app.run_test(size=(80, 20)) as pilot:
         ta = app.query_one("#ta", ListTextArea)
         ta.focus()
+        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
         await pilot.pause()
+        assert not captured, "ListTextArea posted Blurred before focus left it"
         app.query_one("#other", Input).focus()
-        await pilot.pause()
-        assert captured, "Expected a Blurred message from ListTextArea"
+        assert await wait_until(pilot, lambda: bool(captured)), (
+            "Expected a Blurred message from ListTextArea"
+        )
+        assert len(captured) == 1
         assert captured[0].control is ta
 
 
