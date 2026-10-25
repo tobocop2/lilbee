@@ -133,6 +133,10 @@ ONEFILE_BUILD_KEY=${ONEFILE_BUILD_KEY%.exe}
 # hf_xet is included explicitly so the package configuration's hf_xet metadata
 # is emitted: Nuitka only ships metadata for a distribution whose top-level
 # module it actually compiled.
+#
+# filelock loads its read-write and soft lock classes on first access by module
+# name, which Nuitka cannot follow. Without the whole package, ReadWriteLock and
+# AsyncReadWriteLock import as None and the binary fails at startup.
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
@@ -170,6 +174,7 @@ uv run --no-sync python -m nuitka \
     --include-package=litestar           --include-package-data=litestar \
     --include-package=mcp                --include-package-data=mcp \
     --include-package=hf_xet \
+    --include-package=filelock \
     --include-distribution-metadata=lilbee \
     --include-distribution-metadata=litellm \
     --include-distribution-metadata=spacy \

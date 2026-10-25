@@ -11,7 +11,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
-from filelock import ReadWriteLock
+from filelock import AsyncReadWriteLock, ReadWriteLock
 
 import lilbee.app.services as svc_mod
 from lilbee.app import dataset as dataset_mod
@@ -71,6 +71,7 @@ class _Takes:
         self.sync_write_waits: list[float | None] = []
         self.sync_read_takes = 0
         self._watch_sync_lock(monkeypatch)
+        self._watch_async_sync_lock(monkeypatch)
 
     def _watch_sync_lock(self, monkeypatch: pytest.MonkeyPatch) -> None:
         real_write = ReadWriteLock.acquire_write
@@ -100,21 +101,46 @@ class _Takes:
             return proxy
 
         def close(lock):
-            for _ in range(takes._sync_holds.pop(id(lock), 0)):
-                takes._change(_SYNC_LOCK, -1)
+            takes._drop_sync(lock)
             return real_close(lock)
 
         monkeypatch.setattr(ReadWriteLock, "acquire_write", acquire_write)
         monkeypatch.setattr(ReadWriteLock, "acquire_read", acquire_read)
         monkeypatch.setattr(ReadWriteLock, "close", close)
 
+    def _watch_async_sync_lock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Watch the read side a sync takes; the async class does not call acquire_read."""
+        real_read = AsyncReadWriteLock.acquire_read
+        real_close = AsyncReadWriteLock.close
+        takes = self
+
+        async def acquire_read(lock, *args, **kwargs):
+            watched = Path(lock.lock_file).name == _SYNC_LOCK_FILE
+            if watched:
+                takes.sync_read_takes += 1
+            proxy = await real_read(lock, *args, **kwargs)
+            if watched:
+                takes._hold_sync(lock)
+            return proxy
+
+        async def close(lock):
+            takes._drop_sync(lock)
+            return await real_close(lock)
+
+        monkeypatch.setattr(AsyncReadWriteLock, "acquire_read", acquire_read)
+        monkeypatch.setattr(AsyncReadWriteLock, "close", close)
+
     def _change(self, name: str, by: int) -> None:
         key = (threading.get_ident(), name)
         self._open[key] = self._open.get(key, 0) + by
 
-    def _hold_sync(self, lock: ReadWriteLock) -> None:
+    def _hold_sync(self, lock: ReadWriteLock | AsyncReadWriteLock) -> None:
         self._sync_holds[id(lock)] = self._sync_holds.get(id(lock), 0) + 1
         self._change(_SYNC_LOCK, 1)
+
+    def _drop_sync(self, lock: ReadWriteLock | AsyncReadWriteLock) -> None:
+        for _ in range(self._sync_holds.pop(id(lock), 0)):
+            self._change(_SYNC_LOCK, -1)
 
     def held(self) -> list[str]:
         """The library locks the calling thread holds now."""

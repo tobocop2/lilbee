@@ -7,8 +7,8 @@ import shutil
 import sys
 import threading
 import warnings
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import Callable, Generator
+from contextlib import AbstractContextManager, contextmanager
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest import mock
@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-from filelock import FileLock, ReadWriteLock
+from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 from PIL import Image, ImageDraw
 
@@ -826,22 +826,56 @@ def reset_held_on_a_thread(
         resetter.join(timeout=5)
 
 
+ReadTake = Callable[
+    [ReadWriteLock | AsyncReadWriteLock, float | None], AbstractContextManager[None]
+]
+
+
+@contextmanager
+def read_takes_hooked(around: ReadTake) -> Generator[None, None, None]:
+    """Run each take of the read side of a lock inside ``around(lock, timeout)``.
+
+    A sync takes the read side through the async lock class, which does not call the
+    thread class's ``acquire_read``, so both classes are hooked. On the async class
+    *around* runs on the event loop, so it must not block.
+    """
+    real_take = ReadWriteLock.acquire_read
+    real_async_take = AsyncReadWriteLock.acquire_read
+
+    def _take(
+        lock: ReadWriteLock, timeout: float | None = None, *, blocking: bool | None = None
+    ) -> object:
+        with around(lock, timeout):
+            return real_take(lock, timeout, blocking=blocking)
+
+    async def _async_take(
+        lock: AsyncReadWriteLock, timeout: float | None = None, *, blocking: bool | None = None
+    ) -> object:
+        with around(lock, timeout):
+            return await real_async_take(lock, timeout, blocking=blocking)
+
+    with (
+        mock.patch.object(ReadWriteLock, "acquire_read", _take),
+        mock.patch.object(AsyncReadWriteLock, "acquire_read", _async_take),
+    ):
+        yield
+
+
 @contextmanager
 def cancel_set_when_the_sync_lock_is_granted(
     cancel: threading.Event,
 ) -> Generator[list[str], None, None]:
     """Set *cancel* as each take of the read side of a sync lock is granted; yield the grants."""
     grants: list[str] = []
-    real_take = ReadWriteLock.acquire_read
 
-    def _take(lock: ReadWriteLock, *args: object, **kwargs: object) -> object:
-        taken = real_take(lock, *args, **kwargs)
+    @contextmanager
+    def _granted(lock: ReadWriteLock | AsyncReadWriteLock, _timeout: float | None):
+        yield
         if Path(lock.lock_file).name == "sync.lock":
             grants.append("granted")
             cancel.set()
-        return taken
 
-    with mock.patch.object(ReadWriteLock, "acquire_read", _take):
+    with read_takes_hooked(_granted):
         yield grants
 
 

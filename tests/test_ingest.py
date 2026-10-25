@@ -1507,24 +1507,24 @@ class TestSyncCancellation:
     async def test_a_set_cancel_ends_a_sync_that_waits_for_a_reset(
         self, mock_extract_file, isolated_env, mock_svc
     ):
-        from filelock import ReadWriteLock
+        from contextlib import contextmanager
 
         from lilbee.data.ingest import sync
         from lilbee.runtime.lock import _no_sync_running
-        from tests.conftest import reset_held_on_a_thread
+        from tests.conftest import read_takes_hooked, reset_held_on_a_thread
 
         (isolated_env / "a.txt").write_text("file a", encoding="utf-8")
         cancel = threading.Event()
-        real_acquire = ReadWriteLock.acquire_read
 
-        def _cancel_at_the_take(lock: ReadWriteLock, *args, **kwargs) -> None:
+        @contextmanager
+        def _cancel_at_the_take(_lock, _timeout):
             cancel.set()
-            real_acquire(lock, *args, **kwargs)
+            yield
 
         # The reset holds until this block ends; its own limit only ends a test that hangs.
         with (
             reset_held_on_a_thread(cfg.data_root, ends_after_s=30.0) as resetter,
-            mock.patch.object(ReadWriteLock, "acquire_read", _cancel_at_the_take),
+            read_takes_hooked(_cancel_at_the_take),
         ):
             with pytest.raises(asyncio.CancelledError):
                 await sync(quiet=True, cancel=cancel)

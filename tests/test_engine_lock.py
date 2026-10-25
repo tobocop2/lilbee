@@ -118,7 +118,9 @@ class TestUserLocks:
         dead.touch()
         _refuse_unlink(monkeypatch, dead)
         assert live_users_exist(tmp_path) is False
-        assert dead.exists()
+        # On Windows filelock deletes the lock file itself as the probe releases it, so only
+        # the refused delete of lilbee keeps it elsewhere.
+        assert dead.exists() == (sys.platform != "win32")
         monkeypatch.undo()
         assert live_users_exist(tmp_path) is False
         assert not dead.exists()

@@ -57,4 +57,4 @@ def shown_inline(parser: MarkdownIt, line: str) -> tuple[list[str], str]:
 
 
 # A terminal reads these as commands: C0 and C1 controls other than tab and newline, and DEL.
-TERMINAL_CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+TERMINAL_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
