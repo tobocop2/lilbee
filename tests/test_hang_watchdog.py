@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import importlib.util
 import os
 import subprocess
 import sys
-import time
+import types
 from pathlib import Path
 
 import pytest
@@ -29,9 +31,11 @@ def test_stuck_on_a_lock():
     time.sleep(60)
 """
 # The worker stalls after its last test's watchdog is cancelled: pytest-timeout is
-# off, so only the controller's stall watchdog can end the run.
+# off, so only the controller's stall watchdog can end the run. The teardown blocks
+# on a FIFO that nothing writes until the controller has exited, so a controller
+# that exits did not wait for the worker.
 _STALLED_TEARDOWN = """
-import time
+import os
 
 import pytest
 
@@ -39,15 +43,30 @@ import pytest
 @pytest.fixture(scope="session")
 def slow_to_close():
     yield
-    time.sleep(_STALL_SLEEP_S)
+    with open(os.environ["ENTERED"], "w", encoding="utf-8") as marker:
+        marker.write(str(os.getpid()))
+    with open(os.environ["RELEASE"], "rb") as fifo:
+        fifo.read()
 
 
 def test_last(slow_to_close):
     pass
 """
+# Skip the stall timer armed at session start, so worker start-up is not in the race.
+_ARM_AFTER_A_REPORT = """
+import _hang_watchdog
+
+_arm = _hang_watchdog._arm_stall
+
+
+def _arm_after_a_report(last_report):
+    if last_report != "session start":
+        _arm(last_report)
+
+
+_hang_watchdog._arm_stall = _arm_after_a_report
+"""
 _STALL_BACKSTOP_S = 1
-_STALL_SLEEP_S = 30
-_STALL_ENDS_WITHIN_S = 20
 # The test fails, which stops pytest-timeout, then its teardown never returns.
 _FAILED_THEN_WEDGED = """
 import threading
@@ -77,9 +96,10 @@ def pytest_sessionfinish(session):
 """
 
 
-def _run_pytest(
-    tmp_path: Path, source: str, *extra: str, backstop_s: int = _BACKSTOP_S
-) -> tuple[subprocess.CompletedProcess[str], Path]:
+def _child_run(
+    tmp_path: Path, source: str, *extra: str, backstop_s: int
+) -> tuple[list[str], dict[str, str], Path]:
+    """The command, environment and dump directory of a child pytest run."""
     test_file = tmp_path / "test_case.py"
     test_file.write_text(source, encoding="utf-8")
     dump_dir = tmp_path / "dumps"
@@ -88,6 +108,8 @@ def _run_pytest(
         "LILBEE_TEST_HANG_DUMP_S": str(backstop_s),
         "LILBEE_TEST_HANG_DUMP_DIR": str(dump_dir),
         "PYTHONPATH": str(_TESTS_DIR),
+        "ENTERED": str(tmp_path / "entered"),
+        "RELEASE": str(tmp_path / "release"),
     }
     command = [
         sys.executable,
@@ -105,6 +127,13 @@ def _run_pytest(
         str(test_file),
         *extra,
     ]
+    return command, env, dump_dir
+
+
+def _run_pytest(
+    tmp_path: Path, source: str, *extra: str, backstop_s: int = _BACKSTOP_S
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    command, env, dump_dir = _child_run(tmp_path, source, *extra, backstop_s=backstop_s)
     result = subprocess.run(
         command,
         capture_output=True,
@@ -190,20 +219,38 @@ def test_quiet_test_leaves_no_dump(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no signal to make a worker dump")
 def test_a_stall_outside_any_test_ends_the_run_with_every_stack(tmp_path: Path) -> None:
-    source = _STALLED_TEARDOWN.replace("_STALL_SLEEP_S", str(_STALL_SLEEP_S))
-    started = time.monotonic()
-    result, dump_dir = _run_pytest(
-        tmp_path, source, "-n", "1", "--timeout=0", backstop_s=_STALL_BACKSTOP_S
+    os.mkfifo(tmp_path / "release")
+    (tmp_path / "conftest.py").write_text(_ARM_AFTER_A_REPORT, encoding="utf-8")
+    command, env, dump_dir = _child_run(
+        tmp_path, _STALLED_TEARDOWN, "-n", "1", "--timeout=0", backstop_s=_STALL_BACKSTOP_S
     )
-    elapsed = time.monotonic() - started
+    with (tmp_path / "run.log").open("w", encoding="utf-8") as log:
+        child = subprocess.Popen(
+            command, stdout=log, stderr=subprocess.STDOUT, env=env, cwd=tmp_path
+        )
+        try:
+            # The worker is still blocked, so the run ends only if the controller exits itself.
+            # pytest-timeout ends a controller that never exits.
+            returncode = child.wait()
+            entered = (tmp_path / "entered").exists()
+        finally:
+            _release_stalled_worker(tmp_path / "release")
+            child.wait()
 
-    assert result.returncode != 0
-    assert elapsed < _STALL_ENDS_WITHIN_S, result.stdout + result.stderr
+    assert returncode != 0
+    assert entered
     controller = (dump_dir / "hang-master.txt").read_text(encoding="utf-8")
     assert "no test report for 4s after test_case.py::test_last (call)" in controller
     assert "Thread" in controller
     worker = (dump_dir / "hang-gw0.txt").read_text(encoding="utf-8")
     assert "slow_to_close" in worker
+
+
+def _release_stalled_worker(fifo: Path) -> None:
+    """Unblock the worker's teardown so no process outlives the test."""
+    # The open fails when the worker already exited, so nothing reads the FIFO.
+    with contextlib.suppress(OSError):
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
 
 
 def test_a_single_process_run_arms_no_stall_watchdog(tmp_path: Path) -> None:
@@ -213,3 +260,110 @@ def test_a_single_process_run_arms_no_stall_watchdog(tmp_path: Path) -> None:
 
     assert "1 passed" in result.stdout
     assert (dump_dir / "hang-master.txt").read_text(encoding="utf-8") == ""
+
+
+class _RecordedTimer:
+    """Stands in for ``threading.Timer``: records its arguments and never fires."""
+
+    def __init__(self, delay: float, fn: object, args: tuple[object, ...]) -> None:
+        self.delay = delay
+        self.args = args
+        self.cancelled = False
+        self.daemon = False
+
+    def start(self) -> None:
+        pass
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+class _Recorders:
+    def __init__(self) -> None:
+        self.timers: list[_RecordedTimer] = []
+        self.exit_dumps: list[tuple[float, bool]] = []
+        self.cancelled_dumps = 0
+
+
+@pytest.fixture
+def watchdog() -> types.ModuleType:
+    """A private copy of the watchdog, so patching it cannot reach the live plugin."""
+    spec = importlib.util.spec_from_file_location(
+        "_hang_watchdog_copy", _TESTS_DIR / "_hang_watchdog.py"
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def stall_recorders(watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch) -> _Recorders:
+    """Run the controller's stall arming with recorder timers instead of real ones."""
+    recorders = _Recorders()
+
+    def make_timer(delay: float, fn: object, args: tuple[object, ...]) -> _RecordedTimer:
+        timer = _RecordedTimer(delay, fn, args)
+        recorders.timers.append(timer)
+        return timer
+
+    def dump_later(delay: float, *, file: object, exit: bool) -> None:
+        recorders.exit_dumps.append((delay, exit))
+
+    def cancel_dump() -> None:
+        recorders.cancelled_dumps += 1
+
+    monkeypatch.setattr(watchdog, "threading", types.SimpleNamespace(Timer=make_timer))
+    monkeypatch.setattr(
+        watchdog,
+        "faulthandler",
+        types.SimpleNamespace(
+            dump_traceback_later=dump_later, cancel_dump_traceback_later=cancel_dump
+        ),
+    )
+    monkeypatch.setattr(watchdog, "_dump_handle", object())
+    monkeypatch.setattr(watchdog, "_timeout_s", float(_STALL_BACKSTOP_S))
+    monkeypatch.setattr(watchdog, "_stall_s", 0.0)
+    monkeypatch.setattr(watchdog, "_stall_timer", None)
+    return recorders
+
+
+def _xdist_controller_session() -> pytest.Session:
+    manager = types.SimpleNamespace(has_plugin=lambda name: name == "dsession")
+    return types.SimpleNamespace(config=types.SimpleNamespace(pluginmanager=manager))  # type: ignore[return-value]
+
+
+def test_session_start_arms_the_stall_timer_and_the_exit(
+    watchdog: types.ModuleType, stall_recorders: _Recorders
+) -> None:
+    watchdog.pytest_sessionstart(_xdist_controller_session())
+
+    assert [(t.delay, t.args) for t in stall_recorders.timers] == [(4.0, ("session start",))]
+    assert stall_recorders.exit_dumps == [(4.0 + watchdog._STALL_EXIT_GRACE_S, True)]
+
+
+def test_a_report_re_arms_the_stall_timer_under_its_own_name(
+    watchdog: types.ModuleType, stall_recorders: _Recorders
+) -> None:
+    watchdog.pytest_sessionstart(_xdist_controller_session())
+    report = types.SimpleNamespace(nodeid="test_case.py::test_a", when="call")
+    watchdog.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+
+    first, second = stall_recorders.timers
+    assert first.cancelled
+    assert not second.cancelled
+    assert (second.delay, second.args) == (4.0, ("test_case.py::test_a (call)",))
+    assert len(stall_recorders.exit_dumps) == 2
+
+
+def test_session_finish_cancels_the_stall_timer_and_the_exit(
+    watchdog: types.ModuleType, stall_recorders: _Recorders
+) -> None:
+    session = _xdist_controller_session()
+    watchdog.pytest_sessionstart(session)
+    watchdog.pytest_sessionfinish(session)
+
+    assert stall_recorders.timers[-1].cancelled
+    assert stall_recorders.cancelled_dumps == 1
+    assert watchdog._stall_s == 0.0
