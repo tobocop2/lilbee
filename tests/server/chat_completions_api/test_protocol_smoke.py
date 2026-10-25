@@ -78,7 +78,7 @@ def reset_chat_gate():
 
 @pytest.fixture
 def app() -> Litestar:
-    return Litestar(route_handlers=[completions_router])
+    return Litestar(route_handlers=[completions_router], logging_config=None)
 
 
 def _bearer_headers(token: str) -> dict[str, str]:

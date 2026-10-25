@@ -44,7 +44,7 @@ def _h() -> dict[str, str]:
 
 
 def _build_app() -> Litestar:
-    return Litestar(route_handlers=[completions_router])
+    return Litestar(route_handlers=[completions_router], logging_config=None)
 
 
 def _installed_chat_model(ref: str = INSTALLED_REF) -> MagicMock:

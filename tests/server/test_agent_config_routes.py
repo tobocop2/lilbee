@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import yaml
-from litestar.testing import TestClient, create_test_client
+from litestar.testing import TestClient
 
 from lilbee.app.agent_configs import detect as detect_mod
 from lilbee.app.services import set_services
@@ -16,6 +16,7 @@ from lilbee.server import auth as auth_mod
 from lilbee.server.app import create_app
 from lilbee.server.auth import authenticates_itself, session_manager
 from lilbee.server.routes.agent_config import agent_config_index_route, agent_config_route
+from tests._litestar_test_client import create_test_client
 from tests.conftest import make_mock_services
 
 _TOKEN = "agent-config-token-" + "z" * 40

@@ -25,7 +25,6 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.commands.serve_logging import (
     install_health_access_filter,
-    setup_server_log_file,
     setup_server_logging,
 )
 from lilbee.cli.upgrade_line import UpgradeLine
@@ -217,9 +216,6 @@ def serve(
 
     try:
         app = create_app()
-        # Litestar's app construction reconfigures root logging; re-install the file handler.
-        setup_server_log_file()
-        # Install after app construction so Litestar's logging reconfig cannot drop the filter.
         install_health_access_filter()
         config = uvicorn.Config(app, host=cfg.server_host, port=cfg.server_port)
         server = uvicorn.Server(config)

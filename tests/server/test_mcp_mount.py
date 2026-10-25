@@ -153,6 +153,7 @@ def mcp_app() -> Litestar:
         route_handlers=[handler],
         middleware=[DefineMiddleware(AuthMiddleware)],
         lifespan=[lifespan],
+        logging_config=None,
     )
 
 

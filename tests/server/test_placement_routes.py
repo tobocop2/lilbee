@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from litestar.testing import create_test_client
-
 import lilbee.server.handlers as handlers
 from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
 from lilbee.providers.roles import EngineBackend, WorkerRole
@@ -15,6 +13,7 @@ from lilbee.server.routes.placement import (
     placement_route,
     placement_set_route,
 )
+from tests._litestar_test_client import create_test_client
 
 GIB = 1024**3
 
