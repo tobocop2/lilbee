@@ -118,9 +118,21 @@ def install_excepthook() -> None:
     _except_hook.install()
 
 
+def _show_info_on_console() -> None:
+    """Lower each root console handler to INFO so startup and signal lines show at any CLI level."""
+    for handler in logging.getLogger().handlers:
+        if (
+            isinstance(handler, logging.StreamHandler)
+            and not isinstance(handler, logging.FileHandler)
+            and handler.level > logging.INFO
+        ):
+            handler.setLevel(logging.INFO)
+
+
 def setup_server_logging() -> None:
-    """File log, fault log, and excepthook for a ``serve`` process."""
+    """Console, file log, fault log, and excepthook for a ``serve`` process."""
     setup_server_log_file(load_warnings)
+    _show_info_on_console()
     enable_fault_log()
     install_excepthook()
 

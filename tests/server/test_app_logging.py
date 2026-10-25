@@ -48,3 +48,17 @@ def test_building_the_app_keeps_the_root_logger_level():
         assert root.handlers == handlers
     finally:
         root.setLevel(level)
+
+
+def test_a_test_client_builds_no_thread_and_keeps_root_handlers():
+    from tests._litestar_test_client import create_test_client
+
+    root = logging.getLogger()
+    handlers = list(root.handlers)
+    before = set(threading.enumerate())
+
+    with create_test_client([]):
+        pass
+
+    assert [t.name for t in set(threading.enumerate()) - before] == []
+    assert root.handlers == handlers
