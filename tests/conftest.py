@@ -1,7 +1,6 @@
 """Shared test helpers."""
 
 import io
-import logging
 import os
 import shutil
 import sys
@@ -132,39 +131,6 @@ def pytest_configure(config: pytest.Config) -> None:
         "filterwarnings",
         "ignore::pytest.PytestUnraisableExceptionWarning",
     )
-
-
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:  # type: ignore[type-arg]
-    """Downgrade asyncio event loop self-pipe corruption to xfail.
-
-    Textual's @work(thread=True) workers can corrupt the event loop's
-    self-pipe socket: a worker leaked by an earlier test writes to its
-    closed loop's fd after the OS has reused the number for the current
-    test's selector. pytest-asyncio's Runner then raises OSError from the
-    loop's own selector, at close (teardown) or mid-poll (call), depending
-    on when the stray write lands. Neither is a real test failure. The
-    call-phase downgrade only applies when the error comes out of the
-    selector itself, so a genuine EBADF raised by product code still fails.
-    """
-    outcome = yield
-    report = outcome.get_result()
-    if (
-        report.when in ("call", "teardown")
-        and report.failed
-        and call.excinfo is not None
-        and call.excinfo.errisinstance(OSError)
-        and "Bad file descriptor" in str(call.excinfo.value)
-        and (report.when == "teardown" or _raised_in_loop_selector(call.excinfo))
-    ):
-        report.outcome = "passed"
-        report.wasxfail = "asyncio loop self-pipe noise (Textual worker thread)"
-
-
-def _raised_in_loop_selector(excinfo: pytest.ExceptionInfo) -> bool:  # type: ignore[type-arg]
-    """Whether the OSError came out of the event loop's selector poll."""
-    tail = excinfo.traceback[-1]
-    return str(tail.path).endswith("selectors.py")
 
 
 @pytest.fixture(autouse=True)
@@ -521,27 +487,6 @@ def _reset_xberg_extract_globals():
 
 
 @pytest.fixture(autouse=True)
-def _restore_root_logger_after_create_app():
-    """Undo Litestar's root logger reconfiguration from building a test app.
-
-    ``create_app()`` constructs ``Litestar(...)`` with no explicit
-    ``logging_config``, so its default ``LoggingConfig`` runs
-    ``logging.config.dictConfig`` on every call, pinning the root logger's
-    level to INFO and replacing its handlers with Litestar's own. Nothing
-    reverts that, so once one test builds an app, every later logger with no
-    level of its own (``lilbee.ingest.trace`` among them) inherits INFO
-    instead of the suite's default and starts passing records into whatever
-    test's ``caplog`` runs next. (bb-9jbu8)
-    """
-    root = logging.getLogger()
-    level = root.level
-    handlers = list(root.handlers)
-    yield
-    root.setLevel(level)
-    root.handlers[:] = handlers
-
-
-@pytest.fixture(autouse=True)
 def _no_leaked_task_workers():
     """Fail the test that leaves a live task-bar worker thread behind.
 
@@ -621,7 +566,7 @@ def _join_shared_ingest_pool() -> None:
 def _drain_textual_threads():
     """Join non-daemon threads that outlive the test, warning on any that survive.
 
-    Daemon threads (executor workers, litestar QueueListeners) are safe to
+    Daemon threads (executor workers) are safe to
     ignore since they won't block process exit. Only non-daemon threads need
     explicit joining to prevent xdist hangs.
 

@@ -90,6 +90,25 @@ def _restore_native_stderr(redirect: _StderrRedirect | None) -> None:
     sys.__stderr__ = redirect.saved_sys_dunder_stderr  # type: ignore[misc,assignment]
 
 
+def _prestart_mp_resource_tracker() -> None:
+    """Start the multiprocessing resource tracker while stderr has a real descriptor.
+
+    Textual replaces ``sys.stderr`` with a stream whose ``fileno()`` is -1, and a
+    tracker launched after that crashes with ``bad value(s) in fds_to_keep``.
+    Frozen builds run it too: ``__main__._dispatch_frozen_child`` intercepts the
+    tracker's ``-c`` reinvocation. Windows has no tracker.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        from multiprocessing import resource_tracker
+
+        resource_tracker.ensure_running()
+    except (OSError, RuntimeError, ValueError, ImportError):
+        # Best effort: the first worker spawn surfaces a real error at call time.
+        pass
+
+
 def run_tui(*, initial_view: str | None = None) -> None:
     """Launch the full-screen Textual TUI.
 
@@ -101,6 +120,7 @@ def run_tui(*, initial_view: str | None = None) -> None:
     from lilbee.cli.sync import shutdown_executor
     from lilbee.cli.tui.app import LilbeeApp
 
+    _prestart_mp_resource_tracker()
     log_path = setup_tui_log_file()
     _silence_stderr_log_handlers()
     stderr_redirect = _redirect_native_stderr_to(log_path)

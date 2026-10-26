@@ -107,7 +107,6 @@ class TestTokenCommand:
 
 class TestServeCommand:
     @mock.patch("lilbee.cli.commands.servers.install_health_access_filter")
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
@@ -116,7 +115,6 @@ class TestServeCommand:
         mock_create_app,
         mock_asyncio_run,
         mock_setup_logging,
-        mock_setup_log_file,
         mock_install_filter,
     ):
         mock_create_app.return_value = "fake_app"
@@ -124,28 +122,21 @@ class TestServeCommand:
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()
         mock_setup_logging.assert_called_once()
-        mock_setup_log_file.assert_called_once()
         mock_install_filter.assert_called_once()
 
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
-    def test_custom_host_port(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
-    ):
+    def test_custom_host_port(self, mock_create_app, mock_asyncio_run, mock_setup_logging):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve", "--host", "0.0.0.0", "--port", "8080"])
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()
 
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
-    def test_short_flags(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
-    ):
+    def test_short_flags(self, mock_create_app, mock_asyncio_run, mock_setup_logging):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve", "-H", "0.0.0.0", "-p", "9000"])
         assert result.exit_code == 0
@@ -450,12 +441,11 @@ class TestRunServer:
 
 
 class TestServeSingleton:
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_serve_exits_when_another_server_holds_the_lock(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging
     ):
         from lilbee.runtime.lock import acquire_server_lock
 
@@ -471,12 +461,11 @@ class TestServeSingleton:
         assert "already running" in result.output
         mock_asyncio_run.assert_not_called()
 
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_serve_refuses_a_data_directory_that_cannot_lock(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging
     ):
         with mock.patch.object(FileLock, "acquire", side_effect=_no_locks_available()):
             result = runner.invoke(app, ["serve"])
@@ -486,7 +475,6 @@ class TestServeSingleton:
         assert "Errno" not in result.output
         mock_asyncio_run.assert_not_called()
 
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
@@ -495,7 +483,6 @@ class TestServeSingleton:
         mock_create_app,
         mock_asyncio_run,
         mock_setup_logging,
-        mock_setup_log_file,
         tmp_path,
         monkeypatch,
     ):
@@ -510,12 +497,11 @@ class TestServeSingleton:
         assert "Errno" not in result.output
         mock_asyncio_run.assert_not_called()
 
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_serve_releases_the_lock_on_exit(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging
     ):
         from lilbee.runtime.lock import acquire_server_lock
 
@@ -528,7 +514,6 @@ class TestServeSingleton:
 
 
 class TestServeExclusiveScope:
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
@@ -537,7 +522,6 @@ class TestServeExclusiveScope:
         mock_create_app,
         mock_asyncio_run,
         mock_setup_logging,
-        mock_setup_log_file,
         tmp_path,
         monkeypatch,
     ):
@@ -560,7 +544,6 @@ class TestServeExclusiveScope:
         assert "other-vault" in result.output.replace("\n", "")
         mock_asyncio_run.assert_not_called()
 
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
@@ -569,7 +552,6 @@ class TestServeExclusiveScope:
         mock_create_app,
         mock_asyncio_run,
         mock_setup_logging,
-        mock_setup_log_file,
         tmp_path,
         monkeypatch,
     ):
@@ -587,7 +569,6 @@ class TestServeExclusiveScope:
 
 
 class TestServeScopeReleasedOnDataDirRefusal:
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
@@ -596,7 +577,6 @@ class TestServeScopeReleasedOnDataDirRefusal:
         mock_create_app,
         mock_asyncio_run,
         mock_setup_logging,
-        mock_setup_log_file,
         tmp_path,
         monkeypatch,
     ):
@@ -622,12 +602,11 @@ class TestServeScopeReleasedOnDataDirRefusal:
 
 
 class TestServeExitStatus:
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run")
     @mock.patch("lilbee.server.create_app")
     def test_serve_exits_with_the_status_its_loop_returns(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging
     ):
         """The lock is free afterwards, so the status leaves after the teardown wait."""
         from lilbee.runtime.lock import acquire_server_lock
@@ -683,7 +662,6 @@ class TestServeExitStatus:
 
 class TestServeHoldsLocksThroughTeardown:
     @mock.patch("lilbee.cli.commands.servers.wait_for_hard_exit_teardown")
-    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
@@ -692,7 +670,6 @@ class TestServeHoldsLocksThroughTeardown:
         mock_create_app,
         mock_asyncio_run,
         mock_setup_logging,
-        mock_setup_log_file,
         mock_wait,
     ):
         from lilbee.runtime.lock import acquire_server_lock

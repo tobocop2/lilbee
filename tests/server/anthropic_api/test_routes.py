@@ -33,7 +33,7 @@ def _h() -> dict[str, str]:
 
 
 def _build_app() -> Litestar:
-    return Litestar(route_handlers=[anthropic_router])
+    return Litestar(route_handlers=[anthropic_router], logging_config=None)
 
 
 def _body(**overrides) -> dict[str, Any]:
@@ -213,7 +213,6 @@ class TestValidation:
         body = _body(
             messages=[{"role": "user", "content": [_IMAGE, {"type": "text", "text": "q"}]}]
         )
-        # The Litestar app reconfigures logging, which detaches caplog's handler.
         with patch("lilbee.server.chat_dispatch.dispatch.log") as log:
             async with AsyncTestClient(_build_app()) as client:
                 resp = await client.post("/v1/messages", json=body, headers=_h())

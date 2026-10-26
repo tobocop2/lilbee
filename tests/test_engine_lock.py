@@ -17,6 +17,7 @@ from lilbee.runtime.engine_lock import (
     reaper_running,
     try_hold_reaper_lock,
 )
+from tests._prior_run import request_keep_warm_in_prior_run
 
 
 class TestEngineDirs:
@@ -363,23 +364,17 @@ def test_kernel_arbitrates_locks_assumes_support_when_the_probe_is_unusable(
         el.kernel_arbitrates_locks.cache_clear()
 
 
-def test_a_restart_reclaims_its_own_prior_keep_warm(monkeypatch, tmp_path: Path) -> None:
+def test_a_restart_reclaims_its_own_prior_keep_warm(tmp_path: Path) -> None:
     """Keyed by config root, not pid: a later run (new pid) of the same install
 
     reclaims the mark an earlier run left, which a pid key could not.
     """
-    from lilbee.runtime.engine_lock import (
-        keep_warm_requested,
-        request_keep_warm,
-        withdraw_keep_warm,
-    )
+    from lilbee.runtime.engine_lock import keep_warm_requested, withdraw_keep_warm
 
     engine, root = tmp_path / "engine", tmp_path / "cfgroot"
-    request_keep_warm(engine, root, 5)  # run 1: warm on
+    request_keep_warm_in_prior_run(engine, root, 5)  # run 1, a real process: warm on
     assert keep_warm_requested(engine) is True
-    restarted_pid = os.getpid() + 4242
-    monkeypatch.setattr(os, "getpid", lambda: restarted_pid)  # run 2 is a new process
-    withdraw_keep_warm(engine, root)  # same install, warm now off
+    withdraw_keep_warm(engine, root)  # run 2, this process: same install, warm now off
     assert keep_warm_requested(engine) is False
 
 

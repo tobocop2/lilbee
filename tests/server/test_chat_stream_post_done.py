@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import MagicMock
@@ -105,18 +104,11 @@ class TestPostDoneExtractionFailure:
         monkeypatch.setattr(rag, "auto_extract", _boom)
 
         async with AsyncTestClient(app_module.create_app()) as client:
-            # App startup reconfigures logging and drops caplog's root handler,
-            # so attach it to the emitting logger once the app is up.
-            emitter = logging.getLogger(rag.__name__)
-            emitter.addHandler(caplog.handler)
-            try:
-                resp = await client.post(
-                    "/api/chat/stream",
-                    json={"question": "q", "history": []},
-                    headers=_auth_headers(),
-                )
-            finally:
-                emitter.removeHandler(caplog.handler)
+            resp = await client.post(
+                "/api/chat/stream",
+                json={"question": "q", "history": []},
+                headers=_auth_headers(),
+            )
 
         assert resp.status_code == 201
         events = parse_sse_events(resp.content)

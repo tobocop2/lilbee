@@ -342,6 +342,7 @@ def create_app() -> Litestar:
     mcp_route, mcp_session_lifespan = build_mcp_mount()
     return Litestar(
         lifespan=[_lifespan, mcp_session_lifespan],
+        logging_config=None,
         middleware=[DefineMiddleware(AuthMiddleware), _LibraryOpenWait()],
         exception_handlers={
             HTTPException: _json_error_response,

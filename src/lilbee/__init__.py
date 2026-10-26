@@ -47,40 +47,7 @@ def _install_thread_only_tqdm_lock() -> None:
         _tqdm_base._lock = threading.RLock()
 
 
-def _prestart_mp_resource_tracker() -> None:
-    """Start the multiprocessing resource tracker before Textual swaps stderr.
-
-    The tracker launches lazily on the first semaphore creation, which in
-    the TUI is a worker's ``Value(lock=True)`` abort flag, spawned after
-    Textual has replaced ``sys.stderr`` with a stream whose ``fileno()``
-    returns -1. The tracker's launch passes that -1 into
-    ``_posixsubprocess.fork_exec`` and crashes with ``bad value(s) in
-    fds_to_keep``. Launching it here, at import time with a real stderr,
-    caches a valid tracker fd that every later ``Process.start()`` reuses.
-
-    Runs in frozen builds too (Nuitka onefile): the tracker re-executes
-    ``sys.executable`` with ``-c "from multiprocessing.resource_tracker
-    import main;main(N)"``, which ``__main__._dispatch_frozen_child``
-    intercepts and execs before typer sees it. No-op on Windows, which
-    does not use ``_posixsubprocess``.
-    """
-    import sys as _sys
-
-    if _sys.platform == "win32":
-        return
-    try:
-        from multiprocessing import resource_tracker
-
-        resource_tracker.ensure_running()
-    except (OSError, RuntimeError, ValueError, ImportError):
-        # Best-effort: if the tracker already crashed or cannot be started
-        # in the current env, leave the state alone. The worker's own
-        # spawn will surface a real error at call time.
-        pass
-
-
 _install_thread_only_tqdm_lock()
-_prestart_mp_resource_tracker()
 
 
 def _shrink_hf_download_chunk_size() -> None:

@@ -36,12 +36,15 @@ def data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _clean_root_logger() -> Iterator[None]:
     root = logging.getLogger()
     before_handlers = list(root.handlers)
+    before_handler_levels = [handler.level for handler in before_handlers]
     before_level = root.level
     yield
     for handler in root.handlers:
         if handler not in before_handlers:
-            root.removeHandler(handler)
             handler.close()
+    root.handlers[:] = before_handlers
+    for handler, level in zip(before_handlers, before_handler_levels, strict=True):
+        handler.setLevel(level)
     root.setLevel(before_level)
 
 
@@ -83,7 +86,7 @@ def _warning_lines(log_path: Path) -> list[str]:
 def test_a_serve_start_writes_each_load_warning_to_the_file_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The real serve command: its first setup, the app build that drops the handler, its second."""
+    """The real serve command: its setup, then the app build."""
     from typer.testing import CliRunner
 
     from lilbee.cli import app
@@ -142,21 +145,6 @@ def test_does_not_lower_a_more_verbose_root(data_root: Path) -> None:
     assert logging.getLogger().level == logging.DEBUG
 
 
-def test_pins_notset_stream_handler_to_old_root_level(data_root: Path) -> None:
-    root = logging.getLogger()
-    root.setLevel(logging.WARNING)
-    stream_handler = logging.StreamHandler()
-    root.addHandler(stream_handler)
-    assert stream_handler.level == logging.NOTSET
-
-    log_path = setup_server_log_file()
-    logging.getLogger("lilbee.test").info("file only")
-    for handler in _server_log_handlers(log_path):
-        handler.flush()
-    assert "file only" in log_path.read_text()
-    assert stream_handler.level == logging.WARNING
-
-
 def test_reinstalls_after_dictconfig_root_reset(data_root: Path) -> None:
     log_path = setup_server_log_file()
     logging.config.dictConfig(
@@ -171,15 +159,11 @@ def test_reinstalls_after_dictconfig_root_reset(data_root: Path) -> None:
     assert "after reset" in log_path.read_text()
 
 
-def test_create_app_wipes_root_handlers_and_recall_restores(data_root: Path) -> None:
+def test_create_app_keeps_the_server_log_handler(data_root: Path) -> None:
     from lilbee.server import create_app
 
     log_path = setup_server_log_file()
-    # Pins the litestar behavior serve() works around: app construction
-    # applies a dictConfig that replaces root's handlers.
     create_app()
-    assert not _server_log_handlers(log_path)
-    setup_server_log_file()
     assert len(_server_log_handlers(log_path)) == 1
 
 
@@ -310,3 +294,44 @@ def test_install_health_access_filter_idempotent() -> None:
     access_logger = logging.getLogger("uvicorn.access")
     ours = [f for f in access_logger.filters if isinstance(f, _HealthAccessFilter)]
     assert len(ours) == 1
+
+
+def _console_handler(level: int) -> logging.Handler:
+    handler = logging.StreamHandler()
+    handler.setLevel(level)
+    logging.getLogger().addHandler(handler)
+    return handler
+
+
+def test_serve_console_shows_info_when_the_cli_level_is_warning(data_root: Path) -> None:
+    console = _console_handler(logging.WARNING)
+    file_only = logging.FileHandler(data_root / "other.log", encoding="utf-8")
+    file_only.setLevel(logging.ERROR)
+    logging.getLogger().addHandler(file_only)
+
+    setup_server_logging()
+
+    assert console.level == logging.INFO
+    assert file_only.level == logging.ERROR
+
+
+def test_serve_console_keeps_a_debug_cli_level(data_root: Path) -> None:
+    console = _console_handler(logging.DEBUG)
+
+    setup_server_logging()
+
+    assert console.level == logging.DEBUG
+
+
+def test_serve_console_prints_info_lines_from_lilbee_loggers(
+    data_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.WARNING)
+    root.addHandler(logging.StreamHandler(sys.stderr))
+    root.handlers[-1].setLevel(logging.NOTSET)
+
+    setup_server_logging()
+    logging.getLogger("lilbee.server.app").info("startup line")
+
+    assert "startup line" in capsys.readouterr().err

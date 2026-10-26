@@ -8,8 +8,9 @@ These exercise the public entry points (``_cmd_add``, ``_start_crawl``,
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -59,7 +60,30 @@ async def test_reporter_task_id_property_exposes_id() -> None:
         assert reporter.task_id == tid
 
 
+@pytest.fixture
+def traceback_formatted_after_the_test(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Hold record formatting on other threads until teardown, with log capture as the only handler.
+
+    This is the order on a CI worker where an earlier test closed pytest's log-file
+    handler: the capture handler stores a record before it formats the record.
+    """
+    test_thread = threading.current_thread()
+    released = threading.Event()
+    format_record = logging.Formatter.format
+
+    def held(self: logging.Formatter, record: logging.LogRecord) -> str:
+        if threading.current_thread() is not test_thread:
+            released.wait(timeout=_SETTLE_SECONDS)
+        return format_record(self, record)
+
+    monkeypatch.setattr(logging.getLogger(), "handlers", [])
+    monkeypatch.setattr(logging.Formatter, "format", held)
+    yield
+    released.set()
+
+
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("traceback_formatted_after_the_test")
 async def test_on_success_exception_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
     """An on_success failure leaves the task DONE and is reported in the log."""
     caplog.set_level("WARNING", logger="lilbee.cli.tui.widgets.task_bar_controller")
@@ -78,7 +102,7 @@ async def test_on_success_exception_is_swallowed(caplog: pytest.LogCaptureFixtur
             return (
                 task is not None
                 and task.status == TaskStatus.DONE
-                and any("on_success" in r.message for r in caplog.records)
+                and any("on_success" in r.getMessage() for r in caplog.records)
             )
 
         assert await pump_until(pilot, _finalized), "the task never finalized"
@@ -86,9 +110,11 @@ async def test_on_success_exception_is_swallowed(caplog: pytest.LogCaptureFixtur
     task = controller.queue.get_task(task_id)
     assert task is not None
     assert task.status == TaskStatus.DONE
-    raised = [r for r in caplog.records if "on_success" in r.message]
+    raised = [r for r in caplog.records if "on_success" in r.getMessage()]
     assert raised, "the swallowed on_success failure was never logged"
-    assert "boom" in raised[0].exc_text
+    assert raised[0].exc_info is not None
+    _, error, _ = raised[0].exc_info
+    assert repr(error) == "RuntimeError('boom')"
 
 
 @pytest.mark.asyncio
