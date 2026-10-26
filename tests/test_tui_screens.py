@@ -3096,7 +3096,7 @@ async def _tab_complete(app, pilot, typed: str) -> str:
     inp = app.screen.query_one("#chat-input", ChatInput)
     inp.focus()
     inp.value = typed
-    await pilot.pause()
+    assert await wait_until(pilot, lambda: app.focused is inp), "the editor never got focus"
     await pilot.press("tab")
     await pilot.pause()
     return inp.value
@@ -5627,7 +5627,9 @@ async def test_catalog_page_down_no_focus():
 
             inp = screen.query_one("#catalog-search", Input)
             inp.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is inp), (
+                "the editor never got focus"
+            )
             screen.action_page_down()
             screen.action_page_up()
             # Page actions are suppressed when Input is focused
@@ -7113,7 +7115,9 @@ async def test_catalog_initial_focus_first_grid_skips_when_focus_already_set():
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen.query_one("#catalog-search", Input).focus()
-            await _pilot.pause()
+            assert await wait_until(
+                _pilot, lambda: screen.focused is screen.query_one("#catalog-search", Input)
+            ), "the editor never got focus"
             with patch.object(screen, "_focus_first_grid") as fall_through:
                 screen._initial_focus_first_grid()
                 fall_through.assert_not_called()
@@ -7166,7 +7170,9 @@ async def test_catalog_get_highlighted_with_rows():
             assert items_count
             screen._list_widget.highlighted = 0
             screen._list_widget.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is screen._list_widget), (
+                "the widget never got focus"
+            )
             name = screen._get_highlighted_model_name()
             assert name is not None
 
@@ -7794,7 +7800,9 @@ async def test_catalog_page_down_with_focused_table():
             screen._refresh_list()
             screen._list_widget.highlighted = 0
             screen._list_widget.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is screen._list_widget), (
+                "the widget never got focus"
+            )
             screen.action_page_down()
             screen.action_page_up()
             # The back-to-back pair leaves the highlight on item 0.
@@ -7821,7 +7829,9 @@ async def test_catalog_action_cursor_with_focused_table():
             screen._refresh_list()
             screen._list_widget.highlighted = 0
             screen._list_widget.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is screen._list_widget), (
+                "the widget never got focus"
+            )
             screen.action_cursor_down()
             screen.action_cursor_up()
             assert screen._list_widget.highlighted == 0
@@ -7847,7 +7857,9 @@ async def test_catalog_jump_top_bottom():
             screen._refresh_list()
             screen._list_widget.highlighted = 0
             screen._list_widget.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is screen._list_widget), (
+                "the widget never got focus"
+            )
             screen.action_jump_bottom()
             screen.action_jump_top()
             assert screen._list_widget.highlighted == 0
@@ -8120,7 +8132,9 @@ async def test_catalog_key_g_G_noop_in_input():
 
             inp = screen.query_one("#catalog-search", Input)
             inp.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is inp), (
+                "the editor never got focus"
+            )
             screen.action_jump_top()
             screen.action_jump_bottom()
             # Jump actions are suppressed when Input is focused
@@ -8194,7 +8208,9 @@ async def test_catalog_delete_installed_model_confirmation():
             items_count = screen._list_widget.option_count
             assert items_count
             screen._list_widget.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is screen._list_widget), (
+                "the widget never got focus"
+            )
             screen._list_widget.highlighted = screen._list_widget.option_count - 1
 
             screen.action_delete_model()
@@ -8371,7 +8387,9 @@ async def test_catalog_delete_second_press_confirms():
             items_count = screen._list_widget.option_count
             assert items_count
             screen._list_widget.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is screen._list_widget), (
+                "the widget never got focus"
+            )
             screen._list_widget.highlighted = screen._list_widget.option_count - 1
 
             # First press sets pending
@@ -8505,7 +8523,9 @@ async def test_catalog_delete_not_installed():
             items_count = screen._list_widget.option_count
             assert items_count
             screen._list_widget.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is screen._list_widget), (
+                "the widget never got focus"
+            )
             screen._list_widget.highlighted = screen._list_widget.option_count - 1
 
             screen.action_delete_model()
@@ -9311,7 +9331,7 @@ async def test_chat_input_history_up_down():
         await await_chat(app, pilot)
         inp = app.screen.query_one("#chat-input")
         inp.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is inp), "the editor never got focus"
 
         # Patch _stream_response to prevent background worker threads.
         # Reset streaming between submits because the screen now refuses
@@ -9362,7 +9382,7 @@ async def test_chat_input_history_up_no_history():
     async with app.run_test(size=(120, 40)) as pilot:
         inp = app.screen.query_one("#chat-input")
         inp.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is inp), "the editor never got focus"
 
         with pytest.raises(SkipAction):
             app.screen.action_history_prev()
@@ -9376,7 +9396,7 @@ async def test_chat_input_history_down_no_index():
     async with app.run_test(size=(120, 40)) as pilot:
         inp = app.screen.query_one("#chat-input")
         inp.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is inp), "the editor never got focus"
 
         with pytest.raises(SkipAction):
             app.screen.action_history_next()
@@ -9439,7 +9459,9 @@ async def test_chat_action_complete_next_noop_when_input_unfocused():
         screen = app.screen
         chat_btn = screen.query_one("#model-pick-chat", ModelPickerButton)
         chat_btn.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is chat_btn), (
+            "the widget never got focus"
+        )
         # Ctrl+N is not a completion when the input is unfocused: the action skips
         # (no focus move) so an overlay like the sessions drawer can bind it.
         await pilot.press("ctrl+n")
@@ -9589,7 +9611,7 @@ async def test_chat_up_arrow_insert_mode_recalls_history():
     async with app.run_test(size=(120, 40)) as pilot:
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is inp), "the editor never got focus"
         app.screen._input_history = ["hello", "world"]
         app.screen._history_index = -1
         app.screen.action_history_prev()
@@ -9759,7 +9781,9 @@ async def test_chat_enter_on_focused_picker_button_does_not_enter_insert_mode():
         await pilot.press("escape")
         await pilot.pause()
         screen.query_one("#model-pick-chat", ModelPickerButton).focus()
-        await pilot.pause()
+        assert await wait_until(
+            pilot, lambda: app.focused is screen.query_one("#model-pick-chat", ModelPickerButton)
+        ), "the widget never got focus"
         assert screen._insert_mode is False
         await pilot.press("enter")
         await pilot.pause()
@@ -11692,7 +11716,9 @@ class TestWikiDraftsScreen:
             screen.action_jump_top()
             screen.action_jump_bottom()
             screen.query_one("#wiki-drafts-table", DataTable).focus()
-            await pilot.pause()
+            assert await wait_until(
+                pilot, lambda: screen.focused is screen.query_one("#wiki-drafts-table", DataTable)
+            ), "the widget never got focus"
             screen.action_cursor_down()
             screen.action_cursor_up()
             screen.action_jump_bottom()
@@ -12309,7 +12335,7 @@ class TestWikiCoverageEdgeCases:
 
             inp = app.screen.query_one("#wiki-search", TextualInput)
             inp.focus()
-            await pilot.pause()
+            assert await wait_until(pilot, lambda: app.focused is inp), "the editor never got focus"
             # All vim nav actions should be no-ops when input is focused
             app.screen.action_cursor_down()
             app.screen.action_cursor_up()
@@ -12348,7 +12374,9 @@ class TestWikiCoverageEdgeCases:
 
             tree = app.screen.query_one("#wiki-page-list", TextualTree)
             tree.focus()
-            await pilot.pause()
+            assert await wait_until(pilot, lambda: app.focused is tree), (
+                "the widget never got focus"
+            )
             app.screen.action_cursor_down()
             app.screen.action_cursor_up()
             app.screen.action_cursor_left()
@@ -12901,7 +12929,9 @@ async def test_chat_on_key_insert_mode_unfocused_input():
         app.screen.query_one("#chat-input", ChatInput)
         # Focus the chat log instead
         app.screen.query_one("#chat-log").focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is app.screen.query_one("#chat-log")), (
+            "the widget never got focus"
+        )
         assert app.screen._insert_mode is True
         # Simulate a printable key event
         from textual.events import Key
@@ -14221,7 +14251,9 @@ async def test_catalog_delete_when_input_focused():
             # Focus the search input
             inp = screen.query_one("#catalog-search")
             inp.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is inp), (
+                "the editor never got focus"
+            )
             # action_delete_model should return early
             with patch.object(screen, "notify") as mock_notify:
                 screen.action_delete_model()
@@ -14314,7 +14346,9 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             assert items_count
             screen._list_widget.highlighted = 0
             screen._list_widget.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is screen._list_widget), (
+                "the widget never got focus"
+            )
             result = screen._get_highlighted_model_name()
             assert result is None
 
@@ -14581,7 +14615,9 @@ async def test_catalog_cycle_sort_noop_when_input_focused():
                 await pilot.pause()
             screen._grid_view = False
             screen.query_one("#catalog-search", Input).focus()
-            await pilot.pause()
+            assert await wait_until(
+                pilot, lambda: screen.focused is screen.query_one("#catalog-search", Input)
+            ), "the editor never got focus"
             before = screen._sort_column
             screen.action_cycle_sort()
             assert screen._sort_column == before
@@ -15021,7 +15057,9 @@ async def test_catalog_get_highlighted_model_name_model_grid_branch():
             await screen._grid_container.mount(grid)
             grid.highlighted = 2
             grid.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is grid), (
+                "the widget never got focus"
+            )
             assert screen._get_highlighted_model_name() == "ref-2"
 
 
@@ -15565,7 +15603,9 @@ async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
             await screen._grid_container.mount(grid)
             grid.highlighted = 99
             grid.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: screen.focused is grid), (
+                "the widget never got focus"
+            )
             assert screen._get_highlighted_model_name() is None
 
 
@@ -15844,7 +15884,9 @@ async def test_i_returns_to_insert_even_when_the_pill_has_focus():
         screen.action_enter_normal_mode()
         await pilot.pause()
         screen.query(ModelPickerButton).first().focus()
-        await pilot.pause()
+        assert await wait_until(
+            pilot, lambda: app.focused is screen.query(ModelPickerButton).first()
+        ), "the widget never got focus"
         await pilot.press("i")
         await pilot.pause()
         assert screen._insert_mode is True
