@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+import asyncio
+from contextlib import asynccontextmanager, contextmanager
 
 from lilbee.cli.tui.app import LilbeeApp
 
@@ -31,7 +32,6 @@ async def pump_until(pilot, predicate, *, timeout_s: float = _PUMP_TIMEOUT_S) ->
     Returns a bool instead of asserting so the caller keeps its own assertion,
     and with it the failure message that says what was actually expected.
     """
-    import asyncio
     import time
 
     deadline = time.monotonic() + timeout_s
@@ -44,6 +44,23 @@ async def pump_until(pilot, predicate, *, timeout_s: float = _PUMP_TIMEOUT_S) ->
         await asyncio.sleep(_GATE_POLL_S)
 
 
+@asynccontextmanager
+async def saved_setting(app: LilbeeApp, key: str):
+    """Run the body's action, then wait until the app publishes a change of *key*.
+
+    The wait has no deadline: pytest-timeout ends a save that never happens.
+    """
+    saved = asyncio.Event()
+
+    def on_change(change: tuple[str, object]) -> None:
+        if change[0] == key:
+            saved.set()
+
+    app.settings_changed_signal.subscribe(app, on_change, immediate=True)
+    yield
+    await saved.wait()
+
+
 async def await_chat(app, pilot) -> object:
     """Wait for the startup gate to hand over a fully composed chat screen, and return it.
 
@@ -52,7 +69,6 @@ async def await_chat(app, pilot) -> object:
     on chat. Waiting for the screen alone races its children: a caller that queries
     a widget the instant the screen appears can miss it on a slow runner.
     """
-    import asyncio
     import time
 
     from lilbee.cli.tui.screens.chat import ChatScreen
