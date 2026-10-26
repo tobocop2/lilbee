@@ -4442,7 +4442,7 @@ async def test_chat_vim_j_k_skips_in_insert_mode():
     async with app.run_test(size=(120, 40)) as pilot:
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: app.focused is inp), "the editor never got focus"
         assert app.screen._insert_mode is True
         with pytest.raises(SkipAction):
             app.screen.action_vim_scroll_down()
@@ -5588,7 +5588,9 @@ async def test_catalog_vim_keys_in_input():
 
             inp = screen.query_one("#catalog-search", Input)
             inp.focus()
-            await _pilot.pause()
+            assert await wait_until(_pilot, lambda: app.focused is inp), (
+                "the editor never got focus"
+            )
             screen.action_cursor_down()
             screen.action_cursor_up()
             # Input stays focused; vim nav is suppressed when Input focused
