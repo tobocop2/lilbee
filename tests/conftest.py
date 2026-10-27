@@ -246,7 +246,7 @@ def _assume_provider_sdk_available(request, monkeypatch):
 
 def _only_providers_installed(dist: str) -> str:
     if dist == SDK_DIST:
-        return "2.4.0"
+        return "2.4.1"
     raise PackageNotFoundError(dist)
 
 

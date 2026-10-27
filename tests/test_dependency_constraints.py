@@ -50,8 +50,8 @@ def test_providers_extra_stops_before_the_next_major() -> None:
 
 def test_providers_extra_admits_locked_stable() -> None:
     req = _extra_requirement("providers", SDK_DIST)
-    assert req.specifier.contains("2.4.0")
-    assert not req.specifier.contains("2.3.9")
+    assert req.specifier.contains("2.4.1")
+    assert not req.specifier.contains("2.4.0")
 
 
 def test_mcp_rejects_the_line_without_the_mcpserver_module() -> None:

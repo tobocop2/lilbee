@@ -462,6 +462,12 @@ class TestTranslateOptions:
         )
         assert result == {"temperature": 0.5, "response_format": reply_format}
 
+    def test_anthropic_empty_response_format_counts_as_set(self) -> None:
+        """A present response_format key is enough, even when its value is empty."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        result = translate_options({"temperature": 0.5, "response_format": {}, "seed": 7}, ref)
+        assert result == {"temperature": 0.5, "response_format": {}}
+
     @pytest.mark.parametrize("option", ["seed", "frequency_penalty", "presence_penalty"], ids=str)
     def test_anthropic_sends_an_unset_option_unchanged(self, option: str) -> None:
         """None and absent are the same: nothing is refused and nothing is added."""
