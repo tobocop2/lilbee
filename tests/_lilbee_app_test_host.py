@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import weakref
 from contextlib import asynccontextmanager, contextmanager
 
 from lilbee.cli.tui.app import LilbeeApp
+from lilbee.cli.tui.screens.chat import ChatScreen
 
 
 class LilbeeAppHost(LilbeeApp):
@@ -13,6 +16,22 @@ class LilbeeAppHost(LilbeeApp):
 
     _test_skip_auto_init = True
 
+
+# Chat screens whose show handler has returned. The handler moves focus to the chat
+# input, so a caller that opens a widget and types before it ran loses focus to it.
+_shown_chats: weakref.WeakSet[ChatScreen] = weakref.WeakSet()
+
+
+def _record_show(on_show):
+    @functools.wraps(on_show)
+    def wrapper(self: ChatScreen) -> None:
+        on_show(self)
+        _shown_chats.add(self)
+
+    return wrapper
+
+
+ChatScreen.on_show = _record_show(ChatScreen.on_show)  # type: ignore[method-assign]
 
 _GATE_HANDOVER_TIMEOUT_S = 20.0
 _GATE_POLL_S = 0.02
@@ -67,16 +86,22 @@ async def await_chat(app, pilot) -> object:
     Production pushes a blocking StartupGate before the chat screen exists, and its
     boot worker runs on a real thread, so a bare ``pilot.pause()`` no longer lands
     on chat. Waiting for the screen alone races its children: a caller that queries
-    a widget the instant the screen appears can miss it on a slow runner.
+    a widget the instant the screen appears can miss it on a slow runner. The screen's
+    show handler moves focus to the chat input, so the wait also covers that handler
+    having returned: a caller that opens a drawer and types would otherwise lose focus
+    to it.
     """
     import time
-
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     deadline = time.monotonic() + _GATE_HANDOVER_TIMEOUT_S
     while time.monotonic() < deadline:
         chat = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
-        if chat is not None and chat.is_mounted and chat.query("#chat-input"):
+        if (
+            chat is not None
+            and chat.is_mounted
+            and chat.query("#chat-input")
+            and chat in _shown_chats
+        ):
             return chat
         await pilot.pause()
         await asyncio.sleep(_GATE_POLL_S)
