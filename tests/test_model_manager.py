@@ -1270,6 +1270,17 @@ class TestRemoteModelProvider:
         }
 
 
+def _picker_catalog() -> list:
+    """Catalog entries for a keyed provider, an unkeyed one, and non-chat modes."""
+    return [
+        _fake_sdk.catalog_model("openai", "gpt-4o"),
+        _fake_sdk.catalog_model("openai", "gpt-4o-mini"),
+        _fake_sdk.catalog_model("openai", "text-embedding-3-small", "embedding"),
+        _fake_sdk.catalog_model("anthropic", "claude-haiku"),
+        _fake_sdk.catalog_model("google", "gemini-2.5-pro"),
+    ]
+
+
 class TestDiscoverApiModels:
     @pytest.fixture(autouse=True)
     def _force_auto_provider(self) -> Iterator[None]:
@@ -1294,13 +1305,44 @@ class TestDiscoverApiModels:
         monkeypatch.setattr("lilbee.providers.availability.provider_sdk_available", lambda: False)
         assert discover_api_models() == {}
 
-    def test_backend_lists_no_models_so_no_group_appears(
+    def test_keyed_provider_lists_chat_models_from_the_sdk_catalog(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The SDK cannot list a provider's catalog, so a keyed provider yields no group."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        with inject_modules({SDK_MODULE: _fake_sdk.FakeSdk().module()}):
-            assert discover_api_models() == {}
+        sdk = _fake_sdk.FakeSdk(catalog=_picker_catalog())
+        with inject_modules({SDK_MODULE: sdk.module()}):
+            result = discover_api_models()
+        assert [m.name for m in result["OpenAI"]] == ["gpt-4o", "gpt-4o-mini"]
+        assert all(m.task == ModelTask.CHAT for m in result["OpenAI"])
+
+    def test_catalog_providers_without_a_key_stay_out_of_the_picker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.core.config import cfg
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        cfg.anthropic_api_key = ""
+        cfg.gemini_api_key = ""
+        sdk = _fake_sdk.FakeSdk(catalog=_picker_catalog())
+        with inject_modules({SDK_MODULE: sdk.module()}):
+            assert set(discover_api_models()) == {"OpenAI"}
+
+    def test_gemini_key_lists_the_catalog_entries_of_google(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.core.config import cfg
+
+        monkeypatch.setenv("GEMINI_API_KEY", "g-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        cfg.openai_api_key = ""
+        cfg.anthropic_api_key = ""
+        sdk = _fake_sdk.FakeSdk(catalog=_picker_catalog())
+        with inject_modules({SDK_MODULE: sdk.module()}):
+            result = discover_api_models()
+        assert [m.name for m in result["Gemini"]] == ["gemini-2.5-pro"]
 
     def test_returns_models_for_configured_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
         catalog = {"openai": ["gpt-4o", "gpt-4o-mini"]}
