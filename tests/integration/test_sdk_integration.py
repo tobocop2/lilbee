@@ -12,26 +12,30 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 import numpy as np
 import pytest
 
-litellm = pytest.importorskip("litellm")
+from lilbee.providers.factory import sdk_library
 
-from lilbee.core.config import cfg  # noqa: E402
-from lilbee.providers import litellm_sdk as _litellm_sdk_mod  # noqa: E402
-from lilbee.providers.base import (  # noqa: E402
+pytest.importorskip(sdk_library().module)
+
+from lilbee.core.config import cfg
+from lilbee.providers.backends.liter_llm import backend as _backend_mod
+from lilbee.providers.backends.liter_llm import config as _config_mod
+from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
+from lilbee.providers.base import (
     ChatResult,
     StreamFinish,
     TokenUsage,
     ToolCallDelta,
 )
-from lilbee.providers.fleet.swap_manager import _pick_free_ports  # noqa: E402
-from lilbee.providers.litellm_sdk import LitellmSdkBackend  # noqa: E402
-from lilbee.providers.local_servers import OLLAMA  # noqa: E402
-from lilbee.providers.local_servers.spec import LocalServerSpec  # noqa: E402
-from lilbee.providers.sdk_llm_provider import SdkLLMProvider  # noqa: E402
+from lilbee.providers.fleet.swap_manager import _pick_free_ports
+from lilbee.providers.local_servers import OLLAMA
+from lilbee.providers.local_servers.spec import LocalServerSpec
+from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
 _STUB = Path(__file__).parent / "_ollama_stub.py"
 # Ollama keeps its own ``name:tag`` shape; lilbee's config layer requires
@@ -79,21 +83,22 @@ def _isolate_cfg(ollama_stub_base: str):
 @pytest.fixture(autouse=True)
 def _stub_detects_as_ollama(monkeypatch: pytest.MonkeyPatch, ollama_stub_base: str):
     """Map the stub URL to the Ollama spec; its random port matches no URL pattern."""
-    real_detect = _litellm_sdk_mod.detect_local_server
+    real_detect = _config_mod.detect_local_server
 
     def _detect(base_url: str) -> LocalServerSpec | None:
         if base_url.rstrip("/") == ollama_stub_base:
             return OLLAMA
         return real_detect(base_url)
 
-    monkeypatch.setattr(_litellm_sdk_mod, "detect_local_server", _detect)
+    monkeypatch.setattr(_config_mod, "detect_local_server", _detect)
+    monkeypatch.setattr(_backend_mod, "detect_local_server", _detect)
 
 
 class TestSdkEmbed:
     def test_embed_returns_vectors(self) -> None:
         """Embedding via the stub returns float vectors."""
         cfg.embedding_model = OLLAMA_EMBED_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmBackend())
         result = provider.embed(["hello world"])
 
         assert len(result) == 1
@@ -103,7 +108,7 @@ class TestSdkEmbed:
     def test_embed_batch(self) -> None:
         """Batch embedding returns one vector per input."""
         cfg.embedding_model = OLLAMA_EMBED_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmBackend())
         texts = ["hello", "world", "test"]
         result = provider.embed(texts)
 
@@ -115,7 +120,7 @@ class TestSdkChat:
     def test_chat_returns_response(self) -> None:
         """Chat completion via the stub returns non-empty text."""
         cfg.chat_model = OLLAMA_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmBackend())
         result = provider.chat(
             [{"role": "user", "content": "Say hello in exactly one word."}],
             options={"temperature": 0},
@@ -127,7 +132,7 @@ class TestSdkChat:
     def test_chat_stream_yields_tokens(self) -> None:
         """Streaming chat yields text, tool-call deltas, and a closing finish frame."""
         cfg.chat_model = OLLAMA_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmBackend())
         result = provider.chat(
             [{"role": "user", "content": "Count from 1 to 3."}],
             stream=True,
@@ -144,7 +149,7 @@ class TestSdkChat:
     def test_chat_with_model_override(self) -> None:
         """Model override in chat() works."""
         cfg.chat_model = OLLAMA_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmBackend())
         result = provider.chat(
             [{"role": "user", "content": "Say yes."}],
             model=OLLAMA_MODEL,
@@ -155,10 +160,38 @@ class TestSdkChat:
         assert len(result.text) > 0
 
 
+class TestSdkChatWireBody:
+    """What lilbee puts on the Ollama native route, read back from the stub."""
+
+    @staticmethod
+    def _last_chat(base: str) -> dict[str, Any]:
+        return httpx.get(f"{base}/_last_chat", timeout=5.0).json()
+
+    def test_generation_options_travel_under_options(self, ollama_stub_base: str) -> None:
+        cfg.chat_model = OLLAMA_MODEL
+        provider = SdkLLMProvider(LiterLlmBackend())
+        provider.chat(
+            [{"role": "user", "content": "hi"}],
+            options={"num_ctx": 4096, "top_k": 40, "repeat_penalty": 1.1},
+        )
+
+        options = self._last_chat(ollama_stub_base)["options"]
+        assert options["num_ctx"] == 4096
+        assert options["top_k"] == 40
+        assert options["repeat_penalty"] == 1.1
+
+    def test_thinking_off_sends_think_false(self, ollama_stub_base: str) -> None:
+        cfg.chat_model = OLLAMA_MODEL
+        provider = SdkLLMProvider(LiterLlmBackend())
+        provider.chat([{"role": "user", "content": "hi"}], options={"think": False})
+
+        assert self._last_chat(ollama_stub_base)["think"] is False
+
+
 class TestSdkModelManagement:
     def test_list_models(self) -> None:
         """list_models returns the stub's models."""
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmBackend())
         models = provider.list_models()
 
         assert isinstance(models, list)
@@ -167,7 +200,7 @@ class TestSdkModelManagement:
 
     def test_show_model(self) -> None:
         """show_model returns model info dict."""
-        provider = SdkLLMProvider(LitellmSdkBackend())
+        provider = SdkLLMProvider(LiterLlmBackend())
         info = provider.show_model(OLLAMA_MODEL)
 
         assert info is not None
@@ -175,7 +208,7 @@ class TestSdkModelManagement:
 
 
 class TestSdkFactory:
-    def test_create_sdk_provider_for_litellm_config(self) -> None:
+    def test_create_sdk_provider_for_remote_config(self) -> None:
         """Factory wraps the SDK backend in SdkLLMProvider when cfg.llm_provider == "remote"."""
         from lilbee.providers.factory import create_provider
 

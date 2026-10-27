@@ -94,7 +94,7 @@ dependencies = [
 # specifier names a pre-release, to let plain `pip` resolve the beta-versioned
 # wheels without `--pre`.
 engine = ["lilbee-engine>=0.6.90b1"]
-litellm = ["litellm>=1.84.0,<1.99"]
+providers = ["liter-llm>=2.4.1,<3"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 # playwright installs the headless Chromium shell that browser-mode crawls launch.
 # ada-url parses a page address with the URL standard the crawler keys pages by.
@@ -109,7 +109,7 @@ cuda12 = [
     "nvidia-cublas-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
     "nvidia-cuda-nvrtc-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
-release = ["lilbee[crawler,litellm,graph]"]
+release = ["lilbee[crawler,providers,graph]"]
 
 [project.urls]
 Homepage = "https://lilbee.sh/"
@@ -191,7 +191,7 @@ timeout = 60
 markers = [
     "slow: integration tests that download models or take >10s",
     "real_model_classify: opt out of the global _classify_installed_models mock",
-    "real_litellm_probe: opt out of the global litellm_available True override",
+    "real_provider_sdk_probe: opt out of the global provider_sdk_available True override",
     "real_engine_resolution: opt out of the engine-binary seal (host PATH and LILBEE_LLAMA_SERVER_PATH resolve again)",
     "xdist_group: pin grouped tests to a single xdist worker for serial execution",
     "no_health_default: opt out of the launch tests' default-healthy fixture",

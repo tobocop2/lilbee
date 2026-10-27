@@ -341,13 +341,13 @@ def test_canonicalize_embedding_model_ok_passthrough():
 
 
 @pytest.fixture
-def _litellm_absent():
-    """Pretend the litellm extra is not installed (the reported crash scenario)."""
-    with mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=False):
+def _providers_absent():
+    """Pretend the providers extra is not installed (the reported crash scenario)."""
+    with mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=False):
         yield
 
 
-def test_embedding_fallback_skips_chat_model(_litellm_absent):
+def test_embedding_fallback_skips_chat_model(_providers_absent):
     """A stale embedding ref must not fall back to an installed *chat* model.
 
     Regression: an unusable ``ollama/...`` embedder used to fall back to
@@ -366,7 +366,7 @@ def test_embedding_fallback_skips_chat_model(_litellm_absent):
     assert canon.status != ValidationResult.OK
 
 
-def test_embedding_fallback_picks_installed_embedding_model(_litellm_absent):
+def test_embedding_fallback_picks_installed_embedding_model(_providers_absent):
     """With both a chat and an embedding model installed, the embedding
     role falls back to the embedding model, never the chat model."""
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
@@ -383,21 +383,21 @@ def test_embedding_fallback_picks_installed_embedding_model(_litellm_absent):
     assert canon.status != ValidationResult.OK
 
 
-def test_ollama_ref_unusable_when_litellm_missing(_litellm_absent):
-    """An ollama ref with the litellm extra absent is unusable, reason names litellm."""
+def test_ollama_ref_unusable_when_providers_missing(_providers_absent):
+    """An ollama ref with the providers extra absent is unusable, reason names the extra."""
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
     with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
         _holding(registry_cls, [])
         canon = canonicalize_embedding_model()
     assert canon.status != ValidationResult.OK
-    assert canon.reason is not None and "litellm" in canon.reason
+    assert canon.reason is not None and "providers" in canon.reason
 
 
 def test_ollama_ref_unusable_when_server_unreachable():
-    """litellm present but the server is down: unusable, reason names the server."""
+    """providers extra present but the server is down: unusable, reason names the server."""
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
     with (
-        mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True),
+        mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=True),
         mock.patch(
             "lilbee.modelhub.model_manager.validation.classify_remote_models",
             return_value=[],
@@ -418,7 +418,7 @@ def test_ollama_ref_unusable_when_the_server_listing_is_malformed():
     # The parse loop runs outside the request guard, so this raises past it.
     response.json.return_value = {"models": [None]}
     with (
-        mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True),
+        mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=True),
         mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get",
             return_value=response,
@@ -432,10 +432,10 @@ def test_ollama_ref_unusable_when_the_server_listing_is_malformed():
 
 
 def test_ollama_ref_kept_when_server_live():
-    """litellm present and the server lists models: keep the user's ollama ref."""
+    """providers extra present and the server lists models: keep the user's ollama ref."""
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
     with (
-        mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True),
+        mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=True),
         mock.patch(
             "lilbee.modelhub.model_manager.validation.classify_remote_models",
             return_value=[mock.MagicMock()],

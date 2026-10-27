@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 # Display name for the active backend the SDK is talking to. The
 # adapter's own identity is exposed separately via provider_name.
 from lilbee.providers.backend_names import BackendName
+from lilbee.providers.base import TokenUsage
 from lilbee.providers.local_servers import detect_local_server
 
 if TYPE_CHECKING:
@@ -127,6 +128,7 @@ class CompletionResult:
     finish_reason: str | None = None
     model: str | None = None
     tool_calls: tuple[SdkToolCall, ...] = ()
+    usage: TokenUsage = field(default_factory=TokenUsage)
 
 
 @dataclass(frozen=True)
@@ -136,6 +138,7 @@ class StreamChunk:
     content: str
     finish_reason: str | None = None
     tool_call_deltas: tuple[SdkToolCallDelta, ...] = ()
+    usage: TokenUsage | None = None
 
 
 @dataclass(frozen=True)

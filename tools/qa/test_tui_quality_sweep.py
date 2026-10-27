@@ -166,7 +166,7 @@ def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
 def test_settings_screen_omits_unavailable_tabs(tui: TuiSession, lane: Lane) -> None:
     """Settings tabs that depend on optional extras are hidden, not greyed out.
 
-    The plain wheel install ships without [crawler] or [litellm] and leaves
+    The plain wheel install ships without [crawler] or [providers] and leaves
     ``cfg.wiki=False``, so the API-Keys / Crawling / Wiki tabs are absent.
     The release binary bundles those extras, so the tabs render there and
     this invariant doesn't apply.
@@ -177,6 +177,6 @@ def test_settings_screen_omits_unavailable_tabs(tui: TuiSession, lane: Lane) -> 
     tui.send("/settings\r")
     tui.wait_for("Settings", timeout=TUI_SCREEN_TIMEOUT)
     visible = tui.text()
-    assert "API-Keys" not in visible, "API-Keys tab should be hidden without litellm"
+    assert "API-Keys" not in visible, "API-Keys tab should be hidden without the providers extra"
     assert "Crawling" not in visible, "Crawling tab should be hidden without crawler extra"
     assert "Wiki" not in visible, "Wiki tab should be hidden when cfg.wiki is false"

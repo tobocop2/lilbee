@@ -86,31 +86,31 @@ class _FakeManager:
         self,
         *,
         native: list[str] | None = None,
-        litellm: list[str] | None = None,
+        remote: list[str] | None = None,
     ) -> None:
         self._native = list(native or [])
-        self._litellm = list(litellm or [])
+        self._remote = list(remote or [])
         self.pull_calls: list[tuple[str, ModelSource]] = []
         self.remove_calls: list[tuple[str, ModelSource | None]] = []
 
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
         if source is None:
-            return sorted({*self._native, *self._litellm})
+            return sorted({*self._native, *self._remote})
         if source is ModelSource.NATIVE:
             return list(self._native)
-        return list(self._litellm)
+        return list(self._remote)
 
     def is_installed(self, model: str, source: ModelSource | None = None) -> bool:
         if source is None:
-            return model in self._native or model in self._litellm
+            return model in self._native or model in self._remote
         if source is ModelSource.NATIVE:
             return model in self._native
-        return model in self._litellm
+        return model in self._remote
 
     def get_source(self, model: str) -> ModelSource | None:
         if model in self._native:
             return ModelSource.NATIVE
-        if model in self._litellm:
+        if model in self._remote:
             return ModelSource.REMOTE
         return None
 
@@ -134,7 +134,7 @@ class _FakeManager:
 
 @pytest.fixture
 def fake_manager():
-    manager = _FakeManager(native=[_CHAT_REF], litellm=[_OLLAMA_REF])
+    manager = _FakeManager(native=[_CHAT_REF], remote=[_OLLAMA_REF])
     with patch("lilbee.app.models.get_services", return_value=MagicMock(model_manager=manager)):
         yield manager
 
@@ -296,7 +296,7 @@ class TestListModelsData:
         sources = {e.source for e in data.models}
         assert sources == {"native", "ollama"}
 
-    def test_filter_source_native_skips_litellm_http(self, fake_manager, native_manifests):
+    def test_filter_source_native_skips_remote_http(self, fake_manager, native_manifests):
         with patch("lilbee.modelhub.model_manager.classify_all_remote_models") as classify:
             data = model_mod.list_models_data(source=ModelSource.NATIVE)
         classify.assert_not_called()

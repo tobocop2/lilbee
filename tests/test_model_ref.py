@@ -7,6 +7,7 @@ import pytest
 from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.core.config import Config
 from lilbee.modelhub.model_manager.types import RemoteModel
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import (
     format_remote_ref,
     is_native_gguf_ref,
@@ -362,6 +363,16 @@ class TestTranslateOptions:
         assert "num_ctx" not in result
         assert "top_k" not in result
 
+    @pytest.mark.parametrize("raw", ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514"])
+    def test_api_ref_sends_no_local_only_option(self, raw: str) -> None:
+        """A hosted body rejects keys it does not know, so the local-only three never travel."""
+        opts = {"temperature": 0.7, "num_ctx": 4096, "top_k": 40, "repeat_penalty": 1.1}
+        assert translate_options(opts, parse_model_ref(raw)) == {"temperature": 0.7}
+
+    def test_local_ref_keeps_all_three_local_only_options(self) -> None:
+        opts = {"num_ctx": 4096, "top_k": 40, "repeat_penalty": 1.1}
+        assert translate_options(opts, parse_model_ref("ollama/llama3.2:1b")) == opts
+
     def test_local_model_keeps_options(self) -> None:
         ref = parse_model_ref(_LOCAL_REF)
         opts = {"temperature": 0.7, "num_predict": 1024, "num_ctx": 4096}
@@ -406,6 +417,77 @@ class TestTranslateOptions:
         ref = parse_model_ref("ollama/llama3.2:1b")
         assert "reasoning_effort" not in translate_options({"think": True}, ref)
 
+    @pytest.mark.parametrize(
+        ("option", "value"),
+        [
+            ("seed", 0),
+            ("seed", 7),
+            ("frequency_penalty", 0.0),
+            ("frequency_penalty", 0.5),
+            ("presence_penalty", 0.0),
+            ("presence_penalty", -0.5),
+        ],
+        ids=str,
+    )
+    def test_anthropic_refuses_any_value_without_response_format(
+        self, option: str, value: float
+    ) -> None:
+        """Zero counts as set: the request is refused before any call, as litellm refused it."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        with pytest.raises(ProviderError, match=option) as caught:
+            translate_options({"temperature": 0.5, option: value}, ref)
+        assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+        assert caught.value.provider == "remote"
+
+    @pytest.mark.parametrize(
+        ("option", "value"),
+        [
+            ("seed", 0),
+            ("seed", 7),
+            ("frequency_penalty", 0.0),
+            ("frequency_penalty", 0.5),
+            ("presence_penalty", 0.0),
+            ("presence_penalty", -0.5),
+        ],
+        ids=str,
+    )
+    def test_anthropic_drops_any_value_with_response_format(
+        self, option: str, value: float
+    ) -> None:
+        """With a response_format the three options are dropped and the request goes out."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        reply_format = {"type": "json_object"}
+        result = translate_options(
+            {"temperature": 0.5, "response_format": reply_format, option: value}, ref
+        )
+        assert result == {"temperature": 0.5, "response_format": reply_format}
+
+    def test_anthropic_empty_response_format_counts_as_set(self) -> None:
+        """A present response_format key is enough, even when its value is empty."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        result = translate_options({"temperature": 0.5, "response_format": {}, "seed": 7}, ref)
+        assert result == {"temperature": 0.5, "response_format": {}}
+
+    @pytest.mark.parametrize("option", ["seed", "frequency_penalty", "presence_penalty"], ids=str)
+    def test_anthropic_sends_an_unset_option_unchanged(self, option: str) -> None:
+        """None and absent are the same: nothing is refused and nothing is added."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        assert translate_options({"temperature": 0.5, option: None}, ref) == {"temperature": 0.5}
+        assert translate_options({"temperature": 0.5}, ref) == {"temperature": 0.5}
+
+    def test_anthropic_refusal_names_only_the_options_set(self) -> None:
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        with pytest.raises(ProviderError) as caught:
+            translate_options({"seed": 0, "presence_penalty": 0.5, "frequency_penalty": None}, ref)
+        assert "seed" in str(caught.value)
+        assert "presence_penalty" in str(caught.value)
+        assert "frequency_penalty" not in str(caught.value)
+
+    @pytest.mark.parametrize("raw", ["openai/gpt-4o", "ollama/llama3.2:1b"])
+    def test_other_refs_keep_seed_and_penalties(self, raw: str) -> None:
+        opts = {"seed": 7, "frequency_penalty": 0.1, "presence_penalty": 0.2}
+        assert translate_options(opts, parse_model_ref(raw)) == opts
+
 
 class TestChatOptionsThink:
     def test_think_false_maps_to_template_kwargs(self) -> None:
@@ -448,7 +530,7 @@ class TestChatOptionTranslationParity:
 
     Pins the intentional divergence so the two paths can't silently drift:
     the local llama-server path keeps top_k/repeat_penalty and renames
-    num_predict->max_tokens; the API path additionally strips top_k/num_ctx.
+    num_predict->max_tokens; the API path additionally strips top_k/repeat_penalty/num_ctx.
     Both rename num_predict consistently and neither leaks a key its backend
     would reject.
     """
@@ -487,19 +569,3 @@ class TestChatOptionTranslationParity:
         """Every emitted key is one the llama-server request builder accepts."""
         translated = self._local()
         assert set(translated) <= _LOCAL_CHAT_OPTION_KEYS
-
-    def test_api_translation_does_not_error_in_litellm(self) -> None:
-        """litellm accepts the API-translated kwargs without raising.
-
-        Confirms the audit finding empirically: litellm 1.x forwards
-        repeat_penalty (into extra_body for OpenAI-compatible providers)
-        rather than rejecting it, so keeping it is not a correctness bug.
-        """
-        litellm = pytest.importorskip("litellm")
-        translated = self._api()
-        params = litellm.utils.get_optional_params(
-            model="gpt-4o", custom_llm_provider="openai", **translated
-        )
-        assert params["max_tokens"] == 1024
-        # repeat_penalty is forwarded, not dropped or errored on.
-        assert params.get("extra_body", {}).get("repeat_penalty") == 1.1

@@ -1,4 +1,4 @@
-"""The API key a hosted chat request carries, read at the HTTP transport."""
+"""The API key a hosted chat request carries, read at the client."""
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ from unittest import mock
 import httpx
 import pytest
 
-pytest.importorskip("litellm")
-
 from lilbee.app.settings import apply_settings_update
 from lilbee.catalog.types import KeyStatus
 from lilbee.core.config import cfg
@@ -19,45 +17,26 @@ from lilbee.providers import key_check
 from lilbee.providers.base import ProviderError
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.sdk_backend import PROVIDER_API_KEY_ENV
+from tests import _fake_sdk as fakes
 
 GEMINI_MODEL = "gemini/gemini-2.0-flash"
 OPENAI_MODEL = "openai/gpt-4o-mini"
 LM_STUDIO_MODEL = "lm_studio/local-model"
-_GEMINI_REPLY = {
-    "candidates": [
-        {"content": {"parts": [{"text": "hi"}], "role": "model"}, "finishReason": "STOP"}
-    ],
-    "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
-}
-_OPENAI_REPLY = {
-    "id": "x",
-    "object": "chat.completion",
-    "created": 0,
-    "model": "gpt-4o-mini",
-    "choices": [
-        {"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}
-    ],
-    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-}
 
 
 class _Wire:
-    """Records every request litellm sends and answers it like the provider would."""
+    """Answers each chat like a provider and reports the key the client carried."""
 
-    def __init__(self) -> None:
-        self.requests: list[httpx.Request] = []
+    def __init__(self, fake: fakes.FakeSdk) -> None:
+        self.fake = fake
+        self.fake.chat_result = fakes.text_response("hi")
 
-    def send(self, _client: httpx.Client, request: httpx.Request, **_: Any) -> httpx.Response:
-        self.requests.append(request)
-        reply = _GEMINI_REPLY if "googleapis" in request.url.host else _OPENAI_REPLY
-        return httpx.Response(200, json=reply, request=request)
+    @property
+    def requests(self) -> list[dict[str, Any]]:
+        return [fields for name, fields in self.fake.calls if name == "chat"]
 
     def last_key(self) -> str | None:
-        headers = self.requests[-1].headers
-        if "x-goog-api-key" in headers:
-            return headers["x-goog-api-key"]
-        auth = headers.get("authorization")
-        return auth.removeprefix("Bearer ") if auth else None
+        return self.fake.clients[-1]["api_key"]
 
 
 @pytest.fixture(autouse=True)
@@ -75,9 +54,8 @@ def _isolated(tmp_path, monkeypatch) -> Iterator[None]:
 
 @pytest.fixture
 def wire() -> Iterator[_Wire]:
-    recorder = _Wire()
-    with mock.patch.object(httpx.Client, "send", autospec=True, side_effect=recorder.send):
-        yield recorder
+    with fakes.installed(fakes.FakeSdk(require_key=True)) as fake:
+        yield _Wire(fake)
 
 
 def _chat(provider: RoutingProvider, model: str) -> None:
@@ -97,7 +75,7 @@ class TestWhichKeyIsSent:
         cfg.llm_api_key = "generic-key"
         with pytest.raises(ProviderError):
             _chat(RoutingProvider(), model)
-        assert not [r for r in wire.requests if "generic-key" in str(r.headers)]
+        assert not wire.requests
         assert key_check.provider_key_status(provider) is KeyStatus.MISSING_KEY
 
     def test_provider_key_wins_over_llm_api_key(self, wire: _Wire, model: str) -> None:
@@ -152,7 +130,7 @@ class TestKeyChangedInSettings:
         with pytest.raises(ProviderError):
             _chat(provider, GEMINI_MODEL)
 
-        assert not [r for r in wire.requests[sent_before:] if "googleapis" in r.url.host]
+        assert len(wire.requests) == sent_before
         assert key_check.provider_key_status("gemini") is KeyStatus.MISSING_KEY
         assert "GEMINI_API_KEY" not in os.environ
 

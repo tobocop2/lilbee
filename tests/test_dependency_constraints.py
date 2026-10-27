@@ -17,6 +17,9 @@ from pathlib import Path
 
 from packaging.requirements import Requirement
 
+from lilbee.providers.factory import sdk_library
+
+SDK_DIST = sdk_library().dist
 _PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 _QA_REQUIREMENTS = Path(__file__).parents[1] / "tools" / "qa" / "requirements.txt"
 
@@ -39,21 +42,16 @@ def _qa_requirement(name: str) -> Requirement:
     return next(r for r in reqs if r.name == name)
 
 
-def test_litellm_extra_stops_before_the_next_major() -> None:
-    # 1.98.0 ships cp310-abi3 wheels for macOS (x86_64/arm64), Windows, and
-    # manylinux, so the maturin-build wheel gap that capped the line at <1.92
-    # is closed. The <1.99 cap only keeps the next line's prereleases off the
-    # --prerelease=allow channel.
-    req = _extra_requirement("litellm", "litellm")
-    assert not req.specifier.contains("1.99.0rc1", prereleases=True)
-    assert not req.specifier.contains("1.99.0")
+def test_providers_extra_stops_before_the_next_major() -> None:
+    req = _extra_requirement("providers", SDK_DIST)
+    assert not req.specifier.contains("3.0.0rc1", prereleases=True)
+    assert not req.specifier.contains("3.0.0")
 
 
-def test_litellm_extra_admits_locked_stable() -> None:
-    req = _extra_requirement("litellm", "litellm")
-    assert req.specifier.contains("1.89.1")
-    assert req.specifier.contains("1.91.0")
-    assert req.specifier.contains("1.98.0")
+def test_providers_extra_admits_locked_stable() -> None:
+    req = _extra_requirement("providers", SDK_DIST)
+    assert req.specifier.contains("2.4.1")
+    assert not req.specifier.contains("2.4.0")
 
 
 def test_mcp_rejects_the_line_without_the_mcpserver_module() -> None:
