@@ -90,11 +90,16 @@ async def await_chat(app, pilot) -> object:
     show handler moves focus to the chat input, so the wait also covers that handler
     having returned: a caller that opens a drawer and types would otherwise lose focus
     to it.
+
+    An app that exits while the wait runs (a handler raised and Textual shut it down)
+    fails the wait at once. The handler's own error is raised when ``run_test`` closes.
     """
     import time
 
     deadline = time.monotonic() + _GATE_HANDOVER_TIMEOUT_S
     while time.monotonic() < deadline:
+        if app.return_code is not None:
+            raise AssertionError("the app exited before it showed a composed chat screen")
         chat = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
         if (
             chat is not None
