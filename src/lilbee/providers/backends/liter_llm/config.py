@@ -41,14 +41,33 @@ def _wire_base_url(api_base: str | None) -> str | None:
     return f"{trimmed}/v1"
 
 
-def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+EMPTY_MESSAGE_PLACEHOLDER = "[System: Empty message content sanitised to satisfy protocol]"
+
+
+def _is_blank_turn(msg: dict[str, Any]) -> bool:
+    """Whether *msg* is a user or assistant turn with blank text and no tool calls."""
+    content = msg.get("content")
+    return (
+        msg["role"] in ("user", "assistant")
+        and isinstance(content, str)
+        and not content.strip()
+        and not msg.get("tool_calls")
+    )
+
+
+def _format_messages(
+    messages: list[dict[str, Any]], *, fill_blank_turns: bool = False
+) -> list[dict[str, Any]]:
     """Convert messages with inline image bytes into OpenAI content parts.
 
-    Messages without ``images`` pass through untouched.
+    Messages without ``images`` pass through untouched. With *fill_blank_turns*,
+    a blank user or assistant turn carries a placeholder, as Anthropic rejects blank text.
     """
     formatted: list[dict[str, Any]] = []
     for msg in messages:
-        if "images" in msg:
+        if fill_blank_turns and "images" not in msg and _is_blank_turn(msg):
+            formatted.append({**msg, "content": EMPTY_MESSAGE_PLACEHOLDER})
+        elif "images" in msg:
             content_parts: list[dict[str, Any]] = [{"type": "text", "text": msg.get("content", "")}]
             for img in msg["images"]:
                 if isinstance(img, bytes):
@@ -86,7 +105,9 @@ def _chat_fields(request: CompletionRequest, *, stream: bool) -> dict[str, Any]:
     liter_llm = _require_sdk()
     fields: dict[str, Any] = {
         "model": _route_model(request.ref, request.api_base),
-        "messages": _format_messages(request.messages),
+        "messages": _format_messages(
+            request.messages, fill_blank_turns=request.ref.provider == "anthropic"
+        ),
         "stream": stream,
     }
     extra_body: dict[str, Any] = {}

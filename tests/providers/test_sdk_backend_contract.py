@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
+from lilbee.providers.backends.liter_llm.config import EMPTY_MESSAGE_PLACEHOLDER
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import (
@@ -171,6 +172,48 @@ class TestCompleteReturnsCompletionResult:
         sdk.chat_result = fakes.text_response("ok")
         backend.complete(_completion_request())
         assert sdk.last("chat")["messages"] == [{"role": "user", "content": "hi"}]
+
+    @pytest.mark.parametrize("empty", ["", "   ", "\n"], ids=repr)
+    def test_anthropic_empty_text_gets_a_placeholder(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, empty: str
+    ) -> None:
+        """Anthropic rejects empty text, so the user and assistant turns carry a placeholder."""
+        sdk.chat_result = fakes.text_response("ok")
+        backend.complete(
+            _completion_request(
+                "anthropic/claude-sonnet-4-20250514",
+                messages=[
+                    {"role": "user", "content": empty},
+                    {"role": "assistant", "content": empty},
+                    {"role": "user", "content": "real"},
+                ],
+            )
+        )
+        sent = sdk.last("chat")["messages"]
+        assert sent[0] == {"role": "user", "content": EMPTY_MESSAGE_PLACEHOLDER}
+        assert sent[1] == {"role": "assistant", "content": EMPTY_MESSAGE_PLACEHOLDER}
+        assert sent[2] == {"role": "user", "content": "real"}
+
+    def test_anthropic_tool_call_turn_keeps_its_empty_content(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response("ok")
+        call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        turn = {"role": "assistant", "content": "", "tool_calls": [call]}
+        backend.complete(
+            _completion_request(
+                "anthropic/claude-sonnet-4-20250514",
+                messages=[{"role": "user", "content": "go"}, turn],
+            )
+        )
+        assert sdk.last("chat")["messages"][1] == turn
+
+    def test_other_providers_keep_empty_text(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response("ok")
+        backend.complete(_completion_request(messages=[{"role": "user", "content": ""}]))
+        assert sdk.last("chat")["messages"] == [{"role": "user", "content": ""}]
 
     def test_non_bytes_images_are_ignored(self, backend: LlmSdkBackend, sdk: fakes.FakeSdk) -> None:
         sdk.chat_result = fakes.text_response("ok")
