@@ -324,7 +324,9 @@ class SdkLLMProvider(LLMProvider):
         names: list[str] = []
         for spec, base_url in configured_local_servers():
             try:
-                names.extend(self._backend.list_models(base_url=base_url, api_key=cfg.llm_api_key))
+                names.extend(
+                    self._backend.list_models(spec=spec, base_url=base_url, api_key=cfg.llm_api_key)
+                )
             except NotImplementedError:
                 continue
             except Exception as exc:

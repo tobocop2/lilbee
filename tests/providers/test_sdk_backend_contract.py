@@ -18,6 +18,7 @@ import pytest
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.backends.liter_llm.config import EMPTY_MESSAGE_PLACEHOLDER
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.local_servers import LM_STUDIO, OLLAMA
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
@@ -651,7 +652,7 @@ class TestListModels:
         resp.json.return_value = {"models": [{"name": "llama3:8b"}]}
         resp.raise_for_status = mock.MagicMock()
         with mock.patch("httpx.get", return_value=resp) as mock_get:
-            models = backend.list_models(base_url="http://localhost:11434", api_key="")
+            models = backend.list_models(spec=OLLAMA, base_url="http://localhost:11434", api_key="")
         assert models == ["llama3:8b"]
         assert "/api/tags" in mock_get.call_args[0][0]
 
@@ -660,21 +661,39 @@ class TestListModels:
             mock.patch("httpx.get", side_effect=httpx.ConnectError("refused")),
             pytest.raises(ProviderError, match="Cannot list models"),
         ):
-            backend.list_models(base_url="http://localhost:11434", api_key="")
+            backend.list_models(spec=OLLAMA, base_url="http://localhost:11434", api_key="")
 
     def test_openai_v1_models_happy_path(self, backend: LlmSdkBackend) -> None:
         resp = mock.MagicMock()
         resp.json.return_value = {"data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}]}
         resp.raise_for_status = mock.MagicMock()
         with mock.patch("httpx.get", return_value=resp) as mock_get:
-            models = backend.list_models(base_url="https://api.openai.com", api_key="sk-x")
+            models = backend.list_models(
+                spec=LM_STUDIO, base_url="http://localhost:1234", api_key="sk-x"
+            )
         assert models == ["gpt-4o", "gpt-4o-mini"]
         headers = mock_get.call_args[1].get("headers", {})
         assert headers.get("Authorization") == "Bearer sk-x"
 
+    def test_ollama_at_a_lan_address_is_listed_by_tags_without_a_key(
+        self, backend: LlmSdkBackend
+    ) -> None:
+        resp = mock.MagicMock()
+        resp.json.return_value = {"models": [{"name": "llama3:8b"}]}
+        with mock.patch("httpx.get", return_value=resp) as mock_get:
+            models = backend.list_models(
+                spec=OLLAMA, base_url="http://192.168.1.20:11434", api_key="sk-x"
+            )
+        assert models == ["llama3:8b"]
+        assert mock_get.call_args[0][0] == "http://192.168.1.20:11434/api/tags"
+        assert "headers" not in mock_get.call_args[1]
+
     def test_non_ollama_returns_empty_on_error(self, backend: LlmSdkBackend) -> None:
         with mock.patch("httpx.get", side_effect=httpx.ConnectError("refused")):
-            assert backend.list_models(base_url="https://api.openai.com", api_key="") == []
+            assert (
+                backend.list_models(spec=LM_STUDIO, base_url="http://localhost:1234", api_key="")
+                == []
+            )
 
 
 class TestShowModel:

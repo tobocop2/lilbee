@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 # adapter's own identity is exposed separately via provider_name.
 from lilbee.providers.backend_names import BackendName
 from lilbee.providers.base import TokenUsage
-from lilbee.providers.local_servers import detect_local_server
+from lilbee.providers.local_servers import LocalServerSpec, detect_local_server
 
 if TYPE_CHECKING:
     # circular: sdk_backend -> model_ref -> types -> sdk_backend (annotation-only)
@@ -260,8 +260,12 @@ class LlmSdkBackend(Protocol):
         """
         ...
 
-    def list_models(self, *, base_url: str, api_key: str) -> list[str]:
-        """List model identifiers visible to the backend. Return [] if unsupported."""
+    def list_models(self, *, spec: LocalServerSpec, base_url: str, api_key: str) -> list[str]:
+        """List model identifiers served by the local server *spec* at *base_url*.
+
+        The server kind comes from *spec*, never from the address. A server
+        that needs no key (Ollama) gets none. Return [] if unsupported.
+        """
         ...
 
     def list_chat_models(self, provider: str) -> list[str]:

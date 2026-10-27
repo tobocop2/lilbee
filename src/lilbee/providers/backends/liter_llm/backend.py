@@ -28,7 +28,12 @@ from lilbee.providers.backends.liter_llm.events import (
     _usage,
 )
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.local_servers import OLLAMA, detect_local_server, openai_models_url
+from lilbee.providers.local_servers import (
+    OLLAMA,
+    LocalServerSpec,
+    detect_local_server,
+    openai_models_url,
+)
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     CompletionResult,
@@ -220,10 +225,13 @@ class LiterLlmBackend:
             scores[item.index] = float(item.relevance_score)
         return RerankResult(scores=scores)
 
-    def list_models(self, *, base_url: str, api_key: str) -> list[str]:
-        """List models from Ollama (``/api/tags``) or an OpenAI-compatible ``/v1/models``."""
+    def list_models(self, *, spec: LocalServerSpec, base_url: str, api_key: str) -> list[str]:
+        """List models from Ollama (``/api/tags``) or an OpenAI-compatible ``/v1/models``.
+
+        *spec* is the configured server being listed, so the kind never depends on the
+        address. Ollama is listed without a key, as on the request path.
+        """
         clean_base = base_url.rstrip("/")
-        spec = detect_local_server(clean_base)
         if spec is OLLAMA:
             return self._list_ollama_models(clean_base)
         return self._list_openai_models(clean_base, api_key)
