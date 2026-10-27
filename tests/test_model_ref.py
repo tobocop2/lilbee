@@ -428,15 +428,38 @@ class TestTranslateOptions:
 
     @pytest.mark.parametrize(
         ("option", "zero"),
-        [("seed", 0), ("frequency_penalty", 0.0), ("presence_penalty", 0.0)],
+        [
+            ("seed", 0),
+            ("frequency_penalty", 0.0),
+            ("presence_penalty", 0.0),
+            ("seed", None),
+            ("presence_penalty", None),
+        ],
         ids=str,
     )
-    def test_anthropic_refuses_a_zero_value_too(self, option: str, zero: float) -> None:
-        """A zero is a value the caller set; only None means unset."""
+    def test_anthropic_drops_a_zero_or_unset_value(self, option: str, zero: float | None) -> None:
+        """A zero changes nothing and None is unset, so neither is refused or sent."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        result = translate_options({"temperature": 0.5, option: zero}, ref)
+        assert result == {"temperature": 0.5}
+
+    @pytest.mark.parametrize(
+        ("option", "value"),
+        [("seed", 7), ("seed", -1), ("frequency_penalty", 0.1), ("presence_penalty", -0.5)],
+        ids=str,
+    )
+    def test_anthropic_still_refuses_a_nonzero_value(self, option: str, value: float) -> None:
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
         with pytest.raises(ProviderError, match=option) as caught:
-            translate_options({option: zero}, ref)
+            translate_options({option: value}, ref)
         assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+
+    def test_anthropic_refusal_names_only_the_nonzero_options(self) -> None:
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        with pytest.raises(ProviderError) as caught:
+            translate_options({"seed": 0, "presence_penalty": 0.5}, ref)
+        assert "presence_penalty" in str(caught.value)
+        assert "seed" not in str(caught.value)
 
     def test_anthropic_refusal_names_every_option_set(self) -> None:
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
