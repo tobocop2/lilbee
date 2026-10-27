@@ -231,11 +231,18 @@ class LiterLlmBackend:
         come back without the ``provider/`` prefix, sorted; the routing layer adds
         the prefix back. A provider the catalog does not hold, or an empty one,
         gives an empty list: the library reads an empty id as "every provider".
+        A library that is installed but cannot import also gives an empty list,
+        so the model pickers show no hosted models instead of failing.
         """
         catalog_id = _CATALOG_PROVIDER.get(provider, provider)
         if not catalog_id:
             return []
-        models = _require_sdk().list_catalog_models(catalog_id)
+        try:
+            sdk = _require_sdk()
+        except ProviderError:
+            log.debug("Provider library unavailable; no hosted chat models", exc_info=True)
+            return []
+        models = sdk.list_catalog_models(catalog_id)
         return sorted({m.model for m in models if m.mode == _CHAT_MODE})
 
     @staticmethod

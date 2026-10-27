@@ -117,6 +117,12 @@ class TestMissingSdk:
         ):
             backend.complete(_completion_request())
 
+    def test_listing_chat_models_gives_an_empty_list(self, backend: LlmSdkBackend) -> None:
+        from tests._sys_modules import inject_modules
+
+        with inject_modules({fakes.SDK_MODULE: None}):
+            assert backend.list_chat_models("openai") == []
+
 
 class TestCompleteReturnsCompletionResult:
     def test_content_model_and_finish_reason_are_extracted(
