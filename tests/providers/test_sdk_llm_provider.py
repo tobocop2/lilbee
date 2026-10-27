@@ -19,6 +19,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.local_servers import LocalServerSpec
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     CompletionResult,
@@ -58,7 +59,7 @@ class FakeBackend:
     embed_calls: list[EmbeddingRequest] = field(default_factory=list)
     logging_calls: list[bool] = field(default_factory=list)
     pull_calls: list[tuple[str, str]] = field(default_factory=list)
-    list_models_calls: list[tuple[str, str]] = field(default_factory=list)
+    list_models_calls: list[tuple[str, str, str]] = field(default_factory=list)
     list_chat_models_calls: list[str] = field(default_factory=list)
     supports_tools_calls: list[str] = field(default_factory=list)
 
@@ -91,8 +92,8 @@ class FakeBackend:
             raise self.raise_embed
         return self.embed_result
 
-    def list_models(self, *, base_url: str, api_key: str) -> list[str]:
-        self.list_models_calls.append((base_url, api_key))
+    def list_models(self, *, spec: LocalServerSpec, base_url: str, api_key: str) -> list[str]:
+        self.list_models_calls.append((spec.key, base_url, api_key))
         if self.list_not_supported:
             raise NotImplementedError
         return self.list_models_result
@@ -584,6 +585,22 @@ class TestListModels:
         ):
             assert provider.list_models() == ["a", "b"]
 
+    def test_each_server_is_listed_under_its_own_spec(self) -> None:
+        from lilbee.providers.local_servers import LM_STUDIO, OLLAMA
+
+        cfg.llm_api_key = "sk-lan"
+        backend = FakeBackend(list_models_result=["m"])
+        provider = SdkLLMProvider(backend)
+        with mock.patch(
+            "lilbee.providers.sdk_llm_provider.configured_local_servers",
+            return_value=[(OLLAMA, "http://gpu-box:11434"), (LM_STUDIO, "http://gpu-box:1234")],
+        ):
+            provider.list_models()
+        assert backend.list_models_calls == [
+            ("ollama", "http://gpu-box:11434", "sk-lan"),
+            ("lm_studio", "http://gpu-box:1234", "sk-lan"),
+        ]
+
     def test_returns_empty_when_backend_says_not_supported(self) -> None:
         backend = FakeBackend(list_not_supported=True)
         provider = SdkLLMProvider(backend)
@@ -593,7 +610,9 @@ class TestListModels:
         """An unexpected error from one server is swallowed (empty list), not raised."""
 
         class _FailingBackend(FakeBackend):
-            def list_models(self, *, base_url: str, api_key: str) -> list[str]:
+            def list_models(
+                self, *, spec: LocalServerSpec, base_url: str, api_key: str
+            ) -> list[str]:
                 raise RuntimeError("boom")
 
         provider = SdkLLMProvider(_FailingBackend())
@@ -607,7 +626,9 @@ class TestListModels:
         up_url = "http://localhost:1234"
 
         class _PartlyDownBackend(FakeBackend):
-            def list_models(self, *, base_url: str, api_key: str) -> list[str]:
+            def list_models(
+                self, *, spec: LocalServerSpec, base_url: str, api_key: str
+            ) -> list[str]:
                 if base_url == down_url:
                     raise ProviderError("ollama down", provider="fake")
                 return ["lmstudio-model"]
