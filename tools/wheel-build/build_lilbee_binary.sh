@@ -51,7 +51,7 @@ if ! uv run --no-sync python -c "import en_core_web_sm" >/dev/null 2>&1; then
         "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-${MODEL_VER}/en_core_web_sm-${MODEL_VER}-py3-none-any.whl"
 fi
 
-# Top-level *__mypyc*.so helpers (chardet, charset_normalizer, mypy) live at
+# Top-level *__mypyc*.so helpers (charset_normalizer, mypy) live at
 # site-packages root, not inside the package dir, so --include-package-data
 # misses them. Glob them explicitly; forward-compatible across version bumps.
 SITE_PKG=$(uv run --no-sync python -c "import site; print(site.getsitepackages()[0])")
@@ -94,19 +94,6 @@ if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
     done
 fi
 
-# chardet ships its detection models as .bin data files that the
-# self-check-extras charset probe loads. Neither --include-package-data nor
-# --include-data-dir keeps .bin (Nuitka does not classify it as data), so the
-# frozen probe dies with a missing models.bin. Force each .bin in explicitly. The package's .py/.so
-# come from --include-package=chardet above, so only the .bin data is listed.
-CHARDET_FLAGS=()
-CHARDET_MODELS=$(uv run --no-sync python -c "import chardet, pathlib; d = pathlib.Path(chardet.__file__).parent / 'models'; print(d if d.is_dir() else '')" 2>/dev/null || true)
-if [ -n "${CHARDET_MODELS}" ]; then
-    for _f in "${CHARDET_MODELS}"/*.bin; do
-        [ -f "${_f}" ] || continue
-        CHARDET_FLAGS+=(--include-data-files="${_f}=chardet/models/$(basename "${_f}")")
-    done
-fi
 # Spawned via `python -m`, so Nuitka's import following can miss them; include
 # them explicitly or the subprocess dies in the frozen build only. The splash
 # runner is never statically imported at all; the Vulkan probe is imported for
@@ -158,7 +145,6 @@ uv run --no-sync python -m nuitka \
     --include-package=liter_llm          --include-package-data=liter_llm \
     --include-package=crawlberg          --include-package-data=crawlberg \
     --include-package=ada_url            --include-package-data=ada_url \
-    --include-package=chardet            --include-package-data=chardet \
     --include-package=playwright \
     --enable-plugin=spacy \
     --include-package=spacy              --include-package-data=spacy \
@@ -180,6 +166,5 @@ uv run --no-sync python -m nuitka \
     --include-data-dir=src/lilbee/skills=lilbee/skills \
     "${CHILD_MODULE_FLAGS[@]}" \
     "${MYPYC_FLAGS[@]}" \
-    "${CHARDET_FLAGS[@]}" \
     "${LLAMA_SERVER_FLAGS[@]}" \
     src/lilbee/__main__.py

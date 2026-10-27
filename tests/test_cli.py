@@ -7508,15 +7508,7 @@ class TestSelfCheckExtras:
         return _stub
 
     def test_all_extras_present_json(self) -> None:
-        # The probe is stubbed (the import_module patch reaches chardet's own
-        # importlib machinery) and patched first, because mock.patch resolves
-        # its target through importlib.import_module. The real pipeline is
-        # covered by test_charset_probe_runs_real_detection.
         with (
-            mock.patch(
-                "lilbee.cli.commands.setup._probe_charset_detection",
-                return_value=None,
-            ),
             mock.patch(
                 "lilbee.cli.commands.setup.importlib.import_module",
                 side_effect=self._import_module_stub(missing=set()),
@@ -7532,83 +7524,10 @@ class TestSelfCheckExtras:
             "ada_url": True,
             "spacy": True,
             "graspologic_native": True,
-            "charset_detection": True,
         }
-
-    def test_charset_probe_runs_real_detection(self) -> None:
-        """The probe runs the real chardet pipeline, including the lazy
-        chardet.models import that frozen builds have shipped broken.
-
-        Calls the probe directly rather than the command: the unmocked
-        command imports the known-heavy extras (crawlberg, providers, spacy),
-        and a real crawlberg import leaves it in sys.modules, which breaks the
-        crawler tests' module injection.
-        """
-        from lilbee.cli.commands import setup as setup_module
-
-        assert setup_module._probe_charset_detection() is None
-
-    def test_probe_reports_missing_encoding(self) -> None:
-        from lilbee.cli.commands import setup as setup_module
-
-        with mock.patch("chardet.detect", return_value={"encoding": None}):
-            error = setup_module._probe_charset_detection()
-        assert error is not None
-        assert "no encoding" in error
-
-    def test_probe_reports_detection_exception(self) -> None:
-        from lilbee.cli.commands import setup as setup_module
-
-        with mock.patch(
-            "chardet.detect",
-            side_effect=ImportError("cannot import name 'BigramProfile' from 'chardet.models'"),
-        ):
-            error = setup_module._probe_charset_detection()
-        assert error is not None
-        assert "BigramProfile" in error
-
-    def test_charset_probe_failure_exits_nonzero_json(self) -> None:
-        with (
-            mock.patch(
-                "lilbee.cli.commands.setup._probe_charset_detection",
-                return_value="cannot import name 'BigramProfile' from 'chardet.models'",
-            ),
-            mock.patch(
-                "lilbee.cli.commands.setup.importlib.import_module",
-                side_effect=self._import_module_stub(missing=set()),
-            ),
-        ):
-            result = runner.invoke(app, ["--json", "self-check-extras"])
-        assert result.exit_code == 1, result.output
-        payload = json.loads(result.stdout.strip().splitlines()[-1])
-        assert payload["ok"] is False
-        assert payload["charset_detection"] is False
-        assert "BigramProfile" in payload["charset_detection_error"]
-
-    def test_charset_probe_failure_human_mode_reports_failure(self) -> None:
-        with (
-            mock.patch(
-                "lilbee.cli.commands.setup._probe_charset_detection",
-                return_value="chardet.detect returned no encoding",
-            ),
-            mock.patch(
-                "lilbee.cli.commands.setup.importlib.import_module",
-                side_effect=self._import_module_stub(missing=set()),
-            ),
-        ):
-            result = runner.invoke(app, ["self-check-extras"])
-        assert result.exit_code == 1, result.output
-        assert "charset_detection" in result.output
-        assert "MISSING" in result.output
 
     def test_one_extra_missing_exits_nonzero_json(self) -> None:
         with (
-            # Patched first: mock.patch resolves its target through
-            # importlib.import_module, which the next patch replaces.
-            mock.patch(
-                "lilbee.cli.commands.setup._probe_charset_detection",
-                return_value=None,
-            ),
             mock.patch(
                 "lilbee.cli.commands.setup.importlib.import_module",
                 side_effect=self._import_module_stub(missing={"crawlberg"}),
@@ -7630,10 +7549,6 @@ class TestSelfCheckExtras:
         sdk_module = sdk_library().module
         with (
             mock.patch(
-                "lilbee.cli.commands.setup._probe_charset_detection",
-                return_value=None,
-            ),
-            mock.patch(
                 "lilbee.cli.commands.setup.importlib.import_module",
                 side_effect=self._import_module_stub(missing={sdk_module}),
             ),
@@ -7647,12 +7562,6 @@ class TestSelfCheckExtras:
 
     def test_one_extra_missing_human_mode_reports_failure(self) -> None:
         with (
-            # Patched first: mock.patch resolves its target through
-            # importlib.import_module, which the next patch replaces.
-            mock.patch(
-                "lilbee.cli.commands.setup._probe_charset_detection",
-                return_value=None,
-            ),
             mock.patch(
                 "lilbee.cli.commands.setup.importlib.import_module",
                 side_effect=self._import_module_stub(missing={"spacy"}),

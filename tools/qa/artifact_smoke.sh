@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Core-functionality gate for a built lilbee artifact (standalone executable or
 # an installed wheel's entrypoint). Drives the user-facing surface end to end:
-# bundled extras + charset detection (self-check-extras), engine inference
+# bundled extras (self-check-extras), engine inference
 # (self-check: chat + embedding), document ingest + search, a RAG ask, and an
 # http-mode crawl, and a browser-mode crawl that proves the frozen binary loads
 # the crawler's native library and starts Chromium. Models come from a pre-populated models
@@ -62,8 +62,7 @@ embed_gguf=$(find "${models_dir}" -name 'nomic-embed-text-v1.5.Q4_K_M.gguf' \( -
 [ -n "${chat_gguf}" ] || { echo "chat model gguf not found under ${models_dir}" >&2; exit 1; }
 [ -n "${embed_gguf}" ] || { echo "embed model gguf not found under ${models_dir}" >&2; exit 1; }
 
-# Leg 0: bundled extras import and functional charset detection, the check for
-# the frozen chardet closure.
+# Leg 0: bundled extras import.
 # Skipped with the crawl leg: the check needs the crawler extra.
 if [ "${SKIP_CRAWL:-0}" != "1" ]; then
   "${exe}" self-check-extras

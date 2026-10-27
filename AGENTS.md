@@ -397,7 +397,7 @@ work; the greps below remain the full set a reviewer still runs by eye.
 - `grep -rnE "def \w+\(.*\) -> .*:\s*$" src/ | xargs -I{} awk 'def_lines>20'` (proxy: scan modules >700 LOC) — functions over ~20 lines need a split into named sub-helpers.
 - `grep -rn "from lilbee\.\(modelhub\|providers\|data\|retrieval\|wiki\|crawler\)" src/lilbee/catalog src/lilbee/core` — upward imports from foundation layers. catalog and core never import from anything above them.
 - `grep -rn "from lilbee\.\(retrieval\|wiki\|crawler\|cli\|server\)" src/lilbee/data src/lilbee/modelhub src/lilbee/providers` — Layer-2 modules importing Layer-3+. Invert via callback or move the helper down.
-- `grep -rn "include-package-data=lilbee_engine\|include-package-data=chardet" tools/wheel-build/` — Nuitka `--include-package-data` for a native-lib or opaque-data closure. Its heuristics silently drop `.dylib`/`.bin`; use `--include-data-dir` (verbatim). See Build & Release Artifacts.
+- `grep -rn "include-package-data=lilbee_engine" tools/wheel-build/` — Nuitka `--include-package-data` for a native-lib or opaque-data closure. Its heuristics silently drop `.dylib`/`.bin`; use `--include-data-dir` (verbatim). See Build & Release Artifacts.
 - `grep -rn "continue-on-error" .github/workflows/ | grep -iE "smoke|verify|self-check|artifact"` — a swallowed correctness gate. A smoke/verify step must fail the job; `continue-on-error` on one is how a broken artifact ships.
 
 ### Self-Review Checklist (before every push)
@@ -424,11 +424,10 @@ closure. These rules exist because each one shipped a broken artifact once.
   Both `--include-package-data=PKG` AND `--include-data-dir=SRC=DEST` route any
   `.dylib`/`.so`/`.dll` through Nuitka's DLL dependency tracker (which drops the
   engine's shared-library closure because nothing Nuitka scans references the
-  bundled `llama-server`), and both silently drop `.bin` data (chardet's
-  detection models). Neither is verbatim. Enumerate the files and pass each as
+  bundled `llama-server`), and both silently drop `.bin` data. Neither is verbatim. Enumerate the files and pass each as
   `--include-data-files=SRC=DEST` — that copies verbatim, exec bit and baked
   `@loader_path`/`$ORIGIN` rpath intact. `build_lilbee_binary.sh` does this for
-  the engine `bin/` and for `chardet/models/*.bin`. Symptom of getting it wrong:
+  the engine `bin/`. Symptom of getting it wrong:
   a binary that passes `--version` but errors `Library not loaded` /
   missing-data-file the moment it spawns the engine or crawls.
 - **Copy the whole shared-library closure; dereference SONAME symlinks.**
