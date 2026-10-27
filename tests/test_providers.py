@@ -15,7 +15,6 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.factory import sdk_library
 from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
 from tests._gguf_fixture import has_gguf_parser
@@ -42,11 +41,11 @@ def _reset_provider() -> None:
     reset_services()
 
 
-_SDK = sdk_library()
-SDK_DIST = _SDK.dist
-SDK_MODULE = _SDK.module
+# Literal names, not read from the code under test: a wrong name must fail the tests.
+SDK_DIST = "liter-llm"
+SDK_MODULE = "liter_llm"
 # The backend module the factory defers until a provider is built.
-SDK_BACKEND_MODULE = f"{_SDK.create_backend.__module__}.backend"
+SDK_BACKEND_MODULE = "lilbee.providers.backends.liter_llm.backend"
 
 TEST_MODEL_REPO = "org/test-model-GGUF"
 TEST_MODEL_FILE = "test-model.gguf"
@@ -3399,7 +3398,7 @@ class TestNeedsApiBase:
 
 
 class TestChatApiBaseRouting:
-    """Verify that chat() points local servers at their /v1 route and hosted refs at none."""
+    """Verify that chat() passes local servers their base URL and hosted refs none."""
 
     def _make_fake_sdk(self) -> fakes.FakeSdk:
         fake = fakes.FakeSdk()
@@ -3416,7 +3415,7 @@ class TestChatApiBaseRouting:
         with fakes.installed(self._make_fake_sdk()) as fake:
             provider.chat([{"role": "user", "content": "hi"}], model="ollama/qwen3:0.6b")
 
-        assert fake.clients[-1]["base_url"] == "http://localhost:11434/v1"
+        assert fake.clients[-1]["base_url"] == "http://localhost:11434"
         assert fake.last("chat")["model"] == "ollama/qwen3:0.6b"
 
     def test_frontier_model_omits_the_base_url(self) -> None:
@@ -3457,7 +3456,7 @@ class TestChatApiBaseRouting:
 
 
 class TestEmbedApiBaseRouting:
-    """Verify that embed() points local servers at their /v1 route and hosted refs at none."""
+    """Verify that embed() passes local servers their base URL and hosted refs none."""
 
     def test_ollama_embed_passes_the_base_url(self) -> None:
         from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
@@ -3472,7 +3471,7 @@ class TestEmbedApiBaseRouting:
         with fakes.installed(fake):
             provider.embed(["hello"])
 
-        assert fake.clients[-1]["base_url"] == "http://localhost:11434/v1"
+        assert fake.clients[-1]["base_url"] == "http://localhost:11434"
 
     def test_prefixed_embed_omits_the_base_url(self) -> None:
         from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend

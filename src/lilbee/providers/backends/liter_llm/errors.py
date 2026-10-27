@@ -42,7 +42,10 @@ _KIND_MESSAGES: dict[ProviderErrorKind, str] = {
 
 # liter-llm exception class name -> error kind. Every HTTP status maps to one
 # typed class in liter-llm, and the classes are flat (each subclasses
-# ``LiterLlmError`` directly), so this one table covers all providers. Names, not
+# ``LiterLlmError`` directly), so this one table covers all providers. Eight classes
+# are not in the table and classify as UNKNOWN (BudgetExceededError, HookRejectedError,
+# IdempotencyConflictError, IdempotencyInFlightError, InternalError,
+# InvalidHeaderError, OutboundForbiddenError, SerializationError). Names, not
 # classes, so the table stays importable without the native module.
 _ERROR_KINDS: dict[str, ProviderErrorKind] = {
     "AuthenticationError": ProviderErrorKind.AUTH,

@@ -383,15 +383,22 @@ class TestCompleteStream:
 class TestRequestFields:
     """What the adapter puts on the request it hands to liter-llm."""
 
-    def test_local_ref_is_prefixed_and_gets_the_v1_base_the_ollama_route_strips(
+    def test_ollama_ref_is_prefixed_and_keeps_its_base(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
     ) -> None:
         sdk.chat_result = fakes.text_response("ok")
         backend.complete(_completion_request("ollama/m"))
         assert sdk.last("chat")["model"] == "ollama/m:latest"
-        assert sdk.clients[-1]["base_url"] == "http://localhost:11434/v1"
+        assert sdk.clients[-1]["base_url"] == "http://localhost:11434"
 
-    def test_a_base_that_already_ends_in_v1_is_kept(
+    def test_an_lm_studio_base_gets_the_v1_route(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response("ok")
+        backend.complete(_completion_request("lm_studio/m", api_base="http://localhost:1234"))
+        assert sdk.clients[-1]["base_url"] == "http://localhost:1234/v1"
+
+    def test_an_lm_studio_base_that_already_ends_in_v1_is_kept(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
     ) -> None:
         sdk.chat_result = fakes.text_response("ok")
@@ -926,12 +933,12 @@ class TestMultiVectorEmbeddings:
     @pytest.mark.parametrize(
         ("base", "wire"),
         [
-            ("http://localhost:11434", "http://localhost:11434/v1"),
+            ("http://localhost:11434", "http://localhost:11434"),
+            ("http://localhost:11434/", "http://localhost:11434"),
             ("http://localhost:11434/v1", "http://localhost:11434/v1"),
-            ("http://localhost:11434/v1/", "http://localhost:11434/v1"),
         ],
     )
-    def test_an_ollama_embed_takes_the_v1_base_once(
+    def test_an_ollama_embed_keeps_its_base(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, base: str, wire: str
     ) -> None:
         sdk.embed_result = fakes.embedding_response([(0, [0.1])])

@@ -85,7 +85,9 @@ class LiterLlmBackend:
         model = request.ref.for_display()
         try:
             fields = _chat_fields(request, stream=False)
-            client = _client(fields["model"], _wire_base_url(request.api_base), request.api_key)
+            client = _client(
+                fields["model"], _wire_base_url(fields["model"], request.api_base), request.api_key
+            )
             response = asyncio_loop.run(
                 liter_llm.chat(client, liter_llm.ChatCompletionRequest(**fields))
             )
@@ -113,7 +115,9 @@ class LiterLlmBackend:
         model = request.ref.for_display()
         try:
             fields = _chat_fields(request, stream=True)
-            client = _client(fields["model"], _wire_base_url(request.api_base), request.api_key)
+            client = _client(
+                fields["model"], _wire_base_url(fields["model"], request.api_base), request.api_key
+            )
             stream = liter_llm.chat_stream(client, liter_llm.ChatCompletionRequest(**fields))
             first = asyncio_loop.run(_next_chunk(stream))
         except Exception as exc:
@@ -157,7 +161,7 @@ class LiterLlmBackend:
         liter_llm = _require_sdk()
         model = _route_model(request.ref, request.api_base)
         try:
-            client = _client(model, _wire_base_url(request.api_base), request.api_key)
+            client = _client(model, _wire_base_url(model, request.api_base), request.api_key)
             response = asyncio_loop.run(
                 liter_llm.embed(
                     client, liter_llm.EmbeddingRequest(model=model, input=request.inputs)
@@ -200,7 +204,7 @@ class LiterLlmBackend:
         liter_llm = _require_sdk()
         model = _route_model(request.ref, request.api_base)
         try:
-            client = _client(model, _wire_base_url(request.api_base), request.api_key)
+            client = _client(model, _wire_base_url(model, request.api_base), request.api_key)
             response = asyncio_loop.run(
                 liter_llm.rerank(
                     client,
