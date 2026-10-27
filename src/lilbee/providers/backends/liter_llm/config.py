@@ -44,15 +44,31 @@ def _wire_base_url(api_base: str | None) -> str | None:
 EMPTY_MESSAGE_PLACEHOLDER = "[System: Empty message content sanitised to satisfy protocol]"
 
 
-def _is_blank_turn(msg: dict[str, Any]) -> bool:
-    """Whether *msg* is a user or assistant turn with blank text and no tool calls."""
+def _is_blank(text: Any) -> bool:
+    """Whether *text* is not a string, or is empty or only whitespace."""
+    return not isinstance(text, str) or not text.strip()
+
+
+def _fill_blank_text(msg: dict[str, Any]) -> dict[str, Any]:
+    """Give a blank text of a user or assistant turn the placeholder, as Anthropic needs.
+
+    A string content and each text part of a list content are checked. Other parts and
+    other roles pass through.
+    """
+    if msg.get("role") not in ("user", "assistant"):
+        return msg
     content = msg.get("content")
-    return (
-        msg["role"] in ("user", "assistant")
-        and isinstance(content, str)
-        and not content.strip()
-        and not msg.get("tool_calls")
-    )
+    if isinstance(content, str):
+        return {**msg, "content": EMPTY_MESSAGE_PLACEHOLDER} if _is_blank(content) else msg
+    if isinstance(content, list):
+        parts = [
+            {**part, "text": EMPTY_MESSAGE_PLACEHOLDER}
+            if isinstance(part, dict) and part.get("type") == "text" and _is_blank(part.get("text"))
+            else part
+            for part in content
+        ]
+        return {**msg, "content": parts}
+    return msg
 
 
 def _format_messages(
@@ -61,13 +77,11 @@ def _format_messages(
     """Convert messages with inline image bytes into OpenAI content parts.
 
     Messages without ``images`` pass through untouched. With *fill_blank_turns*,
-    a blank user or assistant turn carries a placeholder, as Anthropic rejects blank text.
+    blank text in a user or assistant turn carries a placeholder, as Anthropic rejects it.
     """
     formatted: list[dict[str, Any]] = []
     for msg in messages:
-        if fill_blank_turns and "images" not in msg and _is_blank_turn(msg):
-            formatted.append({**msg, "content": EMPTY_MESSAGE_PLACEHOLDER})
-        elif "images" in msg:
+        if "images" in msg:
             content_parts: list[dict[str, Any]] = [{"type": "text", "text": msg.get("content", "")}]
             for img in msg["images"]:
                 if isinstance(img, bytes):
@@ -81,7 +95,7 @@ def _format_messages(
             formatted.append({"role": msg["role"], "content": content_parts})
         else:
             formatted.append(msg)
-    return formatted
+    return [_fill_blank_text(msg) for msg in formatted] if fill_blank_turns else formatted
 
 
 # lilbee option -> chat request field, for the options liter-llm takes as typed fields.

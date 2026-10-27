@@ -194,19 +194,92 @@ class TestCompleteReturnsCompletionResult:
         assert sent[1] == {"role": "assistant", "content": EMPTY_MESSAGE_PLACEHOLDER}
         assert sent[2] == {"role": "user", "content": "real"}
 
-    def test_anthropic_tool_call_turn_keeps_its_empty_content(
-        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    @pytest.mark.parametrize("empty", ["", "  "], ids=repr)
+    def test_anthropic_tool_call_turn_gets_a_placeholder_like_any_blank_turn(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, empty: str
     ) -> None:
+        """A blank tool-call turn gets the placeholder and keeps its calls."""
         sdk.chat_result = fakes.text_response("ok")
         call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
-        turn = {"role": "assistant", "content": "", "tool_calls": [call]}
         backend.complete(
             _completion_request(
                 "anthropic/claude-sonnet-4-20250514",
-                messages=[{"role": "user", "content": "go"}, turn],
+                messages=[
+                    {"role": "user", "content": "go"},
+                    {"role": "assistant", "content": empty, "tool_calls": [call]},
+                ],
             )
         )
-        assert sdk.last("chat")["messages"][1] == turn
+        assert sdk.last("chat")["messages"][1] == {
+            "role": "assistant",
+            "content": EMPTY_MESSAGE_PLACEHOLDER,
+            "tool_calls": [call],
+        }
+
+    @pytest.mark.parametrize("empty", ["", "  \n", None], ids=repr)
+    def test_anthropic_blank_text_part_gets_a_placeholder(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, empty: str | None
+    ) -> None:
+        """Only blank text parts change; other parts and non-blank text stay as sent."""
+        sdk.chat_result = fakes.text_response("ok")
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+        backend.complete(
+            _completion_request(
+                "anthropic/claude-sonnet-4-20250514",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": empty}, image, "bare"],
+                    },
+                    {"role": "user", "content": [{"type": "text", "text": "kept"}]},
+                ],
+            )
+        )
+        sent = sdk.last("chat")["messages"]
+        assert sent[0]["content"] == [
+            {"type": "text", "text": EMPTY_MESSAGE_PLACEHOLDER},
+            image,
+            "bare",
+        ]
+        assert sent[1]["content"] == [{"type": "text", "text": "kept"}]
+
+    def test_anthropic_image_turn_with_no_text_keeps_the_image(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.chat_result = fakes.text_response("ok")
+        backend.complete(
+            _completion_request(
+                "anthropic/claude-sonnet-4-20250514",
+                messages=[{"role": "user", "content": "", "images": [b"\x89PNG"]}],
+            )
+        )
+        content = sdk.last("chat")["messages"][0]["content"]
+        assert content[0] == {"type": "text", "text": EMPTY_MESSAGE_PLACEHOLDER}
+        assert content[1]["type"] == "image_url"
+        assert len(content) == 2
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            {"role": "assistant", "content": None},
+            {"role": "assistant"},
+            {"role": "system", "content": ""},
+            {"role": "tool", "tool_call_id": "c1", "content": ""},
+            {"content": ""},
+        ],
+        ids=["none-content", "no-content", "system", "tool", "no-role"],
+    )
+    def test_anthropic_leaves_other_turns_alone(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, message: dict[str, Any]
+    ) -> None:
+        sdk.chat_result = fakes.text_response("ok")
+        backend.complete(
+            _completion_request(
+                "anthropic/claude-sonnet-4-20250514",
+                messages=[{"role": "user", "content": "go"}, message],
+            )
+        )
+        assert sdk.last("chat")["messages"][1] == message
 
     def test_other_providers_keep_empty_text(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
