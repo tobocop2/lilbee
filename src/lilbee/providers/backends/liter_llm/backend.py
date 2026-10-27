@@ -85,7 +85,9 @@ class LiterLlmBackend:
         model = request.ref.for_display()
         try:
             fields = _chat_fields(request, stream=False)
-            client = _client(fields["model"], _wire_base_url(request.api_base), request.api_key)
+            client = _client(
+                fields["model"], _wire_base_url(fields["model"], request.api_base), request.api_key
+            )
             response = asyncio_loop.run(
                 liter_llm.chat(client, liter_llm.ChatCompletionRequest(**fields))
             )
@@ -113,7 +115,9 @@ class LiterLlmBackend:
         model = request.ref.for_display()
         try:
             fields = _chat_fields(request, stream=True)
-            client = _client(fields["model"], _wire_base_url(request.api_base), request.api_key)
+            client = _client(
+                fields["model"], _wire_base_url(fields["model"], request.api_base), request.api_key
+            )
             stream = liter_llm.chat_stream(client, liter_llm.ChatCompletionRequest(**fields))
             first = asyncio_loop.run(_next_chunk(stream))
         except Exception as exc:
@@ -157,7 +161,7 @@ class LiterLlmBackend:
         liter_llm = _require_sdk()
         model = _route_model(request.ref, request.api_base)
         try:
-            client = _client(model, _wire_base_url(request.api_base), request.api_key)
+            client = _client(model, _wire_base_url(model, request.api_base), request.api_key)
             response = asyncio_loop.run(
                 liter_llm.embed(
                     client, liter_llm.EmbeddingRequest(model=model, input=request.inputs)
@@ -200,7 +204,7 @@ class LiterLlmBackend:
         liter_llm = _require_sdk()
         model = _route_model(request.ref, request.api_base)
         try:
-            client = _client(model, _wire_base_url(request.api_base), request.api_key)
+            client = _client(model, _wire_base_url(model, request.api_base), request.api_key)
             response = asyncio_loop.run(
                 liter_llm.rerank(
                     client,
@@ -231,11 +235,18 @@ class LiterLlmBackend:
         come back without the ``provider/`` prefix, sorted; the routing layer adds
         the prefix back. A provider the catalog does not hold, or an empty one,
         gives an empty list: the library reads an empty id as "every provider".
+        A library that is installed but cannot import also gives an empty list,
+        so the model pickers show no hosted models instead of failing.
         """
         catalog_id = _CATALOG_PROVIDER.get(provider, provider)
         if not catalog_id:
             return []
-        models = _require_sdk().list_catalog_models(catalog_id)
+        try:
+            sdk = _require_sdk()
+        except ProviderError:
+            log.debug("Provider library unavailable; no hosted chat models", exc_info=True)
+            return []
+        models = sdk.list_catalog_models(catalog_id)
         return sorted({m.model for m in models if m.mode == _CHAT_MODE})
 
     @staticmethod

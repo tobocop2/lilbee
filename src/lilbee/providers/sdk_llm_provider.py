@@ -37,7 +37,7 @@ from lilbee.providers.base import (
     require_role_ref,
 )
 from lilbee.providers.key_check import provider_api_key_in_use
-from lilbee.providers.local_servers import LOCAL_SERVER_KEYS
+from lilbee.providers.local_servers import LOCAL_SERVER_KEYS, OLLAMA
 from lilbee.providers.local_servers.config_urls import base_url_for, configured_local_servers
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
 from lilbee.providers.roles import WorkerRole
@@ -63,9 +63,14 @@ def _api_base_for(ref: ProviderModelRef) -> str | None:
 
 
 def _api_key_for(ref: ProviderModelRef) -> str | None:
-    """A hosted ref sends only the key the key check tests; other refs send ``llm_api_key``."""
+    """A hosted ref sends only the key the key check tests; Ollama sends none.
+
+    Other local-server refs send ``llm_api_key``.
+    """
     if ref.is_api:
         return provider_api_key_in_use(ref.provider)
+    if ref.provider == OLLAMA.key:
+        return None
     return cfg.llm_api_key or None
 
 

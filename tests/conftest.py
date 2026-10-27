@@ -49,11 +49,11 @@ from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SourceSummary
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.availability import provider_sdk_available as _real_provider_sdk_available
-from lilbee.providers.factory import sdk_library
 from lilbee.providers.fleet.binary import EngineTool
 from lilbee.runtime.lock import _no_sync_running
 
-SDK_DIST = sdk_library().dist
+# The literal name, not read from the code under test: a wrong name must fail the tests.
+SDK_DIST = "liter-llm"
 
 # Pristine extraction entry points, captured before any test can patch them.
 _PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document

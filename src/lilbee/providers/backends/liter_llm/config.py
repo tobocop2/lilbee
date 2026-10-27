@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from lilbee.providers.backends.liter_llm.client import _require_sdk
-from lilbee.providers.local_servers import detect_local_server, local_server_for_key
+from lilbee.providers.local_servers import OLLAMA, detect_local_server, local_server_for_key
 from lilbee.providers.model_ref import ProviderModelRef
 from lilbee.providers.sdk_backend import CompletionRequest
 
@@ -26,19 +26,20 @@ def _route_model(ref: ProviderModelRef, api_base: str | None) -> str:
     return ref.name
 
 
-def _wire_base_url(api_base: str | None) -> str | None:
-    """Return the ``/v1`` base URL for a local server, or ``None``.
+def _wire_base_url(model: str, api_base: str | None) -> str | None:
+    """Return the base URL to give liter-llm for a routed *model*, or ``None``.
 
-    Both routes accept the ``/v1`` form. liter-llm posts to
-    ``{base_url}/chat/completions`` for an OpenAI-compatible server such as
-    LM Studio, which serves that route under ``/v1``. For Ollama, liter-llm
-    strips one trailing ``/v1`` and appends ``/api/chat``. A base that
-    already ends in ``/v1`` is kept as it is.
+    liter-llm drops one trailing ``/v1`` from an Ollama base and appends
+    ``/api/...``, so Ollama gets the base as configured. An OpenAI-compatible
+    server such as LM Studio serves ``/chat/completions`` under ``/v1``, so it
+    gets the base with exactly one ``/v1``.
     """
     if not api_base:
         return None
-    trimmed = api_base.rstrip("/").removesuffix("/v1")
-    return f"{trimmed}/v1"
+    trimmed = api_base.rstrip("/")
+    if model.startswith(OLLAMA.wire_prefix):
+        return trimmed
+    return f"{trimmed.removesuffix('/v1')}/v1"
 
 
 EMPTY_MESSAGE_PLACEHOLDER = "[System: Empty message content sanitised to satisfy protocol]"

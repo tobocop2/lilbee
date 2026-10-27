@@ -952,8 +952,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.API_KEYS,
         secret=True,
         help_text=(
-            "API key for the remote OpenAI-compatible endpoint and local model servers. "
-            "Hosted models use their own provider key, never this one"
+            "API key for the remote OpenAI-compatible endpoint and local model servers "
+            "such as LM Studio. Ollama and hosted models never get this key; hosted "
+            "models use their own provider key"
         ),
     ),
     "hf_token": SettingDef(

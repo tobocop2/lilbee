@@ -1,6 +1,6 @@
 """A stand-in for the ``liter_llm`` module, injected where the extra is not installed.
 
-It models the declared surface of liter-llm 2.4.0 (its type stub), never the adapter's
+It models the declared surface of liter-llm 2.4.1 (its type stub), never the adapter's
 reading of it: reply objects carry the documented accessors and nothing the stub omits.
 It has the async ``chat`` / ``chat_stream`` / ``embed`` / ``rerank`` functions, the
 request and options types, and the typed exception hierarchy. Each call
@@ -16,10 +16,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from lilbee.providers.factory import sdk_library
 from tests._sys_modules import inject_modules
 
-SDK_MODULE = sdk_library().module
+# The literal name, not read from the code under test: a wrong name must fail the tests.
+SDK_MODULE = "liter_llm"
 
 # liter-llm's exception classes: every one subclasses LiterLlmError.
 ERROR_NAMES = (
@@ -105,7 +105,7 @@ def finish_member(wire: str) -> FinishReason:
 
 
 class ReasoningEffort(_Enum):
-    """Mirrors ``liter_llm.ReasoningEffort`` 2.4.0."""
+    """Mirrors ``liter_llm.ReasoningEffort`` 2.4.1."""
 
     LOW: ReasoningEffort
     MEDIUM: ReasoningEffort

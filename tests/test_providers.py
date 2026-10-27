@@ -15,7 +15,6 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.factory import sdk_library
 from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
 from tests._gguf_fixture import has_gguf_parser
@@ -42,11 +41,11 @@ def _reset_provider() -> None:
     reset_services()
 
 
-_SDK = sdk_library()
-SDK_DIST = _SDK.dist
-SDK_MODULE = _SDK.module
+# Literal names, not read from the code under test: a wrong name must fail the tests.
+SDK_DIST = "liter-llm"
+SDK_MODULE = "liter_llm"
 # The backend module the factory defers until a provider is built.
-SDK_BACKEND_MODULE = f"{_SDK.create_backend.__module__}.backend"
+SDK_BACKEND_MODULE = "lilbee.providers.backends.liter_llm.backend"
 
 TEST_MODEL_REPO = "org/test-model-GGUF"
 TEST_MODEL_FILE = "test-model.gguf"
@@ -3041,13 +3040,42 @@ class TestHostedRequestKey:
         for prov, cfg_field, _env_var, _label in PROVIDER_KEYS:
             assert _api_key_for(parse_model_ref(f"{prov}/m")) == marker.format(cfg_field)
 
-    def test_local_server_ref_sends_llm_api_key(self) -> None:
+    def test_lm_studio_ref_sends_llm_api_key(self) -> None:
         from lilbee.providers.model_ref import parse_model_ref
         from lilbee.providers.sdk_llm_provider import _api_key_for
 
         cfg.llm_api_key = "sk-generic"
         cfg.openai_api_key = "sk-openai"
-        assert _api_key_for(parse_model_ref("ollama/llama3")) == "sk-generic"
+        assert _api_key_for(parse_model_ref("lm_studio/llama3")) == "sk-generic"
+
+    def test_ollama_ref_never_sends_llm_api_key(self) -> None:
+        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.sdk_llm_provider import _api_key_for
+
+        cfg.llm_api_key = "sk-generic"
+        assert _api_key_for(parse_model_ref("ollama/llama3")) is None
+
+    def test_ollama_requests_carry_no_key(self) -> None:
+        """Chat, stream, embed and rerank requests for an ollama ref reach the client keyless."""
+        from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+        cfg.llm_api_key = "sk-generic"
+        cfg.ollama_base_url = "http://localhost:11434"
+        cfg.embedding_model = "ollama/nomic-embed-text:latest"
+        cfg.reranker_model = "ollama/rerank-model"
+        provider = SdkLLMProvider(LiterLlmBackend())
+        fake = fakes.FakeSdk()
+        fake.chat_result = fakes.text_response("hello")
+        fake.embed_result = fakes.embedding_response([(0, [0.1, 0.2])])
+        fake.rerank_result = fakes.rerank_response([(0, 0.5)])
+        messages = [{"role": "user", "content": "hi"}]
+        with fakes.installed(fake):
+            provider.chat(messages, model="ollama/qwen3:0.6b")
+            list(provider.chat(messages, stream=True, model="ollama/qwen3:0.6b"))
+            provider.embed(["hello"])
+            provider.rerank("q", ["a"])
+        assert [c["api_key"] for c in fake.clients] == [""] * len(fake.clients)
 
     def test_hosted_ref_never_sends_llm_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.providers.model_ref import parse_model_ref
@@ -3370,7 +3398,7 @@ class TestNeedsApiBase:
 
 
 class TestChatApiBaseRouting:
-    """Verify that chat() points local servers at their /v1 route and hosted refs at none."""
+    """Verify that chat() passes local servers their base URL and hosted refs none."""
 
     def _make_fake_sdk(self) -> fakes.FakeSdk:
         fake = fakes.FakeSdk()
@@ -3387,7 +3415,7 @@ class TestChatApiBaseRouting:
         with fakes.installed(self._make_fake_sdk()) as fake:
             provider.chat([{"role": "user", "content": "hi"}], model="ollama/qwen3:0.6b")
 
-        assert fake.clients[-1]["base_url"] == "http://localhost:11434/v1"
+        assert fake.clients[-1]["base_url"] == "http://localhost:11434"
         assert fake.last("chat")["model"] == "ollama/qwen3:0.6b"
 
     def test_frontier_model_omits_the_base_url(self) -> None:
@@ -3428,7 +3456,7 @@ class TestChatApiBaseRouting:
 
 
 class TestEmbedApiBaseRouting:
-    """Verify that embed() points local servers at their /v1 route and hosted refs at none."""
+    """Verify that embed() passes local servers their base URL and hosted refs none."""
 
     def test_ollama_embed_passes_the_base_url(self) -> None:
         from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
@@ -3443,7 +3471,7 @@ class TestEmbedApiBaseRouting:
         with fakes.installed(fake):
             provider.embed(["hello"])
 
-        assert fake.clients[-1]["base_url"] == "http://localhost:11434/v1"
+        assert fake.clients[-1]["base_url"] == "http://localhost:11434"
 
     def test_prefixed_embed_omits_the_base_url(self) -> None:
         from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
