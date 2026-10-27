@@ -417,56 +417,65 @@ class TestTranslateOptions:
         ref = parse_model_ref("ollama/llama3.2:1b")
         assert "reasoning_effort" not in translate_options({"think": True}, ref)
 
-    @pytest.mark.parametrize("option", ["seed", "frequency_penalty", "presence_penalty"], ids=str)
-    def test_anthropic_refuses_an_option_it_cannot_take(self, option: str) -> None:
-        """Anthropic has no such sampler; the request is refused before any call."""
+    @pytest.mark.parametrize(
+        ("option", "value"),
+        [
+            ("seed", 0),
+            ("seed", 7),
+            ("frequency_penalty", 0.0),
+            ("frequency_penalty", 0.5),
+            ("presence_penalty", 0.0),
+            ("presence_penalty", -0.5),
+        ],
+        ids=str,
+    )
+    def test_anthropic_refuses_any_value_without_response_format(
+        self, option: str, value: float
+    ) -> None:
+        """Zero counts as set: the request is refused before any call, as litellm refused it."""
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
         with pytest.raises(ProviderError, match=option) as caught:
-            translate_options({"temperature": 0.5, option: 1}, ref)
+            translate_options({"temperature": 0.5, option: value}, ref)
         assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
         assert caught.value.provider == "remote"
 
     @pytest.mark.parametrize(
-        ("option", "zero"),
+        ("option", "value"),
         [
             ("seed", 0),
+            ("seed", 7),
             ("frequency_penalty", 0.0),
+            ("frequency_penalty", 0.5),
             ("presence_penalty", 0.0),
-            ("seed", None),
-            ("presence_penalty", None),
+            ("presence_penalty", -0.5),
         ],
         ids=str,
     )
-    def test_anthropic_drops_a_zero_or_unset_value(self, option: str, zero: float | None) -> None:
-        """A zero changes nothing and None is unset, so neither is refused or sent."""
+    def test_anthropic_drops_any_value_with_response_format(
+        self, option: str, value: float
+    ) -> None:
+        """With a response_format the three options are dropped and the request goes out."""
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
-        result = translate_options({"temperature": 0.5, option: zero}, ref)
-        assert result == {"temperature": 0.5}
+        reply_format = {"type": "json_object"}
+        result = translate_options(
+            {"temperature": 0.5, "response_format": reply_format, option: value}, ref
+        )
+        assert result == {"temperature": 0.5, "response_format": reply_format}
 
-    @pytest.mark.parametrize(
-        ("option", "value"),
-        [("seed", 7), ("seed", -1), ("frequency_penalty", 0.1), ("presence_penalty", -0.5)],
-        ids=str,
-    )
-    def test_anthropic_still_refuses_a_nonzero_value(self, option: str, value: float) -> None:
+    @pytest.mark.parametrize("option", ["seed", "frequency_penalty", "presence_penalty"], ids=str)
+    def test_anthropic_sends_an_unset_option_unchanged(self, option: str) -> None:
+        """None and absent are the same: nothing is refused and nothing is added."""
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
-        with pytest.raises(ProviderError, match=option) as caught:
-            translate_options({option: value}, ref)
-        assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+        assert translate_options({"temperature": 0.5, option: None}, ref) == {"temperature": 0.5}
+        assert translate_options({"temperature": 0.5}, ref) == {"temperature": 0.5}
 
-    def test_anthropic_refusal_names_only_the_nonzero_options(self) -> None:
+    def test_anthropic_refusal_names_only_the_options_set(self) -> None:
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
         with pytest.raises(ProviderError) as caught:
-            translate_options({"seed": 0, "presence_penalty": 0.5}, ref)
-        assert "presence_penalty" in str(caught.value)
-        assert "seed" not in str(caught.value)
-
-    def test_anthropic_refusal_names_every_option_set(self) -> None:
-        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
-        with pytest.raises(ProviderError) as caught:
-            translate_options({"seed": 1, "presence_penalty": 0.5}, ref)
+            translate_options({"seed": 0, "presence_penalty": 0.5, "frequency_penalty": None}, ref)
         assert "seed" in str(caught.value)
         assert "presence_penalty" in str(caught.value)
+        assert "frequency_penalty" not in str(caught.value)
 
     @pytest.mark.parametrize("raw", ["openai/gpt-4o", "ollama/llama3.2:1b"])
     def test_other_refs_keep_seed_and_penalties(self, raw: str) -> None:

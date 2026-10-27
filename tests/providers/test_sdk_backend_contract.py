@@ -194,6 +194,13 @@ class TestCompleteReturnsCompletionResult:
         assert sent[1] == {"role": "assistant", "content": EMPTY_MESSAGE_PLACEHOLDER}
         assert sent[2] == {"role": "user", "content": "real"}
 
+    def test_empty_message_placeholder_is_the_litellm_text(self) -> None:
+        """The wire text matches the litellm placeholder, so existing history keeps its shape."""
+        assert (
+            EMPTY_MESSAGE_PLACEHOLDER
+            == "[System: Empty message content sanitised to satisfy protocol]"
+        )
+
     @pytest.mark.parametrize("empty", ["", "  "], ids=repr)
     def test_anthropic_tool_call_turn_gets_a_placeholder_like_any_blank_turn(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, empty: str

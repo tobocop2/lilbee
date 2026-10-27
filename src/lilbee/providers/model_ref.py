@@ -178,8 +178,8 @@ _ANTHROPIC_UNSUPPORTED = ("seed", "frequency_penalty", "presence_penalty")
 def _refuse_unsupported(
     options: dict[str, Any], ref: ProviderModelRef, unsupported: tuple[str, ...]
 ) -> None:
-    """Raise a bad-request error when *options* sets a name in *unsupported* to a non-zero value."""
-    refused = [name for name in unsupported if options.get(name) not in (None, 0)]
+    """Raise a bad-request error when *options* sets a name in *unsupported* to any value."""
+    refused = [name for name in unsupported if options.get(name) is not None]
     if refused:
         raise ProviderError(
             f"The provider rejected the request for {ref.raw}. "
@@ -196,7 +196,8 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
     gets the shared per-call mapping (``num_predict`` -> ``max_tokens``, drop
     ``num_ctx``) plus a ``top_k`` and ``repeat_penalty`` drop: hosted APIs do not
     take either, so dropping them keeps the wire request clean. An Anthropic ref
-    refuses a non-zero ``seed`` or penalty with a bad-request error and drops a zero one.
+    refuses a ``seed`` or penalty set to any value, zero included, with a bad-request
+    error; when ``response_format`` is set it drops them and sends the request.
     """
     if not ref.is_api:
         filtered = filter_options(options)
@@ -208,7 +209,8 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
         return filtered
     api_options = normalize_generation_options(options)
     if ref.provider == "anthropic":
-        _refuse_unsupported(api_options, ref, _ANTHROPIC_UNSUPPORTED)
+        if "response_format" not in api_options:
+            _refuse_unsupported(api_options, ref, _ANTHROPIC_UNSUPPORTED)
         for name in _ANTHROPIC_UNSUPPORTED:
             api_options.pop(name, None)
     api_options.pop("top_k", None)

@@ -338,6 +338,16 @@ class TestChatNonStream:
         assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
         assert backend.complete_calls == []
 
+    def test_anthropic_seed_with_response_format_is_dropped_and_sent(self) -> None:
+        backend = FakeBackend()
+        provider = SdkLLMProvider(backend)
+        provider.chat(
+            [{"role": "user", "content": "hi"}],
+            model="anthropic/claude-sonnet-4-20250514",
+            options={"seed": 0, "response_format": {"type": "json_object"}},
+        )
+        assert backend.complete_calls[-1].options == {"response_format": {"type": "json_object"}}
+
     def test_wraps_unexpected_errors_in_provider_error(self) -> None:
         backend = FakeBackend(raise_complete=RuntimeError("boom"))
         provider = SdkLLMProvider(backend)
