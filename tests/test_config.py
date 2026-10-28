@@ -2035,6 +2035,33 @@ class TestCrawlUserAgent:
             Config(crawl_user_agent=value)
 
 
+class TestCrawlLoginHost:
+    _NOT_A_HOST = "crawl_login_host must be a host name, such as wiki.example.com"
+
+    @pytest.mark.parametrize(
+        "value", ["https://wiki.example.com/", "wiki.example.com/wiki", "a@wiki.example.com"]
+    )
+    def test_config_toml_with_a_url_takes_the_default_and_warns(self, tmp_path, value):
+        built, warnings = _build_with(tmp_path, f'crawl_login_host = "{value}"\n')
+        assert built.crawl_login_host == ""
+        assert len(warnings) == 1
+        assert self._NOT_A_HOST in warnings[0]
+        assert warnings[0].endswith("crawl_login_host uses its default")
+
+    def test_a_url_in_the_environment_stops_the_load_with_one_line(self, tmp_path):
+        line = _refusal_of(tmp_path, "", LILBEE_CRAWL_LOGIN_HOST="https://wiki.example.com")
+        assert line == (
+            f"LILBEE_CRAWL_LOGIN_HOST = 'https://wiki.example.com' is refused ({self._NOT_A_HOST})"
+        )
+
+    @pytest.mark.parametrize("value", ["wiki.example.com", "Wiki.example.com:8443", ""])
+    def test_a_bare_host_loads_from_both_sources(self, tmp_path, value):
+        from_toml, warnings = _build_with(tmp_path, f'crawl_login_host = "{value}"\n')
+        assert (from_toml.crawl_login_host, warnings) == (value, ())
+        from_env, _ = _build_with(tmp_path, "", LILBEE_CRAWL_LOGIN_HOST=value)
+        assert from_env.crawl_login_host == value
+
+
 class TestCrawlBrowserExtraWait:
     def test_default_is_no_extra_wait(self):
         assert Config().crawl_browser_extra_wait_ms == 0
@@ -2685,6 +2712,7 @@ _OPEN_SETTINGS_THAT_REFUSE = {
     "ocr_language",
     "placement",
     "linked_roots",
+    "crawl_login_host",
 }
 
 

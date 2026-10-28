@@ -1304,6 +1304,41 @@ class TestAddWithUrls:
 
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_add_sends_the_stored_login_only_to_its_host(
+        self, mock_crawl, _mock_dns, mock_sync, _mock_avail, isolated_env, monkeypatch
+    ):
+        """add() resolves the login as CLI add does."""
+        monkeypatch.setattr(cfg, "crawl_login_host", "example.com")
+        monkeypatch.setattr(cfg, "crawl_cookie", "s=stored")
+        mock_crawl.return_value = []
+        await add(paths=["https://example.com/a"])
+        assert mock_crawl.call_args.kwargs["login"] == CrawlLogin(cookie="s=stored")
+        await add(paths=["https://other.example/a"])
+        assert mock_crawl.call_args.kwargs["login"] == CrawlLogin()
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_add_says_when_it_withholds_the_stored_login(
+        self, mock_crawl, _mock_dns, mock_sync, _mock_avail, isolated_env, monkeypatch
+    ):
+        """The note is the one `lilbee add` prints, and only a withheld login brings it."""
+        from lilbee.cli.commands.crawl_login import STORED_LOGIN_NOT_SENT
+
+        monkeypatch.setattr(cfg, "crawl_login_host", "example.com")
+        monkeypatch.setattr(cfg, "crawl_cookie", "s=Ck-9Vn")
+        mock_crawl.return_value = []
+        sent = await add(paths=["https://example.com/a"])
+        assert "login_note" not in sent
+        withheld = await add(paths=["https://other.example/a"])
+        assert withheld["login_note"] == STORED_LOGIN_NOT_SENT
+        assert "Ck-9Vn" not in str(withheld)
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_url_fetches_single_page(
         self, mock_crawl, mock_sync, _mock_avail, isolated_env
@@ -1449,6 +1484,19 @@ class TestCrawl:
         )
         assert result["status"] == "started"
         assert "t-1" not in str(result)
+
+    @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
+    async def test_the_stored_login_goes_only_to_its_host(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env, monkeypatch
+    ):
+        monkeypatch.setattr(cfg, "crawl_login_host", "example.com")
+        monkeypatch.setattr(cfg, "crawl_cookie", "s=stored")
+        await crawl(url="https://example.com/a")
+        assert mock_start.call_args.kwargs["login"] == CrawlLogin(cookie="s=stored")
+        await crawl(url="https://other.example/a")
+        assert mock_start.call_args.kwargs["login"] == CrawlLogin()
 
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")

@@ -6,6 +6,7 @@ import errno
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
@@ -21,6 +22,7 @@ from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
+from lilbee.core.config.login_host import refuse_unless_host
 from lilbee.core.config.model import written_value
 from lilbee.core.config.schema import field_type_name
 from lilbee.core.crawl_patterns import exclude_patterns_refusal
@@ -117,6 +119,12 @@ def _is_write_only(key: str) -> bool:
     if isinstance(extra, dict):
         return bool(extra.get("write_only", False))
     return False
+
+
+def _secret_refusal(key: str, error: ValidationError) -> str:
+    """What the field's validation says about a secret value, without the value itself."""
+    reasons = "; ".join(detail["msg"] for detail in error.errors(include_input=False))
+    return f"Setting '{key}' is refused: {reasons}"
 
 
 def _public_writable_keys() -> list[str]:
@@ -224,6 +232,34 @@ def _as_int_setting(value: Any) -> int | None:
     return None
 
 
+_CRAWL_LOGIN_KEYS = {
+    "crawl_authorization": "authorization",
+    "crawl_username": "username",
+    "crawl_password": "password",
+    "crawl_cookie": "cookie",
+}
+
+
+def _validate_crawl_login(updates: dict[str, Any]) -> None:
+    """Reject a stored crawl login that CrawlLogin refuses once *updates* apply."""
+    from lilbee.crawler.models import CrawlLogin
+
+    host = updates.get("crawl_login_host")
+    if isinstance(host, str):
+        refuse_unless_host(host)
+    # A value that is not text is left to the field's own type check, as for any string setting.
+    if not _CRAWL_LOGIN_KEYS.keys() & updates.keys() or not all(
+        isinstance(updates[key], str) for key in _CRAWL_LOGIN_KEYS if key in updates
+    ):
+        return
+    CrawlLogin(
+        **{
+            field: updates[key] if key in updates else getattr(cfg, key)
+            for key, field in _CRAWL_LOGIN_KEYS.items()
+        }
+    )
+
+
 def _validate(updates: dict[str, Any]) -> None:
     """Reject unknown keys, null on non-nullable, and out-of-range chunk sizes."""
     for key, value in updates.items():
@@ -233,6 +269,7 @@ def _validate(updates: dict[str, Any]) -> None:
     refusal = exclude_patterns_refusal(updates.get("crawl_exclude_patterns"))
     if refusal is not None:
         raise ValueError(refusal)
+    _validate_crawl_login(updates)
     new_ttl = _as_int_setting(updates.get("engine_idle_ttl_minutes"))
     if new_ttl is not None and new_ttl < 0:
         raise ValueError("engine_idle_ttl_minutes must be >= 0 (0 keeps weights loaded)")
@@ -274,7 +311,12 @@ def _apply_with_rollback(
                 setattr(cfg, key, None)
                 to_delete.append(key)
                 continue
-            setattr(cfg, key, _coerce_value(key, raw))
+            try:
+                setattr(cfg, key, _coerce_value(key, raw))
+            except ValidationError as exc:
+                if _is_write_only(key):
+                    raise ValueError(_secret_refusal(key, exc)) from None
+                raise
             normalized = getattr(cfg, key)
             if isinstance(normalized, list):
                 to_persist[key] = "\n".join(str(x) for x in normalized)

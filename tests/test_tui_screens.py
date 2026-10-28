@@ -14536,6 +14536,7 @@ async def test_chat_open_crawl_dialog():
 async def test_chat_crawl_dialog_callback_triggers_start():
     """CrawlDialog callback calls _start_crawl with the result params."""
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+    from lilbee.crawler.models import NO_LOGIN
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -14553,7 +14554,7 @@ async def test_chat_crawl_dialog_callback_triggers_start():
             app.screen.dismiss(params)
             await _pilot.pause()
         mock_start.assert_called_once_with(
-            "https://test.com", 1, 10, render_mode=CrawlRenderMode.HTTP
+            "https://test.com", 1, 10, render_mode=CrawlRenderMode.HTTP, login=NO_LOGIN
         )
 
 
@@ -16074,11 +16075,13 @@ async def test_settings_leaves_non_credentials_visible():
     """Masking is opt-in: ordinary settings stay readable."""
     from textual.widgets import Input
 
+    from lilbee.app.settings_map import SETTINGS_MAP
+
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         for editor in app.screen.query(Input):
             key = editor.name or ""
-            if not key.endswith("_api_key") and key != "hf_token":
+            if not (key in SETTINGS_MAP and SETTINGS_MAP[key].secret):
                 assert editor.password is False, f"{key} is masked but is not a credential"
 
 

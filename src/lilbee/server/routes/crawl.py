@@ -16,10 +16,11 @@ from lilbee.server.models import CrawlLoginBody, CrawlRequest
 async def crawl_route(data: CrawlRequest) -> Stream:
     """Crawl a URL with streaming SSE progress events."""
     from lilbee.crawler import CrawlLogin, require_valid_crawl_url
+    from lilbee.crawler.stored_login import crawl_login
 
     body = data.login if data.login is not None else CrawlLoginBody()
     try:
-        login = CrawlLogin(**body.model_dump())
+        login = crawl_login([data.url], CrawlLogin(**body.model_dump()))
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     try:

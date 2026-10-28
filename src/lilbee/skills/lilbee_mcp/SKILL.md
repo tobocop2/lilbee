@@ -285,7 +285,7 @@ it to the `lilbee-worker` subagent).
 
 ## Secrets stay out of MCP reads
 
-API keys (`*_api_key` and `hf_token`) carry a `write_only` flag on the lilbee config.
+Secrets (`*_api_key`, `hf_token`, `crawl_authorization`, `crawl_password` and `crawl_cookie`) carry a `write_only` flag on the lilbee config.
 `lilbee_settings_list` skips them; `lilbee_settings_get` errors on them;
 `lilbee_settings_set` still writes (so you can configure a key on the user's behalf).
 Never assume you can read a key back.

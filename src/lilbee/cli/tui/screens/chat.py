@@ -97,7 +97,8 @@ from lilbee.crawler import (
     require_valid_crawl_url,
 )
 from lilbee.crawler.events import BROWSER_SETUP_COMPONENT
-from lilbee.crawler.models import crawl_limit_error
+from lilbee.crawler.models import NO_LOGIN, CrawlLogin, crawl_limit_error
+from lilbee.crawler.stored_login import crawl_login
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
     ChunkType,
@@ -1012,7 +1013,11 @@ class ChatScreen(Screen[None]):
         def _on_result(result: CrawlParams | None) -> None:
             if result is not None:
                 self._start_crawl(
-                    result.url, result.depth, result.max_pages, render_mode=result.render_mode
+                    result.url,
+                    result.depth,
+                    result.max_pages,
+                    render_mode=result.render_mode,
+                    login=result.login,
                 )
 
         self.app.push_screen(CrawlDialog(), callback=_on_result)
@@ -1025,6 +1030,7 @@ class ChatScreen(Screen[None]):
         *,
         include_subdomains: bool = False,
         render_mode: CrawlRenderMode | None = None,
+        login: CrawlLogin = NO_LOGIN,
     ) -> None:
         """Enqueue a crawl task and run it in the background.
 
@@ -1032,10 +1038,16 @@ class ChatScreen(Screen[None]):
         browser-mode crawl. HTTP mode needs no browser, so the SETUP task is
         skipped and the crawl starts immediately. An explicit ``render_mode``
         (from the dialog checkbox or ``--render``) is persisted so the choice
-        sticks for the next crawl.
+        sticks for the next crawl. ``login`` is the one typed for this crawl; it
+        goes over the stored login to the seed host and is kept nowhere.
         """
         from lilbee.cli.tui.task_queue import TaskType
 
+        try:
+            login = crawl_login([url], login)
+        except ValueError as exc:
+            self.notify(msg.CRAWL_DIALOG_INVALID_LOGIN.format(error=exc), severity="error")
+            return
         mode = render_mode if render_mode is not None else cfg.crawl_render_mode
         if render_mode is not None and render_mode is not cfg.crawl_render_mode:
             self._persist_crawl_render_mode(render_mode)
@@ -1053,6 +1065,7 @@ class ChatScreen(Screen[None]):
                     reporter,
                     include_subdomains=include_subdomains,
                     render_mode=mode,
+                    login=login,
                 ),
                 on_success=lambda: call_from_thread(self, self._run_sync),
             )
@@ -1121,6 +1134,7 @@ class ChatScreen(Screen[None]):
         *,
         include_subdomains: bool = False,
         render_mode: CrawlRenderMode | None = None,
+        login: CrawlLogin = NO_LOGIN,
     ) -> None:
         """Crawl body. Runs on worker thread; reporter handles progress + cancel."""
         from lilbee.crawler import crawl_and_save
@@ -1181,6 +1195,7 @@ class ChatScreen(Screen[None]):
                 cancel=reporter,
                 include_subdomains=include_subdomains,
                 render_mode=render_mode,
+                login=login,
             )
         )
         reporter.check_cancelled()
