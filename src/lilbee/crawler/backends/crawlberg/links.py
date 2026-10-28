@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from collections.abc import Sequence
 from urllib.parse import parse_qsl, quote_plus, urlsplit, urlunsplit
 
@@ -19,6 +20,7 @@ _PREFIX_MARK = "*"
 _FORM_SAFE = "*"
 _TILDE = "~"
 _TILDE_ENCODED = "%7E"
+_LEFT_OUT = "Left out %s: it matches %s, a pattern of the crawl_exclude_patterns setting"
 
 
 def _is_tracking_param(name: str) -> bool:
@@ -78,9 +80,10 @@ class _ExcludedLinks:
         self._patterns = _python_patterns(spec.filters.exclude_patterns)
         self._seen_links: set[str] = set()
         self._checked: set[str] = set()
+        self._left_out: Counter[str] = Counter()
 
     def record_seed(self, seed_url: str) -> bool:
-        """Log the seed and return True when a pattern matches it.
+        """Warn about the seed and return True when a pattern matches it.
 
         crawlberg fetches a seed that an exclude pattern matches, so the crawl of a matched
         seed does not start. The seed is matched as crawlberg's URL parser writes it; a seed
@@ -91,10 +94,18 @@ class _ExcludedLinks:
             return False
         url = _queued_url(address)
         self._checked.add(url)
-        return self._check(url)
+        matched = self._matching(url)
+        if matched is None:
+            return False
+        log.warning(_LEFT_OUT, url, matched)
+        return True
 
     def record(self, event: _Event) -> None:
-        """Log each link of *event* that the crawl leaves out, the first time a page holds it."""
+        """Count each link of *event* that the crawl leaves out, the first time a page holds it.
+
+        An exclude pattern leaves out links as a matter of course, so each one is a debug line
+        and ``summarize`` reports the total.
+        """
         if self._depth is not None and event.depth >= self._depth:
             return
         new_links = [link for link in event.links if link not in self._seen_links]
@@ -102,7 +113,23 @@ class _ExcludedLinks:
         for url in map(_queued_url, new_links):
             if url not in self._checked and self._in_scope(url):
                 self._checked.add(url)
-                self._check(url)
+                matched = self._matching(url)
+                if matched is not None:
+                    self._left_out[matched] += 1
+                    log.debug(_LEFT_OUT, url, matched)
+
+    def summarize(self) -> None:
+        """Log one line with the number of addresses each pattern left out, when any."""
+        total = self._left_out.total()
+        if not total:
+            return
+        by_pattern = ", ".join(f"{pattern} {count}" for pattern, count in self._left_out.items())
+        log.info(
+            "Crawl left out %d %s by crawl_exclude_patterns: %s",
+            total,
+            "address" if total == 1 else "addresses",
+            by_pattern,
+        )
 
     def _in_scope(self, url: str) -> bool:
         host = urlsplit(url).hostname or ""
@@ -110,13 +137,6 @@ class _ExcludedLinks:
             host, self._seed_host, include_subdomains=self._include_subdomains
         )
 
-    def _check(self, url: str) -> bool:
-        matched = next((p.pattern for p in self._patterns if p.search(url)), None)
-        if matched is None:
-            return False
-        log.warning(
-            "Left out %s: it matches %s, a pattern of the crawl_exclude_patterns setting",
-            url,
-            matched,
-        )
-        return True
+    def _matching(self, url: str) -> str | None:
+        """The first exclude pattern that matches *url*, or None."""
+        return next((p.pattern for p in self._patterns if p.search(url)), None)

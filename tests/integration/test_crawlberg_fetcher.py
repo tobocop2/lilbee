@@ -1001,11 +1001,13 @@ class TestDefaultExcludePatterns:
             assert heading not in saved, heading
 
     async def test_the_log_names_exactly_the_addresses_the_site_never_received(self, site, caplog):
+        caplog.set_level("DEBUG", logger=BACKEND_LOGGER)
         requested = await self._requested(site)
         warnings = sorted(
             record.getMessage()
             for record in caplog.records
-            if record.name.startswith(BACKEND_LOGGER) and record.levelname == "WARNING"
+            if record.name.startswith(BACKEND_LOGGER) and record.levelname == "DEBUG"
+            if record.getMessage().startswith("Left out ")
         )
         never_received = set(DEFAULTS_LINKS.values()) - requested
         assert never_received == set(DEFAULTS_EXCLUDED)

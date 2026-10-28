@@ -143,15 +143,18 @@ class CrawlbergFetcher:
         excluded = _ExcludedLinks(spec, shown)
         if excluded.record_seed(shown):
             return
-        async with aclosing(self._stream(spec, seed_url, cancel)) as events:
-            async for event in events:
-                excluded.record(event)
-                if event.refused_by_ssrf and event.url != shown:
-                    log.debug("crawlberg refused %s: %s", event.url, event.error)
-                    continue
-                page = await _to_page(event, shown)
-                if page is not None:
-                    yield page
+        try:
+            async with aclosing(self._stream(spec, seed_url, cancel)) as events:
+                async for event in events:
+                    excluded.record(event)
+                    if event.refused_by_ssrf and event.url != shown:
+                        log.debug("crawlberg refused %s: %s", event.url, event.error)
+                        continue
+                    page = await _to_page(event, shown)
+                    if page is not None:
+                        yield page
+        finally:
+            excluded.summarize()
 
 
 # Protocol conformance check: CrawlbergFetcher is structurally a WebFetcher.
