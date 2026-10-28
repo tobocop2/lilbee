@@ -1662,8 +1662,8 @@ PDF are scans.
 
 On a page that gets OCR, the OCR text replaces the text layer. So a page whose
 only text is a page number or a short caption is read with OCR. A page that
-has usable text and also an image of text keeps its text, and the image is
-not read.
+has usable text and also an image of text keeps its text, and gains the text
+that OCR finds in the image.
 
 Some scans carry a hidden text layer of poor quality, and that layer can pass
 the check. To OCR those pages too, set `ocr_strategy` to `scanned_pages`. xberg
