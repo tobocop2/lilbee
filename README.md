@@ -732,6 +732,7 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 - [Xberg] parses 90+ document formats with heading-aware chunking.
 - [llama.cpp] is the local model runtime: lilbee bundles its `llama-server` and starts it for you, so every chat, embedding, vision, and reranker call goes through it. [llama-swap] keeps a server per role resident together behind one endpoint, and [gguf-parser] estimates each model's memory footprint so lilbee loads what fits. Without llama.cpp there is no lilbee.
 - [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
+- [liter-llm] connects to hosted and local model providers: OpenAI, Anthropic, Gemini, Ollama, LM Studio and others.
 - [LanceDB] is the embedded vector store.
 - [tree-sitter] (via [tree-sitter-language-pack]) chunks code across 150+ languages.
 - [crawlberg] crawls the web, and [Playwright] installs its headless Chromium; [Tesseract] is the OCR fallback when no vision model is set.
@@ -765,6 +766,7 @@ MIT. See [LICENSE](LICENSE).
 [Hugging Face Hub]: https://huggingface.co
 [huggingface_hub]: https://github.com/huggingface/huggingface_hub
 [crawlberg]: https://github.com/xberg-io/crawlberg
+[liter-llm]: https://github.com/xberg-io/liter-llm
 [Playwright]: https://playwright.dev
 [Textual]: https://textual.textualize.io
 [tree-sitter]: https://tree-sitter.github.io/tree-sitter/
