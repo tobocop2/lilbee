@@ -91,7 +91,7 @@ def _sorted_query(address: str) -> str:
 
 
 def canonical_address(url: str) -> str:
-    """The key crawlberg 1.12.0's ``normalize_url`` gives the page at *url*, or *url* unparsed.
+    """The key crawlberg 1.12.3's ``normalize_url`` gives the page at *url*, or *url* unparsed.
 
     An address with a malformed escape keeps all its escapes as written: decoding the digits
     after a bad ``%`` could make a valid escape the next time the key is made.

@@ -27,12 +27,12 @@ if TYPE_CHECKING:
 
 _SEED_DEPTH = 0
 _SSRF_ERROR_CODE = "ssrf_policy_violation"
-# How crawlberg 1.12.0 starts its refusal of a setting, and the message that names that setting.
+# How crawlberg 1.12.3 starts its refusal of a setting, and the message that names that setting.
 _REFUSED_SETTING_MESSAGES = {
     "invalid_config: browser.chrome_args": BROWSER_FLAGS_REFUSED_MESSAGE,
     "invalid_config: invalid exclude_path regex": EXCLUDE_PATTERN_REFUSED_MESSAGE,
 }
-# How crawlberg 1.12.0 starts the error of a page the site's robots.txt disallows, and of a
+# How crawlberg 1.12.3 starts the error of a page the site's robots.txt disallows, and of a
 # page it refuses because the site's robots.txt could not be read.
 _ROBOTS_DISALLOWED_START = "robots.txt disallows "
 _ROBOTS_UNREACHABLE_START = "robots_unreachable: "
