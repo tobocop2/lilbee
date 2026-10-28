@@ -106,9 +106,12 @@ runs:
         set -euo pipefail
         bash packaging/tools/render_flatpak_manifest.sh \
           "$MANIFEST" "$VERSION" "$SHA_LINUX" "$SIZE_LINUX" "$ASSET"
+        # flatpak-builder refuses a build dir on another filesystem than its
+        # state dir (.flatpak-builder in the workspace), and on some runners
+        # /tmp is a separate mount. RUNNER_TEMP sits beside the workspace.
         flatpak-builder --user --force-clean --disable-rofiles-fuse \
           --repo=/tmp/pages/repo --gpg-sign="$KEYID" --gpg-homedir="$GNUPGHOME" \
-          /tmp/flatpak-build "$MANIFEST"
+          "$RUNNER_TEMP/flatpak-build" "$MANIFEST"
         flatpak build-update-repo --generate-static-deltas --prune --prune-depth=2 \
           --gpg-sign="$KEYID" --gpg-homedir="$GNUPGHOME" /tmp/pages/repo
 
