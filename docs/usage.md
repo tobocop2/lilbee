@@ -1670,7 +1670,8 @@ slide with a full-page background image grades `0.5`, so lower the value to
 `0.5` to OCR such slides.
 
 `force_ocr_pages` overrides automatic page selection. While it is set, only the
-listed pages get OCR in every PDF, and `auto` and `scanned_pages` do not apply.
+listed pages get page OCR in every PDF, and `auto` and `scanned_pages` do not
+apply. Pictures on the other pages still give the text that OCR finds in them.
 Page numbers start at 1, for example `LILBEE_FORCE_OCR_PAGES=1,3`.
 
 If OCR is off (`ocr = off`), lilbee ignores all three settings.
