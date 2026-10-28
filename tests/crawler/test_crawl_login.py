@@ -101,6 +101,7 @@ class TestFetcherLogin:
         accept = ACCEPT if mode is CrawlRenderMode.HTTP else {}
         assert stub.config["auth"] == auth
         assert stub.config["custom_headers"] == {**accept, **cookie}
+        assert "Cookie" not in stub.config["subdomain_header_allowlist"]
 
 
 class _Answer:

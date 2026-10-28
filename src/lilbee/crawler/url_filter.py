@@ -33,7 +33,7 @@ _NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 _IPV4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")  # RFC 6052 SIIT
 # The mark that ends a username and password in the host part of an address.
 _USERINFO_END = "@"
-# A WHATWG parser escapes a raw "^" in a path; the url crate 2.5.8 crawlberg 1.12.0 uses keeps it.
+# A WHATWG parser escapes a raw "^" in a path; the url crate 2.5.8 crawlberg 1.12.3 uses keeps it.
 _CARET = "^"
 _CARET_ESCAPE = "%5E"
 _CARET_ESCAPE_LOWER = "%5e"
@@ -86,7 +86,7 @@ def parsed_url(url: str) -> ada_url.URL | None:
 
 
 def parsed_address(url: str) -> str | None:
-    """*url* without its fragment as crawlberg 1.12.0's URL parser writes it; None if it fails."""
+    """*url* without its fragment as crawlberg 1.12.3's URL parser writes it; None if it fails."""
     parsed = parsed_url(_ANY_CARET_ESCAPE.sub(_CARET_ESCAPE_LOWER, url))
     if parsed is None:
         return None

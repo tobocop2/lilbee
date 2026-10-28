@@ -191,6 +191,19 @@ class TestCrawlConfig:
         assert sent == [BROWSER_ACCEPT_HEADERS] * 2
 
     @pytest.mark.parametrize("mode", list(CrawlRenderMode), ids=str)
+    async def test_the_accept_headers_reach_subdomains_in_each_mode(
+        self, monkeypatch, tmp_path, mode: CrawlRenderMode
+    ):
+        monkeypatch.setattr(
+            config_mod.bootstrap, "headless_shell_executable", lambda: tmp_path / "shell"
+        )
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await _recursive(CrawlbergFetcher(render_mode=mode))
+        expected = list(BROWSER_ACCEPT_HEADERS) if mode is CrawlRenderMode.HTTP else []
+        assert stub.configs[0].kwargs["subdomain_header_allowlist"] == expected
+
+    @pytest.mark.parametrize("mode", list(CrawlRenderMode), ids=str)
     async def test_an_override_names_every_request_in_each_mode(
         self, monkeypatch, tmp_path, mode: CrawlRenderMode
     ):

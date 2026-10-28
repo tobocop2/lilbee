@@ -286,7 +286,8 @@ def _image_only_pdf(page_texts: list[str]) -> bytes:
 
 @pytest.mark.skipif(not shutil.which("tesseract"), reason="Tesseract not installed")
 class TestForceOcrPagesReplacesAutomaticOcr:
-    """xberg OCRs only the listed pages; a scanned page outside the list comes back empty."""
+    """xberg page-OCRs only the listed pages; a scanned page outside the list keeps
+    the text that OCR of its picture finds (xberg 1.3.8, GH#2068)."""
 
     PDF = _image_only_pdf(
         ["First page reads alpha bravo charlie", "Second page reads delta echo foxtrot"]
@@ -316,8 +317,8 @@ class TestForceOcrPagesReplacesAutomaticOcr:
         assert "alpha" in first
         assert "delta" in second
 
-    def test_force_ocr_pages_leaves_unlisted_scanned_pages_empty(self, monkeypatch):
+    def test_force_ocr_pages_keeps_picture_text_of_unlisted_scanned_pages(self, monkeypatch):
         monkeypatch.setattr(cfg, "force_ocr_pages", [1])
         first, second = self._page_texts()
         assert "alpha" in first
-        assert second == ""
+        assert "delta" in second

@@ -14,7 +14,7 @@ The library properties crawl a library saved by the earlier name rule again and 
 real store: every page keeps exactly one file and one index entry, whether or not its text
 changed, no folder is left empty, and saving a page never reads the whole crawl metadata.
 
-Which spellings name one address follows the key the crawler (crawlberg 1.12.0) gives a page: the
+Which spellings name one address follows the key the crawler (crawlberg 1.12.3) gives a page: the
 WHATWG URL standard as the Rust url crate 2.5.8 parses it, then the escape normalization of
 RFC 3986 section 6.2.2, without the fragment, query parameters sorted by name. That crate keeps
 a raw ``^`` in a path, where newer parsers escape it.

@@ -279,7 +279,7 @@ class TestUrlToFilename:
         assert url_to_filename(url) == f"example.com/T/x~{digest}.md"
 
 
-# Two spellings of one page, as crawlberg 1.12.0 keys it: (one spelling, the key).
+# Two spellings of one page, as crawlberg 1.12.3 keys it: (one spelling, the key).
 SAME_PAGE = [
     pytest.param("https://example.com/t/a%2Db", "https://example.com/t/a-b", id="hyphen"),
     pytest.param("https://example.com/t/a%2db", "https://example.com/t/a-b", id="lower-hex"),
@@ -314,7 +314,7 @@ SAME_PAGE = [
     ),
     pytest.param("not a url", "not a url", id="not-a-url"),
 ]
-# Two addresses crawlberg 1.12.0 keys as two pages: no rule makes them one.
+# Two addresses crawlberg 1.12.3 keys as two pages: no rule makes them one.
 DIFFERENT_PAGES = [
     pytest.param("https://example.com/t/ca^ret", "https://example.com/t/ca%5Eret", id="caret"),
     pytest.param("https://example.com/t/pi|pe", "https://example.com/t/pi%7Cpe", id="pipe"),
@@ -337,7 +337,7 @@ DIFFERENT_PAGES = [
 ]
 
 # An address with a malformed percent escape keeps every escape as written, and its query
-# parameters are still sorted, as crawlberg 1.12.0 keys it: (the address, the key).
+# parameters are still sorted, as crawlberg 1.12.3 keys it: (the address, the key).
 MALFORMED_ESCAPE_KEPT = [
     pytest.param("https://example.com/s/%%341", "https://example.com/s/%%341", id="replay"),
     pytest.param("https://example.com/s/a%2db%zz", "https://example.com/s/a%2db%zz", id="path"),
