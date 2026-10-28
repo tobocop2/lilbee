@@ -792,6 +792,53 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "0 = no extra wait, at most 600000 (ten minutes). http mode ignores it."
         ),
     ),
+    "crawl_login_host": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "The one host that gets the stored crawl login, as a bare host name such as "
+            "wiki.example.com, with no scheme or path. The match ignores the "
+            "scheme and the port of the crawled URL. A crawl of any other host sends "
+            "no stored login. "
+            "Blank = no stored login"
+        ),
+    ),
+    "crawl_authorization": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        secret=True,
+        help_text=(
+            "Authorization header value sent to the crawl login host. Use it or a "
+            "username, not both. Stored in plain text in config.toml"
+        ),
+    ),
+    "crawl_username": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text="Basic-auth username sent to the crawl login host. Blank = none",
+    ),
+    "crawl_password": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        secret=True,
+        help_text=(
+            "Basic-auth password sent with the crawl login username. Stored in plain "
+            "text in config.toml"
+        ),
+    ),
+    "crawl_cookie": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        secret=True,
+        help_text=(
+            "Cookie header value sent to the crawl login host. Stored in plain text in config.toml"
+        ),
+    ),
     "crawl_user_agent": SettingDef(
         str,
         nullable=False,

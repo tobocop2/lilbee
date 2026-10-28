@@ -3974,19 +3974,20 @@ class TestAddWithUrls:
         "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
     )
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_sends_the_login_flags_and_reads_secrets_from_the_environment(
-        self, mock_sync, mock_crawl, mock_avail
+    def test_add_url_sends_the_login_flags_over_the_stored_login(
+        self, mock_sync, mock_crawl, mock_avail, monkeypatch
     ):
         from lilbee.crawler.models import CrawlLogin
 
+        monkeypatch.setattr(cfg, "crawl_password", "pw-stored")
+        monkeypatch.setattr(cfg, "crawl_login_host", "Example.COM")
         result = runner.invoke(
             app,
             ["add", "--crawl", "--username", "alice", "--cookie", "sid=1", "https://example.com"],
-            env={"LILBEE_CRAWL_PASSWORD": "pw-env", "LILBEE_CRAWL_LOGIN_HOST": "Example.COM"},
         )
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["login"] == CrawlLogin(
-            username="alice", password="pw-env", cookie="sid=1"
+            username="alice", password="pw-stored", cookie="sid=1"
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
@@ -4037,19 +4038,18 @@ class TestAddWithUrls:
             (None, ["https://other.example/"]),
             ("private.example", ["https://other.example/"]),
             ("private.example", ["https://private.example/", "https://other.example/"]),
-            ("private example", ["https://private.example/"]),
         ],
-        ids=["no-login-host", "another-host", "several-hosts", "unparsed-login-host"],
+        ids=["no-login-host", "another-host", "several-hosts"],
     )
-    def test_add_url_sends_no_environment_login_to_a_host_it_does_not_name(
-        self, mock_sync, mock_crawl, mock_avail, login_host, urls
+    def test_add_url_sends_no_stored_login_to_a_host_it_does_not_name(
+        self, mock_sync, mock_crawl, mock_avail, login_host, urls, monkeypatch
     ):
         from lilbee.crawler.models import NO_LOGIN
 
-        env = {"LILBEE_CRAWL_COOKIE": "sid=Ck-env-3Tz", "LILBEE_CRAWL_AUTHORIZATION": "Bearer t"}
-        if login_host is not None:
-            env["LILBEE_CRAWL_LOGIN_HOST"] = login_host
-        result = runner.invoke(app, ["add", *urls], env=env)
+        monkeypatch.setattr(cfg, "crawl_cookie", "sid=Ck-env-3Tz")
+        monkeypatch.setattr(cfg, "crawl_authorization", "Bearer t")
+        monkeypatch.setattr(cfg, "crawl_login_host", login_host or "")
+        result = runner.invoke(app, ["add", *urls])
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["login"] == NO_LOGIN
         assert "LILBEE_CRAWL_LOGIN_HOST" in result.output
@@ -4060,18 +4060,16 @@ class TestAddWithUrls:
         "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=_CrawlOutcome()
     )
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_sends_the_environment_login_to_the_host_it_names(
-        self, mock_sync, mock_crawl, mock_avail
+    def test_add_url_sends_the_stored_login_to_the_host_it_names(
+        self, mock_sync, mock_crawl, mock_avail, monkeypatch
     ):
         from lilbee.crawler.models import CrawlLogin
 
-        env = {
-            "LILBEE_CRAWL_COOKIE": "sid=env",
-            "LILBEE_CRAWL_AUTHORIZATION": "Bearer env",
-            "LILBEE_CRAWL_LOGIN_HOST": "BÜCHER.example",
-        }
+        monkeypatch.setattr(cfg, "crawl_cookie", "sid=env")
+        monkeypatch.setattr(cfg, "crawl_authorization", "Bearer env")
+        monkeypatch.setattr(cfg, "crawl_login_host", "BÜCHER.example")
         result = runner.invoke(
-            app, ["add", "https://xn--bcher-kva.example/", "--cookie", "sid=typed"], env=env
+            app, ["add", "https://xn--bcher-kva.example/", "--cookie", "sid=typed"]
         )
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["login"] == CrawlLogin(

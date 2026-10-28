@@ -1798,6 +1798,24 @@ class TestCrawlRoute:
         assert b"pw-4Rv" not in resp.content
 
     @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_sends_the_stored_login_only_to_its_host(
+        self, mock_stream, client, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.crawler.models import CrawlLogin
+
+        # The URL check resolves the host name; the second host does not resolve offline.
+        monkeypatch.setattr("lilbee.crawler.require_valid_crawl_url", lambda url: None)
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        monkeypatch.setattr(cfg, "crawl_login_host", "example.com")
+        monkeypatch.setattr(cfg, "crawl_cookie", "sid=stored")
+        client.post("/api/crawl", json={"url": "https://example.com/a"})
+        assert mock_stream.call_args.kwargs["login"] == CrawlLogin(cookie="sid=stored")
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        client.post("/api/crawl", json={"url": "https://other.example/a"})
+        assert mock_stream.call_args.kwargs["login"] == CrawlLogin()
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
     def test_post_crawl_refuses_a_bad_login_without_echoing_it(self, mock_stream, client):
         login = {"authorization": "Bearer t-7Hn", "username": "alice"}
         resp = client.post("/api/crawl", json={"url": "https://example.com", "login": login})

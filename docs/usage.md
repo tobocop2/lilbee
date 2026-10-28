@@ -1318,22 +1318,27 @@ Also available via MCP (`crawl`), REST API (`POST /api/crawl`), and TUI
 depth, or `depth=null` for the whole site.
 
 **Sites that need a login:** `lilbee add` takes `--authorization`, `--username`,
-`--password` and `--cookie`. The REST body takes a `login` object with the same
-four fields. The MCP `crawl` tool takes them as four parameters. A login goes to
-one host only: the host of the URL, and never to a host a page links or
-redirects to. If one `lilbee add` command has a login and URLs on more than one
-host, lilbee refuses the command. Add the URLs of each host in their own
-command. The login is never saved to `config.toml` or the crawl record. The TUI
-`/crawl` command and the MCP `add` tool do not take a login.
+`--password` and `--cookie`. The TUI crawl dialog (`/crawl`) has a field for each.
+The REST body takes a `login` object with the same four fields. The MCP `crawl`
+tool takes them as four parameters. A login goes to one host only: the host of
+the URL, and never to a host a page links or redirects to. If one `lilbee add`
+command has a login and URLs on more than one host, lilbee refuses the command.
+Add the URLs of each host in their own command. A login you give for one crawl is
+never saved to `config.toml` or the crawl record. The MCP `add` tool does not take
+a login.
 
-To keep a secret out of shell history, export it as `LILBEE_CRAWL_AUTHORIZATION`,
-`LILBEE_CRAWL_PASSWORD` or `LILBEE_CRAWL_COOKIE`, and name its host in
-`LILBEE_CRAWL_LOGIN_HOST`. lilbee sends these variables only to a command whose
-URLs are all on that host. The match ignores the scheme and the port, as
-crawlberg does, so the login also goes to `http://` URLs and to other ports of
-that host. For any other command, lilbee sends none of them and
-prints a note. A flag on the command line wins over the variable of the same
-field.
+To keep a login for a site, set it in the settings: `crawl_login_host` names the
+one host as a bare host name, with an optional port and no scheme or path, and
+`crawl_authorization`, `crawl_username`, `crawl_password` and `crawl_cookie` hold
+the login. The TUI settings screen masks the secret ones, and
+`GET /api/config` and the logs never show them. Each has an environment variable,
+for example `LILBEE_CRAWL_COOKIE`, which keeps a secret out of shell history.
+lilbee sends the stored login only to a crawl whose URLs are all on
+`crawl_login_host`, from every entry point. The match ignores the scheme and the
+port, as crawlberg does, so the login also goes to `http://` URLs and to other
+ports of that host. For any other crawl, lilbee sends none of it, and `lilbee add`
+prints a note. The MCP `add` result carries the same note as `login_note`. A login
+you give for one crawl wins over the stored login for the same field.
 
 ```bash
 export LILBEE_CRAWL_LOGIN_HOST=wiki.example.com

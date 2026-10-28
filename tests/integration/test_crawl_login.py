@@ -190,15 +190,13 @@ class TestOtherHost:
         assert all(TOKEN not in auth and COOKIE not in cookie for _, auth, cookie in landed)
 
 
-def _add(site, isolated_env, *args: str, env: dict[str, str] | None = None):
+def _add(site, isolated_env, *args: str):
     """Run `lilbee add` against the loopback site; the `no_sync` fixture stubs the sync."""
     from typer.testing import CliRunner
 
     from lilbee.cli import app
 
-    return CliRunner().invoke(
-        app, ["add", "--data-dir", str(isolated_env / "data"), *args], env=env
-    )
+    return CliRunner().invoke(app, ["add", "--data-dir", str(isolated_env / "data"), *args])
 
 
 def _carries_login(requests: list[tuple[str, str, str]]) -> bool:
@@ -216,19 +214,24 @@ class TestSecondHostEachEntryPoint:
         assert not _carries_login(site.seen("/landing"))
         assert not _carries_login(site.seen("/cookie/"))
 
-    def test_the_command_line_sends_no_exported_login_to_another_host(self, site, isolated_env):
-        env = {"LILBEE_CRAWL_COOKIE": COOKIE, "LILBEE_CRAWL_AUTHORIZATION": TOKEN}
-        result = _add(site, isolated_env, site.url("/landing", "localhost"), env=env)
+    def test_the_command_line_sends_no_stored_login_to_another_host(
+        self, site, isolated_env, monkeypatch
+    ):
+        # The settings hold the login; `cfg` is read once at start, so a test sets it directly.
+        monkeypatch.setattr(cfg, "crawl_cookie", COOKIE)
+        monkeypatch.setattr(cfg, "crawl_authorization", TOKEN)
+        result = _add(site, isolated_env, site.url("/landing", "localhost"))
         # Positive control: the crawl of the other host ran.
         assert result.exit_code == 0, result.output
         assert site.seen("/landing")
         assert not _carries_login(site.seen("/landing"))
 
-    def test_the_command_line_sends_the_exported_login_to_the_host_it_names(
-        self, site, isolated_env
+    def test_the_command_line_sends_the_stored_login_to_the_host_it_names(
+        self, site, isolated_env, monkeypatch
     ):
-        env = {"LILBEE_CRAWL_COOKIE": COOKIE, "LILBEE_CRAWL_LOGIN_HOST": "127.0.0.1"}
-        result = _add(site, isolated_env, site.url("/cookie/"), env=env)
+        monkeypatch.setattr(cfg, "crawl_cookie", COOKIE)
+        monkeypatch.setattr(cfg, "crawl_login_host", "127.0.0.1")
+        result = _add(site, isolated_env, site.url("/cookie/"))
         assert result.exit_code == 0, result.output
         assert site.seen("/cookie/")[0][2] == COOKIE
 

@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 from textual.app import ComposeResult
-from textual.widgets import Button, Static
+from textual.widgets import Button, Checkbox, Input, Static
 
 from conftest import (
     TEST_EMBED_REF,
@@ -5898,6 +5898,126 @@ async def test_crawl_dialog_accepts_the_largest_depth_and_page_count():
             params = app.screen._validate()
     assert isinstance(params, CrawlParams)
     assert (params.depth, params.max_pages) == (100, 10_000_000)
+
+
+_LOGIN_INPUT_IDS = {
+    "authorization": "#crawl-authorization-input",
+    "username": "#crawl-username-input",
+    "password": "#crawl-password-input",
+    "cookie": "#crawl-cookie-input",
+}
+
+
+async def _submit_login(**typed):
+    """Open the dialog, type *typed* login fields, press Crawl, return (app, error text)."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#crawl-url-input").value = "https://example.com"
+        for name, value in typed.items():
+            app.screen.query_one(_LOGIN_INPUT_IDS[name]).value = value
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            app.screen.query_one("#crawl-submit", Button).press()
+            await pilot.pause()
+        shown = app.results == []
+        error = str(app.screen.query_one("#crawl-error", Static).render()) if shown else ""
+    return app, error
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        {"authorization": "Bearer t-1"},
+        {"username": "alice", "password": "pw-1"},
+        {"cookie": "sid=1"},
+        {"username": "alice", "cookie": "sid=1"},
+    ],
+    ids=["authorization", "basic", "cookie", "username-and-cookie"],
+)
+async def test_crawl_dialog_returns_each_kind_of_login(typed):
+    from lilbee.crawler.models import CrawlLogin
+
+    app, _ = await _submit_login(**typed)
+    assert app.results[0].login == CrawlLogin(**typed)
+
+
+async def test_crawl_dialog_without_a_login_returns_no_login():
+    from lilbee.crawler.models import NO_LOGIN
+
+    app, _ = await _submit_login()
+    assert app.results[0].login == NO_LOGIN
+
+
+async def test_crawl_dialog_login_applies_to_a_single_page_crawl():
+    from lilbee.crawler.models import CrawlLogin
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#crawl-url-input").value = "https://example.com"
+        app.screen.query_one("#crawl-recursive-checkbox", Checkbox).value = False
+        app.screen.query_one("#crawl-cookie-input").value = "sid=1"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            app.screen.query_one("#crawl-submit", Button).press()
+            await pilot.pause()
+    assert app.results[0].login == CrawlLogin(cookie="sid=1")
+    assert app.results[0].depth == 0
+
+
+@pytest.mark.parametrize(
+    ("typed", "words"),
+    [
+        ({"authorization": "Bearer t-9Qx", "username": "alice"}, "not both"),
+        ({"password": "pw-9Qx"}, "password needs a username"),
+        ({"cookie": "sid=9\nQx"}, "cookie holds a control character"),
+        ({"authorization": "Bearer ü-9Qx"}, "authorization holds a character outside ASCII"),
+    ],
+    ids=["both", "password-alone", "control-character", "non-ascii"],
+)
+async def test_crawl_dialog_shows_the_login_error_naming_the_field_and_not_the_value(typed, words):
+    app, error = await _submit_login(**typed)
+    assert app.results == []
+    assert words in error
+    assert "9Qx" not in error
+
+
+async def test_crawl_dialog_checks_a_typed_login_with_the_stored_one(monkeypatch):
+    monkeypatch.setattr(cfg, "crawl_login_host", "example.com")
+    monkeypatch.setattr(cfg, "crawl_authorization", "Bearer stored-Hv3")
+    app, error = await _submit_login(username="alice")
+    assert app.results == []
+    assert "not both" in error
+    assert "stored-Hv3" not in error
+
+
+@pytest.mark.parametrize(
+    ("field", "masked"),
+    [("authorization", True), ("username", False), ("password", True), ("cookie", True)],
+)
+async def test_crawl_dialog_masks_the_secret_login_fields(field, masked):
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        assert app.screen.query_one(_LOGIN_INPUT_IDS[field], Input).password is masked
+
+
+async def test_crawl_dialog_keeps_the_login_out_of_the_params_repr():
+    app, _ = await _submit_login(cookie="sid=Ck-5Tz")
+    assert "Ck-5Tz" not in repr(app.results[0])
+
+
+async def test_crawl_dialog_login_fields_stay_reachable_on_a_short_terminal():
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 16)) as pilot:
+        await pilot.pause()
+        cookie = app.screen.query_one("#crawl-cookie-input", Input)
+        cookie.focus()
+        await pilot.pause()
+        submit = app.screen.query_one("#crawl-submit", Button)
+        assert cookie.has_focus
+        assert submit.region.height > 0
 
 
 async def test_crawl_dialog_browser_checkbox_sets_browser_mode(monkeypatch):

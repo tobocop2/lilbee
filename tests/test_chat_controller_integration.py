@@ -305,6 +305,7 @@ def test_do_crawl_reports_setup_progress() -> None:
         quiet=False,
         include_subdomains=False,
         render_mode=None,
+        login=None,
     ):
         on_progress(EventType.SETUP_START, SetupStartEvent(component="chromium"))
         on_progress(
@@ -388,6 +389,7 @@ def test_do_crawl_reports_page_progress() -> None:
         quiet=False,
         include_subdomains=False,
         render_mode=None,
+        login=None,
     ):
         on_progress(
             EventType.CRAWL_PAGE,
@@ -438,6 +440,7 @@ def test_do_crawl_notifies_page_failures() -> None:
         quiet=False,
         include_subdomains=False,
         render_mode=None,
+        login=None,
     ):
         on_progress(
             EventType.CRAWL_PAGE_FAILED,
@@ -546,6 +549,21 @@ def test_start_crawl_names_a_credentialed_seed_without_its_password(monkeypatch)
     shown = [bar.start_task.call_args.args[0], *notified]
     assert all("https://example.com/" in text for text in shown)
     assert not any("hunter2" in text for text in shown)
+
+
+def test_start_crawl_refuses_a_typed_login_that_clashes_with_the_stored_one(monkeypatch) -> None:
+    """A typed username next to a stored header is refused without the value, and no task starts."""
+    from lilbee.crawler.models import CrawlLogin
+
+    monkeypatch.setattr(cfg, "crawl_login_host", "example.com")
+    monkeypatch.setattr(cfg, "crawl_authorization", "Bearer Tok-stored-5Rd")
+    notified: list[str] = []
+    with _chat_screen_with_task_bar() as (screen, bar):
+        screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
+        screen._start_crawl("https://example.com/", 0, 5, login=CrawlLogin(username="alice"))
+    bar.start_task.assert_not_called()
+    assert len(notified) == 1
+    assert "Tok-stored-5Rd" not in notified[0]
 
 
 def test_do_crawl_names_a_credentialed_seed_without_its_password() -> None:

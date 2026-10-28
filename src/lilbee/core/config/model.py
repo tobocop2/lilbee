@@ -54,6 +54,7 @@ from .load_warnings import (
     shown_marks,
     warn_on_load,
 )
+from .login_host import refuse_unless_host
 from .parsing import parse_bool
 from .validators import ConfigField
 
@@ -712,6 +713,14 @@ class Config(BaseSettings):
     # sends Chrome's own, an HTTP crawl crawlberg's, the sitemap lookup httpx's.
     crawl_user_agent: str = ConfigField(default="", writable=True)
 
+    # The login every crawl of crawl_login_host sends; a crawl of any other host gets none.
+    # CrawlLogin (crawler.models) validates the fields together.
+    crawl_login_host: str = ConfigField(default="", writable=True)
+    crawl_authorization: str = ConfigField(default="", writable=True, write_only=True)
+    crawl_username: str = ConfigField(default="", writable=True)
+    crawl_password: str = ConfigField(default="", writable=True, write_only=True)
+    crawl_cookie: str = ConfigField(default="", writable=True, write_only=True)
+
     # Whether crawls skip the pages a site's robots.txt disallows, and every page of a
     # site whose robots.txt cannot be read.
     crawl_respect_robots_txt: bool = ConfigField(default=True, writable=True)
@@ -1369,6 +1378,13 @@ class Config(BaseSettings):
         if CONTROL_CHARACTER.search(user_agent):
             raise ValueError("crawl_user_agent holds a control character")
         return user_agent
+
+    @field_validator("crawl_login_host", mode="after")
+    @classmethod
+    def _validate_crawl_login_host(cls, v: str) -> str:
+        """The login host as a bare host name; a URL is refused, as in the settings write."""
+        refuse_unless_host(v)
+        return v
 
     @field_validator("crawl_exclude_patterns", mode="before")
     @classmethod

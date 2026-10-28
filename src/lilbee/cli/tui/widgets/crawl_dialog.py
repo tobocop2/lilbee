@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from textual.app import ComposeResult
@@ -14,7 +14,15 @@ from textual.widgets import Button, Checkbox, Input, Label, Static
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.crawler.models import crawl_limit_error
+from lilbee.crawler.models import NO_LOGIN, CrawlLogin, crawl_limit_error
+from lilbee.crawler.stored_login import crawl_login
+
+_LOGIN_INPUTS: tuple[tuple[str, str, bool], ...] = (
+    ("crawl-authorization-input", msg.CRAWL_DIALOG_AUTHORIZATION_LABEL, True),
+    ("crawl-username-input", msg.CRAWL_DIALOG_USERNAME_LABEL, False),
+    ("crawl-password-input", msg.CRAWL_DIALOG_PASSWORD_LABEL, True),
+    ("crawl-cookie-input", msg.CRAWL_DIALOG_COOKIE_LABEL, True),
+)
 
 
 @dataclass(frozen=True)
@@ -25,12 +33,14 @@ class CrawlParams:
     explicit link-follow depth cap. max_pages: CRAWL_PAGES_UNLIMITED (0) = no
     limit (the user cleared the field); positive int = explicit page cap.
     render_mode: http (browserless) or browser (Chromium with JavaScript).
+    login: the login typed for this crawl; it shows in no repr.
     """
 
     url: str
     depth: int | None
     max_pages: int
     render_mode: CrawlRenderMode
+    login: CrawlLogin = field(default=NO_LOGIN, repr=False)
 
 
 class CrawlDialog(ModalScreen[CrawlParams | None]):
@@ -82,6 +92,14 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
                 placeholder=msg.CRAWL_DIALOG_DEPTH_PLACEHOLDER,
                 id="crawl-depth-input",
             )
+            yield Label(msg.CRAWL_DIALOG_LOGIN_LABEL, classes="crawl-field-label")
+            for field_id, label, secret in _LOGIN_INPUTS:
+                yield Label(label)
+                yield Input(
+                    placeholder=msg.CRAWL_DIALOG_LOGIN_PLACEHOLDER,
+                    password=secret,
+                    id=field_id,
+                )
             yield Static("", id="crawl-error", markup=False)
             with Center(), Horizontal(id="crawl-buttons"):
                 yield Button(msg.CRAWL_DIALOG_SUBMIT, variant="primary", id="crawl-submit")
@@ -151,25 +169,37 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
         except ValueError as exc:
             return msg.CRAWL_DIALOG_INVALID_URL.format(error=exc)
 
-        if not recursive:
-            return CrawlParams(
-                url=url, depth=0, max_pages=CRAWL_PAGES_UNLIMITED, render_mode=render_mode
-            )
-
         try:
-            # depth=0 means "single URL" per the crawler contract; allow it.
-            depth = self._parse_optional_non_negative_int(depth_str)
-        except ValueError:
-            return msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_DEPTH_LABEL)
+            login = self._typed_login(url)
+        except ValueError as exc:
+            return msg.CRAWL_DIALOG_INVALID_LOGIN.format(error=exc)
 
-        try:
-            max_pages = self._parse_max_pages(max_pages_str)
-        except ValueError:
-            return msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_MAX_PAGES_LABEL)
+        depth: int | None = 0
+        max_pages = CRAWL_PAGES_UNLIMITED
+        if recursive:
+            try:
+                # depth=0 means "single URL" per the crawler contract; allow it.
+                depth = self._parse_optional_non_negative_int(depth_str)
+            except ValueError:
+                return msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_DEPTH_LABEL)
+            try:
+                max_pages = self._parse_max_pages(max_pages_str)
+            except ValueError:
+                return msg.CRAWL_DIALOG_INVALID_NUMBER.format(
+                    field=msg.CRAWL_DIALOG_MAX_PAGES_LABEL
+                )
 
         return crawl_limit_error(depth, max_pages) or CrawlParams(
-            url=url, depth=depth, max_pages=max_pages, render_mode=render_mode
+            url=url, depth=depth, max_pages=max_pages, render_mode=render_mode, login=login
         )
+
+    def _typed_login(self, url: str) -> CrawlLogin:
+        """The login typed here, checked together with the stored login for *url*'s host."""
+        typed = CrawlLogin(
+            *(self.query_one(f"#{field_id}", Input).value for field_id, _, _ in _LOGIN_INPUTS)
+        )
+        crawl_login([url], typed)
+        return typed
 
     def _try_submit(self) -> None:
         """Validate inputs and dismiss with CrawlParams or show an error."""

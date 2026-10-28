@@ -70,6 +70,7 @@ from lilbee.crawler import (
 )
 from lilbee.crawler.bootstrap import CrawlEngineRefusedError
 from lilbee.crawler.models import CrawlLogin, crawl_limit_error
+from lilbee.crawler.stored_login import STORED_LOGIN_NOT_SENT, crawl_login, stored_login_withheld
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
@@ -422,13 +423,24 @@ async def _crawl_add_urls(
         # add fetches single pages (depth=0); site crawls go through the crawl tool
         try:
             crawled_paths = await crawl_and_save(
-                url, depth=0, render_mode=render_mode, on_progress=on_progress
+                url,
+                depth=0,
+                render_mode=render_mode,
+                on_progress=on_progress,
+                login=crawl_login([url]),
             )
         except CrawlEngineRefusedError as exc:
             errors.append(f"{without_userinfo(url)}: {exc}")
             continue
         crawled_count += len(crawled_paths)
     return crawled_count, errors
+
+
+def _login_note(urls: list[str]) -> dict[str, str]:
+    """The note for ``add`` when a stored login is not sent to one of *urls*, else nothing."""
+    if any(stored_login_withheld([url]) for url in urls):
+        return {"login_note": STORED_LOGIN_NOT_SENT}
+    return {}
 
 
 @_tool
@@ -506,7 +518,7 @@ async def add(
         return _error("add indexed nothing. " + " ".join(errors))
     if errors or (sync_result is not None and sync_result.get("failed")):
         result["warning"] = "some files could not be processed"
-    return result
+    return result | _login_note(urls)
 
 
 @_tool_if(crawler_available)
@@ -531,7 +543,7 @@ async def crawl(
     if (too_large := crawl_limit_error(depth, max_pages)) is not None:
         return _error(too_large)
     try:
-        login = CrawlLogin(authorization, username, password, cookie)
+        login = crawl_login([url], CrawlLogin(authorization, username, password, cookie))
     except ValueError as exc:
         return _error(str(exc))
     try:
