@@ -8,8 +8,16 @@ useDefault = true
 # default generic-api-key rule can match these CamelCase identifiers on
 # entropy alone. Suppress the pattern globally because it is a language
 # idiom, not a secret.
+#
+# The crawl-login tests also use made-up credentials, for example the
+# wrong password for a rejected login. The same rule flags them on
+# entropy alone, at every commit that touched the file. Skip only that
+# one fixture file.
 [allowlist]
-description = "Python mock.patch target identifiers"
+description = "Python mock.patch targets and crawl-login test credentials"
+paths = [
+  '''tests/integration/test_crawl_login\.py''',
+]
 regexTarget = "line"
 regexes = [
   '''patch(?:\.object)?\s*\([^,)]+,\s*"[A-Za-z_][A-Za-z0-9_]*"''',
