@@ -1,5 +1,6 @@
 """Tests for Config (pydantic-settings BaseSettings) and env var overrides."""
 
+import datetime
 import json
 import os
 import re
@@ -3013,6 +3014,12 @@ class TestServerPresetFields:
     )
     def test_any_toml_type_becomes_text(self, value, text):
         assert Config(server_presets=value).server_presets == text
+
+    def test_a_toml_date_in_the_list_becomes_text(self):
+        value = [{"name": "x", "since": datetime.date(2026, 1, 2)}]
+        assert (
+            Config(server_presets=value).server_presets == '[{"name": "x", "since": "2026-01-02"}]'
+        )
 
     def test_no_repr_of_the_config_holds_the_list(self):
         assert "SENTINEL" not in repr(Config(server_presets="SENTINEL"))

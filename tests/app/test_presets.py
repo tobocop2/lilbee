@@ -8,6 +8,7 @@ import socket
 import threading
 
 import pytest
+from pydantic import ValidationError
 
 from lilbee.app import presets
 from lilbee.app import settings as app_settings
@@ -142,8 +143,8 @@ class TestValidatePresetUrl:
     @pytest.mark.parametrize(
         ("url", "message"),
         [
-            ("ftp://8.8.8.8/", "must start with http"),
-            ("8.8.8.8", "must start with http"),
+            ("ftp://8.8.8.8/", "must use the http or https scheme"),
+            ("8.8.8.8", "must use the http or https scheme"),
             ("", "printable ASCII"),
             ("http://8.8.8.8/a b", "printable ASCII"),
             ("http://8.8.8.8\\@10.0.0.1/", "printable ASCII"),
@@ -151,7 +152,7 @@ class TestValidatePresetUrl:
             ("http://１.１.１.１/", "printable ASCII"),  # noqa: RUF001
             ("http://8.8.8.8/?a=b", "query or a fragment"),
             ("http://8.8.8.8/#a", "query or a fragment"),
-            ("http://user:pass@8.8.8.8/", "user name or password"),
+            ("http://user:pass@8.8.8.8/", "user name or password"),  # pragma: allowlist secret
             ("http://@8.8.8.8/", "user name or password"),
             ("http://[fe80::1%25en0]/", "percent sign"),
             ("http://%31.1.1.1/", "percent sign"),
@@ -175,6 +176,46 @@ class TestValidatePresetUrl:
         dns["mixed.test"] = ["8.8.8.8", "169.254.169.254"]
         with pytest.raises(ValueError, match=METADATA_REFUSAL):
             presets.validate_preset_url("http://mixed.test/")
+
+    @pytest.mark.parametrize(
+        ("url", "blocked"),
+        [
+            ("http://[64:ff9b:1::1]/", "64:ff9b:1::1"),
+            ("http://[64:ff9b:1:ffff:ffff:ffff:ffff:ffff]/", "64:ff9b:1:ffff:ffff:ffff:ffff:ffff"),
+            ("http://[2001::1]/", "2001::1"),
+            (
+                "http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/",
+                "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            ),
+            ("http://[2001:db8::5efe:808:808]/", "2001:db8::5efe:808:808"),
+            ("http://[2001:db8::200:5efe:808:808]/", "2001:db8::200:5efe:808:808"),
+            ("http://[2606:4700::5efe:a00:1]/", "2606:4700::5efe:a00:1"),
+        ],
+    )
+    def test_an_address_that_tunnels_to_an_ipv4_host_is_refused(self, url, blocked):
+        with pytest.raises(ValueError, match=re.escape(f"blocked address {blocked}")):
+            presets.validate_preset_url(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://[64:ff9b:2::1]/",
+            "http://[2001:1::1]/",
+            "http://[2001:db8::1]/",
+            "http://[2001:db8::5efd:808:808]/",
+            "http://[2001:db8::1:5efe:808:808]/",
+            "http://[2001:db8::5efe:808]/",
+        ],
+    )
+    def test_a_neighbour_of_a_tunnel_range_is_allowed(self, url):
+        assert presets.validate_preset_url(url) is None
+
+    def test_a_host_name_with_a_tunnel_answer_is_refused_at_save_and_at_request(self, dns):
+        dns["tunnel.test"] = ["8.8.8.8", "2001:0:4136:e378:8000:63bf:3fff:fdd2"]
+        with pytest.raises(ValueError, match="blocked address 2001:0:4136"):
+            presets.validate_preset_url("http://tunnel.test/")
+        with pytest.raises(ValueError, match="blocked address 2001:0:4136"):
+            presets.check_request_address("http://tunnel.test/")
 
     def test_a_host_name_with_a_mapped_answer_is_read_as_the_address_it_embeds(self, dns):
         dns["mapped.test"] = ["::ffff:169.254.169.254"]
@@ -238,7 +279,12 @@ class TestAdd:
 
     def test_a_key_that_cannot_be_stored_is_refused_with_no_echo(self):
         with pytest.raises(ValueError) as refused:
-            presets.add_preset("alpha", URL, roles=["chat"], api_key="bad\ud800key")
+            presets.add_preset(
+                "alpha",
+                URL,
+                roles=["chat"],
+                api_key="bad\ud800key",  # pragma: allowlist secret
+            )
         assert str(refused.value) == "The API key holds a character that cannot be stored."
         assert refused.value.__context__ is None
         assert _stored() == []
@@ -387,7 +433,10 @@ class TestEdit:
     def test_a_key_that_cannot_be_stored_is_refused_with_no_echo(self):
         before = (cfg.data_root / "config.toml").read_bytes()
         with pytest.raises(ValueError, match="cannot be stored") as refused:
-            presets.edit_preset("alpha", api_key="bad\ud800key")
+            presets.edit_preset(
+                "alpha",
+                api_key="bad\ud800key",  # pragma: allowlist secret
+            )
         assert "bad" not in str(refused.value)
         assert refused.value.__context__ is None
         assert (cfg.data_root / "config.toml").read_bytes() == before
@@ -502,7 +551,12 @@ class TestOneBadEntry:
         {"name": "bad", "url": URL, "roles": ["speak"], "api_key": KEY},
         {"name": "bad", "url": URL, "roles": [], "api_key": KEY},
         {"name": "bad", "url": URL, "roles": ["chat"], "extra": 1, "api_key": KEY},
-        {"name": "bad", "url": URL, "roles": ["chat"], "api_key": "lone\ud800"},
+        {
+            "name": "bad",
+            "url": URL,
+            "roles": ["chat"],
+            "api_key": "lone\ud800",  # pragma: allowlist secret
+        },
     )
 
     @pytest.fixture(params=BAD_ENTRIES)
@@ -551,6 +605,25 @@ class TestOneBadEntry:
         with pytest.raises(ValueError, match="'bad' is refused"):
             presets.edit_preset("good", roles=["embed"])
         assert _stored() == before
+
+    def test_an_unreadable_entry_shows_no_text_of_its_row_in_its_repr(self):
+        row = {"name": "bad", "url": URL, "roles": ["speak"], "api_key": KEY}
+        entry = presets._decoded_row(row)
+        assert isinstance(entry, presets._UnreadableEntry)
+        assert KEY not in repr(entry)
+
+    def test_the_error_for_a_bad_row_repeats_none_of_the_input(self):
+        row = {"name": "bad", "url": URL, "roles": [KEY], "api_key": KEY}
+        with pytest.raises(ValidationError) as refused:
+            presets._StoredPreset.model_validate(row)
+        assert KEY not in str(refused.value)
+
+    def test_a_stored_list_nested_past_the_parser_limit_is_refused_as_unparsed(self):
+        settings.set_value(cfg.data_root, "server_presets", "[" * 200_000)
+        before = (cfg.data_root / "config.toml").read_bytes()
+        with pytest.raises(ValueError, match="do not parse"):
+            presets.add_preset("good", URL, roles=["chat"])
+        assert (cfg.data_root / "config.toml").read_bytes() == before
 
     def test_a_key_change_on_a_repeated_name_is_refused(self):
         _store(_entry("twin"), _entry("twin"))

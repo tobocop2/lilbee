@@ -32,6 +32,8 @@ _URL_PATTERN = re.compile(r"[!-\[\]-~]+")
 _IPV4_NUMBER = re.compile(r"0[xX][0-9a-fA-F]*|[0-9]+")
 _IPV4_MAX_PARTS = 4
 _IPV4_PART_BASE = 256
+_LOCAL_NAT64_PREFIX = ipaddress.ip_network("64:ff9b:1::/48")  # RFC 8215
+_ISATAP_INTERFACE_PREFIXES = (0x00005EFE, 0x02005EFE)  # RFC 5214: bits 32 to 63 of the address
 _NOT_AN_IPV4 = "The URL host is not a valid IPv4 address."
 _NOT_AN_IPV6 = "The URL host is not a valid IPv6 address."
 _UNPARSED_STORE = (
@@ -156,7 +158,7 @@ def _url_host(url: str) -> str:
     except ValueError:
         raise ValueError("The server URL does not parse, or its port is not valid.") from None
     if parts.scheme.lower() not in _DEFAULT_PORTS:
-        raise ValueError("A server URL must start with http:// or https://.")
+        raise ValueError("A server URL must use the http or https scheme.")
     if "@" in parts.netloc:
         raise ValueError("A server URL cannot hold a user name or password. Use the API key.")
     if "%" in parts.netloc:
@@ -189,9 +191,22 @@ def _literal_address(host: str) -> IpAddress | None:
     return _numeric_host(host)
 
 
+def _tunnels_to_ipv4(address: IpAddress) -> bool:
+    """True for a local-use NAT64, Teredo or ISATAP address: each can carry a blocked IPv4."""
+    if not isinstance(address, ipaddress.IPv6Address):
+        return False
+    return (
+        address in _LOCAL_NAT64_PREFIX
+        or address.teredo is not None
+        or (int(address) >> 32) & 0xFFFFFFFF in _ISATAP_INTERFACE_PREFIXES
+    )
+
+
 def _refuse_blocked(address: IpAddress) -> None:
     """Refuse *address* when it, or the IPv4 it embeds, lies in an always-blocked network."""
     blocked = blocked_form(address, ALWAYS_BLOCKED_NETWORKS)
+    if blocked is None and _tunnels_to_ipv4(address):
+        blocked = address
     if blocked is not None:
         raise ValueError(f"A server preset cannot use the blocked address {blocked}.")
 
