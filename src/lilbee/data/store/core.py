@@ -39,6 +39,7 @@ from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.security import write_private_text
 from lilbee.core.vectors import Vector
 from lilbee.core.web_names import is_web_source
+from lilbee.providers.base import ProviderError
 from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
@@ -76,9 +77,11 @@ from .lance_helpers import (
     refs_compatible,
     table_names,
 )
+from .canary import CANARY_MAX_DISTANCE, CANARY_TEXTS, CanaryProbe, CanaryState, canary_distance
 from .locations import SourceLocations, root_location, under_sql
 from .ranking import mmr_rerank
 from .schema import (
+    CANARY_VECTORS_COLUMN,
     _citations_schema,
     _entity_schema_state_schema,
     _meta_schema,
@@ -88,6 +91,7 @@ from .schema import (
 )
 from .types import (
     ENTITY_SCHEMA_DELETE_ALL_PREDICATE,
+    KEYED_SCHEMA_VERSION,
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
@@ -95,6 +99,7 @@ from .types import (
     ChunkType,
     ChunkWrite,
     CitationRecord,
+    EmbeddingEngineChangedError,
     EmbeddingModelMismatchError,
     EntitySchemaState,
     HeldOut,
@@ -276,7 +281,7 @@ _UPGRADE_LABELS = {
 # The path column of ``_sources`` before it was renamed.
 _OLD_PATH = "filename"
 # The ``_meta`` rows an upgrade has yet to stamp; a store stamped 1 keeps 1.
-_UNSTAMPED = f"schema_version >= 2 AND schema_version < {META_SCHEMA_VERSION}"
+_UNSTAMPED = f"schema_version >= 2 AND schema_version < {KEYED_SCHEMA_VERSION}"
 
 # The type column of ``_sources``, and of the chunks table.
 _SOURCE_TYPE = "source_type"
@@ -1017,10 +1022,16 @@ class Store:
     """LanceDB vector store: wraps all DB operations with config-driven defaults."""
 
     def __init__(
-        self, config: Config, on_upgrade: DetailedProgressCallback = noop_callback
+        self,
+        config: Config,
+        on_upgrade: DetailedProgressCallback = noop_callback,
+        canary_probe: CanaryProbe | None = None,
     ) -> None:
         self._config = config
         self._on_upgrade = on_upgrade
+        self._canary_probe = canary_probe
+        # The last canary verdict of this process, keyed by the embedder trigger it was made for.
+        self._canary_verdict: tuple[str, EmbeddingEngineChangedError | None] | None = None
         # The latest event of an upgrade that runs, and when it began; None when none runs.
         self._upgrade: LibraryUpgradeEvent | None = None
         self._upgrade_started = 0.0
@@ -1179,16 +1190,44 @@ class Store:
             updated_at=row["updated_at"],
         )
 
-    def _write_meta_unlocked(self, *, embedding_model: str, embedding_dim: int) -> None:
+    def canary_state(self) -> CanaryState | None:
+        """The canary baseline in the ``_meta`` row, or ``None`` when the row holds none."""
+        table = self.open_table(META_TABLE)
+        rows = table.search().limit(None).to_list() if table is not None else []
+        if not rows:
+            return None
+        row = max(rows, key=lambda r: r["updated_at"])
+        vectors = row.get(CANARY_VECTORS_COLUMN)
+        if not vectors or len(vectors) != len(CANARY_TEXTS):
+            return None
+        return CanaryState(
+            vectors=[[float(x) for x in v] for v in vectors],
+            trigger=row["canary_trigger"],
+            verified=bool(row["canary_verified"]),
+        )
+
+    def _write_meta_unlocked(
+        self,
+        *,
+        embedding_model: str,
+        embedding_dim: int,
+        canary: CanaryState | None | Literal["keep"] = "keep",
+    ) -> None:
         """Overwrite the single ``_meta`` row with the supplied identity.
 
         Caller must hold ``write_lock()``. Args are passed explicitly rather than
         re-read from ``self._config`` so the caller can snapshot cfg at a coherent
-        instant and not race with a concurrent ``set_embedding_model``.
+        instant and not race with a concurrent ``set_embedding_model``. The canary
+        baseline stays as the row holds it unless *canary* replaces it.
         """
+        state = self.canary_state() if isinstance(canary, str) else canary
         db = self.get_db()
         table = ensure_table(db, META_TABLE, _meta_schema())
-        _safe_delete_unlocked(table, META_DELETE_ALL_PREDICATE)
+        if CANARY_VECTORS_COLUMN in table.schema.names:
+            _safe_delete_unlocked(table, META_DELETE_ALL_PREDICATE)
+        else:
+            db.drop_table(META_TABLE)
+            table = ensure_table(db, META_TABLE, _meta_schema())
         table.add(
             [
                 {
@@ -1196,9 +1235,13 @@ class Store:
                     "embedding_dim": embedding_dim,
                     "schema_version": META_SCHEMA_VERSION,
                     "updated_at": datetime.now(UTC).isoformat(),
+                    CANARY_VECTORS_COLUMN: state.vectors if state else None,
+                    "canary_trigger": state.trigger if state else None,
+                    "canary_verified": state.verified if state else None,
                 }
             ]
         )
+        self._canary_verdict = None
         # A rebuild is the remedy the prefix warning names, so the next query
         # re-decides instead of logging a mismatch this write just resolved.
         self._doc_prefix_warned = False
@@ -1239,7 +1282,11 @@ class Store:
                 embedding_model,
                 embedding_dim,
             )
-            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
+            self._write_meta_unlocked(
+                embedding_model=embedding_model,
+                embedding_dim=embedding_dim,
+                canary=self._new_baseline(verified=False),
+            )
             return True
 
     def index_mismatch(self) -> EmbeddingModelMismatchError | None:
@@ -1270,6 +1317,89 @@ class Store:
             current_model=current_model,
             current_dim=current_dim,
         )
+
+    def _canary_trigger(self) -> str | None:
+        """The embedder this process would embed with, or ``None`` when no check can run."""
+        return self._canary_probe.trigger() if self._canary_probe is not None else None
+
+    def _embed_canaries(self) -> list[Vector] | None:
+        """Embed the canary texts, or ``None`` when no probe is set or the embedder is down."""
+        if self._canary_probe is None:
+            return None
+        try:
+            return self._canary_probe.embed(list(CANARY_TEXTS))
+        except (ProviderError, OSError):
+            log.warning("Canary check skipped: the embedder could not be reached", exc_info=True)
+            return None
+
+    def _new_baseline(self, *, verified: bool) -> CanaryState | None:
+        """Canary vectors of the embedder now configured, to store as the baseline of an index."""
+        trigger = self._canary_trigger()
+        vectors = self._embed_canaries() if trigger is not None else None
+        if trigger is None or vectors is None:
+            return None
+        return CanaryState([[float(x) for x in v] for v in vectors], trigger, verified)
+
+    def canary_mismatch(self) -> EmbeddingEngineChangedError | None:
+        """Compare canary vectors from the embedder now configured with the stored baseline.
+
+        The check runs once per embedder trigger in a process, and a pass is stored so
+        the next process skips it. Call it with no write lock held.
+        """
+        trigger = self._canary_trigger()
+        if trigger is None:
+            return None
+        if self._canary_verdict is not None and self._canary_verdict[0] == trigger:
+            return self._canary_verdict[1]
+        meta = self.get_meta()
+        if meta is None:
+            return None
+        state = self.canary_state()
+        mismatch = None
+        if state is None:
+            baseline = self._new_baseline(verified=False)
+            if baseline is None:
+                return None
+            log.warning(
+                "The embedding canary check starts now for this index. It has no verified "
+                "baseline: the engine that made the index is not known."
+            )
+            self._store_canary(meta, baseline)
+        elif state.trigger != trigger:
+            vectors = self._embed_canaries()
+            if vectors is None:
+                return None
+            distance = canary_distance(state.vectors, vectors)
+            if distance > CANARY_MAX_DISTANCE:
+                mismatch = EmbeddingEngineChangedError(
+                    model=meta["embedding_model"],
+                    dim=meta["embedding_dim"],
+                    distance=distance,
+                    verified=state.verified,
+                )
+            else:
+                self._store_canary(meta, CanaryState(state.vectors, trigger, state.verified))
+        self._canary_verdict = (trigger, mismatch)
+        return mismatch
+
+    def _store_canary(self, meta: StoreMeta, canary: CanaryState) -> None:
+        """Write *canary* into the meta row, which keeps the identity it already holds."""
+        with self._write_lock():
+            self._write_meta_unlocked(
+                embedding_model=meta["embedding_model"],
+                embedding_dim=meta["embedding_dim"],
+                canary=canary,
+            )
+
+    def embedding_mismatch(self) -> EmbeddingModelMismatchError | None:
+        """The verdict a report shows: the embedder name first, then the canary check."""
+        return self.index_mismatch() or self.canary_mismatch()
+
+    def _ensure_embedding_servable(self) -> None:
+        """Raise when the index and the embedder disagree. Call it with no write lock held."""
+        mismatch = self.embedding_mismatch()
+        if mismatch is not None:
+            raise mismatch
 
     def _ensure_embedding_compat(self) -> None:
         """Raise when the persisted embedding identity drifts from cfg."""
@@ -1322,9 +1452,15 @@ class Store:
 
     def _index_mismatch_warning(self) -> HealthWarning | None:
         """The stale-index degradation, from the same verdict search refuses on."""
-        mismatch = self.index_mismatch()
+        mismatch = self.embedding_mismatch()
         if mismatch is None:
             return None
+        if isinstance(mismatch, EmbeddingEngineChangedError):
+            return HealthWarning(
+                code=WarningCode.INDEX_EMBEDDING_MISMATCH,
+                message=str(mismatch),
+                remedy="Run `lilbee rebuild`, or switch back to the earlier engine.",
+            )
         return HealthWarning(
             code=WarningCode.INDEX_EMBEDDING_MISMATCH,
             message=(
@@ -1403,7 +1539,7 @@ class Store:
         """
         self.initialize_meta_if_legacy()
         self.canonicalize_meta_if_legacy()
-        self._ensure_embedding_compat()
+        self._ensure_embedding_servable()
 
     def _needs_canonical_meta_rewrite(
         self, meta: StoreMeta | None, current_model: str, current_dim: int
@@ -1588,7 +1724,7 @@ class Store:
                 done += 1
         if META_TABLE in names:
             db.open_table(META_TABLE).update(
-                where="schema_version >= 2", values={"schema_version": META_SCHEMA_VERSION}
+                where="schema_version >= 2", values={"schema_version": KEYED_SCHEMA_VERSION}
             )
         log.info("Keyed the library at %s by source id", self._config.lancedb_dir)
 
@@ -1985,7 +2121,11 @@ class Store:
         table = self._chunks_table()
         table.add(_keyed(records, "source", ids))
         if self.get_meta() is None:
-            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
+            self._write_meta_unlocked(
+                embedding_model=embedding_model,
+                embedding_dim=embedding_dim,
+                canary=self._new_baseline(verified=True),
+            )
         return len(records)
 
     def add_chunks(self, records: list[dict]) -> int:
@@ -1999,6 +2139,7 @@ class Store:
         concurrent ``set_embedding_model`` cannot slip a write in past a stale
         compatibility check.
         """
+        self._ensure_embedding_servable()
         with self._write_lock():
             return self._add_chunks_unlocked(records)
 
@@ -2014,6 +2155,7 @@ class Store:
         read a success-shaped result over rows still describing the old body.
         Returns the count added.
         """
+        self._ensure_embedding_servable()
         with self._write_lock():
             self._ensure_embedding_compat()
             _check_vector_dims(records, self._config.embedding_dim)
@@ -2074,7 +2216,7 @@ class Store:
             return []
         self.initialize_meta_if_legacy()
         self.canonicalize_meta_if_legacy()
-        self._ensure_embedding_compat()
+        self._ensure_embedding_servable()
         self._warn_stale_doc_prefix()
 
         if not self._scalar_ready:
@@ -3093,6 +3235,7 @@ class Store:
         """
         if not items:
             return 0
+        self._ensure_embedding_servable()
         with self._write_lock(timeout=BATCH_LOCK_TIMEOUT):
             if present is not None:
                 items = [it for it in items if present(it.source)]
@@ -3165,7 +3308,11 @@ class Store:
             return
         self._chunks_table().add(all_records)
         if self.get_meta() is None:
-            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
+            self._write_meta_unlocked(
+                embedding_model=embedding_model,
+                embedding_dim=embedding_dim,
+                canary=self._new_baseline(verified=True),
+            )
 
     def _batch_source_writes(self, items: list[ChunkWrite]) -> list[_SourceWrite]:
         """One ``_sources`` row per batched document, of the type its item states."""
@@ -3659,6 +3806,7 @@ class Store:
                 f"Memory vector dimension mismatch: expected "
                 f"{self._config.embedding_dim}, got {len(record.vector)}"
             )
+        self._ensure_embedding_servable()
         with self._write_lock():
             embedding_model = self._config.embedding_model
             embedding_dim = self._config.embedding_dim
@@ -3676,7 +3824,9 @@ class Store:
             table.add([record.model_dump(mode="json")])
             if self.get_meta() is None:
                 self._write_meta_unlocked(
-                    embedding_model=embedding_model, embedding_dim=embedding_dim
+                    embedding_model=embedding_model,
+                    embedding_dim=embedding_dim,
+                    canary=self._new_baseline(verified=True),
                 )
             return record.id
 
@@ -3710,7 +3860,7 @@ class Store:
         table = self.open_table(MEMORIES_TABLE)
         if table is None or top_k <= 0:
             return []
-        self._ensure_embedding_compat()
+        self._ensure_embedding_servable()
         predicate = f"({owner_predicate}) AND kind = '{MemoryKind.FACT}'"
         rows = (
             table.search(query_vector)

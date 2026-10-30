@@ -210,6 +210,7 @@ def build_services(
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.modelhub.role_validator import warn_unregistered_role_refs
     from lilbee.providers.factory import create_provider
+    from lilbee.retrieval.canary_probe import canary_probe
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -224,8 +225,12 @@ def build_services(
     registry = registry or ModelRegistry(config.models_dir)
     # The first point that sees env vars, --model and config.toml together.
     warn_unregistered_role_refs(config, registry)
-    store = Store(config, on_upgrade=_state.report_upgrade)
     embedder = Embedder(config, provider)
+    store = Store(
+        config,
+        on_upgrade=_state.report_upgrade,
+        canary_probe=canary_probe(config, embedder, registry),
+    )
     reranker = Reranker(config)
     concepts = ConceptGraph(config, store)
     clusterer = Clusterer(config, store)
@@ -392,13 +397,18 @@ def reset_store() -> None:
     from lilbee.core.config import cfg
     from lilbee.data.store import Store
     from lilbee.retrieval.clustering import Clusterer
+    from lilbee.retrieval.canary_probe import canary_probe
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.query import Searcher
 
     # Build the replacement, swap the reference, then close the old store last so
     # a new caller never observes a closed handle mid-swap.
     old_store = svc.store
-    store = Store(cfg, on_upgrade=_state.report_upgrade)
+    store = Store(
+        cfg,
+        on_upgrade=_state.report_upgrade,
+        canary_probe=canary_probe(cfg, svc.embedder, svc.registry),
+    )
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
     searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
