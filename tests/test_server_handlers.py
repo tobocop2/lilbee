@@ -174,7 +174,9 @@ class TestHealth:
     async def test_health_answers_at_once_while_an_upgrade_runs(self, mock_svc):
         from lilbee.runtime.progress import LibraryUpgradeEvent, UpgradePhase
 
-        mock_svc.store.upgrade_progress.return_value = LibraryUpgradeEvent(phase=list(UpgradePhase)[0])
+        mock_svc.store.upgrade_progress.return_value = LibraryUpgradeEvent(
+            phase=next(iter(UpgradePhase))
+        )
         await handlers.health()
         mock_svc.store.wait_for_open.assert_not_called()
 

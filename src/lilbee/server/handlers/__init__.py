@@ -148,7 +148,10 @@ async def health() -> HealthResponse:
         chat_prefill_processed=prefill[0] if prefill else None,
         chat_prefill_total=prefill[1] if prefill else None,
         embed_token_cap=provider.embed_token_cap(),
-        warnings=[*await asyncio.to_thread(services.store.health_warnings), *provider.health_warnings()],
+        warnings=[
+            *await asyncio.to_thread(services.store.health_warnings),
+            *provider.health_warnings(),
+        ],
         upgrade=services.store.upgrade_progress(),
     )
 

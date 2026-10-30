@@ -545,7 +545,9 @@ class EmbeddingEngineChangedError(EmbeddingModelMismatchError):
     def __init__(self, *, model: str, dim: int, distance: float, verified: bool) -> None:
         self.distance = distance
         self.verified = verified
-        super().__init__(persisted_model=model, persisted_dim=dim, current_model=model, current_dim=dim)
+        super().__init__(
+            persisted_model=model, persisted_dim=dim, current_model=model, current_dim=dim
+        )
 
     @property
     def dims_match(self) -> bool:

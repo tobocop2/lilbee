@@ -57,6 +57,7 @@ from lilbee.runtime.progress import (
     noop_callback,
 )
 
+from .canary import CANARY_MAX_DISTANCE, CANARY_TEXTS, CanaryProbe, CanaryState, canary_distance
 from .crawl_pages import CrawlPages, import_legacy_crawl_files, legacy_crawl_files
 from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
 from .held_import import legacy_files, read_legacy_records, remove_legacy_files
@@ -77,7 +78,6 @@ from .lance_helpers import (
     refs_compatible,
     table_names,
 )
-from .canary import CANARY_MAX_DISTANCE, CANARY_TEXTS, CanaryProbe, CanaryState, canary_distance
 from .locations import SourceLocations, root_location, under_sql
 from .ranking import mmr_rerank
 from .schema import (
@@ -1318,25 +1318,22 @@ class Store:
             current_dim=current_dim,
         )
 
-    def _canary_trigger(self) -> str | None:
-        """The embedder this process would embed with, or ``None`` when no check can run."""
-        return self._canary_probe.trigger() if self._canary_probe is not None else None
-
-    def _embed_canaries(self) -> list[Vector] | None:
-        """Embed the canary texts, or ``None`` when no probe is set or the embedder is down."""
-        if self._canary_probe is None:
-            return None
+    def _embed_canaries(self, probe: CanaryProbe) -> list[Vector] | None:
+        """Embed the canary texts, or ``None`` when the embedder is down."""
         try:
-            return self._canary_probe.embed(list(CANARY_TEXTS))
+            return probe.embed(list(CANARY_TEXTS))
         except (ProviderError, OSError):
             log.warning("Canary check skipped: the embedder could not be reached", exc_info=True)
             return None
 
     def _new_baseline(self, *, verified: bool) -> CanaryState | None:
         """Canary vectors of the embedder now configured, to store as the baseline of an index."""
-        trigger = self._canary_trigger()
-        vectors = self._embed_canaries() if trigger is not None else None
-        if trigger is None or vectors is None:
+        probe = self._canary_probe
+        trigger = probe.trigger() if probe is not None else None
+        if probe is None or trigger is None:
+            return None
+        vectors = self._embed_canaries(probe)
+        if vectors is None:
             return None
         return CanaryState([[float(x) for x in v] for v in vectors], trigger, verified)
 
@@ -1346,8 +1343,9 @@ class Store:
         The check runs once per embedder trigger in a process, and a pass is stored so
         the next process skips it. Call it with no write lock held.
         """
-        trigger = self._canary_trigger()
-        if trigger is None:
+        probe = self._canary_probe
+        trigger = probe.trigger() if probe is not None else None
+        if probe is None or trigger is None:
             return None
         if self._canary_verdict is not None and self._canary_verdict[0] == trigger:
             return self._canary_verdict[1]
@@ -1366,7 +1364,7 @@ class Store:
             )
             self._store_canary(meta, baseline)
         elif state.trigger != trigger:
-            vectors = self._embed_canaries()
+            vectors = self._embed_canaries(probe)
             if vectors is None:
                 return None
             distance = canary_distance(state.vectors, vectors)

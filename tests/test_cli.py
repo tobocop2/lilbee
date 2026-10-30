@@ -880,7 +880,9 @@ class TestEmbeddingMismatchCli:
 def _engine_changed_error():
     from lilbee.data.store import EmbeddingEngineChangedError
 
-    return EmbeddingEngineChangedError(model="orgA/repoA/built.gguf", dim=768, distance=0.2, verified=True)
+    return EmbeddingEngineChangedError(
+        model="orgA/repoA/built.gguf", dim=768, distance=0.2, verified=True
+    )
 
 
 class TestEngineChangedCli:

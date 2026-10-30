@@ -1,4 +1,4 @@
-"""The canary probe of a store: it embeds canaries with the configured embedder and names that embedder."""
+"""The canary probe of a store: it embeds canaries with the configured embedder."""
 
 from __future__ import annotations
 

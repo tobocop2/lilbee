@@ -319,6 +319,20 @@ class TestChangedEmbedder:
         assert not isinstance(mismatch, EmbeddingEngineChangedError)
         assert engine.calls == 0
 
+    def test_a_write_under_another_embedder_name_is_refused_before_any_canary(
+        self, store, test_config, engine
+    ):
+        store.add_chunks(_make_records())
+        before = store.open_table("chunks").count_rows()
+        test_config.embedding_model = "acme/other-GGUF/other.gguf"
+        engine.calls = 0
+
+        with pytest.raises(EmbeddingModelMismatchError, match=r"other\.gguf"):
+            store.add_chunks(_make_records())
+
+        assert store.open_table("chunks").count_rows() == before
+        assert engine.calls == 0
+
 
 class TestGates:
     @pytest.fixture()
@@ -382,7 +396,9 @@ class TestGates:
         assert state.verified is True
 
     def test_the_first_batched_write_stores_a_verified_baseline(self, store):
-        store.write_chunks_batch([ChunkWrite("a.md", "h", _records_of("a.md"), needs_cleanup=False)])
+        store.write_chunks_batch(
+            [ChunkWrite("a.md", "h", _records_of("a.md"), needs_cleanup=False)]
+        )
 
         state = store.canary_state()
 
@@ -429,9 +445,7 @@ class TestOldIndex:
         assert _reopen(test_config, engine).canary_mismatch() is None
         assert engine.calls == 0
 
-    def test_a_later_swap_stops_and_says_there_is_no_verified_baseline(
-        self, test_config, engine
-    ):
+    def test_a_later_swap_stops_and_says_there_is_no_verified_baseline(self, test_config, engine):
         _make_v3_library(test_config)
         assert _reopen(test_config, engine).canary_mismatch() is None
         engine.trigger_name, engine.distance = "B", 2 * T

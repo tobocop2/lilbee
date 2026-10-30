@@ -1,4 +1,4 @@
-"""Canary vectors: fixed texts whose stored vectors show whether the embedder still agrees with an index."""
+"""Canary vectors: fixed texts that show whether the embedder still agrees with an index."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ CANARY_MAX_DISTANCE = 0.05
 
 @dataclass(frozen=True)
 class CanaryState:
-    """The baseline vectors of an index, the engine that last passed, and whether the baseline is verified."""
+    """The baseline vectors of an index, the engine that last passed, and the verified flag."""
 
     vectors: list[list[float]]
     trigger: str

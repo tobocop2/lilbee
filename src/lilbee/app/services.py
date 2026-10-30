@@ -396,8 +396,8 @@ def reset_store() -> None:
 
     from lilbee.core.config import cfg
     from lilbee.data.store import Store
-    from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.canary_probe import canary_probe
+    from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.query import Searcher
 

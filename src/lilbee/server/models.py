@@ -210,7 +210,7 @@ class StatusIndexInfo(BaseModel):
     embedding_model: str
     embedding_dim: int
     engine_mismatch: str | None = None
-    """Why search and ingest stop when the embedding engine gives other vectors; absent otherwise."""
+    """Why search and ingest stop when the embedding engine gives other vectors."""
 
 
 class StatusResponse(BaseModel):
