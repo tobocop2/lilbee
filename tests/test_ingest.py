@@ -150,6 +150,8 @@ def mock_svc():
     store.ensure_fts_index.return_value = None
     store.get_meta.return_value = None
     store.index_mismatch.return_value = None
+    store.embedding_mismatch.return_value = None
+    store.canary_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.side_effect = lambda text, **kw: np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
@@ -349,7 +351,7 @@ class TestSync:
         from lilbee.data.ingest import sync
         from lilbee.data.store import EmbeddingModelMismatchError
 
-        mock_svc.store.index_mismatch.return_value = EmbeddingModelMismatchError(
+        mock_svc.store.embedding_mismatch.return_value = EmbeddingModelMismatchError(
             persisted_model="old/embed-GGUF/old.gguf",
             persisted_dim=768,
             current_model="new/embed-GGUF/new.gguf",

@@ -63,6 +63,7 @@ class SseErrorCode(StrEnum):
     MODEL_TOO_LARGE = "model_too_large"
     MODEL_NOT_INSTALLED = "model_not_installed"
     INDEX_EMBEDDER_MISMATCH = "index_embedder_mismatch"
+    EMBEDDING_MISMATCH = "embedding_mismatch"
 
 
 class FileStartEvent(BaseModel):

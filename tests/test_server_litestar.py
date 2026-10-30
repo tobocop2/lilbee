@@ -677,6 +677,50 @@ class TestEmbeddingMismatchSurfacing:
         assert "persisted_model" not in body.get("extra", {})
         assert body["extra"]["adoptable"] is True
 
+    def _engine_changed(self):
+        from lilbee.data.store import EmbeddingEngineChangedError
+
+        return EmbeddingEngineChangedError(
+            model=self.PERSISTED, dim=768, distance=0.2, verified=True
+        )
+
+    @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock)
+    def test_search_route_answers_an_engine_change_with_its_code(self, mock_search, client):
+        mock_search.side_effect = self._engine_changed()
+        resp = client.get("/api/search", params={"q": "x"})
+        assert resp.status_code == 409
+        body = resp.json()
+        assert body["extra"] == {"code": "embedding_mismatch"}
+        assert "lilbee rebuild" in body["detail"]
+
+    @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
+    def test_ask_route_answers_an_engine_change_with_its_code(self, mock_ask, client):
+        mock_ask.side_effect = self._engine_changed()
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 409
+        assert resp.json()["extra"] == {"code": "embedding_mismatch"}
+
+    def test_ask_stream_emits_the_engine_change_code(self):
+        from lilbee.runtime.progress import SseErrorCode
+        from lilbee.server.handlers import rag
+
+        async def _collect():
+            with mock.patch.object(rag, "get_services") as mock_services:
+                searcher = mock_services.return_value.searcher
+                searcher.search_unavailable.return_value = False
+                searcher.skip_retrieval.return_value = False
+                searcher.library_empty.return_value = False
+                searcher.pre_retrieval_answer.return_value = None
+                searcher.route_direct_answer.return_value = None
+                searcher.build_rag_context.side_effect = self._engine_changed()
+                return [event async for event in rag.ask_stream(question="q")]
+
+        events = asyncio.run(_collect())
+        payloads = [
+            json.loads(e.split("data: ", 1)[1]) for e in events if e.startswith("event: error")
+        ]
+        assert [p["code"] for p in payloads] == [SseErrorCode.EMBEDDING_MISMATCH]
+
     @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
     def test_ask_route_returns_structured_409(self, mock_ask, client):
         mock_ask.side_effect = self._mismatch()
