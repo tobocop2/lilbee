@@ -1,0 +1,38 @@
+lilbee.__file__ = /Users/tobias/projects/lb-eng-design-1180/src/lilbee/__init__.py
+GREEN G0: base generator ran, 400 seeded inputs (ok)
+GREEN G0b: census nonempty: 400 argv, 8 configs
+GREEN G0c: control: another seed gives other argv and configs, so the comparison can fail
+GREEN G1: head code path (build_server_argv, build_swap_config) equals base (compared)
+RED   G2: llama adapter argv equals base argv for all 400 inputs (ModuleNotFoundError: No module named 'lilbee.providers.fleet.engines')
+RED   G3: swap config built from adapter launches is byte-identical for 8 variants (swap x ttl x log dir) (ModuleNotFoundError: No module named 'lilbee.providers.fleet.engines')
+RED   A.formats: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.supports_architecture: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.binary: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.pin_record: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.identity: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.role_spec: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.served_roles: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.launch_argv: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.discover_devices: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.estimate_memory: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.readback: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.swap_extras: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.request_profile: lilbee.providers.fleet.engines missing (No module named 'lilbee.providers.fleet.engines')
+RED   A.registry: no EngineName/LLAMA exports
+RED   A.pin_matches_env: no adapter
+GREEN D.control: the scanner finds a planted forbidden call in a synthetic file
+RED   D.argv and roles: 7 direct sites outside the adapter: providers/fleet/planning.py:1735:build_server_argv, providers/fleet/planning.py:20:ROLE_SPECS, providers/fleet/planning.py:20:build_server_argv, providers/fleet/planning.py:20:embed_spec, providers/fleet/planning.py:20:rerank_spec, providers/fleet/planning.py:643:rerank_spec
+RED   D.binary and pin: 17 direct sites outside the adapter: data/ingest/adaptive.py:396:resolve_llama_server, data/ingest/adaptive.py:399:resolve_llama_server, providers/fleet/planning.py:1465:resolve_llama_server, providers/fleet/planning.py:1800:resolve_llama_server, providers/fleet/planning.py:2312:resolve_llama_server, providers/fleet/planning.py:2370:resolve_llama_server
+RED   D.device discovery: 3 direct sites outside the adapter: providers/fleet/planning.py:1902:probe_devices, providers/fleet/planning.py:1915:probe_devices, providers/fleet/planning.py:37:probe_devices
+RED   D.formats: 3 direct sites outside the adapter: catalog/compat.py:10:SUPPORTED_ARCHS, mcp_server.py:1316:SUPPORTED_ARCHS, server/handlers/models.py:527:SUPPORTED_ARCHS
+RED   D.memory estimate: 12 direct sites outside the adapter: providers/fleet/ctx.py:136:estimate_instance_footprint, providers/fleet/ctx.py:18:estimate_instance_footprint, providers/fleet/ctx.py:74:estimate_instance_footprint, providers/fleet/loadability.py:11:resolve_gguf_parser, providers/fleet/loadability.py:85:resolve_gguf_parser, providers/fleet/planning.py:449:estimate_instance_footprint
+RED   D.readback: 6 direct sites outside the adapter: providers/fleet/planning.py:1615:engine_advertises, providers/fleet/planning.py:1624:engine_advertises, providers/fleet/planning.py:1752:supports_memory_readback, providers/fleet/planning.py:518:engine_advertises, providers/fleet/planning.py:56:engine_advertises, providers/fleet/planning.py:56:supports_memory_readback
+RED   D.request parameters: 4 direct sites outside the adapter: providers/fleet/client.py:1162:'embd_normalize', providers/fleet/client.py:378:'/tokenize', providers/fleet/client.py:380:'/apply-template', providers/fleet/client.py:959:'return_progress'
+      total direct sites: 52
+GREEN S.reference: v267 reference holds the keys the adapter may emit (missing: none)
+RED   S.extras_field: InstanceLaunch carries swap_extras (empty for llama.cpp)
+RED   S.extras_render: needs the field and the adapter
+RED   S.llama_empty: needs the adapter
+RED   T.suite: no --suite checkout with tests/conformance (origin/engines/1205-impl)
+
+rows: 34  green: 6  red: 28  inputs: 400 x (argv) + 8 swap-config variants
