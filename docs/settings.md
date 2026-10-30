@@ -314,7 +314,7 @@ These settings have no runtime write path. Set them in `config.toml`, or with th
 | `placement` | `LILBEE_PLACEMENT` | `str|null` | *(none)* | no | write-only | write-only | `lilbee placement set` | Manual multi-GPU placement spec. It fully replaces the automatic planner: each active role pins to the listed device indices. Edit it with the placement commands, not the settings list. Empty uses the VRAM-aware planner. |
 | `server_host` | `LILBEE_SERVER_HOST` | `str` | `127.0.0.1` | no | no | no | no | Address `lilbee serve` binds. Loopback by default; set 0.0.0.0 to accept connections from the network. |
 | `server_port` | `LILBEE_SERVER_PORT` | `int` | `0` | no | no | no | no | Port `lilbee serve` binds. 0 picks a free port and prints it. |
-| `server_presets` | no | `str|null` | *(none)* | no | write-only | write-only | no | User-defined OpenAI-compatible servers, with their API keys. Edit them with the preset commands, not the settings list. |
+| `server_presets` | no | `str|null` | *(none)* | no | no | no | no | User-defined OpenAI-compatible servers, with their API keys. Edit them with the preset commands, not the settings list. |
 
 ## Environment-only variables
 

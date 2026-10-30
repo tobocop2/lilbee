@@ -33,6 +33,7 @@ _IPV4_NUMBER = re.compile(r"0[xX][0-9a-fA-F]*|[0-9]+")
 _IPV4_MAX_PARTS = 4
 _IPV4_PART_BASE = 256
 _NOT_AN_IPV4 = "The URL host is not a valid IPv4 address."
+_NOT_AN_IPV6 = "The URL host is not a valid IPv6 address."
 _UNPARSED_STORE = (
     "The stored server presets do not parse. Fix or remove server_presets in config.toml."
 )
@@ -50,6 +51,7 @@ class _StoredPreset(BaseModel):
 
 
 _STORED_LIST = TypeAdapter(list[_StoredPreset])
+_ListChange = Callable[[list[_StoredPreset]], list[_StoredPreset]]
 
 
 @dataclass(frozen=True)
@@ -80,7 +82,8 @@ def _numeric_host(host: str) -> ipaddress.IPv4Address | None:
     as addresses without asking DNS. ValueError when the host ends in a number and names none.
     """
     parts = host.removesuffix(".").split(".")
-    if not _IPV4_NUMBER.fullmatch(parts[-1]):
+    *_, final_part = parts
+    if not _IPV4_NUMBER.fullmatch(final_part):
         return None
     if len(parts) > _IPV4_MAX_PARTS or not all(_IPV4_NUMBER.fullmatch(part) for part in parts):
         raise ValueError(_NOT_AN_IPV4)
@@ -120,6 +123,8 @@ def _url_host(url: str) -> str:
         raise ValueError("A server URL cannot hold a percent sign or a zone id in its host.")
     if not parts.hostname:
         raise ValueError("A server URL needs a host.")
+    if parts.netloc.startswith("[") and ":" not in parts.hostname:
+        raise ValueError(_NOT_AN_IPV6)  # urlsplit admits a bracketed [v1.abc]; a connection cannot
     return parts.hostname
 
 
@@ -129,7 +134,7 @@ def _literal_address(host: str) -> IpAddress | None:
         try:
             return ipaddress.IPv6Address(host)
         except ValueError:
-            raise ValueError("The URL host is not a valid IPv6 address.") from None
+            raise ValueError(_NOT_AN_IPV6) from None
     return _numeric_host(host)
 
 
@@ -148,7 +153,7 @@ def _resolved_addresses(host: str) -> list[IpAddress]:
         return []
     except UnicodeError:
         raise ValueError("The URL host is not a valid host name.") from None
-    return [ipaddress.ip_address(info[4][0]) for info in infos]
+    return [ipaddress.ip_address(sockaddr[0]) for *_, sockaddr in infos]
 
 
 def _check_form(url: str) -> str | None:
@@ -209,7 +214,7 @@ def _decoded(raw: Any) -> list[_StoredPreset]:
     if raw is None:
         return []
     entries: list[_StoredPreset] | None = None
-    if isinstance(raw, str):
+    if isinstance(raw, str):  # a hand-edited config.toml can hold any TOML type here
         try:
             entries = _STORED_LIST.validate_json(raw)
         except ValidationError:
@@ -253,17 +258,27 @@ def _check_list(entries: list[_StoredPreset]) -> None:
             raise ValueError(f"The stored preset {entry.name!r} is refused: {exc}") from None
 
 
-def _write(change: Callable[[list[_StoredPreset]], list[_StoredPreset]]) -> list[_StoredPreset]:
+def _store(change: _ListChange) -> list[_StoredPreset]:
     """Apply *change* to the stored list under the config lock; return the list it made."""
 
     def apply(raw: Any) -> tuple[str | None, list[_StoredPreset]]:
         changed = change(_decoded(raw))
-        _check_list(changed)
         encoded = _encoded(changed)
         cfg.server_presets = encoded
         return encoded, changed
 
     return settings.mutate_value(cfg.data_root, _PRESETS_KEY, apply)
+
+
+def _write(change: _ListChange) -> list[_StoredPreset]:
+    """Store what *change* makes when all of it passes the check for a list to write."""
+
+    def checked(entries: list[_StoredPreset]) -> list[_StoredPreset]:
+        changed = change(entries)
+        _check_list(changed)
+        return changed
+
+    return _store(checked)
 
 
 def _named(entries: list[_StoredPreset], name: str) -> _StoredPreset:
@@ -337,10 +352,10 @@ def clear_key(name: str) -> ServerPreset:
 
 
 def remove_preset(name: str) -> None:
-    """Remove the preset *name*; the rest of the list must still be one a write accepts."""
+    """Remove the preset *name*. A removal adds nothing, so no other stored entry can stop it."""
 
     def change(entries: list[_StoredPreset]) -> list[_StoredPreset]:
         target = _named(entries, name)
         return [entry for entry in entries if entry.name != target.name]
 
-    _write(change)
+    _store(change)
