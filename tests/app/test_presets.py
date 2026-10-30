@@ -157,6 +157,7 @@ class TestValidatePresetUrl:
             ("http://%31.1.1.1/", "percent sign"),
             ("http:///v1", "needs a host"),
             ("http://8.8.8.8:99999/", "does not parse"),
+            ("http://8.8.8.8:0/", "does not parse"),
             ("http://8.8.8.8:port/", "does not parse"),
             ("http://[::g]/", "does not parse"),
         ],
@@ -196,6 +197,15 @@ class TestCheckRequestAddress:
     def test_a_public_answer_is_allowed(self):
         assert presets.check_request_address(URL) is None
 
+    def test_an_os_error_from_the_lookup_is_no_answer(self, monkeypatch):
+        def getaddrinfo(_host, _port):
+            raise OSError("no route")
+
+        monkeypatch.setattr(presets.socket, "getaddrinfo", getaddrinfo)
+        presets.validate_preset_url("http://offline.test/")
+        with pytest.raises(ValueError, match="no DNS answer"):
+            presets.check_request_address("http://offline.test/")
+
     def test_a_literal_address_needs_no_dns(self):
         assert presets.check_request_address(OTHER_URL) is None
 
@@ -217,12 +227,21 @@ class TestCheckRequestAddress:
 class TestAdd:
     def test_it_stores_one_json_scalar_with_the_key(self):
         view = presets.add_preset("alpha", URL, roles=["chat", "embed"], api_key=KEY)
-        assert view == presets.ServerPreset("alpha", URL, (WorkerRole.CHAT, WorkerRole.EMBED), True)
+        assert view == presets.ServerPreset(
+            "alpha", URL, (WorkerRole.CHAT, WorkerRole.EMBED), True, True
+        )
         assert isinstance(settings.load(cfg.data_root)["server_presets"], str)
         assert _stored() == [
             {"name": "alpha", "url": URL, "roles": ["chat", "embed"], "api_key": KEY}
         ]
         assert json.loads(cfg.server_presets) == _stored()
+
+    def test_a_key_that_cannot_be_stored_is_refused_with_no_echo(self):
+        with pytest.raises(ValueError) as refused:
+            presets.add_preset("alpha", URL, roles=["chat"], api_key="bad\ud800key")
+        assert str(refused.value) == "The API key holds a character that cannot be stored."
+        assert refused.value.__context__ is None
+        assert _stored() == []
 
     @pytest.mark.parametrize("empty", [None, ""])
     def test_an_empty_key_stores_no_key(self, empty):
@@ -301,10 +320,78 @@ class TestEdit:
     def _alpha(self):
         presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
 
-    def test_a_url_edit_changes_the_url_and_keeps_the_rest(self):
-        view = presets.edit_preset("alpha", url=OTHER_URL)
+    def test_a_url_edit_with_a_new_key_changes_both_and_keeps_the_rest(self):
+        view = presets.edit_preset("alpha", url=OTHER_URL, api_key=KEY + "-2")
         assert view.base_url == OTHER_URL
-        assert _stored() == [{"name": "alpha", "url": OTHER_URL, "roles": ["chat"], "api_key": KEY}]
+        assert _stored() == [
+            {"name": "alpha", "url": OTHER_URL, "roles": ["chat"], "api_key": KEY + "-2"}
+        ]
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            f"https://{PUBLIC_HOST}:8080/v1",
+            "http://other.test:8080/v1",
+            f"http://{PUBLIC_HOST}:8081/v1",
+            f"http://{PUBLIC_HOST}/v1",
+        ],
+        ids=["scheme", "host", "port", "default-port"],
+    )
+    @pytest.mark.parametrize("empty", [None, ""])
+    def test_a_new_origin_with_no_new_key_is_refused_and_the_entry_stays(self, url, empty):
+        before = (cfg.data_root / "config.toml").read_bytes()
+        with pytest.raises(
+            ValueError, match="Give the key again, or clear the key first"
+        ) as refused:
+            presets.edit_preset("alpha", url=url, api_key=empty)
+        assert KEY not in str(refused.value)
+        assert (cfg.data_root / "config.toml").read_bytes() == before
+
+    def test_a_downgrade_to_http_is_a_new_origin(self):
+        presets.add_preset("secure", "https://good.test/v1", roles=["chat"], api_key=KEY)
+        with pytest.raises(ValueError, match="different server"):
+            presets.edit_preset("secure", url="http://good.test/v1")
+        with pytest.raises(ValueError, match="different server"):
+            presets.edit_preset("secure", url="http://good.test:443/v1")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            f"http://{PUBLIC_HOST}:8080/v2",
+            f"http://{PUBLIC_HOST.upper()}:8080/v1/",
+            f"HTTP://{PUBLIC_HOST}:8080",
+        ],
+        ids=["path", "host-case", "scheme-case"],
+    )
+    def test_the_same_origin_keeps_the_key(self, url):
+        view = presets.edit_preset("alpha", url=url)
+        assert view.base_url == url
+        assert view.has_key is True
+        assert _stored()[0]["api_key"] == KEY
+
+    def test_a_written_default_port_is_the_same_origin(self):
+        presets.add_preset("plain", "https://good.test/v1", roles=["chat"], api_key=KEY)
+        presets.edit_preset("plain", url="https://good.test:443/v2")
+        assert _stored()[1]["api_key"] == KEY
+
+    def test_a_preset_with_no_key_can_move(self):
+        presets.clear_key("alpha")
+        assert presets.edit_preset("alpha", url=OTHER_URL).base_url == OTHER_URL
+        assert KEY not in (cfg.data_root / "config.toml").read_text(encoding="utf-8")
+
+    def test_a_stored_url_that_is_not_well_formed_is_no_origin_for_the_key(self):
+        _store(_entry("bad", f"http://me:{KEY}@good.test/") | {"api_key": KEY})
+        with pytest.raises(ValueError, match="different server"):
+            presets.edit_preset("bad", url="http://good.test/")
+
+    def test_a_key_that_cannot_be_stored_is_refused_with_no_echo(self):
+        before = (cfg.data_root / "config.toml").read_bytes()
+        with pytest.raises(ValueError, match="cannot be stored") as refused:
+            presets.edit_preset("alpha", api_key="bad\ud800key")
+        assert "bad" not in str(refused.value)
+        assert refused.value.__context__ is None
+        assert (cfg.data_root / "config.toml").read_bytes() == before
+        assert [entry.name for entry in presets.list_presets()] == ["alpha"]
 
     def test_a_role_edit_changes_the_roles_and_keeps_the_rest(self):
         view = presets.edit_preset("alpha", roles=["rerank"])
@@ -405,6 +492,87 @@ class TestWholeList:
         assert _stored()[0]["url"] == URL
 
 
+class TestOneBadEntry:
+    """A bad stored entry stops no read, no clear and no key change of another preset."""
+
+    BAD_ENTRIES = (
+        _entry("bad", BLOCKED_URL) | {"api_key": KEY},
+        _entry("bad", f"http://me:{KEY}@good.test/") | {"api_key": KEY},
+        _entry("bad", f"http://good.test/?api_key={KEY}") | {"api_key": KEY},
+        {"name": "bad", "url": URL, "roles": ["speak"], "api_key": KEY},
+        {"name": "bad", "url": URL, "roles": [], "api_key": KEY},
+        {"name": "bad", "url": URL, "roles": ["chat"], "extra": 1, "api_key": KEY},
+        {"name": "bad", "url": URL, "roles": ["chat"], "api_key": "lone\ud800"},
+    )
+
+    @pytest.fixture(params=BAD_ENTRIES)
+    def bad(self, request):
+        _store(_entry("good", URL) | {"api_key": KEY}, request.param)
+        return request.param
+
+    def test_list_shows_both_and_no_text_of_the_bad_url(self, bad, caplog):
+        with caplog.at_level(logging.WARNING, logger=presets.__name__):
+            good, shown = presets.list_presets()
+        assert (good.name, good.base_url, good.valid) == ("good", URL, True)
+        assert (shown.name, shown.base_url, shown.valid, shown.has_key) == ("bad", "", False, True)
+        assert "'bad'" in caplog.text
+        assert KEY not in f"{shown!r} {caplog.text}"
+
+    def test_clear_key_on_the_other_preset_works(self, bad):
+        assert presets.clear_key("good").has_key is False
+        assert "api_key" not in _stored()[0]
+        assert _stored()[1] == bad
+
+    def test_a_key_change_on_the_other_preset_works(self, bad):
+        assert presets.edit_preset("good", api_key=KEY + "-2").has_key is True
+        assert _stored()[0]["api_key"] == KEY + "-2"
+        assert _stored()[1] == bad
+
+    def test_clear_key_on_the_bad_entry_works_and_the_key_leaves_the_file(self, bad):
+        view = presets.clear_key("bad")
+        assert view.has_key is False
+        assert "api_key" not in _stored()[1]
+        assert _stored()[0]["api_key"] == KEY
+
+    def test_a_remove_of_the_bad_entry_works(self, bad):
+        presets.remove_preset("bad")
+        assert [entry["name"] for entry in _stored()] == ["good"]
+
+    def test_a_key_change_on_the_bad_entry_is_refused(self, bad):
+        before = _stored()
+        with pytest.raises(ValueError, match="'bad' is refused"):
+            presets.edit_preset("bad", api_key=KEY + "-2")
+        assert _stored() == before
+
+    def test_an_add_and_a_role_edit_beside_it_are_still_refused(self, bad):
+        before = _stored()
+        with pytest.raises(ValueError, match="'bad' is refused"):
+            presets.add_preset("new", URL, roles=["chat"])
+        with pytest.raises(ValueError, match="'bad' is refused"):
+            presets.edit_preset("good", roles=["embed"])
+        assert _stored() == before
+
+    def test_a_key_change_on_a_repeated_name_is_refused(self):
+        _store(_entry("twin"), _entry("twin"))
+        with pytest.raises(ValueError, match="share a name"):
+            presets.edit_preset("twin", api_key=KEY)
+
+    def test_a_clear_on_a_repeated_name_clears_every_copy(self):
+        _store(_entry("twin") | {"api_key": KEY}, _entry("twin") | {"api_key": KEY + "-2"})
+        presets.clear_key("twin")
+        assert all("api_key" not in entry for entry in _stored())
+
+    @pytest.mark.parametrize("row", [7, "text", {"url": URL}, {"name": 7, "api_key": KEY}])
+    def test_a_row_with_no_name_reads_as_invalid_and_stays(self, row):
+        _store(_entry("good"), row)
+        good, shown = presets.list_presets()
+        assert good.valid is True
+        assert (shown.name, shown.base_url, shown.roles, shown.valid) == ("", "", (), False)
+        assert shown.has_key is (isinstance(row, dict) and "api_key" in row)
+        presets.clear_key("good")
+        assert _stored()[1] == row
+
+
 class TestDnsAndTheLock:
     def test_the_new_url_is_looked_up_with_the_config_lock_free(self, monkeypatch):
         held = []
@@ -449,7 +617,7 @@ class TestList:
     def test_an_entry_says_a_key_is_set_and_holds_no_key(self):
         presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
         view = presets.list_presets()[0]
-        assert view == presets.ServerPreset("alpha", URL, (WorkerRole.CHAT,), True)
+        assert view == presets.ServerPreset("alpha", URL, (WorkerRole.CHAT,), True, True)
         assert not hasattr(view, "api_key")
         assert KEY not in f"{view!r} {dataclasses.asdict(view)}"
 
@@ -458,9 +626,6 @@ class TestList:
         [
             f"not json {KEY}",
             json.dumps({"name": "alpha", "api_key": KEY}),
-            json.dumps([{"name": "alpha", "url": URL, "roles": [], "api_key": KEY}]),
-            json.dumps([{"name": "alpha", "url": URL, "roles": ["speak"], "api_key": KEY}]),
-            json.dumps([{"name": "alpha", "url": URL, "roles": ["chat"], "extra": KEY}]),
             [{"api_key": KEY}],
             7,
         ],

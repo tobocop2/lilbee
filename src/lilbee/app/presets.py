@@ -8,11 +8,11 @@ import logging
 import re
 import socket
 from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
 from lilbee.core import settings
 from lilbee.core.blocked_networks import ALWAYS_BLOCKED_NETWORKS, IpAddress, blocked_form
@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 _PRESETS_KEY = "server_presets"
 _NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
 _RESERVED_NAMES = PROVIDER_PREFIXES | {LOCAL_PROVIDER}
-_ALLOWED_SCHEMES = ("http", "https")
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 # What a base URL may hold: printable ASCII, less a space and a backslash. A URL standard
 # parser reads these differently from urlsplit, or folds them into an address.
 _URL_PATTERN = re.compile(r"[!-\[\]-~]+")
@@ -37,6 +37,19 @@ _NOT_AN_IPV6 = "The URL host is not a valid IPv6 address."
 _UNPARSED_STORE = (
     "The stored server presets do not parse. Fix or remove server_presets in config.toml."
 )
+_UNREADABLE_ENTRY = "The stored entry is not a valid preset. Fix or remove it in config.toml."
+_KEY_STAYS_WITH_ORIGIN = (
+    "The new URL is a different server, and the stored key does not follow it. "
+    "Give the key again, or clear the key first."
+)
+
+
+def _checked_key(api_key: str) -> SecretStr:
+    """*api_key* as a secret; ValueError that does not repeat it when it cannot be stored."""
+    # A compare and no caught UnicodeEncodeError: its object would keep the key on the chain.
+    if api_key.encode("utf-8", "replace").decode("utf-8") != api_key:
+        raise ValueError("The API key holds a character that cannot be stored.")
+    return SecretStr(api_key)
 
 
 class _StoredPreset(BaseModel):
@@ -49,23 +62,49 @@ class _StoredPreset(BaseModel):
     roles: Annotated[tuple[WorkerRole, ...], Field(min_length=1)]
     api_key: SecretStr | None = None
 
+    @field_validator("api_key")
+    @classmethod
+    def _key_can_be_stored(cls, value: SecretStr | None) -> SecretStr | None:
+        return value and _checked_key(value.get_secret_value())
 
-_STORED_LIST = TypeAdapter(list[_StoredPreset])
-_ListChange = Callable[[list[_StoredPreset]], list[_StoredPreset]]
+    @property
+    def has_key(self) -> bool:
+        return bool(self.api_key)
+
+
+@dataclass(frozen=True)
+class _UnreadableEntry:
+    """A stored row that is no valid preset; a write puts it back as it came."""
+
+    raw: Any = field(repr=False)
+    roles: tuple[WorkerRole, ...] = ()
+
+    @property
+    def name(self) -> str | None:
+        name = self.raw.get("name") if isinstance(self.raw, dict) else None
+        return name if isinstance(name, str) else None
+
+    @property
+    def has_key(self) -> bool:
+        return isinstance(self.raw, dict) and bool(self.raw.get("api_key"))
+
+
+_Entry = _StoredPreset | _UnreadableEntry
+_ListChange = Callable[[list[_Entry]], list[_Entry]]
 
 
 @dataclass(frozen=True)
 class ServerPreset:
-    """One preset as a surface shows it: it says whether a key is set and never holds one."""
+    """One preset as a surface shows it: it says whether a key is set and never holds one.
+
+    An entry no preset may hold has valid False and an empty base_url.
+    """
 
     name: str
     base_url: str
     roles: tuple[WorkerRole, ...]
     has_key: bool
-
-
-def _view(entry: _StoredPreset) -> ServerPreset:
-    return ServerPreset(entry.name, entry.url, entry.roles, bool(entry.api_key))
+    valid: bool
 
 
 def _ipv4_part(part: str) -> int:
@@ -112,10 +151,11 @@ def _url_host(url: str) -> str:
         raise ValueError("A server URL cannot hold a query or a fragment.")
     try:
         parts = urlsplit(url)
-        parts.port  # noqa: B018  reading it is the check: it refuses a bad port
+        if parts.port == 0:
+            raise ValueError
     except ValueError:
         raise ValueError("The server URL does not parse, or its port is not valid.") from None
-    if parts.scheme.lower() not in _ALLOWED_SCHEMES:
+    if parts.scheme.lower() not in _DEFAULT_PORTS:
         raise ValueError("A server URL must start with http:// or https://.")
     if "@" in parts.netloc:
         raise ValueError("A server URL cannot hold a user name or password. Use the API key.")
@@ -126,6 +166,17 @@ def _url_host(url: str) -> str:
     if parts.netloc.startswith("[") and ":" not in parts.hostname:
         raise ValueError(_NOT_AN_IPV6)  # urlsplit admits a bracketed [v1.abc]; a connection cannot
     return parts.hostname
+
+
+def _origin(url: str) -> tuple[str, str, int] | None:
+    """The scheme, host and port that *url* connects to; None when *url* is not well formed."""
+    try:
+        host = _url_host(url)
+    except ValueError:
+        return None
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, host, _DEFAULT_PORTS[scheme] if parts.port is None else parts.port
 
 
 def _literal_address(host: str) -> IpAddress | None:
@@ -149,7 +200,7 @@ def _resolved_addresses(host: str) -> list[IpAddress]:
     """Every address DNS gives for *host*; empty when it gives none."""
     try:
         infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
+    except OSError:
         return []
     except UnicodeError:
         raise ValueError("The URL host is not a valid host name.") from None
@@ -209,28 +260,38 @@ def _checked_roles(roles: Collection[str]) -> tuple[WorkerRole, ...]:
     return tuple(known[role] for role in roles)
 
 
-def _decoded(raw: Any) -> list[_StoredPreset]:
-    """The presets of a stored value; a refusal and a log line that repeat none of it."""
+def _decoded_row(row: Any) -> _Entry:
+    try:
+        return _StoredPreset.model_validate(row)
+    except ValidationError:
+        return _UnreadableEntry(row)
+
+
+def _decoded(raw: Any) -> list[_Entry]:
+    """The entries of a stored value; a refusal and a log line that repeat none of it."""
     if raw is None:
         return []
-    entries: list[_StoredPreset] | None = None
+    rows: Any = None
     if isinstance(raw, str):  # a hand-edited config.toml can hold any TOML type here
         try:
-            entries = _STORED_LIST.validate_json(raw)
-        except ValidationError:
-            entries = None
-    if entries is None:
+            rows = json.loads(raw)
+        except (ValueError, RecursionError):
+            rows = None
+    if not isinstance(rows, list):
         log.warning(_UNPARSED_STORE)
         raise ValueError(_UNPARSED_STORE)
-    return entries
+    return [_decoded_row(row) for row in rows]
 
 
-def _encoded(entries: list[_StoredPreset]) -> str | None:
+def _encoded(entries: list[_Entry]) -> str | None:
     """The stored value for *entries*; None when there are none, so the key leaves the file."""
     if not entries:
         return None
     rows = []
     for entry in entries:
+        if isinstance(entry, _UnreadableEntry):
+            rows.append(entry.raw)
+            continue
         row: dict[str, Any] = {
             "name": entry.name,
             "url": entry.url,
@@ -242,26 +303,44 @@ def _encoded(entries: list[_StoredPreset]) -> str | None:
     return json.dumps(rows)
 
 
-def _check_list(entries: list[_StoredPreset]) -> None:
+def _checked_url(entry: _Entry) -> str:
+    """The URL of *entry*; ValueError when no preset may hold it. No stored name is looked up."""
+    if isinstance(entry, _UnreadableEntry):
+        raise ValueError(_UNREADABLE_ENTRY)
+    _check_name(entry.name)
+    _check_form(entry.url)
+    return entry.url
+
+
+def _check_list(entries: list[_Entry]) -> None:
     """Refuse a list to write that holds a repeated name or an entry no preset may hold.
 
-    A stored host name is not looked up: a write holds the config lock, and the request
-    check refuses a name whose DNS answer turned bad.
+    A write holds the config lock, and the request check refuses a name whose DNS answer
+    turned bad.
     """
     if len({entry.name for entry in entries}) != len(entries):
         raise ValueError("Two stored server presets share a name. Remove one of them.")
     for entry in entries:
         try:
-            _check_name(entry.name)
-            _check_form(entry.url)
+            _checked_url(entry)
         except ValueError as exc:
             raise ValueError(f"The stored preset {entry.name!r} is refused: {exc}") from None
 
 
-def _store(change: _ListChange) -> list[_StoredPreset]:
+def _view(entry: _Entry) -> ServerPreset:
+    """What a surface shows of *entry*; the URL of a refused entry can hold a credential."""
+    try:
+        url = _checked_url(entry)
+    except ValueError:
+        log.warning("The stored server preset %r is not valid and cannot be used.", entry.name)
+        url = ""
+    return ServerPreset(entry.name or "", url, entry.roles, entry.has_key, bool(url))
+
+
+def _store(change: _ListChange) -> list[_Entry]:
     """Apply *change* to the stored list under the config lock; return the list it made."""
 
-    def apply(raw: Any) -> tuple[str | None, list[_StoredPreset]]:
+    def apply(raw: Any) -> tuple[str | None, list[_Entry]]:
         changed = change(_decoded(raw))
         encoded = _encoded(changed)
         cfg.server_presets = encoded
@@ -270,37 +349,21 @@ def _store(change: _ListChange) -> list[_StoredPreset]:
     return settings.mutate_value(cfg.data_root, _PRESETS_KEY, apply)
 
 
-def _write(change: _ListChange) -> list[_StoredPreset]:
-    """Store what *change* makes when all of it passes the check for a list to write."""
-
-    def checked(entries: list[_StoredPreset]) -> list[_StoredPreset]:
-        changed = change(entries)
-        _check_list(changed)
-        return changed
-
-    return _store(checked)
-
-
-def _named(entries: list[_StoredPreset], name: str) -> _StoredPreset:
+def _named(entries: list[_Entry], name: str) -> _Entry:
     for entry in entries:
         if entry.name == name:
             return entry
     raise ValueError(f"No server preset is named {name!r}.")
 
 
-def _replace(name: str, **changes: Any) -> ServerPreset:
-    """Change the fields *changes* names on the stored preset *name*."""
-
-    def change(entries: list[_StoredPreset]) -> list[_StoredPreset]:
-        target = _named(entries, name)
-        updated = target.model_copy(update=changes)
-        return [updated if entry is target else entry for entry in entries]
-
-    return _view(_named(_write(change), name))
+def _without_key(entry: _Entry) -> _Entry:
+    if isinstance(entry, _UnreadableEntry):
+        return _UnreadableEntry({k: v for k, v in entry.raw.items() if k != "api_key"})
+    return entry.model_copy(update={"api_key": None})
 
 
 def list_presets() -> list[ServerPreset]:
-    """Every stored preset; a stored value that does not parse is refused."""
+    """Every stored entry; a stored value that is no list of entries is refused."""
     return [_view(entry) for entry in _decoded(settings.load(cfg.data_root).get(_PRESETS_KEY))]
 
 
@@ -315,15 +378,17 @@ def add_preset(
         name=name,
         url=url,
         roles=checked_roles,
-        api_key=SecretStr(api_key) if api_key else None,
+        api_key=_checked_key(api_key) if api_key else None,
     )
 
-    def change(entries: list[_StoredPreset]) -> list[_StoredPreset]:
+    def change(entries: list[_Entry]) -> list[_Entry]:
         if any(existing.name == name for existing in entries):
             raise ValueError(f"A server preset named {name!r} already exists.")
-        return [*entries, entry]
+        changed = [*entries, entry]
+        _check_list(changed)
+        return changed
 
-    _write(change)
+    _store(change)
     return _view(entry)
 
 
@@ -334,7 +399,11 @@ def edit_preset(
     roles: Collection[str] | None = None,
     api_key: str | None = None,
 ) -> ServerPreset:
-    """Change what is passed. An empty or omitted key keeps the stored key."""
+    """Change what is passed. An empty or omitted key keeps the stored key.
+
+    A URL with a new scheme, host or port and no new key is refused: the stored key never
+    follows the URL to a new origin. A key change alone checks only that preset's entry.
+    """
     changes: dict[str, Any] = {}
     if url is not None:
         validate_preset_url(url)
@@ -342,20 +411,39 @@ def edit_preset(
     if roles is not None:
         changes["roles"] = _checked_roles(roles)
     if api_key:
-        changes["api_key"] = SecretStr(api_key)
-    return _replace(name, **changes)
+        changes["api_key"] = _checked_key(api_key)
+
+    def change(entries: list[_Entry]) -> list[_Entry]:
+        target = _named(entries, name)
+        if isinstance(target, _UnreadableEntry):
+            raise ValueError(f"The stored preset {name!r} is refused: {_UNREADABLE_ENTRY}")
+        moves_key = target.has_key and not api_key
+        if url is not None and moves_key and _origin(target.url) != _origin(url):
+            raise ValueError(_KEY_STAYS_WITH_ORIGIN)
+        updated = target.model_copy(update=changes)
+        changed = [updated if entry is target else entry for entry in entries]
+        key_change_only = list(changes) == ["api_key"]
+        _check_list([e for e in changed if e.name == name] if key_change_only else changed)
+        return changed
+
+    return _view(_named(_store(change), name))
 
 
 def clear_key(name: str) -> ServerPreset:
-    """Remove the stored key of the preset *name*."""
-    return _replace(name, api_key=None)
+    """Remove the stored key of the preset *name*. A clear adds nothing, so no entry can stop it."""
+
+    def change(entries: list[_Entry]) -> list[_Entry]:
+        _named(entries, name)
+        return [_without_key(entry) if entry.name == name else entry for entry in entries]
+
+    return _view(_named(_store(change), name))
 
 
 def remove_preset(name: str) -> None:
     """Remove the preset *name*. A removal adds nothing, so no other stored entry can stop it."""
 
-    def change(entries: list[_StoredPreset]) -> list[_StoredPreset]:
-        target = _named(entries, name)
-        return [entry for entry in entries if entry.name != target.name]
+    def change(entries: list[_Entry]) -> list[_Entry]:
+        _named(entries, name)
+        return [entry for entry in entries if entry.name != name]
 
     _store(change)
