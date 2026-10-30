@@ -11,7 +11,12 @@ import httpx
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.providers import availability
 from lilbee.providers.backends.liter_llm.client import _client, _require_sdk
-from lilbee.providers.backends.liter_llm.config import _chat_fields, _route_model, _wire_base_url
+from lilbee.providers.backends.liter_llm.config import (
+    _chat_fields,
+    _route_model,
+    _wire_base_url,
+    rerank_route,
+)
 from lilbee.providers.backends.liter_llm.errors import (
     _CHAT_FAILED,
     _EMBED_FAILED,
@@ -207,9 +212,11 @@ class LiterLlmBackend:
         if not request.candidates:
             return RerankResult(scores=[])
         liter_llm = _require_sdk()
-        model = _route_model(request.ref, request.api_base)
+        model, client_model, base_url = rerank_route(
+            request.ref, request.api_base, request.rerank_wire
+        )
         try:
-            client = _client(model, _wire_base_url(model, request.api_base), request.api_key)
+            client = _client(client_model, base_url, request.api_key)
             response = asyncio_loop.run(
                 liter_llm.rerank(
                     client,

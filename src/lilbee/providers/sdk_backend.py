@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from lilbee.providers.backend_names import BackendName
 from lilbee.providers.base import TokenUsage
 from lilbee.providers.local_servers import LocalServerSpec, detect_local_server
+from lilbee.providers.server_registry import RerankWire
 
 if TYPE_CHECKING:
     # circular: sdk_backend -> model_ref -> types -> sdk_backend (annotation-only)
@@ -186,6 +187,7 @@ class RerankRequest:
     candidates: list[str]
     api_base: str | None = None
     api_key: str | None = None
+    rerank_wire: RerankWire = RerankWire.V1
 
 
 @dataclass(frozen=True)
