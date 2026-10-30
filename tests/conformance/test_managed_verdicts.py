@@ -23,8 +23,16 @@ GOOD_PIN: dict[str, Any] = {
     "backend": None,
     "launch": ["{binary}", "--port", "{port}"],
     "platforms": {
-        "linux-x86_64": {"url": "https://example.org/fake-linux.tar.gz", "sha256": SHA, "min_os": None},
-        "macos-arm64": {"url": "https://example.org/fake-mac.tar.gz", "sha256": SHA, "min_os": "14.0"},
+        "linux-x86_64": {
+            "url": "https://example.org/fake-linux.tar.gz",
+            "sha256": SHA,
+            "min_os": None,
+        },
+        "macos-arm64": {
+            "url": "https://example.org/fake-mac.tar.gz",
+            "sha256": SHA,
+            "min_os": "14.0",
+        },
     },
     "memory": {"sizing": ["{binary}", "--estimate", "{model}"], "rule": None},
     "licenses": ["MIT", "Apache-2.0", "BSD-3-Clause"],
@@ -42,7 +50,9 @@ def pin_with(**changes: Any) -> dict[str, Any]:
     return pin
 
 
-def _platform(url: str = "https://e.org/x", sha: str = SHA, min_os: str | None = None) -> dict[str, Any]:
+def _platform(
+    url: str = "https://e.org/x", sha: str = SHA, min_os: str | None = None
+) -> dict[str, Any]:
     return {"url": url, "sha256": sha, "min_os": min_os}
 
 
@@ -62,7 +72,12 @@ CASES: list[tuple[str, dict[str, Any], dict[str, Any], dict[str, Verdict]]] = [
     ),
     ("no_memory_rule", {}, pin_with(memory={"sizing": None, "rule": None}), {"M3": F}),
     ("pin_no_sha", {}, pin_with(platform={"linux-x86_64": _platform(sha="")}), {"M4": F}),
-    ("pin_http_url", {}, pin_with(platform={"linux-x86_64": _platform(url="http://e.org/x")}), {"M4": F}),
+    (
+        "pin_http_url",
+        {},
+        pin_with(platform={"linux-x86_64": _platform(url="http://e.org/x")}),
+        {"M4": F},
+    ),
     ("pin_mac_no_floor", {}, pin_with(platform={"macos-arm64": _platform()}), {"M4": F}),
     ("pin_no_platforms", {}, pin_with(platforms={}), {"M4": F}),
     ("licence_gpl", {}, pin_with(licenses=["MIT", "GPL-3.0-only"]), {"M5": F}),

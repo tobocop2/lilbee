@@ -119,11 +119,11 @@ class _Probe:
 
     def call(self, method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, bytes]:
         data = json.dumps(body).encode() if body is not None else None
-        request = urllib.request.Request(
+        request = urllib.request.Request(  # noqa: S310  url comes from the caller's engine option
             self.url + path, data=data, method=method, headers={"Content-Type": "application/json"}
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(request, timeout=self.timeout) as resp:  # noqa: S310  same url
                 return resp.status, resp.read()
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read()
@@ -220,7 +220,7 @@ def _delta_text(frame: dict[str, Any]) -> str:
 
 
 def _check_tools(probe: _Probe) -> Verdict:
-    status, doc = probe.chat("chat", **golden("E7")["request"])
+    _status, doc = probe.chat("chat", **golden("E7")["request"])
     message = _message(doc) or {}
     calls = message.get("tool_calls")
     wanted = golden("E7")["request"]["tools"][0]["function"]["name"]
@@ -391,8 +391,10 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def launch(binary: Path, pin: Mapping[str, Any], *, timeout: float) -> tuple[subprocess.Popen[bytes], int] | None:
-    """Start the engine from the pin's launch template; None when it has no ``{port}`` or never answers."""
+def launch(
+    binary: Path, pin: Mapping[str, Any], *, timeout: float
+) -> tuple[subprocess.Popen[bytes], int] | None:
+    """Start the engine from the pin's launch template; None without ``{port}`` or an answer."""
     template = pin["launch"]
     if not any("{port}" in arg for arg in template):
         return None
@@ -412,13 +414,19 @@ def launch(binary: Path, pin: Mapping[str, Any], *, timeout: float) -> tuple[sub
 
 def _check_launch(binary: Path, started: bool) -> Verdict:
     """M1: the launch template starts the engine and ``--help`` prints text."""
-    helped = subprocess.run([str(binary), "--help"], capture_output=True, text=True, check=False)
+    helped = subprocess.run(
+        [str(binary), "--help"], capture_output=True, text=True, encoding="utf-8", check=False
+    )
     return _verdict(started and helped.returncode == 0 and bool(helped.stdout.strip()))
 
 
 def _check_devices(binary: Path, pin: Mapping[str, Any]) -> Verdict:
     listed = subprocess.run(
-        [str(binary), "--list-devices"], capture_output=True, text=True, check=False
+        [str(binary), "--list-devices"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     if listed.returncode == 0 and any(_DEVICE_LINE.match(x) for x in listed.stdout.splitlines()):
         return Verdict.PASS
@@ -429,7 +437,7 @@ def _check_memory(binary: Path, pin: Mapping[str, Any]) -> Verdict:
     memory = pin.get("memory") or {}
     if memory.get("sizing"):
         argv = [arg.format(binary=binary, model="model.gguf") for arg in memory["sizing"]]
-        sized = subprocess.run(argv, capture_output=True, text=True, check=False)
+        sized = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", check=False)
         return _verdict(sized.returncode == 0 and sized.stdout.strip().isdigit())
     return Verdict.FALLBACK if memory.get("rule") else Verdict.FAIL
 
@@ -471,7 +479,9 @@ def _check_sigterm(binary: Path, pin: Mapping[str, Any], timeout: float) -> Verd
     return Verdict.PASS
 
 
-def run_managed(binary: Path, *, pin: Mapping[str, Any], timeout: float = 30.0) -> dict[str, Verdict]:
+def run_managed(
+    binary: Path, *, pin: Mapping[str, Any], timeout: float = 30.0
+) -> dict[str, Verdict]:
     """Verdicts for tier 2: the launch, device, memory, pin, licence and SIGTERM rows."""
     started = launch(binary, pin, timeout=timeout)
     launched = started is not None
@@ -488,7 +498,9 @@ def run_managed(binary: Path, *, pin: Mapping[str, Any], timeout: float = 30.0) 
     }
 
 
-def write_record(path: Path, verdicts: Mapping[str, Verdict], pin: Mapping[str, Any] | None) -> None:
+def write_record(
+    path: Path, verdicts: Mapping[str, Verdict], pin: Mapping[str, Any] | None
+) -> None:
     """Write one JSON line for each requirement, then the pin, so a result carries its engine."""
     lines = [json.dumps({"id": key, "verdict": str(value)}) for key, value in verdicts.items()]
     lines.append(json.dumps({"pin": dict(pin) if pin is not None else None}))

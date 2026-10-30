@@ -127,25 +127,50 @@ MUTANT_CASES = [
         expect_quality={"E11": F},
         quality_modes=(True,),
     ),
-    Case("stream_without_done", Behaviour(stream="no-done"), expect={"E5": F}, quality_modes=(True,)),
-    Case("stream_without_sse", Behaviour(stream="bad-sse"), expect={"E5": F}, quality_modes=(True,)),
+    Case(
+        "stream_without_done", Behaviour(stream="no-done"), expect={"E5": F}, quality_modes=(True,)
+    ),
+    Case(
+        "stream_without_sse", Behaviour(stream="bad-sse"), expect={"E5": F}, quality_modes=(True,)
+    ),
     Case("tools_none", Behaviour(tools="none"), expect={"E7": F}, quality_modes=(True,)),
     Case("tools_bare_json", Behaviour(tools="bare"), expect={"E7": K}, quality_modes=(True,)),
     Case("reasoning_alt_field", Behaviour(reasoning="reasoning"), quality_modes=(True,)),
     Case("reasoning_inline", Behaviour(reasoning="inline"), quality_modes=(True,)),
-    Case("reasoning_unknown_field", Behaviour(reasoning="thoughts"), expect={"E6": F}, quality_modes=(True,)),
+    Case(
+        "reasoning_unknown_field",
+        Behaviour(reasoning="thoughts"),
+        expect={"E6": F},
+        quality_modes=(True,),
+    ),
     Case("embed_all_zero", Behaviour(embed="zero"), expect={"E8": F}, quality_modes=(True,)),
-    Case("embed_first_zero", Behaviour(embed="zero_first"), expect={"E8": F}, quality_modes=(True,)),
+    Case(
+        "embed_first_zero", Behaviour(embed="zero_first"), expect={"E8": F}, quality_modes=(True,)
+    ),
     Case("embed_short_count", Behaviour(embed="count"), expect={"E8": F}, quality_modes=(True,)),
-    Case("embed_dimension_drift", Behaviour(embed="drift"), expect={"E8": F}, quality_modes=(True,)),
+    Case(
+        "embed_dimension_drift", Behaviour(embed="drift"), expect={"E8": F}, quality_modes=(True,)
+    ),
     Case("embed_unnormalized", Behaviour(embed_normalized=False), quality_modes=(True,)),
     Case("embed_404", Behaviour(embed="404"), expect={"E8": F, "E2": F}, quality_modes=(True,)),
     Case("rerank_501", Behaviour(rerank="501"), expect={"E9": F, "E2": F}, quality_modes=(True,)),
     Case("rerank_wrong_key", Behaviour(rerank="badkey"), expect={"E9": F}, quality_modes=(True,)),
-    Case("rerank_reversed", Behaviour(order_ok=False), expect_quality={"E9": F}, quality_modes=(True,)),
-    Case("vision_blind", Behaviour(vision="blind"), expect_quality={"E10": F}, quality_modes=(True,)),
+    Case(
+        "rerank_reversed",
+        Behaviour(order_ok=False),
+        expect_quality={"E9": F},
+        quality_modes=(True,),
+    ),
+    Case(
+        "vision_blind", Behaviour(vision="blind"), expect_quality={"E10": F}, quality_modes=(True,)
+    ),
     Case("vision_400", Behaviour(vision="400"), expect={"E10": F}, quality_modes=(True,)),
-    Case("chat_random", Behaviour(deterministic=False), expect_quality={"E11": F}, quality_modes=(True,)),
+    Case(
+        "chat_random",
+        Behaviour(deterministic=False),
+        expect_quality={"E11": F},
+        quality_modes=(True,),
+    ),
     Case("overflow_hang", Behaviour(overflow="hang"), expect={"E12": F}, quality_modes=(True,)),
     Case("overflow_500", Behaviour(overflow="500"), expect={"E12": F}, quality_modes=(True,)),
     Case("overflow_sequence_text", Behaviour(overflow="400-seq"), quality_modes=(True,)),
@@ -156,7 +181,12 @@ MUTANT_CASES = [
         expect={"E13": F},
         quality_modes=(True,),
     ),
-    Case("unclaimed_role_serves_valid", Behaviour(), claims=frozenset({"chat"}), quality_modes=(True,)),
+    Case(
+        "unclaimed_role_serves_valid",
+        Behaviour(),
+        claims=frozenset({"chat"}),
+        quality_modes=(True,),
+    ),
 ]
 
 
@@ -200,4 +230,18 @@ def test_every_tier_one_requirement_is_judged_by_some_case() -> None:
     judged = {key for case in (*PROFILE_CASES, *MUTANT_CASES) for key in case.expect}
     judged |= {key for case in (*PROFILE_CASES, *MUTANT_CASES) for key in case.expect_quality}
     assert judged
-    assert {"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10", "E11", "E12", "E13"} <= judged
+    assert {
+        "E1",
+        "E2",
+        "E3",
+        "E4",
+        "E5",
+        "E6",
+        "E7",
+        "E8",
+        "E9",
+        "E10",
+        "E11",
+        "E12",
+        "E13",
+    } <= judged

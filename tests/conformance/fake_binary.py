@@ -8,6 +8,7 @@ import signal
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -34,22 +35,30 @@ def _serve(cfg: dict[str, object], argv: list[str]) -> None:
     HTTPServer(("127.0.0.1", port), _Handler).serve_forever()
 
 
+def _list_devices(cfg: dict[str, Any]) -> int:
+    if cfg["devices"] == "llama":
+        print("Available devices:\n  CUDA0: NVIDIA Test GPU (8192 MiB, 8000 MiB free)")
+        return 0
+    sys.stderr.write("error: unexpected argument '--list-devices' found\n")
+    return 2
+
+
+def _estimate(cfg: dict[str, Any]) -> int:
+    if cfg["estimate"]:
+        print("123456789")
+        return 0
+    return 1
+
+
 def main(argv: list[str]) -> int:
     cfg = json.loads(os.environ["FAKE_ENGINE_CFG"])
     if "--help" in argv:
         print("usage: engine " + " ".join(cfg["flags"]))
         return int(cfg["help_rc"])
     if "--list-devices" in argv:
-        if cfg["devices"] == "llama":
-            print("Available devices:\n  CUDA0: NVIDIA Test GPU (8192 MiB, 8000 MiB free)")
-            return 0
-        sys.stderr.write("error: unexpected argument '--list-devices' found\n")
-        return 2
+        return _list_devices(cfg)
     if "--estimate" in argv:
-        if cfg["estimate"]:
-            print("123456789")
-            return 0
-        return 1
+        return _estimate(cfg)
     if "--port" in argv:
         _serve(cfg, argv)
         return 0

@@ -58,11 +58,13 @@ PROFILES: dict[str, Profile] = {
     ),
     "tei_embed": Profile((12, 13, 17), Behaviour(models=404)),
     "tei_rerank": Profile((19, 20, 21), Behaviour(models=404, rerank="tei")),
-    "lemonade": Profile((22, 23, 24, 26, 28, 29, 33), Behaviour(health=404, live=200, envelope_404=True)),
+    "lemonade": Profile(
+        (22, 23, 24, 26, 28, 29, 33), Behaviour(health=404, live=200, envelope_404=True)
+    ),
     "lemonade_reranker_as_embed": Profile(
         (32,), Behaviour(health=404, live=200, embed="zero", envelope_404=True)
     ),
-    "mistralrs_cpu": Profile((43, 50, 52, 54), Behaviour(overflow="400-seq")),
+    "mistralrs_cpu": Profile((43, 50, 52, 54, 55), Behaviour(overflow="400-seq")),
     "mistralrs_cuda": Profile((36, 37, 38, 44), Behaviour(chat="503")),
 }
 
@@ -77,7 +79,7 @@ def _vector(text: str, dim: int, normalized: bool) -> list[float]:
 
 
 def image_colour(data_url: str) -> str:
-    """"red" when the first pixel of a PNG data URL is red, else "other"."""
+    """ "red" when the first pixel of a PNG data URL is red, else "other"."""
     blob = base64.b64decode(data_url.split(",", 1)[1])
     pos = blob.index(b"IDAT")
     length = struct.unpack(">I", blob[pos - 4 : pos])[0]
@@ -178,14 +180,20 @@ class _Handler(BaseHTTPRequestHandler):
         if not self.cfg.deterministic:
             return "ans-" + os.urandom(3).hex()
         if req.get("temperature") == 0 and req.get("seed") is not None:
-            return "ans-" + hashlib.sha1((prompt + str(req["seed"])).encode()).hexdigest()[:6]
+            return "ans-" + hashlib.sha256((prompt + str(req["seed"])).encode()).hexdigest()[:6]
         return "ok"
 
-    def _tool_message(self, req: dict[str, Any], message: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    def _tool_message(
+        self, req: dict[str, Any], message: dict[str, Any]
+    ) -> tuple[dict[str, Any], str]:
         name = req["tools"][0]["function"]["name"]
         arguments = json.dumps({"city": "Paris"})
         if self.cfg.tools == "native":
-            call = {"id": "c1", "type": "function", "function": {"name": name, "arguments": arguments}}
+            call = {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
             return {"role": "assistant", "content": None, "tool_calls": [call]}, "tool_calls"
         if self.cfg.tools == "bare":
             message["content"] = json.dumps({"name": name, "arguments": {"city": "Paris"}})
@@ -215,7 +223,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": {"message": "images are not supported"}})
             return
         if images:
-            seen = image_colour(images[0]["image_url"]["url"]) if self.cfg.vision == "ok" else "nothing"
+            seen = (
+                image_colour(images[0]["image_url"]["url"])
+                if self.cfg.vision == "ok"
+                else "nothing"
+            )
             message["content"] = f"I see {seen}"
         finish = "stop"
         if req.get("tools"):
@@ -227,7 +239,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, {"id": "x"})
         else:
             choice = {"index": 0, "message": message, "finish_reason": finish}
-            self._send(200, {"choices": [choice], "usage": {"prompt_tokens": 3, "completion_tokens": 2}})
+            self._send(
+                200, {"choices": [choice], "usage": {"prompt_tokens": 3, "completion_tokens": 2}}
+            )
 
     def _stream(self, message: dict[str, Any], finish: str) -> None:
         frames: list[dict[str, Any]] = []

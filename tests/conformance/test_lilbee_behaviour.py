@@ -1,4 +1,4 @@
-"""What lilbee does about the engines' gaps. Each row is a strict xfail until its owning item lands."""
+"""What lilbee does about the engines' gaps. Each row is a strict xfail until its item lands."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def test_L1_embed_without_tokenize_estimates_the_cut() -> None:
 
 @pytest.mark.xfail(strict=True, raises=_FAILS_AS_STATED, reason="L2, owner item 1180")
 def test_L2_json_404_on_apply_template_falls_back_to_an_estimate() -> None:
-    """A JSON error envelope on a missing route is an absent route, so the prompt count estimates."""
+    """A JSON error envelope on a missing route is an absent route, so the count estimates."""
     with FakeEngine(PROFILES["lemonade"].behaviour) as engine:
         count = _client(engine, "m-chat").count_chat_prompt_tokens(_TURN)
     assert count > 0

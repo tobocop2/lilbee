@@ -1,4 +1,4 @@
-"""The requirement table in code, the golden files and docs/engine-integration.md say the same thing."""
+"""The requirement table in code, the golden files and the document say the same thing."""
 
 from __future__ import annotations
 

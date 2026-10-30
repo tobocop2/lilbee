@@ -1,4 +1,4 @@
-"""Each fake profile answers the way the measured spike row says, checked with raw HTTP and no harness."""
+"""Each fake profile answers as the measured spike row says, checked with raw HTTP."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ _ONE_TURN = {"messages": [{"role": "user", "content": "x"}]}
 
 def _http(url: str, method: str, body: dict[str, Any] | None = None) -> tuple[int, bytes]:
     data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(url, data=data, method=method)
+    request = urllib.request.Request(url, data=data, method=method)  # noqa: S310  local fake
     try:
-        with urllib.request.urlopen(request, timeout=5) as resp:
+        with urllib.request.urlopen(request, timeout=5) as resp:  # noqa: S310  local fake
             return resp.status, resp.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
@@ -33,7 +33,15 @@ WIRE_FACTS = [
     ("lemonade", 22, "GET", "/live", None, 200, b"ok"),
     ("lemonade", 23, "POST", "/upstream/m/tokenize", {"content": "x"}, 404, b"error"),
     ("lemonade", 24, "POST", "/upstream/m/apply-template", {"messages": []}, 404, b'"error"'),
-    ("lemonade", 33, "POST", "/v1/rerank", {"query": "a b", "documents": ["a"]}, 200, b"relevance_score"),
+    (
+        "lemonade",
+        33,
+        "POST",
+        "/v1/rerank",
+        {"query": "a b", "documents": ["a"]},
+        200,
+        b"relevance_score",
+    ),
     ("lemonade", 33, "POST", "/rerank", {"query": "a", "documents": ["a"]}, 404, b"error"),
     ("mlx_lm", 2, "POST", "/upstream/m/tokenize", {"content": "x"}, 404, b"Not Found"),
     ("tei_embed", 13, "GET", "/v1/models", None, 404, b""),
@@ -43,9 +51,33 @@ WIRE_FACTS = [
     ("mistralrs_cuda", 36, "POST", _CHAT, _ONE_TURN, 503, b"service_unavailable"),
     ("mistralrs_cuda", 37, "GET", "/health", None, 200, b"ok"),
     ("mistralrs_cuda", 38, "GET", "/v1/models", None, 200, b"m-chat"),
-    ("mistralrs_cpu", 43, "POST", _CHAT, {"messages": [{"role": "user", "content": "w " * 60000}]}, 400, b"sequence length is greater than"),
-    ("lemonade", 28, "POST", _CHAT, {"messages": [{"role": "user", "content": "w " * 60000}]}, 400, b"exceeds the available context size"),
-    ("lemonade_reranker_as_embed", 32, "POST", "/v1/embeddings", {"input": ["a"], "encoding_format": "float"}, 200, b"0.0"),
+    (
+        "mistralrs_cpu",
+        43,
+        "POST",
+        _CHAT,
+        {"messages": [{"role": "user", "content": "w " * 60000}]},
+        400,
+        b"sequence length is greater than",
+    ),
+    (
+        "lemonade",
+        28,
+        "POST",
+        _CHAT,
+        {"messages": [{"role": "user", "content": "w " * 60000}]},
+        400,
+        b"exceeds the available context size",
+    ),
+    (
+        "lemonade_reranker_as_embed",
+        32,
+        "POST",
+        "/v1/embeddings",
+        {"input": ["a"], "encoding_format": "float"},
+        200,
+        b"0.0",
+    ),
 ]
 
 
