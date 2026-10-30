@@ -1,0 +1,362 @@
+HEAD 76ce7cf886fa6ea3f0e50e47d64c61d476235a5b base=76ce7cf886fa6ea3f0e50e47d64c61d476235a5b seed=34 names=20
+ROW PASS classify-before-add 'a/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'a/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'a/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'a/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'a/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'a/model' expected=('a', True, False, 'model') actual=('local', False, False, 'a/model')
+ROW RED classify-after-add 'a/model:tag' expected=('a', True, False, 'model:tag') actual=('local', False, False, 'a/model:tag')
+ROW RED classify-after-add 'a/org/model' expected=('a', True, False, 'org/model') actual=('local', False, False, 'a/org/model')
+ROW RED classify-after-add 'a/x.gguf' expected=('a', True, False, 'x.gguf') actual=('local', False, False, 'a/x.gguf')
+ROW PASS classify-after-add 'a/org/repo/file.gguf' expected=('local', False, False, 'a/org/repo/file.gguf') actual=('local', False, False, 'a/org/repo/file.gguf')
+ROW PASS classify-after-remove 'a/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add '0/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '0/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '0/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '0/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '0/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add '0/model' expected=('0', True, False, 'model') actual=('local', False, False, '0/model')
+ROW RED classify-after-add '0/model:tag' expected=('0', True, False, 'model:tag') actual=('local', False, False, '0/model:tag')
+ROW RED classify-after-add '0/org/model' expected=('0', True, False, 'org/model') actual=('local', False, False, '0/org/model')
+ROW RED classify-after-add '0/x.gguf' expected=('0', True, False, 'x.gguf') actual=('local', False, False, '0/x.gguf')
+ROW PASS classify-after-add '0/org/repo/file.gguf' expected=('local', False, False, '0/org/repo/file.gguf') actual=('local', False, False, '0/org/repo/file.gguf')
+ROW PASS classify-after-remove '0/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add '9lives/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '9lives/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '9lives/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '9lives/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '9lives/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add '9lives/model' expected=('9lives', True, False, 'model') actual=('local', False, False, '9lives/model')
+ROW RED classify-after-add '9lives/model:tag' expected=('9lives', True, False, 'model:tag') actual=('local', False, False, '9lives/model:tag')
+ROW RED classify-after-add '9lives/org/model' expected=('9lives', True, False, 'org/model') actual=('local', False, False, '9lives/org/model')
+ROW RED classify-after-add '9lives/x.gguf' expected=('9lives', True, False, 'x.gguf') actual=('local', False, False, '9lives/x.gguf')
+ROW PASS classify-after-add '9lives/org/repo/file.gguf' expected=('local', False, False, '9lives/org/repo/file.gguf') actual=('local', False, False, '9lives/org/repo/file.gguf')
+ROW PASS classify-after-remove '9lives/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'my-server/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'my-server/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'my-server/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'my-server/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'my-server/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'my-server/model' expected=('my-server', True, False, 'model') actual=('local', False, False, 'my-server/model')
+ROW RED classify-after-add 'my-server/model:tag' expected=('my-server', True, False, 'model:tag') actual=('local', False, False, 'my-server/model:tag')
+ROW RED classify-after-add 'my-server/org/model' expected=('my-server', True, False, 'org/model') actual=('local', False, False, 'my-server/org/model')
+ROW RED classify-after-add 'my-server/x.gguf' expected=('my-server', True, False, 'x.gguf') actual=('local', False, False, 'my-server/x.gguf')
+ROW PASS classify-after-add 'my-server/org/repo/file.gguf' expected=('local', False, False, 'my-server/org/repo/file.gguf') actual=('local', False, False, 'my-server/org/repo/file.gguf')
+ROW PASS classify-after-remove 'my-server/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'my_server/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'my_server/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'my_server/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'my_server/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'my_server/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'my_server/model' expected=('my_server', True, False, 'model') actual=('local', False, False, 'my_server/model')
+ROW RED classify-after-add 'my_server/model:tag' expected=('my_server', True, False, 'model:tag') actual=('local', False, False, 'my_server/model:tag')
+ROW RED classify-after-add 'my_server/org/model' expected=('my_server', True, False, 'org/model') actual=('local', False, False, 'my_server/org/model')
+ROW RED classify-after-add 'my_server/x.gguf' expected=('my_server', True, False, 'x.gguf') actual=('local', False, False, 'my_server/x.gguf')
+ROW PASS classify-after-add 'my_server/org/repo/file.gguf' expected=('local', False, False, 'my_server/org/repo/file.gguf') actual=('local', False, False, 'my_server/org/repo/file.gguf')
+ROW PASS classify-after-remove 'my_server/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'x1-y2_z3/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'x1-y2_z3/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'x1-y2_z3/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'x1-y2_z3/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'x1-y2_z3/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'x1-y2_z3/model' expected=('x1-y2_z3', True, False, 'model') actual=('local', False, False, 'x1-y2_z3/model')
+ROW RED classify-after-add 'x1-y2_z3/model:tag' expected=('x1-y2_z3', True, False, 'model:tag') actual=('local', False, False, 'x1-y2_z3/model:tag')
+ROW RED classify-after-add 'x1-y2_z3/org/model' expected=('x1-y2_z3', True, False, 'org/model') actual=('local', False, False, 'x1-y2_z3/org/model')
+ROW RED classify-after-add 'x1-y2_z3/x.gguf' expected=('x1-y2_z3', True, False, 'x.gguf') actual=('local', False, False, 'x1-y2_z3/x.gguf')
+ROW PASS classify-after-add 'x1-y2_z3/org/repo/file.gguf' expected=('local', False, False, 'x1-y2_z3/org/repo/file.gguf') actual=('local', False, False, 'x1-y2_z3/org/repo/file.gguf')
+ROW PASS classify-after-remove 'x1-y2_z3/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'bge/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'bge/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'bge/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'bge/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'bge/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'bge/model' expected=('bge', True, False, 'model') actual=('local', False, False, 'bge/model')
+ROW RED classify-after-add 'bge/model:tag' expected=('bge', True, False, 'model:tag') actual=('local', False, False, 'bge/model:tag')
+ROW RED classify-after-add 'bge/org/model' expected=('bge', True, False, 'org/model') actual=('local', False, False, 'bge/org/model')
+ROW RED classify-after-add 'bge/x.gguf' expected=('bge', True, False, 'x.gguf') actual=('local', False, False, 'bge/x.gguf')
+ROW PASS classify-after-add 'bge/org/repo/file.gguf' expected=('local', False, False, 'bge/org/repo/file.gguf') actual=('local', False, False, 'bge/org/repo/file.gguf')
+ROW PASS classify-after-remove 'bge/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'tei/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'tei/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'tei/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'tei/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'tei/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'tei/model' expected=('tei', True, False, 'model') actual=('local', False, False, 'tei/model')
+ROW RED classify-after-add 'tei/model:tag' expected=('tei', True, False, 'model:tag') actual=('local', False, False, 'tei/model:tag')
+ROW RED classify-after-add 'tei/org/model' expected=('tei', True, False, 'org/model') actual=('local', False, False, 'tei/org/model')
+ROW RED classify-after-add 'tei/x.gguf' expected=('tei', True, False, 'x.gguf') actual=('local', False, False, 'tei/x.gguf')
+ROW PASS classify-after-add 'tei/org/repo/file.gguf' expected=('local', False, False, 'tei/org/repo/file.gguf') actual=('local', False, False, 'tei/org/repo/file.gguf')
+ROW PASS classify-after-remove 'tei/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add '7_bobyx/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '7_bobyx/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '7_bobyx/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '7_bobyx/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '7_bobyx/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add '7_bobyx/model' expected=('7_bobyx', True, False, 'model') actual=('local', False, False, '7_bobyx/model')
+ROW RED classify-after-add '7_bobyx/model:tag' expected=('7_bobyx', True, False, 'model:tag') actual=('local', False, False, '7_bobyx/model:tag')
+ROW RED classify-after-add '7_bobyx/org/model' expected=('7_bobyx', True, False, 'org/model') actual=('local', False, False, '7_bobyx/org/model')
+ROW RED classify-after-add '7_bobyx/x.gguf' expected=('7_bobyx', True, False, 'x.gguf') actual=('local', False, False, '7_bobyx/x.gguf')
+ROW PASS classify-after-add '7_bobyx/org/repo/file.gguf' expected=('local', False, False, '7_bobyx/org/repo/file.gguf') actual=('local', False, False, '7_bobyx/org/repo/file.gguf')
+ROW PASS classify-after-remove '7_bobyx/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'etvg_6jg/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'etvg_6jg/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'etvg_6jg/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'etvg_6jg/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'etvg_6jg/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'etvg_6jg/model' expected=('etvg_6jg', True, False, 'model') actual=('local', False, False, 'etvg_6jg/model')
+ROW RED classify-after-add 'etvg_6jg/model:tag' expected=('etvg_6jg', True, False, 'model:tag') actual=('local', False, False, 'etvg_6jg/model:tag')
+ROW RED classify-after-add 'etvg_6jg/org/model' expected=('etvg_6jg', True, False, 'org/model') actual=('local', False, False, 'etvg_6jg/org/model')
+ROW RED classify-after-add 'etvg_6jg/x.gguf' expected=('etvg_6jg', True, False, 'x.gguf') actual=('local', False, False, 'etvg_6jg/x.gguf')
+ROW PASS classify-after-add 'etvg_6jg/org/repo/file.gguf' expected=('local', False, False, 'etvg_6jg/org/repo/file.gguf') actual=('local', False, False, 'etvg_6jg/org/repo/file.gguf')
+ROW PASS classify-after-remove 'etvg_6jg/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'raj7fdx/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'raj7fdx/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'raj7fdx/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'raj7fdx/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'raj7fdx/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'raj7fdx/model' expected=('raj7fdx', True, False, 'model') actual=('local', False, False, 'raj7fdx/model')
+ROW RED classify-after-add 'raj7fdx/model:tag' expected=('raj7fdx', True, False, 'model:tag') actual=('local', False, False, 'raj7fdx/model:tag')
+ROW RED classify-after-add 'raj7fdx/org/model' expected=('raj7fdx', True, False, 'org/model') actual=('local', False, False, 'raj7fdx/org/model')
+ROW RED classify-after-add 'raj7fdx/x.gguf' expected=('raj7fdx', True, False, 'x.gguf') actual=('local', False, False, 'raj7fdx/x.gguf')
+ROW PASS classify-after-add 'raj7fdx/org/repo/file.gguf' expected=('local', False, False, 'raj7fdx/org/repo/file.gguf') actual=('local', False, False, 'raj7fdx/org/repo/file.gguf')
+ROW PASS classify-after-remove 'raj7fdx/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'qdyk_tsyun/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'qdyk_tsyun/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'qdyk_tsyun/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'qdyk_tsyun/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'qdyk_tsyun/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'qdyk_tsyun/model' expected=('qdyk_tsyun', True, False, 'model') actual=('local', False, False, 'qdyk_tsyun/model')
+ROW RED classify-after-add 'qdyk_tsyun/model:tag' expected=('qdyk_tsyun', True, False, 'model:tag') actual=('local', False, False, 'qdyk_tsyun/model:tag')
+ROW RED classify-after-add 'qdyk_tsyun/org/model' expected=('qdyk_tsyun', True, False, 'org/model') actual=('local', False, False, 'qdyk_tsyun/org/model')
+ROW RED classify-after-add 'qdyk_tsyun/x.gguf' expected=('qdyk_tsyun', True, False, 'x.gguf') actual=('local', False, False, 'qdyk_tsyun/x.gguf')
+ROW PASS classify-after-add 'qdyk_tsyun/org/repo/file.gguf' expected=('local', False, False, 'qdyk_tsyun/org/repo/file.gguf') actual=('local', False, False, 'qdyk_tsyun/org/repo/file.gguf')
+ROW PASS classify-after-remove 'qdyk_tsyun/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'n8li-z81p/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'n8li-z81p/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'n8li-z81p/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'n8li-z81p/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'n8li-z81p/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'n8li-z81p/model' expected=('n8li-z81p', True, False, 'model') actual=('local', False, False, 'n8li-z81p/model')
+ROW RED classify-after-add 'n8li-z81p/model:tag' expected=('n8li-z81p', True, False, 'model:tag') actual=('local', False, False, 'n8li-z81p/model:tag')
+ROW RED classify-after-add 'n8li-z81p/org/model' expected=('n8li-z81p', True, False, 'org/model') actual=('local', False, False, 'n8li-z81p/org/model')
+ROW RED classify-after-add 'n8li-z81p/x.gguf' expected=('n8li-z81p', True, False, 'x.gguf') actual=('local', False, False, 'n8li-z81p/x.gguf')
+ROW PASS classify-after-add 'n8li-z81p/org/repo/file.gguf' expected=('local', False, False, 'n8li-z81p/org/repo/file.gguf') actual=('local', False, False, 'n8li-z81p/org/repo/file.gguf')
+ROW PASS classify-after-remove 'n8li-z81p/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'p_e/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'p_e/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'p_e/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'p_e/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'p_e/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'p_e/model' expected=('p_e', True, False, 'model') actual=('local', False, False, 'p_e/model')
+ROW RED classify-after-add 'p_e/model:tag' expected=('p_e', True, False, 'model:tag') actual=('local', False, False, 'p_e/model:tag')
+ROW RED classify-after-add 'p_e/org/model' expected=('p_e', True, False, 'org/model') actual=('local', False, False, 'p_e/org/model')
+ROW RED classify-after-add 'p_e/x.gguf' expected=('p_e', True, False, 'x.gguf') actual=('local', False, False, 'p_e/x.gguf')
+ROW PASS classify-after-add 'p_e/org/repo/file.gguf' expected=('local', False, False, 'p_e/org/repo/file.gguf') actual=('local', False, False, 'p_e/org/repo/file.gguf')
+ROW PASS classify-after-remove 'p_e/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add '20h_sm/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '20h_sm/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '20h_sm/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '20h_sm/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add '20h_sm/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add '20h_sm/model' expected=('20h_sm', True, False, 'model') actual=('local', False, False, '20h_sm/model')
+ROW RED classify-after-add '20h_sm/model:tag' expected=('20h_sm', True, False, 'model:tag') actual=('local', False, False, '20h_sm/model:tag')
+ROW RED classify-after-add '20h_sm/org/model' expected=('20h_sm', True, False, 'org/model') actual=('local', False, False, '20h_sm/org/model')
+ROW RED classify-after-add '20h_sm/x.gguf' expected=('20h_sm', True, False, 'x.gguf') actual=('local', False, False, '20h_sm/x.gguf')
+ROW PASS classify-after-add '20h_sm/org/repo/file.gguf' expected=('local', False, False, '20h_sm/org/repo/file.gguf') actual=('local', False, False, '20h_sm/org/repo/file.gguf')
+ROW PASS classify-after-remove '20h_sm/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'lv2f7403/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'lv2f7403/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'lv2f7403/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'lv2f7403/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'lv2f7403/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'lv2f7403/model' expected=('lv2f7403', True, False, 'model') actual=('local', False, False, 'lv2f7403/model')
+ROW RED classify-after-add 'lv2f7403/model:tag' expected=('lv2f7403', True, False, 'model:tag') actual=('local', False, False, 'lv2f7403/model:tag')
+ROW RED classify-after-add 'lv2f7403/org/model' expected=('lv2f7403', True, False, 'org/model') actual=('local', False, False, 'lv2f7403/org/model')
+ROW RED classify-after-add 'lv2f7403/x.gguf' expected=('lv2f7403', True, False, 'x.gguf') actual=('local', False, False, 'lv2f7403/x.gguf')
+ROW PASS classify-after-add 'lv2f7403/org/repo/file.gguf' expected=('local', False, False, 'lv2f7403/org/repo/file.gguf') actual=('local', False, False, 'lv2f7403/org/repo/file.gguf')
+ROW PASS classify-after-remove 'lv2f7403/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'x2ri/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'x2ri/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'x2ri/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'x2ri/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'x2ri/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'x2ri/model' expected=('x2ri', True, False, 'model') actual=('local', False, False, 'x2ri/model')
+ROW RED classify-after-add 'x2ri/model:tag' expected=('x2ri', True, False, 'model:tag') actual=('local', False, False, 'x2ri/model:tag')
+ROW RED classify-after-add 'x2ri/org/model' expected=('x2ri', True, False, 'org/model') actual=('local', False, False, 'x2ri/org/model')
+ROW RED classify-after-add 'x2ri/x.gguf' expected=('x2ri', True, False, 'x.gguf') actual=('local', False, False, 'x2ri/x.gguf')
+ROW PASS classify-after-add 'x2ri/org/repo/file.gguf' expected=('local', False, False, 'x2ri/org/repo/file.gguf') actual=('local', False, False, 'x2ri/org/repo/file.gguf')
+ROW PASS classify-after-remove 'x2ri/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'oste/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'oste/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'oste/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'oste/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'oste/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'oste/model' expected=('oste', True, False, 'model') actual=('local', False, False, 'oste/model')
+ROW RED classify-after-add 'oste/model:tag' expected=('oste', True, False, 'model:tag') actual=('local', False, False, 'oste/model:tag')
+ROW RED classify-after-add 'oste/org/model' expected=('oste', True, False, 'org/model') actual=('local', False, False, 'oste/org/model')
+ROW RED classify-after-add 'oste/x.gguf' expected=('oste', True, False, 'x.gguf') actual=('local', False, False, 'oste/x.gguf')
+ROW PASS classify-after-add 'oste/org/repo/file.gguf' expected=('local', False, False, 'oste/org/repo/file.gguf') actual=('local', False, False, 'oste/org/repo/file.gguf')
+ROW PASS classify-after-remove 'oste/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'tg_7t0o0t8/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'tg_7t0o0t8/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'tg_7t0o0t8/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'tg_7t0o0t8/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'tg_7t0o0t8/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'tg_7t0o0t8/model' expected=('tg_7t0o0t8', True, False, 'model') actual=('local', False, False, 'tg_7t0o0t8/model')
+ROW RED classify-after-add 'tg_7t0o0t8/model:tag' expected=('tg_7t0o0t8', True, False, 'model:tag') actual=('local', False, False, 'tg_7t0o0t8/model:tag')
+ROW RED classify-after-add 'tg_7t0o0t8/org/model' expected=('tg_7t0o0t8', True, False, 'org/model') actual=('local', False, False, 'tg_7t0o0t8/org/model')
+ROW RED classify-after-add 'tg_7t0o0t8/x.gguf' expected=('tg_7t0o0t8', True, False, 'x.gguf') actual=('local', False, False, 'tg_7t0o0t8/x.gguf')
+ROW PASS classify-after-add 'tg_7t0o0t8/org/repo/file.gguf' expected=('local', False, False, 'tg_7t0o0t8/org/repo/file.gguf') actual=('local', False, False, 'tg_7t0o0t8/org/repo/file.gguf')
+ROW PASS classify-after-remove 'tg_7t0o0t8/model' expected=local actual=local note=no stale copy of the name
+ROW PASS classify-before-add 'w3eedv0ull0/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'w3eedv0ull0/model:tag' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'w3eedv0ull0/org/model' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'w3eedv0ull0/x.gguf' expected=local actual=local note=control: equals the base
+ROW PASS classify-before-add 'w3eedv0ull0/org/repo/file.gguf' expected=local actual=local note=control: equals the base
+ROW RED classify-after-add 'w3eedv0ull0/model' expected=('w3eedv0ull0', True, False, 'model') actual=('local', False, False, 'w3eedv0ull0/model')
+ROW RED classify-after-add 'w3eedv0ull0/model:tag' expected=('w3eedv0ull0', True, False, 'model:tag') actual=('local', False, False, 'w3eedv0ull0/model:tag')
+ROW RED classify-after-add 'w3eedv0ull0/org/model' expected=('w3eedv0ull0', True, False, 'org/model') actual=('local', False, False, 'w3eedv0ull0/org/model')
+ROW RED classify-after-add 'w3eedv0ull0/x.gguf' expected=('w3eedv0ull0', True, False, 'x.gguf') actual=('local', False, False, 'w3eedv0ull0/x.gguf')
+ROW PASS classify-after-add 'w3eedv0ull0/org/repo/file.gguf' expected=('local', False, False, 'w3eedv0ull0/org/repo/file.gguf') actual=('local', False, False, 'w3eedv0ull0/org/repo/file.gguf')
+ROW PASS classify-after-remove 'w3eedv0ull0/model' expected=local actual=local note=no stale copy of the name
+ROW PASS config-validator 'chat_model' expected=kept/some-model actual=kept/some-model
+ROW PASS config-validator 'embedding_model' expected=kept/some-model actual=kept/some-model
+ROW PASS config-validator 'reranker_model' expected=kept/some-model actual=kept/some-model
+ROW RED other-process 'add' expected=other actual=local
+ROW PASS other-process 'remove' expected=local actual=local
+ROW PASS builtin-no-presets 'openai/gpt-4o' expected=('openai', True) actual=('openai', True)
+ROW PASS builtin-no-presets 'anthropic/claude-3' expected=('anthropic', True) actual=('anthropic', True)
+ROW PASS builtin-no-presets 'gemini/gemini-pro' expected=('gemini', True) actual=('gemini', True)
+ROW PASS builtin-no-presets 'ollama/llama3.2:1b' expected=('ollama', False) actual=('ollama', False)
+ROW PASS builtin-no-presets 'lm_studio/qwen2.5-7b' expected=('lm_studio', False) actual=('lm_studio', False)
+ROW PASS builtin-no-presets 'bartowski/Qwen3-GGUF' expected=('local', False) actual=('local', False)
+ROW PASS builtin-no-presets 'TheBloke/x/y.gguf' expected=('local', False) actual=('local', False)
+ROW PASS builtin-no-presets 'noslash' expected=refuse actual=refuse
+ROW PASS builtin-no-presets 'model.gguf' expected=refuse actual=refuse
+ROW PASS builtin-no-presets 'translate_options keeps raw options for openai/' expected=True actual=True
+ROW PASS builtin-with-presets 'openai/gpt-4o' expected=('openai', True) actual=('openai', True)
+ROW PASS builtin-with-presets 'anthropic/claude-3' expected=('anthropic', True) actual=('anthropic', True)
+ROW PASS builtin-with-presets 'gemini/gemini-pro' expected=('gemini', True) actual=('gemini', True)
+ROW PASS builtin-with-presets 'ollama/llama3.2:1b' expected=('ollama', False) actual=('ollama', False)
+ROW PASS builtin-with-presets 'lm_studio/qwen2.5-7b' expected=('lm_studio', False) actual=('lm_studio', False)
+ROW PASS builtin-with-presets 'TheBloke/x/y.gguf' expected=('local', False) actual=('local', False)
+ROW PASS builtin-with-presets 'noslash' expected=refuse actual=refuse
+ROW PASS builtin-with-presets 'model.gguf' expected=refuse actual=refuse
+ROW PASS builtin-with-presets 'translate_options keeps raw options for openai/' expected=True actual=True
+ROW RED shadow-default 'bartowski/Qwen3-GGUF' expected=bartowski actual=local note=owner question 3: prefix wins
+ROW PASS shadow-default 'bartowski/Qwen3/Q4.gguf' expected=local actual=local note=native shape wins, as for openai/
+ROW RED shadow-default 'role validator reads the same registry' expected=False actual=True
+ROW RED check-role 'chat asked chat' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat asked embed' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat asked rerank' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat asked vision' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed asked chat' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed asked embed' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed asked rerank' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed asked vision' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed asked chat' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed asked embed' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed asked rerank' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed asked vision' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'rerank asked chat' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'rerank asked embed' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'rerank asked rerank' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'rerank asked vision' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+rerank asked chat' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+rerank asked embed' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+rerank asked rerank' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+rerank asked vision' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+rerank asked chat' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+rerank asked embed' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+rerank asked rerank' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+rerank asked vision' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+rerank asked chat' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+rerank asked embed' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+rerank asked rerank' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+rerank asked vision' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'vision asked chat' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'vision asked embed' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'vision asked rerank' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'vision asked vision' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+vision asked chat' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+vision asked embed' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+vision asked rerank' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+vision asked vision' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+vision asked chat' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+vision asked embed' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+vision asked rerank' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+vision asked vision' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+vision asked chat' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+vision asked embed' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+vision asked rerank' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+vision asked vision' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'rerank+vision asked chat' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'rerank+vision asked embed' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'rerank+vision asked rerank' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'rerank+vision asked vision' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+rerank+vision asked chat' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+rerank+vision asked embed' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+rerank+vision asked rerank' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+rerank+vision asked vision' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+rerank+vision asked chat' expected=refuse actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+rerank+vision asked embed' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+rerank+vision asked rerank' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'embed+rerank+vision asked vision' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+rerank+vision asked chat' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+rerank+vision asked embed' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+rerank+vision asked rerank' expected=ok actual=absent:ModuleNotFoundError
+ROW RED check-role 'chat+embed+rerank+vision asked vision' expected=ok actual=absent:ModuleNotFoundError
+ROW RED wire 'chat/default/key' expected=routed to wired actual=parsed as ('local', False, False, 'wired/some-model') note=not called: a local ref would start the engine
+ROW RED wire 'chat/default/nokey' expected=routed to wired actual=parsed as ('local', False, False, 'wired/some-model') note=not called: a local ref would start the engine
+ROW RED wire 'embed/default/key' expected=routed to wired actual=parsed as ('local', False, False, 'wired/some-model') note=not called: a local ref would start the engine
+ROW RED wire 'embed/default/nokey' expected=routed to wired actual=parsed as ('local', False, False, 'wired/some-model') note=not called: a local ref would start the engine
+ROW RED wire 'rerank/default/key' expected=routed to wired actual=parsed as ('local', False, False, 'wired/some-model') note=not called: a local ref would start the engine
+ROW RED wire 'rerank/default/nokey' expected=routed to wired actual=parsed as ('local', False, False, 'wired/some-model') note=not called: a local ref would start the engine
+ROW RED wire 'rerank/tei/key' expected=added actual=absent:TypeError
+ROW RED wire 'rerank/tei/nokey' expected=added actual=absent:TypeError
+ROW PASS harness-control 'lm_studio chat' expected=/v1/chat/completions actual=/v1/chat/completions note=driver returned str
+ROW PASS harness-control 'lm_studio embed' expected=/v1/embeddings actual=/v1/embeddings note=driver returned list
+ROW PASS harness-control 'lm_studio rerank' expected=/v1/rerank actual=/v1/rerank note=driver returned list
+ROW RED two-servers 'one' expected=('from A', 1, 0) actual=("parsed as ('local', False, False, 'one/m')", 0, 0)
+ROW RED two-servers 'two' expected=('from B', 1, 0) actual=("parsed as ('local', False, False, 'two/m')", 0, 0)
+ROW RED unserved-no-request 'chat asked embed' expected=('refuse', 0) actual=parsed as ('local', False, False, 'narrow/m') note=not called
+ROW RED unserved-no-request 'chat+embed asked rerank' expected=('refuse', 0) actual=parsed as ('local', False, False, 'narrow/m') note=not called
+ROW RED unserved-no-request 'embed asked chat' expected=('refuse', 0) actual=parsed as ('local', False, False, 'narrow/m') note=not called
+ROW RED request-time '169.254.169.254' expected=('refuse', 0, False) actual=parsed as ('local', False, False, 'moves/m') note=not called
+ROW RED request-time '0.0.0.0' expected=('refuse', 0, False) actual=parsed as ('local', False, False, 'moves/m') note=not called
+ROW RED request-time '224.0.0.1' expected=('refuse', 0, False) actual=parsed as ('local', False, False, 'moves/m') note=not called
+ROW RED request-time '240.0.0.1' expected=('refuse', 0, False) actual=parsed as ('local', False, False, 'moves/m') note=not called
+ROW RED canary-trigger 'a named string' expected=True actual=False
+ROW RED canary-trigger 'stable in one process' expected=True actual=False
+ROW RED canary-trigger 'model change differs' expected=True actual=False
+ROW RED canary-trigger 'same model, other preset URL differs' expected=True actual=False
+ROW RED canary-trigger 'URL edit under the same name differs' expected=True actual=False
+ROW RED canary-trigger 'key change keeps the trigger' expected=True actual=False
+ROW RED canary-trigger 'no key text' expected=True actual=False
+ROW RED canary-trigger 'builtin remote still process-scoped' expected=True actual=False
+ROW PASS census 'control: grep finds a known class' expected=['src/lilbee/providers/local_servers/spec.py'] actual=['src/lilbee/providers/local_servers/spec.py']
+ROW RED census 'files naming PROVIDER_PREFIXES' expected=[] actual=['src/lilbee/app/presets.py', 'src/lilbee/modelhub/role_validator.py', 'src/lilbee/providers/model_ref.py'] note=the registry replaces the set; no caller keeps it
+ROW RED census 'files naming LOCAL_SERVER_KEYS outside the registry' expected=[] actual=['src/lilbee/modelhub/model_manager/validation.py', 'src/lilbee/providers/model_ref.py', 'src/lilbee/providers/sdk_llm_provider.py']
+DEFER canary-stop-end-to-end: needs the 1187 store on this branch
+GAP request-time: the check runs before the call; liter-llm resolves the host itself, so a change between check and connect is not refused
+SECTION builtin-no-presets PASS 10
+SECTION builtin-with-presets PASS 9
+SECTION canary-trigger RED 8
+SECTION census PASS 1
+SECTION census RED 2
+SECTION check-role RED 60
+SECTION classify-after-add PASS 20
+SECTION classify-after-add RED 80
+SECTION classify-after-remove PASS 20
+SECTION classify-before-add PASS 100
+SECTION config-validator PASS 3
+SECTION harness-control PASS 3
+SECTION other-process PASS 1
+SECTION other-process RED 1
+SECTION request-time RED 4
+SECTION shadow-default PASS 1
+SECTION shadow-default RED 2
+SECTION two-servers RED 2
+SECTION unserved-no-request RED 3
+SECTION wire RED 8
+TOTAL inputs=338 PASS=168 RED=170 OPEN=0
