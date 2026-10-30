@@ -9,6 +9,8 @@ lint: lint-shell
 	# The README formats table is generated from discovery's format map, so an
 	# xberg or tree-sitter bump that changes the set lands in the table.
 	uv run python tools/gen_formats_table.py --check
+	# No GPL or AGPL package may enter the locked dependency tree.
+	bash tools/ci/check_licenses.sh
 
 lint-shell:  ## shellcheck the release scripts and actionlint every workflow
 	@if command -v shellcheck >/dev/null; then \
