@@ -15,6 +15,7 @@ from lilbee.config_meta import SERVICE_ONLY_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.providers.roles import WorkerRole
+from lilbee.server.handlers.config import get_config, get_config_defaults
 
 KEY = "SENTINEL-key-5d1e"
 PUBLIC_HOST = "pub.example.test"
@@ -239,7 +240,7 @@ class TestAdd:
         "name", ["", "a/b", "a b", "Alpha", "-x", "_x", "x.y", "x:y", "naïve", "a\nb"]
     )
     def test_a_name_outside_the_pattern_is_refused(self, name):
-        with pytest.raises(ValueError, match="lower-case letters"):
+        with pytest.raises(ValueError, match=r"^A preset name uses lower-case letters"):
             presets.add_preset(name, URL, roles=["chat"])
 
     @pytest.mark.parametrize("name", ["openai", "local", "anthropic"])
@@ -519,3 +520,12 @@ class TestNoGeneralPath:
         assert len(listed) > 20
         assert self.FIELD not in {info.key for info in listed}
         assert KEY not in repr(listed)
+
+    async def test_the_http_config_read_leaves_it_out_and_holds_no_key(self):
+        assert cfg.server_presets is not None
+        assert KEY in cfg.server_presets
+        for payload in (await get_config(), await get_config_defaults()):
+            dumped = payload.model_dump()
+            assert len(dumped) > 20
+            assert self.FIELD not in dumped
+            assert KEY not in repr(dumped)
