@@ -1,0 +1,11 @@
+{
+  "id": "E13",
+  "rows": [
+    32,
+    33,
+    46,
+    47
+  ],
+  "request": null,
+  "assert": "A role that is not claimed answers 404, 405 or 501, or with a valid answer of that role."
+}

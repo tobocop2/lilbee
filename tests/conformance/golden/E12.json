@@ -1,0 +1,14 @@
+{
+  "id": "E12",
+  "rows": [
+    8,
+    28,
+    43,
+    52
+  ],
+  "request": {
+    "unit": "word ",
+    "repeat": 300000
+  },
+  "assert": "A prompt past the context answers a 4xx within the timeout."
+}

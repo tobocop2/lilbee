@@ -1,0 +1,30 @@
+{
+  "id": "E4",
+  "rows": [
+    6,
+    26,
+    36
+  ],
+  "request": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Be brief."
+      },
+      {
+        "role": "user",
+        "content": "Say ok."
+      },
+      {
+        "role": "assistant",
+        "content": "ok"
+      },
+      {
+        "role": "user",
+        "content": "Again."
+      }
+    ],
+    "max_tokens": 32
+  },
+  "assert": "200 and choices[0].message.content is a string."
+}
