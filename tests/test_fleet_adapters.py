@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -507,3 +508,137 @@ def test_build_argv_emits_the_device_names_it_is_given() -> None:
         device_names=("Vulkan0", "Vulkan2"),
     )
     assert argv[argv.index("--device") + 1] == "Vulkan0,Vulkan2"
+
+
+def _help_listing(flags, *, indent: str = "") -> str:
+    return "\n".join(f"{indent}{flag} X    what it does" for flag in flags) + "\n"
+
+
+def _every_optional_flag_argv(
+    monkeypatch, help_text: str | None, *, cpu_moe_only: bool = False
+) -> list[str]:
+    """A chat argv that carries every optional flag, built against a binary printing *help_text*."""
+
+    def _run(*_a, **_k):
+        if help_text is None:
+            raise OSError("no such file")
+        return SimpleNamespace(stdout=help_text, stderr="")
+
+    binary_mod.engine_help.cache_clear()
+    monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+    monkeypatch.setattr(adapters, "engine_thread_count", lambda: 4)
+    spec = replace(
+        ROLE_SPECS[WorkerRole.CHAT],
+        extra_args=(*ROLE_SPECS[WorkerRole.CHAT].extra_args, "--pooling", "rank"),
+    )
+    return build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=spec,
+        model_path=Path("/models/chat.gguf"),
+        devices=(0, 1),
+        device_names=("CUDA0", "CUDA1"),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+        tensor_split=(1, 1),
+        mmproj=Path("/models/mmproj.gguf"),
+        flash_attn="on",
+        cache_type="q8_0",
+        batch_size=512,
+        cpu_moe=cpu_moe_only,
+        n_cpu_moe=None if cpu_moe_only else 3,
+        kv_unified_per_slot=4096,
+    )
+
+
+_OPTIONAL = sorted(adapters._OPTIONAL_FLAGS)
+_ALWAYS_WRITTEN = [
+    "--device",
+    "--tensor-split",
+    "--embeddings",
+    "--fit-target",
+    "--kv-unified-per-slot",
+]
+
+
+def test_the_optional_flag_table_is_not_empty() -> None:
+    assert len(_OPTIONAL) == 14
+
+
+@pytest.mark.parametrize("flag", _OPTIONAL)
+def test_a_flag_the_build_does_not_list_is_dropped_with_its_value(
+    monkeypatch, caplog, flag: str
+) -> None:
+    cpu_moe_only = flag == "--cpu-moe"
+    full = _every_optional_flag_argv(monkeypatch, None, cpu_moe_only=cpu_moe_only)
+    assert flag in full
+    listed = [f for f in _OPTIONAL + _ALWAYS_WRITTEN if f != flag]
+    with caplog.at_level("WARNING"):
+        argv = _every_optional_flag_argv(
+            monkeypatch, _help_listing(listed), cpu_moe_only=cpu_moe_only
+        )
+    assert flag not in argv
+    width = adapters._OPTIONAL_FLAGS[flag].values
+    start = full.index(flag)
+    expected = full[:start] + full[start + 1 + width :]
+    assert argv == expected
+    lines = [r.getMessage() for r in caplog.records if f"list {flag};" in r.getMessage()]
+    assert len(lines) == 1
+    assert adapters._OPTIONAL_FLAGS[flag].effect in lines[0]
+
+
+def test_a_build_that_lists_every_flag_gets_the_full_argv(monkeypatch, caplog) -> None:
+    full = _every_optional_flag_argv(monkeypatch, None)
+    with caplog.at_level("WARNING"):
+        argv = _every_optional_flag_argv(monkeypatch, _help_listing(_OPTIONAL + _ALWAYS_WRITTEN))
+    assert argv == full
+    assert not [r for r in caplog.records if "does not list" in r.getMessage()]
+
+
+def test_option_lines_indented_as_in_ik_layout_count_as_listed(monkeypatch) -> None:
+    full = _every_optional_flag_argv(monkeypatch, None)
+    help_text = _help_listing(_OPTIONAL[:7], indent="  ") + _help_listing(
+        _OPTIONAL[7:], indent="         "
+    )
+    assert _every_optional_flag_argv(monkeypatch, help_text) == full
+
+
+def test_a_flag_quoted_in_a_description_does_not_count_as_listed(monkeypatch) -> None:
+    help_text = _help_listing([f for f in _OPTIONAL if f != "--jinja"])
+    help_text += "-x, --other X                 see --jinja for details\n"
+    assert "--jinja" not in _every_optional_flag_argv(monkeypatch, help_text)
+
+
+def test_placement_and_embedding_flags_are_written_whatever_the_help_says(monkeypatch) -> None:
+    argv = _every_optional_flag_argv(monkeypatch, _help_listing(["--model"]))
+    assert "--device" in argv
+    assert "--tensor-split" in argv
+    embed = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.EMBED],
+        model_path=Path("/models/embed.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=512,
+    )
+    assert "--embeddings" in embed
+
+
+def test_a_build_with_no_help_text_keeps_every_flag_and_warns_once(monkeypatch, caplog) -> None:
+    full = _every_optional_flag_argv(monkeypatch, None)
+    with caplog.at_level("WARNING"):
+        first = _every_optional_flag_argv(monkeypatch, "")
+        second = _every_optional_flag_argv(monkeypatch, "")
+    assert first == second == full
+    blind = [r for r in caplog.records if "printed no --help text" in r.getMessage()]
+    assert len(blind) == 1
+
+
+def test_a_dropped_flag_is_logged_once_per_binary(monkeypatch, caplog) -> None:
+    help_text = _help_listing([f for f in _OPTIONAL if f != "--jinja"])
+    with caplog.at_level("WARNING"):
+        _every_optional_flag_argv(monkeypatch, help_text)
+        _every_optional_flag_argv(monkeypatch, help_text)
+    lines = [r for r in caplog.records if "list --jinja;" in r.getMessage()]
+    assert len(lines) == 1
