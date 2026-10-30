@@ -182,7 +182,7 @@ class TestValidatePresetUrl:
         [
             ("http://[64:ff9b:1::1]/", "64:ff9b:1::1"),
             ("http://[64:ff9b:1:ffff:ffff:ffff:ffff:ffff]/", "64:ff9b:1:ffff:ffff:ffff:ffff:ffff"),
-            ("http://[2001::1]/", "2001::1"),
+            ("http://[2001::1]/", "255.255.255.254"),  # the Teredo client is blocked
             (
                 "http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/",
                 "2001:0:4136:e378:8000:63bf:3fff:fdd2",
@@ -209,6 +209,24 @@ class TestValidatePresetUrl:
     )
     def test_a_neighbour_of_a_tunnel_range_is_allowed(self, url):
         assert presets.validate_preset_url(url) is None
+
+    def test_a_6to4_address_with_a_public_ipv4_is_allowed(self):
+        assert presets.validate_preset_url("http://[2002:808:808::]/") is None
+
+    def test_a_6to4_host_name_with_a_blocked_ipv4_is_refused_at_save_and_at_request(self, dns):
+        dns["sixtofour.test"] = ["2002:a9fe:a9fe::"]
+        with pytest.raises(ValueError, match=METADATA_REFUSAL):
+            presets.validate_preset_url("http://sixtofour.test/")
+        with pytest.raises(ValueError, match=METADATA_REFUSAL):
+            presets.check_request_address("http://sixtofour.test/")
+
+    @pytest.mark.parametrize(
+        "address",
+        ["2001:0:4136:e378:8000:1:5601:5601", "2001:0:4136:e378:8000:1:f7f7:f7f7"],
+    )
+    def test_a_teredo_address_is_refused_whatever_its_client(self, address):
+        with pytest.raises(ValueError, match="blocked address"):
+            presets.validate_preset_url(f"http://[{address}]/")
 
     def test_a_host_name_with_a_tunnel_answer_is_refused_at_save_and_at_request(self, dns):
         dns["tunnel.test"] = ["8.8.8.8", "2001:0:4136:e378:8000:63bf:3fff:fdd2"]
@@ -611,6 +629,16 @@ class TestOneBadEntry:
         entry = presets._decoded_row(row)
         assert isinstance(entry, presets._UnreadableEntry)
         assert KEY not in repr(entry)
+
+    def test_a_stored_preset_shows_no_url_credentials_in_its_repr(self):
+        stored = presets._StoredPreset(
+            name="a",
+            url="http://alice:hunter2@pub.example.test/v1",  # pragma: allowlist secret
+            roles=("chat",),
+        )
+        assert "alice" not in repr(stored)
+        assert "hunter2" not in repr(stored)
+        assert "name='a'" in repr(stored)
 
     def test_the_error_for_a_bad_row_repeats_none_of_the_input(self):
         row = {"name": "bad", "url": URL, "roles": [KEY], "api_key": KEY}
