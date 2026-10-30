@@ -60,6 +60,7 @@ from lilbee.app.settings import (
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import (
@@ -874,6 +875,8 @@ def reset(confirm: bool = False) -> dict[str, Any]:
         result = perform_reset().model_dump()
     except ResetRefusedError as exc:
         return _error(str(exc))
+    except FileLockUnavailableError as exc:
+        return _error(config_write_failure_message(exc))
     # Reopen LanceDB against the empty data dir; keep providers loaded.
     reset_store()
     return result
@@ -1673,6 +1676,8 @@ def _placement_guard(serialize: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         return serialize()
     except (PlacementError, ProviderError) as exc:
         return _error(str(exc))
+    except FileLockUnavailableError as exc:
+        return _error(config_write_failure_message(exc))
 
 
 def _placement_result(action: Callable[[], PlacementView]) -> dict[str, Any]:
