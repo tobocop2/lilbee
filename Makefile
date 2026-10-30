@@ -1,4 +1,4 @@
-.PHONY: lint lint-shell test-shell format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: lint license-check lint-shell test-shell format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint: lint-shell
 	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
@@ -9,7 +9,8 @@ lint: lint-shell
 	# The README formats table is generated from discovery's format map, so an
 	# xberg or tree-sitter bump that changes the set lands in the table.
 	uv run python tools/gen_formats_table.py --check
-	# No GPL or AGPL package may enter the locked dependency tree.
+
+license-check:  ## fail on a GPL or AGPL package in uv.lock (needs the network and Python 3.12)
 	bash tools/ci/check_licenses.sh
 
 lint-shell:  ## shellcheck the release scripts and actionlint every workflow
@@ -67,7 +68,7 @@ test-integration:
 fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
 	uv run python scripts/qa/tui_fuzz.py smoke
 
-check: lint format-check typecheck test test-shell  ## Run all checks (same as CI)
+check: lint license-check format-check typecheck test test-shell  ## Run all checks (same as CI)
 
 install:
 	uv tool install ".[crawler]" --force --reinstall --compile-bytecode
