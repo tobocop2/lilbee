@@ -45,16 +45,30 @@ class _NvmlError(Exception):
     pass
 
 
-def _fake_nvml(*, init_error: bool = False, gpus: int = 1) -> types.ModuleType:
+class _NvmlLibraryNotFound(_NvmlError):
+    pass
+
+
+class _NvmlDriverNotLoaded(_NvmlError):
+    pass
+
+
+class _NvmlMismatch(_NvmlError):
+    pass
+
+
+def _fake_nvml(*, init_error: type[Exception] | None = None, gpus: int = 1) -> types.ModuleType:
     mod = types.ModuleType("pynvml")
     mod.NVMLError = _NvmlError
+    mod.NVMLError_LibraryNotFound = _NvmlLibraryNotFound
+    mod.NVMLError_DriverNotLoaded = _NvmlDriverNotLoaded
     calls: list[str] = []
     mod.calls = calls
 
     def init() -> None:
         calls.append("init")
-        if init_error:
-            raise _NvmlError("no library")
+        if init_error is not None:
+            raise init_error("init failed")
 
     mod.nvmlInit = init
     mod.nvmlShutdown = lambda: calls.append("shutdown")
@@ -204,10 +218,25 @@ class TestNvmlReaders:
         monkeypatch.setitem(sys.modules, "pynvml", _fake_nvml(gpus=0))
         assert nvml_device_totals() is None
 
-    def test_a_failed_init_reads_as_no_driver_and_skips_shutdown(self, monkeypatch) -> None:
-        fake = _fake_nvml(init_error=True)
+    @pytest.mark.parametrize("error", [_NvmlLibraryNotFound, _NvmlDriverNotLoaded])
+    def test_a_missing_library_or_driver_reads_as_no_driver_and_skips_shutdown(
+        self, monkeypatch, error
+    ) -> None:
+        fake = _fake_nvml(init_error=error)
         monkeypatch.setitem(sys.modules, "pynvml", fake)
         assert read_nvml() is None
+        assert nvml_device_totals() is None
+        assert "shutdown" not in fake.calls
+
+    @pytest.mark.parametrize("error", [_NvmlMismatch, _NvmlError])
+    def test_any_other_init_error_reads_as_unknown_not_no_driver(self, monkeypatch, error) -> None:
+        fake = _fake_nvml(init_error=error)
+        monkeypatch.setitem(sys.modules, "pynvml", fake)
+        answer = read_nvml()
+        assert answer == {"driver": None, "cuda_driver": None, "gpus": None}
+        caps = _collect(nvml=answer)
+        assert not caps.nvidia_known
+        assert caps.nvidia_reason == host_caps.NVIDIA_UNREADABLE
         assert nvml_device_totals() is None
         assert "shutdown" not in fake.calls
 
@@ -242,6 +271,22 @@ class TestAccelDevices:
             (device / "vendor").write_text(vendor + "\n", encoding="utf-8")
         monkeypatch.setattr(host_caps, "_SYSFS_ACCEL_DIR", tmp_path)
         assert host_caps._accel_device_names() == ["Intel NPU", "Qualcomm NPU"]
+
+    def test_a_glob_that_fails_lists_nothing(self, monkeypatch) -> None:
+        class FailingDir:
+            def glob(self, pattern: str):
+                raise PermissionError("denied")
+
+        monkeypatch.setattr(host_caps, "_SYSFS_ACCEL_DIR", FailingDir())
+        assert host_caps._accel_device_names() == []
+
+    def test_a_vendor_file_that_is_not_text_is_skipped(self, tmp_path, monkeypatch) -> None:
+        for index, content in enumerate([b"\xff\xfe\x00", b"0x8086\n"]):
+            device = tmp_path / f"accel{index}" / "device"
+            device.mkdir(parents=True)
+            (device / "vendor").write_bytes(content)
+        monkeypatch.setattr(host_caps, "_SYSFS_ACCEL_DIR", tmp_path)
+        assert host_caps._accel_device_names() == ["Intel NPU"]
 
     def test_no_accel_class_lists_nothing(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(host_caps, "_SYSFS_ACCEL_DIR", tmp_path / "absent")
@@ -319,6 +364,15 @@ class TestUnknownIsNotAbsent:
     def test_flags_that_are_not_a_collection_are_unknown(self) -> None:
         assert not _collect(cpu_info={"flags": 7}).avx2.known
 
+    def test_flags_given_as_one_string_are_unknown(self) -> None:
+        avx2 = _collect(cpu_info={"flags": "avx2 sse2", "brand_raw": "Odd"}).avx2
+        assert (avx2.present, avx2.known) == (False, False)
+
+    @pytest.mark.parametrize("system", ["Linux", "Windows"])
+    def test_a_mac_version_is_read_only_on_macos(self, system) -> None:
+        assert _collect(system=system, mac_ver="14.2").macos_version is None
+        assert _collect(system="Darwin", machine="arm64", mac_ver="14.2").macos_version == (14, 2)
+
     def test_a_cpu_without_avx2_is_known_absent(self) -> None:
         avx2 = _collect(cpu_info={"flags": ["sse2"], "brand_raw": "Old"}).avx2
         assert (avx2.present, avx2.known) == (False, True)
@@ -333,6 +387,23 @@ class TestUnknownIsNotAbsent:
         assert not caps.nvidia_known
         assert caps.nvidia_reason == host_caps.NVIDIA_UNREADABLE
         assert caps.gpus[0].compute == (8, 6)
+
+    @pytest.mark.parametrize(
+        "gpu",
+        [
+            {"name": "G", "cc": [None, None]},
+            {"name": "G", "cc": ["8", "6"]},
+            {"name": "G", "cc": [8.0, 6.0]},
+            {"name": "G", "cc": [True, False]},
+            {"name": None, "cc": [8, 6]},
+            {"name": 7, "cc": [8, 6]},
+        ],
+    )
+    def test_a_gpu_with_a_junk_field_is_unknown_and_cuda_version_stays(self, gpu) -> None:
+        caps = _collect(nvml=_nvml_answer(gpus=[gpu]))
+        assert caps.gpus == ()
+        assert not caps.nvidia_known
+        assert caps.nvidia_driver_cuda == (12, 8)
 
     @pytest.mark.parametrize("gpus", [None, [{"name": "G", "cc": []}], [{"name": "G"}], 5])
     def test_junk_gpu_list_is_unknown_and_cuda_version_stays(self, gpus) -> None:

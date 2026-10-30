@@ -116,7 +116,7 @@ def _decoded(value: str | bytes) -> str:
 def _open_nvml() -> ModuleType | None:
     """The initialised NVML bindings, or ``None`` when the library or driver is missing.
 
-    Any other failure to initialise raises: the library is present but its state is unknown.
+    Any other failure to initialise raises: the driver is present but its state is unknown.
     """
     try:
         import pynvml  # type: ignore[import-untyped]
@@ -124,7 +124,7 @@ def _open_nvml() -> ModuleType | None:
         return None
     try:
         pynvml.nvmlInit()
-    except pynvml.NVMLError:
+    except (pynvml.NVMLError_LibraryNotFound, pynvml.NVMLError_DriverNotLoaded):
         return None
     module: ModuleType = pynvml
     return module
@@ -203,12 +203,19 @@ def _cuda_version(code: object) -> tuple[int, int] | None:
     ) // _NVML_CUDA_MINOR_DIVISOR
 
 
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _gpus(raw: Any) -> tuple[NvidiaGpu, ...] | None:
     """The GPUs in an NVML answer, or ``None`` when the answer is not readable."""
     try:
-        return tuple(NvidiaGpu(g["name"], (g["cc"][0], g["cc"][1])) for g in raw)
+        gpus = tuple(NvidiaGpu(g["name"], (g["cc"][0], g["cc"][1])) for g in raw)
     except (TypeError, KeyError, IndexError):
         return None
+    if not all(isinstance(g.name, str) and all(map(_is_int, g.compute)) for g in gpus):
+        return None
+    return gpus
 
 
 def _avx2(arch: HostArch | None, cpu_info: dict[str, Any]) -> Feature:
@@ -286,11 +293,15 @@ def _nvidia_reason(nvml: dict[str, Any] | None, known: bool) -> str:
 
 def _accel_device_names() -> list[str]:
     """Names of the NPUs the Linux accelerator class lists, from the PCI vendor of each."""
+    try:
+        vendor_files = sorted(_SYSFS_ACCEL_DIR.glob("accel*/device/vendor"))
+    except OSError:
+        return []
     names = []
-    for vendor_file in sorted(_SYSFS_ACCEL_DIR.glob("accel*/device/vendor")):
+    for vendor_file in vendor_files:
         try:
             vendor = vendor_file.read_text(encoding="utf-8").strip().lower()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         name = _ACCEL_NPU_NAMES.get(vendor)
         if name is not None:
