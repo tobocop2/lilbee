@@ -47,7 +47,7 @@ from lilbee.app.ingest import (
 )
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
-from lilbee.app.settings_map import SETTINGS_MAP
+from lilbee.app.settings_map import SETTINGS_MAP, SettingDef
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
@@ -89,6 +89,7 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.core.text import strip_control_characters
 from lilbee.crawler import (
     CRAWLER_MISSING_MESSAGE,
@@ -1516,14 +1517,22 @@ class ChatScreen(Screen[None]):
                         severity="error",
                     )
                     return
-            # Route through set_setting so settings_changed_signal subscribers
-            # (model bar, scope chip, status bar) refresh. The boundary's
-            # _invalidate_caches now handles llm_provider service reset.
-            self.app.set_setting(key, parsed)
-            shown = msg.MASKED_VALUE if defn.secret and parsed else parsed
-            self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
+            self._write_set_value(key, defn, parsed)
         except (ValueError, TypeError) as exc:
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
+
+    def _write_set_value(self, key: str, defn: SettingDef, parsed: object) -> None:
+        """Write one /set value; a config lock that cannot be taken toasts instead."""
+        # Route through set_setting so settings_changed_signal subscribers
+        # (model bar, scope chip, status bar) refresh. The boundary's
+        # _invalidate_caches now handles llm_provider service reset.
+        try:
+            self.app.set_setting(key, parsed)
+        except FileLockUnavailableError as exc:
+            self.app.notify_config_not_written(exc)
+            return
+        shown = msg.MASKED_VALUE if defn.secret and parsed else parsed
+        self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
 
     def _cmd_settings(self, _args: str) -> None:
         self.app.switch_view("Settings")

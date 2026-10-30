@@ -15,6 +15,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.config.model import _TAKES_DEFAULT_WHEN_REFUSED, _refusals
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.data.store import SourceType
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.runtime.progress import EmbedEvent, EventType
@@ -2747,3 +2748,30 @@ class TestUnhandledErrorsReachTheLog:
         assert "GET" in caplog.text
         assert "/api/health" in caplog.text
         assert "engine exploded" in caplog.text
+
+
+class TestConfigWriteWithoutItsLock:
+    """A config write that cannot take its lock answers 503 with a plain message."""
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        side_effect=FileLockUnavailableError("another lilbee process held the lock"),
+    )
+    def test_the_route_answers_503_and_names_the_fix(self, mock_health, client, caplog):
+        with caplog.at_level(logging.ERROR, logger="lilbee.server.app"):
+            resp = client.get("/api/health")
+
+        assert resp.status_code == 503
+        detail = resp.json()["detail"]
+        assert detail.startswith("Could not write config.toml: another lilbee process")
+        assert "Nothing was changed." in detail
+        assert "Unhandled error" not in caplog.text
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        side_effect=PermissionError("denied"),
+    )
+    def test_another_os_error_still_answers_500(self, mock_health, client):
+        assert client.get("/api/health").status_code == 500
