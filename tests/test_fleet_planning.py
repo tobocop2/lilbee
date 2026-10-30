@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -3554,6 +3555,29 @@ def test_a_probe_that_could_not_run_still_falls_back(monkeypatch) -> None:
 
     devices = planning_mod.resolve_devices(_Path("/fake/llama-server"))
     assert [(d.backend, d.index) for d in devices] == [("Vulkan", 0)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in engine is a shell script")
+def test_a_build_without_list_devices_falls_back_to_the_host_loader(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    """A real child process that prints usage text and exits 1, as a build without the flag does."""
+    from lilbee.providers.fleet import gpu_select
+
+    engine = tmp_path / "llama-server"
+    engine.write_text(
+        "#!/bin/sh\necho 'error: invalid argument: --list-devices'\nexit 1\n", encoding="utf-8"
+    )
+    engine.chmod(0o755)
+    monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9, 8 * 10**9)])
+    monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
+
+    with caplog.at_level("WARNING"):
+        devices = planning_mod.resolve_devices(engine)
+
+    assert [(d.backend, d.index, d.from_loader) for d in devices] == [("Vulkan", 0, True)]
+    assert any("does not appear to support the flag" in r.getMessage() for r in caplog.records)
 
 
 def test_an_engine_that_does_not_know_the_flag_still_reaches_the_fallback(monkeypatch) -> None:

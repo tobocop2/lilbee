@@ -1500,6 +1500,23 @@ retries rather than respawning the same launch. Repeated shrink-and-retry
 messages for one model mean the estimate is too optimistic for that card;
 lowering `usable_vram_fraction` fixes it more directly than pinning placement.
 
+### Use another llama-server build
+
+Set `llama_server_path` (`LILBEE_LLAMA_SERVER_PATH`) to any llama-server binary, for example a build of ik_llama.cpp:
+
+```bash
+LILBEE_LLAMA_SERVER_PATH=/path/to/ik_llama.cpp/build/bin/llama-server lilbee
+```
+
+lilbee reads the `--help` text of the binary once. It writes an optional flag (`--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--kv-unified`) only if the help lists it. For each flag the build lacks, lilbee logs one warning that names the flag and the effect, and the launch continues.
+
+Two rules keep the launch safe:
+
+- If the binary prints no help text, lilbee writes every optional flag and logs one warning.
+- lilbee always writes `--embeddings`, `--device` and `--tensor-split` where placement asks for them. A build that lacks one of them stops with its own error.
+
+An ik_llama.cpp build does not list `--list-devices`. lilbee then reads the GPU list from the Vulkan loader of the host. The ik_llama.cpp README lists ROCm, Vulkan and Metal as unsupported, so use a CPU or CUDA build.
+
 ---
 
 ## Cross-encoder reranking

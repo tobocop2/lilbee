@@ -228,11 +228,14 @@ def _seal_provider_sdk_distribution(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fresh_engine_help():
     """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
+    from lilbee.providers.fleet.adapters import _warn_once
     from lilbee.providers.fleet.binary import engine_help
 
     engine_help.cache_clear()
+    _warn_once.cache_clear()
     yield
     engine_help.cache_clear()
+    _warn_once.cache_clear()
 
 
 @pytest.fixture(autouse=True)
