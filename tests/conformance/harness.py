@@ -25,7 +25,9 @@ from typing import Any
 GOLDEN_DIR = Path(__file__).parent / "golden"
 CLAIMS = frozenset({"chat", "embed", "rerank", "vision", "reasoning"})
 _HTTP_OK = 200
-_ABSENT_STATUSES = frozenset({404, 405, 501})
+_NOT_IMPLEMENTED = 501
+_TEXT_FIELDS = ("content", "reasoning_content", "reasoning")
+_ORDER_COSINE = 0.99
 _CLIENT_ERROR = range(400, 500)
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _COPYLEFT = re.compile(r"(^|[^L])GPL|AGPL")
@@ -213,10 +215,18 @@ def _check_stream(probe: _Probe) -> Verdict:
 
 
 def _delta_text(frame: dict[str, Any]) -> str:
+    """The answer or reasoning text of a frame; a thinking model may send no answer."""
     choices = frame.get("choices")
     if not choices:
         return ""
-    return str((choices[0].get("delta") or {}).get("content") or "")
+    delta = choices[0].get("delta") or {}
+    return "".join(str(delta.get(name) or "") for name in _TEXT_FIELDS)
+
+
+def _text(doc: Any) -> tuple[str, ...]:
+    """The answer and reasoning text of a chat reply, one entry per field."""
+    message = _message(doc) or {}
+    return tuple(str(message.get(name) or "") for name in _TEXT_FIELDS)
 
 
 def _check_tools(probe: _Probe) -> Verdict:
@@ -267,11 +277,8 @@ def _check_chat(probe: _Probe, claims: set[str], quality: bool) -> dict[str, Ver
 
 def _check_determinism(probe: _Probe) -> Verdict:
     request = golden("E11")["request"]
-    texts = []
-    for _ in range(2):
-        _, doc = probe.chat("chat", **request)
-        texts.append((_message(doc) or {}).get("content"))
-    return _verdict(bool(texts[0]) and texts[0] == texts[1])
+    texts = [_text(probe.chat("chat", **request)[1]) for _ in range(2)]
+    return _verdict(any(texts[0]) and texts[0] == texts[1])
 
 
 def _check_vision(probe: _Probe, quality: bool) -> Verdict:
@@ -294,7 +301,28 @@ def _check_embed(probe: _Probe) -> Verdict:
         status, doc = probe.embed(texts, encoding_format=encoding)
         if status != _HTTP_OK or not _embeddings_ok(doc, len(texts), encoding):
             return Verdict.FAIL
-    return Verdict.PASS
+    return _verdict(_in_input_order(probe, texts))
+
+
+def _in_input_order(probe: _Probe, texts: list[str]) -> bool:
+    """Vector i of the batch is the vector of text i embedded alone."""
+    _, batch_doc = probe.embed(texts)
+    batch = _vectors(batch_doc, len(texts), "float")
+    if batch is None:
+        return False
+    for text, vector in zip(texts, batch, strict=True):
+        _, alone_doc = probe.embed([text])
+        alone = _vectors(alone_doc, 1, "float")
+        if alone is None or _cosine(vector, alone[0]) < _ORDER_COSINE:
+            return False
+    return True
+
+
+def _cosine(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right):
+        return -1.0
+    norm = math.hypot(*left) * math.hypot(*right)
+    return sum(a * b for a, b in zip(left, right, strict=True)) / norm if norm else -1.0
 
 
 def _check_rerank(probe: _Probe, quality: bool) -> Verdict:
@@ -311,7 +339,8 @@ def _check_rerank(probe: _Probe, quality: bool) -> Verdict:
         )
     except (KeyError, TypeError):
         return Verdict.FAIL
-    shaped = len(results) == len(request["documents"]) and typed
+    positions = set(range(len(request["documents"])))
+    shaped = len(results) == len(positions) and typed and set(scores) == positions
     if not shaped or not all(math.isfinite(s) for s in scores.values()):
         return Verdict.FAIL
     if len(set(scores.values())) < 2:
@@ -345,7 +374,8 @@ def _serves_role(probe: _Probe, role: str) -> bool:
     else:
         status, doc = probe.rerank("q", ["a", "b"])
         valid = isinstance(doc, dict) and bool(doc.get("results"))
-    return status in _ABSENT_STATUSES or (status == _HTTP_OK and valid)
+    refused = status in _CLIENT_ERROR or status == _NOT_IMPLEMENTED
+    return refused or (status == _HTTP_OK and valid)
 
 
 def _check_absent_routes(probe: _Probe, claims: set[str]) -> Verdict:

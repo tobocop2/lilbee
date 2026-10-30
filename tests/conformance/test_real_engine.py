@@ -18,6 +18,10 @@ from tests.conformance.harness import (
 )
 
 _ENGINE_TIMEOUT_S = 180.0
+_RUN_TIMEOUT_S = 3600
+
+# A real run takes minutes, so the repo-wide 60 second test timeout does not apply to this module.
+pytestmark = pytest.mark.timeout(_RUN_TIMEOUT_S)
 
 
 def _claims(config: pytest.Config) -> set[str]:
@@ -31,7 +35,7 @@ def _models(config: pytest.Config, claims: set[str]) -> dict[str, str]:
     pairs = str(config.getoption("--models", default="") or "")
     named = dict(pair.split("=", 1) for pair in pairs.split(",") if pair)
     missing = claims - set(named) - {"reasoning"}
-    assert not missing, f"--models gives no id for {sorted(missing)}"
+    assert not missing, f"--models gives no id for {sorted(missing)}; pass --models role=ID,..."
     return named
 
 
@@ -54,6 +58,7 @@ def test_running_engine_conforms(pytestconfig: pytest.Config, tmp_path: Path) ->
         url,
         claims=claims,
         models=_models(pytestconfig, claims),
+        health_path=pytestconfig.getoption("--health-path", default=None),
         quality=True,
         timeout=_ENGINE_TIMEOUT_S,
     )
@@ -76,6 +81,7 @@ def test_pinned_engine_conforms(pytestconfig: pytest.Config, tmp_path: Path) -> 
             f"http://127.0.0.1:{port}",
             claims=claims,
             models=_models(pytestconfig, claims),
+            health_path=pytestconfig.getoption("--health-path", default=None),
             quality=True,
             timeout=_ENGINE_TIMEOUT_S,
         )

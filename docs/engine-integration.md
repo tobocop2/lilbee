@@ -10,19 +10,24 @@ A verdict is `pass`, `fallback`, `fail` or `skip`. `fallback` means the engine l
 
 Llama-server extras are not requirements. These are `/tokenize`, `/detokenize`, `/apply-template`, `/memory`, `/props`, prompt-progress frames and `embd_normalize`. If lilbee needs one, the need is an L requirement.
 
-A "row" is a numbered line of the spike report `reports/spike-1188-failures.md`. The report measured four engines: mlx_lm.server, TEI, Lemonade and mistral.rs.
+A "row" is a numbered observation from the engine spike, which measured four engines: mlx_lm.server, TEI, Lemonade and mistral.rs. Each Evidence line states what the rows showed, so no other file is needed.
 
 ## Run the suite
 
-Run tier 1 against a server that is already up:
+Run tier 1 against a server that is already up. `--models` gives the model id of each claimed role. `--health-path` is needed only when the health path is not `/health`.
 
 ```bash
-pytest tests/conformance --engine-url URL --claims chat,embed,rerank,vision,reasoning
+pytest tests/conformance/test_real_engine.py \
+  --engine-url URL \
+  --claims chat,embed,rerank,vision,reasoning \
+  --models chat=CHAT_ID,embed=EMBED_ID,rerank=RERANK_ID,vision=VISION_ID
 ```
 
-Run tier 2 against a pinned binary with `--engine-pin NAME`. The suite starts the binary the way llama-swap does, runs tier 1 against it, then runs the M requirements.
+Run tier 2 against a pinned binary with `--engine-pin PATH`. `PATH` is a JSON file, the pin record, with the keys `binary` (the engine file), `launch` (the argument list, with `{binary}` and `{port}`), and the M requirement fields (`version`, `platforms`, `backend`, `memory`, `licenses`). The suite starts the binary from `launch`, runs tier 1 against it, then runs the M requirements. Give `--claims` and `--models` as for tier 1.
 
-Without these options the suite runs against the fake engine in `tests/conformance/fake_engine.py` and the fake binary in `tests/conformance/fake_binary.py`. No model is needed. The content requirements (E9 order, E10 colour, E11 determinism) run against the fake and against a real engine.
+A real run takes minutes. The module `tests/conformance/test_real_engine.py` sets its own pytest timeout of one hour, so the repo timeout of 60 seconds does not stop it. Add `--record FILE` to keep the verdicts as JSON lines.
+
+Without these options the suite runs against the fake engine in `tests/conformance/fake_engine.py` and the fake binary in `tests/conformance/fake_binary.py`. No model is needed. The content requirements (E9 order, E10 colour) run against the fake and against a real engine. E11 needs a real engine; against the fake it only shows that the check can fail.
 
 ## Tier 1
 
@@ -30,7 +35,7 @@ Tier 1 is a server that lilbee does not start. The user runs it.
 
 ### E1 Health
 
-The engine answers 200 on the health path. The path is the preset's `health_path`, else `/health`. If no path answers, `GET /v1/models` with 200 gives `fallback`.
+The engine answers 200 on its health path, which is `/health` unless the run gives `--health-path`. Lilbee has no health path setting today; the option names the path for the run only. If the path does not answer, `GET /v1/models` with 200 gives `fallback`.
 
 Evidence: row 1, row 12, row 22, row 38. Lemonade answers 404 on `/health` and 200 on `/live` (row 22). The caller is `src/lilbee/providers/fleet/swap_manager.py`.
 
@@ -54,7 +59,7 @@ Evidence: row 6, row 26, row 36. The caller is `src/lilbee/providers/fleet/clien
 
 ### E5 Stream
 
-A stream sends `data:` frames with `choices[0].delta` and ends with `data: [DONE]`. It sends no `error` frame.
+A stream sends `data:` frames with `choices[0].delta` and ends with `data: [DONE]`. It sends no `error` frame. At least one frame carries text in `content`, `reasoning_content` or `reasoning`: a reasoning model can spend a small token budget on thinking and send no `content`.
 
 Evidence: row 36. The CUDA mistral.rs sent an error frame and then `[DONE]`.
 
@@ -72,13 +77,13 @@ Evidence: row 9, row 29, row 48, row 55. Row 55 is the real mistral.rs CPU run o
 
 ### E8 Embeddings
 
-`POST /v1/embeddings` returns N vectors in input order, as float and as base64. All vectors have one dimension, hold finite numbers, are not all zero, and differ for different inputs. A normalized or a raw vector both pass.
+`POST /v1/embeddings` returns N vectors in input order, as float and as base64. The suite checks the order: vector i of a batch must match the vector of text i embedded alone. All vectors have one dimension, hold finite numbers, are not all zero, and differ for different inputs. A normalized or a raw vector both pass.
 
 Evidence: row 10, row 17, row 30, row 32, row 44, row 46, row 54. Row 32 and row 46 answered 200 with zeros or a vector that is not a score. Row 17 is not a defect for embeddings. Row 10 was not probed.
 
 ### E9 Rerank
 
-`POST /v1/rerank` with `{model, query, documents}` returns `{"results": [{"index": int, "relevance_score": float}]}`. The scores are finite and not all equal. The relevant document scores higher.
+`POST /v1/rerank` with `{model, query, documents}` returns `{"results": [{"index": int, "relevance_score": float}]}`. Each `index` is an integer, and the indexes are exactly 0 to N-1 for N documents, because lilbee reads the score of document i at `index` i. The scores are finite and not all equal. The relevant document scores higher.
 
 Evidence: row 10, row 19, row 20, row 21, row 32, row 33, row 46, row 47. Lemonade serves the route (row 33). TEI serves `/rerank` with other field names (row 20) and not `/v1/rerank` (row 21). mistral.rs serves no route (row 47).
 
@@ -90,7 +95,7 @@ Evidence: no spike row. The callers are `src/lilbee/vision.py` and `src/lilbee/p
 
 ### E11 Deterministic output
 
-Two chats at temperature 0 with a fixed seed return the same text. This runs against a real engine only.
+Two chats at temperature 0 with a fixed seed return the same text. The text is the answer and the reasoning, and at least one is not empty. This runs against a real engine only.
 
 Evidence: no spike row. The golden comparison of the next engine items needs it.
 
@@ -102,7 +107,7 @@ Evidence: row 8, row 28, row 43, row 52. mlx_lm.server hung until the client tim
 
 ### E13 Route not served
 
-A route the engine does not serve answers 404, 405 or 501, or answers with a valid body of that role. A 200 with a degenerate body fails.
+A role the engine does not claim answers with a 4xx status or 501, or answers with a valid body of that role. A 200 with a degenerate body fails, and so does a 5xx other than 501. An embedding server that answers a chat call with 400 "model not found" passes.
 
 Evidence: row 32, row 33, row 46, row 47. Row 33 is a chat model that answers 501 on rerank.
 

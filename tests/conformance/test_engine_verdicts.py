@@ -44,6 +44,7 @@ def _profile(name: str, **changes: object) -> Behaviour:
     return replace(PROFILES[name].behaviour, **changes)
 
 
+_CHAT_REASONING = frozenset({"chat", "reasoning"})
 F, P, K = Verdict.FAIL, Verdict.PASS, Verdict.FALLBACK
 
 PROFILE_CASES = [
@@ -169,6 +170,47 @@ MUTANT_CASES = [
         "chat_random",
         Behaviour(deterministic=False),
         expect_quality={"E11": F},
+        quality_modes=(True,),
+    ),
+    Case(
+        "reasoning_model_spends_budget_thinking",
+        Behaviour(chat="think-only"),
+        claims=_CHAT_REASONING,
+    ),
+    Case(
+        "reasoning_model_random_thoughts",
+        Behaviour(chat="think-only", deterministic=False),
+        claims=_CHAT_REASONING,
+        expect_quality={"E11": F},
+        quality_modes=(True,),
+    ),
+    Case(
+        "chat_returns_no_text_and_no_reasoning",
+        Behaviour(chat="empty"),
+        claims=_CHAT_REASONING,
+        expect={"E5": F, "E6": F},
+        expect_quality={"E11": F},
+    ),
+    Case("embed_swapped_order", Behaviour(embed="swapped"), expect={"E8": F}),
+    Case("rerank_one_based_index", Behaviour(rerank="onebased"), expect={"E9": F}),
+    Case(
+        "embed_server_answers_chat_400",
+        Behaviour(chat="model400"),
+        claims=frozenset({"embed"}),
+        quality_modes=(True,),
+    ),
+    Case(
+        "embed_server_answers_chat_500",
+        Behaviour(chat="500"),
+        claims=frozenset({"embed"}),
+        expect={"E13": F},
+        quality_modes=(True,),
+    ),
+    Case(
+        "embed_server_answers_chat_200_without_choices",
+        Behaviour(chat="nochoices"),
+        claims=frozenset({"embed"}),
+        expect={"E13": F},
         quality_modes=(True,),
     ),
     Case("overflow_hang", Behaviour(overflow="hang"), expect={"E12": F}, quality_modes=(True,)),

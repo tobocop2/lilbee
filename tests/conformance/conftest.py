@@ -29,11 +29,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Comma-separated roles the engine claims: chat, embed, rerank, vision, reasoning.",
     )
     group.addoption("--models", default="", help="Model ids by role, for example chat=ID,embed=ID.")
+    group.addoption(
+        "--health-path", default=None, help="Health path of the engine when it is not /health."
+    )
     group.addoption("--record", default=None, help="Path of the JSON-lines result file to write.")
     group.addoption(
         "--engine-pin",
         default=None,
-        help="Path to a pin record (JSON with a binary path): launch it and check tier 2.",
+        help="Path to a pin record (JSON with binary and launch): launch it, check tiers 1 and 2.",
     )
 
 

@@ -139,7 +139,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._chat(req)
         elif self.path == "/v1/embeddings" and self.cfg.embed != "404":
             self._embed(req)
-        elif self.path == "/v1/rerank" and self.cfg.rerank in ("v1", "zero", "badkey", "501"):
+        elif self.path == "/v1/rerank" and self.cfg.rerank in (
+            "v1",
+            "zero",
+            "badkey",
+            "501",
+            "onebased",
+        ):
             self._rerank(req)
         elif self.path == "/rerank" and self.cfg.rerank == "tei":
             self._send(200, [{"index": i, "score": 0.5} for i in range(len(req["texts"]))])
@@ -208,10 +214,28 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             message[field_name] = "hm"
 
+    def _exhaust_budget(self, message: dict[str, Any]) -> None:
+        """Think-only: the budget ends inside the reasoning. Empty: no answer and no reasoning."""
+        if self.cfg.chat not in ("think-only", "empty") or message.get("tool_calls"):
+            return
+        thought, message["content"] = message["content"], ""
+        for name in ("reasoning_content", "reasoning"):
+            message.pop(name, None)
+        if self.cfg.chat == "think-only":
+            message["reasoning_content"] = thought
+
     def _chat(self, req: dict[str, Any]) -> None:
         prompt = json.dumps(req["messages"])
         if self.cfg.chat == "503":
             self._unavailable(req)
+            return
+        if self.cfg.chat == "model400":
+            self._send(
+                400, {"error": {"message": "model was not found", "type": "invalid_request_error"}}
+            )
+            return
+        if self.cfg.chat == "500":
+            self._send(500, {"error": {"message": "boom"}})
             return
         if len(prompt) > CTX_CHARS:
             self._overflow()
@@ -233,6 +257,7 @@ class _Handler(BaseHTTPRequestHandler):
         if req.get("tools"):
             message, finish = self._tool_message(req, message)
         self._with_reasoning(message)
+        self._exhaust_budget(message)
         if req.get("stream"):
             self._stream(message, finish)
         elif self.cfg.chat == "nochoices":
@@ -268,7 +293,8 @@ class _Handler(BaseHTTPRequestHandler):
         if self.cfg.embed == "count":
             inputs = inputs[:-1] or inputs
         data = []
-        for i, text in enumerate(inputs):
+        vectors_for = inputs[::-1] if self.cfg.embed == "swapped" else inputs
+        for i, text in enumerate(vectors_for):
             dim = self.cfg.dim + (1 if self.cfg.embed == "drift" and i else 0)
             zero = self.cfg.embed == "zero" or (self.cfg.embed == "zero_first" and i == 0)
             values = [0.0] * dim if zero else _vector(text, dim, self.cfg.embed_normalized)
@@ -291,7 +317,7 @@ class _Handler(BaseHTTPRequestHandler):
             score = 1 - score if not self.cfg.order_ok else score
             score = 0.0 if self.cfg.rerank == "zero" else score
             key = "score" if self.cfg.rerank == "badkey" else "relevance_score"
-            results.append({"index": i, key: score})
+            results.append({"index": i + 1 if self.cfg.rerank == "onebased" else i, key: score})
         results.sort(key=lambda r: -r.get("relevance_score", r.get("score", 0.0)))
         self._send(200, {"results": results})
 
