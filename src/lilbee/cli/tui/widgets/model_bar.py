@@ -21,10 +21,10 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from lilbee.app.services import peek_services, reset_services
+from lilbee.app.settings import config_write_failure_message
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
-from lilbee.app.settings import config_write_failure_message
 from lilbee.cli.tui.app import apply_setting
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope

@@ -60,6 +60,7 @@ from lilbee.app.settings import (
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import (
@@ -85,7 +86,6 @@ from lilbee.data.store import (
 )
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
-from lilbee.core.security import FileLockUnavailableError
 from lilbee.runtime.lock import ResetRefusedError
 from lilbee.runtime.progress import (
     UPGRADE_HEADLINE,

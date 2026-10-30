@@ -29,14 +29,18 @@ def file_lock(path: Path, timeout_s: float) -> Iterator[None]:
     """Serialize access to *path* across processes via a sibling ``.lock`` file.
 
     Raises ``FileLockUnavailableError`` when another process holds the lock
-    past *timeout_s*, or when the operating system refuses the lock. The
-    block does not run then, so a writer never writes without the lock.
-    filelock applies the owner-only mode under its own lock on every acquire;
-    some NFS/FUSE/SMB mounts refuse that with an ``OSError`` such as
-    ``ENOTSUP``, which this reports the same way.
+    past *timeout_s*, or when the operating system refuses the lock itself.
+    The block does not run then, so a writer never writes without the lock.
+    A refused chmod on the lock file does not fail the lock: some NFS/FUSE/SMB
+    mounts answer ``ENOTSUP``, and the lock is held all the same, so that only
+    logs a warning. The lock file is created owner-only, so filelock is given
+    no mode and never calls fchmod.
     """
-    flock = FileLock(str(path) + ".lock", mode=OWNER_ONLY_MODE)
+    lock_path = Path(str(path) + ".lock")
+    flock = FileLock(lock_path)
     try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        os.close(os.open(lock_path, os.O_CREAT | os.O_RDWR, OWNER_ONLY_MODE))
         flock.acquire(timeout=timeout_s)
     except FileLockTimeout:
         raise FileLockUnavailableError(
@@ -47,6 +51,7 @@ def file_lock(path: Path, timeout_s: float) -> Iterator[None]:
             f"the lock on {path.name} cannot be taken ({exc.strerror or exc})"
         ) from exc
     try:
+        harden_private_file(lock_path)
         yield
     finally:
         flock.release()
