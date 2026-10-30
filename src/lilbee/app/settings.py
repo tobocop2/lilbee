@@ -13,6 +13,7 @@ from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS,
     REINDEX_FIELDS,
+    SERVICE_ONLY_FIELDS,
     WRITABLE_CONFIG_FIELDS,
 )
 from lilbee.core import settings as persistent_settings
@@ -130,7 +131,7 @@ def _secret_refusal(key: str, error: ValidationError) -> str:
 def _public_writable_keys() -> list[str]:
     """Names of every writable config field minus write-only secrets."""
     keys = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
-    return sorted(k for k in keys if not _is_write_only(k))
+    return sorted(k for k in keys - SERVICE_ONLY_FIELDS if not _is_write_only(k))
 
 
 def _setting_help(key: str, definition: SettingDef | None) -> str:
@@ -195,6 +196,8 @@ def get_setting(key: str) -> SettingInfo:
 
 
 def _is_settable(key: str) -> bool:
+    if key in SERVICE_ONLY_FIELDS:
+        return False
     return key in WRITABLE_CONFIG_FIELDS or key in MODEL_ROLE_FIELDS
 
 
