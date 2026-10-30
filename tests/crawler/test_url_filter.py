@@ -130,7 +130,7 @@ class TestValidateCrawlUrl:
         ],
     )
     def test_accepts_public_ipv6(self, monkeypatch, addr):
-        # Guards against an over-eager _embedded_ipv4 edit blocking public v6.
+        # Guards against an over-eager embedded_ipv4 edit blocking public v6.
         monkeypatch.setattr(
             "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(10, 1, 6, "", (addr, 0, 0, 0))],
