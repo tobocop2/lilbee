@@ -877,6 +877,46 @@ class TestEmbeddingMismatchCli:
         assert payload["persisted_model"] == "orgA/repoA/built.gguf"
 
 
+def _engine_changed_error():
+    from lilbee.data.store import EmbeddingEngineChangedError
+
+    return EmbeddingEngineChangedError(model="orgA/repoA/built.gguf", dim=768, distance=0.2, verified=True)
+
+
+class TestEngineChangedCli:
+    """An engine change names the rebuild and the earlier engine, and no adopt command."""
+
+    def test_search_prints_the_stop_message(self, mock_svc):
+        mock_svc.searcher.search.side_effect = _engine_changed_error()
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 1
+        assert "lilbee rebuild" in result.output
+        assert "use-embedder" not in result.output
+
+    def test_search_json_carries_the_message_only(self, mock_svc):
+        mock_svc.searcher.search.side_effect = _engine_changed_error()
+        result = runner.invoke(app, ["--json", "search", "q"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert "different vectors" in payload["error"]
+        assert "persisted_model" not in payload
+
+    def test_status_shows_the_mismatch_line(self):
+        from lilbee.cli.helpers import render_status_result
+
+        status = MagicMock()
+        status.index.engine_mismatch = "the engine changed"
+        status.index.embedding_model = "m"
+        status.index.embedding_dim = 8
+        status.config.vision_model = ""
+        status.config.reranker_model = ""
+        status.skipped = []
+        status.skipped_total = 0
+        rendered = " ".join(str(r) for r in render_status_result(status))
+        assert "Index mismatch" in rendered
+        assert "the engine changed" in rendered
+
+
 class TestUseEmbedderCommand:
     @mock.patch("lilbee.app.models.adopt_embedder")
     def test_use_embedder_reports_active_model(self, mock_adopt, mock_svc):
