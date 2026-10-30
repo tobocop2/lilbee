@@ -290,6 +290,7 @@ These settings have no runtime write path. Set them in `config.toml`, or with th
 
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Description |
 |---|---|---|---|---|---|---|---|---|
+| `allow_http_engines` | `LILBEE_ALLOW_HTTP_ENGINES` | `bool` | `false` | no | no | no | no | Let the HTTP server change engines and presets. Off by default because a preset sets where requests and API keys go. Turn it on only for a deployment you alone use. |
 | `allow_http_placement` | `LILBEE_ALLOW_HTTP_PLACEMENT` | `bool` | `false` | no | no | no | no | Let PUT and DELETE /api/placement change model placement over HTTP. Off by default because applying placement restarts the moved roles, which is unsafe with concurrent clients. Turn it on only for a deployment you alone use. |
 | `concept_allowed_ent_types` | `LILBEE_CONCEPT_ALLOWED_ENT_TYPES` | `list` | *(built-in list)* | no | no | no | no | spaCy NER labels the wiki entity extractor keeps. It drops everything else (QUANTITY, CARDINAL, DATE, and so on) before aggregation. |
 | `cors_origin_regex` | `LILBEE_CORS_ORIGIN_REGEX` | `str` | *(built-in text)* | no | no | no | no | Regular expression matching browser origins the HTTP server accepts. |
@@ -313,6 +314,7 @@ These settings have no runtime write path. Set them in `config.toml`, or with th
 | `placement` | `LILBEE_PLACEMENT` | `str|null` | *(none)* | no | write-only | write-only | `lilbee placement set` | Manual multi-GPU placement spec. It fully replaces the automatic planner: each active role pins to the listed device indices. Edit it with the placement commands, not the settings list. Empty uses the VRAM-aware planner. |
 | `server_host` | `LILBEE_SERVER_HOST` | `str` | `127.0.0.1` | no | no | no | no | Address `lilbee serve` binds. Loopback by default; set 0.0.0.0 to accept connections from the network. |
 | `server_port` | `LILBEE_SERVER_PORT` | `int` | `0` | no | no | no | no | Port `lilbee serve` binds. 0 picks a free port and prints it. |
+| `server_presets` | no | `str|null` | *(none)* | no | no | no | no | User-defined OpenAI-compatible servers, with their API keys. Edit them with the preset commands, not the settings list. |
 
 ## Environment-only variables
 
