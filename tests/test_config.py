@@ -2376,10 +2376,13 @@ class TestValidateModelTaskAssignment:
         from tests.conftest import install_fake_model
 
         ref = install_fake_model(
-            "bartowski/SmolLM2-360M-Instruct-GGUF", "SmolLM2-360M-Q4_K_M.gguf", task="chat"
+            "bartowski/SmolLM2-360M-Instruct-GGUF",  # pragma: allowlist secret
+            "SmolLM2-360M-Q4_K_M.gguf",
+            task="chat",
         )
         result = validate_model_task_assignment(
-            "chat_model", "bartowski/SmolLM2-360M-Instruct-GGUF"
+            "chat_model",
+            "bartowski/SmolLM2-360M-Instruct-GGUF",  # pragma: allowlist secret
         )
         assert result == ref
 
@@ -2510,13 +2513,14 @@ class TestABadValueInConfigTomlKeepsTheRest:
     ):
         toml = (
             f"{key} = {bad}\ntop_k = 7\n"
-            f'vision_model = "{_SAMPLE_VISION_REF}"\ngemini_api_key = "sk-kept"\n'
+            f'vision_model = "{_SAMPLE_VISION_REF}"\n'
+            'gemini_api_key = "sk-kept"\n'  # pragma: allowlist secret
         )
         built, warnings = _build_with(tmp_path, toml)
         assert getattr(built, key) == default
         assert built.top_k == 7
         assert built.vision_model == _SAMPLE_VISION_REF
-        assert built.gemini_api_key == "sk-kept"
+        assert built.gemini_api_key == "sk-kept"  # pragma: allowlist secret
         assert [w for w in warnings if w.startswith(f"config.toml: {key} = ")] == list(warnings)
         assert len(warnings) == 1
 
@@ -3316,7 +3320,7 @@ class TestCrawlExclusionsMatchWholeSegments:
             "https://example.com/login",
             "https://example.com/my-account/orders",
             "https://shop.example/cart/items",
-            "http://user:secret@shop.example:8080/orders/7",
+            "http://user:secret@shop.example:8080/orders/7",  # pragma: allowlist secret
             "https://shop.example/account#details",
         ],
     )
