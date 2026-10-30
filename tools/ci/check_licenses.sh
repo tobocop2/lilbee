@@ -25,5 +25,14 @@ checker="$work/checker.txt"
 uv export --locked --only-group license-check --no-hashes --no-annotate \
   --no-emit-project > "$checker"
 
-uv run --no-project --python 3.12 --with-requirements "$checker" licensecheck \
-  --requirements-paths "$requirements" --zero --show-only-failing
+run_checker=(uv run --no-project --python 3.12 --with-requirements "$checker")
+report="$work/report.json"
+
+# --zero makes licensecheck exit non-zero on an incompatible package. It reads
+# a package as compatible when any entry of its licence list is, so the second
+# step fails on a GPL or AGPL entry in any list.
+status=0
+"${run_checker[@]}" licensecheck --requirements-paths "$requirements" \
+  --format json --file "$report" --zero || status=$?
+"${run_checker[@]}" python -I tools/ci/check_copyleft.py "$report" pyproject.toml || status=$?
+exit "$status"
