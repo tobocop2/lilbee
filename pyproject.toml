@@ -61,6 +61,10 @@ dependencies = [
     # bound; regex takes a per-match timeout where the stdlib re module cannot.
     # Already present transitively via tiktoken.
     "regex",
+    # GPU and CPU probes for the hardware report: NVML bindings (BSD) and a
+    # pure-Python CPU reader (MIT).
+    "nvidia-ml-py>=13.615.71",
+    "py-cpuinfo>=9.0.0",
     # llama.cpp's own Python package, for the ggml block and type sizes the
     # download-size estimate prices a quant with. It is not a second GGUF
     # reader: gguf-parser is, built from the pin that builds llama-server.
@@ -176,6 +180,21 @@ dev = [
     "pytest-timeout>=2.3",
     "pre-commit>=4.0",
     "types-cachetools>=7.0.0.20260713",
+]
+# Kept out of dev: only `make lint` runs it, it needs the network, and it
+# supports Python 3.12 and later.
+license-check = ["licensecheck>=2026.0.8; python_full_version >= '3.12'"]
+
+# The licence check reads the locked tree (tools/ci/check_licenses.sh). It fails
+# on any package whose licence is incompatible with lilbee's MIT, which includes
+# every GPL and AGPL package. Each entry below names the proof of its licence.
+[tool.licensecheck]
+ignore_packages = [
+    # CUDA runtime wheels for Linux x86_64. Proprietary but redistributable, not
+    # copyleft: https://docs.nvidia.com/cuda/eula/index.html
+    "nvidia-cublas-cu12",
+    "nvidia-cuda-nvrtc-cu12",
+    "nvidia-cuda-runtime-cu12",
 ]
 
 [tool.pytest.ini_options]
