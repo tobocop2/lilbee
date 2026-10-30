@@ -3213,6 +3213,7 @@ def test_expert_offload_still_refuses_a_dense_model_over_vram(monkeypatch) -> No
     # the guided refusal instead of a raw load-time OOM.
     monkeypatch.setattr(cfg, "cpu_moe", True)
     monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 16 * _GB)
     assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=False) is True
 
 
@@ -3220,6 +3221,7 @@ def test_oversize_model_is_still_refused_without_expert_offload(monkeypatch) -> 
     monkeypatch.setattr(cfg, "cpu_moe", False)
     monkeypatch.setattr(cfg, "n_cpu_moe", None)
     monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 16 * _GB)
     assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=True) is True
 
 
@@ -3229,6 +3231,7 @@ def test_zero_n_cpu_moe_is_not_effective_offload(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "cpu_moe", False)
     monkeypatch.setattr(cfg, "n_cpu_moe", 0)
     monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 16 * _GB)
     assert planning_mod._expert_offload_configured() is False
     assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=True) is True
     assert planning_mod.expert_offload_layers({"expert_count": "128"}) is None
