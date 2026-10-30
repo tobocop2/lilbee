@@ -1,0 +1,45 @@
+ROW oracle/gcp-epyc-nogpu GREEN 16 nvsmi_rc=1
+ROW oracle/home-xeon-1070ti GREEN 0 550.135, 6.1 CUDA Version: 12.4
+ROW oracle/mac-m1pro GREEN 1 arm64 14.6.1
+ROW gate/gcp-epyc-nogpu GREEN {'ik_llama.cpp': 'in', 'mistral.rs-cuda': 'out'}
+ROW gate/home-xeon-1070ti GREEN {'ik_llama.cpp': 'out', 'mistral.rs-cuda': 'out'}
+ROW gate/mac-m1pro GREEN {'ik_llama.cpp': 'out', 'mistral.rs-cuda': 'out'}
+ROW static/module-exists RED providers/fleet/host_caps.py
+ROW static/no-/proc/cpuinfo RED 
+ROW static/no-sysctl RED 
+ROW static/no-nvidia-smi RED 
+ROW static/no-IsProcessorFeaturePresent RED 
+ROW static/no-ctypes RED 
+ROW static/no-subprocess RED 
+ROW static/model_cache-no-own-nvml RED model_cache imports the NVML package itself
+ROW static/one-nvml-reader RED model_cache.py
+ROW static/smi-utilization-stays GREEN 
+ROW static/smi-topology-stays GREEN 
+ROW static/no-cpuinfo-reader-elsewhere GREEN 
+ROW unchanged/model_cache-nvml-totals GREEN [('GPU-0', 1000), ('GPU-1', 2000)]
+ROW unchanged/gpu_hardware-vendor-ids GREEN 
+ROW module/import RED No module named 'lilbee.providers.fleet.host_caps'
+ROW fixture/gcp-epyc-nogpu/avx2 RED module absent
+ROW fixture/gcp-epyc-nogpu/neon RED module absent
+ROW fixture/gcp-epyc-nogpu/gpus RED module absent
+ROW fixture/gcp-epyc-nogpu/driver_cuda RED module absent
+ROW fixture/gcp-epyc-nogpu/os_arch RED module absent
+ROW fixture/gcp-epyc-nogpu/macos_version RED module absent
+ROW fixture/gcp-epyc-nogpu/npus RED module absent
+ROW fixture/home-xeon-1070ti/avx2 RED module absent
+ROW fixture/home-xeon-1070ti/neon RED module absent
+ROW fixture/home-xeon-1070ti/gpus RED module absent
+ROW fixture/home-xeon-1070ti/driver_cuda RED module absent
+ROW fixture/home-xeon-1070ti/os_arch RED module absent
+ROW fixture/home-xeon-1070ti/macos_version RED module absent
+ROW fixture/home-xeon-1070ti/npus RED module absent
+ROW fixture/mac-m1pro/avx2 RED module absent
+ROW fixture/mac-m1pro/neon RED module absent
+ROW fixture/mac-m1pro/gpus RED module absent
+ROW fixture/mac-m1pro/driver_cuda RED module absent
+ROW fixture/mac-m1pro/os_arch RED module absent
+ROW fixture/mac-m1pro/macos_version RED module absent
+ROW fixture/mac-m1pro/npus RED module absent
+ROW generated/300-inputs-seed-1211 RED module absent
+ROW live/avx2-vs-proc RED module absent
+SUMMARY rows=44 red=33 green=11 inputs=300
