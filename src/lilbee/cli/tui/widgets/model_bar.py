@@ -24,6 +24,7 @@ from lilbee.app.services import peek_services, reset_services
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
+from lilbee.app.settings import config_write_failure_message
 from lilbee.cli.tui.app import apply_setting
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
@@ -31,6 +32,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.model_pick import apply_model_pick, config_key_for_scope
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
 from lilbee.retrieval.embedder import is_model_available, is_model_installed
@@ -476,7 +478,11 @@ class ChatModeToggle(Widget, can_focus=False):
             self.app.notify(msg.SEARCH_NEEDS_EMBEDDER)
             _open_catalog_for_key(self, "embedding_model")
             return False
-        apply_setting(self.app, "chat_mode", target)
+        try:
+            apply_setting(self.app, "chat_mode", target)
+        except FileLockUnavailableError as exc:
+            self.app.notify(config_write_failure_message(exc), severity="error")
+            return False
         self._refresh()
         return True
 

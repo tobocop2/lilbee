@@ -27,6 +27,7 @@ from lilbee.core.config.login_host import refuse_unless_host
 from lilbee.core.config.model import written_value
 from lilbee.core.config.schema import field_type_name
 from lilbee.core.crawl_patterns import exclude_patterns_refusal
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
 
@@ -397,6 +398,8 @@ def provider_reset_refused_message(action: str) -> str:
 def config_write_failure_message(exc: OSError) -> str:
     """User-facing text for a failed config write; names the fix when the file is locked."""
     detail = f"Could not write {CONFIG_FILE_NAME}: {exc}."
+    if isinstance(exc, FileLockUnavailableError):
+        return f"{detail} Nothing was changed. Close any other lilbee process and try again."
     if exc.errno in (errno.EACCES, errno.EPERM):
         detail += f" Close the program that holds {CONFIG_FILE_NAME} open and try again."
     return detail

@@ -8,7 +8,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from filelock import FileLock
@@ -20,36 +20,50 @@ OWNER_ONLY_MODE = 0o600
 OWNER_ONLY_DIR_MODE = 0o700
 
 
+class FileLockUnavailableError(OSError):
+    """Raised when a file lock cannot be taken; the guarded file is untouched."""
+
+
 @contextmanager
-def file_lock_or_warn(path: Path, timeout_s: float) -> Iterator[None]:
+def file_lock(path: Path, timeout_s: float) -> Iterator[None]:
     """Serialize access to *path* across processes via a sibling ``.lock`` file.
 
-    On timeout the caller proceeds unserialized: losing coordination to a stale
-    lock file is worse than the rare interleave the lock prevents. filelock
-    applies the owner-only mode under its own lock on every acquire and
-    suppresses a refused chmod only for ``PermissionError``; some NFS/FUSE/SMB
-    mounts refuse it with a different ``OSError`` (e.g. ``ENOTSUP``), which
-    must degrade the same way rather than crash the caller.
+    Raises ``FileLockUnavailableError`` when another process holds the lock
+    past *timeout_s*, or when the operating system refuses the lock. The
+    block does not run then, so a writer never writes without the lock.
+    filelock applies the owner-only mode under its own lock on every acquire;
+    some NFS/FUSE/SMB mounts refuse that with an ``OSError`` such as
+    ``ENOTSUP``, which this reports the same way.
     """
     flock = FileLock(str(path) + ".lock", mode=OWNER_ONLY_MODE)
     try:
         flock.acquire(timeout=timeout_s)
     except FileLockTimeout:
-        log.warning("Timed out waiting for the %s lock; proceeding without it.", path.name)
-        yield
-        return
-    except OSError:
-        log.warning(
-            "Could not fully acquire the %s lock; proceeding without it.",
-            path.name,
-            exc_info=True,
-        )
-        yield
-        return
+        raise FileLockUnavailableError(
+            f"another lilbee process held the lock on {path.name} for {timeout_s:g} seconds"
+        ) from None
+    except OSError as exc:
+        raise FileLockUnavailableError(
+            f"the lock on {path.name} cannot be taken ({exc.strerror or exc})"
+        ) from exc
     try:
         yield
     finally:
         flock.release()
+
+
+@contextmanager
+def file_lock_or_warn(path: Path, timeout_s: float) -> Iterator[None]:
+    """Like :func:`file_lock`, but a lock that cannot be taken only logs a warning.
+
+    For a reader, which sees a whole file because writers replace it atomically.
+    """
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(file_lock(path, timeout_s))
+        except FileLockUnavailableError as exc:
+            log.warning("Lock on %s not taken (%s); proceeding without it.", path.name, exc)
+        yield
 
 
 class PathTraversalError(ValueError):

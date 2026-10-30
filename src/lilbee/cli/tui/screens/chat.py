@@ -89,6 +89,7 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.core.text import strip_control_characters
 from lilbee.crawler import (
     CRAWLER_MISSING_MESSAGE,
@@ -1524,6 +1525,8 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
         except (ValueError, TypeError) as exc:
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
+        except FileLockUnavailableError as exc:
+            self.app.notify_config_not_written(exc)
 
     def _cmd_settings(self, _args: str) -> None:
         self.app.switch_view("Settings")
