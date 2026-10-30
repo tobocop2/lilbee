@@ -16,11 +16,14 @@ from litestar.exceptions.responses import create_exception_response
 from litestar.middleware import ASGIMiddleware
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
+from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 
 from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import get_services, peek_services
+from lilbee.app.settings import config_write_failure_message
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
@@ -330,6 +333,14 @@ def _unhandled_error_response(request: Request, exc: Exception) -> Response:
     return _json_error_response(request, exc)
 
 
+def _config_locked_response(request: Request, exc: FileLockUnavailableError) -> Response:
+    """Answer a config write that could not take its lock as a 503 with a plain message."""
+    unavailable = HTTPException(
+        status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=config_write_failure_message(exc)
+    )
+    return _json_error_response(request, unavailable)
+
+
 def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
@@ -346,6 +357,7 @@ def create_app() -> Litestar:
         middleware=[DefineMiddleware(AuthMiddleware), _LibraryOpenWait()],
         exception_handlers={
             HTTPException: _json_error_response,
+            FileLockUnavailableError: _config_locked_response,
             Exception: _unhandled_error_response,
         },
         route_handlers=[

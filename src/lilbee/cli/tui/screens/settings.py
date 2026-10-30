@@ -55,6 +55,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.model_pick import apply_model_pick
 from lilbee.core.config import cfg
+from lilbee.core.security import FileLockUnavailableError
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -359,6 +360,8 @@ class SettingsScreen(Screen[None]):
             self._refresh_help(key, defn)
         except (ValueError, TypeError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
+        except FileLockUnavailableError as exc:
+            self.app.notify_config_not_written(exc)
 
     def _parse_value(self, defn: SettingDef, raw: str) -> object:
         """Convert a raw string to the setting's target type."""

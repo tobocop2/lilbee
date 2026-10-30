@@ -682,6 +682,24 @@ class TestReset:
         assert list(cfg.documents_dir.iterdir()) == []
         assert list(cfg.data_dir.iterdir()) == []
 
+    def test_reset_with_a_held_config_lock_returns_an_error_and_deletes_nothing(self, monkeypatch):
+        from filelock import FileLock
+
+        from lilbee.core import settings
+
+        monkeypatch.setattr(settings, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+        held = FileLock(str(cfg.data_root / "config.toml") + ".lock")
+        held.acquire()
+        try:
+            result = reset(confirm=True)
+        finally:
+            held.release()
+
+        assert result["error"].startswith("Could not write config.toml: another lilbee process")
+        assert "Nothing was changed." in result["error"]
+        assert (cfg.documents_dir / "doc.txt").read_text(encoding="utf-8") == "content"
+
     async def test_reset_refused_while_a_sync_runs(self):
         from lilbee.runtime.lock import sync_running
 
@@ -3479,3 +3497,26 @@ class TestMcpCommandExit:
         ):
             CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
         mock_exit.assert_called_once_with(1)
+
+
+class TestPlacementGuardConfigLock:
+    def test_a_placement_write_without_its_config_lock_returns_a_plain_error(self):
+        from lilbee.core.security import FileLockUnavailableError
+        from lilbee.mcp_server import _placement_result
+
+        def locked():
+            raise FileLockUnavailableError("another lilbee process held the lock")
+
+        result = _placement_result(locked)
+
+        assert result["error"].startswith("Could not write config.toml: another lilbee process")
+        assert "Nothing was changed." in result["error"]
+
+    def test_another_os_error_still_surfaces_from_a_placement_write(self):
+        from lilbee.mcp_server import _placement_result
+
+        def denied():
+            raise PermissionError("denied")
+
+        with pytest.raises(PermissionError, match="denied"):
+            _placement_result(denied)
