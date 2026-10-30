@@ -95,6 +95,7 @@ from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
     DOCUMENTS_PAGE_DEFAULT,
     DOCUMENTS_PAGE_MAX,
+    EmbeddingEngineChangedError,
     EmbeddingModelMismatchError,
     MemoryKind,
     MemorySource,
@@ -111,6 +112,7 @@ from lilbee.runtime.progress import (
     EmbedEvent,
     EventType,
     ProgressEvent,
+    SseErrorCode,
 )
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
@@ -331,16 +333,7 @@ def search(
         )
         return clean_results(results)
     except EmbeddingModelMismatchError as exc:
-        # Structured so an agent can offer to adopt the index's embedder
-        # rather than parse prose out of a generic error. Names the embedder,
-        # which the HTTP search route keeps out of its generic 503.
-        return {
-            "error": str(exc),
-            "code": "INDEX_EMBEDDER_MISMATCH",
-            "persisted_model": exc.persisted_model,
-            "persisted_dim": exc.persisted_dim,
-            "adoptable": exc.dims_match,
-        }
+        return _embedding_mismatch_error(exc)
     except Exception as exc:
         return _error(str(exc))
 
@@ -1927,6 +1920,22 @@ def _derive_owner(agent_id: str, ctx: Context | None) -> str:
     return agent_owner(_slug(_anon_owner_id(ctx)))
 
 
+def _embedding_mismatch_error(exc: EmbeddingModelMismatchError) -> dict[str, Any]:
+    """The structured error of an index that the embedder no longer matches."""
+    if isinstance(exc, EmbeddingEngineChangedError):
+        return {"error": str(exc), "code": SseErrorCode.EMBEDDING_MISMATCH}
+    # Structured so an agent can offer to adopt the index's embedder rather than
+    # parse prose out of a generic error. Names the embedder, which the HTTP
+    # search route keeps out of its generic 503.
+    return {
+        "error": str(exc),
+        "code": "INDEX_EMBEDDER_MISMATCH",
+        "persisted_model": exc.persisted_model,
+        "persisted_dim": exc.persisted_dim,
+        "adoptable": exc.dims_match,
+    }
+
+
 @_tool_if(memory_enabled)
 def memory_remember(
     text: str,
@@ -1940,7 +1949,10 @@ def memory_remember(
     if not memory_enabled():
         return _error(MEMORY_DISABLED_HINT)
     owner = _derive_owner(agent_id, ctx)
-    memory_id = remember(text, owner=owner, kind=kind, source=MemorySource.AGENT, shared=shared)
+    try:
+        memory_id = remember(text, owner=owner, kind=kind, source=MemorySource.AGENT, shared=shared)
+    except EmbeddingModelMismatchError as exc:
+        return _embedding_mismatch_error(exc)
     return {"ok": True, "id": memory_id, "owner": owner}
 
 
@@ -1952,7 +1964,10 @@ def memory_recall(
     if not memory_enabled():
         return _error(MEMORY_DISABLED_HINT)
     owner = _derive_owner(agent_id, ctx)
-    memories = recall(query, owner, top_k=limit if limit > 0 else None)
+    try:
+        memories = recall(query, owner, top_k=limit if limit > 0 else None)
+    except EmbeddingModelMismatchError as exc:
+        return _embedding_mismatch_error(exc)
     return {
         "memories": [
             {"id": m.id, "text": m.text, "kind": m.kind.value, "owner": m.owner} for m in memories

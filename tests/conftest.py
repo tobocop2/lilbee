@@ -838,6 +838,8 @@ def _default_store_mock():
     store.get_meta.return_value = None
     store.count_chunks.return_value = 0
     store.index_mismatch.return_value = None
+    store.embedding_mismatch.return_value = None
+    store.canary_mismatch.return_value = None
     store.upgrade_progress.return_value = None
     return store
 

@@ -112,6 +112,8 @@ class IndexStatus(BaseModel):
 
     embedding_model: str
     embedding_dim: int
+    engine_mismatch: str | None = None
+    """Why search and ingest stop when the embedding engine gives other vectors; None otherwise."""
 
 
 class SourceInfo(BaseModel):
@@ -156,7 +158,13 @@ def _index_status() -> IndexStatus | None:
     meta = get_services().store.get_meta()
     if meta is None:
         return None
-    return IndexStatus(embedding_model=meta["embedding_model"], embedding_dim=meta["embedding_dim"])
+    store = get_services().store
+    mismatch = store.canary_mismatch() if store.index_mismatch() is None else None
+    return IndexStatus(
+        embedding_model=meta["embedding_model"],
+        embedding_dim=meta["embedding_dim"],
+        engine_mismatch=str(mismatch) if mismatch is not None else None,
+    )
 
 
 def gather_status() -> StatusResult:

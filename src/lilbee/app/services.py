@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from lilbee.core.config import Config
     from lilbee.core.profile_files import ProfileStore
     from lilbee.data.store import Store
+    from lilbee.data.store.canary import CanaryProbe
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
     from lilbee.modelhub.registry import ModelRegistry
@@ -197,11 +198,11 @@ class _ServicesState:
 _state = _ServicesState()
 
 
-def _new_store(config: Config) -> Store:
+def _new_store(config: Config, probe: CanaryProbe | None = None) -> Store:
     """Build a Store and record it, so ``wait_for_opens`` sees its open; the one way to make one."""
     from lilbee.data.store import Store
 
-    store = Store(config, on_upgrade=_state.report_upgrade)
+    store = Store(config, on_upgrade=_state.report_upgrade, canary_probe=probe)
     with _state.stores_lock:
         _state.stores.add(store)
     return store
@@ -251,6 +252,7 @@ def build_services(
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.modelhub.role_validator import warn_unregistered_role_refs
     from lilbee.providers.factory import create_provider
+    from lilbee.retrieval.canary_probe import canary_probe
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -267,8 +269,8 @@ def build_services(
     registry = registry or ModelRegistry(config.models_dir)
     # The first point that sees env vars, --model and config.toml together.
     warn_unregistered_role_refs(config, registry)
-    store = _new_store(config)
     embedder = Embedder(config, provider)
+    store = _new_store(config, canary_probe(config, embedder, registry))
     reranker = Reranker(config)
     concepts = ConceptGraph(config, store)
     clusterer = Clusterer(config, store)
@@ -468,6 +470,7 @@ def reset_store() -> None:
     from dataclasses import replace
 
     from lilbee.core.config import cfg
+    from lilbee.retrieval.canary_probe import canary_probe
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.query import Searcher
@@ -475,7 +478,7 @@ def reset_store() -> None:
     # Build the replacement, swap the reference, then close the old store last so
     # a new caller never observes a closed handle mid-swap.
     old_store = svc.store
-    store = _new_store(cfg)
+    store = _new_store(cfg, canary_probe(cfg, svc.embedder, svc.registry))
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
     searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
