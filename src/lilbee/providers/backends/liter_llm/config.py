@@ -56,22 +56,18 @@ _RERANK_WIRES: dict[RerankWire, tuple[str, bool]] = {
 
 def rerank_route(
     ref: ProviderModelRef, api_base: str | None, wire: RerankWire
-) -> tuple[str, str, str | None]:
-    """The model, the client model and the base URL for a rerank call; a preset follows its *wire*.
+) -> tuple[str, str | None]:
+    """The model and the base URL for a rerank call; a preset follows its *wire*.
 
-    A TEI preset sends the model as ``huggingface/<model>`` while its client keeps the
-    ``openai/`` hint, so the SDK reads the TEI request shape and leaves the model text as it is.
+    The model is both the request model and the client hint, so the SDK reads the wire's
+    request shape and sends the plain model name in the body.
     """
     if not ref.is_preset:
         model = _route_model(ref, api_base)
-        return model, model, _wire_base_url(model, api_base)
+        return model, _wire_base_url(model, api_base)
     prefix, versioned = _RERANK_WIRES[wire]
     base = api_base.rstrip("/").removesuffix("/v1") if api_base else None
-    return (
-        f"{prefix}/{ref.name}",
-        f"openai/{ref.name}",
-        f"{base}/v1" if base and versioned else base,
-    )
+    return f"{prefix}/{ref.name}", f"{base}/v1" if base and versioned else base
 
 
 EMPTY_MESSAGE_PLACEHOLDER = "[System: Empty message content sanitised to satisfy protocol]"

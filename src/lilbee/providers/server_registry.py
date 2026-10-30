@@ -111,7 +111,7 @@ def decode_entries(raw: Any) -> list[Entry]:
 
 def stored_entries() -> list[Entry]:
     """Every stored entry, read from config.toml now; a value that is no list is refused."""
-    # Deferred: the config builds its model fields through parse_model_ref, which imports this module.
+    # Deferred: the config builds its fields through parse_model_ref, which imports this module.
     from lilbee.core import settings
     from lilbee.core.config import cfg
 
@@ -149,7 +149,7 @@ def route_for(prefix: str) -> ServerRoute | None:
 
 
 def check_role(ref: ProviderModelRef, role: WorkerRole) -> ServerRoute:
-    """The route of the preset *ref* names; ProviderError before any request when it serves no *role*."""
+    """The route of the preset *ref* names; ProviderError when it serves no *role*."""
     route = route_for(ref.provider)
     if route is None:
         raise ProviderError(

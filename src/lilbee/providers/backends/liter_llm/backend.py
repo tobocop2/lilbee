@@ -212,11 +212,9 @@ class LiterLlmBackend:
         if not request.candidates:
             return RerankResult(scores=[])
         liter_llm = _require_sdk()
-        model, client_model, base_url = rerank_route(
-            request.ref, request.api_base, request.rerank_wire
-        )
+        model, base_url = rerank_route(request.ref, request.api_base, request.rerank_wire)
         try:
-            client = _client(client_model, base_url, request.api_key)
+            client = _client(model, base_url, request.api_key)
             response = asyncio_loop.run(
                 liter_llm.rerank(
                     client,

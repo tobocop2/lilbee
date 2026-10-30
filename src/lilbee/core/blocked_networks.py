@@ -220,7 +220,11 @@ def validate_preset_url(url: str) -> None:
 
 
 def check_request_address(url: str) -> None:
-    """Refuse a request unless every address of the URL's host is allowed at this moment."""
+    """Refuse a request unless every address of the URL's host is allowed at this moment.
+
+    The SDK resolves the host again when it connects, so a DNS change between this check
+    and the connection is not refused.
+    """
     host = check_url_form(url)
     if host is None:
         return
