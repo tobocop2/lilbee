@@ -238,8 +238,9 @@ def llama_server_runtime_env() -> dict[str, str]:
 def engine_help(binary: Path) -> str:
     """The usage text *binary* prints for ``--help``, stdout then stderr, read once per path.
 
-    Empty when the binary cannot run or answer in time: every caller reads an
-    absent flag as unsupported, so a launch never carries a flag it did not see.
+    Empty when the binary cannot run or answer in time. A gated flag then reads as
+    unsupported; the optional flags are all written, since no help text proves
+    them missing.
     """
     from lilbee.providers.fleet.gpu_env import engine_environ
 
@@ -258,18 +259,25 @@ def engine_help(binary: Path) -> str:
     return f"{done.stdout}\n{done.stderr}"
 
 
+# Option lines start at the margin or a few columns in; wrapped descriptions start further right.
+_MAX_OPTION_INDENT = 12
+
+
 def help_lists_option(help_text: str, flag: str) -> bool:
     """Whether an option line of *help_text* names *flag*.
 
-    An option line starts with ``-`` and names its flags up to the first word
-    that is not one, so a flag quoted in another option's description does not count.
+    An option line starts with ``-`` within the first few columns and names its flags
+    up to the first word that is not one, so a flag quoted in a description does not
+    count. A flag written ``--name(s)`` names both ``--name`` and ``--names``.
     """
     for line in help_text.splitlines():
-        if not line.startswith("-"):
+        text = line.lstrip()
+        if not text.startswith("-") or len(line) - len(text) > _MAX_OPTION_INDENT:
             continue
-        for token in line.split():
+        for token in text.split():
             if not token.startswith("-"):
                 break
-            if token.rstrip(",") == flag:
+            name = token.rstrip(",")
+            if flag in (name.replace("(s)", ""), name.replace("(s)", "s")):
                 return True
     return False

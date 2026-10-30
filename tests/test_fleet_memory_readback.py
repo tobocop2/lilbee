@@ -260,6 +260,14 @@ class TestSupportsMemoryReadback:
         binary = self._binary_with_help(monkeypatch, "--metrics\n--slots")
         assert not supports_memory_readback(binary)
 
+    def test_true_when_an_indented_option_line_lists_the_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        binary = self._binary_with_help(
+            monkeypatch, "  -t,    --threads N   threads\n         --memory      memory endpoint"
+        )
+        assert supports_memory_readback(binary)
+
     def test_a_longer_flag_is_not_mistaken_for_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
         binary = self._binary_with_help(monkeypatch, "--memory-f32 use f32 for memory")
         assert not supports_memory_readback(binary)
