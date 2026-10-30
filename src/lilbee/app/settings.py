@@ -50,6 +50,7 @@ from lilbee.core.config.resolve import (
 from lilbee.core.config.schema import field_type_name
 from lilbee.core.crawl_patterns import exclude_patterns_refusal
 from lilbee.core.project_state import dismiss_tip
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
 from lilbee.providers.roles import (
     MODEL_FIELD_TO_ROLE,
@@ -526,6 +527,8 @@ def _config_failure_message(exc: OSError, verb: str) -> str:
         # The error text already names the file by its full path.
         return f"{exc}."
     detail = f"Could not {verb} {CONFIG_FILE_NAME}: {exc}."
+    if isinstance(exc, FileLockUnavailableError):
+        return f"{detail} Nothing was changed. Close any other lilbee process and try again."
     if exc.errno in (errno.EACCES, errno.EPERM):
         detail += f" Close the program that holds {CONFIG_FILE_NAME} open and try again."
     return detail

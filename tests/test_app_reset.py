@@ -110,3 +110,32 @@ def test_reset_keeps_other_settings(isolated_cfg: Path) -> None:
     perform_reset()
 
     assert settings.get(cfg.data_root, "chat_model") == "qwen3:8b"
+
+
+def test_reset_with_a_held_config_lock_deletes_nothing(
+    isolated_cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A config lock that cannot be taken refuses the reset before any file goes."""
+    from filelock import FileLock
+
+    from lilbee.core.security import FileLockUnavailableError
+
+    monkeypatch.setattr(settings, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
+    doc = cfg.documents_dir / "keep.md"
+    doc.write_text("mine", encoding="utf-8")
+    record = cfg.data_dir / "keep.bin"
+    record.write_text("index", encoding="utf-8")
+    settings.set_value(cfg.data_root, "linked_roots", {"corpus": "/somewhere"})
+    cfg.linked_roots = {"corpus": "/somewhere"}
+    held = FileLock(str(cfg.data_root / "config.toml") + ".lock")
+    held.acquire()
+    try:
+        with pytest.raises(FileLockUnavailableError, match=r"held the lock on config\.toml"):
+            perform_reset()
+    finally:
+        held.release()
+
+    assert doc.read_text(encoding="utf-8") == "mine"
+    assert record.read_text(encoding="utf-8") == "index"
+    assert cfg.linked_roots == {"corpus": "/somewhere"}
+    assert settings.load(cfg.data_root)["linked_roots"] == {"corpus": "/somewhere"}
