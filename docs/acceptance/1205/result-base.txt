@@ -128,6 +128,32 @@ ROW v.ref.T.E9 RED want pass got no harness
 ROW v.ref.T.E10 RED want pass got no harness
 ROW v.ref.T.E6 RED want pass got no harness
 ROW v.ref.T.E11 RED want pass got no harness
+ROW v.rerank_zero.F.E1 RED want pass got no harness
+ROW v.rerank_zero.F.E2 RED want pass got no harness
+ROW v.rerank_zero.F.E3 RED want pass got no harness
+ROW v.rerank_zero.F.E13 RED want pass got no harness
+ROW v.rerank_zero.F.E4 RED want pass got no harness
+ROW v.rerank_zero.F.E5 RED want pass got no harness
+ROW v.rerank_zero.F.E7 RED want pass got no harness
+ROW v.rerank_zero.F.E12 RED want pass got no harness
+ROW v.rerank_zero.F.E8 RED want pass got no harness
+ROW v.rerank_zero.F.E9 RED want fail got no harness
+ROW v.rerank_zero.F.E10 RED want pass got no harness
+ROW v.rerank_zero.F.E6 RED want pass got no harness
+ROW v.rerank_zero.F.E11 RED want skip got no harness
+ROW v.rerank_zero.T.E1 RED want pass got no harness
+ROW v.rerank_zero.T.E2 RED want pass got no harness
+ROW v.rerank_zero.T.E3 RED want pass got no harness
+ROW v.rerank_zero.T.E13 RED want pass got no harness
+ROW v.rerank_zero.T.E4 RED want pass got no harness
+ROW v.rerank_zero.T.E5 RED want pass got no harness
+ROW v.rerank_zero.T.E7 RED want pass got no harness
+ROW v.rerank_zero.T.E12 RED want pass got no harness
+ROW v.rerank_zero.T.E8 RED want pass got no harness
+ROW v.rerank_zero.T.E9 RED want fail got no harness
+ROW v.rerank_zero.T.E10 RED want pass got no harness
+ROW v.rerank_zero.T.E6 RED want pass got no harness
+ROW v.rerank_zero.T.E11 RED want pass got no harness
 ROW v.mlx_lm.F.E1 RED want pass got no harness
 ROW v.mlx_lm.F.E2 RED want pass got no harness
 ROW v.mlx_lm.F.E13 RED want pass got no harness
@@ -540,6 +566,19 @@ ROW v.embed_zero.T.E9 RED want pass got no harness
 ROW v.embed_zero.T.E10 RED want pass got no harness
 ROW v.embed_zero.T.E6 RED want pass got no harness
 ROW v.embed_zero.T.E11 RED want pass got no harness
+ROW v.embed_zero_first.T.E1 RED want pass got no harness
+ROW v.embed_zero_first.T.E2 RED want pass got no harness
+ROW v.embed_zero_first.T.E3 RED want pass got no harness
+ROW v.embed_zero_first.T.E13 RED want pass got no harness
+ROW v.embed_zero_first.T.E4 RED want pass got no harness
+ROW v.embed_zero_first.T.E5 RED want pass got no harness
+ROW v.embed_zero_first.T.E7 RED want pass got no harness
+ROW v.embed_zero_first.T.E12 RED want pass got no harness
+ROW v.embed_zero_first.T.E8 RED want fail got no harness
+ROW v.embed_zero_first.T.E9 RED want pass got no harness
+ROW v.embed_zero_first.T.E10 RED want pass got no harness
+ROW v.embed_zero_first.T.E6 RED want pass got no harness
+ROW v.embed_zero_first.T.E11 RED want pass got no harness
 ROW v.embed_count.T.E1 RED want pass got no harness
 ROW v.embed_count.T.E2 RED want pass got no harness
 ROW v.embed_count.T.E3 RED want pass got no harness
@@ -592,19 +631,6 @@ ROW v.embed_404.T.E9 RED want pass got no harness
 ROW v.embed_404.T.E10 RED want pass got no harness
 ROW v.embed_404.T.E6 RED want pass got no harness
 ROW v.embed_404.T.E11 RED want pass got no harness
-ROW v.rerank_zero.T.E1 RED want pass got no harness
-ROW v.rerank_zero.T.E2 RED want pass got no harness
-ROW v.rerank_zero.T.E3 RED want pass got no harness
-ROW v.rerank_zero.T.E13 RED want pass got no harness
-ROW v.rerank_zero.T.E4 RED want pass got no harness
-ROW v.rerank_zero.T.E5 RED want pass got no harness
-ROW v.rerank_zero.T.E7 RED want pass got no harness
-ROW v.rerank_zero.T.E12 RED want pass got no harness
-ROW v.rerank_zero.T.E8 RED want pass got no harness
-ROW v.rerank_zero.T.E9 RED want fail got no harness
-ROW v.rerank_zero.T.E10 RED want pass got no harness
-ROW v.rerank_zero.T.E6 RED want pass got no harness
-ROW v.rerank_zero.T.E11 RED want pass got no harness
 ROW v.rerank_501.T.E1 RED want pass got no harness
 ROW v.rerank_501.T.E2 RED want fail got no harness
 ROW v.rerank_501.T.E3 RED want pass got no harness
@@ -847,4 +873,4 @@ ROW v2.ignores_sigterm.M6 RED want fail got no harness
 ROW same.src GREEN changed []
 ROW same.tests GREEN changed outside tests/conformance []
 ROW same.integration_stub GREEN tests/integration untouched
-SUMMARY inputs=849 green=16 red=833 open=0
+SUMMARY inputs=875 green=16 red=859 open=0

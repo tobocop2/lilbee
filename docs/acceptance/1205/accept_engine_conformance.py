@@ -275,7 +275,7 @@ def make_handler(cfg: dict):
             out = []
             for i, text in enumerate(inputs):
                 dim = cfg["dim"] + (1 if cfg["embed"] == "drift" and i else 0)
-                v = [0.0] * dim if cfg["embed"] == "zero" else vec(text, dim, cfg["embed_norm"])
+                v = [0.0] * dim if cfg["embed"] == "zero" or (cfg["embed"] == "zero_first" and i == 0) else vec(text, dim, cfg["embed_norm"])
                 if req.get("encoding_format") == "base64":
                     v = base64.b64encode(struct.pack(f"<{len(v)}f", *v)).decode()
                 out.append({"object": "embedding", "index": i, "embedding": v})
@@ -340,6 +340,8 @@ def default_expect(claims: set[str], quality: bool) -> dict[str, str | None]:
 # (name, config override, claims, {req: verdict or None=not asserted}, {req: verdict} extra when quality)
 PROFILES = [
     ("ref", {}, ALL, {}, {}),
+    # constant scores: with quality on the order check also fails, so the row must run with it off
+    ("rerank_zero", dict(rerank="zero"), ALL, {"E9": "fail"}, {}),
     # rows 1, 6, 8, 9: mlx_lm.server; /v1/models not probed in the spike, so E3 is not asserted
     ("mlx_lm", dict(reasoning="reasoning", overflow="hang", vision="400"), {"chat", "reasoning"},
      {"E12": "fail", "E3": None}, {}),
@@ -377,11 +379,11 @@ MUTANTS = [
     ("reasoning_inline", dict(reasoning="inline"), ALL, {}, {}),
     ("reasoning_thoughts", dict(reasoning="thoughts"), ALL, {"E6": "fail"}, {}),
     ("embed_zero", dict(embed="zero"), ALL, {"E8": "fail"}, {}),
+    ("embed_zero_first", dict(embed="zero_first"), ALL, {"E8": "fail"}, {}),
     ("embed_count", dict(embed="count"), ALL, {"E8": "fail"}, {}),
     ("embed_dim_drift", dict(embed="drift"), ALL, {"E8": "fail"}, {}),
     ("embed_unnormalized", dict(embed_norm=False), ALL, {}, {}),
     ("embed_404", dict(embed="404"), ALL, {"E8": "fail", "E2": "fail"}, {}),
-    ("rerank_zero", dict(rerank="zero"), ALL, {"E9": "fail"}, {}),
     ("rerank_501", dict(rerank="501"), ALL, {"E9": "fail", "E2": "fail"}, {}),
     ("rerank_bad_key", dict(rerank="badkey"), ALL, {"E9": "fail"}, {}),
     ("rerank_reversed", dict(order_ok=False), ALL, {}, {"E9": "fail"}),
