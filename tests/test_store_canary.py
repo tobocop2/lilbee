@@ -333,6 +333,22 @@ class TestChangedEmbedder:
         assert store.open_table("chunks").count_rows() == before
         assert engine.calls == 0
 
+    def test_a_name_change_after_the_first_check_is_refused_under_the_write_lock(
+        self, store, test_config, monkeypatch
+    ):
+        store.add_chunks(_make_records())
+        before = store.open_table("chunks").count_rows()
+
+        def change_name_after_the_check() -> None:
+            test_config.embedding_model = "acme/other-GGUF/other.gguf"
+
+        monkeypatch.setattr(store, "_ensure_embedding_servable", change_name_after_the_check)
+
+        with pytest.raises(EmbeddingModelMismatchError, match=r"other\.gguf"):
+            store.add_chunks(_make_records())
+
+        assert store.open_table("chunks").count_rows() == before
+
 
 class TestGates:
     @pytest.fixture()
