@@ -308,6 +308,14 @@ class TestDetect:
         assert caps.nvidia_reason == "no NVIDIA driver"
         assert caps.npus == (Npu(NpuVendor.AMD, "AMD NPU"),)
 
+    def test_detect_reports_the_gpus_the_nvml_binding_lists(self, monkeypatch) -> None:
+        monkeypatch.setitem(sys.modules, "pynvml", _fake_nvml())
+        monkeypatch.setattr(host_caps, "_accel_device_names", list)
+        caps = detect()
+        assert caps.nvidia_known
+        assert caps.gpus[0].compute == (8, 6)
+        assert caps.nvidia_driver_cuda == (12, 8)
+
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/cpuinfo")
     def test_live_avx2_agrees_with_proc_cpuinfo(self) -> None:
         raw = Path("/proc/cpuinfo").read_text(encoding="utf-8")
