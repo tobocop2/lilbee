@@ -65,6 +65,9 @@ class TestEmbeddedIpv4:
             ("64:ff9b::a9fe:a9fe", "169.254.169.254"),
             ("::ffff:0:a9fe:a9fe", "169.254.169.254"),
             ("::a9fe:a9fe", "169.254.169.254"),
+            ("2001:0:4136:e378:8000:1:5601:5601", "169.254.169.254"),  # Teredo client
+            ("2001:0:4136:e378:8000:1:f7f7:f7f7", "8.8.8.8"),  # Teredo client
+            ("2002:808:808::", "8.8.8.8"),
         ],
     )
     def test_each_form_gives_the_address_it_embeds(self, address, embedded):
@@ -92,6 +95,28 @@ class TestBlockedForm:
     def test_a_blocked_ipv6_with_no_embedded_address_is_returned(self):
         address = ipaddress.ip_address("fe80::1")
         assert blocked_form(address, ALWAYS_BLOCKED_NETWORKS) == address
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "2001:0:4136:e378:8000:1:5601:5601",  # Teredo client 169.254.169.254
+            "2002:a9fe:a9fe::",  # 6to4 for 169.254.169.254
+        ],
+    )
+    def test_a_tunnel_form_returns_the_blocked_ipv4_it_carries(self, address):
+        assert blocked_form(
+            ipaddress.ip_address(address), ALWAYS_BLOCKED_NETWORKS
+        ) == ipaddress.IPv4Address("169.254.169.254")
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "2001:0:4136:e378:8000:1:f7f7:f7f7",  # Teredo client 8.8.8.8
+            "2002:808:808::",  # 6to4 for 8.8.8.8
+        ],
+    )
+    def test_a_tunnel_form_with_a_public_ipv4_gives_none(self, address):
+        assert blocked_form(ipaddress.ip_address(address), ALWAYS_BLOCKED_NETWORKS) is None
 
     def test_an_allowed_ipv6_with_an_allowed_embedded_address_gives_none(self):
         address = ipaddress.ip_address("::ffff:8.8.8.8")

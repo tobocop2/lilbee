@@ -55,12 +55,12 @@ def _checked_key(api_key: str) -> SecretStr:
 
 
 class _StoredPreset(BaseModel):
-    """One preset as config.toml holds it; the key is a secret so no repr shows it."""
+    """One preset as config.toml holds it; the key and the URL credentials stay out of its repr."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     name: str
-    url: str
+    url: str = Field(repr=False)
     roles: Annotated[tuple[WorkerRole, ...], Field(min_length=1)]
     api_key: SecretStr | None = None
 
