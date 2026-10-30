@@ -104,9 +104,6 @@ _WARM_POLL_INTERVAL_S = 0.25
 # model still loading past it just warms on the client's first call. Generous to
 # cover a cold tensor-split giant off a slow filesystem.
 _WARM_STREAM_TIMEOUT_S = 1800.0
-# How long health waits for a library that is still opening, so its first answer can
-# carry the embedding mismatch; an upgrade that runs is reported at once instead.
-_HEALTH_OPEN_WAIT_S = 2.0
 
 
 def _chat_status(
@@ -135,8 +132,6 @@ async def health() -> HealthResponse:
     provider = services.provider
     chat_status, chat_error = _chat_status(provider)
     prefill = provider.chat_prefill_progress()
-    if services.store.upgrade_progress() is None:
-        await asyncio.to_thread(services.store.wait_for_open, _HEALTH_OPEN_WAIT_S)
     return HealthResponse(
         status="ok",
         version=get_version(),
@@ -148,10 +143,7 @@ async def health() -> HealthResponse:
         chat_prefill_processed=prefill[0] if prefill else None,
         chat_prefill_total=prefill[1] if prefill else None,
         embed_token_cap=provider.embed_token_cap(),
-        warnings=[
-            *await asyncio.to_thread(services.store.health_warnings),
-            *provider.health_warnings(),
-        ],
+        warnings=[*services.store.health_warnings(), *provider.health_warnings()],
         upgrade=services.store.upgrade_progress(),
     )
 

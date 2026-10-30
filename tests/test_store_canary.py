@@ -281,6 +281,82 @@ class TestChangedEmbedder:
         engine.failure = None
         assert store.canary_mismatch() is not None
 
+    @pytest.mark.parametrize("failure", [RuntimeError("worker died"), ValueError("NaN vector")])
+    def test_an_embedder_that_fails_in_other_ways_is_not_a_stop(self, store, engine, failure):
+        store.add_chunks(_make_records())
+        engine.trigger_name, engine.distance = "B", 2 * T
+        engine.failure = failure
+
+        assert store.canary_mismatch() is None
+        assert store.health_warnings() == []
+
+    def test_a_rebuild_in_the_same_process_ends_the_stop(self, store, engine):
+        store.add_chunks(_make_records())
+        engine.trigger_name, engine.distance = "B", 2 * T
+        assert store.canary_mismatch() is not None
+
+        store.drop_all()
+        store.add_chunks(_make_records())
+
+        assert store.canary_mismatch() is None
+        assert store.canary_state().trigger == "B"
+
+    def test_a_rebuild_by_another_process_ends_the_stop_here(self, store, test_config, engine):
+        store.add_chunks(_make_records())
+        engine.trigger_name, engine.distance = "B", 2 * T
+        assert store.canary_mismatch() is not None
+
+        other = _reopen(test_config, engine)
+        other.drop_all()
+        other.add_chunks(_make_records())
+
+        assert store.canary_mismatch() is None
+
+    def test_a_swapped_engine_is_checked_again_in_the_same_process(self, store, engine):
+        store.add_chunks(_make_records())
+        engine.trigger_name, engine.distance = "B", 2 * T
+        assert store.canary_mismatch() is not None
+        engine.trigger_name, engine.distance = "C", 0.0
+
+        assert store.canary_mismatch() is None
+
+    def test_a_ratchet_write_from_a_stale_snapshot_is_refused(self, store, engine):
+        store.add_chunks(_make_records())
+        seen = store.get_meta()
+        with write_lock():
+            store._write_meta_unlocked(embedding_model="other-model", embedding_dim=DIM)
+
+        stored = store._store_canary(seen, CanaryState([[1.0]], "B", True))
+
+        assert stored is None
+        assert store.get_meta()["embedding_model"] == "other-model"
+
+    def test_a_ratchet_that_lost_the_race_decides_on_the_next_check(
+        self, store, test_config, engine, monkeypatch
+    ):
+        store.add_chunks(_make_records())
+        engine.trigger_name = "B"
+        real = store._store_canary
+        raced = []
+
+        def race(seen, canary):
+            if not raced:
+                raced.append(True)
+                with write_lock():
+                    store._write_meta_unlocked(
+                        embedding_model=seen["embedding_model"], embedding_dim=seen["embedding_dim"]
+                    )
+            return real(seen, canary)
+
+        monkeypatch.setattr(store, "_store_canary", race)
+
+        assert store.canary_mismatch() is None
+        assert raced == [True]
+        assert store.canary_state().trigger == "A"
+
+        assert store.canary_mismatch() is None
+        assert store.canary_state().trigger == "B"
+
     def test_a_rebuild_under_the_new_embedder_makes_it_the_baseline(
         self, store, test_config, engine
     ):
@@ -486,23 +562,78 @@ class TestOldIndex:
 
 
 class TestHealthWarning:
-    def test_an_engine_change_is_a_health_warning_with_the_stop_message(self, store, engine):
+    def _engine_changes(self, store, engine):
         store.add_chunks(_make_records())
         engine.trigger_name, engine.distance = "B", 2 * T
 
-        warnings = store.health_warnings()
+    def _stale(self, store):
+        return [
+            w for w in store.health_warnings() if w.code is WarningCode.INDEX_EMBEDDING_MISMATCH
+        ]
 
-        stale = [w for w in warnings if w.code is WarningCode.INDEX_EMBEDDING_MISMATCH]
+    def test_a_stop_a_search_found_is_a_health_warning_with_the_stop_message(self, store, engine):
+        self._engine_changes(store, engine)
+        assert store.canary_mismatch() is not None
+
+        stale = self._stale(store)
+
         assert len(stale) == 1
         assert "different vectors" in stale[0].message
         assert "lilbee rebuild" in stale[0].remedy
 
+    def test_health_embeds_no_canary_and_reports_nothing_before_a_check(self, store, engine):
+        self._engine_changes(store, engine)
+        engine.calls = 0
+
+        assert self._stale(store) == []
+        assert engine.calls == 0
+
+    def test_health_stops_reporting_a_stop_once_the_engine_is_swapped_back(self, store, engine):
+        self._engine_changes(store, engine)
+        assert store.canary_mismatch() is not None
+        engine.trigger_name = "A"
+
+        assert self._stale(store) == []
+
+    def test_health_stops_reporting_a_stop_once_the_library_is_dropped(self, store, engine):
+        self._engine_changes(store, engine)
+        assert store.canary_mismatch() is not None
+        store.drop_all()
+
+        assert self._stale(store) == []
+
+    def test_a_store_with_no_probe_reports_no_canary_stop(self, test_config):
+        bare = Store(test_config)
+        bare.add_chunks(_make_records())
+
+        assert bare.last_canary_mismatch() is None
+
     def test_no_change_is_no_warning(self, store):
         store.add_chunks(_make_records())
 
-        assert not [
-            w for w in store.health_warnings() if w.code is WarningCode.INDEX_EMBEDDING_MISMATCH
-        ]
+        assert self._stale(store) == []
+
+
+class TestImport:
+    async def test_an_import_under_a_changed_engine_stops_before_any_embedding(
+        self, store, engine, monkeypatch
+    ):
+        from lilbee.data import export
+
+        store.add_chunks(_make_records())
+        before = store.open_table("chunks").count_rows()
+        engine.trigger_name, engine.distance = "B", 2 * T
+
+        async def embedded(*args, **kwargs):
+            raise AssertionError("the import embedded page texts under the changed engine")
+
+        monkeypatch.setattr(export, "chunk_and_embed_pages", embedded)
+        row = {"source": "new.txt", "page": 1, "text": "hello", "content_type": "text"}
+
+        with pytest.raises(EmbeddingEngineChangedError, match="lilbee rebuild"):
+            await export.import_dataset(store, [row])
+
+        assert store.open_table("chunks").count_rows() == before
 
 
 class TestEngineChangedMessage:

@@ -164,22 +164,6 @@ class TestHealth:
         assert [w.code for w in result.warnings] == [WarningCode.FTS_UNAVAILABLE]
         assert result.warnings[0].remedy == "rebuild"
 
-    async def test_health_waits_briefly_for_a_library_that_is_still_opening(self, mock_svc):
-        from lilbee.server.handlers import _HEALTH_OPEN_WAIT_S
-
-        mock_svc.store.upgrade_progress.return_value = None
-        await handlers.health()
-        mock_svc.store.wait_for_open.assert_called_once_with(_HEALTH_OPEN_WAIT_S)
-
-    async def test_health_answers_at_once_while_an_upgrade_runs(self, mock_svc):
-        from lilbee.runtime.progress import LibraryUpgradeEvent, UpgradePhase
-
-        mock_svc.store.upgrade_progress.return_value = LibraryUpgradeEvent(
-            phase=next(iter(UpgradePhase))
-        )
-        await handlers.health()
-        mock_svc.store.wait_for_open.assert_not_called()
-
     async def test_health_reports_no_warnings_on_a_clean_store(self, mock_svc):
         mock_svc.store.health_warnings.return_value = []
         assert (await handlers.health()).warnings == []

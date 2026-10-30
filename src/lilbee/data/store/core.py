@@ -1030,8 +1030,11 @@ class Store:
         self._config = config
         self._on_upgrade = on_upgrade
         self._canary_probe = canary_probe
-        # The last canary verdict of this process, keyed by the embedder trigger it was made for.
-        self._canary_verdict: tuple[str, EmbeddingEngineChangedError | None] | None = None
+        # The last canary verdict of this process, keyed by what it depends on: the embedder
+        # trigger and the stamp of the meta row that holds the baseline.
+        self._canary_verdict: tuple[tuple[str, str], EmbeddingEngineChangedError | None] | None = (
+            None
+        )
         # The latest event of an upgrade that runs, and when it began; None when none runs.
         self._upgrade: LibraryUpgradeEvent | None = None
         self._upgrade_started = 0.0
@@ -1241,7 +1244,6 @@ class Store:
                 }
             ]
         )
-        self._canary_verdict = None
         # A rebuild is the remedy the prefix warning names, so the next query
         # re-decides instead of logging a mismatch this write just resolved.
         self._doc_prefix_warned = False
@@ -1322,8 +1324,10 @@ class Store:
         """Embed the canary texts, or ``None`` when the embedder is down."""
         try:
             return probe.embed(list(CANARY_TEXTS))
-        except (ProviderError, OSError):
-            log.warning("Canary check skipped: the embedder could not be reached", exc_info=True)
+        except (ProviderError, OSError, RuntimeError, ValueError):
+            log.warning(
+                "Canary check skipped: the embedder did not return usable vectors", exc_info=True
+            )
             return None
 
     def _new_baseline(self, *, verified: bool) -> CanaryState | None:
@@ -1340,54 +1344,85 @@ class Store:
     def canary_mismatch(self) -> EmbeddingEngineChangedError | None:
         """Compare canary vectors from the embedder now configured with the stored baseline.
 
-        The check runs once per embedder trigger in a process, and a pass is stored so
-        the next process skips it. Call it with no write lock held.
+        The check runs once per embedder trigger and meta row in a process, and a pass is
+        stored so the next process skips it. A check that could not decide (the embedder is
+        down, or another writer changed the row) is not remembered and runs again. Call it
+        with no write lock held.
         """
         probe = self._canary_probe
         trigger = probe.trigger() if probe is not None else None
-        if probe is None or trigger is None:
+        meta = self.get_meta() if trigger is not None else None
+        if probe is None or trigger is None or meta is None:
             return None
-        if self._canary_verdict is not None and self._canary_verdict[0] == trigger:
+        key = (trigger, meta["updated_at"])
+        if self._canary_verdict is not None and self._canary_verdict[0] == key:
             return self._canary_verdict[1]
-        meta = self.get_meta()
-        if meta is None:
+        decided = self._check_canary(probe, trigger, meta)
+        if decided is None:
             return None
-        state = self.canary_state()
-        mismatch = None
-        if state is None:
-            baseline = self._new_baseline(verified=False)
-            if baseline is None:
-                return None
-            log.warning(
-                "The embedding canary check starts now for this index. It has no verified "
-                "baseline: the engine that made the index is not known."
-            )
-            self._store_canary(meta, baseline)
-        elif state.trigger != trigger:
-            vectors = self._embed_canaries(probe)
-            if vectors is None:
-                return None
-            distance = canary_distance(state.vectors, vectors)
-            if distance > CANARY_MAX_DISTANCE:
-                mismatch = EmbeddingEngineChangedError(
-                    model=meta["embedding_model"],
-                    dim=meta["embedding_dim"],
-                    distance=distance,
-                    verified=state.verified,
-                )
-            else:
-                self._store_canary(meta, CanaryState(state.vectors, trigger, state.verified))
-        self._canary_verdict = (trigger, mismatch)
+        row, mismatch = decided
+        self._canary_verdict = ((trigger, row["updated_at"]), mismatch)
         return mismatch
 
-    def _store_canary(self, meta: StoreMeta, canary: CanaryState) -> None:
-        """Write *canary* into the meta row, which keeps the identity it already holds."""
+    def _check_canary(
+        self, probe: CanaryProbe, trigger: str, meta: StoreMeta
+    ) -> tuple[StoreMeta, EmbeddingEngineChangedError | None] | None:
+        """The meta row a verdict holds for and the verdict, or ``None`` when it cannot decide."""
+        state = self.canary_state()
+        if state is None:
+            baseline = self._new_baseline(verified=False)
+            stored = self._store_canary(meta, baseline) if baseline is not None else None
+            if stored is not None:
+                log.warning(
+                    "The embedding canary check starts now for this index. It has no verified "
+                    "baseline: the engine that made the index is not known."
+                )
+                return stored, None
+            return None
+        if state.trigger == trigger:
+            return meta, None
+        vectors = self._embed_canaries(probe)
+        if vectors is None:
+            return None
+        distance = canary_distance(state.vectors, vectors)
+        if distance <= CANARY_MAX_DISTANCE:
+            stored = self._store_canary(meta, CanaryState(state.vectors, trigger, state.verified))
+            return (stored, None) if stored is not None else None
+        return meta, EmbeddingEngineChangedError(
+            model=meta["embedding_model"],
+            dim=meta["embedding_dim"],
+            distance=distance,
+            verified=state.verified,
+        )
+
+    def last_canary_mismatch(self) -> EmbeddingEngineChangedError | None:
+        """The stop this process last found for the current embedder and index, or ``None``.
+
+        It embeds nothing and starts no engine, so a report can call it freely.
+        """
+        probe = self._canary_probe
+        trigger = probe.trigger() if probe is not None else None
+        meta = self.get_meta() if trigger is not None else None
+        if meta is None or self._canary_verdict is None:
+            return None
+        key, mismatch = self._canary_verdict
+        return mismatch if key == (trigger, meta["updated_at"]) else None
+
+    def _store_canary(self, seen: StoreMeta, canary: CanaryState) -> StoreMeta | None:
+        """Write *canary* into the meta row, which keeps the identity it already holds.
+
+        Returns the row written, or ``None`` when another writer changed the row since *seen*.
+        """
         with self._write_lock():
+            meta = self.get_meta()
+            if meta is None or meta["updated_at"] != seen["updated_at"]:
+                return None
             self._write_meta_unlocked(
                 embedding_model=meta["embedding_model"],
                 embedding_dim=meta["embedding_dim"],
                 canary=canary,
             )
+            return self.get_meta()
 
     def embedding_mismatch(self) -> EmbeddingModelMismatchError | None:
         """The verdict a report shows: the embedder name first, then the canary check."""
@@ -1449,8 +1484,11 @@ class Store:
         return [HealthWarning(code=WarningCode.LIBRARY_UPGRADING, message=message, remedy=remedy)]
 
     def _index_mismatch_warning(self) -> HealthWarning | None:
-        """The stale-index degradation, from the same verdict search refuses on."""
-        mismatch = self.embedding_mismatch()
+        """The stale-index degradation: the name check, then the last canary stop found.
+
+        It embeds no canary, so a health probe never starts the embedding engine.
+        """
+        mismatch = self.index_mismatch() or self.last_canary_mismatch()
         if mismatch is None:
             return None
         if isinstance(mismatch, EmbeddingEngineChangedError):
