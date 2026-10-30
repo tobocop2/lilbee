@@ -20,6 +20,7 @@ case "$1" in
     fi ;;
   run)
     if [[ "$*" == *" licensecheck "* && "$*" != *" --zero"* ]]; then exit 9; fi
+    if [[ "$*" == *" python "* && -n "${STUB_PY_RC:-}" ]]; then exit "${STUB_PY_RC}"; fi
     while [ "$#" -gt 0 ]; do
       if [ "$1" = "--requirements-paths" ]; then cat "$2"; break; fi
       shift
@@ -69,4 +70,9 @@ STUB
   [[ "$output" == *"tools/ci/check_licenses.sh"* ]]
   run make -C "${REPO_ROOT}" -n lint
   [[ "$output" != *"tools/ci/check_licenses.sh"* ]]
+}
+
+@test "a failing copyleft step fails the script when licensecheck passes" {
+  STUB_PY_RC=1 run bash "${SCRIPT}"
+  [ "$status" -eq 1 ]
 }
