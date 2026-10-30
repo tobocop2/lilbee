@@ -635,3 +635,70 @@ class TestGetServicesThreadSafety:
         assert not errors
         assert len(builds) == 1
         assert len({id(r) for r in results}) == 1
+
+
+class TestCanaryWiring:
+    """The stores of the container embed their canaries with the embedder of the container."""
+
+    @pytest.fixture()
+    def counted_embeds(self, monkeypatch, tmp_path):
+        from lilbee.retrieval.embedder import Embedder
+
+        cfg.data_root = tmp_path
+        cfg.documents_dir = tmp_path / "documents"
+        cfg.data_dir = tmp_path / "data"
+        cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(cfg, "embedding_model", "ollama/canary-test")
+        calls: list[list[str]] = []
+
+        def _embed(self, texts, **kwargs):
+            calls.append(list(texts))
+            return [[1.0, float(i)] for i, _ in enumerate(texts)]
+
+        monkeypatch.setattr(Embedder, "embed_batch", _embed)
+        return calls
+
+    @staticmethod
+    def _record(dim):
+        return {
+            "source": "a.md",
+            "content_type": "text",
+            "chunk_type": "raw",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": "text",
+            "chunk_index": 0,
+            "vector": [0.5] * dim,
+        }
+
+    def test_a_built_container_stores_a_baseline_at_the_first_write(self, counted_embeds):
+        from lilbee.app.services import build_services
+        from lilbee.data.store.canary import CANARY_TEXTS
+
+        services = build_services(cfg, provider=MagicMock())
+        try:
+            services.store.add_chunks([self._record(cfg.embedding_dim)])
+
+            assert services.store.canary_state() is not None
+            assert counted_embeds == [list(CANARY_TEXTS)]
+        finally:
+            services.store.close()
+
+    def test_a_store_rebuilt_in_place_keeps_the_check(self, counted_embeds):
+        from lilbee.app.services import get_services, reset_services, reset_store
+
+        try:
+            reset_services()
+            get_services()
+            reset_store()
+
+            get_services().store.add_chunks([self._record(cfg.embedding_dim)])
+
+            assert get_services().store.canary_state() is not None
+            assert len(counted_embeds) == 1
+        finally:
+            reset_services()

@@ -1058,7 +1058,7 @@ def _report_index_mismatch(store: Store) -> IndexMismatch | None:
     so without this a sync finishes green over an index search refuses. Wiping
     it is the caller's decision, never the sync's.
     """
-    mismatch = store.index_mismatch()
+    mismatch = store.embedding_mismatch()
     if mismatch is None:
         return None
     log.warning("Sync left the index as it is: %s", mismatch)
@@ -1420,7 +1420,7 @@ async def sync(
         await to_ingest_thread(_force_rebuild_store, _store)
 
     config.documents_dir.mkdir(parents=True, exist_ok=True)
-    index_mismatch = _report_index_mismatch(_store)
+    index_mismatch = await to_ingest_thread(_report_index_mismatch, _store)
     corpus_root = await _corpus_root(_store, shard, retry_skipped=retry_skipped)
     if shard is None and (specs := plan_fanout()):
         merged = await _sync_across_workers(

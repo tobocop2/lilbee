@@ -126,6 +126,8 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
             "Index built with",
             f"{status.index.embedding_model} ({status.index.embedding_dim} dims)",
         )
+        if status.index.engine_mismatch is not None:
+            yield _label_line("Index mismatch", status.index.engine_mismatch)
     vision = status.config.vision_model or "(disabled)"
     reranker = status.config.reranker_model or "(disabled)"
     yield _label_line("Vision", vision)

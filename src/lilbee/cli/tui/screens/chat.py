@@ -102,6 +102,7 @@ from lilbee.crawler.stored_login import crawl_login
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
     ChunkType,
+    EmbeddingEngineChangedError,
     EmbeddingModelMismatchError,
     SearchScope,
     scope_to_chunk_type,
@@ -1962,6 +1963,9 @@ class ChatScreen(Screen[None]):
         self, exc: EmbeddingModelMismatchError, question: str, widget: AssistantMessage
     ) -> None:
         """Offer to adopt the index's embedder (same dim) or explain the rebuild path."""
+        if isinstance(exc, EmbeddingEngineChangedError):
+            widget.append_content(str(exc))
+            return
         if not exc.dims_match:
             widget.append_content(msg.EMBED_ADOPT_REBUILD_NOTICE.format(dim=exc.persisted_dim))
             return
