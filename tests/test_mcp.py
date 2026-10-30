@@ -335,6 +335,7 @@ class TestStatus:
         assert result["index"] == {
             "embedding_model": "org/embed-GGUF/embed.Q4_K_M.gguf",
             "embedding_dim": 768,
+            "engine_mismatch": None,
         }
 
     def test_status_index_is_none_before_any_sync(self, mock_svc):

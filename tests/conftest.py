@@ -715,6 +715,8 @@ def _default_store_mock():
     # No index identity persisted unless a test writes one.
     store.get_meta.return_value = None
     store.index_mismatch.return_value = None
+    store.embedding_mismatch.return_value = None
+    store.canary_mismatch.return_value = None
     store.upgrade_progress.return_value = None
     return store
 

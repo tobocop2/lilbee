@@ -129,6 +129,8 @@ def mock_svc():
     # No index identity persisted unless a test writes one.
     store.get_meta.return_value = None
     store.index_mismatch.return_value = None
+    store.embedding_mismatch.return_value = None
+    store.canary_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.return_value = []
