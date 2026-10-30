@@ -561,8 +561,158 @@ _ALWAYS_WRITTEN = [
 ]
 
 
+# Literal argv, written by hand from the engine's flag grammar: each flag and its values
+# leave together. They do not read the width from the flag table under test.
+def _argv(text: str) -> list[str]:
+    return text.split()
+
+
+_FULL_ARGV = _argv(
+    "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 --n-gpu-layers "
+    "-1 --parallel 1 --cont-batching --ctx-size 4096 --threads 4 --flash-attn on "
+    "--cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
+    "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+    "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+    "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+)
+_FULL_ARGV_CPU_MOE = _argv(
+    "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 --n-gpu-layers "
+    "-1 --parallel 1 --cont-batching --ctx-size 4096 --threads 4 --flash-attn on "
+    "--cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
+    "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+    "--cpu-moe --kv-unified --kv-unified-per-slot 4096 --jinja --reasoning-format "
+    "deepseek --no-prefill-assistant --pooling rank"
+)
+_ARGV_WITHOUT = {
+    "--flash-attn": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size "
+        "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--cache-type-k": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
+        "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--cache-type-v": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --batch-size 512 --ubatch-size 512 "
+        "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--batch-size": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --ubatch-size "
+        "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--ubatch-size": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--mmproj": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--n-cpu-moe": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--cpu-moe": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--threads": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 "
+        "--flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 "
+        "--ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--jinja --reasoning-format deepseek --no-prefill-assistant --pooling "
+        "rank"
+    ),
+    "--jinja": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--reasoning-format": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--jinja --no-prefill-assistant --pooling rank"
+    ),
+    "--no-prefill-assistant": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--jinja --reasoning-format deepseek --pooling rank"
+    ),
+    "--pooling": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--jinja --reasoning-format deepseek --no-prefill-assistant"
+    ),
+    "--kv-unified": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+}
+
+
 def test_the_optional_flag_table_is_not_empty() -> None:
     assert len(_OPTIONAL) == 14
+
+
+def test_the_literal_argv_table_names_every_optional_flag() -> None:
+    assert sorted(_ARGV_WITHOUT) == _OPTIONAL
+
+
+def test_a_build_that_lists_every_flag_gets_the_literal_full_argv(monkeypatch) -> None:
+    listed = _help_listing(_OPTIONAL + _ALWAYS_WRITTEN)
+    assert _every_optional_flag_argv(monkeypatch, listed) == _FULL_ARGV
+    cpu_moe = _every_optional_flag_argv(monkeypatch, listed, cpu_moe_only=True)
+    assert cpu_moe == _FULL_ARGV_CPU_MOE
 
 
 @pytest.mark.parametrize("flag", _OPTIONAL)
@@ -570,18 +720,12 @@ def test_a_flag_the_build_does_not_list_is_dropped_with_its_value(
     monkeypatch, caplog, flag: str
 ) -> None:
     cpu_moe_only = flag == "--cpu-moe"
-    full = _every_optional_flag_argv(monkeypatch, None, cpu_moe_only=cpu_moe_only)
-    assert flag in full
     listed = [f for f in _OPTIONAL + _ALWAYS_WRITTEN if f != flag]
     with caplog.at_level("WARNING"):
         argv = _every_optional_flag_argv(
             monkeypatch, _help_listing(listed), cpu_moe_only=cpu_moe_only
         )
-    assert flag not in argv
-    width = adapters._OPTIONAL_FLAGS[flag].values
-    start = full.index(flag)
-    expected = full[:start] + full[start + 1 + width :]
-    assert argv == expected
+    assert argv == _ARGV_WITHOUT[flag]
     lines = [r.getMessage() for r in caplog.records if f"list {flag};" in r.getMessage()]
     assert len(lines) == 1
     assert adapters._OPTIONAL_FLAGS[flag].effect in lines[0]
