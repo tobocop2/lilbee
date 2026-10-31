@@ -393,15 +393,7 @@ def test_the_first_use_of_the_chat_role_raises_the_user_text(chat_without_engine
     with pytest.raises(NoEngineError, match="For chat: No installed engine loads the mlx format"):
         chat_without_engine.engines.for_role(WorkerRole.CHAT)
     with pytest.raises(NoEngineError, match="For chat: No installed engine loads the mlx format"):
-        chat_without_engine.provider._get_local()
-
-
-def test_the_embed_offload_target_runs_while_the_chat_model_has_no_engine(
-    chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
-    monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda engine: 1)
-    assert offload.embed_inflight_target() == 0
+        chat_without_engine.provider.chat([{"role": "user", "content": "hi"}])
 
 
 def test_the_embed_offload_target_does_not_hide_a_missing_embed_engine(

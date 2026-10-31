@@ -152,12 +152,12 @@ def use(
     """Choose the engine that runs the model of one role."""
     try:
         chosen = engine_service.use_for_role(role, model, engine)
-    except (engine_service.EngineRefusedError, engine_service.EngineNotSavedError) as exc:
+    except engine_service.WRITE_FAILURES as exc:
         raise _refuse("engine use", exc) from exc
     if cfg.json_mode:
         json_out({"command": "engine use", "role": str(role), "model": model, "engine": chosen})
         return
-    console.print(f"{role} model {model} uses engine {chosen}. {engine_service.RESTART_NOTE}")
+    console.print(f"{role} model {model} uses engine {chosen}.")
 
 
 @engine_app.command("prefer")
@@ -167,9 +167,9 @@ def prefer(
     """Set the engine to use for every model that has no choice of its own."""
     try:
         chosen = engine_service.prefer(name)
-    except (engine_service.EngineRefusedError, engine_service.EngineNotSavedError) as exc:
+    except engine_service.WRITE_FAILURES as exc:
         raise _refuse("engine prefer", exc) from exc
     if cfg.json_mode:
         json_out({"command": "engine prefer", "engine": chosen})
         return
-    console.print(f"The preferred engine is {chosen}. {engine_service.RESTART_NOTE}")
+    console.print(f"The preferred engine is {chosen}.")

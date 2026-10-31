@@ -56,7 +56,6 @@ from lilbee.providers.fleet.contract import (
     decoded_launches,
     vision_slots_cover,
 )
-from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
@@ -131,6 +130,8 @@ if TYPE_CHECKING:
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
+RELOADING_NOTICE = "A change to the engines is being applied; roles may run their previous engine."
+RELOAD_FAILED_NOTICE = "The last engine reload failed; a role may still run its previous engine."
 # No-healthy-replica message for a server that stopped answering at the transport.
 _NOT_RESPONDING_MESSAGE = (
     "The model server is not responding and no healthy replica is available. "
@@ -1021,11 +1022,9 @@ class FleetProvider:
     def __init__(
         self,
         *,
-        engine: EngineAdapter = LLAMA,
         hold_warm: bool = False,
         config_refresh: Callable[[], None] | None = None,
     ) -> None:
-        self.engine = engine
         # Takes config.toml changes now. The process that follows the file injects it,
         # so a retry plans on the settings an owner restarted its fleet with.
         self._config_refresh = config_refresh
@@ -1119,6 +1118,8 @@ class FleetProvider:
         # while one is in flight sets the pending flag instead of dispatching,
         # and the in-flight thread re-runs the plan loop once per pending flag.
         self._reloading = False
+        # True after the last reload pass failed and until a pass succeeds.
+        self._reload_failed = False
         # Set when a reload arrives mid-reload: the in-flight pass may have
         # already snapshotted its plan, so the change must be re-applied.
         self._reload_pending = False
@@ -1131,11 +1132,24 @@ class FleetProvider:
         # request waiting for its role's server wake at the change they wait for.
         self._reload_done = threading.Condition(self._lock)
 
+    def _host_engine(self) -> EngineAdapter:
+        """The engine whose device snapshot a plan reads; raises when no role has an engine."""
+        return planning.snapshot_engine(self._engines())
+
     def _engines(self) -> dict[WorkerRole, EngineAdapter]:
         """The adapter of each role now, read from the engine book at this call."""
         from lilbee.app.engine_choice import EngineBook
 
         return EngineBook(cfg).adapters()
+
+    def _adopt_engine(self, role: WorkerRole) -> EngineAdapter:
+        """The adapter of *role* now; raises with the engine text when its engine went."""
+        from lilbee.app.engine_choice import EngineBook
+
+        engines = self._engines()
+        if role in engines:
+            return engines[role]
+        return EngineBook(cfg).for_role(role).adapter
 
     def _unusable_engine_reason(self) -> str | None:
         """Why no server can start on this host, or None once the engine resolves.
@@ -1146,7 +1160,7 @@ class FleetProvider:
         mid-session from being reported as still missing.
         """
         try:
-            self.engine.binary()
+            self._host_engine().binary()
         except ProviderError as exc:
             return str(exc)
         return None
@@ -1190,7 +1204,7 @@ class FleetProvider:
         never both build and stop-if-last never races an arrival.
         """
         pin = engine_pin()
-        demand = _placeable_demand(self.engine, self._engines())
+        demand = _placeable_demand(self._host_engine(), self._engines())
         # Record the demand plan's skips before walking the ladder: a bind or an
         # early serve-nothing exit never reaches _plan_and_spawn, and the warm
         # tracker must still be able to say "chat model X is not installed"
@@ -1313,7 +1327,7 @@ class FleetProvider:
                     # before a build, and its weights do not stay beside the private fleet.
                     _clear_engine_dir(engine_dir)
                     return True
-            if not _can_build_engine(wanted, self.engine):
+            if not _can_build_engine(wanted, self._host_engine()):
                 return False
             # No live user holds this dir now: reap dead leftovers and stop any
             # recorded engine so planning sees true free VRAM and the build never
@@ -1452,7 +1466,7 @@ class FleetProvider:
             # warm tracker and the caller report the real reason instead of a
             # silent never-ready fleet.
             origin = _plan_origin()
-            planning.capture_plan_probe(self.engine)
+            planning.capture_plan_probe(self._host_engine())
             engines = self._engines()
             plan = planning.plan_all_launches(engines=engines)
         except ProviderError as exc:
@@ -1518,6 +1532,7 @@ class FleetProvider:
             # client snapshot, and never closing leaks an httpx pool per replica.
             old_clients = list(self._clients.get(role, []))
             self._role_group[role] = group
+            profile = self._adopt_engine(role).request_profile(role)
             # token_cap truncates oversize embed/rerank inputs to the per-slot context
             # (the in-process backstop); the longer timeout covers a cold upstream load.
             self._clients[role] = [
@@ -1531,7 +1546,7 @@ class FleetProvider:
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
                     engine_log=_engine_log_of(launch, swap.log_path.parent),
                     model_ref=launch.model,
-                    profile=self.engine.request_profile(role),
+                    profile=profile,
                 )
                 for launch in role_launches
             ]
@@ -1792,7 +1807,20 @@ class FleetProvider:
             launches = self._role_launches(WorkerRole.EMBED)
         if launches:
             return launches[0].token_cap
-        return planning.planned_embed_token_cap(cfg.embedding_model, engine=self.engine)
+        try:
+            engine = self._host_engine()
+        except ProviderError:
+            return None
+        return planning.planned_embed_token_cap(cfg.embedding_model, engine=engine)
+
+    def reload_notice(self) -> str | None:
+        """What is true of the engines while a reload runs or after one failed, else None."""
+        with self._lock:
+            if self._reloading:
+                return RELOADING_NOTICE
+            if self._reload_failed:
+                return RELOAD_FAILED_NOTICE
+        return None
 
     def health_warnings(self) -> list[HealthWarning]:
         """Serving degradations: the embed window and any placement divergences."""
@@ -2307,7 +2335,10 @@ class FleetProvider:
 
     def supports_rerank(self) -> bool:
         """Report whether the engine serves the rerank role."""
-        return WorkerRole.RERANK in self.engine.served_roles
+        try:
+            return WorkerRole.RERANK in self._host_engine().served_roles
+        except ProviderError:
+            return False
 
     def list_models(self) -> list[str]:
         """List installed models from the registry."""
@@ -2774,7 +2805,8 @@ class FleetProvider:
         pass) has finished and the proxies are healthy again, so a caller already
         off the event loop gets a real completion signal. A restarted role's model
         still loads lazily (the reload kicks an off-thread warm). It propagates a
-        reload failure as an exception.
+        reload failure as an exception, to a caller that joined an in-flight reload
+        as well.
         """
         with self._lock:
             if not self._swaps:
@@ -2784,6 +2816,11 @@ class FleetProvider:
                 if wait:
                     while self._reloading:
                         self._reload_done.wait()
+                    if self._reload_failed:
+                        raise ProviderError(
+                            "The engine reload that was already running failed.",
+                            provider=_PROVIDER_NAME,
+                        )
                 return
             self._reloading = True
             self._reload_owed = frozenset(WorkerRole)
@@ -2793,7 +2830,7 @@ class FleetProvider:
             return
         try:
             threading.Thread(
-                target=self._reload_blocking,
+                target=self._reload_off_thread,
                 name=thread_name,
                 daemon=True,
             ).start()
@@ -2803,6 +2840,13 @@ class FleetProvider:
                 self._reload_owed = frozenset()
                 self._reload_done.notify_all()
             raise
+
+    def _reload_off_thread(self) -> None:
+        """Run the reload for a thread with no caller to hear it: log the failure."""
+        try:
+            self._reload_blocking()
+        except (ProviderError, OSError) as exc:
+            log.error("The engine reload failed: %s", exc)
 
     def _reload_blocking(self) -> None:
         """Run reload passes until no further reload arrived mid-pass.
@@ -2824,6 +2868,7 @@ class FleetProvider:
                     if rerun:
                         self._reload_owed = frozenset(WorkerRole)
                     else:
+                        self._reload_failed = True
                         self._reloading = False
                         self._reload_owed = frozenset()
                         self._reload_done.notify_all()
@@ -2835,6 +2880,7 @@ class FleetProvider:
                 self._drop_dead_swaps()
                 raise
             with self._lock:
+                self._reload_failed = False
                 if not self._reload_pending:
                     self._reloading = False
                     self._reload_owed = frozenset()
@@ -2891,7 +2937,7 @@ class FleetProvider:
             # figures beside it are deliberately not re-taken: this fleet is
             # resident, and charging it against itself is what the snapshot exists
             # to prevent.
-            planning.refresh_plan_devices(self.engine)
+            planning.refresh_plan_devices(self._host_engine())
             with self._lock:
                 if self._shut_down:
                     # Terminal shutdown landed while this reload was queued; a
@@ -2918,24 +2964,17 @@ class FleetProvider:
             with build_lock(reload_dir):
                 reap_stale(reload_dir)
                 origin = _plan_origin()
-                try:
-                    if not running:
-                        # Nothing loaded (a resurrect after a failed pass): the box is
-                        # clean, so refresh the plan snapshot like a first build would.
-                        planning.capture_plan_probe(self.engine)
-                    engines = self._engines()
-                    plan = planning.plan_all_launches(engines=engines)
-                except ProviderError as exc:
-                    # Same policy as the initial build: a genuinely-missing engine
-                    # binary aborts the reload quietly (nothing to serve), while any
-                    # other planning failure (a wedged GPU probe, an unusable CUDA
-                    # runtime) propagates to fail loud. The raise lands before the
-                    # stop phase, so a running fleet is left intact rather than half
-                    # torn down.
-                    if exc.kind is not ProviderErrorKind.NOT_FOUND:
-                        raise
-                    log.debug("Engine binary unavailable; reload left the fleet as-is")
-                    return
+                # A planning failure (a missing engine binary, a wedged GPU probe, an
+                # unusable CUDA runtime) propagates: the change was not applied, and a
+                # caller that wrote the choice must hear that. The raise lands before
+                # the stop phase, so a running fleet is left intact rather than half
+                # torn down.
+                if not running:
+                    # Nothing loaded (a resurrect after a failed pass): the box is
+                    # clean, so refresh the plan snapshot like a first build would.
+                    planning.capture_plan_probe(self._host_engine())
+                engines = self._engines()
+                plan = planning.plan_all_launches(engines=engines)
                 # Keep the skip reasons in step with the fresh plan.
                 self._skipped_not_installed = dict(plan.skipped_not_installed)
                 self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)

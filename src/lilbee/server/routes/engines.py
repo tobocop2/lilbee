@@ -30,13 +30,19 @@ _HTTP_UNAVAILABLE = 503
 
 
 async def _call(action: Callable[[], _T]) -> _T:
-    """Run a service call off the loop; a refusal is a 422 and a failed save a 503."""
+    """Run a service call off the loop; a refusal is a 422, a failed save or apply a 503."""
     try:
         return await asyncio.to_thread(action)
     except service.EngineRefusedError as exc:
         raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=str(exc)) from exc
     except service.EngineNotSavedError as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
+    except service.EngineNotAppliedError as exc:
+        raise HTTPException(
+            status_code=_HTTP_UNAVAILABLE,
+            detail=str(exc),
+            extra={"code": service.NOT_APPLIED_CODE, "saved": True},
+        ) from exc
 
 
 def _require_engines_enabled(_connection: ASGIConnection, _handler: BaseRouteHandler) -> None:
