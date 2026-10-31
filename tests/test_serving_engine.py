@@ -11,7 +11,7 @@ import pytest
 from lilbee.app import presets
 from lilbee.app.status import ServingStatus, chat_engine, serving_roles
 from lilbee.core.config import cfg
-from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines import LLAMA, EngineName, choice
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.serving import (
@@ -134,7 +134,7 @@ def test_the_tui_config_section_names_the_engine(
 
 
 def _provider(monkeypatch: pytest.MonkeyPatch) -> tuple[RoutingProvider, MagicMock, MagicMock]:
-    provider = RoutingProvider(engine=LLAMA)
+    provider = RoutingProvider(engine=lambda: LLAMA)
     local, sdk = MagicMock(), MagicMock()
     monkeypatch.setattr(provider, "_get_local", lambda: local)
     monkeypatch.setattr(provider, "_get_sdk_provider", lambda: sdk)
@@ -239,7 +239,9 @@ def test_chat_answers_when_the_pin_lookup_fails(monkeypatch: pytest.MonkeyPatch)
     engine = MagicMock()
     engine.name = "llama.cpp"
     engine.pin_record.side_effect = OSError("gone")
-    provider = RoutingProvider(engine=engine)
+    engine.formats = frozenset({"gguf"})
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, engine)
+    provider = RoutingProvider(engine=lambda: engine)
     local = MagicMock()
     local.chat.return_value = "Rome"
     monkeypatch.setattr(provider, "_get_local", lambda: local)

@@ -97,6 +97,6 @@ class TestPlacementWarnings:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
-        routing = RoutingProvider(engine=LLAMA)
+        routing = RoutingProvider(engine=lambda: LLAMA)
         assert routing._local is None
         assert routing.health_warnings() == []

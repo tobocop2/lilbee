@@ -7,11 +7,17 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from lilbee.catalog.types import ModelFormat
-from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
+from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.roles import WorkerRole
 
 AUTO = "auto"
 _DARWIN = "darwin"
 _ARM64 = "arm64"
+
+# The adapters this build ships, by engine name.
+ADAPTERS: Mapping[EngineName, EngineAdapter] = {EngineName(a.name): a for a in (LLAMA,)}
 
 # What each installed engine loads: the ``formats`` of its adapter.
 InstalledEngines = Mapping[EngineName, Collection[str]]
@@ -31,7 +37,7 @@ class NoticeKind(StrEnum):
     NONE = "none"
 
 
-class NoEngineError(Exception):
+class NoEngineError(ProviderError):
     """No installed engine loads the model format."""
 
 
@@ -55,7 +61,7 @@ class EngineChoice:
     def require(self) -> EngineName:
         """The engine name, or ``NoEngineError`` when no engine can load the format."""
         if self.name is None:
-            raise NoEngineError(self.notice)
+            raise NoEngineError(self.notice or "")
         return self.name
 
 
@@ -89,12 +95,13 @@ def choose_engine(
     installed: InstalledEngines,
     preferred: str,
     override: str | None,
+    role: WorkerRole | None = None,
 ) -> EngineChoice:
     """Pick the engine for *fmt*: the override, else the preference, else the host default.
 
     The result never names an engine that cannot load *fmt*. A preference that
     is unusable gives the host default, with a notice. An override that is
-    installed but cannot load *fmt* gives no engine.
+    installed but cannot load *fmt* gives no engine. A notice names *role* when given.
     """
     request = _request(preferred, override)
     if request is None:
@@ -102,17 +109,58 @@ def choose_engine(
         if default is not None:
             return EngineChoice(default, None, None)
         text = f"No installed engine loads the {fmt} format. Install an engine that loads {fmt}."
-        return EngineChoice(None, NoticeKind.NONE, text)
+        return EngineChoice(None, NoticeKind.NONE, f"For {role.value}: {text}" if role else text)
     name, kind = request
     if name in installed and fmt in installed[EngineName(name)]:
         return EngineChoice(EngineName(name), None, None)
+    subject = f"Engine {name} for {role.value}" if role else f"Engine {name}"
     if name not in installed:
-        reason = f"Engine {name} is not installed. Install {name} to use it."
+        reason = f"{subject} is not installed. Install {name} to use it."
     else:
-        reason = f"Engine {name} cannot load the {fmt} format."
+        reason = f"{subject} cannot load the {fmt} format."
         if kind is NoticeKind.OVERRIDE_UNUSABLE:
             return EngineChoice(None, kind, f"{reason} Choose an engine that loads {fmt}.")
     default = _default(fmt, host, installed)
     if default is None:
         return EngineChoice(None, kind, f"{reason} No installed engine loads the {fmt} format.")
     return EngineChoice(default, kind, f"{reason} Using {default}.")
+
+
+def installed_engines() -> InstalledEngines:
+    """The formats each shipped adapter loads, read from the adapter."""
+    return {name: adapter.formats for name, adapter in ADAPTERS.items()}
+
+
+@dataclass(frozen=True)
+class RoleEngine:
+    """The engine one role runs on, with the notice that says why it is not the one asked for."""
+
+    name: EngineName
+    notice: str | None
+
+    @property
+    def adapter(self) -> EngineAdapter:
+        """The adapter of the engine."""
+        return ADAPTERS[self.name]
+
+
+@dataclass(frozen=True)
+class EngineAssignment:
+    """The choice for each role, so two roles can run on two engines."""
+
+    choices: Mapping[WorkerRole, EngineChoice]
+
+    @classmethod
+    def for_test(cls, engines: Mapping[str, str]) -> EngineAssignment:
+        """An assignment with no notices, from role and engine names."""
+        return cls(
+            {
+                WorkerRole(role): EngineChoice(EngineName(name), None, None)
+                for role, name in engines.items()
+            }
+        )
+
+    def for_role(self, role: WorkerRole) -> RoleEngine:
+        """The engine for *role*; raises ``NoEngineError`` when none loads its model."""
+        choice = self.choices[role]
+        return RoleEngine(choice.require(), choice.notice)

@@ -21,6 +21,7 @@ from textual.widget import AwaitMount
 from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
 from textual.worker import Worker, WorkerState
 
+from lilbee.app.engine_choice import engine_for_ref
 from lilbee.app.services import get_services
 from lilbee.catalog import (
     CatalogModel,
@@ -88,6 +89,7 @@ from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import RemoteModel, classify_all_remote_models
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD
 from lilbee.runtime.hardware import available_memory_for_fit, chip_for_size
 
@@ -2169,16 +2171,20 @@ class CatalogScreen(Screen[None]):
         # The row's own size is an approximation off the parameter count; one
         # file is named here, so the check asks HuggingFace what it really costs.
         needed = int(model.size_gb * _BYTES_PER_GB)
-        if model.format is ModelFormat.GGUF:
-            try:
-                filename = resolve_filename(model, get_services().engine)
+        try:
+            engine = engine_for_ref(model.pull_ref)
+            if model.format is ModelFormat.GGUF:
+                filename = resolve_filename(model, engine)
                 dest = cfg.models_dir / filename
                 if dest.exists():
                     self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
                     return
                 needed = download_bytes(model.hf_repo, filename)
-            except Exception:
-                log.debug("Could not resolve filename", exc_info=True)
+        except NoEngineError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        except Exception:
+            log.debug("Could not resolve filename", exc_info=True)
 
         # After the already-installed check, which needs no space, and before
         # the enqueue: a task that fails instantly is terminal, so dedupe would

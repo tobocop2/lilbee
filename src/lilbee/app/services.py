@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from lilbee.app.engine_choice import EngineBook
     from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import Config
     from lilbee.data.store import Store
@@ -40,7 +41,6 @@ if TYPE_CHECKING:
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.base import LLMProvider
-    from lilbee.providers.fleet.engines.base import EngineAdapter
     from lilbee.providers.roles import WorkerRole
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
@@ -90,7 +90,7 @@ class Services:
     """
 
     provider: LLMProvider
-    engine: EngineAdapter
+    engines: EngineBook
     store: Store
     embedder: Embedder
     reranker: Reranker
@@ -205,14 +205,16 @@ def build_services(
     process-wide slot, so every container (singleton or per-instance library)
     binds its own, not only get_services.
     """
+    from lilbee.app.engine_choice import EngineBook, engine_for_format
     from lilbee.catalog.hf_client import HfClient
+    from lilbee.catalog.types import ModelFormat
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.modelhub.role_validator import warn_unregistered_role_refs
     from lilbee.providers.factory import create_provider
-    from lilbee.providers.fleet.engines import select_engine
+    from lilbee.providers.roles import WorkerRole
     from lilbee.retrieval.canary_probe import canary_probe
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
@@ -221,8 +223,10 @@ def build_services(
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    engine = select_engine(config)
-    provider = provider or create_provider(config, engine=engine, hold_warm=interactive)
+    engines = EngineBook(config)
+    provider = provider or create_provider(
+        config, engine=lambda: engines.for_role(WorkerRole.CHAT).adapter, hold_warm=interactive
+    )
     from lilbee.data.extract.backends import sync_xberg_backends
 
     sync_xberg_backends(provider)
@@ -239,9 +243,10 @@ def build_services(
     concepts = ConceptGraph(config, store)
     clusterer = Clusterer(config, store)
     searcher = Searcher(config, provider, store, embedder, reranker, concepts)
-    hf_client = HfClient(engine)
+    pull_engine = engine_for_format(ModelFormat.GGUF)
+    hf_client = HfClient(pull_engine)
     ingest_lock_registry = IngestLockRegistry()
-    model_manager = ModelManager(config.models_dir, engine)
+    model_manager = ModelManager(config.models_dir, pull_engine)
     crawler_semaphore = (
         asyncio.Semaphore(config.crawl_max_concurrent) if config.crawl_max_concurrent > 0 else None
     )
@@ -249,7 +254,7 @@ def build_services(
     known_models = KnownModelCache()
     return Services(
         provider=provider,
-        engine=engine,
+        engines=engines,
         store=store,
         embedder=embedder,
         reranker=reranker,

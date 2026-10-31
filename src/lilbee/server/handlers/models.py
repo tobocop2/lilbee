@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from cachetools import TTLCache
 from pydantic import BaseModel
 
+from lilbee.app.engine_choice import engine_for_ref
 from lilbee.app.models import list_models_data
 from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
@@ -31,6 +32,7 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.role_validator import MODEL_FIELD_TO_TASK, validate_model_task_assignment
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.key_check import provider_key_status
 from lilbee.providers.local_servers import local_server_for_label
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
@@ -532,13 +534,19 @@ async def enforce_pull_arch_compat(
 
     from lilbee.catalog.compat import UnsupportedArchError
 
-    if _parse_source(source) is not ModelSource.NATIVE or allow_unsupported:
+    if _parse_source(source) is not ModelSource.NATIVE:
         return
     manager = get_services().model_manager
     try:
+        manager.require_engine(model)
+    except NoEngineError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if allow_unsupported:
+        return
+    try:
         await asyncio.to_thread(manager.enforce_arch_compat, model)
     except UnsupportedArchError as exc:
-        engine = get_services().engine
+        engine = engine_for_ref(model)
         raise HTTPException(
             status_code=409,
             detail="unsupported_arch",

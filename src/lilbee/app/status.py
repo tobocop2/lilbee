@@ -14,9 +14,8 @@ from lilbee.core.config.enums import KvCacheType, OcrMode
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
 from lilbee.data.store import HeldOut
 from lilbee.data.types import SkippedSource
-from lilbee.providers.fleet.engines import select_engine
 from lilbee.providers.roles import WorkerRole
-from lilbee.providers.serving import serving_engine
+from lilbee.providers.serving import role_serving
 
 LILBEE_LABEL_MAX_LEN = 40
 """Hard cap on the compact-label width. The leaf gets its own internal
@@ -169,7 +168,6 @@ class StatusResult(BaseModel):
 
 def serving_roles() -> list[ServingStatus]:
     """The engine for each configured role, from the ref each role routes by."""
-    engine = select_engine(cfg)
     configured = (
         (WorkerRole.CHAT, cfg.chat_model),
         (WorkerRole.EMBED, cfg.embedding_model),
@@ -180,7 +178,7 @@ def serving_roles() -> list[ServingStatus]:
     for role, model in configured:
         if not model:
             continue
-        served = serving_engine(role, model, engine)
+        served = role_serving(role, model)
         rows.append(
             ServingStatus(role=role, model=model, engine=served.engine, version=served.version)
         )

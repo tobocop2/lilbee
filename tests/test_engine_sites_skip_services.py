@@ -12,7 +12,7 @@ from lilbee.app import services as services_mod
 from lilbee.cli.commands import setup as setup_cmd
 from lilbee.cli.launchers import server as launcher
 from lilbee.core.config import cfg
-from lilbee.providers.fleet.engines import LLAMA, select_engine
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.roles import WorkerRole
 
@@ -29,10 +29,6 @@ def _opening_a_store_fails(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(services_mod, "build_services", _forbidden)
     monkeypatch.setattr(services_mod._state, "singleton", None)
-
-
-def test_select_engine_is_the_adapter_the_container_holds() -> None:
-    assert select_engine(cfg) is LLAMA
 
 
 def test_placement_views_plan_with_the_selected_engine(monkeypatch: pytest.MonkeyPatch) -> None:
