@@ -76,7 +76,7 @@ def test_the_pin_names_the_commit_by_its_first_twelve_digits() -> None:
     assert ik_llama.IK_LLAMA_COMMIT == COMMIT
     assert pin["version"] == f"git-{COMMIT[:12]}"
     assert (pin["engine"], pin["backend"], pin["licenses"]) == ("ik_llama.cpp", "cpu", ["MIT"])
-    assert choice.pin_lock(pin).version == "git-13cffc006b82"
+    assert choice.pin_lock({**pin, "sha256": "a" * 64}).version == "git-13cffc006b82"
 
 
 def test_the_engine_is_registered_and_does_not_ship_in_the_package() -> None:
@@ -132,6 +132,21 @@ def test_binary_skips_a_build_of_another_version_and_one_with_no_server(
 
 
 @pytest.mark.parametrize(
+    ("version", "backend"),
+    [("git-aaaaaaaaaaaa", ik_llama.BACKEND), (ik_llama.VERSION, "cuda")],
+)
+def test_binary_skips_a_build_of_another_version_or_backend_that_has_a_server(
+    version: str, backend: str, tmp_path: Path
+) -> None:
+    wheel = tmp_path / "ik.whl"
+    sha = _make_wheel(wheel)
+    lock = PinLock("ik_llama.cpp", version, backend, {}, ("MIT",), sha)
+    EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
+    with pytest.raises(ProviderError, match="is not installed"):
+        IK_LLAMA.binary()
+
+
+@pytest.mark.parametrize(
     ("system", "machine", "flags", "mac_ver"),
     [("Linux", "x86_64", ["avx2"], ""), ("Darwin", "arm64", None, "15.0")],
 )
@@ -172,14 +187,24 @@ def test_install_on_a_host_without_avx2_is_refused_and_writes_nothing(
     assert not engines_root(cfg.models_dir).exists()
 
 
-def test_install_without_a_real_pack_digest_refuses_a_wheel(
+def test_the_adapter_records_no_pack_digest_until_a_pack_is_published() -> None:
+    assert ik_llama.PACK_SHA256 is None
+    assert IK_LLAMA.pin_record()["sha256"] is None
+
+
+def test_install_with_no_published_pack_says_so_for_a_wheel_and_the_packs_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(host_caps, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
     wheel = tmp_path / "ik.whl"
     _make_wheel(wheel)
-    with pytest.raises(engine_service.EngineRefusedError, match="does not match its pin"):
-        engine_service.install("ik_llama.cpp", wheel)
+    packs = engines_root(cfg.models_dir) / "packs"
+    packs.mkdir(parents=True)
+    (packs / f"ik_llama.cpp-{ik_llama.VERSION}-cpu.whl").write_bytes(wheel.read_bytes())
+    for given in (wheel, None):
+        with pytest.raises(engine_service.EngineRefusedError) as exc:
+            engine_service.install("ik_llama.cpp", given)
+        assert str(exc.value) == "No pack of ik_llama.cpp is published yet. llama.cpp stays in use."
     assert EngineStore(engines_root(cfg.models_dir)).installed() == []
 
 

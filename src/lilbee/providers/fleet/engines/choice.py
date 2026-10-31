@@ -164,8 +164,20 @@ class PinError(Exception):
     """An adapter's pin record cannot name a build."""
 
 
+class NoPublishedPackError(PinError):
+    """The adapter records no pack digest: no pack of the engine is published yet."""
+
+
 def pin_lock(pin: Mapping[str, Any]) -> PinLock:
-    """The lock for *pin*; raises ``PinError`` for a missing field or an unusable name."""
+    """The lock for *pin*; raises ``PinError`` for a missing field or an unusable name.
+
+    A pin whose ``sha256`` is ``None`` raises ``NoPublishedPackError``; an adapter
+    with no published pack sets its pack digest to ``None`` and holds no made-up digest.
+    """
+    if "sha256" in pin and pin["sha256"] is None:
+        raise NoPublishedPackError(
+            f"No pack of {pin.get('engine')} is published yet. {LLAMA.name} stays in use."
+        )
     try:
         licences = tuple(pin["licenses"])
         return PinLock(pin["engine"], pin["version"], pin["backend"], {}, licences, pin["sha256"])
@@ -185,6 +197,8 @@ def _is_installed(name: EngineName, adapter: EngineAdapter, store: EngineStore) 
         pin = adapter.pin_record()
         lock = pin_lock(pin)
         return store.complete_build(lock) is not None
+    except NoPublishedPackError:
+        return False
     except (OSError, EngineConflictError, PinError) as exc:
         log.warning("Engine %s counts as not installed: %s", name, exc)
         return False

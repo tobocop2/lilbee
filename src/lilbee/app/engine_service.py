@@ -215,6 +215,8 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         raise EngineRefusedError(f"Engine {name} cannot run on this host. {gate.reason}")
     try:
         lock = choice.pin_lock(adapter.pin_record())
+    except choice.NoPublishedPackError as exc:
+        raise EngineRefusedError(str(exc)) from exc
     except choice.PinError as exc:
         raise EngineRefusedError(f"Engine {name} cannot be installed: {exc}.") from exc
     store = EngineStore(engines_root(cfg.models_dir))
