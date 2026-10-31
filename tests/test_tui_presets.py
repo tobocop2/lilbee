@@ -788,3 +788,69 @@ class TestSlashKeyStaysOutOfEveryStore:
                 chat._submit_draft(chat._chat_input, "/preset list")
             assert worker.called
             assert chat._input_history == ["earlier line"]
+
+
+class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
+    """Press Up after a submit and read what the input holds."""
+
+    PASSWORD = "SENTINEL-crawl-password-5e1d"
+    TOKEN = "hf_SENTINEL-login-token-77aa"
+
+    @staticmethod
+    async def _recalled(typed: str) -> str:
+        app = _ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            chat = await await_chat(app, pilot)
+            chat._enter_insert_mode()
+            chat._input_history.append("earlier line")
+            with (
+                mock.patch.object(chat, "notify"),
+                mock.patch.object(chat, "_run_preset_command"),
+                mock.patch.object(chat, "_run_hf_login"),
+                mock.patch.object(chat, "_send_message"),
+            ):
+                chat._submit_draft(chat._chat_input, typed)
+            chat._chat_input.focus()
+            await pilot.press("up")
+            assert await wait_until(pilot, lambda: bool(chat._chat_input.value))
+            return chat._chat_input.value
+
+    @pytest.mark.parametrize(
+        "typed",
+        [
+            f"/login {TOKEN}",
+            f"/LOGIN   {TOKEN}",
+            f"/set crawl_password {PASSWORD}",
+            f"/set  crawl_password\t{PASSWORD}",
+            f"/preset add x1 {LOCAL} --roles chat --key {PASSWORD}",
+        ],
+    )
+    async def test_a_line_with_a_secret_is_not_recalled(self, typed):
+        assert await self._recalled(typed) == "earlier line"
+
+    @pytest.mark.parametrize(
+        "typed",
+        ["/login", "/set chunk_size 512", "/version", "hello there"],
+    )
+    async def test_a_line_without_a_secret_is_recalled(self, typed):
+        assert await self._recalled(typed) == typed
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("/login tok", True),
+            ("/login", False),
+            ("/set crawl_password x", True),
+            ("/set crawl_password", True),
+            ("/set chunk_size 512", False),
+            ("/set nonsense x", False),
+            ("/set", False),
+            ("/preset list", True),
+            ("/version", False),
+            ("", False),
+        ],
+    )
+    def test_the_rule_names_each_secret_line(self, text, expected):
+        from lilbee.cli.tui.secret_lines import carries_secret
+
+        assert carries_secret(text) is expected
