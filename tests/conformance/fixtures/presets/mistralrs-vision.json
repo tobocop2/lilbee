@@ -1,0 +1,47 @@
+{
+ "server": "mistralrs-vision",
+ "version": "mistralrs 0.9.5 v0.9.5 cpu",
+ "roles": [
+  "vision"
+ ],
+ "models": {
+  "vision": "HuggingFaceTB/SmolVLM-256M-Instruct"
+ },
+ "rerank_wire": "v1",
+ "results": {
+  "vision": {
+   "ok": true,
+   "detail": "colour_named=True"
+  }
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": [
+       {
+        "image_url": {
+         "url": "data:image/png;base64,iVBORw0K..."
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "What colour is this image? Answer in one word.",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "HuggingFaceTB/SmolVLM-256M-Instruct",
+    "stream": false
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"1\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Red.\",\"role\":\"assistant\",\"tool_calls\":null},\"logprobs\":null}],\"created\":1793417468,\"model\":\"HuggingFaceTB/SmolVLM-256M-Instruct\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":1146,\"total_tokens\":1149,\"avg_tok_per_sec\":76.79455,\"avg_prompt_tok_per_sec\":77.45337,\"avg_compl_tok_per_sec\":18.072289,\"total_time_sec\":14.962,\"total_prompt_time_sec\":14.796,\"total_completion_time_sec\":0.166}}"
+  }
+ ]
+}
