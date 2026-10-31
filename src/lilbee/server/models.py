@@ -19,6 +19,7 @@ from lilbee.core.health_warnings import HealthWarning
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
 from lilbee.providers.roles import EngineBackend, WorkerRole
+from lilbee.providers.server_registry import RerankWire
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.sessions import MessageRole
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from lilbee.app.agent_configs.detect import ClientDetection
     from lilbee.app.agent_configs.document import AgentConfigDocument
     from lilbee.app.placement import PlacementView
+    from lilbee.app.presets import ServerPreset
 
 
 def decode_chunk_type(value: str | None) -> ChunkType | None:
@@ -864,6 +866,61 @@ class PlacementResponse(BaseModel):
             rejected_spec_json=view.rejected_spec_json,
             engine_backend=view.engine_backend,
         )
+
+
+class PresetResponse(BaseModel):
+    """One server preset: whether a key is set, never the key."""
+
+    name: str
+    base_url: str
+    roles: list[WorkerRole]
+    has_key: bool
+    valid: bool
+    rerank_wire: RerankWire | None
+
+    @classmethod
+    def from_view(cls, view: ServerPreset) -> PresetResponse:
+        """The canonical serialized preset, shared by the CLI, HTTP and MCP surfaces."""
+        return cls(
+            name=view.name,
+            base_url=view.base_url,
+            roles=list(view.roles),
+            has_key=view.has_key,
+            valid=view.valid,
+            rerank_wire=view.rerank_wire,
+        )
+
+
+class PresetListResponse(BaseModel):
+    """Response for the preset list."""
+
+    presets: list[PresetResponse]
+
+
+class PresetRemovedResponse(BaseModel):
+    """Response for a preset removal."""
+
+    removed: str
+
+
+class PresetAddBody(BaseModel):
+    """Request body for adding a server preset. The key is write only."""
+
+    name: str
+    url: str
+    roles: list[str]
+    api_key: str | None = None
+    rerank_wire: str = RerankWire.V1
+
+
+class PresetEditBody(BaseModel):
+    """Request body for changing a server preset. Send only what changes."""
+
+    url: str | None = None
+    roles: list[str] | None = None
+    api_key: str | None = None
+    rerank_wire: str | None = None
+    clear_key: bool = False
 
 
 class PlacementSpecBody(BaseModel):

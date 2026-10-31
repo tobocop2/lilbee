@@ -1,0 +1,112 @@
+{
+ "server": "mistralrs-chat",
+ "version": "mistralrs 0.9.5 v0.9.5 cpu",
+ "roles": [
+  "chat"
+ ],
+ "models": {
+  "chat": "Qwen/Qwen3-0.6B"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "results": {
+  "template": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "tool": {
+   "ok": true,
+   "detail": "tool_calls=['get_weather']"
+  },
+  "overflow": {
+   "ok": true,
+   "detail": "kind=context_overflow"
+  }
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "You answer in one short sentence.",
+      "role": "system"
+     },
+     {
+      "content": "What is the capital of France?",
+      "role": "user"
+     },
+     {
+      "content": "Paris.",
+      "role": "assistant"
+     },
+     {
+      "content": "And of Italy?",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen/Qwen3-0.6B",
+    "stream": false
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"1\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nRome.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, the user first asked about the capital of France, and I provided the answer. Now they're asking about Italy. I need to make sure I'm answering correctly. Let me think. Italy's capital is Rome. I should check if there's any recent change, but I don't think there's been any significant shift. So the answer should be Rome. Just a simple sentence.\\n\"},\"logprobs\":null}],\"created\":1793429395,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":87,\"prompt_tokens\":43,\"total_tokens\":130,\"avg_tok_per_sec\":9.386281,\"avg_prompt_tok_per_sec\":99.76798,\"avg_compl_tok_per_sec\":6.4833446,\"total_time_sec\":13.85,\"total_prompt_time_sec\":0.431,\"total_completion_time_sec\":13.419}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "What is the weather in Paris? Use the tool.",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen/Qwen3-0.6B",
+    "stream": false,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "function": {
+       "description": "Get the weather for a city.",
+       "name": "get_weather",
+       "parameters": {
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"2\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-4e485d25-6371-4028-a296-c57c4ee6f024\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}],\"reasoning_content\":\"\\nOkay, the user is asking about the weather in Paris. I need to use the get_weather function. The function requires the city parameter. Since they mentioned Paris, I should call the function with \\\"Paris\\\" as the city. Let me make sure there are no typos. Alright, the tool call should be correct.\\n\"},\"logprobs\":null}],\"created\":1793429409,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":90,\"prompt_tokens\":158,\"total_tokens\":248,\"prompt_tokens_details\":{\"cached_tokens\":3},\"avg_tok_per_sec\":16.739792,\"avg_prompt_tok_per_sec\":195.06172,\"avg_compl_tok_per_sec\":6.426276,\"total_time_sec\":14.815,\"total_prompt_time_sec\":0.81,\"total_completion_time_sec\":14.005}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen/Qwen3-0.6B",
+    "stream": false
+   },
+   "status": 400,
+   "content_type": "application/json",
+   "body": "{\"error\":{\"message\":\"Prompt sequence length is greater than 40960, perhaps consider using `truncate_sequence`?\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  }
+ ]
+}

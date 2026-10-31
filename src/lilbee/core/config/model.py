@@ -5,6 +5,7 @@ The settings sources and the TOML parser live here too. Every
 to the same instance defined at module bottom.
 """
 
+import json
 import logging
 import os
 import re
@@ -103,6 +104,9 @@ _USES_ITS_DEFAULT = "uses its default"
 _TAKES_DEFAULT_WHEN_REFUSED = frozenset(
     {"flash_attention", "n_gpu_layers", "gpu_devices", "semantic_chunking"}
 )
+
+# Only their own service writes these: no variable and no general settings path sets them.
+SERVICE_ONLY_FIELDS = frozenset({"server_presets"})
 
 # A key that is not a setting, by name, and what to use instead. A stored or
 # exported one is refused out loud rather than silently ignored.
@@ -869,6 +873,11 @@ class Config(BaseSettings):
     # tools cost schema on every request whether or not anything uses them.
     mcp_sessions_enabled: bool = ConfigField(default=False, writable=True)
 
+    # The four server preset tools, off by default: a preset decides where
+    # requests and keys go, which most agents never need, and the tools cost
+    # schema on every request. REST, the CLI and the slash command are unchanged.
+    mcp_presets_enabled: bool = ConfigField(default=False, writable=True)
+
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM
@@ -940,6 +949,30 @@ class Config(BaseSettings):
             "Manual multi-GPU placement spec. It fully replaces the automatic planner: "
             "each active role pins to the listed device indices. Edit it with the "
             "placement commands, not the settings list. Empty uses the VRAM-aware planner"
+        ),
+    )
+
+    # The user's OpenAI-compatible servers as a JSON scalar, as placement is stored. Only the
+    # preset service writes it; it holds API keys, so it stays out of every read and repr.
+    server_presets: str | None = ConfigField(
+        default=None,
+        writable=True,
+        public=False,
+        from_env=False,
+        repr=False,
+        description=(
+            "User-defined OpenAI-compatible servers, with their API keys. "
+            "Edit them with the preset commands, not the settings list"
+        ),
+    )
+
+    # Gates the HTTP routes that change engines and presets, not the preset service itself.
+    allow_http_engines: bool = Field(
+        default=False,
+        description=(
+            "Let the HTTP server change engines and presets. Off by default because a "
+            "preset sets where requests and API keys go. Turn it on only for a deployment "
+            "you alone use"
         ),
     )
 
@@ -1299,6 +1332,12 @@ class Config(BaseSettings):
             return ",".join(parts)
         return str(v)
 
+    @field_validator("server_presets", mode="before")
+    @classmethod
+    def _server_presets_as_text(cls, v: Any) -> Any:
+        """Text for any TOML type: a refused value is printed, and this one holds API keys."""
+        return v if v is None or isinstance(v, str) else json.dumps(v, default=str)
+
     @field_validator("placement", mode="before")
     @classmethod
     def _parse_placement(cls, v: Any) -> str | None:
@@ -1339,9 +1378,9 @@ class Config(BaseSettings):
         """Validate and canonicalize a model ref; blank means the role is unconfigured."""
         if not v or not v.strip():
             return ""
-        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.model_ref import canonical_model_ref
 
-        return parse_model_ref(v).for_openai_prefix()
+        return canonical_model_ref(v)
 
     @field_validator("ollama_base_url", "lm_studio_base_url", mode="after")
     @classmethod
@@ -1615,7 +1654,7 @@ class _PlainEnvSource:
         values: dict[str, Any] = {}
         for field_name in self._settings_cls.model_fields:
             raw = os.environ.get(_variable(self._settings_cls, field_name))
-            if value_is_set(field_name, raw):
+            if field_name not in SERVICE_ONLY_FIELDS and value_is_set(field_name, raw):
                 values[field_name] = raw
         return values, _refusals(self._settings_cls, values)
 
@@ -1729,7 +1768,9 @@ class _TomlSource:
 
 
 def env_value(field_name: str) -> str | None:
-    """What LILBEE_<FIELD_NAME> holds, or None when it is unset or blank."""
+    """What LILBEE_<FIELD_NAME> holds, or None when it is unset, blank or read from no variable."""
+    if field_name in SERVICE_ONLY_FIELDS:
+        return None
     raw = os.environ.get(_variable(Config, field_name))
     return raw if value_is_set(field_name, raw) else None
 

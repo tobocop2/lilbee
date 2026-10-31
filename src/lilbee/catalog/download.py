@@ -17,6 +17,7 @@ from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
     HF_API_URL,
+    HfToken,
     hf_headers,
     hf_token,
     repo_has_mmproj,
@@ -72,7 +73,7 @@ class DownloadConfig(BaseModel):
 
     repo_id: str
     filename: str
-    token: str | None
+    token: HfToken
     force_download: bool = False
     cache_dir: str | None = None
     tqdm_class: Any = None
@@ -307,7 +308,7 @@ def download_model(
 def fetch_model_files(
     entry: CatalogModel,
     models_dir: Path,
-    token: str | None,
+    token: HfToken,
     engine: "EngineAdapter",
     *,
     on_progress: ProgressCallback | None = None,
@@ -400,7 +401,7 @@ def _probed_shard(entry: CatalogModel, shard: str, on_probe: ProbeCallback | Non
 def _ensure_projector(
     entry: CatalogModel,
     models_dir: Path,
-    token: str | None,
+    token: HfToken,
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
@@ -431,7 +432,7 @@ def download_mmproj(
 def _fetch_mmproj(
     entry: CatalogModel,
     models_dir: Path,
-    token: str | None,
+    token: HfToken,
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,

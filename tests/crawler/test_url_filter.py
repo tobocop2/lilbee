@@ -130,12 +130,42 @@ class TestValidateCrawlUrl:
         ],
     )
     def test_accepts_public_ipv6(self, monkeypatch, addr):
-        # Guards against an over-eager _embedded_ipv4 edit blocking public v6.
+        # Guards against an over-eager embedded_ipv4 edit blocking public v6.
         monkeypatch.setattr(
             "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(10, 1, 6, "", (addr, 0, 0, 0))],
         )
         validate_crawl_url("http://public.example.com")  # must not raise
+
+    @pytest.mark.parametrize(
+        "addr",
+        [
+            "2001:0:4136:e378:8000:1:5601:5601",  # Teredo client 169.254.169.254
+            "2001:0:4136:e378:8000:1:80ff:fffe",  # Teredo client 127.0.0.1
+        ],
+    )
+    def test_rejects_a_teredo_address_whose_client_is_blocked(self, monkeypatch, addr):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(10, 1, 6, "", (addr, 0, 0, 0))],
+        )
+        with pytest.raises(ValueError, match="private/reserved"):
+            validate_crawl_url("http://teredo.example.com")
+
+    def test_accepts_a_teredo_address_whose_client_is_public(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(10, 1, 6, "", ("2001:0:4136:e378:8000:1:f7f7:f7f7", 0, 0, 0))],
+        )
+        validate_crawl_url("http://teredo.example.com")  # client 8.8.8.8, must not raise
+
+    def test_rejects_a_nat64_address_with_a_public_ipv4(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(10, 1, 6, "", ("64:ff9b::808:808", 0, 0, 0))],
+        )
+        with pytest.raises(ValueError, match="private/reserved"):
+            validate_crawl_url("http://nat64.example.com")
 
 
 class TestRequireValidCrawlUrl:
