@@ -24,6 +24,7 @@ from lilbee.providers.base import (
     require_role_ref,
 )
 from lilbee.providers.factory import create_sdk_provider
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.providers.serving import (
@@ -40,6 +41,8 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.engines.base import EngineAdapter
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
     from lilbee.providers.warm_progress import WarmProgress
+
+    SpawnListener = tuple[Callable[[WorkerRole], None] | None, Callable[[WorkerRole], None] | None]
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +61,8 @@ class RoutingProvider(LLMProvider):
         self._engine = engine
         self._noticed: dict[WorkerRole, str] = {}
         self._local: LLMProvider | None = None
+        # The spawn listener registered while no engine can build the local fleet.
+        self._waiting_listener: SpawnListener | None = None
         self._sdk_provider: SdkLLMProvider | None = None
         # Carried until the local fleet is lazily built, so a provider created for
         # an interactive session hands that down to the FleetProvider it composes.
@@ -78,8 +83,19 @@ class RoutingProvider(LLMProvider):
                 if self._local is None:
                     from lilbee.providers.fleet.provider import FleetProvider
 
-                    self._local = FleetProvider(engine=self._engine(), hold_warm=self._hold_warm)
+                    local = FleetProvider(engine=self._engine(), hold_warm=self._hold_warm)
+                    if self._waiting_listener is not None:
+                        on_spawning, on_spawned = self._waiting_listener
+                        local.add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
+                    self._local = local
         return self._local
+
+    def _local_for_read(self) -> LLMProvider | None:
+        """The local engine for a read; None when no engine can build it."""
+        try:
+            return self._get_local()
+        except NoEngineError:
+            return None
 
     def _get_sdk_provider(self) -> SdkLLMProvider:
         if self._sdk_provider is None:
@@ -93,6 +109,10 @@ class RoutingProvider(LLMProvider):
         if ref.is_remote:
             return self._get_sdk_provider()
         return self._get_local()
+
+    def _backend_for_read(self, ref: ProviderModelRef) -> LLMProvider | None:
+        """The backend for a read of *ref*; None for a local ref no engine can build."""
+        return self._get_sdk_provider() if ref.is_remote else self._local_for_read()
 
     def _log_served(self, role: WorkerRole, model: str, served: ServingEngine) -> None:
         """Name the engine that serves this request."""
@@ -112,8 +132,11 @@ class RoutingProvider(LLMProvider):
             log.warning("%s", notice)
 
     def _announce(self, role: WorkerRole, ref: ProviderModelRef) -> None:
+        """Log what serves *role*, and refuse a local run when it has no engine."""
         self._warn_once(role)
         self._log_served(role, ref.raw, role_serving(role, ref.raw))
+        if not ref.is_remote:
+            resolve_engines(cfg).for_role(role)
 
     def embed(self, texts: list[str]) -> list[Vector]:
         ref = parse_model_ref(require_role_ref(cfg.embedding_model, WorkerRole.EMBED))
@@ -247,8 +270,10 @@ class RoutingProvider(LLMProvider):
         missing native registry does not mask the other.
         """
         native: set[str] = set()
-        with contextlib.suppress(Exception):
-            native = set(self._get_local().list_models())
+        local = self._local_for_read()
+        if local is not None:
+            with contextlib.suppress(Exception):
+                native = set(local.list_models())
         sdk = self._get_sdk_provider()
         if not sdk.available():
             return sorted(native)
@@ -274,13 +299,13 @@ class RoutingProvider(LLMProvider):
 
     def show_model(self, model: str) -> dict[str, Any] | None:
         """Show model info from the backend selected by the ref prefix."""
-        ref = parse_model_ref(model)
-        return self._pick_backend(ref).show_model(model)
+        backend = self._backend_for_read(parse_model_ref(model))
+        return None if backend is None else backend.show_model(model)
 
     def get_capabilities(self, model: str) -> list[str]:
         """Return capability tags from the backend selected by the ref prefix."""
-        ref = parse_model_ref(model)
-        return self._pick_backend(ref).get_capabilities(model)
+        backend = self._backend_for_read(parse_model_ref(model))
+        return [] if backend is None else backend.get_capabilities(model)
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Dispatch rerank to the backend that owns ``cfg.reranker_model``.
@@ -321,7 +346,8 @@ class RoutingProvider(LLMProvider):
         if not model:
             return True
         if is_native_rerank_ref(model, role_engine(WorkerRole.RERANK)):
-            return self._get_local().supports_rerank()
+            local = self._local_for_read()
+            return local is not None and local.supports_rerank()
         return self._get_sdk_provider().supports_rerank()
 
     def shutdown(self) -> None:
@@ -410,7 +436,7 @@ class RoutingProvider(LLMProvider):
         ref = cfg.embedding_model
         if not ref or parse_model_ref(ref).is_remote:
             return None
-        return self._get_local()
+        return self._local_for_read()
 
     def embed_token_cap(self) -> int | None:
         """Embed token cap of the local engine; None for a remote or unset embedder."""
@@ -450,7 +476,8 @@ class RoutingProvider(LLMProvider):
 
     def warm_pending(self) -> bool:
         """Forward to the native side; the SDK side never warms."""
-        return self._get_local().warm_pending()
+        local = self._local_for_read()
+        return local is not None and local.warm_pending()
 
     def warm_progress(self) -> WarmProgress | None:
         """Cold-load progress of the local engine, or None when none exists yet."""
@@ -467,6 +494,11 @@ class RoutingProvider(LLMProvider):
         """Register on the native engine so its server spawns reach the TUI.
 
         Builds the local engine if it isn't up yet so the listener is attached
-        before the first spawn, matching ``warm_up_pool``'s eager construction.
+        before the first spawn, matching ``warm_up_pool``'s eager construction. With no
+        engine to build it, the listener waits for the build.
         """
-        self._get_local().add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
+        local = self._local_for_read()
+        if local is None:
+            self._waiting_listener = (on_spawning, on_spawned)
+            return
+        local.add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
