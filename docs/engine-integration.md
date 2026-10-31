@@ -111,6 +111,12 @@ A role the engine does not claim answers 400, 404, 405 or 501, or answers with a
 
 Evidence: row 32, row 33, row 46, row 47. Row 33 is a chat model that answers 501 on rerank.
 
+### E14 Response format and JSON schema
+
+A chat request with `response_format` of type `json_object` gets content that parses whole to an object, with no code fence and no trailing text. A request of type `json_schema` gets content that also holds every required key with the declared type and no other key. An engine that ignores the field fails. The row runs only when the engine claims `json`. No caller in `src/lilbee` sends the field today, so a failure does not refuse the engine.
+
+Evidence: no spike row. Issue 1190 lists the field.
+
 ### L1 No tokenize route
 
 Without `/tokenize` or `/detokenize` the client estimates the token count. Embed and rerank do not fail.
