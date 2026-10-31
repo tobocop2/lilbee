@@ -978,6 +978,20 @@ class EngineChosenResponse(BaseModel):
     engine: str
 
 
+class EngineInstallBody(BaseModel):
+    """Request body for installing an engine build from its pack."""
+
+    engine: str
+
+
+class EngineInstalledResponse(BaseModel):
+    """Response for an engine install: the build now in the store."""
+
+    engine: str
+    version: str
+    backend: str
+
+
 class PresetAddBody(BaseModel):
     """Request body for adding a server preset. The key is write only."""
 

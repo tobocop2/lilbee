@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeVar
 
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
@@ -13,6 +15,21 @@ from lilbee.catalog.refs import model_format
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
+from lilbee.providers.fleet import host_caps
+from lilbee.providers.fleet.engine_store import (
+    ChecksumError,
+    EngineConflictError,
+    EngineDiskError,
+    EngineStore,
+    LicenceRefusedError,
+    MissingPackError,
+    PackageInstallError,
+    PinLock,
+    UnsafeWheelError,
+    UnsupportedPlatformError,
+    engines_root,
+)
+from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
     AUTO,
@@ -47,6 +64,27 @@ class RoleView:
     format: str
     engine: str | None
     notice: str | None
+
+
+@dataclass(frozen=True)
+class InstalledBuild:
+    """The engine build an install wrote."""
+
+    engine: str
+    version: str
+    backend: str
+
+
+_STORE_REFUSALS = (
+    ChecksumError,
+    EngineConflictError,
+    EngineDiskError,
+    LicenceRefusedError,
+    MissingPackError,
+    PackageInstallError,
+    UnsafeWheelError,
+    UnsupportedPlatformError,
+)
 
 
 def _unknown(name: str) -> EngineRefusedError:
@@ -119,6 +157,45 @@ def prefer(name: str) -> str:
 
     _store(PREFERRED_KEY, apply, commit)
     return setting.value
+
+
+def _no_download(_lock: PinLock, _scratch: Path) -> Path:
+    """The fetch for an install with no wheel: engines have no download route."""
+    raise FileNotFoundError("Engines have no download route.")
+
+
+def install(name: str, wheel: Path | None = None) -> InstalledBuild:
+    """Install the pinned build of engine *name* from *wheel*, else from its pack.
+
+    The host gate of the engine runs first. The store checks the digest, the licence
+    and the files of the wheel and writes the record.
+    """
+    engine = _engine_name(name)
+    adapter = choice.ADAPTERS.get(engine)
+    if adapter is None:
+        raise EngineRefusedError(
+            f"Engine {name} has no build to install in this version of lilbee."
+        )
+    if adapter.bundled:
+        raise EngineRefusedError(f"Engine {name} ships with lilbee. There is nothing to install.")
+    gate = adapter.host_gate(host_caps.detect())
+    if not gate.ok:
+        raise EngineRefusedError(f"Engine {name} cannot run on this host. {gate.reason}")
+    try:
+        lock = choice.pin_lock(adapter.pin_record())
+    except choice.PinError as exc:
+        raise EngineRefusedError(f"Engine {name} cannot be installed: {exc}.") from exc
+    store = EngineStore(engines_root(cfg.models_dir))
+    try:
+        if wheel is None:
+            store.ensure(lock, _no_download)
+        else:
+            store.install_from_wheel(lock, wheel)
+    except _STORE_REFUSALS as exc:
+        raise EngineRefusedError(str(exc)) from exc
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise EngineRefusedError(f"Engine {name} was not installed: {exc}") from exc
+    return InstalledBuild(lock.engine, lock.version, lock.backend)
 
 
 def http_refused_message() -> str:

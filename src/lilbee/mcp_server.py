@@ -275,7 +275,9 @@ ENGINES_DISABLED_ERROR = (
     "true, /set mcp_engines_enabled true in the TUI, or mcp_engines_enabled = true in "
     "config.toml."
 )
-_ENGINE_TOOL_NAMES: frozenset[str] = frozenset({"engine_roles", "engine_use", "engine_prefer"})
+_ENGINE_TOOL_NAMES: frozenset[str] = frozenset(
+    {"engine_roles", "engine_use", "engine_prefer", "engine_install"}
+)
 
 PRESETS_DISABLED_ERROR = (
     "Server presets are off over MCP. Turn them on with settings_set mcp_presets_enabled "
@@ -1971,6 +1973,23 @@ def engine_prefer_tool(engine: str) -> dict[str, Any]:
     if (refused := _engine_write_refused()) is not None:
         return refused
     return _engine_result(lambda: EngineChosenResponse(engine=engine_service.prefer(engine)))
+
+
+@_tool_named("engine_install")
+def engine_install_tool(engine: str) -> dict[str, Any]:
+    """Install an engine build from its pack; the host must pass the engine's gate."""
+    from lilbee.server.models import EngineInstalledResponse
+
+    if (refused := _engine_write_refused()) is not None:
+        return refused
+
+    def install() -> EngineInstalledResponse:
+        built = engine_service.install(engine)
+        return EngineInstalledResponse(
+            engine=built.engine, version=built.version, backend=built.backend
+        )
+
+    return _engine_result(install)
 
 
 def build_mcp_server() -> LilbeeMCP:
