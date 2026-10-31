@@ -7,5 +7,5 @@
     47
   ],
   "request": null,
-  "assert": "A role that is not claimed answers a 4xx status or 501, or with a valid answer of that role."
+  "assert": "A role that is not claimed answers 400, 404, 405 or 501, or with a valid answer of that role."
 }

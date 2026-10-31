@@ -12,5 +12,5 @@
     "seed": 7,
     "max_tokens": 32
   },
-  "assert": "Two identical requests return the same answer and reasoning text, not both empty."
+  "assert": "Two identical requests return the same answer and reasoning text. The answer is not empty; reasoning text alone counts only when the finish_reason is length."
 }

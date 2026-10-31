@@ -14,7 +14,7 @@ A "row" is a numbered observation from the engine spike, which measured four eng
 
 ## Run the suite
 
-Run tier 1 against a server that is already up. `--models` gives the model id of each claimed role. `--health-path` is needed only when the health path is not `/health`.
+Run tier 1 against a server that is already up. `--models` gives the model id of each claimed role. `--health-path` is needed only when the health path is not `/health`. It applies to a running engine. A pin run starts the engine and waits for 200 on `/health`, so a pinned engine answers `/health`.
 
 ```bash
 pytest tests/conformance/test_real_engine.py \
@@ -35,7 +35,7 @@ Tier 1 is a server that lilbee does not start. The user runs it.
 
 ### E1 Health
 
-The engine answers 200 on its health path, which is `/health` unless the run gives `--health-path`. Lilbee has no health path setting today; the option names the path for the run only. If the path does not answer, `GET /v1/models` with 200 gives `fallback`.
+The engine answers 200 on its health path, which is `/health` unless the run gives `--health-path`. Lilbee has no health path setting today; the option names the path for the E1 probe only. If the path does not answer, `GET /v1/models` with 200 gives `fallback`.
 
 Evidence: row 1, row 12, row 22, row 38. Lemonade answers 404 on `/health` and 200 on `/live` (row 22). The caller is `src/lilbee/providers/fleet/swap_manager.py`.
 
@@ -53,13 +53,13 @@ Evidence: row 13, row 34, row 38. The callers are `src/lilbee/providers/backends
 
 ### E4 Chat
 
-`POST /v1/chat/completions` without streaming returns `choices[0].message.content` as a string for a system, user, assistant, user conversation.
+`POST /v1/chat/completions` without streaming returns `choices[0].message.content` as a non-empty string and `finish_reason` `stop` for a system, user, assistant, user conversation. The request allows 1024 tokens, so a reasoning model has room to think and answer. An engine that sends reasoning and no `content` fails, because lilbee shows `content` to the user.
 
 Evidence: row 6, row 26, row 36. The caller is `src/lilbee/providers/fleet/client.py`.
 
 ### E5 Stream
 
-A stream sends `data:` frames with `choices[0].delta` and ends with `data: [DONE]`. It sends no `error` frame. At least one frame carries text in `content`, `reasoning_content` or `reasoning`: a reasoning model can spend a small token budget on thinking and send no `content`.
+A stream sends `data:` frames with `choices[0].delta` and ends with `data: [DONE]`. It sends no `error` frame. At least one frame carries text in `content`. Text in `reasoning_content` or `reasoning` alone counts only when the stream ends with `finish_reason` `length`: the request allows 32 tokens, and a reasoning model can spend them all on thinking.
 
 Evidence: row 36. The CUDA mistral.rs sent an error frame and then `[DONE]`.
 
@@ -77,7 +77,7 @@ Evidence: row 9, row 29, row 48, row 55. Row 55 is the real mistral.rs CPU run o
 
 ### E8 Embeddings
 
-`POST /v1/embeddings` returns N vectors in input order, as float and as base64. The suite checks the order: vector i of a batch must match the vector of text i embedded alone. All vectors have one dimension, hold finite numbers, are not all zero, and differ for different inputs. A normalized or a raw vector both pass.
+`POST /v1/embeddings` returns N vectors in input order, as float and as base64. The suite checks the order at batches of 3, 9 and 33 texts: vector i of a batch must match the vector of text i embedded alone. All vectors have one dimension, hold finite numbers, are not all zero, and differ for different inputs. A normalized or a raw vector both pass.
 
 Evidence: row 10, row 17, row 30, row 32, row 44, row 46, row 54. Row 32 and row 46 answered 200 with zeros or a vector that is not a score. Row 17 is not a defect for embeddings. Row 10 was not probed.
 
@@ -95,7 +95,7 @@ Evidence: no spike row. The callers are `src/lilbee/vision.py` and `src/lilbee/p
 
 ### E11 Deterministic output
 
-Two chats at temperature 0 with a fixed seed return the same text. The text is the answer and the reasoning, and at least one is not empty. This runs against a real engine only.
+Two chats at temperature 0 with a fixed seed return the same text. The text is the answer and the reasoning. The answer is not empty. Reasoning alone counts only when `finish_reason` is `length`, because the request allows 32 tokens. The check also runs against the fake engine, to show that it can fail. A pass counts as a result for a real engine only.
 
 Evidence: no spike row. The golden comparison of the next engine items needs it.
 
@@ -107,7 +107,7 @@ Evidence: row 8, row 28, row 43, row 52. mlx_lm.server hung until the client tim
 
 ### E13 Route not served
 
-A role the engine does not claim answers with a 4xx status or 501, or answers with a valid body of that role. A 200 with a degenerate body fails, and so does a 5xx other than 501. An embedding server that answers a chat call with 400 "model not found" passes.
+A role the engine does not claim answers 400, 404, 405 or 501, or answers with a valid body of that role. A 200 with a degenerate body fails. Every other status fails, including 401, 403, 429 and 5xx. An embedding server that answers a chat call with 400 "model not found" passes.
 
 Evidence: row 32, row 33, row 46, row 47. Row 33 is a chat model that answers 501 on rerank.
 

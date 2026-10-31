@@ -24,7 +24,7 @@
         "content": "Again."
       }
     ],
-    "max_tokens": 32
+    "max_tokens": 1024
   },
-  "assert": "200 and choices[0].message.content is a string."
+  "assert": "200, choices[0].message.content is a non-empty string and choices[0].finish_reason is stop, with a token budget large enough for a reasoning model to think and answer."
 }

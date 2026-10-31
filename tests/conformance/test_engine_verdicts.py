@@ -173,25 +173,35 @@ MUTANT_CASES = [
         quality_modes=(True,),
     ),
     Case(
-        "reasoning_model_spends_budget_thinking",
-        Behaviour(chat="think-only"),
+        "reasoning_model_thinks_then_answers",
+        Behaviour(chat="think-budget"),
         claims=_CHAT_REASONING,
     ),
     Case(
         "reasoning_model_random_thoughts",
-        Behaviour(chat="think-only", deterministic=False),
+        Behaviour(chat="think-budget", deterministic=False),
         claims=_CHAT_REASONING,
         expect_quality={"E11": F},
         quality_modes=(True,),
     ),
     Case(
+        "reasoning_model_never_answers",
+        Behaviour(chat="think-only"),
+        claims=_CHAT_REASONING,
+        expect={"E4": F, "E5": F},
+        expect_quality={"E11": F},
+    ),
+    Case(
         "chat_returns_no_text_and_no_reasoning",
         Behaviour(chat="empty"),
         claims=_CHAT_REASONING,
-        expect={"E5": F, "E6": F},
+        expect={"E4": F, "E5": F, "E6": F},
         expect_quality={"E11": F},
     ),
     Case("embed_swapped_order", Behaviour(embed="swapped"), expect={"E8": F}),
+    Case("embed_swapped_from_9", Behaviour(embed="swapped-from-9"), expect={"E8": F}),
+    Case("embed_swapped_from_33", Behaviour(embed="swapped-from-33"), expect={"E8": F}),
+    Case("embed_swapped_past_the_largest_batch", Behaviour(embed="swapped-from-34")),
     Case("rerank_one_based_index", Behaviour(rerank="onebased"), expect={"E9": F}),
     Case(
         "embed_server_answers_chat_400",
@@ -201,7 +211,7 @@ MUTANT_CASES = [
     ),
     Case(
         "embed_server_answers_chat_500",
-        Behaviour(chat="500"),
+        Behaviour(chat="status-500"),
         claims=frozenset({"embed"}),
         expect={"E13": F},
         quality_modes=(True,),
@@ -229,6 +239,19 @@ MUTANT_CASES = [
         claims=frozenset({"chat"}),
         quality_modes=(True,),
     ),
+]
+
+
+_ABSENT_STATUSES = (404, 405, 501)
+MUTANT_CASES += [
+    Case(
+        f"embed_server_answers_chat_{code}",
+        Behaviour(chat=f"status-{code}"),
+        claims=frozenset({"embed"}),
+        expect={} if code in _ABSENT_STATUSES else {"E13": F},
+        quality_modes=(True,),
+    )
+    for code in (401, 403, 404, 405, 408, 422, 429, 501)
 ]
 
 

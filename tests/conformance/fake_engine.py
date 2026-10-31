@@ -16,6 +16,7 @@ from typing import Any
 
 CTX_CHARS = 100_000
 _HANG_S = 3.0
+_THINK_TOKENS = 256
 _ENVELOPE = {"error": {"message": "The requested endpoint does not exist"}}
 
 
@@ -214,15 +215,26 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             message[field_name] = "hm"
 
-    def _exhaust_budget(self, message: dict[str, Any]) -> None:
-        """Think-only: the budget ends inside the reasoning. Empty: no answer and no reasoning."""
-        if self.cfg.chat not in ("think-only", "empty") or message.get("tool_calls"):
-            return
+    def _exhaust_budget(self, message: dict[str, Any], req: dict[str, Any]) -> str | None:
+        """The finish reason when the chat mode drops the answer; None when it keeps it.
+
+        think-budget thinks and answers, unless max_tokens ends inside the thinking.
+        think-only never answers. empty sends neither answer nor reasoning.
+        """
+        mode = self.cfg.chat
+        if mode not in ("think-only", "think-budget", "empty") or message.get("tool_calls"):
+            return None
+        budget_ended = (
+            mode == "think-budget" and (req.get("max_tokens") or _THINK_TOKENS) < _THINK_TOKENS
+        )
+        if mode == "think-budget" and not budget_ended:
+            return None
         thought, message["content"] = message["content"], ""
         for name in ("reasoning_content", "reasoning"):
             message.pop(name, None)
-        if self.cfg.chat == "think-only":
+        if mode != "empty":
             message["reasoning_content"] = thought
+        return "length" if budget_ended else "stop"
 
     def _chat(self, req: dict[str, Any]) -> None:
         prompt = json.dumps(req["messages"])
@@ -234,8 +246,8 @@ class _Handler(BaseHTTPRequestHandler):
                 400, {"error": {"message": "model was not found", "type": "invalid_request_error"}}
             )
             return
-        if self.cfg.chat == "500":
-            self._send(500, {"error": {"message": "boom"}})
+        if self.cfg.chat.startswith("status-"):
+            self._send(int(self.cfg.chat.removeprefix("status-")), {"error": {"message": "no"}})
             return
         if len(prompt) > CTX_CHARS:
             self._overflow()
@@ -257,7 +269,7 @@ class _Handler(BaseHTTPRequestHandler):
         if req.get("tools"):
             message, finish = self._tool_message(req, message)
         self._with_reasoning(message)
-        self._exhaust_budget(message)
+        finish = self._exhaust_budget(message, req) or finish
         if req.get("stream"):
             self._stream(message, finish)
         elif self.cfg.chat == "nochoices":
@@ -288,12 +300,23 @@ class _Handler(BaseHTTPRequestHandler):
             raw += "" if self.cfg.stream == "no-done" else "data: [DONE]\n\n"
         self._send(200, raw=raw.encode(), ctype="text/event-stream")
 
+    def _embed_order(self, inputs: list[str]) -> list[str]:
+        """swapped reverses every batch. swapped-from-N swaps two texts in a batch of N or more."""
+        mode = self.cfg.embed
+        if mode == "swapped":
+            return inputs[::-1]
+        if mode.startswith("swapped-from-") and len(inputs) >= int(
+            mode.removeprefix("swapped-from-")
+        ):
+            return [inputs[1], inputs[0], *inputs[2:]]
+        return inputs
+
     def _embed(self, req: dict[str, Any]) -> None:
         inputs = req["input"] if isinstance(req["input"], list) else [req["input"]]
         if self.cfg.embed == "count":
             inputs = inputs[:-1] or inputs
         data = []
-        vectors_for = inputs[::-1] if self.cfg.embed == "swapped" else inputs
+        vectors_for = self._embed_order(inputs)
         for i, text in enumerate(vectors_for):
             dim = self.cfg.dim + (1 if self.cfg.embed == "drift" and i else 0)
             zero = self.cfg.embed == "zero" or (self.cfg.embed == "zero_first" and i == 0)

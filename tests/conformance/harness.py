@@ -26,9 +26,14 @@ GOLDEN_DIR = Path(__file__).parent / "golden"
 CLAIMS = frozenset({"chat", "embed", "rerank", "vision", "reasoning"})
 _HTTP_OK = 200
 _NOT_IMPLEMENTED = 501
-_TEXT_FIELDS = ("content", "reasoning_content", "reasoning")
+_REASONING_FIELDS = ("reasoning_content", "reasoning")
+_TEXT_FIELDS = ("content", *_REASONING_FIELDS)
+_FINISH_STOP = "stop"
+_FINISH_LENGTH = "length"
 _ORDER_COSINE = 0.99
+_ORDER_BATCHES = (3, 9, 33)
 _CLIENT_ERROR = range(400, 500)
+_ABSENT_STATUSES = frozenset({400, 404, 405, _NOT_IMPLEMENTED})
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _COPYLEFT = re.compile(r"(^|[^L])GPL|AGPL")
 _DEVICE_LINE = re.compile(r"^\s*[A-Za-z]+\d+:\s*.+?\s*\(\d+\s*MiB")
@@ -211,16 +216,36 @@ def _check_stream(probe: _Probe) -> Verdict:
         if not isinstance(frame, dict) or "error" in frame:
             return Verdict.FAIL
         frames.append(frame)
-    return _verdict(any(_delta_text(f) for f in frames))
+    answer = "".join(_delta_text(f, ("content",)) for f in frames)
+    thought = "".join(_delta_text(f, _REASONING_FIELDS) for f in frames)
+    finishes = [reason for reason in map(_frame_finish, frames) if reason]
+    return _verdict(_answered(answer, thought, finishes[-1] if finishes else None))
 
 
-def _delta_text(frame: dict[str, Any]) -> str:
-    """The answer or reasoning text of a frame; a thinking model may send no answer."""
+def _delta_text(frame: dict[str, Any], names: tuple[str, ...]) -> str:
+    """The text of the named fields in the delta of a frame."""
     choices = frame.get("choices")
     if not choices:
         return ""
     delta = choices[0].get("delta") or {}
-    return "".join(str(delta.get(name) or "") for name in _TEXT_FIELDS)
+    return "".join(str(delta.get(name) or "") for name in names)
+
+
+def _frame_finish(frame: dict[str, Any]) -> Any:
+    choices = frame.get("choices")
+    return choices[0].get("finish_reason") if choices else None
+
+
+def _answered(answer: str, thought: str, finish: Any) -> bool:
+    """An answer counts. Reasoning alone counts only when the engine says the budget ended."""
+    return bool(answer.strip()) or (bool(thought.strip()) and finish == _FINISH_LENGTH)
+
+
+def _reply_answered(doc: Any) -> bool:
+    message = _message(doc) or {}
+    answer = str(message.get("content") or "")
+    thought = "".join(str(message.get(name) or "") for name in _REASONING_FIELDS)
+    return _answered(answer, thought, doc["choices"][0].get("finish_reason"))
 
 
 def _text(doc: Any) -> tuple[str, ...]:
@@ -260,7 +285,11 @@ def _check_chat(probe: _Probe, claims: set[str], quality: bool) -> dict[str, Ver
     status, doc = probe.chat("chat", **golden("E4")["request"])
     message = _message(doc)
     out["E4"] = _verdict(
-        status == _HTTP_OK and message is not None and isinstance(message.get("content"), str)
+        status == _HTTP_OK
+        and message is not None
+        and isinstance(message.get("content"), str)
+        and bool(message["content"].strip())
+        and doc["choices"][0].get("finish_reason") == _FINISH_STOP
     )
     out["E5"] = _check_stream(probe)
     out["E7"] = _check_tools(probe)
@@ -277,8 +306,10 @@ def _check_chat(probe: _Probe, claims: set[str], quality: bool) -> dict[str, Ver
 
 def _check_determinism(probe: _Probe) -> Verdict:
     request = golden("E11")["request"]
-    texts = [_text(probe.chat("chat", **request)[1]) for _ in range(2)]
-    return _verdict(any(texts[0]) and texts[0] == texts[1])
+    docs = [probe.chat("chat", **request)[1] for _ in range(2)]
+    if not all(_message(doc) is not None and _reply_answered(doc) for doc in docs):
+        return Verdict.FAIL
+    return _verdict(_text(docs[0]) == _text(docs[1]))
 
 
 def _check_vision(probe: _Probe, quality: bool) -> Verdict:
@@ -301,7 +332,8 @@ def _check_embed(probe: _Probe) -> Verdict:
         status, doc = probe.embed(texts, encoding_format=encoding)
         if status != _HTTP_OK or not _embeddings_ok(doc, len(texts), encoding):
             return Verdict.FAIL
-    return _verdict(_in_input_order(probe, texts))
+    batches = [texts + [f"text {i}" for i in range(size - len(texts))] for size in _ORDER_BATCHES]
+    return _verdict(all(_in_input_order(probe, batch) for batch in batches))
 
 
 def _in_input_order(probe: _Probe, texts: list[str]) -> bool:
@@ -374,7 +406,7 @@ def _serves_role(probe: _Probe, role: str) -> bool:
     else:
         status, doc = probe.rerank("q", ["a", "b"])
         valid = isinstance(doc, dict) and bool(doc.get("results"))
-    refused = status in _CLIENT_ERROR or status == _NOT_IMPLEMENTED
+    refused = status in _ABSENT_STATUSES
     return refused or (status == _HTTP_OK and valid)
 
 

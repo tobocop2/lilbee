@@ -11,5 +11,5 @@
       }
     ]
   },
-  "assert": "stream: data frames with choices, no error frame, at least one frame with content or reasoning text, last line data: [DONE]."
+  "assert": "stream: data frames with choices, no error frame, at least one frame with content text (reasoning text alone counts only when the finish_reason is length), last line data: [DONE]."
 }
