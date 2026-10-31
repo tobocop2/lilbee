@@ -455,7 +455,7 @@ async def scenario_not_installed_named(tmp: Path) -> Result:
     with _isolated_env(tmp):
         plan = planning_mod.FleetPlan((), skipped_not_installed={WorkerRole.CHAT: cfg.chat_model})
         with (
-            mock.patch.object(planning_mod, "plan_all_launches", lambda: plan),
+            mock.patch.object(planning_mod, "plan_all_launches", lambda *, engine: plan),
             mock.patch.object(planning_mod, "placeable_total_vram", lambda _engine: 0),
             mock.patch.object(planning_mod, "capture_plan_probe", lambda _engine: None),
             mock.patch.object(prov_mod, "engine_pin", lambda: "pin"),

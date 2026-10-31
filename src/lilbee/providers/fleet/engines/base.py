@@ -180,7 +180,7 @@ class EngineAdapter(Protocol):
         """Whether *binary* can give its slots one KV pool with a per-slot cap."""
         ...
 
-    def model_meta(self, path: Path) -> Mapping[str, str] | None:
+    def model_meta(self, path: Path) -> dict[str, str] | None:
         """Header metadata of the model file at *path*, or ``None`` when it has none."""
         ...
 

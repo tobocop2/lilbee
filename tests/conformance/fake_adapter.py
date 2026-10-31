@@ -117,7 +117,7 @@ class FakeAdapter:
             shared_bytes=_RESERVE_BYTES,
         )
 
-    def model_meta(self, path: Path) -> Mapping[str, str] | None:
+    def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
     def assert_loadable(self, repo: str, filename: str, token: str | None) -> None:

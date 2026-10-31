@@ -120,7 +120,7 @@ class LlamaCppAdapter:
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return probe_devices(binary)
 
-    def model_meta(self, path: Path) -> Mapping[str, str] | None:
+    def model_meta(self, path: Path) -> dict[str, str] | None:
         if path.suffix.lower() != _GGUF_SUFFIX:
             return None
         return read_gguf_metadata(path)

@@ -25,7 +25,6 @@ from lilbee.providers.fleet.adapters import (
 from lilbee.providers.fleet.binary import (
     engine_binary_identity,
     engine_build_id,
-    llama_server_runtime_env,
 )
 from lilbee.providers.fleet.devices import (
     MIB,
@@ -34,7 +33,7 @@ from lilbee.providers.fleet.devices import (
     host_lacks_nvlink,
     visible_env,
 )
-from lilbee.providers.fleet.engines import LLAMA, EngineAdapter, LaunchRequest, MemoryRequest
+from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest, MemoryRequest
 from lilbee.providers.fleet.engines.base import MemoryKind
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import (
@@ -474,7 +473,7 @@ def _fit_slots(
                     flash_attn=_role_flash(role, rerank_mode, engine=engine),
                     kv_cache_type=_role_kv_cache_type(role, engine=engine),
                     mmproj_path=mmproj_path,
-                    expert_offload=_role_expert_offload(model_path),
+                    expert_offload=_role_expert_offload(model_path, engine=engine),
                 )
             )
         except (ProviderError, OSError):
@@ -513,7 +512,7 @@ def fit_chat_ctx(
         kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
         unified=plan_sizing_is_unified(engine),
         ctx_ceiling=ctx_ceiling,
-        expert_offload=_role_expert_offload(model_path),
+        expert_offload=_role_expert_offload(model_path, engine=engine),
     )
     needed = engine_params.min_usable_chat_ctx()
     if (
@@ -535,7 +534,7 @@ def _engine_fits_chat_offload(model_path: Path, binary: Path | None, engine: Eng
     """
     return (
         _role_gpu_layers(WorkerRole.CHAT) == engine_params.N_GPU_LAYERS_AUTO
-        and not _role_expert_offload(model_path)
+        and not _role_expert_offload(model_path, engine=engine)
         and not plan_sizing_is_unified(engine)
         and binary is not None
         and engine.supports_fit_target(binary)
@@ -561,7 +560,7 @@ def _chat_host_estimate(model_path: Path, ctx: int, slots: int, engine: EngineAd
                 gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
                 flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
                 kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
-                expert_offload=_role_expert_offload(model_path),
+                expert_offload=_role_expert_offload(model_path, engine=engine),
             )
         )
     except (ProviderError, OSError):
@@ -843,11 +842,9 @@ def _estimate_role(
     roles; ``device_count`` resolves an auto (0) replica knob to one per GPU.
     Charges the unified footprint with no discrete GPU, else the VRAM one.
     """
-    from lilbee.providers.gguf_meta import read_gguf_metadata
-
     path = engine_params.resolve_model_path(model_ref)
     mmproj = _vision_mmproj(model_ref) if role is WorkerRole.VISION else None
-    meta = read_gguf_metadata(path)
+    meta = engine.model_meta(path)
     # Size the single-instance footprint against the placement reserve (a usable
     # KV floor for chat), so a model that fits weights-only on one card but not
     # weights + a usable context falls through to a tensor-split instead of being
@@ -875,7 +872,7 @@ def _estimate_role(
             kv_cache_type=_role_kv_cache_type(role, engine=engine),
             mmproj_path=mmproj,
             batch_size=_pooled_batch_size(role, rerank_mode, ctx),
-            expert_offload=_role_expert_offload(path),
+            expert_offload=_role_expert_offload(path, engine=engine),
         )
     )
     fp = est.footprint(unified=unified_budget is not None)
@@ -960,11 +957,10 @@ def _peak_estimator(model_refs: dict[WorkerRole, str], engine: EngineAdapter) ->
     Estimates each role at its launch ceiling (ctx x slots) with the candidate
     tensor-split ratio, so the planner reserves enough cards for the busiest one.
     """
-    from lilbee.providers.gguf_meta import read_gguf_metadata
 
     def estimate_peak(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
         path = engine_params.resolve_model_path(model_refs[role])
-        meta = read_gguf_metadata(path)
+        meta = engine.model_meta(path)
         mmproj = _vision_mmproj(model_refs[role]) if role is WorkerRole.VISION else None
         slots = _placement_estimate_slots(role, meta)
         ctx = _placement_estimate_ctx(role, path, meta)
@@ -980,7 +976,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str], engine: EngineAdapter) ->
                 mmproj_path=mmproj,
                 tensor_split=ratio,
                 batch_size=_pooled_batch_size(role, rerank_mode, ctx),
-                expert_offload=_role_expert_offload(path),
+                expert_offload=_role_expert_offload(path, engine=engine),
             )
         )
         return est.per_device
@@ -999,10 +995,8 @@ def _chat_split_ctx_objective(
     """
     if WorkerRole.CHAT not in model_refs:
         return None, 0
-    from lilbee.providers.gguf_meta import read_gguf_metadata
-
     path = engine_params.resolve_model_path(model_refs[WorkerRole.CHAT])
-    meta = read_gguf_metadata(path)
+    meta = engine.model_meta(path)
     target = _placement_estimate_ctx(WorkerRole.CHAT, path, meta)
 
     def fit(ratio: tuple[int, ...], per_device_free_bytes: Sequence[int]) -> int:
@@ -1017,7 +1011,7 @@ def _chat_split_ctx_objective(
             flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
             ctx_ceiling=target,
-            expert_offload=_role_expert_offload(path),
+            expert_offload=_role_expert_offload(path, engine=engine),
         )
 
     return fit, target
@@ -1078,16 +1072,15 @@ def expert_offload_layers(meta: dict[str, str] | None) -> int | None:
     return cfg.n_cpu_moe
 
 
-def _role_expert_offload(model_path: Path) -> tuple[str, ...]:
+def _role_expert_offload(model_path: Path, *, engine: EngineAdapter) -> tuple[str, ...]:
     """Expert patterns the launch will offload, for sizing the same way it runs.
 
     Reads the GGUF (cached) rather than taking metadata as an argument so every
     estimate site charges the same tensors the launch moves off the GPU.
     """
     from lilbee.providers.fleet.adapters import expert_offload_patterns
-    from lilbee.providers.gguf_meta import read_gguf_metadata
 
-    meta = read_gguf_metadata(model_path)
+    meta = engine.model_meta(model_path)
     return expert_offload_patterns(
         cpu_moe=expert_offload_all(meta), n_cpu_moe=expert_offload_layers(meta)
     )
@@ -1206,6 +1199,7 @@ def _estimate_or_fallback(
         total_vram=total_vram,
         ram_bytes=estimate.est_ram_bytes,
         host_committed=host_committed,
+        engine=engine,
     )
 
 
@@ -1217,6 +1211,7 @@ def _admit_estimate(
     total_vram: int,
     ram_bytes: int,
     host_committed: int = 0,
+    engine: EngineAdapter,
 ) -> ModelPlacementInput | None:
     """*estimate*, or ``None`` when this model cannot load on this machine.
 
@@ -1225,7 +1220,7 @@ def _admit_estimate(
     fit the system.
     """
     weights = _role_weights_bytes(role, ref)
-    if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref)):
+    if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref, engine=engine)):
         _warn_weights_exceed(role, ref, weights, total_vram)
         return None
     if total_vram > 0 and weights > total_vram:
@@ -1333,7 +1328,7 @@ def _sizing_failure_fallback(
     if weights == 0:
         log.warning("Skipping %s server: could not size model %r (%s).", role.value, ref, exc)
         return None
-    if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref)):
+    if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref, engine=engine)):
         _warn_weights_exceed(role, ref, weights, total_vram)
         return None
     floor = _fallback_floor_for(role, ref, weights, engine=engine)
@@ -1356,11 +1351,10 @@ def _sizing_failure_fallback(
 def _fallback_floor_for(role: WorkerRole, ref: str, weights: int, *, engine: EngineAdapter) -> int:
     """:func:`_analytic_footprint_floor` for *role*, reading what metadata it can."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.gguf_meta import read_gguf_metadata
 
     try:
         path = engine_params.resolve_model_path(ref)
-        meta = read_gguf_metadata(path)
+        meta = engine.model_meta(path)
     except (ProviderError, OSError, ValueError):
         meta = None
         path = None
@@ -1375,18 +1369,17 @@ def _fallback_floor_for(role: WorkerRole, ref: str, weights: int, *, engine: Eng
     )
 
 
-def planned_embed_token_cap(ref: str) -> int | None:
+def planned_embed_token_cap(ref: str, *, engine: EngineAdapter) -> int | None:
     """The token cap an embed launch of *ref* gets, or None when *ref* cannot be read.
 
     Computed from the model's metadata the way the launch is, so the chunker can
     bound itself to the cap before the engine is up.
     """
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.gguf_meta import read_gguf_metadata
 
     try:
         path = engine_params.resolve_model_path(ref)
-        meta = read_gguf_metadata(path)
+        meta = engine.model_meta(path)
     except (ProviderError, OSError, ValueError):
         return None
     return engine_params.embed_token_cap(
@@ -1394,13 +1387,12 @@ def planned_embed_token_cap(ref: str) -> int | None:
     )
 
 
-def _ref_is_moe(ref: str) -> bool:
+def _ref_is_moe(ref: str, *, engine: EngineAdapter) -> bool:
     """Whether *ref*'s GGUF declares routed experts; False when it cannot be read."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.gguf_meta import read_gguf_metadata
 
     try:
-        return _is_moe(read_gguf_metadata(engine_params.resolve_model_path(ref)))
+        return _is_moe(engine.model_meta(engine_params.resolve_model_path(ref)))
     except (ProviderError, OSError):
         return False
 
@@ -1532,7 +1524,9 @@ def placeable_total_vram(engine: EngineAdapter) -> int:
         return 0
 
 
-def role_model_placeable(role: WorkerRole, ref: str, total_vram: int) -> bool:
+def role_model_placeable(
+    role: WorkerRole, ref: str, total_vram: int, *, engine: EngineAdapter
+) -> bool:
     """Whether a fresh plan would actually serve *role* on *ref*.
 
     Mirrors the planner's own drop conditions (SDK-routed role, vision without a
@@ -1547,7 +1541,7 @@ def role_model_placeable(role: WorkerRole, ref: str, total_vram: int) -> bool:
     weights = _role_weights_bytes(role, ref)  # 0 when not installed / unresolvable
     if weights == 0:
         return False
-    return not _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref))
+    return not _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref, engine=engine))
 
 
 def _server_model_inputs(
@@ -1671,7 +1665,11 @@ def _charge_by_device(
 
 
 def _chat_fit_target_mib(
-    binary: Path, chosen: tuple[FleetDevice, ...], reserved: Mapping[int, int]
+    binary: Path,
+    chosen: tuple[FleetDevice, ...],
+    reserved: Mapping[int, int],
+    *,
+    engine: EngineAdapter,
 ) -> tuple[int, ...]:
     """Memory, in MiB, the engine's fit leaves free on each of chat's cards.
 
@@ -1679,16 +1677,16 @@ def _chat_fit_target_mib(
     that load after chat. Empty for an engine without ``--fit-target`` and on
     shared memory, where a layer moved off the device frees nothing.
     """
-    if any(device.unified for device in chosen) or not LLAMA.supports_fit_target(binary):
+    if any(device.unified for device in chosen) or not engine.supports_fit_target(binary):
         return ()
     return tuple(
         ENGINE_FIT_MARGIN_MIB + -(-reserved.get(device.index, 0) // MIB) for device in chosen
     )
 
 
-def _engine_shares_kv(binary: Path) -> bool:
+def _engine_shares_kv(binary: Path, *, engine: EngineAdapter) -> bool:
     """Whether *binary* can give its slots one KV pool with a per-slot cap."""
-    return LLAMA.supports_shared_kv(binary)
+    return engine.supports_shared_kv(binary)
 
 
 def _launch_for(
@@ -1706,13 +1704,11 @@ def _launch_for(
     engine: EngineAdapter,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
-    from lilbee.providers.gguf_meta import read_gguf_metadata
-
     # The self-check holds a downloaded file rather than a configured reference,
     # so it hands the path over instead of asking for one to be resolved.
     model_path = model_path or engine_params.resolve_model_path(model_ref)
     weights_bytes = _weights_bytes(model_path)
-    meta = read_gguf_metadata(model_path)
+    meta = engine.model_meta(model_path)
     from lilbee.core.config import cfg
 
     chosen = tuple(by_index[i] for i in plan.devices)
@@ -1763,7 +1759,7 @@ def _launch_for(
                 flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
                 kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
                 ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
-                expert_offload=_role_expert_offload(model_path),
+                expert_offload=_role_expert_offload(model_path, engine=engine),
             )
 
         split_slots, ctx = _resolve_split_chat_slots(_split_fit)
@@ -1795,7 +1791,7 @@ def _launch_for(
             device=placed_device,
         )
     )
-    spec = LLAMA.role_spec(plan.role, rerank_mode, meta)
+    spec = engine.role_spec(plan.role, rerank_mode, meta)
     # Where the engine's fit can move chat layers off the card, the readback
     # compares the host memory it reports with this to say so.
     fit_moves_chat = (
@@ -1824,11 +1820,13 @@ def _launch_for(
         cpu_moe=expert_offload_all(meta),
         n_cpu_moe=expert_offload_layers(meta),
         device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(engine),
-        memory_endpoint=LLAMA.check_readback(binary),
+        memory_endpoint=engine.check_readback(binary),
         fit_target_mib=(
-            _chat_fit_target_mib(binary, chosen, reserved_after_chat or {}) if is_chat else ()
+            _chat_fit_target_mib(binary, chosen, reserved_after_chat or {}, engine=engine)
+            if is_chat
+            else ()
         ),
-        kv_unified_per_slot=ctx if is_chat and _engine_shares_kv(binary) else None,
+        kv_unified_per_slot=ctx if is_chat and _engine_shares_kv(binary, engine=engine) else None,
     )
     if est_vram_bytes is None:
         est_vram_bytes = _declared_reserve(
@@ -1841,14 +1839,14 @@ def _launch_for(
                 flash_attn=_role_flash(plan.role, rerank_mode, engine=engine),
                 kv_cache_type=_role_kv_cache_type(plan.role, engine=engine),
                 mmproj_path=mmproj,
-                expert_offload=_role_expert_offload(model_path),
+                expert_offload=_role_expert_offload(model_path, engine=engine),
             ),
             unified=unified_budget is not None,
         )
     launch = InstanceLaunch(
         role=plan.role,
-        argv=LLAMA.launch_argv(spec, request),
-        env_overrides={**visible_env(chosen), **llama_server_runtime_env()},
+        argv=engine.launch_argv(spec, request),
+        env_overrides={**visible_env(chosen), **engine.runtime_env()},
         model=model_ref,
         # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
         # doesn't truncate (it relies on the per-slot ctx headroom), so leave it None.
@@ -1873,7 +1871,7 @@ def _launch_for(
         est_unreported_bytes=_unreported_bytes(plan.role, mmproj),
         est_host_bytes=_chat_host_estimate(model_path, ctx, slots, engine) if fit_moves_chat else 0,
     )
-    return replace(launch, swap_extras=LLAMA.swap_extras(launch))
+    return replace(launch, swap_extras=engine.swap_extras(launch))
 
 
 def build_single_role_launch(
@@ -3010,7 +3008,7 @@ class ResolvedPlacement:
 
 
 def resolve_placement_plan(
-    placement: PlacementSpec | None, *, fall_back_to_auto: bool = False
+    placement: PlacementSpec | None, *, engine: EngineAdapter, fall_back_to_auto: bool = False
 ) -> ResolvedPlacement:
     """Probe devices and resolve the auto-or-manual placement, without launching.
 
@@ -3023,24 +3021,24 @@ def resolve_placement_plan(
     than the plan snapshot, so borrowing the snapshot's backend would pair a live
     device list with a backend read at fleet build.
     """
-    binary = LLAMA.binary()
-    reading = _read_device_cache.get(binary, LLAMA)
+    binary = engine.binary()
+    reading = _read_device_cache.get(binary, engine)
     devices = reading.devices
-    unified_budget = _unified_memory_budget(devices, LLAMA)
+    unified_budget = _unified_memory_budget(devices, engine)
     inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
         None,
-        engine=LLAMA,
+        engine=engine,
         unified_budget=unified_budget,
         total_vram=sum(d.total_bytes for d in devices),
     )
-    admission_budget = _unified_admission_budget(devices, LLAMA)
+    admission_budget = _unified_admission_budget(devices, engine)
     if fall_back_to_auto:
         resolved, spec_applied = _placement_or_auto(
-            placement, inputs, model_refs, devices, engine=LLAMA, unified_budget=admission_budget
+            placement, inputs, model_refs, devices, engine=engine, unified_budget=admission_budget
         )
     else:
         resolved = _resolve_placement(
-            placement, inputs, model_refs, devices, engine=LLAMA, unified_budget=admission_budget
+            placement, inputs, model_refs, devices, engine=engine, unified_budget=admission_budget
         )
         spec_applied = placement is not None
     return ResolvedPlacement(
@@ -3136,10 +3134,12 @@ def plan_launches(
     binary: Path,
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
+    *,
+    engine: EngineAdapter,
 ) -> FleetPlan:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
-    with _one_engine_per_pass(engine=LLAMA):
-        return _planned_launches(roles, binary, by_index, devices, LLAMA)
+    with _one_engine_per_pass(engine=engine):
+        return _planned_launches(roles, binary, by_index, devices, engine)
 
 
 def _planned_launches(
@@ -3258,14 +3258,14 @@ def _launched_roles() -> tuple[WorkerRole, ...]:
     )
 
 
-def plan_all_launches() -> FleetPlan:
+def plan_all_launches(*, engine: EngineAdapter) -> FleetPlan:
     """Probe devices and plan launches for the configured roles.
 
     Writes no environment: the probe child carries the Vulkan loader safety and any
     ``cfg.gpu_devices`` pin in its own env, and the plan reads the pin from there.
     """
-    binary = LLAMA.binary()
-    with _one_engine_per_pass(engine=LLAMA):
-        devices = _plan_devices(binary, LLAMA)
+    binary = engine.binary()
+    with _one_engine_per_pass(engine=engine):
+        devices = _plan_devices(binary, engine)
         by_index = {d.index: d for d in devices}
-        return plan_launches(_launched_roles(), binary, by_index, devices)
+        return plan_launches(_launched_roles(), binary, by_index, devices, engine=engine)

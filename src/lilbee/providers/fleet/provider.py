@@ -787,7 +787,7 @@ def _placeable_demand() -> _EngineDemand:
     )
 
     try:
-        plan = plan_all_launches()
+        plan = plan_all_launches(engine=LLAMA)
     except ProviderError as exc:
         if exc.kind is ProviderErrorKind.NOT_FOUND:
             return _EngineDemand(set(), 0, {}, {})
@@ -799,7 +799,7 @@ def _placeable_demand() -> _EngineDemand:
         for role in WorkerRole
         if role in placed
         and (model := _configured_model_for(role))
-        and role_model_placeable(role, model, total_vram)
+        and role_model_placeable(role, model, total_vram, engine=LLAMA)
     }
     return _EngineDemand(
         pairs,
@@ -1246,7 +1246,7 @@ class FleetProvider:
             # warm tracker and the caller report the real reason instead of a
             # silent never-ready fleet.
             planning.capture_plan_probe(LLAMA)
-            plan = planning.plan_all_launches()
+            plan = planning.plan_all_launches(engine=LLAMA)
         except ProviderError as exc:
             # Only a genuinely-missing engine binary keeps the quiet no-fleet path;
             # any other planning failure (a wedged GPU probe, an unusable CUDA
@@ -1526,7 +1526,7 @@ class FleetProvider:
             launches = self._role_launches(WorkerRole.EMBED)
         if launches:
             return launches[0].token_cap
-        return planning.planned_embed_token_cap(cfg.embedding_model)
+        return planning.planned_embed_token_cap(cfg.embedding_model, engine=LLAMA)
 
     def health_warnings(self) -> list[HealthWarning]:
         """Serving degradations: the embed window and any placement divergences."""
@@ -2622,7 +2622,7 @@ class FleetProvider:
                         # Nothing loaded (a resurrect after a failed pass): the box is
                         # clean, so refresh the plan snapshot like a first build would.
                         planning.capture_plan_probe(LLAMA)
-                    plan = planning.plan_all_launches()
+                    plan = planning.plan_all_launches(engine=LLAMA)
                 except ProviderError as exc:
                     # Same policy as the initial build: a genuinely-missing engine
                     # binary aborts the reload quietly (nothing to serve), while any
