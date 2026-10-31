@@ -26,7 +26,7 @@ from lilbee.app.profiles import (
 )
 from lilbee.app.settings import SettingInfo, SettingsUpdateResult
 from lilbee.app.settings_map import SettingGroup
-from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
+from lilbee.catalog.types import KeyStatus, ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config.defaults import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
 from lilbee.core.config.enums import (
     CrawlRenderMode,
@@ -581,8 +581,18 @@ class CatalogEntryResponse(BaseModel):
     architecture: str = ""
     compat: ModelCompat = ModelCompat.UNKNOWN
     safety_stripped: bool = False
+    formats: list[str] = Field(default_factory=lambda: [ModelFormat.GGUF.value])
+    """The weight formats this host can run for the row; a pull takes one of them."""
     provider: str = ""
     key_status: KeyStatus | None = None
+
+
+class HiddenEntryResponse(BaseModel):
+    """A catalog row the listing left out, and why."""
+
+    hf_repo: str
+    reason: str
+    text: str
 
 
 class ModelsCatalogResponse(BaseModel):
@@ -600,6 +610,8 @@ class ModelsCatalogResponse(BaseModel):
     has_more: bool = False
     next_offset: int | None
     truncated: bool = False
+    hidden: list[HiddenEntryResponse] = Field(default_factory=list)
+    hidden_summary: str = ""
 
 
 class ModelsInstalledResponse(BaseModel):

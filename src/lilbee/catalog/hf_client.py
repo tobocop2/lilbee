@@ -18,7 +18,7 @@ from huggingface_hub.hf_api import RepoSibling
 
 from lilbee.catalog.compat import classify
 from lilbee.catalog.content import is_safety_stripped
-from lilbee.catalog.formats import hf_listing_params, select_files
+from lilbee.catalog.formats import formats_from_tags, hf_listing_params, select_files
 from lilbee.catalog.models import (
     CatalogModel,
     HfGgufMeta,
@@ -381,6 +381,7 @@ class HfClient:
             params=gguf_meta.total,
             safety_stripped=is_safety_stripped(item.tags or []),
             format=fmt,
+            formats=formats_from_tags(item.tags or []) | {fmt},
         )
 
     def _compat(self, fmt: ModelFormat, architecture: str) -> ModelCompat:
