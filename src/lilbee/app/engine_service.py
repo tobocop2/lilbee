@@ -10,6 +10,7 @@ from typing import TypeVar
 
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.catalog.refs import model_format
+from lilbee.app.services import peek_services
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
@@ -21,17 +22,21 @@ from lilbee.providers.fleet.engines.choice import (
     engines_loading,
     installed_engines,
 )
+from lilbee.providers.base import ProviderError
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
 log = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 PREFERRED_KEY = "preferred_engine"
-RESTART_NOTE = "A running server uses the choice after a restart."
 
 
 class EngineRefusedError(ValueError):
     """The engine service refuses a write; the text names the problem and the fix."""
+
+
+class EngineNotAppliedError(EngineRefusedError):
+    """The choice is saved but the running server could not apply it."""
 
 
 class EngineNotSavedError(Exception):
@@ -82,6 +87,21 @@ def _store(
         ) from exc
 
 
+def _apply_to_running() -> None:
+    """Reload the roles of a running server whose engine changed; no services means nothing runs."""
+    services = peek_services()
+    if services is None:
+        return
+    try:
+        services.provider.reload_placement(wait=True)
+    except ProviderError as exc:
+        log.warning("The running server did not apply the engine choice: %s", exc)
+        raise EngineNotAppliedError(
+            "The engine choice is saved, but the running server could not apply it and keeps "
+            f"the engine it started with: {exc}. Restart lilbee to use the choice."
+        ) from exc
+
+
 def roles(config: Config = cfg) -> list[RoleView]:
     """The engine of every role, with the notice for a role that fell back or has none."""
     assignment = resolve_engines(config)
@@ -118,6 +138,7 @@ def prefer(name: str) -> str:
         cfg.preferred_engine = setting
 
     _store(PREFERRED_KEY, apply, commit)
+    _apply_to_running()
     return setting.value
 
 
@@ -181,4 +202,5 @@ def use(model: str, name: str) -> str:
         cfg.engine_choices = encoded
 
     _store(CHOICES_KEY, apply, commit)
+    _apply_to_running()
     return name

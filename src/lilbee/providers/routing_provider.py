@@ -359,6 +359,10 @@ class RoutingProvider(LLMProvider):
         if self._local is not None:
             self._local.reload_role(role, wait=wait)
 
+    def reload_notice(self) -> str | None:
+        """The reload notice of the native engine, or None when none exists."""
+        return None if self._local is None else self._local.reload_notice()
+
     def reload_placement(self, *, wait: bool = False) -> None:
         """Forward to the native engine; the SDK side has no GPU placement."""
         if self._local is not None:
@@ -421,7 +425,14 @@ class RoutingProvider(LLMProvider):
         return [*self._engine_fallbacks(), *self._local_warnings()]
 
     def _engine_fallbacks(self) -> list[HealthWarning]:
-        """One warning for each role whose engine choice did not hold."""
+        """One warning for each role whose engine choice did not hold.
+
+        While a reload runs or after one failed, the live choice is not what the
+        server holds, so the warning says that instead.
+        """
+        notice = self.reload_notice()
+        if notice is not None:
+            return [HealthWarning(code=WarningCode.ENGINE_FALLBACK, message=notice)]
         return [
             HealthWarning(code=WarningCode.ENGINE_FALLBACK, message=choice.notice)
             for choice in resolve_engines(cfg).choices.values()

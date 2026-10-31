@@ -44,9 +44,7 @@ def _roles_text() -> str:
 
 def _use(role: WorkerRole, model: str, engine: str) -> EngineCommandResult:
     chosen = engine_service.use_for_role(role, model, engine)
-    text = msg.ENGINE_USE_DONE.format(
-        role=role, model=model, engine=chosen, note=msg.ENGINE_RESTART_NOTE
-    )
+    text = msg.ENGINE_USE_DONE.format(role=role, model=model, engine=chosen)
     return EngineCommandResult(True, text, CHOICES_KEY)
 
 
@@ -58,7 +56,7 @@ def _run(verb: str, words: list[str]) -> EngineCommandResult:
         return _use(engine_service.parse_role(role), model, engine)
     if verb == _PREFER and len(words) == _PREFER_ARGS:
         chosen = engine_service.prefer(words[0])
-        text = msg.ENGINE_PREFER_DONE.format(engine=chosen, note=msg.ENGINE_RESTART_NOTE)
+        text = msg.ENGINE_PREFER_DONE.format(engine=chosen)
         return EngineCommandResult(True, text, engine_service.PREFERRED_KEY)
     return EngineCommandResult(False, USAGE)
 

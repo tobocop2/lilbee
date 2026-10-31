@@ -3839,6 +3839,7 @@ class TestRoutingProviderEmbedCap:
         routing = RoutingProvider()
         local = MagicMock()
         local.embed_token_cap.return_value = 504
+        local.reload_notice.return_value = None
         local.health_warnings.return_value = [
             HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut")
         ]
@@ -3871,6 +3872,7 @@ class TestRoutingProviderEmbedCap:
         monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
         routing = RoutingProvider()
         local = MagicMock()
+        local.reload_notice.return_value = None
         local.health_warnings.return_value = [
             HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut"),
             HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan"),
@@ -6636,3 +6638,62 @@ def test_demanded_vision_slots_follows_the_configured_concurrency(
 
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     assert _demanded_vision_slots(pairs) == expected
+
+
+def test_the_reload_notice_is_none_when_no_reload_ran(monkeypatch) -> None:
+    p = _provider_without_preload(monkeypatch)
+    assert p.reload_notice() is None
+
+
+def test_the_reload_notice_says_roles_may_run_the_previous_engine_while_a_reload_runs(
+    monkeypatch,
+) -> None:
+    p = _provider_without_preload(monkeypatch)
+    p._swaps = {SwapGroup.CHAT: _FakeSwap()}
+    seen: list[str | None] = []
+    monkeypatch.setattr(p, "_reload_pass", lambda *a, **k: seen.append(p.reload_notice()))
+    p.reload_placement(wait=True)
+    assert seen == ["A change to the engines is being applied; roles may run their previous engine."]
+    assert p.reload_notice() is None
+
+
+def test_a_failed_reload_leaves_the_notice_until_a_pass_succeeds(
+    monkeypatch, ocr_gated_engine
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_without_preload(monkeypatch)
+    p._ensure_fleet()
+    reload_pass = p._reload_pass
+    failures = iter([ProviderError("engine refused", provider="llama-server")])
+
+    def _fail_once(*args, **kwargs) -> None:
+        failure = next(failures, None)
+        if failure is not None:
+            raise failure
+        reload_pass(*args, **kwargs)
+
+    monkeypatch.setattr(p, "_reload_pass", _fail_once)
+    with pytest.raises(ProviderError, match="engine refused"):
+        p.reload_placement(wait=True)
+    assert p.reload_notice() == (
+        "The last engine reload failed; the server keeps the engines it started with."
+    )
+    p.reload_placement(wait=True)
+    assert p.reload_notice() is None
+
+
+def test_the_engine_warning_reads_the_reload_state_not_the_live_setting(monkeypatch) -> None:
+    from lilbee.core.health_warnings import WarningCode
+    from lilbee.providers.routing_provider import RoutingProvider
+
+    routing = RoutingProvider()
+    assert routing.reload_notice() is None
+    local = MagicMock()
+    local.reload_notice.return_value = "The last engine reload failed; kept."
+    local.health_warnings.return_value = []
+    routing._local = local
+    warnings = routing.health_warnings()
+    assert [(w.code, w.message) for w in warnings] == [
+        (WarningCode.ENGINE_FALLBACK, "The last engine reload failed; kept.")
+    ]

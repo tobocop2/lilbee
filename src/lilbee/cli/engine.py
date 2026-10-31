@@ -157,7 +157,7 @@ def use(
     if cfg.json_mode:
         json_out({"command": "engine use", "role": str(role), "model": model, "engine": chosen})
         return
-    console.print(f"{role} model {model} uses engine {chosen}. {engine_service.RESTART_NOTE}")
+    console.print(f"{role} model {model} uses engine {chosen}.")
 
 
 @engine_app.command("prefer")
@@ -172,4 +172,4 @@ def prefer(
     if cfg.json_mode:
         json_out({"command": "engine prefer", "engine": chosen})
         return
-    console.print(f"The preferred engine is {chosen}. {engine_service.RESTART_NOTE}")
+    console.print(f"The preferred engine is {chosen}.")

@@ -1012,6 +1012,8 @@ class FleetProvider:
         # while one is in flight sets the pending flag instead of dispatching,
         # and the in-flight thread re-runs the plan loop once per pending flag.
         self._reloading = False
+        # True after the last reload pass failed and until a pass succeeds.
+        self._reload_failed = False
         # Set when a reload arrives mid-reload: the in-flight pass may have
         # already snapshotted its plan, so the change must be re-applied.
         self._reload_pending = False
@@ -1029,6 +1031,15 @@ class FleetProvider:
         from lilbee.app.engine_choice import EngineBook
 
         return EngineBook(cfg).adapters()
+
+    def _adopt_engine(self, role: WorkerRole) -> EngineAdapter:
+        """The adapter of *role* now; raises with the engine text when its engine went."""
+        from lilbee.app.engine_choice import EngineBook
+
+        engines = self._engines()
+        if role in engines:
+            return engines[role]
+        return EngineBook(cfg).for_role(role).adapter
 
     def _unusable_engine_reason(self) -> str | None:
         """Why no server can start on this host, or None once the engine resolves.
@@ -1333,7 +1344,7 @@ class FleetProvider:
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
                     engine_log=_engine_log_of(launch, swap.log_path.parent),
                     model_ref=launch.model,
-                    profile=self._engines()[role].request_profile(role),
+                    profile=self._adopt_engine(role).request_profile(role),
                 )
                 for launch in role_launches
             ]
@@ -1549,6 +1560,15 @@ class FleetProvider:
         except ProviderError:
             return None
         return planning.planned_embed_token_cap(cfg.embedding_model, engine=engine)
+
+    def reload_notice(self) -> str | None:
+        """What is true of the engines while a reload runs or after one failed, else None."""
+        with self._lock:
+            if self._reloading:
+                return "A change to the engines is being applied; roles may run their previous engine."
+            if self._reload_failed:
+                return "The last engine reload failed; the server keeps the engines it started with."
+        return None
 
     def health_warnings(self) -> list[HealthWarning]:
         """Serving degradations: the embed window and any placement divergences."""
@@ -2552,6 +2572,7 @@ class FleetProvider:
                     rerun = self._reload_pending
                     self._reload_pending = False
                     if not rerun:
+                        self._reload_failed = True
                         self._reloading = False
                         self._reload_done.notify_all()
                 if rerun:
@@ -2562,6 +2583,7 @@ class FleetProvider:
                 self._drop_dead_swaps()
                 raise
             with self._lock:
+                self._reload_failed = False
                 if not self._reload_pending:
                     self._reloading = False
                     self._reload_done.notify_all()

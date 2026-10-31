@@ -23,6 +23,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.data import offload
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as ingest_pipeline
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import HostFacts, NoEngineError
@@ -392,8 +393,8 @@ def test_the_container_builds_when_the_chat_model_has_no_engine(chat_without_eng
 def test_the_first_use_of_the_chat_role_raises_the_user_text(chat_without_engine: Any) -> None:
     with pytest.raises(NoEngineError, match="For chat: No installed engine loads the mlx format"):
         chat_without_engine.engines.for_role(WorkerRole.CHAT)
-    with pytest.raises(NoEngineError, match="For chat: No installed engine loads the mlx format"):
-        chat_without_engine.provider._get_local()
+    with pytest.raises(ProviderError, match="No chat model server is running"):
+        chat_without_engine.provider._get_local()._require_clients(WorkerRole.CHAT)
 
 
 def test_the_embed_offload_target_runs_while_the_chat_model_has_no_engine(

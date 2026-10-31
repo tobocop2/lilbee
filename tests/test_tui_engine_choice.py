@@ -131,10 +131,7 @@ async def test_the_key_e_opens_the_picker_and_saves_the_pick(size: tuple[int, in
         assert await wait_until(
             pilot, lambda: _text(app, "#model-bar-engine-chips").startswith("chat: openvino")
         )
-        assert any(
-            "uses engine openvino. This lilbee process uses the choice after a restart." in t
-            for t in _toasts(app)
-        )
+        assert any(t.endswith("uses engine openvino.") for t in _toasts(app))
 
 
 async def test_a_refused_save_shows_the_refusal_and_keeps_the_live_choice() -> None:

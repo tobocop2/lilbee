@@ -428,12 +428,12 @@ def test_the_cli_prints_plain_lines_for_a_write_and_a_refusal() -> None:
     use = runner.invoke(cli_app, ["engine", "use", "chat", GGUF_REF, "llama.cpp"])
     assert (use.exit_code, " ".join(use.stdout.split())) == (
         0,
-        f"chat model {GGUF_REF} uses engine llama.cpp. {engine_service.RESTART_NOTE}",
+        f"chat model {GGUF_REF} uses engine llama.cpp.",
     )
     prefer = runner.invoke(cli_app, ["engine", "prefer", "llama.cpp"])
     assert (prefer.exit_code, " ".join(prefer.stdout.split())) == (
         0,
-        f"The preferred engine is llama.cpp. {engine_service.RESTART_NOTE}",
+        "The preferred engine is llama.cpp.",
     )
     refused = runner.invoke(cli_app, ["engine", "prefer", "nonesuch"])
     assert refused.exit_code == 1
@@ -563,14 +563,11 @@ def test_an_unknown_role_on_rest_names_the_valid_roles() -> None:
     )
 
 
-def test_the_success_text_says_a_running_server_needs_a_restart() -> None:
+def test_the_success_text_carries_no_restart_note() -> None:
     use = run_engine_command(f"use chat {GGUF_REF} llama.cpp")
     prefer = run_engine_command("prefer llama.cpp")
-    assert use.text.endswith(tui_messages.ENGINE_RESTART_NOTE)
-    assert prefer.text.endswith(tui_messages.ENGINE_RESTART_NOTE)
-    assert (
-        tui_messages.ENGINE_RESTART_NOTE == "This lilbee process uses the choice after a restart."
-    )
+    assert use.text == f"chat model {GGUF_REF} uses engine llama.cpp."
+    assert prefer.text == "The preferred engine is llama.cpp."
 
 
 def test_a_rest_write_runs_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:

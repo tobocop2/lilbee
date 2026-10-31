@@ -368,3 +368,56 @@ def test_a_tool_chat_with_no_engine_gets_the_engine_text(monkeypatch: pytest.Mon
     monkeypatch.setattr(capability, "get_services", lambda: SimpleNamespace(provider=provider))
     with pytest.raises(NoEngineError, match="For chat: No installed engine loads x"):
         capability.model_supports_tools("org/repo#mlx")
+
+
+class _RecordingProvider:
+    def __init__(self, failure: Exception | None = None) -> None:
+        self.reloads: list[bool] = []
+        self.failure = failure
+
+    def reload_placement(self, *, wait: bool = False) -> None:
+        self.reloads.append(wait)
+        if self.failure is not None:
+            raise self.failure
+
+
+@pytest.fixture
+def running(monkeypatch: pytest.MonkeyPatch) -> _RecordingProvider:
+    provider = _RecordingProvider()
+    monkeypatch.setattr(
+        engine_service, "peek_services", lambda: SimpleNamespace(provider=provider)
+    )
+    return provider
+
+
+def test_use_and_prefer_reload_a_running_server_and_wait(
+    with_mlx: None, running: _RecordingProvider
+) -> None:
+    engine_service.use(GGUF_REF, "llama.cpp")
+    engine_service.prefer("llama.cpp")
+    assert running.reloads == [True, True]
+
+
+def test_a_refused_write_reloads_nothing(running: _RecordingProvider) -> None:
+    with pytest.raises(engine_service.EngineRefusedError):
+        engine_service.prefer("nonesuch")
+    assert running.reloads == []
+
+
+def test_with_no_services_built_a_write_runs_nothing(
+    with_mlx: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_service, "peek_services", lambda: None)
+    assert engine_service.prefer("llama.cpp") == "llama.cpp"
+
+
+def test_a_failed_reload_keeps_the_saved_choice_and_tells_the_user(
+    with_mlx: None, running: _RecordingProvider
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    running.failure = ProviderError("engine refused", provider="llama-server")
+    with pytest.raises(engine_service.EngineNotAppliedError, match="engine refused") as raised:
+        engine_service.prefer("llama.cpp")
+    assert "keeps the engine it started with" in str(raised.value)
+    assert _stored(engine_service.PREFERRED_KEY) == "llama.cpp"
