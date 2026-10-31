@@ -386,6 +386,7 @@ async def sync(
     """
     from lilbee.app.ingest import LIBRARY_REFUSALS, temporary_ocr_config
     from lilbee.data.ingest import sync as run_sync
+    from lilbee.providers.base import ProviderError
 
     try:
         validate_ocr_timeout(ocr_timeout)
@@ -401,7 +402,7 @@ async def sync(
                 cancel=cancel,
                 started_by=_SYNC_STARTER,
             )
-        except LIBRARY_REFUSALS as exc:
+        except (*LIBRARY_REFUSALS, ProviderError) as exc:
             return _error(str(exc))
     return result.model_dump()
 

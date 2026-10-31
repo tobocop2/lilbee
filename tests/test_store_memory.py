@@ -1,5 +1,7 @@
 """Tests for the ``_memories`` table: CRUD, dedup, eviction, recall, and rebuild."""
 
+import subprocess
+import sys
 from datetime import UTC, datetime
 
 import numpy as np
@@ -398,6 +400,117 @@ class TestRebuildEmbeddings:
 
         store.rebuild_memory_embeddings(embed)
         assert locked_during == [True]  # embed ran while the write lock was held
+
+
+_KILL_DURING_SWAP = """
+import os
+import sys
+from pathlib import Path
+
+import lancedb.db as lancedb_db
+import lancedb.table as lancedb_table
+import numpy as np
+import pyarrow as pa
+
+from lilbee.core.config import cfg
+from lilbee.data.store import Store
+
+store = Store(cfg.model_copy(update={"lancedb_dir": Path(sys.argv[1])}))
+real_sanitize = lancedb_db.sanitize_create_table
+
+
+def killing_sanitize(*args, **kwargs):
+    data, schema = real_sanitize(*args, **kwargs)
+    if not isinstance(data, pa.RecordBatchReader):
+        return data, schema
+
+    def batches():
+        for batch in data:
+            yield batch
+            os._exit(9)
+
+    return pa.RecordBatchReader.from_batches(schema, batches()), schema
+
+
+def killing_add(*args, **kwargs):
+    os._exit(9)
+
+
+lancedb_db.sanitize_create_table = killing_sanitize
+lancedb_table.LanceTable.add = killing_add
+dim = store._config.embedding_dim
+store.rebuild_memory_embeddings(lambda texts: [np.ones(dim, dtype=np.float32) for _ in texts])
+"""
+
+
+def _vectors_by_text(store) -> dict[str, list[float]]:
+    return {m.text: list(m.vector) for m in store.get_memories(owner_predicate=LOCAL_PREDICATE)}
+
+
+class TestRebuildKeepsMemories:
+    """A failure while the vectors are rewritten leaves every memory with its old vector."""
+
+    @pytest.fixture()
+    def kept(self, store):
+        for axis, text in enumerate(["first", "second", "third"]):
+            store.add_memory(_memory(store, text=text, axis=axis))
+        return _vectors_by_text(store)
+
+    def test_wrong_dimension_keeps_old_vectors(self, store, kept):
+        with pytest.raises(ValueError, match="dimension 5, but the embedding_dim setting is"):
+            store.rebuild_memory_embeddings(
+                lambda texts: [np.ones(5, dtype=np.float32)] * len(texts)
+            )
+        assert _vectors_by_text(store) == kept
+
+    def test_wrong_count_keeps_old_vectors(self, store, kept):
+        dim = store._config.embedding_dim
+        with pytest.raises(ValueError, match="1 vectors for 3 memories"):
+            store.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 1)])
+        assert _vectors_by_text(store) == kept
+
+    def test_embedder_failure_keeps_old_vectors(self, store, kept):
+        def embed(texts: list[str]) -> list[npt.NDArray[np.float32]]:
+            raise RuntimeError("embedder down")
+
+        with pytest.raises(RuntimeError, match="embedder down"):
+            store.rebuild_memory_embeddings(embed)
+        assert _vectors_by_text(store) == kept
+
+    def test_failed_table_write_keeps_old_vectors(self, store, kept, monkeypatch):
+        dim = store._config.embedding_dim
+
+        def failing_create(self, *args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(type(store.get_db()), "create_table", failing_create)
+        with pytest.raises(OSError, match="disk full"):
+            store.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+        monkeypatch.undo()
+        assert _vectors_by_text(store) == kept
+
+    def test_process_killed_mid_rewrite_keeps_old_vectors(self, store, kept, tmp_path):
+        script = tmp_path / "kill_during_swap.py"
+        script.write_text(_KILL_DURING_SWAP, encoding="utf-8")
+        done = subprocess.run(
+            [sys.executable, str(script), str(store._config.lancedb_dir)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=120,
+        )
+        assert done.returncode == 9, done.stderr
+        reopened = Store(store._config.model_copy())
+        assert _vectors_by_text(reopened) == kept
+
+    def test_successful_swap_replaces_every_vector(self, store, kept):
+        dim = store._config.embedding_dim
+        assert (
+            store.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 7) for _ in texts]) == 3
+        )
+        assert set(_vectors_by_text(store)) == set(kept)
+        assert all(vec[7] == 1.0 for vec in _vectors_by_text(store).values())
 
 
 class TestEmbeddingCompat:
