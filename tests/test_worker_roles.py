@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import Config
 from lilbee.providers.roles import (
@@ -9,6 +11,7 @@ from lilbee.providers.roles import (
     REPLICATED_ROLES,
     ROLE_REGISTRY,
     WorkerRole,
+    unserved_role_message,
 )
 
 
@@ -51,3 +54,18 @@ def test_model_field_to_role_maps_to_distinct_roles() -> None:
         WorkerRole.RERANK,
         WorkerRole.VISION,
     }
+
+
+@pytest.mark.parametrize(
+    ("served", "listed"),
+    [
+        ({WorkerRole.EMBED}, "embed"),
+        ({WorkerRole.RERANK, WorkerRole.EMBED}, "embed and rerank"),
+        ({WorkerRole.VISION, WorkerRole.CHAT, WorkerRole.EMBED}, "chat, embed and vision"),
+    ],
+)
+def test_unserved_role_message_names_the_served_roles_in_words(
+    served: set[WorkerRole], listed: str
+) -> None:
+    message = unserved_role_message("eng", WorkerRole.RERANK, served)
+    assert message == f"Engine eng does not serve rerank. It serves {listed}."

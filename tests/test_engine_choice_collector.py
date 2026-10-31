@@ -33,11 +33,12 @@ from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
 def test_installed_mapping_holds_the_formats_each_adapter_loads() -> None:
     installed = installed_engines()
     assert installed
-    bundled = {name for name, adapter in ADAPTERS.items() if adapter.bundled}
+    bundled = {name: adapter for name, adapter in ADAPTERS.items() if adapter.bundled}
     assert bundled
-    assert set(installed) == bundled
-    for name in bundled:
-        assert installed[name] == ADAPTERS[name].formats
+    assert set(bundled) < set(ADAPTERS)
+    assert set(installed) == set(bundled)
+    for name, adapter in bundled.items():
+        assert installed[name] == adapter.formats
     assert installed[EngineName.LLAMA] == frozenset({ModelFormat.GGUF})
 
 
