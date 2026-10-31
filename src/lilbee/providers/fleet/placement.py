@@ -6,8 +6,9 @@ model that fits one GPU runs as a single pinned instance, small models co-locate
 on a GPU with spare VRAM, and a model too big for any single GPU is tensor-split
 across enough GPUs to fit. Roles that never run in the same phase (ingest OCR vs a
 query) share one swap group when they cannot all co-reside, so only the phase in
-use is charged. On GPUs the estimate advises but never refuses: a role that fits
-nowhere is placed tight (best-effort, with a warning). See docs/architecture.md.
+use is charged. On GPUs a plan with one engine places a role that fits nowhere
+tight (best-effort, with a warning); a plan with several engines refuses that role.
+See docs/architecture.md.
 """
 
 from __future__ import annotations
@@ -79,9 +80,9 @@ class Placement:
     """Planner output: server instances, swap tenants, and best-effort placements.
 
     ``unplaceable_roles`` get no server, so a call to them surfaces a
-    ``ProviderError`` (there is no in-process fallback); only the shared-memory
-    path produces them (an oversize load there OOM-livelocks the host). On GPUs
-    a role that fits nowhere is placed anyway and listed in ``tight_roles`` with
+    ``ProviderError`` (there is no in-process fallback); the shared-memory path
+    and a plan with several engines produce them. On GPUs a plan with one engine
+    places a role that fits nowhere anyway and lists it in ``tight_roles`` with
     its estimated shortfall in bytes. ``co_tenants`` share one llama-swap group
     and evict each other on demand, so only one is resident at a time; each runs
     a single instance.
@@ -102,6 +103,7 @@ def plan_placement(
     chat_ctx_fit: SplitCtxFitter | None = None,
     chat_ctx_target: int = 0,
     free_headroom: dict[int, int] | None = None,
+    refuse_oversize: bool = False,
 ) -> Placement:
     """Bin-pack *models* onto *devices* (``[(index, vram_bytes), ...]``).
 
@@ -111,7 +113,8 @@ def plan_placement(
     only if vision's VRAM is refunded, the two become ``co_tenants`` of one swap
     group instead of either becoming unplaceable. A model that fits nowhere, even
     alone beside the pinned tier, is still placed tight and reported in
-    ``tight_roles``.
+    ``tight_roles``, unless ``refuse_oversize`` is set: it is then refused and takes
+    no card.
 
     A chat split widens past the fewest fitting cards when ``chat_ctx_fit`` shows a
     tighter shard would starve its served context below ``chat_ctx_target``; the
@@ -134,8 +137,25 @@ def plan_placement(
     if not devices:
         return _place_ungated(models)
     usable = usable_vram_fraction()
-    remaining: dict[int, float] = {idx: vram * usable for idx, vram in devices}
+    cards: dict[int, float] = {idx: vram * usable for idx, vram in devices}
 
+    def placer(remaining: dict[int, float]) -> Callable[[ModelPlacementInput], _Placed | None]:
+        def place(model: ModelPlacementInput) -> _Placed | None:
+            return _place_single(
+                model,
+                remaining,
+                estimate_peak,
+                chat_ctx_fit=chat_ctx_fit,
+                chat_ctx_target=chat_ctx_target,
+                free_headroom=free_headroom,
+            )
+
+        return place
+
+    if refuse_oversize:
+        return _place_refusing(models, cards, placer)
+
+    remaining = dict(cards)
     # The persistent singles are every replicas<=1 role plus replica 0 of each
     # replicated role. They are charged before the elastic replicas, and the chat
     # model is charged last of all (``placement_rank``).
@@ -144,17 +164,9 @@ def plan_placement(
         _persistent_single(m) for m in replicated
     ]
 
-    def place(model: ModelPlacementInput) -> _Placed | None:
-        return _place_single(
-            model,
-            remaining,
-            estimate_peak,
-            chat_ctx_fit=chat_ctx_fit,
-            chat_ctx_target=chat_ctx_target,
-            free_headroom=free_headroom,
-        )
-
-    instances, co_tenants, tight = _place_persistent(persistent_singles, place, remaining)
+    instances, co_tenants, tight = _place_persistent(
+        persistent_singles, placer(remaining), remaining
+    )
     instances.extend(_place_elastic(replicated, instances, remaining, co_tenants))
 
     return Placement(
@@ -175,6 +187,70 @@ def _place_ungated(models: list[ModelPlacementInput]) -> Placement:
         ),
         unplaceable_roles=(),
     )
+
+
+@dataclass(frozen=True)
+class _RefusingPack:
+    """One pass of the refusing packer over fresh cards."""
+
+    instances: list[InstancePlan]
+    co_tenants: frozenset[WorkerRole]
+    refused: list[WorkerRole]
+    remaining: dict[int, float]
+
+
+def _place_refusing(
+    models: list[ModelPlacementInput],
+    cards: dict[int, float],
+    placer: Callable[[dict[int, float]], Callable[[ModelPlacementInput], _Placed | None]],
+) -> Placement:
+    """Give each role a card or a refusal; a role with no device charge takes no card.
+
+    A second pass, largest role first, replaces the first only when it refuses a
+    strict subset of the roles, so small roles spread over the cards do not block a
+    large one and no role loses its place to a lower rank.
+    """
+    on_cards = [m for m in models if m.est_vram_bytes > 0]
+    singles = [_persistent_single(m) for m in on_cards]
+    packed = _pack_refusing(singles, cards, placer, _shared_pool_order)
+    if packed.refused:
+        retry = _pack_refusing(singles, cards, placer, lambda m: (-m.est_vram_bytes,))
+        if set(retry.refused) < set(packed.refused):
+            packed = retry
+    replicated = [m for m in on_cards if m.replicas > 1]
+    elastic = _place_elastic(replicated, packed.instances, packed.remaining, packed.co_tenants)
+    unpinned = _place_ungated([m for m in models if m.est_vram_bytes == 0])
+    return Placement(
+        instances=(*packed.instances, *elastic, *unpinned.instances),
+        unplaceable_roles=tuple(packed.refused),
+        co_tenants=packed.co_tenants,
+    )
+
+
+def _pack_refusing(
+    singles: list[ModelPlacementInput],
+    cards: dict[int, float],
+    placer: Callable[[dict[int, float]], Callable[[ModelPlacementInput], _Placed | None]],
+    order: Callable[[ModelPlacementInput], tuple[int, ...]],
+) -> _RefusingPack:
+    """Charge *singles* in *order* on fresh cards; a role with no room charges nothing."""
+    remaining = dict(cards)
+    place = placer(remaining)
+    instances: list[InstancePlan] = []
+    charges: dict[WorkerRole, dict[int, float]] = {}
+    co_tenants: set[WorkerRole] = set()
+    refused: list[WorkerRole] = []
+    for model in sorted(singles, key=order):
+        placed = place(model)
+        if placed is None:
+            placed, group = _place_beside_disjoint(model, place, remaining, charges)
+            co_tenants |= group
+        if placed is None:
+            refused.append(model.role)
+            continue
+        instances.append(placed.plan)
+        charges[model.role] = placed.charges
+    return _RefusingPack(instances, frozenset(co_tenants), refused, remaining)
 
 
 def _place_persistent(
@@ -423,7 +499,7 @@ def _place_split(
                 per_device = estimate_peak(model.role, ratio)
             except (ProviderError, OSError):
                 # An unsizable model cannot evaluate a split; the tight single-card
-                # path downstream still places it.
+                # path downstream places it or, when refusing, refuses it.
                 continue
             if len(per_device) != count or not all(
                 peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)

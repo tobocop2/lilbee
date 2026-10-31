@@ -51,6 +51,7 @@ class FakeAdapter:
     architectures = frozenset({"fakearch"})
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED})
     memory_kind = MemoryKind.FIXED_RESERVE
+    takes_device_names = False
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures

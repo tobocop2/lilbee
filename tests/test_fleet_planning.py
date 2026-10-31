@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -3303,7 +3304,10 @@ class TestPlacementFindingsLog:
             tight_roles={WorkerRole.VISION: int(4.1 * _GB)},
         )
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
-            planning_mod._log_placement_findings(placement, {WorkerRole.VISION: "org/ocr.gguf"})
+            planning_mod._log_placement_findings(
+                placement,
+                {WorkerRole.VISION: "org/ocr.gguf"},
+            )
         assert "Memory is tight for the vision model org/ocr.gguf" in caplog.text
         assert "4.1 GiB" in caplog.text
         assert "will still load on demand" in caplog.text
@@ -3316,7 +3320,15 @@ class TestPlacementFindingsLog:
             unplaceable_roles=(WorkerRole.CHAT,),
         )
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
-            planning_mod._log_placement_findings(placement, {WorkerRole.CHAT: "org/chat.gguf"})
+            planning_mod._log_refused_roles(
+                placement,
+                {WorkerRole.CHAT: "org/chat.gguf"},
+                planning_mod.engines_for_all_roles(LLAMA),
+                [],
+                [],
+                unified_budget=_GB,
+                capacity={},
+            )
         assert "will not be served" in caplog.text
 
     def test_tiny_shortfall_never_reads_as_zero(self, caplog) -> None:
@@ -3328,7 +3340,10 @@ class TestPlacementFindingsLog:
             tight_roles={WorkerRole.VISION: 10 * 1024 * 1024},
         )
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
-            planning_mod._log_placement_findings(placement, {WorkerRole.VISION: "org/ocr.gguf"})
+            planning_mod._log_placement_findings(
+                placement,
+                {WorkerRole.VISION: "org/ocr.gguf"},
+            )
         assert "0.0 GiB" not in caplog.text
         assert "0.1 GiB" in caplog.text
 
@@ -4779,7 +4794,7 @@ class TestSnapshotEngineWithMixedReadings:
     @staticmethod
     def _no_launches(monkeypatch) -> None:
         monkeypatch.setattr(
-            planning_mod, "plan_launches", lambda *_a, **_k: planning_mod.FleetPlan(launches=())
+            planning_mod, "_planned_launches", lambda *_a, **_k: planning_mod.FleetPlan(launches=())
         )
 
     @pytest.mark.parametrize("cpu_first", [True, False])
@@ -4848,7 +4863,7 @@ class TestSnapshotEngineWithMixedReadings:
         with pytest.raises(ProviderError, match="No engine is assigned to any role"):
             planning_mod._snapshot_engine({})
 
-    def test_a_configured_role_without_an_engine_is_recorded(self, monkeypatch) -> None:
+    def test_a_configured_role_without_an_engine_is_recorded(self, monkeypatch, caplog) -> None:
         self._devices(monkeypatch, {id(LLAMA): [_card(8 * _GB)]})
         monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
         monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
@@ -4856,9 +4871,41 @@ class TestSnapshotEngineWithMixedReadings:
         monkeypatch.setattr(cfg, "vision_model", "org/repo/vision.gguf")
         monkeypatch.setattr(planning_mod, "vision_role_wanted", lambda _ref: False)
         self._no_launches(monkeypatch)
-        plan = planning_mod.plan_all_launches(engines={WorkerRole.EMBED: LLAMA})
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            plan = planning_mod.plan_all_launches(engines={WorkerRole.EMBED: LLAMA})
         assert plan.skipped_no_engine == {WorkerRole.CHAT: "org/repo/chat.gguf"}
         assert "skipped_no_engine" not in repr(plan)
+        assert (
+            "The chat model org/repo/chat.gguf has no engine assigned and will not be served"
+            in caplog.text
+        )
+
+    def test_a_direct_call_that_lacks_a_role_reports_it(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/vision.gguf")
+        monkeypatch.setattr(planning_mod, "vision_role_wanted", lambda _ref: False)
+        monkeypatch.setattr(
+            planning_mod, "_planned_launches", lambda *_a, **_k: planning_mod.FleetPlan(launches=())
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        card = _card(8 * _GB)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            plan = planning_mod.plan_launches(
+                None,
+                Path("/bin/llama-server"),
+                {0: card},
+                [card],
+                engines={WorkerRole.EMBED: LLAMA},
+            )
+        assert plan.skipped_no_engine == {WorkerRole.CHAT: "org/repo/chat.gguf"}
+        assert "The chat model org/repo/chat.gguf has no engine assigned" in caplog.text
+        assert "embed model" not in caplog.text
+        assert "vision model" not in caplog.text
 
     def test_a_wanted_vision_role_without_an_engine_is_recorded(self, monkeypatch) -> None:
         self._devices(monkeypatch, {id(LLAMA): [_card(8 * _GB)]})

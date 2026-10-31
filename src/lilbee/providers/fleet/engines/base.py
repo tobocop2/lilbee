@@ -95,6 +95,8 @@ class EngineAdapter(Protocol, Hashable):
     served_roles: frozenset[WorkerRole]
     memory_kind: MemoryKind
     """How far this engine's memory figures can be trusted, known without an estimate."""
+    takes_device_names: bool
+    """Whether ``launch_argv`` puts ``LaunchRequest.device_names`` on the command line."""
 
     def supports_architecture(self, architecture: str) -> bool: ...
 
@@ -116,7 +118,9 @@ class EngineAdapter(Protocol, Hashable):
 
     def discover_devices(self, binary: Path) -> DeviceProbe: ...
 
-    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate: ...
+    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        """Size one instance; ``per_device`` follows a ratio only if ``launch_argv`` honours it."""
+        ...
 
     def check_readback(self, binary: Path) -> bool:
         """Whether *binary* can report its memory use by endpoint."""
