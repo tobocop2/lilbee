@@ -21,6 +21,7 @@ _ROLE_OF = {
     "E9": "rerank",
     "E10": "vision",
     "E6": "reasoning",
+    "E14": "json",
 }
 
 
@@ -185,10 +186,33 @@ MUTANT_CASES = [
         quality_modes=(True,),
     ),
     Case(
+        "engine_honours_response_format",
+        Behaviour(),
+        claims=frozenset({"chat", "json"}),
+    ),
+    Case(
+        "tool_call_with_empty_arguments",
+        Behaviour(tools="emptyargs"),
+        claims=frozenset({"chat"}),
+        expect={"E7": F},
+    ),
+    Case(
+        "vision_answers_red_for_every_image",
+        Behaviour(vision="const"),
+        claims=frozenset({"chat", "vision"}),
+        expect_quality={"E10": F},
+    ),
+    Case(
+        "engine_ignores_response_format",
+        Behaviour(json_mode="ignore"),
+        claims=frozenset({"chat", "json"}),
+        expect={"E14": F},
+    ),
+    Case(
         "reasoning_model_never_answers",
         Behaviour(chat="think-only"),
         claims=_CHAT_REASONING,
-        expect={"E4": F, "E5": F},
+        expect={"E4": F, "E5": F, "E6": F},
         expect_quality={"E11": F},
     ),
     Case(
