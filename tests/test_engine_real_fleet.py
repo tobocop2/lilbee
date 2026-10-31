@@ -26,7 +26,7 @@ from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 from tests.conformance.fake_engine import FakeEngine
 
 MLX_REF = "org/repo#mlx"
@@ -36,8 +36,8 @@ _GIB = 1 << 30
 _MESSAGES = [{"role": "user", "content": "hi"}]
 
 
-class _Gguf(FakeAdapter):
-    """A gguf engine that plans one GPU and sizes every model at one GiB."""
+class _Gguf(BundledFakeAdapter):
+    """A gguf engine that ships in the package, plans one GPU and sizes every model at one GiB."""
 
     name = "llama.cpp"
     formats = frozenset({"gguf"})
