@@ -33,9 +33,9 @@ from lilbee.providers.fleet.devices import (
     host_lacks_nvlink,
     visible_env,
 )
-from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest, MemoryRequest
-from lilbee.providers.fleet.engines.base import MemoryKind
+from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.placement import (
     InstancePlan,
     ModelPlacementInput,
