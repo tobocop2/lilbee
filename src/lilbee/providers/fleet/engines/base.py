@@ -22,6 +22,9 @@ class EngineName(StrEnum):
     """The engines the fleet can launch."""
 
     LLAMA = "llama.cpp"
+    IK_LLAMA = "ik_llama.cpp"
+    MLX = "mlx"
+    OPENVINO = "openvino"
 
 
 class MemoryKind(StrEnum):
