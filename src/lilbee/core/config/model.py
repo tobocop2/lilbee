@@ -1373,9 +1373,9 @@ class Config(BaseSettings):
         """Validate and canonicalize a model ref; blank means the role is unconfigured."""
         if not v or not v.strip():
             return ""
-        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.model_ref import canonical_model_ref
 
-        return parse_model_ref(v).for_openai_prefix()
+        return canonical_model_ref(v)
 
     @field_validator("ollama_base_url", "lm_studio_base_url", mode="after")
     @classmethod
