@@ -22,6 +22,7 @@ def _render(manifest: pathlib.Path, *args: str) -> subprocess.CompletedProcess[s
         [sys.executable, str(_RENDER), str(manifest), "--version", "9.9.9", *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
