@@ -172,21 +172,36 @@ class PresetDialog(ModalScreen[str | None]):
         self, preset: ServerPreset, url: str, roles: list[str], wire: str, key: str
     ) -> None:
         """Send only what differs from the stored preset; the service says when none does."""
-        changes: dict[str, object] = {}
-        if url != preset.base_url:
-            changes["url"] = url
-        if set(roles) != {r.value for r in preset.roles}:
-            changes["roles"] = roles
-        if WorkerRole.RERANK.value in roles and wire != preset.rerank_wire:
-            changes["rerank_wire"] = wire
-        if key:
-            changes["api_key"] = key
-        self._run_edit(preset.name, **changes)
+        self._run_edit(
+            preset.name,
+            url=url if url != preset.base_url else None,
+            roles=roles if set(roles) != {r.value for r in preset.roles} else None,
+            rerank_wire=(
+                wire if WorkerRole.RERANK.value in roles and wire != preset.rerank_wire else None
+            ),
+            api_key=key or None,
+        )
 
     @work(thread=True)
-    def _run_edit(self, name: str, **changes: object) -> None:
+    def _run_edit(
+        self,
+        name: str,
+        *,
+        url: str | None = None,
+        roles: list[str] | None = None,
+        rerank_wire: str | None = None,
+        api_key: str | None = None,
+        clear_key: bool = False,
+    ) -> None:
         try:
-            preset = edit_preset(name, **changes)  # type: ignore[arg-type]
+            preset = edit_preset(
+                name,
+                url=url,
+                roles=roles,
+                api_key=api_key,
+                rerank_wire=rerank_wire,
+                clear_key=clear_key,
+            )
         except (ValueError, OSError) as exc:
             call_from_thread(self, self._show_error, failure_text(exc))
             return
