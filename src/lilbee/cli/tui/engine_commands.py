@@ -21,7 +21,10 @@ _USE = "use"
 _PREFER = "prefer"
 _USE_ARGS = 3
 _PREFER_ARGS = 1
-USAGE = "Use /engine roles, /engine use ROLE MODEL ENGINE, or /engine prefer ENGINE."
+YES_WORD = "--yes"
+USAGE = (
+    "Use /engine roles, /engine use ROLE MODEL ENGINE [--yes], or /engine prefer ENGINE [--yes]."
+)
 
 
 @dataclass(frozen=True)
@@ -42,20 +45,22 @@ def _roles_text() -> str:
     return "\n".join(lines)
 
 
-def _use(role: WorkerRole, model: str, engine: str) -> EngineCommandResult:
-    chosen = engine_service.use_for_role(role, model, engine)
+def _use(role: WorkerRole, model: str, engine: str, confirmed: bool = False) -> EngineCommandResult:
+    chosen = engine_service.use_for_role(role, model, engine, confirmed=confirmed)
     text = msg.ENGINE_USE_DONE.format(role=role, model=model, engine=chosen)
     return EngineCommandResult(True, text, CHOICES_KEY)
 
 
-def _run(verb: str, words: list[str]) -> EngineCommandResult:
-    if verb == _ROLES and not words:
+def _run(verb: str, args: list[str]) -> EngineCommandResult:
+    confirmed = YES_WORD in args
+    words = [word for word in args if word != YES_WORD]
+    if verb == _ROLES and not words and not confirmed:
         return EngineCommandResult(True, _roles_text())
     if verb == _USE and len(words) == _USE_ARGS:
         role, model, engine = words
-        return _use(engine_service.parse_role(role), model, engine)
+        return _use(engine_service.parse_role(role), model, engine, confirmed)
     if verb == _PREFER and len(words) == _PREFER_ARGS:
-        chosen = engine_service.prefer(words[0])
+        chosen = engine_service.prefer(words[0], confirmed)
         text = msg.ENGINE_PREFER_DONE.format(engine=chosen)
         return EngineCommandResult(True, text, engine_service.PREFERRED_KEY)
     return EngineCommandResult(False, USAGE)
@@ -70,11 +75,18 @@ def chips_text(views: list[engine_service.RoleView]) -> str:
     )
 
 
-def choose_engine_for_role(role: WorkerRole, engine: str) -> EngineCommandResult:
-    """Store *engine* for the current model of *role*; a refusal comes back as its text."""
+def choose_engine_for_role(
+    role: WorkerRole, engine: str, confirmed: bool = False
+) -> EngineCommandResult:
+    """Store *engine* for the current model of *role*; a refusal comes back as its text.
+
+    A change that needs the user's confirmation raises ``EmbedConfirmRequiredError``.
+    """
     model = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
     try:
-        return _use(role, model, engine)
+        return _use(role, model, engine, confirmed)
+    except engine_service.EmbedConfirmRequiredError:
+        raise
     except engine_service.WRITE_FAILURES as exc:
         return EngineCommandResult(False, str(exc))
 
@@ -89,6 +101,9 @@ def run_engine_command(args: str) -> EngineCommandResult:
         return EngineCommandResult(True, _roles_text())
     try:
         return _run(words[0], words[1:])
+    except engine_service.EmbedConfirmRequiredError as exc:
+        text = msg.ENGINE_CONFIRM_REFUSED.format(reason=exc, yes=YES_WORD)
+        return EngineCommandResult(False, text)
     except engine_service.WRITE_FAILURES as exc:
         return EngineCommandResult(False, str(exc))
 

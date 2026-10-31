@@ -583,8 +583,10 @@ def test_a_rest_write_runs_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -
             where.append("event loop")
         return name
 
-    monkeypatch.setattr(engine_service, "prefer", record)
-    monkeypatch.setattr(engine_service, "use_for_role", lambda _r, _m, name: record(name))
+    monkeypatch.setattr(engine_service, "prefer", lambda name, _confirmed: record(name))
+    monkeypatch.setattr(
+        engine_service, "use_for_role", lambda _r, _m, name, confirmed: record(name)
+    )
     monkeypatch.setattr(engine_service, "roles", lambda: record("") and [])
     assert _rest("PUT", "/api/engines/preferred", {"engine": "auto"})[0] == 200
     body = {"model": GGUF_REF, "engine": "auto"}
@@ -638,7 +640,9 @@ def server_cannot_apply(monkeypatch: pytest.MonkeyPatch) -> str:
     from lilbee.providers.base import ProviderError
 
     server = _FailingServer(ProviderError("engine refused", provider="llama-server"))
-    monkeypatch.setattr(engine_service, "peek_services", lambda: SimpleNamespace(provider=server))
+    empty = SimpleNamespace(source_summary=lambda _n: SimpleNamespace(document_count=0))
+    services = SimpleNamespace(provider=server, store=empty)
+    monkeypatch.setattr(engine_service, "peek_services", lambda: services)
     with pytest.raises(engine_service.EngineNotAppliedError) as exc:
         engine_service.prefer("llama.cpp")
     return str(exc.value)

@@ -199,7 +199,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/models` | `/m`, `/catalog` | Browse the full model catalog |
 | `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
-| `/engine [subcommand]` | | Show the engine of each role (`roles`), or choose it (`use ROLE MODEL ENGINE`, `prefer ENGINE`) |
+| `/engine [subcommand]` | | Show the engine of each role (`roles`), or choose it (`use ROLE MODEL ENGINE`, `prefer ENGINE`); add `--yes` to confirm a change that can make the index vectors unusable |
 | `/preset <subcommand>` | | List, add, edit or remove server presets (edit opens a dialog) |
 | `/delete <name>` | | Remove a document from the index |
 | `/prune-ignored` | | Drop indexed documents a `.lilbeeignore` now excludes |
@@ -446,6 +446,15 @@ back to another engine. `engine use` sets the engine for the model of one role.
 server the two writes need `allow_http_engines`. The three MCP tools need the
 setting `mcp_engines_enabled`. It is off by default. Turn it on, then restart the
 MCP server.
+
+A change to the engine of the embed role can make the vectors in the index
+unusable. If the library holds documents, `engine use embed` and `engine prefer`
+ask first. On a terminal, answer `y` to confirm. Without a terminal, or with
+`--json`, add `--yes` to confirm. In the TUI, the dialog opens on Cancel, so
+one Enter keeps the engine. The REST routes and the MCP tools take
+`confirm_embed_change`. Without it, the REST write answers 409 with the code
+`embed_engine_confirm_required`, the library name and the document count. Send
+the request again with `confirm_embed_change` set to `true` to write the change.
 
 ## Memory
 

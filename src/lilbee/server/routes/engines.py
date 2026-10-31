@@ -35,6 +35,16 @@ async def _call(action: Callable[[], _T]) -> _T:
         return await asyncio.to_thread(action)
     except service.EngineRefusedError as exc:
         raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=str(exc)) from exc
+    except service.EmbedConfirmRequiredError as exc:
+        raise HTTPException(
+            status_code=_HTTP_CONFLICT,
+            detail=f"{exc} Send confirm_embed_change: true to confirm.",
+            extra={
+                "code": service.CONFIRM_CODE,
+                "library": exc.library,
+                "documents": exc.documents,
+            },
+        ) from exc
     except service.EngineNotSavedError as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
     except service.EngineNotAppliedError as exc:
@@ -72,12 +82,16 @@ async def engine_use_route(role: FromPath[str], data: EngineUseBody) -> EngineCh
         parsed = service.parse_role(role)
     except service.EngineRefusedError as exc:
         raise HTTPException(status_code=_HTTP_BAD_REQUEST, detail=str(exc)) from exc
-    chosen = await _call(lambda: service.use_for_role(parsed, data.model, data.engine))
+    chosen = await _call(
+        lambda: service.use_for_role(
+            parsed, data.model, data.engine, confirmed=data.confirm_embed_change
+        )
+    )
     return EngineChosenResponse(engine=chosen)
 
 
 @put("/api/engines/preferred", status_code=200, guards=[_require_engines_enabled])
 async def engine_prefer_route(data: EnginePreferBody) -> EngineChosenResponse:
     """Set the global engine preference. Refused unless allow_http_engines is enabled."""
-    chosen = await _call(lambda: service.prefer(data.engine))
+    chosen = await _call(lambda: service.prefer(data.engine, data.confirm_embed_change))
     return EngineChosenResponse(engine=chosen)
