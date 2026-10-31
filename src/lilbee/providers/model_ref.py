@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from lilbee.catalog.refs import GGUF_SUFFIX, NATIVE_GGUF_REF_MIN_SLASHES
-from lilbee.catalog.types import ModelSource
+from lilbee.catalog.refs import is_gguf_filename, is_native_gguf_shape, model_format
+from lilbee.catalog.types import ModelFormat, ModelSource
 from lilbee.providers.base import (
     ProviderError,
     ProviderErrorKind,
@@ -42,8 +42,8 @@ def is_native_gguf_ref(raw: str) -> bool:
     (:func:`lilbee.catalog.refs.hf_repo_from_ref`) only recognises the
     lowercase ``.gguf`` suffix, and classification must agree with it.
     """
-    return raw.endswith(GGUF_SUFFIX) and (
-        PureWindowsPath(raw).is_absolute() or raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
+    return is_native_gguf_shape(raw) or (
+        is_gguf_filename(raw) and PureWindowsPath(raw).is_absolute()
     )
 
 
@@ -64,8 +64,27 @@ def routes_to_native_gguf(raw: str) -> bool:
     shape rule: those servers report model ids that can themselves look like
     GGUF paths, so the prefix wins over the shape.
     """
-    first_segment = raw.split("/", 1)[0]
-    return local_server_for_key(first_segment) is None and is_native_gguf_ref(raw)
+    return not _has_local_server_prefix(raw) and is_native_gguf_ref(raw)
+
+
+def routes_to_native_model(raw: str, *, read_presets: bool = False) -> bool:
+    """True when *raw* is a native model in any format.
+
+    A GGUF shape follows :func:`routes_to_native_gguf`. A ``#<format>`` ref
+    routes natively unless its prefix names a provider: ``openai/x#mlx`` and
+    ``ollama/x#mlx`` keep their provider. A malformed format qualifier is not a
+    native ref. With *read_presets*, a stored server preset name is a provider.
+    """
+    if routes_to_native_gguf(raw):
+        return True
+    if model_format(raw) == ModelFormat.GGUF:
+        return False
+    prefix = raw.split("/", 1)[0]
+    return prefix not in BUILTIN_PREFIXES and not (read_presets and route_for(prefix))
+
+
+def _has_local_server_prefix(raw: str) -> bool:
+    return local_server_for_key(raw.split("/", 1)[0]) is not None
 
 
 @dataclass(frozen=True)
@@ -153,7 +172,7 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
 
 
 def _classify(raw: str, *, read_presets: bool) -> ProviderModelRef:
-    if routes_to_native_gguf(raw):
+    if routes_to_native_model(raw, read_presets=read_presets):
         return ProviderModelRef(raw=raw, provider=LOCAL_PROVIDER, name=raw)
     if "/" not in raw:
         known = ", ".join(f"{p}/" for p in sorted(BUILTIN_PREFIXES))

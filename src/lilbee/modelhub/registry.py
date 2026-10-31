@@ -23,13 +23,14 @@ from typing import TYPE_CHECKING
 
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import (
-    GGUF_SUFFIX,
-    NATIVE_GGUF_REF_MIN_SLASHES,
+    ModelRef,
     format_native_gguf_ref,
     is_bare_hf_repo,
+    is_gguf_filename,
+    parse_model_ref,
     split_shard_filenames,
 )
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 
@@ -46,7 +47,7 @@ _REPO_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
 _FILENAME_RE = re.compile(r"^[a-zA-Z0-9._/-]+\.gguf$")
 
 REPO_DIR_SEPARATOR = "--"
-_MANIFEST_SUFFIX = f"{GGUF_SUFFIX}.json"
+_MANIFEST_SUFFIX = ".gguf.json"
 
 
 def _validate_hf_repo(hf_repo: str) -> str:
@@ -78,12 +79,10 @@ def parse_hf_ref(ref: str) -> tuple[str, str]:
     after is the filename, which may include repo subdirectories (unsloth stores
     quants under e.g. ``Q4_K_M/Model-...-00001-of-00003.gguf``).
     """
-    if not ref.endswith(GGUF_SUFFIX) or ref.count("/") < NATIVE_GGUF_REF_MIN_SLASHES:
+    parsed = parse_model_ref(ref)
+    if not parsed.filename:
         raise ValueError(f"Model ref {ref!r} is not a HuggingFace ref. {_REF_SHAPE_HINT}")
-    parts = ref.split("/")
-    hf_repo = "/".join(parts[:NATIVE_GGUF_REF_MIN_SLASHES])
-    gguf_filename = "/".join(parts[NATIVE_GGUF_REF_MIN_SLASHES:])
-    return _validate_hf_repo(hf_repo), _validate_gguf_filename(gguf_filename)
+    return _validate_hf_repo(parsed.hf_repo), _validate_gguf_filename(parsed.filename)
 
 
 def repo_to_dir(hf_repo: str) -> str:
@@ -106,10 +105,14 @@ class ModelManifest:
     # ``shard_blobs`` are the non-primary shard digests, so removal frees them all.
     total_size_bytes: int | None = None
     shard_blobs: list[str] = field(default_factory=list)
+    format: ModelFormat = ModelFormat.GGUF
+
+    def __post_init__(self) -> None:
+        self.format = ModelFormat(self.format)
 
     @property
     def ref(self) -> str:
-        return format_native_gguf_ref(self.hf_repo, self.gguf_filename)
+        return ModelRef(self.hf_repo, self.gguf_filename, self.format).canonical
 
     @property
     def disk_size_bytes(self) -> int:
@@ -329,7 +332,7 @@ class ModelRegistry:
             if repo.repo_id == hf_repo
             for rev in repo.revisions
             for f in rev.files
-            if f.file_name.endswith(GGUF_SUFFIX)
+            if is_gguf_filename(f.file_name)
         }
 
     def _snapshot_gguf_path(self, hf_repo: str, gguf_filename: str) -> Path | None:
@@ -473,6 +476,7 @@ class ModelRegistry:
             # caller from the full shard set); install only rewrites the primary.
             total_size_bytes=manifest.total_size_bytes,
             shard_blobs=manifest.shard_blobs,
+            format=manifest.format,
         )
         self._write_manifest(updated)
         return blob_path
@@ -658,7 +662,10 @@ class ModelRegistry:
     def _write_manifest(self, manifest: ModelManifest) -> None:
         path = self._manifest_path(manifest.hf_repo, manifest.gguf_filename)
         path.parent.mkdir(parents=True, exist_ok=True)
-        data = json.dumps(asdict(manifest), indent=2)
+        fields = asdict(manifest)
+        if manifest.format == ModelFormat.GGUF:
+            del fields["format"]
+        data = json.dumps(fields, indent=2)
         tmp_path: str | None = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -679,7 +686,8 @@ class ModelRegistry:
             data = json.loads(path.read_text(encoding="utf-8"))
             return ModelManifest(**data)
         # UnicodeDecodeError is a ValueError, not a JSONDecodeError.
-        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, KeyError):
+        # An unknown format name is a ValueError, as a bad key is a TypeError.
+        except (ValueError, TypeError, KeyError):
             log.warning("Corrupt manifest: %s", path)
             return None
 

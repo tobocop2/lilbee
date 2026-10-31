@@ -17,9 +17,8 @@ from lilbee.catalog.models import (
 from lilbee.catalog.picks import get_picks
 from lilbee.catalog.refs import (
     GGUF_GLOB,
-    GGUF_SUFFIX,
-    NATIVE_GGUF_REF_MIN_SLASHES,
     hf_repo_from_ref,
+    is_native_gguf_shape,
 )
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 
@@ -298,7 +297,7 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
     # circular: modelhub.registry imports catalog.query at top
     from lilbee.modelhub.registry import parse_hf_ref
 
-    if model.endswith(GGUF_SUFFIX) and model.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
+    if is_native_gguf_shape(model):
         try:
             hf_repo, gguf_filename = parse_hf_ref(model)
         except ValueError:

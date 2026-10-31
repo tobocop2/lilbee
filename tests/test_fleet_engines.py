@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from lilbee.catalog.types import ModelFormat
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet.engines import LLAMA, EngineName, LaunchRequest
@@ -16,7 +17,6 @@ from lilbee.providers.fleet.engines.base import (
     MemoryEstimate,
     MemoryKind,
     MemoryRequest,
-    ModelFormat,
 )
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.vram import GgufVramEstimate

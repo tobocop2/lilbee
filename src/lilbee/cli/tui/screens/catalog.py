@@ -33,6 +33,7 @@ from lilbee.catalog import (
 )
 from lilbee.catalog.download import _BYTES_PER_GB, download_bytes
 from lilbee.catalog.models import estimate_min_ram_gb
+from lilbee.catalog.refs import is_gguf_filename
 from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
@@ -2307,7 +2308,7 @@ class CatalogScreen(Screen[None]):
         resolve to the lexicographically-first matching installed
         manifest; full refs and remote names pass through.
         """
-        if "/" in identity and identity.endswith(".gguf"):
+        if "/" in identity and is_gguf_filename(identity):
             return identity
         prefix = identity + "/"
         matches = sorted(n for n in self._installed_names if n.startswith(prefix))
