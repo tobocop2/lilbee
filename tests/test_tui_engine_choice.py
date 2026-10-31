@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 from rich.console import Console
@@ -19,12 +21,15 @@ from lilbee.cli.tui.engine_commands import announce, run_engine_command
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
 from lilbee.cli.tui.screens.model_info import ModelInfoModal
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
+from lilbee.data.store.canary import CanaryState
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.retrieval import canary_probe
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests.conformance.fake_adapter import FakeAdapter
@@ -354,3 +359,94 @@ async def test_the_tooltip_and_the_help_panel_name_the_key_e() -> None:
         console = Console(width=120, file=io.StringIO(), record=True)
         console.print(panel.query_one(BindingsTable).render())
         assert "Pick engine" in console.export_text()
+
+
+class _Store:
+    def source_summary(self, _newest: int) -> SimpleNamespace:
+        return SimpleNamespace(document_count=7)
+
+    def canary_state(self) -> CanaryState | None:
+        return CanaryState([[1.0]], "an-older-trigger", True)
+
+
+@pytest.fixture
+def embed_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A running library of 7 documents whose baseline differs from the candidate embedder."""
+    model_file = tmp_path / "embed.gguf"
+    model_file.write_bytes(b"x")
+    monkeypatch.setattr(canary_probe, "resolve_model_path", lambda *_: model_file)
+    monkeypatch.setattr(canary_probe, "engine_build_id", lambda: "build")
+    services = SimpleNamespace(store=_Store(), registry=SimpleNamespace(), provider=mock.Mock())
+    monkeypatch.setattr(engine_service, "peek_services", lambda: services)
+
+
+async def _pick_openvino_for_embed(app: _ChatApp, pilot, chat: ChatScreen) -> None:
+    chat.query_one("#model-pick-embed", ModelPickerButton).action_pick_engine()
+    assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+    await pilot.press("down", "down", "enter")
+    assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+
+
+def _stored_choices() -> object:
+    return settings.load(cfg.data_root).get("engine_choices")
+
+
+@pytest.mark.parametrize("size", [(80, 24), (120, 40)])
+async def test_the_picker_asks_with_the_library_and_count_then_writes_on_yes(
+    embed_library: None, size: tuple[int, int]
+) -> None:
+    app = _ChatApp()
+    async with app.run_test(size=size) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        await _pick_openvino_for_embed(app, pilot, chat)
+        text = _text(app.screen, "#confirm-message")
+        assert f"Library {cfg.data_root.name} holds 7 documents." in text
+        assert "None" not in text
+        assert _stored_choices() is None
+        await pilot.press("y")
+        assert await wait_until(pilot, lambda: _stored_choices() is not None)
+        assert json.loads(str(_stored_choices())) == {EMBED_REF: "openvino"}
+        assert app.focused is chat._chat_input
+
+
+async def test_cancelling_the_confirm_leaves_the_file_unchanged_and_returns_focus(
+    embed_library: None,
+) -> None:
+    app = _ChatApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        await _pick_openvino_for_embed(app, pilot, chat)
+        await pilot.press("n")
+        assert await wait_until(pilot, lambda: not isinstance(app.screen, ConfirmDialog))
+        assert await wait_until(pilot, lambda: "The engine is unchanged." in _toasts(app))
+        assert _stored_choices() is None
+        assert cfg.engine_choices is None
+        assert app.focused is chat._chat_input
+
+
+async def test_the_confirm_opens_on_cancel_so_one_enter_writes_nothing_and_yes_then_enter_writes(
+    embed_library: None,
+) -> None:
+    app = _ChatApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        await _pick_openvino_for_embed(app, pilot, chat)
+        assert app.focused is not None
+        assert app.focused.id == "confirm-no"
+        await pilot.press("enter")
+        assert await wait_until(pilot, lambda: not isinstance(app.screen, ConfirmDialog))
+        assert await wait_until(pilot, lambda: "The engine is unchanged." in _toasts(app))
+        assert _stored_choices() is None
+        assert cfg.engine_choices is None
+
+        await _pick_openvino_for_embed(app, pilot, chat)
+        await pilot.press("left")
+        assert await wait_until(
+            pilot, lambda: app.focused is not None and app.focused.id == "confirm-yes"
+        )
+        await pilot.press("enter")
+        assert await wait_until(pilot, lambda: _stored_choices() is not None)
+        assert json.loads(str(_stored_choices())) == {EMBED_REF: "openvino"}
