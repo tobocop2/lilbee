@@ -83,6 +83,15 @@ def _slotted_estimator(*, base: int, per_slot: int):
 
 
 @pytest.fixture(autouse=True)
+def _stub_bundled_engine(monkeypatch) -> None:
+    """A launch reads the binary from its adapter, so a default host has the bundled one."""
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+        lambda: Path("/bin/llama-server"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _stub_estimator(monkeypatch) -> None:
     """Default: a cheap fixed footprint so tests never shell out to gguf-parser.
     Tests that exercise sizing override this with their own estimator."""
@@ -1124,9 +1133,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
         plan = InstancePlan(role=WorkerRole.VISION, devices=(0,))
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
         assert "--mmproj" in launch.argv
         assert str(Path("/m/mmproj.gguf")) in launch.argv
 
@@ -1162,9 +1169,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(llama_mod, "llama_server_runtime_env", lambda: {})
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
         assert launch.role == WorkerRole.CHAT
         assert launch.env_overrides == visible_env((device,))
         assert "--model" in launch.argv
@@ -1205,7 +1210,6 @@ class TestBuildFleetWiring:
         launch = planning_mod._launch_for(
             plan,
             "ref",
-            Path("/bin/llama-server"),
             {0: device},
             reserved_by_device=reserved,
             reserved_after_chat=after_chat,
@@ -1352,9 +1356,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "num_ctx", None)
         device = FleetDevice("Metal", 0, "M3", 24 * _GB, 24 * _GB, unified=True)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
         assert "--fit-target" not in launch.argv
         assert "--kv-unified" in launch.argv
 
@@ -1389,9 +1391,7 @@ class TestBuildFleetWiring:
         d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
         d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1}, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", {0: d0, 1: d1}, engine=LLAMA)
         assert launch.ctx == 5000
         assert seen["ratio"] == (1, 1)
         assert seen["free"] == [70 * _GB, 60 * _GB]  # per-device free, not the summed pool
@@ -1416,9 +1416,7 @@ class TestBuildFleetWiring:
         d0 = FleetDevice("CUDA", 0, "gpu", 143 * _GB, 130 * _GB)
         d1 = FleetDevice("CUDA", 1, "gpu", 143 * _GB, 130 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1}, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", {0: d0, 1: d1}, engine=LLAMA)
         assert launch.slots == planning_mod._CHAT_SLOTS  # all four full windows fit
         assert launch.ctx == 65536  # each agent keeps the full window
         # --ctx-size is the per-slot window times the slot count.
@@ -1441,9 +1439,7 @@ class TestBuildFleetWiring:
         device = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
         with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
-            launch = planning_mod._launch_for(
-                plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
-            )
+            launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
         assert "network filesystem" in caplog.text.lower()
         assert "--no-mmap" not in launch.argv  # too big to malloc; mmap kept
 
@@ -1478,9 +1474,7 @@ class TestBuildFleetWiring:
         )
         device = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
         got = [t for t in launch.argv if t in ("--no-mmap", "--load-mode", "none")]
         assert got == expected
 
@@ -1508,7 +1502,6 @@ class TestBuildFleetWiring:
         planning_mod._launch_for(
             plan,
             "ref",
-            Path("/bin/llama-server"),
             {0: d0, 1: d1},
             reserved_by_device={0: 10 * _GB},
             engine=LLAMA,  # an embed server sits on card 0
@@ -1531,9 +1524,7 @@ class TestBuildFleetWiring:
         d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
         with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
-            planning_mod._launch_for(
-                plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1}, engine=LLAMA
-            )
+            planning_mod._launch_for(plan, "ref", {0: d0, 1: d1}, engine=LLAMA)
         assert "nvlink" in caplog.text.lower()
 
     def test_non_chat_reservation_sums_per_device(self) -> None:
@@ -1609,9 +1600,7 @@ class TestBuildFleetWiring:
         d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
         d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1}, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", {0: d0, 1: d1}, engine=LLAMA)
         assert launch.ctx == 8192
         assert launch.slots == planning_mod._SPLIT_CHAT_SLOTS
 
@@ -1663,9 +1652,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_aux_role_ctx", lambda _r, _p, _m: ctx)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=role, devices=(0,))
-        return planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
-        )
+        return planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
 
     @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
     def test_launch_for_embed_roles_set_token_cap(self, tmp_path, monkeypatch, role) -> None:
@@ -1753,9 +1740,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.RERANK, devices=(0,))
-        return planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
-        )
+        return planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
 
     def test_launch_for_rerank_decoder_arch_serves_generatively(
         self, tmp_path, monkeypatch
@@ -2489,9 +2474,7 @@ class TestEstimateLaunchParity:
             1: FleetDevice("CUDA", 1, "gpu", 24 * _GB, 23 * _GB),
         }
         plan = InstancePlan(role=role, devices=devices, tensor_split=ratio)
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), by_index, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", by_index, engine=LLAMA)
         estimator_argv = vram_mod.estimator_argv(
             str(captured["path"]),
             ctx=captured["ctx"],  # type: ignore[arg-type]
@@ -2561,9 +2544,7 @@ class TestEstimateLaunchParity:
         monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _capture)
         device = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 80 * _GB)
         plan = InstancePlan(role=WorkerRole.RERANK, devices=(0,))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
 
         assert launch.slots == LLM_RERANK_CONCURRENCY > 1, "need a batching role to tell them apart"
         estimator_argv = vram_mod.estimator_argv(
@@ -2615,9 +2596,7 @@ class TestWeightsBytes:
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
         assert launch.weights_bytes == 2048  # both shards, not just the served file
 
 
@@ -3230,9 +3209,7 @@ class TestSizingBudgetComesFromTheDevice:
 
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", _record_fit)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(1,))
-        planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), {0: small, 1: large}, engine=LLAMA
-        )
+        planning_mod._launch_for(plan, "ref", {0: small, 1: large}, engine=LLAMA)
         assert seen == [int(48 * _GB * cfg.gpu_memory_fraction)]
 
     def test_unified_budgets_cap_at_the_devices_own_memory(self, monkeypatch) -> None:
@@ -4409,9 +4386,7 @@ class TestATightSplitSizesPerDeviceButLaunchesWithoutARatio:
         }
         # devices without a ratio is what _place_tight emits.
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=())
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), by_index, engine=LLAMA
-        )
+        launch = planning_mod._launch_for(plan, "ref", by_index, engine=LLAMA)
         return launch, seen
 
     def test_the_estimate_gets_a_two_card_ratio(self, monkeypatch) -> None:
@@ -4721,7 +4696,7 @@ class TestEnginePerRole:
             ),
         )
 
-        def _launch(plan, _ref, _binary, _by_index, *, engine, **_kw):
+        def _launch(plan, _ref, _by_index, *, engine, **_kw):
             launched[plan.role] = engine
             return SimpleNamespace(role=plan.role)
 
@@ -4732,9 +4707,7 @@ class TestEnginePerRole:
         )
         engines = {**engines_for_all_roles(LLAMA), WorkerRole.EMBED: FAKE}
         card = _card(24 * _GB)
-        plan = planning_mod.plan_launches(
-            None, Path("/bin/srv"), {0: card}, [card], engines=engines
-        )
+        plan = planning_mod.plan_launches(None, {0: card}, [card], engines=engines)
         assert {launch.role for launch in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
         assert launched == {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
 
@@ -4822,7 +4795,7 @@ class TestSnapshotEngineWithMixedReadings:
         self._devices(monkeypatch, {id(LLAMA): [card], id(FAKE): []})
         seen: dict[str, object] = {}
 
-        def _plan(roles, _binary, _by_index, devices, *, engines):
+        def _plan(roles, _by_index, devices, *, engines):
             seen["devices"] = devices
             return planning_mod.FleetPlan(launches=())
 
@@ -4890,7 +4863,6 @@ class TestSnapshotEngineWithMixedReadings:
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
             plan = planning_mod.plan_launches(
                 None,
-                Path("/bin/llama-server"),
                 {0: card},
                 [card],
                 engines={WorkerRole.EMBED: LLAMA},

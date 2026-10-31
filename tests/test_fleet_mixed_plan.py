@@ -753,7 +753,7 @@ class TestGeneratedPlansAgainstBruteForce:
 
 
 class TestEngineIdentityIsItsName:
-    def test_two_adapter_instances_of_one_engine_launch_one_binary(
+    def test_two_adapter_instances_of_one_engine_each_launch_their_own_binary(
         self, monkeypatch, tmp_path
     ) -> None:
         prepare_host(monkeypatch, tmp_path, _PAIR, 64 * _GIB)
@@ -761,8 +761,10 @@ class TestEngineIdentityIsItsName:
         chat = CardEngine("engine-a", tmp_path / "first", _PAIR, busy)
         twin = CardEngine("engine-a", tmp_path / "second", _PAIR, cards_of((8, 8)))
         plan = planning.plan_all_launches(engines={C: chat, E: twin})
-        assert sorted(launch.role for launch in plan.launches) == sorted([C, E])
-        assert {launch.argv[0] for launch in plan.launches} == {str(twin.binary())}
+        assert {launch.role: launch.argv[0] for launch in plan.launches} == {
+            C: str(chat.binary()),
+            E: str(twin.binary()),
+        }
 
     def test_two_adapter_instances_of_one_engine_keep_the_one_engine_rule(
         self, monkeypatch, tmp_path, caplog

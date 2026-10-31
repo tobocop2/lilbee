@@ -1713,7 +1713,6 @@ def _engine_shares_kv(binary: Path, *, engine: EngineAdapter) -> bool:
 def _launch_for(
     plan: InstancePlan,
     model_ref: str,
-    binary: Path,
     by_index: dict[int, FleetDevice],
     *,
     unified_budget: int | None = None,
@@ -1725,6 +1724,7 @@ def _launch_for(
     engine: EngineAdapter,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
+    binary = engine.binary()
     # The self-check holds a downloaded file rather than a configured reference,
     # so it hands the path over instead of asking for one to be resolved.
     model_path = model_path or engine_params.resolve_model_path(model_ref)
@@ -1919,7 +1919,6 @@ def build_single_role_launch(
         return _launch_for(
             plan,
             str(model_path),
-            binary,
             by_index,
             unified_budget=_unified_memory_budget(devices, engine),
             model_path=model_path,
@@ -3327,7 +3326,6 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
 
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
-    binary: Path,
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
     *,
@@ -3336,7 +3334,7 @@ def plan_launches(
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
     host_engine = snapshot_engine(engines)
     with _one_engine_per_pass(engine=host_engine):
-        plan = _planned_launches(roles, binary, by_index, devices, engines, host_engine)
+        plan = _planned_launches(roles, by_index, devices, engines, host_engine)
     plan = replace(plan, skipped_no_engine=_roles_without_engine(roles, engines))
     _log_roles_without_engine(plan)
     return plan
@@ -3356,7 +3354,6 @@ def _log_roles_without_engine(plan: FleetPlan) -> None:
 
 def _planned_launches(
     roles: tuple[WorkerRole, ...] | None,
-    binary: Path,
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
     engines: Mapping[WorkerRole, EngineAdapter],
@@ -3410,9 +3407,6 @@ def _planned_launches(
         launch = _launch_for(
             plan,
             model_refs[plan.role],
-            binary
-            if engines[plan.role].name == snapshot_engine.name
-            else engines[plan.role].binary(),
             by_index,
             unified_budget=unified_budget,
             chat_reservation=reservation,
@@ -3527,11 +3521,10 @@ def plan_all_launches(*, engines: Mapping[WorkerRole, EngineAdapter]) -> FleetPl
     ``cfg.gpu_devices`` pin in its own env, and the plan reads the pin from there.
     """
     host_engine = snapshot_engine(engines)
-    binary = host_engine.binary()
     with _one_engine_per_pass(engine=host_engine):
-        devices = _plan_devices(binary, host_engine)
+        devices = _plan_devices(host_engine.binary(), host_engine)
         by_index = {d.index: d for d in devices}
-        return plan_launches(_launched_roles(engines), binary, by_index, devices, engines=engines)
+        return plan_launches(_launched_roles(engines), by_index, devices, engines=engines)
 
 
 def _roles_without_engine(
