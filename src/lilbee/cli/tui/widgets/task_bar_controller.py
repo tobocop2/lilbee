@@ -554,7 +554,7 @@ class TaskBarController:
 
 def download_key(model: CatalogModel) -> str:
     """Identity of a pull: repo plus filename, since one repo ships several quants."""
-    return f"{model.hf_repo}::{model.gguf_filename}"
+    return f"{model.pull_ref}::{model.gguf_filename}"
 
 
 def _download_target(
@@ -576,7 +576,7 @@ def _download_target(
 
     try:
         pull_model_data(
-            model.ref,
+            model.pull_ref,
             ModelSource.NATIVE,
             on_update=_on_progress,
             allow_unsupported=allow_unsupported,

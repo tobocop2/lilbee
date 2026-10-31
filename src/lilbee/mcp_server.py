@@ -65,6 +65,7 @@ from lilbee.app.settings import (
     requires_services_reset,
     reset_settings,
 )
+from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
@@ -1282,6 +1283,8 @@ def catalog_browse(
         "offset": result.offset,
         "has_more": result.has_more,
         "truncated": result.truncated,
+        "hidden": [asdict(h) for h in result.hidden],
+        "hidden_summary": hidden_summary([h.text for h in result.hidden]),
         "models": [
             {
                 "ref": m.hf_repo,
@@ -1295,6 +1298,7 @@ def catalog_browse(
                 "architecture": m.architecture,
                 "compat": m.compat.value,
                 "safety_stripped": m.safety_stripped,
+                "formats": sorted(f.value for f in m.formats),
             }
             for m in result.models
         ],

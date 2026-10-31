@@ -15,6 +15,8 @@ from lilbee.providers.roles import RerankMode, WorkerRole
 if TYPE_CHECKING:
     from lilbee.providers.fleet.adapters import RoleServerSpec
     from lilbee.providers.fleet.devices import DeviceProbe
+    from lilbee.providers.fleet.engines.host_gate import HostGate
+    from lilbee.providers.fleet.host_caps import HostCaps
     from lilbee.providers.fleet.launch import InstanceLaunch
 
 
@@ -95,6 +97,10 @@ class EngineAdapter(Protocol, Hashable):
     """How far this engine's memory figures can be trusted, known without an estimate."""
 
     def supports_architecture(self, architecture: str) -> bool: ...
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        """Whether *host* can run this engine; callable at any time, before ``binary()``."""
+        ...
 
     def binary(self) -> Path: ...
 

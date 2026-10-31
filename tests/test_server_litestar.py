@@ -1151,6 +1151,28 @@ class TestModelsPullRoute:
         assert resp.status_code == 201
 
 
+class TestModelsPullByFormat:
+    """A pull names the weight format with the ``<repo>#<format>`` reference."""
+
+    def test_pull_of_a_repo_hash_mlx_fetches_the_mlx_files(self, client, tmp_path):
+        from lilbee.catalog.types import ModelFormat
+
+        fetched = []
+
+        def _download(entry, engine, **_kw):
+            fetched.append((entry.hf_repo, entry.format))
+            return tmp_path / "unused"
+
+        with mock.patch("lilbee.catalog.download_model", _download):
+            resp = client.post(
+                "/api/models/pull", json={"model": "acme/two#mlx", "source": "native"}
+            )
+        events = parse_sse_events(resp.content)
+        assert resp.status_code == 201
+        assert [e for e in events if e[0] == "error"] == []
+        assert fetched == [("acme/two", ModelFormat.MLX)]
+
+
 class TestModelsShowRoute:
     @mock.patch(
         "lilbee.server.handlers.models_show",

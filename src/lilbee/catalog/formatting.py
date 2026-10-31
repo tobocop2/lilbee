@@ -10,7 +10,7 @@ from lilbee.catalog.refs import (
     is_gguf_filename,
     is_native_gguf_shape,
 )
-from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
+from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 
 PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 
@@ -167,6 +167,7 @@ class EnrichedModel:
     architecture: str
     compat: ModelCompat
     safety_stripped: bool
+    formats: frozenset[ModelFormat]
 
 
 def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[EnrichedModel]:
@@ -197,6 +198,7 @@ def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[Enri
                 architecture=m.architecture,
                 compat=m.compat,
                 safety_stripped=m.safety_stripped,
+                formats=m.formats,
             )
         )
     return enriched

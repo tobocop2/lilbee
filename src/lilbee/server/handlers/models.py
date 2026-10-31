@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Literal
 
 from cachetools import TTLCache
@@ -24,6 +25,7 @@ from lilbee.catalog import (
     picks_for,
 )
 from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo
+from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
@@ -47,6 +49,7 @@ from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
 from lilbee.server.models import (
     CatalogEntryResponse,
     ExternalModelsResponse,
+    HiddenEntryResponse,
     ModelsCatalogResponse,
     ModelsDeleteResponse,
     ModelsInstalledResponse,
@@ -351,6 +354,7 @@ def _build_catalog_entry(
         architecture=enriched.architecture,
         compat=enriched.compat,
         safety_stripped=enriched.safety_stripped,
+        formats=sorted(f.value for f in enriched.formats),
     )
 
 
@@ -501,6 +505,8 @@ async def models_catalog(
         has_more=has_more,
         next_offset=offset + limit if has_more else None,
         truncated=result.truncated,
+        hidden=[HiddenEntryResponse(**asdict(h)) for h in result.hidden],
+        hidden_summary=hidden_summary([h.text for h in result.hidden]),
         models=hosted[offset : offset + limit] + native_rows,
     )
 
