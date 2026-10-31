@@ -54,6 +54,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.command_registry import runs_while_streaming
 from lilbee.cli.tui.log_routing import tui_log_path
+from lilbee.cli.tui.preset_commands import is_preset_line
 from lilbee.cli.tui.screens.chat_helpers import (
     add_indexed_anything,
     build_add_progress_callback,
@@ -683,7 +684,8 @@ class ChatScreen(Screen[None]):
         if not self._ready_to_submit(text):
             return
         chat_input.value = ""
-        self._input_history.append(text)
+        if not is_preset_line(text):
+            self._input_history.append(text)
         self._history_index = -1
 
         if text.startswith("/"):
@@ -1426,6 +1428,60 @@ class ChatScreen(Screen[None]):
             call_from_thread(
                 self, self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
             )
+
+    def _cmd_preset(self, args: str) -> None:
+        from lilbee.cli.tui.preset_commands import dialog_request, key_typed, remove_target
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        if key_typed(args):
+            self.notify(msg.PRESET_KEY_IN_DIALOG, severity="error")
+            return
+
+        def _notify_dialog_result(notice: str | None) -> None:
+            if notice is not None:
+                self.notify(notice)
+
+        if (request := dialog_request(args)) is not None:
+            self._open_preset_dialog(request.name, _notify_dialog_result)
+            return
+        if (name := remove_target(args)) is not None:
+
+            def _on_confirm(confirmed: bool | None) -> None:
+                if confirmed:
+                    self._run_preset_command(args)
+
+            self.app.push_screen(
+                ConfirmDialog(
+                    msg.PRESET_REMOVE_CONFIRM_TITLE,
+                    msg.PRESET_REMOVE_CONFIRM_MESSAGE.format(name=name),
+                ),
+                _on_confirm,
+            )
+            return
+        self._run_preset_command(args)
+
+    @work(thread=True)
+    def _open_preset_dialog(self, name: str | None, on_done: Callable[[str | None], None]) -> None:
+        from lilbee.app.presets import failure_text, get_preset
+        from lilbee.cli.tui.screens.settings_presets import PresetDialog
+
+        preset = None
+        if name is not None:
+            try:
+                preset = get_preset(name)
+            except (ValueError, OSError) as exc:
+                call_from_thread(self, self.notify, failure_text(exc), severity="error")
+                return
+        call_from_thread(self, self.app.push_screen, PresetDialog(preset), on_done)
+
+    @work(thread=True)
+    def _run_preset_command(self, args: str) -> None:
+        from lilbee.cli.tui.preset_commands import run_preset_command
+
+        result = run_preset_command(args)
+        call_from_thread(
+            self, self.notify, result.text, severity="information" if result.ok else "error"
+        )
 
     def _cmd_rebuild(self, _args: str) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog

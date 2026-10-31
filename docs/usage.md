@@ -199,6 +199,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/models` | `/m`, `/catalog` | Browse the full model catalog |
 | `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
+| `/preset <subcommand>` | | List, add, edit or remove server presets (edit opens a dialog) |
 | `/delete <name>` | | Remove a document from the index |
 | `/prune-ignored` | | Drop indexed documents a `.lilbeeignore` now excludes |
 | `/rebuild` | | Re-index the documents directory from scratch (asks for confirmation) |
@@ -829,6 +830,9 @@ key. There are two ways to use cloud models when you want to:
 
 Either way your files and the index never leave the machine; only the queries
 and the snippets the model needs to answer cross the wire when you opt in.
+
+To use a server that you run yourself, add a server preset. See
+[Server presets](presets.md).
 
 ---
 
