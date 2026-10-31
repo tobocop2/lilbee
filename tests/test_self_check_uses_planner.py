@@ -34,7 +34,7 @@ class TestTheSelfCheckAsksThePlanner:
         # that finds a llama-server on PATH and the test passes by accident; CI
         # has none, which is where it showed up.
         monkeypatch.setattr(
-            "lilbee.providers.fleet.planning.resolve_llama_server",
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
             lambda: Path("/bin/llama-server"),
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})

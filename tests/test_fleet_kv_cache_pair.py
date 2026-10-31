@@ -15,7 +15,9 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.placement import InstancePlan
+from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import WorkerRole
 
 _GB = 1024**3
@@ -73,13 +75,9 @@ def test_auto_does_not_send_a_quantized_v_that_forces_flash_attention_on(
     assert "--cache-type-k" not in argv
 
 
-class _Estimate:
+def _estimate() -> GgufVramEstimate:
     """What gguf-parser would return; the test reads the KV type it was asked for."""
-
-    ram_bytes = 0
-
-    def footprint(self, *, unified: bool) -> int:
-        return 1
+    return GgufVramEstimate(vram_bytes=1, ram_bytes=0, unified_bytes=1)
 
 
 @pytest.mark.parametrize(("backend", "flash", "flash_flag", "kv_type"), _CASES)
@@ -92,9 +90,9 @@ def test_chat_placement_estimate_sizes_the_kv_type_the_launch_sends(
 
     def _record(*_a, kv_cache_type, **_k):
         asked.append(kv_cache_type)
-        return _Estimate()
+        return _estimate()
 
-    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _record)
+    monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _record)
     monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 4096)
 
     planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1)

@@ -142,6 +142,7 @@ def test_the_estimators_own_host_figure_is_what_gets_judged(monkeypatch, tmp_pat
     # admission reads, or the whole bound is decorative.
     from lilbee.providers import engine_params, gguf_meta
     from lilbee.providers.fleet import planning
+    from lilbee.providers.fleet.engines import llama as llama_mod
     from lilbee.providers.fleet.vram import GgufVramEstimate
 
     seen: list[int] = []
@@ -155,7 +156,7 @@ def test_the_estimators_own_host_figure_is_what_gets_judged(monkeypatch, tmp_pat
     monkeypatch.setattr(engine_params, "resolve_model_path", lambda *_a, **_k: model)
     monkeypatch.setattr(gguf_meta, "read_gguf_metadata", lambda *_a, **_k: {})
     monkeypatch.setattr(
-        planning,
+        llama_mod,
         "estimate_instance_footprint",
         lambda *_a, **_k: GgufVramEstimate(
             vram_bytes=4 * _GB, unified_bytes=4 * _GB, ram_bytes=7 * _GB

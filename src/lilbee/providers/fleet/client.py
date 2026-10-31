@@ -37,8 +37,10 @@ from lilbee.providers.base import (
     ToolCallDelta,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.base import RequestProfile
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
-from lilbee.providers.roles import RerankMode
+from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 _PROVIDER_NAME = "llama-server"
@@ -352,12 +354,6 @@ def _fetch_log_tail(url: str) -> str:
     return "".join(chunks)[-_UPSTREAM_LOG_TAIL_CHARS:]
 
 
-# llama-server L2-normalizes pooled embeddings by default (embd_normalize=2);
-# every embeddings request sends embd_normalize=-1 so the engine returns raw
-# vectors, and so a rank-pooling rerank score (a single value per pair) is not
-# collapsed to +-1 by normalization. The server only exposes this per request
-# body, not as a startup flag.
-_EMBD_NORMALIZE_NONE = -1
 # Vectors come back as a base64 float32 buffer: parsing thousands of JSON float
 # literals per batch is CPU-bound and holds the GIL, which caps embedding
 # throughput below what the GPUs can feed regardless of how many are dispatching.
@@ -375,11 +371,8 @@ _NO_RERANK_SCORE_ERROR = "The reranker returned no relevance score for a candida
 _HEALTH_PATH = "/health"
 _CHAT_PATH = "/v1/chat/completions"
 _EMBED_PATH = "/v1/embeddings"
-_TOKENIZE_PATH = "/tokenize"
-_DETOKENIZE_PATH = "/detokenize"
-_APPLY_TEMPLATE_PATH = "/apply-template"
-# llama-swap proxies native (non-OpenAI) llama.cpp routes only under
-# /upstream/<model>/...; the bare /tokenize path 404s (it routes /v1/* by the
+# llama-swap proxies native (non-OpenAI) engine routes only under
+# /upstream/<model>/...; the bare tokenize path 404s (it routes /v1/* by the
 # body's model field, but a native route carries no such field).
 _UPSTREAM_PREFIX = "/upstream"
 # Match the in-process tokenizer call (llm.tokenize(text, add_bos=True, special=False)):
@@ -503,7 +496,10 @@ class LlamaServerClient:
         on_prefill: Callable[[tuple[int, int] | None], None] | None = None,
         engine_log: Path | None = None,
         model_ref: str | None = None,
+        profile: RequestProfile | None = None,
     ) -> None:
+        # The request fields and native paths of this server's engine.
+        self._profile = LLAMA.request_profile(WorkerRole.CHAT) if profile is None else profile
         self._base = base_url.rstrip("/")
         # The file this server's own engine writes its output to; None when the
         # launch writes none or no swap manager fronts the client (the self-check).
@@ -954,9 +950,7 @@ class LlamaServerClient:
             # include_usage makes llama-server emit a final SSE chunk carrying the
             # token usage (with an empty choices list) just before [DONE].
             payload["stream_options"] = {"include_usage": True}
-            # return_progress makes llama-server stream prompt_progress frames
-            # during prefill, so a long first turn is observable server-side.
-            payload["return_progress"] = True
+            payload.update(self._profile.stream_fields)
         if tools is not None:
             payload["tools"] = tools
         if tool_choice is not None:
@@ -1159,7 +1153,7 @@ class LlamaServerClient:
                     json={
                         "model": self._model,
                         "input": inputs,
-                        "embd_normalize": _EMBD_NORMALIZE_NONE,
+                        **self._profile.embed_fields,
                         "encoding_format": _EMBED_ENCODING_FORMAT,
                     },
                 )
@@ -1238,7 +1232,7 @@ class LlamaServerClient:
 
         def _call() -> list[int]:
             resp = self._http.post(
-                self._native_route(_TOKENIZE_PATH),
+                self._native_route(self._profile.tokenize_path),
                 json={
                     "content": text,
                     "add_special": _TOKENIZE_ADD_SPECIAL,
@@ -1293,10 +1287,12 @@ class LlamaServerClient:
         )
 
         def _call() -> str:
-            resp = self._http.post(self._native_route(_APPLY_TEMPLATE_PATH), json=payload)
+            resp = self._http.post(
+                self._native_route(self._profile.apply_template_path), json=payload
+            )
             if _route_is_absent(resp):
                 raise NotImplementedError(
-                    f"This inference engine has no {_APPLY_TEMPLATE_PATH} route."
+                    f"This inference engine has no {self._profile.apply_template_path} route."
                 )
             self._raise_for_status(resp)
             return str(resp.json()["prompt"])
@@ -1304,7 +1300,9 @@ class LlamaServerClient:
         return retry_on_gateway_error(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
-        resp = self._http.post(self._native_route(_DETOKENIZE_PATH), json={"tokens": tokens})
+        resp = self._http.post(
+            self._native_route(self._profile.detokenize_path), json={"tokens": tokens}
+        )
         self._raise_for_status(resp)
         return str(resp.json()["content"])
 

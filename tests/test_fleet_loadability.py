@@ -10,6 +10,7 @@ import pytest
 from lilbee.catalog.compat import UnsupportedQuantError
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import loadability
+from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.loadability import _named_quant, assert_engine_can_load
 
 _REPO = "prism-ml/Ternary-Bonsai-27B-gguf"
@@ -32,7 +33,7 @@ _NO_SUCH_HOST = (
 @pytest.fixture(autouse=True)
 def _stub_parser_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The probe must not need a real engine wheel to build its argv."""
-    monkeypatch.setattr(loadability, "resolve_gguf_parser", lambda: tmp_path / "gguf-parser")
+    monkeypatch.setattr(llama_mod, "resolve_gguf_parser", lambda: tmp_path / "gguf-parser")
 
 
 def _returns(monkeypatch: pytest.MonkeyPatch, output: str, returncode: int) -> list[list[str]]:
@@ -203,7 +204,7 @@ class TestNoParserAvailable:
         def _unavailable() -> Path:
             raise ProviderError("gguf-parser binary not found.")
 
-        monkeypatch.setattr(loadability, "resolve_gguf_parser", _unavailable)
+        monkeypatch.setattr(llama_mod, "resolve_gguf_parser", _unavailable)
         monkeypatch.setattr(
             loadability,
             "run_bounded",

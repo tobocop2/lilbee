@@ -10,6 +10,7 @@ import pytest
 
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import devices as devices_mod
+from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.roles import EngineBackend
 
 
@@ -93,11 +94,10 @@ class TestEveryVendorGetsTheWarning:
 
     @staticmethod
     def _probe_reporting_nothing(monkeypatch, vendor_ids: set[int]) -> None:
-        from lilbee.providers.fleet import planning as planning_mod
         from lilbee.providers.fleet.devices import DeviceProbe
 
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _b: DeviceProbe([], "", spoke_protocol=True)
+            llama_mod, "probe_devices", lambda _b: DeviceProbe([], "", spoke_protocol=True)
         )
         monkeypatch.setattr(
             "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
@@ -155,7 +155,9 @@ class TestABootTimeEmptyAnswerIsRetried:
             devices = list(results[min(len(calls) - 1, len(results) - 1)])
             return planning_mod.DeviceReading(devices, EngineBackend.CUDA)
 
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         monkeypatch.setattr(planning_mod, "_read_devices", _resolve)
         monkeypatch.setattr(planning_mod, "_PROBE_RETRY_DELAY_S", 0.0)
         return calls

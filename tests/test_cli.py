@@ -6971,10 +6971,11 @@ class TestSelfCheck:
         # The llama-server binary isn't present in CI; stub the resolver so the
         # function reaches the swap.start cleanup path under test.
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/fake/llama-server")
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/fake/llama-server"),
         )
         monkeypatch.setattr(
-            "lilbee.providers.fleet.planning.resolve_llama_server",
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
             lambda: Path("/fake/llama-server"),
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
@@ -7552,10 +7553,11 @@ class TestSelfCheckHelpers:
             lambda _e, _m, **_k: mock.MagicMock(),
         )
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/bin/llama-server")
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
         )
         monkeypatch.setattr(
-            "lilbee.providers.fleet.planning.resolve_llama_server",
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
             lambda: Path("/bin/llama-server"),
         )
         monkeypatch.setattr(
@@ -7860,16 +7862,17 @@ def test_self_check_applies_expert_offload_to_embed_like_the_fleet(monkeypatch, 
 
     # planning binds this name at import, so patching the adapters module alone
     # would leave the real one in the call path.
-    monkeypatch.setattr("lilbee.providers.fleet.planning.build_server_argv", _spy)
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.build_server_argv", _spy)
     monkeypatch.setattr(
         "lilbee.providers.gguf_meta.read_gguf_metadata",
         lambda _p: {"architecture": "qwen3moe", "expert_count": "128"},
     )
     monkeypatch.setattr(
-        "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/fake/llama-server")
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+        lambda: Path("/fake/llama-server"),
     )
     monkeypatch.setattr(
-        "lilbee.providers.fleet.planning.resolve_llama_server",
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
         lambda: Path("/fake/llama-server"),
     )
     # The launch now comes from the planner, which probes for devices first; the
