@@ -134,3 +134,47 @@ def test_complete_surfaces_classified_message_end_to_end(sdk: fakes.FakeSdk) -> 
     assert caught.value.kind == ProviderErrorKind.RATE_LIMIT
     assert "gemini-3.1-pro" in str(caught.value)
     assert "blob" not in str(caught.value)
+
+
+# The 400 body a local server returned for a prompt past its window, as recorded.
+_OVERFLOW_400 = (
+    '{"error":{"message":"Prompt sequence length is greater than 40960, '
+    'perhaps consider using `truncate_sequence`?",'
+    '"type":"invalid_request_error","param":null,"code":null}}'
+)
+
+
+def test_prompt_length_400_through_the_backend_is_a_context_overflow(sdk: fakes.FakeSdk) -> None:
+    sdk.chat_error = sdk.error("BadRequestError", _OVERFLOW_400)
+    req = CompletionRequest(
+        ref=parse_model_ref("gemini/gemini-3.1-pro"),
+        messages=[{"role": "user", "content": "test"}],
+    )
+    with pytest.raises(ProviderError) as caught:
+        LiterLlmBackend().complete(req)
+    assert caught.value.kind == ProviderErrorKind.CONTEXT_OVERFLOW
+    assert "context window" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        '{"error":{"message":"Unknown field `foo`","type":"invalid_request_error"}}',
+        '{"error":{"message":"Prompt sequence length is invalid"}}',
+    ],
+)
+def test_unrelated_400_through_the_backend_stays_a_bad_request(
+    sdk: fakes.FakeSdk, message: str
+) -> None:
+    sdk.chat_error = sdk.error("BadRequestError", message)
+    req = CompletionRequest(
+        ref=parse_model_ref("gemini/gemini-3.1-pro"),
+        messages=[{"role": "user", "content": "test"}],
+    )
+    with pytest.raises(ProviderError) as caught:
+        LiterLlmBackend().complete(req)
+    assert caught.value.kind == ProviderErrorKind.BAD_REQUEST
+
+
+def test_prompt_length_text_on_another_error_type_keeps_its_kind(sdk: fakes.FakeSdk) -> None:
+    assert _classify_error(sdk.error("ServerError", _OVERFLOW_400)) == ProviderErrorKind.SERVER

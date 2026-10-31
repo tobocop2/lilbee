@@ -36,6 +36,7 @@ from lilbee.providers.base import (
     TokenUsage,
     ToolCall,
     ToolCallDelta,
+    is_prompt_length_overflow,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
 from lilbee.providers.fleet.engines.base import RequestProfile
@@ -599,7 +600,9 @@ class LlamaServerClient:
         # user-facing message so the chat route returns a clean context_length_exceeded
         # (400) instead of a generic internal_error -- a long conversation that fills
         # the window then reads as "too long", not "Internal server error".
-        if resp.status_code == _HTTP_BAD_REQUEST and self._profile.context_overflow.search(body):
+        if resp.status_code == _HTTP_BAD_REQUEST and (
+            self._profile.context_overflow.search(body) or is_prompt_length_overflow(body)
+        ):
             raise ProviderError(
                 "The conversation exceeds this model's context window. "
                 "Start a new conversation or shorten the input.",

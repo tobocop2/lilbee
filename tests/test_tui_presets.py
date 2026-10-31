@@ -110,6 +110,17 @@ async def await_chat(app, pilot):
     return app.screen
 
 
+async def await_dialog(pilot, app) -> bool:
+    """Wait until the preset dialog is the top screen and every widget in it is mounted."""
+    return await wait_until(
+        pilot,
+        lambda: (
+            isinstance(app.screen, PresetDialog)
+            and all(w.is_mounted for w in app.screen.walk_children(with_self=True))
+        ),
+    )
+
+
 def _press(app, selector: str) -> None:
     """Press the button *selector* on the top screen."""
     app.screen.query_one(selector, Button).press()
@@ -338,7 +349,7 @@ class TestChatHandler:
         async with app.run_test(size=(120, 40)) as pilot:
             chat = await await_chat(app, pilot)
             chat._cmd_preset("add")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             assert app.screen.query("#preset-name-input")
 
     async def test_edit_with_a_name_opens_the_dialog_for_that_preset(self):
@@ -347,7 +358,7 @@ class TestChatHandler:
         async with app.run_test(size=(120, 40)) as pilot:
             chat = await await_chat(app, pilot)
             chat._cmd_preset("edit omlx")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             assert app.screen.query_one("#preset-url-input", Input).value == LOCAL
 
     async def test_edit_of_a_missing_preset_notifies_the_service_text(self):
@@ -367,7 +378,7 @@ class TestChatHandler:
             chat = await await_chat(app, pilot)
             with mock.patch.object(chat, "notify") as notify:
                 chat._cmd_preset("edit omlx")
-                assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+                assert await await_dialog(pilot, app)
                 app.screen.query_one("#preset-key-input", Input).value = "NEWKEY"
                 _press(app, "#preset-save")
                 assert await wait_until(pilot, lambda: notify.called)
@@ -434,7 +445,7 @@ class TestPane:
         async with app.run_test(size=(120, 50)) as pilot:
             pane = await _open_pane(pilot, app)
             _press(app, "#presets-add")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             dialog = app.screen
             key_input = dialog.query_one("#preset-key-input", Input)
             assert key_input.password is True
@@ -453,7 +464,7 @@ class TestPane:
         async with app.run_test(size=(120, 50)) as pilot:
             await _open_pane(pilot, app)
             _press(app, "#presets-add")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             app.screen.query_one("#preset-name-input", Input).value = "omlx"
             app.screen.query_one("#preset-url-input", Input).value = LOCAL
             _press(app, "#preset-save")
@@ -471,7 +482,7 @@ class TestPane:
         async with app.run_test(size=(120, 50)) as pilot:
             await _open_pane(pilot, app)
             _press(app, "#presets-add")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             select = app.screen.query_one("#preset-wire-select", Select)
             assert select.display is False
             app.screen.query_one("#preset-role-rerank", Checkbox).value = True
@@ -482,7 +493,7 @@ class TestPane:
         async with app.run_test(size=(120, 50)) as pilot:
             await _open_pane(pilot, app)
             _press(app, "#presets-add")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             _press(app, "#preset-cancel")
             assert await wait_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
         assert _stored() == []
@@ -494,7 +505,7 @@ class TestPane:
             pane = await _open_pane(pilot, app)
             assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
             _press(app, ".preset-edit")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             assert KEY not in _screen_text(app)
             assert app.screen.query_one("#preset-key-input", Input).value == ""
             app.screen.query_one("#preset-role-vision", Checkbox).value = True
@@ -510,7 +521,7 @@ class TestPane:
             pane = await _open_pane(pilot, app)
             assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
             _press(app, ".preset-edit")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             app.screen.query_one("#preset-url-input", Input).value = f"{LOCAL}/x"
             _press(app, "#preset-save")
             assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
@@ -528,7 +539,7 @@ class TestPane:
             pane = await _open_pane(pilot, app)
             assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
             _press(app, ".preset-edit")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             _press(app, "#preset-save")
             error = app.screen.query_one("#preset-error", Static)
             assert await wait_until(
@@ -542,7 +553,7 @@ class TestPane:
             pane = await _open_pane(pilot, app)
             assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
             _press(app, ".preset-edit")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             app.screen.query_one("#preset-wire-select", Select).value = "tei"
             _press(app, "#preset-save")
             assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
@@ -555,7 +566,7 @@ class TestPane:
             pane = await _open_pane(pilot, app)
             assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
             _press(app, ".preset-edit")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             assert "Key: set" in _screen_text(app)
             _press(app, "#preset-clear-key")
             assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
@@ -568,7 +579,7 @@ class TestPane:
             pane = await _open_pane(pilot, app)
             assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
             _press(app, ".preset-edit")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             assert not app.screen.query("#preset-clear-key")
             assert "Key: none" in _screen_text(app)
 
@@ -614,7 +625,7 @@ class TestPane:
         async with app.run_test(size=(120, 50)) as pilot:
             await _open_pane(pilot, app)
             _press(app, "#presets-add")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
             with mock.patch(
                 "lilbee.cli.tui.screens.settings_presets.add_preset", side_effect=OSError("busy")
             ):
@@ -697,7 +708,7 @@ class TestPaneKeyboardAccess:
                 pilot, lambda: "preset-edit" in getattr(app.focused, "classes", ())
             )
             await pilot.press("enter")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            assert await await_dialog(pilot, app)
 
 
 SECRET = "SENTINEL-slash-key-5d7e"
