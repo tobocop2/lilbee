@@ -11,7 +11,8 @@ from cachetools import TTLCache
 
 from lilbee.catalog.compat import UnsupportedQuantError
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.types import ModelSource
+from lilbee.catalog.refs import model_format
+from lilbee.catalog.types import ModelFormat, ModelSource
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
 from lilbee.modelhub.model_manager.types import ModelNotFoundError
@@ -222,6 +223,8 @@ class ModelManager:
         check before starting a download, so a caller learns the model is
         unsupported before any bytes move.
         """
+        if model_format(ref) is not ModelFormat.GGUF:
+            return
         from lilbee.app.services import get_services
         from lilbee.catalog.compat import (
             ModelCompat,
@@ -277,6 +280,8 @@ class ModelManager:
         download reports the gated repo or the missing file properly, so a
         resolution failure here is left to it.
         """
+        if entry.format is not ModelFormat.GGUF:
+            return entry
         # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
         from lilbee.catalog.download import resolve_filename
         from lilbee.catalog.hf_client import hf_token

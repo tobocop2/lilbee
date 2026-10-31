@@ -30,6 +30,8 @@ from lilbee.providers.fleet.engines.base import (
     LaunchRequest,
     RequestProfile,
 )
+from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.loadability import assert_engine_can_load
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
@@ -74,6 +76,9 @@ class LlamaCppAdapter:
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return PASS
 
     def binary(self) -> Path:
         return resolve_llama_server()

@@ -66,7 +66,7 @@ from lilbee.catalog.refs import (
     quant_label,
     rank_gguf_candidates,
 )
-from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
+from lilbee.catalog.types import CatalogSize, CatalogSort, ModelFormat, ModelTask
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.runtime.hardware import FitLevel, fit_for_size, make_fit_filter
@@ -1755,7 +1755,7 @@ class TestHfRowsMergeTags:
                 "sentence-similarity": [self._row("b/high-GGUF", 9000)],
             },
         )
-        rows = list(_query._HfScan(ModelTask.EMBEDDING, "").rows())
+        rows = list(_query._HfScan(ModelTask.EMBEDDING, "", [ModelFormat.GGUF]).rows())
         assert [m.hf_repo for m in rows] == ["b/high-GGUF", "a/low-GGUF"]
 
     def test_rows_dedupe_a_repo_listed_under_both_tags(
@@ -1763,7 +1763,7 @@ class TestHfRowsMergeTags:
     ) -> None:
         dupe = self._row("a/dupe-GGUF", 500)
         stub_hf_listing(monkeypatch, {"feature-extraction": [dupe], "sentence-similarity": [dupe]})
-        rows = list(_query._HfScan(ModelTask.EMBEDDING, "").rows())
+        rows = list(_query._HfScan(ModelTask.EMBEDDING, "", [ModelFormat.GGUF]).rows())
         assert [m.hf_repo for m in rows] == ["a/dupe-GGUF"]
 
     def test_rows_follow_cursors_across_pages_of_both_tags(
@@ -1776,7 +1776,7 @@ class TestHfRowsMergeTags:
         calls = stub_hf_listing(
             monkeypatch, {"feature-extraction": tag_a, "sentence-similarity": tag_b}
         )
-        rows = list(_query._HfScan(ModelTask.EMBEDDING, "").rows())
+        rows = list(_query._HfScan(ModelTask.EMBEDDING, "", [ModelFormat.GGUF]).rows())
         by_downloads = sorted(tag_a + tag_b, key=lambda m: m.downloads, reverse=True)
         assert [m.hf_repo for m in rows] == [m.hf_repo for m in by_downloads]
         assert sorted(str(c["cursor"]) for c in calls) == [str(size), str(size), "None", "None"]
@@ -1787,7 +1787,7 @@ class TestHfRowsMergeTags:
         pages = _query._HF_SCAN_MAX_PAGES
         endless = [make_test_catalog_model(name=f"Hf{i}") for i in range(size * (pages + 1))]
         calls = stub_hf_listing(monkeypatch, {"text-generation": endless})
-        scan = _query._HfScan(ModelTask.CHAT, "")
+        scan = _query._HfScan(ModelTask.CHAT, "", [ModelFormat.GGUF])
         rows = list(scan.rows())
         assert len(rows) == size * pages
         assert len(calls) == pages
@@ -1807,7 +1807,7 @@ class TestHfRowsMergeTags:
         bound = _query._HF_SCAN_PAGE_SIZE * _query._HF_SCAN_MAX_PAGES
         rows = [make_test_catalog_model(name=f"Hf{i}") for i in range(bound + past_bound)]
         stub_hf_listing(monkeypatch, {"text-generation": rows})
-        scan = _query._HfScan(ModelTask.CHAT, "")
+        scan = _query._HfScan(ModelTask.CHAT, "", [ModelFormat.GGUF])
         assert len(list(scan.rows())) == min(len(rows), bound)
         assert scan.truncated is truncated
 
