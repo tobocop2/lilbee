@@ -471,10 +471,16 @@ maps a model reference to an engine name and is empty by default. Only the
 engine commands write these keys. Do not edit them in the settings list.
 
 An `engine_choices` entry for a model wins. `preferred_engine` covers the
-models with no entry. If the winning engine cannot load the format of the
-model, the role has no engine and a notice shows, for example `Engine llama.cpp
-cannot load the mlx format of org/repo#mlx.` lilbee does not fall back to the
-other key.
+models with no entry. Three cases follow.
+
+- If an `engine_choices` entry names an engine that is not installed, lilbee
+  uses the default engine for the format and shows a notice, for example
+  `Engine ik_llama.cpp is not installed. Using llama.cpp.`
+- If `preferred_engine` names an engine that is not installed, lilbee also uses
+  the default engine for the format and shows a notice.
+- If an `engine_choices` entry names an installed engine that cannot load the
+  format, the role has no engine and a notice shows, for example `Engine
+  llama.cpp cannot load the mlx format of org/repo#mlx.`
 
 #### Pick the engine in the TUI
 
