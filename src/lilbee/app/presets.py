@@ -12,11 +12,10 @@ from typing import Any
 from lilbee.core import settings
 from lilbee.core.blocked_networks import check_url_form, url_origin, validate_preset_url
 from lilbee.core.config import cfg
-from lilbee.providers.model_ref import LOCAL_PROVIDER
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.server_registry import (
-    BUILTIN_PREFIXES,
     PRESETS_KEY,
+    RESERVED_NAMES,
     Entry,
     RerankWire,
     StoredPreset,
@@ -29,7 +28,6 @@ from lilbee.providers.server_registry import (
 log = logging.getLogger(__name__)
 
 _NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
-_RESERVED_NAMES = BUILTIN_PREFIXES | {LOCAL_PROVIDER}
 _UNREADABLE_ENTRY = "The stored entry is not a valid preset. Fix or remove it in config.toml."
 _KEY_STAYS_WITH_ORIGIN = (
     "The new URL is a different server, and the stored key does not follow it. "
@@ -60,7 +58,7 @@ def _check_name(name: str) -> None:
             "A preset name uses lower-case letters, digits, - and _, "
             "and starts with a letter or a digit."
         )
-    if name in _RESERVED_NAMES:
+    if name in RESERVED_NAMES:
         raise ValueError(f"The preset name {name!r} is a provider prefix. Choose another name.")
 
 

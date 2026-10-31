@@ -160,6 +160,11 @@ class TestRouteFor:
         assert route_for("wired") is None
         assert route_for("good") is not None
 
+    def test_a_hand_edited_preset_named_local_does_not_take_a_local_ref(self) -> None:
+        _store(_preset("local"))
+        assert route_for("local") is None
+        assert parse_model_ref("local/x").name == "local/x"
+
     def test_a_store_that_does_not_parse_routes_nothing(self) -> None:
         settings.set_value(cfg.data_root, "server_presets", "not json")
         assert route_for("wired") is None
@@ -393,6 +398,31 @@ class TestSdkProviderRouting:
         assert PRESET_KEY not in str(err.value)
         assert backend.requests == 0
 
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda p: p.embed(["x"]),
+            lambda p: p.rerank("q", ["x"]),
+            lambda p: p.vision_ocr(b"png", "wired/v"),
+        ],
+        ids=["embed", "rerank", "vision"],
+    )
+    def test_a_blocked_host_sends_no_request_and_no_key_on_every_other_role(
+        self,
+        provider: SdkLLMProvider,
+        backend: _Backend,
+        dns: dict[str, list[str]],
+        call: Any,
+    ) -> None:
+        _store(_preset(api_key=PRESET_KEY))
+        cfg.embedding_model = "wired/e"
+        cfg.reranker_model = "wired/r"
+        dns[PUBLIC_HOST] = ["169.254.169.254"]
+        with pytest.raises(ProviderError, match=r"blocked address 169\.254\.169\.254") as err:
+            call(provider)
+        assert PRESET_KEY not in str(err.value)
+        assert backend.requests == 0
+
     def test_a_host_with_no_dns_answer_sends_no_request(
         self, provider: SdkLLMProvider, backend: _Backend, dns: dict[str, list[str]]
     ) -> None:
@@ -420,8 +450,8 @@ class TestSdkProviderRouting:
     ) -> None:
         dns["two.test"] = ["93.184.216.35"]
         _store(
-            _preset("one", URL, api_key="key-one"),
-            _preset("two", "http://two.test/v1", api_key="key-two"),
+            _preset("one", URL, api_key="key-one"),  # pragma: allowlist secret
+            _preset("two", "http://two.test/v1", api_key="key-two"),  # pragma: allowlist secret
         )
         for name in ("one", "two"):
             provider.chat([{"role": "user", "content": "x"}], model=f"{name}/same")

@@ -24,6 +24,10 @@ PRESETS_KEY = "server_presets"
 API_PROVIDERS = frozenset({"openrouter", "gemini", "anthropic", "openai", "mistral", "deepseek"})
 # Prefixes that route a ref away from the local registry; a constant at run time.
 BUILTIN_PREFIXES: frozenset[str] = frozenset(API_PROVIDERS | LOCAL_SERVER_KEYS)
+# Provider value for refs served from the local registry (native GGUF).
+LOCAL_PROVIDER = "local"
+# Names a preset cannot take: a ref with one of them as its prefix never routes to a preset.
+RESERVED_NAMES = BUILTIN_PREFIXES | {LOCAL_PROVIDER}
 
 _UNPARSED_STORE = (
     "The stored server presets do not parse. Fix or remove server_presets in config.toml."
@@ -111,7 +115,7 @@ def decode_entries(raw: Any) -> list[Entry]:
 
 def stored_entries() -> list[Entry]:
     """Every stored entry, read from config.toml now; a value that is no list is refused."""
-    # Deferred: the config builds its fields through parse_model_ref, which imports this module.
+    # Deferred: the config imports model_ref, which imports this module, before cfg exists.
     from lilbee.core import settings
     from lilbee.core.config import cfg
 
@@ -130,12 +134,12 @@ class ServerRoute:
 
 
 def route_for(prefix: str) -> ServerRoute | None:
-    """The route of the stored preset named *prefix*; None for a built-in prefix or no preset.
+    """The route of the stored preset named *prefix*; None for a reserved name or no preset.
 
     The store is read on each call, so a preset another process changes is seen at once.
     A store that does not parse routes nothing; the read has logged the fault.
     """
-    if prefix in BUILTIN_PREFIXES:
+    if prefix in RESERVED_NAMES:
         return None
     try:
         entries = stored_entries()
