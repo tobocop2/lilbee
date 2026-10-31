@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 
 from lilbee.catalog.refs import ggml_bytes_per_param, ggml_quant_block_sizes, quant_label
-from lilbee.catalog.types import ModelCompat, ModelTask
+from lilbee.catalog.types import ModelCompat, ModelFormat, ModelTask
 
 # Minimum recommended floor so a tiny model still reports a sane RAM ask.
 _MIN_RAM_FLOOR_GB = 2.0
@@ -138,6 +138,9 @@ class CatalogModel:
     # Safety-stripped (abliterated/uncensored) per the repo's HF tags. Browse
     # rows carry it; recommendation rails exclude rows that set it.
     safety_stripped: bool = False
+    # The weight format a pull fetches. For a non-GGUF format ``gguf_filename`` is
+    # the entry file the engine loads from.
+    format: ModelFormat = ModelFormat.GGUF
 
     @property
     def ref(self) -> str:

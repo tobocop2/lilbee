@@ -184,7 +184,9 @@ class TestManifestFormat:
         registry._write_manifest(ModelManifest(**{**_OLD, "format": "mlx"}))
 
         saved = json.loads(
-            registry._manifest_path("org/repo", "m.gguf").read_text(encoding="utf-8")
+            registry._manifest_path("org/repo", "m.gguf", ModelFormat.MLX).read_text(
+                encoding="utf-8"
+            )
         )
 
         assert saved["format"] == "mlx"
@@ -245,6 +247,8 @@ class TestInstallKeepsTheFormat:
         registry.install("org/repo", "m.gguf", source, manifest)
 
         written = json.loads(
-            registry._manifest_path("org/repo", "m.gguf").read_text(encoding="utf-8")
+            registry._manifest_path("org/repo", "m.gguf", ModelFormat.MLX).read_text(
+                encoding="utf-8"
+            )
         )
         assert written["format"] == "mlx"
