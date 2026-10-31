@@ -27,6 +27,7 @@ from lilbee.data.store import (
     local_owner_predicate,
 )
 from lilbee.providers.base import aux_options
+from lilbee.retrieval.reasoning import strip_reasoning
 
 
 def make_memory_row(
@@ -162,11 +163,13 @@ def auto_extract(question: str, answer: str) -> list[SavedMemory]:
     services = get_services()
 
     def _chat_text(messages: list[dict[str, str]], **_kwargs: object) -> str:
-        return services.provider.chat(
-            messages,
-            stream=False,
-            options=aux_options(MEMORY_EXTRACT_MAX_TOKENS, response_format=json_reply_format()),
-        ).text
+        return strip_reasoning(
+            services.provider.chat(
+                messages,
+                stream=False,
+                options=aux_options(MEMORY_EXTRACT_MAX_TOKENS, response_format=json_reply_format()),
+            ).text
+        )
 
     extracted = extract_memories(question, answer, _chat_text)
     stored: list[SavedMemory] = []
