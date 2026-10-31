@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF, SUPPORTED_ARCHS
 from lilbee.catalog.header_probe import GGUF_MAGIC
+from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.adapters import (
     FLAG_FIT_TARGET,
     FLAG_KV_UNIFIED_PER_SLOT,
@@ -30,7 +31,6 @@ from lilbee.providers.fleet.engines.base import (
     MemoryEstimate,
     MemoryKind,
     MemoryRequest,
-    ModelFormat,
     RequestProfile,
 )
 from lilbee.providers.fleet.launch import InstanceLaunch
