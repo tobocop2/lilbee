@@ -162,6 +162,7 @@ def planned_chat_ctx() -> int | None:
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_chat_ctx, resolve_model_path
+    from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.planning import plan_sizing_budget
     from lilbee.providers.gguf_meta import read_gguf_metadata
     from lilbee.providers.model_ref import parse_model_ref
@@ -174,7 +175,7 @@ def planned_chat_ctx() -> int | None:
     try:
         path = resolve_model_path(ref)
         return resolve_chat_ctx(
-            path, read_gguf_metadata(path), available_bytes=plan_sizing_budget()
+            path, read_gguf_metadata(path), engine=LLAMA, available_bytes=plan_sizing_budget()
         )
     except (ProviderError, OSError, ValueError):
         # Sizing needs the model file and its GGUF header; an absent or unreadable

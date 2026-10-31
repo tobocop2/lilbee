@@ -33,7 +33,8 @@ from lilbee.providers.fleet.devices import (
     host_lacks_nvlink,
     visible_env,
 )
-from lilbee.providers.fleet.engines import LLAMA, LaunchRequest, MemoryRequest
+from lilbee.providers.fleet.engines import LLAMA, EngineAdapter, LaunchRequest, MemoryRequest
+from lilbee.providers.fleet.engines.base import MemoryKind
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import (
     InstancePlan,
@@ -252,6 +253,7 @@ def _slots_for(
     model_path: Path,
     ctx: int,
     *,
+    engine: EngineAdapter,
     mmproj_path: Path | None = None,
     unified_budget: int | None = None,
     chat_reservation: int = 0,
@@ -273,6 +275,7 @@ def _slots_for(
         return _resolve_chat_slots(
             model_path,
             ctx,
+            engine=engine,
             mmproj_path=mmproj_path,
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
@@ -280,11 +283,16 @@ def _slots_for(
         )
     if role is WorkerRole.VISION:
         return _resolve_vision_slots(
-            model_path, ctx, mmproj_path=mmproj_path, unified_budget=unified_budget, device=device
+            model_path,
+            ctx,
+            engine=engine,
+            mmproj_path=mmproj_path,
+            unified_budget=unified_budget,
+            device=device,
         )
     if role is WorkerRole.RERANK and rerank_mode is RerankMode.LLM:
         return _resolve_llm_rerank_slots(
-            model_path, ctx, unified_budget=unified_budget, device=device
+            model_path, ctx, engine=engine, unified_budget=unified_budget, device=device
         )
     return _AUX_SLOTS
 
@@ -326,6 +334,7 @@ def _resolve_chat_slots(
     model_path: Path,
     ctx: int,
     *,
+    engine: EngineAdapter,
     mmproj_path: Path | None = None,
     unified_budget: int | None = None,
     chat_reservation: int = 0,
@@ -350,6 +359,7 @@ def _resolve_chat_slots(
         mmproj_path=mmproj_path,
         unified=unified_budget is not None,
         budget=budget,
+        engine=engine,
     )
 
 
@@ -357,6 +367,7 @@ def _resolve_vision_slots(
     model_path: Path,
     ctx: int,
     *,
+    engine: EngineAdapter,
     mmproj_path: Path | None = None,
     unified_budget: int | None = None,
     device: FleetDevice | None = None,
@@ -376,6 +387,7 @@ def _resolve_vision_slots(
         mmproj_path=mmproj_path,
         unified=unified_budget is not None,
         budget=_slot_budget(unified_budget, device, vram_fraction=_VISION_VRAM_FRACTION),
+        engine=engine,
     )
 
 
@@ -383,6 +395,7 @@ def _resolve_llm_rerank_slots(
     model_path: Path,
     ctx: int,
     *,
+    engine: EngineAdapter,
     unified_budget: int | None = None,
     device: FleetDevice | None = None,
 ) -> int:
@@ -396,6 +409,7 @@ def _resolve_llm_rerank_slots(
         mmproj_path=None,
         unified=unified_budget is not None,
         budget=_slot_budget(unified_budget, device, vram_fraction=_LLM_RERANK_VRAM_FRACTION),
+        engine=engine,
         rerank_mode=RerankMode.LLM,
     )
 
@@ -429,6 +443,7 @@ def _fit_slots(
     mmproj_path: Path | None,
     unified: bool,
     budget: int,
+    engine: EngineAdapter,
     rerank_mode: RerankMode | None = None,
 ) -> int:
     """Largest slot count in ``1..ceiling`` whose instance footprint fits *budget*;
@@ -437,7 +452,7 @@ def _fit_slots(
 
     for slots in range(ceiling, 1, -1):
         try:
-            est = LLAMA.estimate_memory(
+            est = engine.estimate_memory(
                 MemoryRequest(
                     model_path=model_path,
                     ctx=ctx,
@@ -463,6 +478,7 @@ def fit_chat_ctx(
     *,
     available_bytes: int,
     ctx_ceiling: int,
+    engine: EngineAdapter,
 ) -> int:
     """The chat window gguf-parser says *available_bytes* backs at the configured offload.
 
@@ -475,6 +491,7 @@ def fit_chat_ctx(
     """
     ctx = fleet_ctx.fit_single_ctx(
         model_path,
+        engine=engine,
         meta=meta,
         slots=1,
         available_bytes=available_bytes,
@@ -489,14 +506,14 @@ def fit_chat_ctx(
     if (
         ctx >= needed
         or ctx_ceiling < needed
-        or not _engine_fits_chat_offload(model_path, _engine_binary())
+        or not _engine_fits_chat_offload(model_path, _engine_binary(engine), engine)
     ):
         return ctx
     quantum = model_cache._DYNAMIC_CTX_QUANTUM
     return min(ctx_ceiling, -(-needed // quantum) * quantum)
 
 
-def _engine_fits_chat_offload(model_path: Path, binary: Path | None) -> bool:
+def _engine_fits_chat_offload(model_path: Path, binary: Path | None, engine: EngineAdapter) -> bool:
     """Whether llama-server's own fit places the chat layers at load.
 
     It does for an auto layer count with no expert overrides, on a card with
@@ -508,22 +525,22 @@ def _engine_fits_chat_offload(model_path: Path, binary: Path | None) -> bool:
         and not _role_expert_offload(model_path)
         and not plan_sizing_is_unified()
         and binary is not None
-        and LLAMA.supports_fit_target(binary)
+        and engine.supports_fit_target(binary)
     )
 
 
-def _engine_binary() -> Path | None:
+def _engine_binary(engine: EngineAdapter) -> Path | None:
     """The llama-server lilbee launches, or None on a host without one."""
     try:
-        return LLAMA.binary()
+        return engine.binary()
     except ProviderError:
         return None
 
 
-def _chat_host_estimate(model_path: Path, ctx: int, slots: int) -> int:
+def _chat_host_estimate(model_path: Path, ctx: int, slots: int, engine: EngineAdapter) -> int:
     """Host bytes gguf-parser expects chat to hold at its configured offload; 0 when unsized."""
     try:
-        estimate = LLAMA.estimate_memory(
+        estimate = engine.estimate_memory(
             MemoryRequest(
                 model_path=model_path,
                 ctx=ctx,
@@ -539,11 +556,26 @@ def _chat_host_estimate(model_path: Path, ctx: int, slots: int) -> int:
     return estimate.host_bytes
 
 
+def _declared_reserve(engine: EngineAdapter, request: MemoryRequest, *, unified: bool) -> int:
+    """The bytes a fixed-reserve engine declares for one instance, else 0.
+
+    A self-check launch is not placed, so a sized engine owes it no charge. A
+    fixed-reserve engine declares its figure whatever the placement.
+    """
+    try:
+        estimate = engine.estimate_memory(request)
+    except (ProviderError, OSError):
+        return 0
+    return estimate.footprint(unified=unified) if estimate.kind is MemoryKind.FIXED_RESERVE else 0
+
+
 def _role_ctx(
     role: WorkerRole,
     model_path: Path,
     meta: dict[str, str] | None,
     device: FleetDevice | None = None,
+    *,
+    engine: EngineAdapter,
 ) -> int:
     """Per-slot context for a role, derived as the in-process loader does.
 
@@ -555,19 +587,24 @@ def _role_ctx(
     """
     from lilbee.core.config import cfg
 
+    if role is not WorkerRole.CHAT:
+        return _aux_role_ctx(role, model_path, meta)
+    if cfg.num_ctx is not None:
+        return _pinned_chat_ctx(model_path, meta)
+    return engine_params.resolve_chat_ctx(
+        model_path, meta, engine=engine, available_bytes=plan_sizing_budget(device)
+    )
+
+
+def _aux_role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
+    """Per-slot context for an embed, rerank or vision role, which no engine sizes."""
     if role is WorkerRole.EMBED:
         return engine_params.resolve_embed_ctx(meta, model_path)
     if role is WorkerRole.RERANK:
         if _rerank_mode_for(meta) is RerankMode.LLM:
             return engine_params.resolve_llm_rerank_ctx(meta, model_path)
         return engine_params.resolve_embed_ctx(meta, model_path)
-    if role is WorkerRole.VISION:
-        return engine_params.resolve_vision_ctx(model_path)
-    if cfg.num_ctx is not None:
-        return _pinned_chat_ctx(model_path, meta)
-    return engine_params.resolve_chat_ctx(
-        model_path, meta, available_bytes=plan_sizing_budget(device)
-    )
+    return engine_params.resolve_vision_ctx(model_path)
 
 
 def _pinned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
@@ -771,6 +808,7 @@ def _estimate_role(
     role: WorkerRole,
     model_ref: str,
     *,
+    engine: EngineAdapter,
     slots: int | None = None,
     unified_budget: int | None = None,
     chat_reservation: int = 0,
@@ -799,12 +837,13 @@ def _estimate_role(
             role,
             path,
             ctx,
+            engine=engine,
             mmproj_path=mmproj,
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
             rerank_mode=rerank_mode,
         )
-    est = LLAMA.estimate_memory(
+    est = engine.estimate_memory(
         MemoryRequest(
             model_path=path,
             ctx=ctx,
@@ -818,13 +857,14 @@ def _estimate_role(
         )
     )
     fp = est.footprint(unified=unified_budget is not None)
-    if role is WorkerRole.CHAT and unified_budget is None:
+    if role is WorkerRole.CHAT and unified_budget is None and est.kind is MemoryKind.SIZED:
         fp = _chat_serve_budget_footprint(fp)
     return ModelPlacementInput(
         role=role,
         est_vram_bytes=fp,
         replicas=_replica_count(role, device_count),
         est_ram_bytes=est.host_bytes,
+        kind=est.kind,
     )
 
 
@@ -870,7 +910,7 @@ def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, 
                 max(cfg.chat_n_ctx_target, _MIN_USABLE_CHAT_CTX),
             ),
         )
-    return apply_ctx_downshift(role, _role_ctx(role, model_path, meta))
+    return apply_ctx_downshift(role, _aux_role_ctx(role, model_path, meta))
 
 
 def _placement_estimate_slots(role: WorkerRole, meta: dict[str, str] | None) -> int:
@@ -892,7 +932,7 @@ def _placement_estimate_slots(role: WorkerRole, meta: dict[str, str] | None) -> 
     return _AUX_SLOTS
 
 
-def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
+def _peak_estimator(model_refs: dict[WorkerRole, str], engine: EngineAdapter) -> PeakEstimator:
     """Per-device VRAM-vector estimator for the planner, bound to the configured models.
 
     Estimates each role at its launch ceiling (ctx x slots) with the candidate
@@ -907,7 +947,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
         slots = _placement_estimate_slots(role, meta)
         ctx = _placement_estimate_ctx(role, path, meta)
         rerank_mode = _role_rerank_mode(role, meta)
-        est = LLAMA.estimate_memory(
+        est = engine.estimate_memory(
             MemoryRequest(
                 model_path=path,
                 ctx=ctx,
@@ -927,7 +967,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
 
 
 def _chat_split_ctx_objective(
-    model_refs: dict[WorkerRole, str],
+    model_refs: dict[WorkerRole, str], engine: EngineAdapter
 ) -> tuple[SplitCtxFitter | None, int]:
     """The chat split's context fitter and target, or ``(None, 0)`` with no chat model.
 
@@ -946,6 +986,7 @@ def _chat_split_ctx_objective(
     def fit(ratio: tuple[int, ...], per_device_free_bytes: Sequence[int]) -> int:
         return fleet_ctx.fit_split_ctx(
             path,
+            engine=engine,
             meta=meta,
             slots=_SPLIT_CHAT_SLOTS,
             ratio=ratio,
@@ -1097,6 +1138,7 @@ def _estimate_or_fallback(
     role: WorkerRole,
     ref: str,
     *,
+    engine: EngineAdapter,
     unified_budget: int | None,
     chat_reservation: int,
     device_count: int,
@@ -1116,6 +1158,7 @@ def _estimate_or_fallback(
         estimate = _estimate_role(
             role,
             ref,
+            engine=engine,
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
             device_count=device_count,
@@ -1225,7 +1268,7 @@ def _floor_implausible_estimate(
     Offload lifts the bound: the layers in system memory are weight bytes the
     card never holds.
     """
-    if _cpu_offload_in_play():
+    if estimate.kind is MemoryKind.FIXED_RESERVE or _cpu_offload_in_play():
         return estimate
     weights = _role_weights_bytes(role, ref)
     if not _estimate_is_implausible(estimated=estimate.est_vram_bytes, floor=weights):
@@ -1312,7 +1355,7 @@ def planned_embed_token_cap(ref: str) -> int | None:
     except (ProviderError, OSError, ValueError):
         return None
     return engine_params.embed_token_cap(
-        apply_ctx_downshift(WorkerRole.EMBED, _role_ctx(WorkerRole.EMBED, path, meta))
+        apply_ctx_downshift(WorkerRole.EMBED, _aux_role_ctx(WorkerRole.EMBED, path, meta))
     )
 
 
@@ -1475,6 +1518,7 @@ def role_model_placeable(role: WorkerRole, ref: str, total_vram: int) -> bool:
 def _server_model_inputs(
     roles: tuple[WorkerRole, ...] | None = None,
     *,
+    engine: EngineAdapter,
     unified_budget: int | None = None,
     device_count: int = 0,
     total_vram: int = 0,
@@ -1513,6 +1557,7 @@ def _server_model_inputs(
         estimate = _estimate_or_fallback(
             role,
             ref,
+            engine=engine,
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
             device_count=device_count,
@@ -1621,8 +1666,9 @@ def _launch_for(
     chat_reservation: int = 0,
     reserved_by_device: dict[int, int] | None = None,
     reserved_after_chat: dict[int, int] | None = None,
-    est_vram_bytes: int = 0,
+    est_vram_bytes: int | None = None,
     model_path: Path | None = None,
+    engine: EngineAdapter,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
     from lilbee.providers.gguf_meta import read_gguf_metadata
@@ -1673,6 +1719,7 @@ def _launch_for(
         def _split_fit(slots: int) -> int:
             return fleet_ctx.fit_split_ctx(
                 model_path,
+                engine=engine,
                 meta=meta,
                 slots=slots,
                 ratio=plan.tensor_split,
@@ -1690,7 +1737,9 @@ def _launch_for(
         # pure functions of model and config, so without this the retry after a
         # load OOM re-emits a byte-identical argv and dies the same way. The
         # split branch above already inherits it through its ctx_ceiling.
-        ctx = apply_ctx_downshift(plan.role, _role_ctx(plan.role, model_path, meta, placed_device))
+        ctx = apply_ctx_downshift(
+            plan.role, _role_ctx(plan.role, model_path, meta, placed_device, engine=engine)
+        )
     rerank_mode = _role_rerank_mode(plan.role, meta)
     is_llm_rerank = rerank_mode is RerankMode.LLM
     # A multi-card chat runs as many full-context slots as its cards' KV headroom
@@ -1703,6 +1752,7 @@ def _launch_for(
             plan.role,
             model_path,
             ctx,
+            engine=engine,
             mmproj_path=mmproj,
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
@@ -1714,7 +1764,9 @@ def _launch_for(
     # Where the engine's fit can move chat layers off the card, the readback
     # compares the host memory it reports with this to say so.
     fit_moves_chat = (
-        is_chat and placed_device is not None and _engine_fits_chat_offload(model_path, binary)
+        is_chat
+        and placed_device is not None
+        and _engine_fits_chat_offload(model_path, binary, engine)
     )
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
     # is generative and uses the default batching plus flash attention.
@@ -1741,6 +1793,21 @@ def _launch_for(
         ),
         kv_unified_per_slot=ctx if is_chat and _engine_shares_kv(binary) else None,
     )
+    if est_vram_bytes is None:
+        est_vram_bytes = _declared_reserve(
+            engine,
+            MemoryRequest(
+                model_path=model_path,
+                ctx=ctx,
+                slots=slots,
+                gpu_layers=_role_gpu_layers(plan.role),
+                flash_attn=_role_flash(plan.role, rerank_mode),
+                kv_cache_type=_role_kv_cache_type(plan.role),
+                mmproj_path=mmproj,
+                expert_offload=_role_expert_offload(model_path),
+            ),
+            unified=unified_budget is not None,
+        )
     launch = InstanceLaunch(
         role=plan.role,
         argv=LLAMA.launch_argv(spec, request),
@@ -1767,12 +1834,14 @@ def _launch_for(
         est_vram_bytes=est_vram_bytes,
         est_vram_by_device=_charge_by_device(chosen, plan.tensor_split, est_vram_bytes),
         est_unreported_bytes=_unreported_bytes(plan.role, mmproj),
-        est_host_bytes=_chat_host_estimate(model_path, ctx, slots) if fit_moves_chat else 0,
+        est_host_bytes=_chat_host_estimate(model_path, ctx, slots, engine) if fit_moves_chat else 0,
     )
     return replace(launch, swap_extras=LLAMA.swap_extras(launch))
 
 
-def build_single_role_launch(role: WorkerRole, model_path: Path) -> InstanceLaunch:
+def build_single_role_launch(
+    role: WorkerRole, model_path: Path, *, engine: EngineAdapter
+) -> InstanceLaunch:
     """The launch the fleet would build for *role* serving *model_path*, alone.
 
     One construction path. The self-check used to assemble its own beside this
@@ -1785,7 +1854,7 @@ def build_single_role_launch(role: WorkerRole, model_path: Path) -> InstanceLaun
     check runs on the card the role would really land on.
     """
     binary = LLAMA.binary()
-    with _one_engine_per_pass():
+    with _one_engine_per_pass(engine=engine):
         devices = _plan_devices(binary)
         by_index = {d.index: d for d in devices}
         # The whole machine, since nothing else is resident during a self-check.
@@ -1798,6 +1867,7 @@ def build_single_role_launch(role: WorkerRole, model_path: Path) -> InstanceLaun
             by_index,
             unified_budget=_unified_memory_budget(devices),
             model_path=model_path,
+            engine=engine,
         )
 
 
@@ -2347,14 +2417,14 @@ def assert_engine_probeable() -> None:
     _probe_engine_devices()
 
 
-def _engine_identity() -> str:
+def _engine_identity(engine: EngineAdapter) -> str:
     """Identity of the engine binary a plan snapshot has to agree with.
 
     A host with no engine binary has an identity of its own, so a snapshot taken
     before the engine arrived never reads as one taken after.
     """
     try:
-        return engine_binary_identity(LLAMA.binary())
+        return engine_binary_identity(engine.binary())
     except (ProviderError, OSError):
         return _NO_ENGINE_BINARY
 
@@ -2368,7 +2438,7 @@ _pass_engine: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 
 
 @contextmanager
-def _one_engine_per_pass() -> Iterator[None]:
+def _one_engine_per_pass(*, engine: EngineAdapter) -> Iterator[None]:
     """Pin the engine identity every snapshot read in this planning pass answers about.
 
     Re-entrant: a nested pass keeps the outer one's binary, so a pass that calls
@@ -2378,7 +2448,7 @@ def _one_engine_per_pass() -> Iterator[None]:
     if _pass_engine.get() is not None:
         yield
         return
-    token = _pass_engine.set(_engine_identity())
+    token = _pass_engine.set(_engine_identity(engine))
     try:
         yield
     finally:
@@ -2388,7 +2458,7 @@ def _one_engine_per_pass() -> Iterator[None]:
 def _pass_engine_identity() -> str:
     """The engine this read answers about: the pass's binary, or the live one outside a pass."""
     pinned = _pass_engine.get()
-    return pinned if pinned is not None else _engine_identity()
+    return pinned if pinned is not None else _engine_identity(LLAMA)
 
 
 def _probe_engine_devices_and_identity() -> tuple[str, DeviceReading]:
@@ -2398,7 +2468,7 @@ def _probe_engine_devices_and_identity() -> tuple[str, DeviceReading]:
     answer with the binary that gave it, and the next read restates. The other
     order tags the outgoing binary's answer with the incoming binary.
     """
-    engine = _engine_identity()
+    engine = _engine_identity(LLAMA)
     return engine, _probe_engine_devices()
 
 
@@ -2445,7 +2515,7 @@ def refresh_plan_devices() -> None:
     in the build, not here. A reload asks to look again, so it probes even inside
     the failure wait that holds the read path off.
     """
-    _plan_probe_store.restate(_restated, _engine_identity())
+    _plan_probe_store.restate(_restated, _engine_identity(LLAMA))
 
 
 def _restated(probe: _PlanProbe) -> _PlanProbe | None:
@@ -2786,11 +2856,12 @@ def _resolve_placement(
     model_refs: dict[WorkerRole, str],
     devices: list[FleetDevice],
     *,
+    engine: EngineAdapter,
     unified_budget: int | None,
     charge_against_free: bool = False,
 ) -> Placement:
     """Resolve a Placement from the manual spec when set, else the auto planner."""
-    estimate_peak = _peak_estimator(model_refs)
+    estimate_peak = _peak_estimator(model_refs, engine)
     capacity = _device_capacity(devices, charge_against_free)
     if placement is not None:
         return placement_from_spec(
@@ -2803,7 +2874,9 @@ def _resolve_placement(
     # launch sizes its context against) so placement and launch agree. A split needs
     # >=2 GPUs, so skip the chat model's gguf read entirely below that.
     chat_ctx_fit, chat_ctx_target = (
-        _chat_split_ctx_objective(model_refs) if len(capacity) >= _MIN_SPLIT_GPUS else (None, 0)
+        _chat_split_ctx_objective(model_refs, engine)
+        if len(capacity) >= _MIN_SPLIT_GPUS
+        else (None, 0)
     )
     return plan_placement(
         inputs,
@@ -2822,6 +2895,7 @@ def _placement_or_auto(
     model_refs: dict[WorkerRole, str],
     devices: list[FleetDevice],
     *,
+    engine: EngineAdapter,
     unified_budget: int | None,
     charge_against_free: bool = False,
 ) -> tuple[Placement, bool]:
@@ -2841,6 +2915,7 @@ def _placement_or_auto(
             inputs,
             model_refs,
             devices,
+            engine=engine,
             unified_budget=unified_budget,
             charge_against_free=charge_against_free,
         ), False
@@ -2850,6 +2925,7 @@ def _placement_or_auto(
             inputs,
             model_refs,
             devices,
+            engine=engine,
             unified_budget=unified_budget,
             charge_against_free=charge_against_free,
         ), True
@@ -2864,6 +2940,7 @@ def _placement_or_auto(
         inputs,
         model_refs,
         devices,
+        engine=engine,
         unified_budget=unified_budget,
         charge_against_free=charge_against_free,
     ), False
@@ -2913,16 +2990,19 @@ def resolve_placement_plan(
     devices = reading.devices
     unified_budget = _unified_memory_budget(devices)
     inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
-        None, unified_budget=unified_budget, total_vram=sum(d.total_bytes for d in devices)
+        None,
+        engine=LLAMA,
+        unified_budget=unified_budget,
+        total_vram=sum(d.total_bytes for d in devices),
     )
     admission_budget = _unified_admission_budget(devices)
     if fall_back_to_auto:
         resolved, spec_applied = _placement_or_auto(
-            placement, inputs, model_refs, devices, unified_budget=admission_budget
+            placement, inputs, model_refs, devices, engine=LLAMA, unified_budget=admission_budget
         )
     else:
         resolved = _resolve_placement(
-            placement, inputs, model_refs, devices, unified_budget=admission_budget
+            placement, inputs, model_refs, devices, engine=LLAMA, unified_budget=admission_budget
         )
         spec_applied = placement is not None
     return ResolvedPlacement(
@@ -3020,8 +3100,8 @@ def plan_launches(
     devices: list[FleetDevice],
 ) -> FleetPlan:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
-    with _one_engine_per_pass():
-        return _planned_launches(roles, binary, by_index, devices)
+    with _one_engine_per_pass(engine=LLAMA):
+        return _planned_launches(roles, binary, by_index, devices, LLAMA)
 
 
 def _planned_launches(
@@ -3029,6 +3109,7 @@ def _planned_launches(
     binary: Path,
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
+    engine: EngineAdapter,
 ) -> FleetPlan:
     """The placement and launches for *roles*, sized and placed against one snapshot."""
     from lilbee.core.config import cfg
@@ -3036,6 +3117,7 @@ def _planned_launches(
     unified_budget = _unified_memory_budget(devices)
     inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
         roles,
+        engine=engine,
         unified_budget=unified_budget,
         device_count=len(devices),
         total_vram=sum(d.total_bytes for d in devices),
@@ -3046,6 +3128,7 @@ def _planned_launches(
         inputs,
         model_refs,
         devices,
+        engine=engine,
         unified_budget=_unified_admission_budget(devices),
         # Only the clean-box snapshot's free bytes mean "what other tenants hold";
         # a live probe here would also be missing the fleet's own residency.
@@ -3072,6 +3155,7 @@ def _planned_launches(
             reserved_by_device=reserved_by_device,
             reserved_after_chat=reserved_after_chat,
             est_vram_bytes=charged.get(plan.role, 0),
+            engine=engine,
         )
         reason = _unusable_chat_ctx_reason(launch)
         if reason is not None:
@@ -3143,7 +3227,7 @@ def plan_all_launches() -> FleetPlan:
     ``cfg.gpu_devices`` pin in its own env, and the plan reads the pin from there.
     """
     binary = LLAMA.binary()
-    with _one_engine_per_pass():
+    with _one_engine_per_pass(engine=LLAMA):
         devices = _plan_devices(binary)
         by_index = {d.index: d for d in devices}
         return plan_launches(_launched_roles(), binary, by_index, devices)

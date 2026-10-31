@@ -175,11 +175,12 @@ def _self_check_server(
     shuts the manager down.
     """
     from lilbee.providers.fleet.client import LlamaServerClient
+    from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.groups import SwapGroup
     from lilbee.providers.fleet.planning import build_single_role_launch
     from lilbee.providers.fleet.swap_manager import SwapManager
 
-    launch = build_single_role_launch(role, model_path)
+    launch = build_single_role_launch(role, model_path, engine=LLAMA)
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     swap = SwapManager(work_dir, SwapGroup(role.value))
     try:

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
+    from lilbee.providers.fleet.engines import EngineAdapter
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.health_warnings import HealthWarning, WarningCode
@@ -210,7 +211,11 @@ def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
 
 
 def resolve_chat_ctx(
-    model_path: Path, meta: dict[str, str] | None, *, available_bytes: int | None = None
+    model_path: Path,
+    meta: dict[str, str] | None,
+    *,
+    engine: EngineAdapter,
+    available_bytes: int | None = None,
 ) -> int:
     """Pick a single-GPU chat n_ctx aiming for ``cfg.chat_n_ctx_target``, clamped to model + host.
 
@@ -241,7 +246,9 @@ def resolve_chat_ctx(
     upper = min(training_ctx, ceiling, cfg.chat_n_ctx_target)
 
     try:
-        return fit_chat_ctx(model_path, meta, available_bytes=available_bytes, ctx_ceiling=upper)
+        return fit_chat_ctx(
+            model_path, meta, available_bytes=available_bytes, ctx_ceiling=upper, engine=engine
+        )
     except (ProviderError, OSError, ValueError):
         log.debug("gguf-parser ctx fit failed for %s, using header math", model_path, exc_info=True)
     return _header_math_chat_ctx(
