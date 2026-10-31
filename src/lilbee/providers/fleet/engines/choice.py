@@ -226,8 +226,9 @@ def _is_installed(name: EngineName, adapter: EngineAdapter, store: EngineStore) 
     if adapter.bundled:
         return True
     try:
-        pin = adapter.pin_record()
-        lock = pin_lock(pin)
+        if not any(build.engine == name.value for build in store.installed()):
+            return False
+        lock = pin_lock(adapter.pin_record())
         return store.complete_build(lock) is not None
     except NoPublishedPackError:
         return False

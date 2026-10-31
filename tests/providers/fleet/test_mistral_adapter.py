@@ -6,6 +6,7 @@ import hashlib
 import json
 import shlex
 import stat
+import subprocess
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -375,6 +376,58 @@ def test_an_install_reads_the_host_now_and_a_list_reads_the_cached_host(
     assert (built.backend, reads) == ("cuda128-sm89", [False, True])
     assert EngineName.MISTRAL in installed_engines()
     assert reads == [False, True]
+
+
+def _count_processes(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Count every ``subprocess.Popen`` started from now on."""
+    started: list[object] = []
+    real = subprocess.Popen
+
+    def counting(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        started.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", counting)
+    return started
+
+
+def test_a_cold_list_with_nothing_installed_starts_no_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    monkeypatch.setattr(mistral, "PACK_SHA256", "a" * 64)
+    runnable.session_host.cache_clear()
+    started = _count_processes(monkeypatch)
+    assert runnable.session_host.cache_info().currsize == 0
+    assert EngineName.MISTRAL not in installed_engines()
+    assert (started, runnable.session_host.cache_info().currsize) == ([], 0)
+    # Control: the same instrument sees the host read when it happens.
+    runnable.session_host()
+    assert started != []
+    runnable.session_host.cache_clear()
+
+
+def test_a_cold_list_with_a_build_in_the_store_reads_the_host_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    reads: list[bool] = []
+
+    def detect_now() -> host_caps.HostCaps:
+        reads.append(True)
+        return caps("Linux", "x86_64", gpus=[L4])
+
+    monkeypatch.setattr(runnable, "detect", detect_now)
+    monkeypatch.setattr(host_caps, "detect", detect_now)
+    sha = make_pack(tmp_path / "pack.whl")
+    monkeypatch.setattr(mistral, "PACK_SHA256", sha)
+    engine_service.install("mistral.rs", tmp_path / "pack.whl")
+    runnable.session_host.cache_clear()
+    reads.clear()
+    assert EngineName.MISTRAL in installed_engines()
+    installed_engines()
+    assert reads == [True]
+    runnable.session_host.cache_clear()
 
 
 def test_rerank_is_refused_for_the_engine_before_its_install_is_read(

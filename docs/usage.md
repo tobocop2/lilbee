@@ -515,11 +515,20 @@ formats, not engines. The format name is `gguf`, `mlx`, `openvino` or
 
 ### Install an engine
 
-An engine that is not bundled needs a pack. Copy the pack into the `packs` folder
-of the engines folder, then run:
+An engine that is not bundled needs a pack. No pack of ik_llama.cpp, mistral.rs
+or TEI is published yet, so today all three engines refuse to install and print
+the no-pack text. Nothing is installed, and llama.cpp stays in use.
+
+When a pack exists, copy it into the `packs` folder of the engines folder, then run:
 
 ```bash
 lilbee engine install <engine>
+```
+
+To install from a wheel in another place, add `--wheel`. This works only with a
+wheel whose digest matches the pin of the engine:
+
+```bash
 lilbee engine install <engine> --wheel /path/to/pack.whl
 ```
 
