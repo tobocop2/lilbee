@@ -132,7 +132,9 @@ def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
 
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(1,))})
     monkeypatch.setattr(app_placement, "_active_spec", lambda: spec)
-    monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/fake")
+    )
     # The read path's only probe seam. Stubbing resolve_devices instead left the
     # real probe on the call path, so this test spawned a subprocess against
     # /fake and planned against whatever cards the host's Vulkan loader offered.

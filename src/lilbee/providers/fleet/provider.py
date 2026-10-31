@@ -40,7 +40,7 @@ from lilbee.providers.base import (
     prompt_token_budget,
 )
 from lilbee.providers.fleet import planning
-from lilbee.providers.fleet.binary import engine_pin, resolve_llama_server
+from lilbee.providers.fleet.binary import engine_pin
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
@@ -56,6 +56,7 @@ from lilbee.providers.fleet.contract import (
     decoded_launches,
     vision_slots_cover,
 )
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -785,7 +786,7 @@ def _unusable_engine_reason() -> str | None:
     mid-session from being reported as still missing.
     """
     try:
-        resolve_llama_server()
+        LLAMA.binary()
     except ProviderError as exc:
         return str(exc)
     return None
@@ -1513,6 +1514,7 @@ class FleetProvider:
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
                     engine_log=_engine_log_of(launch, swap.log_path.parent),
                     model_ref=launch.model,
+                    profile=LLAMA.request_profile(role),
                 )
                 for launch in role_launches
             ]

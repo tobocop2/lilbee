@@ -27,7 +27,9 @@ def _reading(devices: list[FleetDevice]) -> planning_mod.DeviceReading:
 
 
 def _snapshot(monkeypatch, devices: list[FleetDevice], free_ram: int = 64 * _GB) -> None:
-    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+    )
     monkeypatch.setattr(planning_mod, "_read_devices", lambda _b: _reading(devices))
     monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: free_ram)
     planning_mod.capture_plan_probe()
@@ -65,7 +67,9 @@ class TestAReloadRediscoversDevices:
     def test_a_refresh_without_a_snapshot_does_nothing(self, monkeypatch) -> None:
         # Nothing has been captured, so there is nothing to restate and the next
         # capture will read the hardware anyway.
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         planning_mod.refresh_plan_devices()
         assert planning_mod._plan_probe_store.get() is None
 
@@ -160,7 +164,9 @@ class TestAnEngineThatChangesUnderARunningServe:
     def _engine(self, monkeypatch, binary: Path, backend: str = "CUDA") -> list[int]:
         """Point planning at *binary* and report cards only while it has content."""
         runs: list[int] = []
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: binary)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: binary
+        )
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 64 * _GB)
 
         def _probe(_binary: Path) -> planning_mod.DeviceReading:
@@ -361,7 +367,7 @@ class TestAnEngineThatChangesUnderARunningServe:
             raise ProviderError("no engine binary", provider="llama-server")
 
         monkeypatch.setattr(planning_mod, "_probe_engine_devices", _counted)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", _gone)
+        monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _gone)
         assert len(planning_mod._plan_devices(binary)) == 2
         assert len(attempts) == 1
 

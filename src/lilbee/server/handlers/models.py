@@ -524,7 +524,8 @@ async def enforce_pull_arch_compat(
     """
     from litestar.exceptions import HTTPException
 
-    from lilbee.catalog.compat import SUPPORTED_ARCHS, UnsupportedArchError
+    from lilbee.catalog.compat import UnsupportedArchError
+    from lilbee.providers.fleet.engines import LLAMA
 
     if _parse_source(source) is not ModelSource.NATIVE or allow_unsupported:
         return
@@ -539,8 +540,8 @@ async def enforce_pull_arch_compat(
                 "code": "unsupported_arch",
                 "arch": exc.architecture,
                 "ref": exc.ref,
-                "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
-                "total_supported": len(SUPPORTED_ARCHS),
+                "supported_examples": sorted(LLAMA.architectures)[:5],
+                "total_supported": len(LLAMA.architectures),
             },
         ) from exc
 
