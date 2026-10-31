@@ -82,12 +82,12 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name' > assets.txt
           # The same derivation release.yml's assets go through, pointed at the GPU
-          # matrix. Every cell there runs continue-on-error and none is droppable,
-          # so the required set is the whole matrix. release.yml's own assets are
+          # cells file. Every cell runs continue-on-error; a cell marked soft is
+          # droppable and the rest are required. release.yml's own assets are
           # not checked here: attach-prerelease already refused a release missing
           # one of them.
           expected=$(bash scripts/release_required_assets.sh \
-                       .github/workflows/build-gpu-executables.yml)
+                       .github/gpu-cells.yml)
           # The ROCm binary carries a sidecar naming the gfx targets it was built
           # for. It is not a matrix cell, so it is named here.
           expected="${expected}"$'\n'"lilbee-linux-x86_64-rocm.gfx.txt"
@@ -139,8 +139,11 @@ jobs:
                  lilbee-linux-x86_64.snap:lilbee-linux-x86_64
                  lilbee-linux-x86_64-cu125.snap:lilbee-linux-x86_64-cu125
                  lilbee-linux-x86_64-rocm.snap:lilbee-linux-x86_64-rocm
-                 lilbee-compat-linux-x86_64.snap:lilbee-compat-linux-x86_64"
-          soft=$(bash scripts/release_required_assets.sh --soft) || {
+                 lilbee-compat-linux-x86_64.snap:lilbee-compat-linux-x86_64
+                 lilbee-compat-cuda.flatpakref:lilbee-compat-linux-x86_64-cu124
+                 lilbee-compat-linux-x86_64-cu124.snap:lilbee-compat-linux-x86_64-cu124"
+          soft=$(bash scripts/release_required_assets.sh --soft \
+                 && bash scripts/release_required_assets.sh --soft .github/gpu-cells.yml) || {
             echo "::error::cannot read which build cells are droppable"; exit 1; }
           expected=""
           for pair in ${pairs}; do

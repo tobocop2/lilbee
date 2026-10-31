@@ -357,6 +357,27 @@ jobs:
           REPO: ${{ github.repository }}
         run: gh workflow run publish-compat-packages.yml --repo "${REPO}" -f tag="${TAG}"
 
+  # Auto-dispatch the compat CUDA packaging fan-out and its Docker image once the
+  # CUDA executables are on the release. Fire-and-forget: nothing needs this job,
+  # and a failure here never blocks the release or another variant. The Docker
+  # image has its own dispatch because the shared fan-out starts before the CUDA
+  # build attaches the Linux binary.
+  dispatch-compat-cuda:
+    needs: [resolve, attach-prerelease, build-cuda]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh workflow run publish-compat-cuda-packages.yml --repo "${REPO}" -f tag="${TAG}"
+          gh workflow run publish-docker.yml --repo "${REPO}" -f tag="${TAG}" -f variant=compat-cuda
+
   # Supplementary opt-in lilbee[multi-gpu] artifacts on their OWN path. Fully
   # decoupled: not in attach-prerelease's needs and not gating dispatch-publish,
   # so a failure here never blocks the release. Builds are continue-on-error.

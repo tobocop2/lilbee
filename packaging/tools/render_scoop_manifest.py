@@ -45,44 +45,41 @@ def _render_default(content: str, args: argparse.Namespace) -> str:
     return content
 
 
-def _render_cuda(content: str, args: argparse.Namespace) -> str:
-    # The CUDA manifest is a plain single-arch package whose Scoop-verified
-    # download is the cu125 exe: version, the version in its download URL, and
-    # the hash. post_install only warns on old drivers; it downloads nothing.
+# The single-arch manifests: a plain package whose Scoop-verified download is one
+# exe. Each renders the version, the version in that exe's download URL, and the
+# hash. The key is the mode flag, the values are the asset, the digest flag's
+# namespace name and the label error messages use.
+_SINGLE_ASSET_MODES = {
+    "cuda": ("lilbee-windows-x86_64-cu125.exe", "sha_windows_cu125", "cu125"),
+    "compat": ("lilbee-compat-windows-x86_64.exe", "sha_windows_compat", "compat"),
+    "compat-cuda": (
+        "lilbee-compat-windows-x86_64-cu124.exe",
+        "sha_windows_compat_cu124",
+        "compat-cuda",
+    ),
+}
+
+
+def _dest(name: str) -> str:
+    return name.replace("-", "_")
+
+
+def _render_single_asset(content: str, args: argparse.Namespace, mode: str) -> str:
+    asset, digest, label = _SINGLE_ASSET_MODES[mode]
     content = _replace_once(
         content, re.compile(r'"version": "[^"]*"'), f'"version": "{args.version}"', "version line"
     )
     content = _replace_once(
         content,
-        re.compile(r"(releases/download/v)[^/]+(/lilbee-windows-x86_64-cu125\.exe)"),
+        re.compile(r"(releases/download/v)[^/]+(/" + re.escape(asset) + ")"),
         rf"\g<1>{args.version}\g<2>",
-        "cu125 download URL",
+        f"{label} download URL",
     )
     return _replace_once(
         content,
         re.compile(r'("hash": ")[0-9a-f]{64}(")'),
-        rf"\g<1>{args.sha_windows_cu125}\g<2>",
-        "cu125 hash",
-    )
-
-
-def _render_compat(content: str, args: argparse.Namespace) -> str:
-    # The pre-Haswell manifest is a plain single-arch package: version, the
-    # version in its download URL, and the Scoop-verified hash. No cu125 path.
-    content = _replace_once(
-        content, re.compile(r'"version": "[^"]*"'), f'"version": "{args.version}"', "version line"
-    )
-    content = _replace_once(
-        content,
-        re.compile(r"(releases/download/v)[^/]+(/lilbee-compat-windows-x86_64\.exe)"),
-        rf"\g<1>{args.version}\g<2>",
-        "compat download URL",
-    )
-    return _replace_once(
-        content,
-        re.compile(r'("hash": ")[0-9a-f]{64}(")'),
-        rf"\g<1>{args.sha_windows_compat}\g<2>",
-        "compat hash",
+        rf"\g<1>{getattr(args, digest)}\g<2>",
+        f"{label} hash",
     )
 
 
@@ -91,28 +88,25 @@ def main() -> None:
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--version", required=True)
     variant = parser.add_mutually_exclusive_group()
-    variant.add_argument(
-        "--compat",
-        action="store_true",
-        help="Render the lilbee-compat (pre-Haswell CPU) manifest.",
-    )
-    variant.add_argument(
-        "--cuda",
-        action="store_true",
-        help="Render the lilbee-cuda (cu125-only) manifest.",
-    )
+    for mode in _SINGLE_ASSET_MODES:
+        variant.add_argument(
+            f"--{mode}",
+            action="store_true",
+            help=f"Render the lilbee-{mode} manifest.",
+        )
     parser.add_argument("--sha-windows")
     parser.add_argument("--sha-windows-cu125")
     parser.add_argument("--sha-windows-cu124")
-    parser.add_argument("--sha-windows-compat")
+    for _, digest, _ in _SINGLE_ASSET_MODES.values():
+        if digest != "sha_windows_cu125":
+            parser.add_argument(f"--{digest.replace('_', '-')}")
     args = parser.parse_args()
 
-    if args.compat:
-        if not args.sha_windows_compat:
-            parser.error("--compat requires --sha-windows-compat")
-    elif args.cuda:
-        if not args.sha_windows_cu125:
-            parser.error("--cuda requires --sha-windows-cu125")
+    mode = next((m for m in _SINGLE_ASSET_MODES if getattr(args, _dest(m))), None)
+    if mode is not None:
+        digest = _SINGLE_ASSET_MODES[mode][1]
+        if not getattr(args, digest):
+            parser.error(f"--{mode} requires --{digest.replace('_', '-')}")
     else:
         missing = [
             flag
@@ -127,12 +121,10 @@ def main() -> None:
             parser.error(f"missing required arguments: {', '.join(missing)}")
 
     content = args.manifest.read_text()
-    if args.compat:
-        content = _render_compat(content, args)
-    elif args.cuda:
-        content = _render_cuda(content, args)
-    else:
+    if mode is None:
         content = _render_default(content, args)
+    else:
+        content = _render_single_asset(content, args, mode)
     args.manifest.write_text(content)
 
 

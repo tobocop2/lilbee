@@ -34,6 +34,7 @@ producer() {
     lilbee-linux-x86_64-cu125.snap) echo "publish-cuda-packages.yml|Publish CUDA Packages|dispatch-cuda" ;;
     lilbee-linux-x86_64-rocm.snap) echo "publish-rocm-packages.yml|Publish ROCm Packages|dispatch-rocm" ;;
     lilbee-compat-linux-x86_64.snap) echo "publish-compat-packages.yml|Publish compat packages|dispatch-compat" ;;
+    lilbee-compat-linux-x86_64-cu124.snap) echo "publish-compat-cuda-packages.yml|Publish compat CUDA packages|dispatch-compat-cuda" ;;
     *) return 1 ;;
   esac
 }

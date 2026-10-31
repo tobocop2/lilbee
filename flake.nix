@@ -236,6 +236,59 @@
           pkgs = mkPkgs system;
         in
         mkCompatLinuxFHS pkgs system;
+
+      # Pre-Haswell CUDA variant: the cu124 compat binary with its own cudart and
+      # cublas, so the host supplies only the NVIDIA driver. Kept in
+      # sources-compat-cuda.json for the same reason as the compat pins, and present
+      # only on systems that file names. The version still comes from sources.json.
+      compatCudaSources = builtins.fromJSON (builtins.readFile ./sources-compat-cuda.json);
+      hasCompatCuda = system: builtins.elem system (builtins.attrNames compatCudaSources.systems);
+
+      mkVariantBin =
+        {
+          pname,
+          sources,
+        }:
+        pkgs: system:
+        let
+          entry = sources.systems.${system};
+        in
+        pkgs.stdenvNoCC.mkDerivation {
+          inherit pname version;
+          src = pkgs.fetchurl {
+            url = "https://github.com/tobocop2/lilbee/releases/download/v${version}/${entry.asset}";
+            inherit (entry) sha256;
+          };
+          dontUnpack = true;
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 $src $out/bin/lilbee
+            runHook postInstall
+          '';
+          meta = mkMeta pkgs;
+        };
+
+      mkLilbeeCompatCuda =
+        system:
+        let
+          pkgs = mkPkgs system;
+          bin = mkVariantBin {
+            pname = "lilbee-compat-cuda";
+            sources = compatCudaSources;
+          } pkgs system;
+        in
+        pkgs.buildFHSEnv {
+          name = "lilbee-compat-cuda";
+          targetPkgs =
+            ps: with ps; [
+              stdenv.cc.cc.lib
+              glibc
+              zlib
+              libGL
+            ];
+          runScript = "${bin}/bin/lilbee";
+          meta = mkMeta pkgs;
+        };
     in
     {
       packages = forAllSystems (
@@ -251,6 +304,9 @@
         }
         // nixpkgs.lib.optionalAttrs (hasCompat system) {
           lilbee-compat = mkLilbeeCompat system;
+        }
+        // nixpkgs.lib.optionalAttrs (hasCompatCuda system) {
+          lilbee-compat-cuda = mkLilbeeCompatCuda system;
         }
       );
 

@@ -34,6 +34,7 @@ def _render(formula: pathlib.Path, *args: str) -> subprocess.CompletedProcess[st
     [
         ("lilbee-compat.rb", "--compat", "--sha-linux-compat"),
         ("lilbee-rocm.rb", "--rocm", "--sha-linux-rocm"),
+        ("lilbee-compat-cuda.rb", "--compat-cuda", "--sha-linux-compat-cu124"),
     ],
 )
 def test_a_stale_license_is_rewritten(tmp_path, seed, mode, sha_flag):
@@ -114,3 +115,43 @@ def test_a_formula_with_no_license_line_fails_loudly(tmp_path):
     result = _render(formula, "--rocm", "--sha-linux-rocm", _SHA)
     assert result.returncode != 0
     assert "license" in result.stderr
+
+
+def test_the_compat_cuda_flavor_pins_the_cu124_asset_and_leaves_compat_alone(tmp_path):
+    """The two compat assets share a prefix, so each digest must land under its own url."""
+    formula = tmp_path / "lilbee-compat-cuda.rb"
+    formula.write_text(
+        _SEEDS.joinpath("lilbee-compat-cuda.rb").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    result = _render(formula, "--compat-cuda", "--sha-linux-compat-cu124", _SHA)
+    assert result.returncode == 0, result.stderr
+    rendered = formula.read_text(encoding="utf-8")
+    assert 'version "9.9.9"' in rendered
+    assert f'lilbee-compat-linux-x86_64-cu124"\n      sha256 "{_SHA}"' in rendered
+
+    compat = tmp_path / "lilbee-compat.rb"
+    compat.write_text(
+        _SEEDS.joinpath("lilbee-compat.rb").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    result = _render(compat, "--compat", "--sha-linux-compat", _SHA)
+    assert result.returncode == 0, result.stderr
+    assert "cu124" not in compat.read_text(encoding="utf-8")
+
+
+def test_the_compat_cuda_flavor_requires_its_digest(tmp_path):
+    formula = tmp_path / "lilbee-compat-cuda.rb"
+    formula.write_text(
+        _SEEDS.joinpath("lilbee-compat-cuda.rb").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    result = _render(formula, "--compat-cuda")
+    assert result.returncode != 0
+    assert "--sha-linux-compat-cu124" in result.stderr
+
+
+def test_every_formula_seed_conflicts_with_every_other_lilbee_binary_formula():
+    """Two formulas that install the same binary must refuse each other."""
+    names = {"lilbee-compat-cuda", "lilbee-compat", "lilbee-rocm"}
+    for name in names:
+        seed = _SEEDS.joinpath(f"{name}.rb").read_text(encoding="utf-8")
+        for other in names - {name}:
+            assert f'conflicts_with "tobocop2/lilbee/{other}"' in seed, (name, other)

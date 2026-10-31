@@ -29,6 +29,7 @@ _APP_IDS = [
     "io.github.tobocop2.lilbee.cuda",
     "io.github.tobocop2.lilbee.rocm",
     "io.github.tobocop2.lilbee.compat",
+    "io.github.tobocop2.lilbee.compat-cuda",
 ]
 
 

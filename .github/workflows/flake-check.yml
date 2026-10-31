@@ -10,6 +10,7 @@ on:
       - sources-cuda.json
       - sources-rocm.json
       - sources-compat.json
+      - sources-compat-cuda.json
       - .github/workflows/flake-check.yml
   pull_request:
     paths:
@@ -19,6 +20,7 @@ on:
       - sources-cuda.json
       - sources-rocm.json
       - sources-compat.json
+      - sources-compat-cuda.json
       - .github/workflows/flake-check.yml
 
 jobs:

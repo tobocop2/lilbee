@@ -83,6 +83,13 @@ def _render_compat(content: str, args: argparse.Namespace) -> str:
     return _replace_sha_for_asset(content, "lilbee-compat-linux-x86_64", args.sha_linux_compat)
 
 
+def _render_compat_cuda(content: str, args: argparse.Namespace) -> str:
+    content = _replace_version(content, args.version)
+    return _replace_sha_for_asset(
+        content, "lilbee-compat-linux-x86_64-cu124", args.sha_linux_compat_cu124
+    )
+
+
 # Each GPU/CPU flavor of the formula: the flag that selects it, the renderer, and
 # the one digest that flavor needs. A new flavor is an entry here, not another
 # branch in main.
@@ -90,12 +97,13 @@ _FLAVORS = (
     ("cuda", _render_cuda, "sha_linux_cu125"),
     ("rocm", _render_rocm, "sha_linux_rocm"),
     ("compat", _render_compat, "sha_linux_compat"),
+    ("compat-cuda", _render_compat_cuda, "sha_linux_compat_cu124"),
 )
 
 
 def _selected_flavor(args: argparse.Namespace) -> tuple[str, Renderer, str] | None:
     """The flavor *args* asks for, or None for the default formula."""
-    return next((f for f in _FLAVORS if getattr(args, f[0])), None)
+    return next((f for f in _FLAVORS if getattr(args, _dest(f"--{f[0]}"))), None)
 
 
 def main() -> None:

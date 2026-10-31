@@ -181,7 +181,7 @@ remote_branches() {
 }
 
 @test "every nix-flake job checks out with the flake pins key" {
-  for wf in publish-packages publish-cuda-packages publish-rocm-packages publish-compat-packages; do
+  for wf in publish-packages publish-cuda-packages publish-rocm-packages publish-compat-packages publish-compat-cuda-packages; do
     run yq -r '.jobs["nix-flake"].steps[0].with["ssh-key"]' "${REPO_ROOT}/.github/workflows/${wf}.yml"
     [ "$output" = '${{ secrets.FLAKE_PINS_SSH_KEY }}' ] || { echo "${wf}: ${output}" >&2; return 1; }
   done

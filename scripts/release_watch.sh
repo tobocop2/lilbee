@@ -42,6 +42,7 @@ publish-packages.yml|Publish Packages|yes
 publish-cuda-packages.yml|Publish CUDA Packages|yes
 publish-rocm-packages.yml|Publish ROCm Packages|yes
 publish-compat-packages.yml|Publish compat packages|yes
+publish-compat-cuda-packages.yml|Publish compat CUDA packages|yes
 publish-docker.yml|Publish Docker Image|yes
 publish-flatpak.yml|Publish Flatpak|yes
 verify-release.yml|Verify release|no'

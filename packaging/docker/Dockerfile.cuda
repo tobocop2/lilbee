@@ -1,4 +1,5 @@
-FROM nvidia/cuda:12.5.1-runtime-ubuntu22.04
+ARG CUDA_BASE=nvidia/cuda:12.5.1-runtime-ubuntu22.04
+FROM ${CUDA_BASE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -7,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG LILBEE_VERSION
-# cu125 == CUDA 12.5, matching the nvidia/cuda:12.5.x-runtime base above.
+# The asset's CUDA flavor matches the runtime base: cu125 on 12.5, cu124 on 12.4.
 ARG CUDA_ASSET=lilbee-linux-x86_64-cu125
 RUN test -n "${LILBEE_VERSION}" || (echo "LILBEE_VERSION build arg required" && exit 1) && \
     curl -fsSL -o /usr/local/bin/lilbee \

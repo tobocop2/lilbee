@@ -1,0 +1,32 @@
+# Pre-Haswell CUDA (NVIDIA GPU) variant of the snap. Rendered per release by
+# render_snapcraft.sh; CI stages lilbee-compat-linux-x86_64-cu124 into payload/
+# (gitignored) before building. Distinct name + app so it coexists with the
+# stock lilbee snap; the command is `lilbee-compat-cuda`.
+name: lilbee-compat-cuda
+base: core24
+version: "0.0.0"
+summary: The whole local AI stack in one executable (pre-Haswell CPU, CUDA / NVIDIA GPU build)
+description: |
+  lilbee is the whole local AI stack in one executable: it runs and manages
+  local AI models across every GPU you have, indexes your files and code,
+  crawls the web pages you point it at, and answers questions with citations
+  down to the file and line. One install covers the TUI, CLI, HTTP server, and
+  MCP server. You don't need Ollama or LM Studio, and it works with both.
+
+  This build runs on older x86_64 CPUs (Sandy Bridge / Bulldozer class) that
+  crash on the stock build's lancedb wheel, and offloads model inference to an
+  NVIDIA GPU via CUDA 12.4. It needs a working NVIDIA driver on the host; with
+  no usable GPU it falls back to CPU.
+grade: stable
+confinement: classic
+platforms:
+  amd64:
+parts:
+  lilbee:
+    plugin: dump
+    source: payload
+    organize:
+      lilbee-compat-linux-x86_64-cu124: bin/lilbee
+apps:
+  lilbee-compat-cuda:
+    command: bin/lilbee
