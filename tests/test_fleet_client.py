@@ -24,10 +24,10 @@ from lilbee.providers.fleet.client import (
     _first_token_top_logprobs,
     _llm_rerank_score,
     _parse_sse_deltas,
-    _ThinkInliner,
     is_connection_failure,
 )
 from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.reasoning import ThinkInliner
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cancellation import TaskCancelledError
 
@@ -2308,7 +2308,7 @@ def test_parse_sse_stream_items_skips_malformed_json() -> None:
         list(
             _parse_sse_stream_items(
                 "data: {not json",
-                _ThinkInliner(enabled=True),
+                ThinkInliner(enabled=True),
                 reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
             )
         )
@@ -2323,7 +2323,7 @@ def test_parse_sse_stream_items_skips_empty_choices() -> None:
         list(
             _parse_sse_stream_items(
                 'data: {"choices": []}',
-                _ThinkInliner(enabled=True),
+                ThinkInliner(enabled=True),
                 reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
             )
         )
@@ -2339,7 +2339,7 @@ def test_parse_sse_stream_items_emits_finish_frame_on_length() -> None:
     items = list(
         _parse_sse_stream_items(
             line,
-            _ThinkInliner(enabled=True),
+            ThinkInliner(enabled=True),
             reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
         )
     )
@@ -2354,7 +2354,7 @@ def test_parse_sse_stream_items_no_finish_frame_without_reason() -> None:
     items = list(
         _parse_sse_stream_items(
             line,
-            _ThinkInliner(enabled=True),
+            ThinkInliner(enabled=True),
             reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
         )
     )
@@ -2543,7 +2543,7 @@ def test_chat_forwards_per_request_timeout() -> None:
 
 class TestThinkInliner:
     def test_wraps_reasoning_then_content(self) -> None:
-        inliner = _ThinkInliner(enabled=True)
+        inliner = ThinkInliner(enabled=True)
         out = (
             inliner.feed("step one", "")
             + inliner.feed(" step two", "")
@@ -2553,21 +2553,21 @@ class TestThinkInliner:
         assert out == "<think>step one step two</think>answer"
 
     def test_mixed_delta_carries_both(self) -> None:
-        inliner = _ThinkInliner(enabled=True)
+        inliner = ThinkInliner(enabled=True)
         assert inliner.feed("thought", "answer") == "<think>thought</think>answer"
 
     def test_unterminated_reasoning_closed_at_finish(self) -> None:
-        inliner = _ThinkInliner(enabled=True)
+        inliner = ThinkInliner(enabled=True)
         out = inliner.feed("endless thought", "") + inliner.finish()
         assert out == "<think>endless thought</think>"
 
     def test_disabled_drops_reasoning_and_passes_content(self) -> None:
-        inliner = _ThinkInliner(enabled=False)
+        inliner = ThinkInliner(enabled=False)
         assert inliner.feed("secret reasoning", "ocr text") == "ocr text"
         assert inliner.finish() == ""
 
     def test_no_reasoning_passthrough(self) -> None:
-        inliner = _ThinkInliner(enabled=True)
+        inliner = ThinkInliner(enabled=True)
         assert inliner.feed("", "plain") == "plain"
         assert inliner.finish() == ""
 
