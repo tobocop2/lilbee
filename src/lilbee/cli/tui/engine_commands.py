@@ -102,7 +102,8 @@ def run_engine_command(args: str) -> EngineCommandResult:
     try:
         return _run(words[0], words[1:])
     except engine_service.EmbedConfirmRequiredError as exc:
-        return EngineCommandResult(False, msg.ENGINE_CONFIRM_REFUSED.format(reason=exc, yes=YES_WORD))
+        text = msg.ENGINE_CONFIRM_REFUSED.format(reason=exc, yes=YES_WORD)
+        return EngineCommandResult(False, text)
     except engine_service.WRITE_FAILURES as exc:
         return EngineCommandResult(False, str(exc))
 

@@ -199,7 +199,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/models` | `/m`, `/catalog` | Browse the full model catalog |
 | `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
-| `/engine [subcommand]` | | Show the engine of each role (`roles`), or choose it (`use ROLE MODEL ENGINE`, `prefer ENGINE`) |
+| `/engine [subcommand]` | | Show the engine of each role (`roles`), or choose it (`use ROLE MODEL ENGINE`, `prefer ENGINE`); add `--yes` to confirm a change that can make the index vectors unusable |
 | `/preset <subcommand>` | | List, add, edit or remove server presets (edit opens a dialog) |
 | `/delete <name>` | | Remove a document from the index |
 | `/prune-ignored` | | Drop indexed documents a `.lilbeeignore` now excludes |

@@ -230,21 +230,19 @@ def use(model: str, name: str, confirmed: bool = False) -> str:
                 f"Choose an engine that loads {fmt}."
             )
 
-    after = stored_choices(cfg.engine_choices)
-    if name == AUTO:
-        after.pop(model, None)
-    else:
-        after[model] = name
-    encoded_after = json.dumps(after, sort_keys=True) if after else None
-    _check_embed_identity(cfg.model_copy(update={"engine_choices": encoded_after}), confirmed)
-
-    def apply(raw: object) -> tuple[str | None, str | None]:
-        chosen = stored_choices(raw if isinstance(raw, str) else None)
+    def merged(raw: str | None) -> str | None:
+        chosen = stored_choices(raw)
         if name == AUTO:
             chosen.pop(model, None)
         else:
             chosen[model] = name
-        encoded = json.dumps(chosen, sort_keys=True) if chosen else None
+        return json.dumps(chosen, sort_keys=True) if chosen else None
+
+    candidate = cfg.model_copy(update={"engine_choices": merged(cfg.engine_choices)})
+    _check_embed_identity(candidate, confirmed)
+
+    def apply(raw: object) -> tuple[str | None, str | None]:
+        encoded = merged(raw if isinstance(raw, str) else None)
         return encoded, encoded
 
     def commit(encoded: str | None) -> None:
