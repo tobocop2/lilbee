@@ -69,7 +69,8 @@ def test_missing_pack_error_names_engine_pin_and_pack_directory(store: EngineSto
     text = str(caught.value)
     assert "Engine fx 9 (cpu) is not installed and cannot be downloaded." in text
     assert f"Copy fx-9-cpu.whl into {store.root / 'packs'}" in text
-    assert not store.root.exists()
+    assert [p.name for p in store.root.iterdir()] == [".locks"]
+    assert [p for p in store.root.rglob("*") if p.is_file()] == []
 
 
 def test_pack_copied_by_hand_installs_without_the_network(
