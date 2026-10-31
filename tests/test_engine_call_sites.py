@@ -26,12 +26,8 @@ from lilbee.providers.fleet import ctx as fleet_ctx
 from lilbee.providers.fleet import planning, replicas
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
-from lilbee.providers.fleet.engines.base import (
-    MemoryEstimate,
-    MemoryKind,
-    MemoryRequest,
-    RequestProfile,
-)
+from lilbee.providers.fleet.engines.base import RequestProfile
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests.conformance.fake_adapter import FakeAdapter

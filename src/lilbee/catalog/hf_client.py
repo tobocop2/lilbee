@@ -12,7 +12,8 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
-from huggingface_hub import ModelInfo
+from huggingface_hub import HfApi, ModelInfo
+from huggingface_hub.errors import HfHubHTTPError, NotASafetensorsRepoError, SafetensorsParsingError
 from huggingface_hub.hf_api import RepoSibling
 
 from lilbee.catalog.compat import classify
@@ -199,6 +200,30 @@ def repo_has_mmproj(hf_repo: str) -> bool:
         log.debug("mmproj sibling probe failed for %s: %s", hf_repo, exc)
         return False
     return any(fnmatch.fnmatch(s.rfilename, DEFAULT_MMPROJ_PATTERN) for s in siblings)
+
+
+def read_parameter_count(repo: str, *, token: str | bool | None = None) -> dict[str, int]:
+    """The per-dtype tensor count of a Hub repo, read from the safetensors headers alone.
+
+    Returns an empty dict when the repo has no readable header, so the caller
+    reaches the unknown-size reserve instead of an error. A header that parses but
+    has the wrong shape (a list where a mapping belongs) counts as unreadable.
+    """
+    try:
+        counts = HfApi().get_safetensors_metadata(repo, token=token).parameter_count
+        return {str(dtype): count for dtype, count in counts.items()}
+    except (
+        HfHubHTTPError,
+        NotASafetensorsRepoError,
+        SafetensorsParsingError,
+        OSError,
+        AttributeError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        log.debug("No safetensors header for %s: %s", repo, exc)
+        return {}
 
 
 def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
