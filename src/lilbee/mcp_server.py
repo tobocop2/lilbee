@@ -2006,7 +2006,7 @@ def engine_install_tool(engine: str, wheel: str | None = None) -> dict[str, Any]
     def install() -> EngineInstalledResponse:
         built = engine_service.install(engine)
         return EngineInstalledResponse(
-            engine=built.engine, version=built.version, backend=built.backend
+            engine=built.engine, version=built.version, backend=built.backend, note=built.note
         )
 
     return _engine_result(install)

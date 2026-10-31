@@ -13,11 +13,11 @@ from typing import TypeVar
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.app.services import peek_services
 from lilbee.catalog.refs import model_format
+from lilbee.catalog.runnable import session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engine_store import (
     ChecksumError,
     EngineConflictError,
@@ -101,6 +101,7 @@ class InstalledBuild:
     engine: str
     version: str
     backend: str
+    note: str = ""
 
 
 _STORE_REFUSALS = (
@@ -268,7 +269,7 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         )
     if adapter.bundled:
         raise EngineRefusedError(f"Engine {name} ships with lilbee. There is nothing to install.")
-    gate = adapter.host_gate(host_caps.detect())
+    gate = adapter.host_gate(session_host())
     if not gate.ok:
         raise EngineRefusedError(f"Engine {name} cannot run on this host. {gate.reason}")
     try:
@@ -287,7 +288,7 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         raise EngineRefusedError(str(exc)) from exc
     except _UNREADABLE_WHEEL as exc:
         raise EngineRefusedError(f"Engine {name} was not installed: {exc}") from exc
-    return InstalledBuild(lock.engine, lock.version, lock.backend)
+    return InstalledBuild(lock.engine, lock.version, lock.backend, gate.reason)
 
 
 def http_refused_message() -> str:
@@ -321,6 +322,10 @@ def use_for_role(
         raise EngineRefusedError(
             f"The {role} model is {current}, not {model}. Choose the engine for {current}."
         )
+    adapter = None if name == AUTO else choice.ADAPTERS.get(_engine_name(name))
+    if adapter is not None and role not in adapter.served_roles:
+        served = ", ".join(sorted(served_role.value for served_role in adapter.served_roles))
+        raise EngineRefusedError(f"Engine {name} does not serve {role}. It serves {served}.")
     if name != AUTO:
         _require_serves(_engine_name(name), role)
     return use(model, name, confirmed)

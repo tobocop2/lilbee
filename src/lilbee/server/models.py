@@ -996,6 +996,7 @@ class EngineInstalledResponse(BaseModel):
     engine: str
     version: str
     backend: str
+    note: str = ""
 
 
 class PresetAddBody(BaseModel):

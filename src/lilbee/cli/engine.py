@@ -97,9 +97,11 @@ def install(
         raise _refuse("engine install", exc) from exc
     label = f"{built.engine} {built.version} ({built.backend})"
     if cfg.json_mode:
-        json_out({"command": "engine install", "installed": label})
+        json_out({"command": "engine install", "installed": label, "note": built.note})
         return
     console.print(f"Installed engine {label}.")
+    if built.note:
+        console.print(built.note)
 
 
 @engine_app.command("remove")
