@@ -4754,7 +4754,7 @@ class TestEnginePerRole:
 
         monkeypatch.setattr(planning_mod, "_plan_devices", _no_probe)
         engines = engines_for_all_roles(LLAMA)
-        assert planning_mod._snapshot_engine(engines) is LLAMA
+        assert planning_mod.snapshot_engine(engines) is LLAMA
 
     def test_the_snapshot_engine_sees_the_least_free_memory(self, monkeypatch) -> None:
         from tests.conformance.fake_adapter import FAKE
@@ -4768,7 +4768,7 @@ class TestEnginePerRole:
             planning_mod, "_plan_devices", lambda _binary, engine: [free[id(engine)]]
         )
         engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
-        assert planning_mod._snapshot_engine(engines) is FAKE
+        assert planning_mod.snapshot_engine(engines) is FAKE
 
 
 class TestSnapshotEngineWithMixedReadings:
@@ -4797,21 +4797,21 @@ class TestSnapshotEngineWithMixedReadings:
         self._devices(monkeypatch, {id(LLAMA): [_card(40 * _GB)], id(FAKE): []})
         roles = [WorkerRole.CHAT, WorkerRole.EMBED]
         pair = [FAKE, LLAMA] if cpu_first else [LLAMA, FAKE]
-        assert planning_mod._snapshot_engine(dict(zip(roles, pair, strict=True))) is LLAMA
+        assert planning_mod.snapshot_engine(dict(zip(roles, pair, strict=True))) is LLAMA
 
     def test_two_gpu_engines_still_take_the_tighter_one(self, monkeypatch) -> None:
         from tests.conformance.fake_adapter import FAKE
 
         self._devices(monkeypatch, {id(LLAMA): [_card(40 * _GB)], id(FAKE): [_card(8 * _GB)]})
         engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
-        assert planning_mod._snapshot_engine(engines) is FAKE
+        assert planning_mod.snapshot_engine(engines) is FAKE
 
     def test_no_engine_with_a_gpu_gives_a_cpu_plan(self, monkeypatch) -> None:
         from tests.conformance.fake_adapter import FAKE
 
         self._devices(monkeypatch, {id(LLAMA): [], id(FAKE): []})
         engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
-        chosen = planning_mod._snapshot_engine(engines)
+        chosen = planning_mod.snapshot_engine(engines)
         assert chosen in (LLAMA, FAKE)
         assert planning_mod._plan_devices(Path("/bin/x"), chosen) == []
 
@@ -4848,13 +4848,13 @@ class TestSnapshotEngineWithMixedReadings:
         monkeypatch.setattr(planning_mod, "_plan_devices", _read)
         engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
         with pytest.raises(ProviderError, match=f"Cannot read the GPUs of the {FAKE.name} engine"):
-            planning_mod._snapshot_engine(engines)
+            planning_mod.snapshot_engine(engines)
 
     def test_an_empty_mapping_is_refused_in_plain_words(self) -> None:
         from lilbee.providers.base import ProviderError
 
         with pytest.raises(ProviderError, match="No engine is assigned to any role"):
-            planning_mod._snapshot_engine({})
+            planning_mod.snapshot_engine({})
 
     def test_a_configured_role_without_an_engine_is_recorded(self, monkeypatch, caplog) -> None:
         self._devices(monkeypatch, {id(LLAMA): [_card(8 * _GB)]})

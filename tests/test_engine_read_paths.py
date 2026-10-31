@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import inspect
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -24,7 +22,6 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.roles import WorkerRole
-from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.server.handlers import health
 from lilbee.server.handlers import status as status_handler
 from lilbee.server.handlers.models import models_show
@@ -118,33 +115,14 @@ def test_a_run_of_the_role_refuses_with_the_engine_text(no_engine: Services) -> 
         run()
 
 
-def test_a_listener_added_with_no_engine_reaches_the_engine_once_it_builds(
+def test_a_run_of_the_other_role_works(
     no_engine: Services, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def on_spawning(role: WorkerRole) -> None: ...
+    from lilbee.providers.fleet.provider import FleetProvider
 
-    no_engine.add_pool_listener(on_spawning=on_spawning)
-    monkeypatch.setattr(cfg, "chat_model", GGUF_REF)
-    monkeypatch.setattr(cfg, "embedding_model", GGUF_REF)
-    assert no_engine.provider._get_local()._on_spawning is on_spawning
-
-
-# The methods that send work to the local engine, and may refuse with the engine text.
-_RUN_METHODS = {
-    "_pick_backend",
-    "rerank",
-    "warm_up_pool",
-    "_local_for_read",
-}
-
-
-def test_only_a_run_reaches_the_call_that_builds_the_engine() -> None:
-    tree = ast.parse(inspect.getsource(RoutingProvider))
-    callers = {
-        method.name
-        for method in ast.walk(tree)
-        if isinstance(method, ast.FunctionDef)
-        for node in ast.walk(method)
-        if isinstance(node, ast.Attribute) and node.attr == "_get_local"
-    }
-    assert callers == _RUN_METHODS
+    monkeypatch.setattr(FleetProvider, "embed", lambda self, texts: [[0.5]])
+    monkeypatch.setattr(FleetProvider, "chat", lambda self, messages, **kwargs: "Rome")
+    if cfg.chat_model == MLX_REF:
+        assert no_engine.provider.embed(["hi"]) == [[0.5]]
+    else:
+        assert no_engine.provider.chat([{"role": "user", "content": "hi"}]) == "Rome"

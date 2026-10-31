@@ -564,6 +564,10 @@ class LLMProvider(Protocol):
         """
         return
 
+    def reload_notice(self) -> str | None:
+        """What is true of the engines while a reload runs or after one failed; None here."""
+        return None
+
     def reload_placement(self, *, wait: bool = False) -> None:
         """Re-plan GPU placement with current cfg, restarting only moved roles.
 

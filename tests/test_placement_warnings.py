@@ -7,7 +7,6 @@ from unittest.mock import MagicMock
 
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
-from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
@@ -97,6 +96,6 @@ class TestPlacementWarnings:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
-        routing = RoutingProvider(engine=lambda: LLAMA)
+        routing = RoutingProvider()
         assert routing._local is None
         assert routing.health_warnings() == []

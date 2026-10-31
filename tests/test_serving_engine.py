@@ -134,7 +134,7 @@ def test_the_tui_config_section_names_the_engine(
 
 
 def _provider(monkeypatch: pytest.MonkeyPatch) -> tuple[RoutingProvider, MagicMock, MagicMock]:
-    provider = RoutingProvider(engine=lambda: LLAMA)
+    provider = RoutingProvider()
     local, sdk = MagicMock(), MagicMock()
     monkeypatch.setattr(provider, "_get_local", lambda: local)
     monkeypatch.setattr(provider, "_get_sdk_provider", lambda: sdk)
@@ -241,7 +241,7 @@ def test_chat_answers_when_the_pin_lookup_fails(monkeypatch: pytest.MonkeyPatch)
     engine.pin_record.side_effect = OSError("gone")
     engine.formats = frozenset({"gguf"})
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, engine)
-    provider = RoutingProvider(engine=lambda: engine)
+    provider = RoutingProvider()
     local = MagicMock()
     local.chat.return_value = "Rome"
     monkeypatch.setattr(provider, "_get_local", lambda: local)
