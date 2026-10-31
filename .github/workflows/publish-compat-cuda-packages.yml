@@ -1,0 +1,240 @@
+name: Publish compat CUDA packages
+run-name: Publish compat CUDA packages ${{ inputs.tag }}
+
+# Pins a tag's pre-Haswell CUDA binaries into the lilbee-compat-cuda channels:
+# the Homebrew formula, the AUR PKGBUILD, the Nix flake entry, a snap and the
+# Scoop manifest. release-candidate.yml dispatches it after build-cuda;
+# workflow_dispatch remains for manual re-runs and for a release that predates
+# the package. Separate from the other fan-outs so no other variant is touched,
+# and so a failure here never blocks them. The Flatpak and Docker images of this
+# variant are published by publish-flatpak.yml and publish-docker.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag whose lilbee-compat-linux-x86_64-cu124 is on the GH release (e.g. v0.6.90b691)."
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-compat-cuda-packages-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.info.outputs.tag }}
+      version: ${{ steps.info.outputs.version }}
+      sha_linux_compat_cuda: ${{ steps.info.outputs.sha_linux_compat_cuda }}
+      sha_windows_compat_cuda: ${{ steps.info.outputs.sha_windows_compat_cuda }}
+    steps:
+      - name: Resolve tag and compat CUDA asset digests
+        id: info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${TAG}"
+          version="${tag#v}"
+          gh api "/repos/${REPO}/releases/tags/${tag}" \
+            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))\t\(.size)"' > /tmp/assets.tsv
+
+          get_sha() {
+            awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
+          }
+          sha_linux_compat_cuda=$(get_sha lilbee-compat-linux-x86_64-cu124)
+          sha_windows_compat_cuda=$(get_sha lilbee-compat-windows-x86_64-cu124.exe)
+
+          # This job gates every channel, so it asserts nothing: scoop ships only
+          # the Windows binary and must publish when the Linux one is absent, and
+          # the reverse. Each channel checks what it ships.
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "sha_linux_compat_cuda=$sha_linux_compat_cuda"
+            echo "sha_windows_compat_cuda=$sha_windows_compat_cuda"
+          } >> "$GITHUB_OUTPUT"
+
+  homebrew:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: The formula pins the Linux compat CUDA binary
+        env:
+          SHA_LINUX_COMPAT_CUDA: ${{ needs.resolve.outputs.sha_linux_compat_cuda }}
+        run: '[ -n "$SHA_LINUX_COMPAT_CUDA" ] || { echo "lilbee-compat-linux-x86_64-cu124 is not on the release; run build-gpu-executables.yml (compat CUDA cell) first"; exit 1; }'
+      - uses: ./.github/actions/publish-homebrew-formula
+        with:
+          tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          formula-path: Formula/lilbee-compat-cuda.rb
+          render-args: --compat-cuda --version ${{ needs.resolve.outputs.version }} --sha-linux-compat-cu124 ${{ needs.resolve.outputs.sha_linux_compat_cuda }}
+          commit-message: "lilbee-compat-cuda ${{ needs.resolve.outputs.version }}"
+
+  aur:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: The PKGBUILD pins the Linux compat CUDA binary
+        env:
+          SHA_LINUX_COMPAT_CUDA: ${{ needs.resolve.outputs.sha_linux_compat_cuda }}
+        run: '[ -n "$SHA_LINUX_COMPAT_CUDA" ] || { echo "lilbee-compat-linux-x86_64-cu124 is not on the release; run build-gpu-executables.yml (compat CUDA cell) first"; exit 1; }'
+      - uses: ./.github/actions/publish-aur-package
+        with:
+          pkgname: lilbee-compat-cuda
+          pkgbuild-dir: packaging/aur/lilbee-compat-cuda
+          version: ${{ needs.resolve.outputs.version }}
+          sha-linux: ${{ needs.resolve.outputs.sha_linux_compat_cuda }}
+          aur-ssh-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+
+  nix-flake:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          # A deploy key: its push starts the pin pull request's CI.
+          ssh-key: ${{ secrets.FLAKE_PINS_SSH_KEY }}
+      - name: Build systems JSON
+        id: sys
+        env:
+          SHA_LINUX_COMPAT_CUDA: ${{ needs.resolve.outputs.sha_linux_compat_cuda }}
+        run: |
+          set -euo pipefail
+          # The one system this flake entry pins.
+          [ -n "$SHA_LINUX_COMPAT_CUDA" ] || { echo "lilbee-compat-linux-x86_64-cu124 is not on the release"; exit 1; }
+          systems=$(jq -nc \
+            --arg sha "$SHA_LINUX_COMPAT_CUDA" \
+            '{ "x86_64-linux": { asset: "lilbee-compat-linux-x86_64-cu124", sha256: $sha } }')
+          echo "value=${systems}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/publish-flake-sources
+        with:
+          target-file: sources-compat-cuda.json
+          version: ${{ needs.resolve.outputs.version }}
+          systems-json: ${{ steps.sys.outputs.value }}
+          commit-message: "lilbee-compat-cuda ${{ needs.resolve.outputs.version }} (flake)"
+
+  snap:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download and verify the release binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha_linux_compat_cuda }}
+        run: |
+          set -euo pipefail
+          [ -n "$SHA" ] || { echo "lilbee-compat-linux-x86_64-cu124 is not on the release"; exit 1; }
+          mkdir -p packaging/snap-compat-cuda/payload
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            -p lilbee-compat-linux-x86_64-cu124 -O packaging/snap-compat-cuda/payload/lilbee-compat-linux-x86_64-cu124
+          echo "$SHA  packaging/snap-compat-cuda/payload/lilbee-compat-linux-x86_64-cu124" | sha256sum -c -
+          chmod +x packaging/snap-compat-cuda/payload/lilbee-compat-linux-x86_64-cu124
+      - name: Render snapcraft.yaml
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: bash packaging/tools/render_snapcraft.sh packaging/snap-compat-cuda/snapcraft.yaml "$VERSION"
+      - uses: snapcore/action-build@v1
+        id: build
+        with:
+          path: packaging/snap-compat-cuda
+      - name: Smoke test
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo snap install "${{ steps.build.outputs.snap }}" --dangerous --classic
+          bash scripts/assert_launcher_boots.sh "$VERSION" /snap/bin/lilbee-compat-cuda
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        # Stable asset name so releases/latest/download/lilbee-compat-linux-x86_64-cu124.snap works.
+        run: |
+          cp "${{ steps.build.outputs.snap }}" lilbee-compat-linux-x86_64-cu124.snap
+          gh release upload "$TAG" lilbee-compat-linux-x86_64-cu124.snap --repo "$GITHUB_REPOSITORY" --clobber
+
+  # Pushes the pre-Haswell CUDA manifest to tobocop2/scoop-lilbee. See the scoop
+  # job in publish-packages.yml for why the bucket is a separate repository.
+  scoop:
+    needs: resolve
+    # The Windows compat CUDA binary is a soft cell in gpu-cells.yml; skip scoop
+    # rather than fail if it wasn't attached.
+    if: needs.resolve.outputs.sha_windows_compat_cuda != ''
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Clone the bucket
+        shell: bash
+        env:
+          BUCKET_SSH_KEY: ${{ secrets.SCOOP_BUCKET_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${BUCKET_SSH_KEY}" ] || { echo "SCOOP_BUCKET_SSH_KEY is not set; the bucket cannot be published"; exit 1; }
+          mkdir -p ~/.ssh
+          printf '%s\n' "${BUCKET_SSH_KEY}" > ~/.ssh/scoop_bucket
+          chmod 600 ~/.ssh/scoop_bucket
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          echo "GIT_SSH_COMMAND=ssh -i ${HOME}/.ssh/scoop_bucket -o IdentitiesOnly=yes" >> "${GITHUB_ENV}"
+          export GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/scoop_bucket -o IdentitiesOnly=yes"
+          git clone git@github.com:tobocop2/scoop-lilbee.git scoop-bucket
+      # The renderer edits a manifest in place, and the bucket holds none for this
+      # package until the first publish, so copy the seed from this repo.
+      - name: Seed the manifest when the bucket has none
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=scoop-bucket/bucket/lilbee-compat-cuda.json
+          if [ ! -f "${manifest}" ]; then
+            cp packaging/scoop/lilbee-compat-cuda.json "${manifest}"
+            echo "seeded ${manifest} from packaging/scoop/lilbee-compat-cuda.json"
+          fi
+      - name: Render manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA_WINDOWS_COMPAT_CUDA: ${{ needs.resolve.outputs.sha_windows_compat_cuda }}
+        run: |
+          set -euo pipefail
+          python packaging/tools/render_scoop_manifest.py scoop-bucket/bucket/lilbee-compat-cuda.json \
+            --compat-cuda --version "$VERSION" --sha-windows-compat-cu124 "$SHA_WINDOWS_COMPAT_CUDA"
+      - name: Install from the rendered manifest and smoke test
+        uses: ./.github/actions/validate-scoop-install
+        with:
+          manifest-path: scoop-bucket/bucket/lilbee-compat-cuda.json
+          expected-version: lilbee ${{ needs.resolve.outputs.version }}
+      - name: Commit and push the manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Resolved before the cd: GITHUB_WORKSPACE is a backslash path here.
+          retry="$(pwd)/tools/ci/git_push_retry.sh"
+          git config --global user.name "lilbee-bot"
+          git config --global user.email "lilbee-bot@users.noreply.github.com"
+          cd scoop-bucket
+          git add bucket/lilbee-compat-cuda.json
+          if git diff --cached --quiet; then
+            echo "no manifest changes; skipping push"
+            exit 0
+          fi
+          git commit -m "lilbee-compat-cuda ${VERSION}"
+          # The regular workflow pushes to this same bucket in parallel.
+          bash "${retry}"

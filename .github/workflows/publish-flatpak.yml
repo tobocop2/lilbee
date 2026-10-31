@@ -2,7 +2,7 @@ name: Publish Flatpak
 
 run-name: Publish Flatpak ${{ inputs.tag }}
 
-# Publishes every flatpak variant -- stock, CUDA and compat -- to the shared
+# Publishes every flatpak variant -- stock, CUDA, ROCm, compat and compat CUDA -- to the shared
 # OSTree pages repo.
 #
 # All three live in one workflow because each regenerates the repo's summary and
@@ -18,6 +18,10 @@ on:
       tag:
         description: "Release tag to publish flatpaks for (e.g. v0.6.90b420.dev727)."
         required: true
+      only_app:
+        description: "Publish only this app id (e.g. io.github.tobocop2.lilbee.compat-cuda). Empty = every app."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -39,6 +43,8 @@ jobs:
       size_rocm: ${{ steps.info.outputs.size_rocm }}
       sha_compat: ${{ steps.info.outputs.sha_compat }}
       size_compat: ${{ steps.info.outputs.size_compat }}
+      sha_compat_cuda: ${{ steps.info.outputs.sha_compat_cuda }}
+      size_compat_cuda: ${{ steps.info.outputs.size_compat_cuda }}
     steps:
       - uses: actions/checkout@v7
       # Dispatched as soon as the stock executables are attached, which can be
@@ -57,8 +63,10 @@ jobs:
           variants="stock:lilbee-linux-x86_64
                     cuda:lilbee-linux-x86_64-cu125
                     rocm:lilbee-linux-x86_64-rocm
-                    compat:lilbee-compat-linux-x86_64"
-          soft=$(bash scripts/release_required_assets.sh --soft) || {
+                    compat:lilbee-compat-linux-x86_64
+                    compat_cuda:lilbee-compat-linux-x86_64-cu124"
+          soft=$(bash scripts/release_required_assets.sh --soft \
+                 && bash scripts/release_required_assets.sh --soft .github/gpu-cells.yml) || {
             echo "::error::cannot read which build cells are droppable"; exit 1; }
           is_soft() { grep -qxF "$1" <<< "${soft}"; }
 
@@ -140,11 +148,18 @@ jobs:
             ref: lilbee-compat.flatpakref
             sha: ${{ needs.resolve.outputs.sha_compat }}
             size: ${{ needs.resolve.outputs.size_compat }}
+          - app-id: io.github.tobocop2.lilbee.compat-cuda
+            asset: lilbee-compat-linux-x86_64-cu124
+            ref: lilbee-compat-cuda.flatpakref
+            sha: ${{ needs.resolve.outputs.sha_compat_cuda }}
+            size: ${{ needs.resolve.outputs.size_compat_cuda }}
     steps:
       - uses: actions/checkout@v7
       # Empty only for a droppable binary that never landed. Resolve fails on a
       # required one, so this never hides a dropped stock, CUDA or ROCm variant.
-      - if: matrix.sha != ''
+      # only_app narrows a dispatch for a released tag to one app, so the other
+      # apps keep the commits and flatpakrefs they already have.
+      - if: matrix.sha != '' && (inputs.only_app == '' || inputs.only_app == matrix['app-id'])
         uses: ./.github/actions/publish-flatpak
         with:
           pages-token: ${{ secrets.FLATPAK_PAGES_TOKEN }}

@@ -245,13 +245,16 @@ test("Windows asks kernel32 for AVX2 through PowerShell and takes the compat bui
   assert.deepEqual((await report("linux", "x64", {})).cpu, { status: "detected", avx2: true });
 
   assert.equal(await variant("win32", "x64", { powershell: "False" }), "compat");
-  assert.equal(await variant("win32", "x64", { powershell: "False", smi: "CUDA Version: 12.6" }), "compat");
+  assert.equal(await variant("win32", "x64", { powershell: "False", smi: "CUDA Version: 12.6" }), "compat-cu124");
+  assert.equal(await variant("win32", "x64", { powershell: "False", smi: "CUDA Version: 12.4" }), "compat-cu124");
   assert.equal(await variant("win32", "x64", { powershell: "False", smi: "CUDA Version: 12.2" }), "compat");
   assert.equal(await variant("win32", "x64", { powershell: "True", smi: "CUDA Version: 12.6" }), "cu125");
   assert.equal(await variant("win32", "x64", { powershell: null, smi: "CUDA Version: 12.6" }), "cu125");
   assert.equal(assetNameFor("win32", "x64", "compat"), "lilbee-compat-windows-x86_64.exe");
   assert.deepEqual(parseAssetName("lilbee-compat-windows-x86_64.exe"), { platform: "win32", arch: "x64", variant: "compat" });
-  assert.throws(() => assetNameFor("win32", "x64", "compat-cu124"), /Windows compat build has no GPU variants/);
+  assert.equal(assetNameFor("win32", "x64", "compat-cu124"), "lilbee-compat-windows-x86_64-cu124.exe");
+  assert.deepEqual(parseAssetName("lilbee-compat-windows-x86_64-cu124.exe"), { platform: "win32", arch: "x64", variant: "compat-cu124" });
+  assert.throws(() => assetNameFor("win32", "x64", "compat-rocm"), /Windows compat build has only the compat-cu124 GPU variant/);
 });
 
 test("the Windows AVX2 probe is a PowerShell one-liner calling IsProcessorFeaturePresent(40)", async () => {

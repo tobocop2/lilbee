@@ -22,6 +22,7 @@ on:
       - 'engine-versions.env'
       - 'tools/wheel-build/**'
       - '.github/release-cells.yml'
+      - '.github/gpu-cells.yml'
       - '.github/workflows/release.yml'
       - '.github/workflows/build-gpu-executables.yml'
       - '.github/workflows/flatpak-validate.yml'
@@ -62,6 +63,7 @@ jobs:
             windows:
               - 'tools/wheel-build/**'
               - '.github/release-cells.yml'
+              - '.github/gpu-cells.yml'
               - '.github/workflows/release.yml'
               - '.github/workflows/build-gpu-executables.yml'
               - '.github/workflows/flatpak-validate.yml'

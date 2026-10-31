@@ -60,6 +60,7 @@ jobs:
               - 'sources-cuda.json'
               - 'sources-rocm.json'
               - 'sources-compat.json'
+              - 'sources-compat-cuda.json'
               - '.github/workflows/ci.yml'
 
   lint:

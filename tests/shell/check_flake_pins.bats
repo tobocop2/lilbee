@@ -79,7 +79,14 @@ check() {
 @test "the repository's own pins pass" {
   run bash "${SCRIPT}" "${REPO_ROOT}"/sources*.json
   [ "$status" -eq 0 ]
-  [ "$(printf '%s\n' "$output" | grep -c ': ok$')" -eq 4 ]
+  # Every sources file on disk reports ok; a new file needs no edit here.
+  local file seen=0
+  for file in "${REPO_ROOT}"/sources*.json; do
+    printf '%s\n' "$output" | grep -qF "${file}: ok" || { echo "no ok line for ${file}" >&2; return 1; }
+    seen=$(( seen + 1 ))
+  done
+  [ "${seen}" -ge 1 ]
+  [ "$(printf '%s\n' "$output" | grep -vc ': ok$')" -eq 0 ]
 }
 
 @test "the CI flake job runs this check on every sources file" {

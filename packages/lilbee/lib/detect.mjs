@@ -235,10 +235,10 @@ function linuxVariant(cuda, rocm, noAvx2, log) {
 }
 
 function windowsVariant(cuda, noAvx2, log) {
-  // Windows ships cu124 and cu125, and a compat build with no GPU flavor
+  // Windows ships cu124 and cu125, and a compat build with a cu124 flavor
   if (noAvx2) {
     log(COMPAT_BUILD_LOG);
-    return "compat";
+    return cuda === "cu124" || cuda === "cu125" ? "compat-cu124" : "compat";
   }
   if (cuda === "cu121") {
     log("lilbee: this NVIDIA driver predates CUDA 12.4 — using the universal Windows build (override with LILBEE_VARIANT).");

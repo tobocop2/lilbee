@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="console-application">
+  <id>io.github.tobocop2.lilbee.compat-cuda</id>
+  <name>lilbee-compat-cuda</name>
+  <summary>The whole local AI stack in one executable (pre-Haswell CPU, NVIDIA CUDA build)</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      lilbee is the whole local AI stack in one executable: it runs and manages
+      local AI models across every GPU you have, indexes your files and code,
+      crawls the web pages you point it at, and answers questions with
+      citations down to the file and line. One install covers the TUI, CLI,
+      HTTP server, and MCP server. You don't need Ollama or LM Studio, and it
+      works with both.
+    </p>
+    <p>
+      This build runs on older x86_64 CPUs (Sandy Bridge / Bulldozer class)
+      that crash on the stock build's lancedb wheel, and offloads inference to
+      an NVIDIA GPU via CUDA 12.4. It needs a recent NVIDIA proprietary driver
+      on the host; without a usable GPU it falls back to the CPU. Run it with
+      GPU access enabled (flatpak --device=all).
+    </p>
+  </description>
+  <url type="homepage">https://lilbee.sh</url>
+  <url type="bugtracker">https://github.com/tobocop2/lilbee/issues</url>
+  <provides>
+    <binary>lilbee</binary>
+  </provides>
+</component>

@@ -50,7 +50,9 @@ export function assetNameFor(platform, arch, variant = "") {
     return `${prefix}-linux-x86_64${gpu}`;
   }
   if (platform === "win32" && arch === "x64") {
-    if (compat && gpu) throw new Error("Windows compat build has no GPU variants.");
+    if (compat && gpu && variant !== "compat-cu124") {
+      throw new Error("Windows compat build has only the compat-cu124 GPU variant.");
+    }
     return `${prefix}-windows-x86_64${gpu}.exe`;
   }
   throw new Error(

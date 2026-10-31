@@ -50,6 +50,7 @@ publish-compat-packages.yml|Publish compat packages
 publish-docker.yml|Publish Docker Image
 publish-flatpak.yml|Publish Flatpak
 verify-release.yml|Verify release
+publish-compat-cuda-packages.yml|Publish compat CUDA packages
 LEGS
 }
 
@@ -96,6 +97,14 @@ summary() { cat "${FIXTURE}/summary.md"; }
   [ "$status" -eq 0 ]
   run dispatch_log
   [[ "$output" == *"rerun 102"* ]]
+}
+
+@test "the compat CUDA fan-out is a watched leg that heals like the others" {
+  set_conclusion publish-compat-cuda-packages.yml failure
+  run watch
+  [ "$status" -eq 0 ]
+  run dispatch_log
+  [[ "$output" == *"rerun 109"* ]]
 }
 
 @test "a leg already at the attempt bound is called a defect, not rerun again" {

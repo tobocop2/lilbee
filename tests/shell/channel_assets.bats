@@ -44,6 +44,13 @@ rc_dispatch() {  # job:conclusion ...
   [[ "$output" == *"dispatch-compat failure"* ]]
 }
 
+@test "a skipped compat CUDA dispatch blocks the compat CUDA snap" {
+  rc_dispatch "dispatch-compat-cuda:skipped"
+  RC_RUN_ID=900 run blockers lilbee-compat-linux-x86_64-cu124.snap
+  [ "$status" -eq 0 ]
+  [[ "$output" == "lilbee-compat-linux-x86_64-cu124.snap: dispatch-compat-cuda skipped"* ]]
+}
+
 @test "a dispatch job that succeeded and has no run yet is still awaited" {
   rc_dispatch "dispatch-rocm:success"
   RC_RUN_ID=900 run blockers lilbee-linux-x86_64-rocm.snap

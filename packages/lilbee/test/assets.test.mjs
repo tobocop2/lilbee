@@ -113,7 +113,7 @@ test("parseAssetName rejects names outside the published matrix", () => {
   assert.equal(parseAssetName("lilbee-windows-x86_64"), null);
   assert.equal(parseAssetName("lilbee-linux-x86_64.exe"), null);
   assert.equal(parseAssetName("lilbee-macos-arm64-cu124"), null);
-  assert.equal(parseAssetName("lilbee-compat-windows-x86_64-cu124.exe"), null);
+  assert.equal(parseAssetName("lilbee-compat-windows-x86_64-cu125.exe"), null);
   assert.equal(parseAssetName("lilbee-compat-linux-x86_64-cu121"), null);
   assert.equal(parseAssetName("lilbee-linux-x86_64.download.123"), null);
   assert.equal(parseAssetName(""), null);

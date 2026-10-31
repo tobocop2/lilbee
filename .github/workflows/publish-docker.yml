@@ -1,5 +1,5 @@
 name: Publish Docker Image
-run-name: Publish Docker Image ${{ inputs.tag }}
+run-name: Publish Docker Image ${{ inputs.tag }}${{ inputs.variant && format(' ({0})', inputs.variant) || '' }}
 
 # Dispatched by the publish & emergency-publish workflows (and by hand) once
 # the tag's binaries are attached to its GH release.
@@ -9,12 +9,16 @@ on:
       tag:
         description: "Release tag to (re)publish (e.g. v0.6.66b469)."
         required: true
+      variant:
+        description: "Build only this image: default, cuda, rocm or compat-cuda (empty = every image)."
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-docker-${{ inputs.tag }}
+  group: publish-docker-${{ inputs.tag }}-${{ inputs.variant }}
   cancel-in-progress: false
 
 jobs:
@@ -30,7 +34,13 @@ jobs:
         id: info
         env:
           TAG: ${{ inputs.tag }}
-        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          case "${VARIANT}" in
+            "" | default | cuda | rocm | compat-cuda) ;;
+            *) echo "variant must be default, cuda, rocm or compat-cuda, not '${VARIANT}'" >&2; exit 1 ;;
+          esac
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
@@ -38,7 +48,9 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
+      - name: Build & push default image
+        if: inputs.variant == '' || inputs.variant == 'default'
+        uses: docker/build-push-action@v7
         with:
           context: packaging/docker
           file: packaging/docker/Dockerfile
@@ -50,6 +62,7 @@ jobs:
           push: true
 
       - name: Build & push CUDA image
+        if: inputs.variant == '' || inputs.variant == 'cuda'
         uses: docker/build-push-action@v7
         with:
           context: packaging/docker
@@ -62,6 +75,7 @@ jobs:
           push: true
 
       - name: Build & push ROCm image
+        if: inputs.variant == '' || inputs.variant == 'rocm'
         uses: docker/build-push-action@v7
         with:
           context: packaging/docker
@@ -71,4 +85,24 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.version }}-rocm
             ghcr.io/${{ github.repository_owner }}/lilbee:rocm
+          push: true
+
+      # The compat CUDA binary is built against CUDA 12.4, so it runs on the 12.4
+      # runtime base. The CUDA image above keeps its default base and asset. Only
+      # an explicit variant builds this image: the default run starts when the
+      # stock binaries land, before the CUDA build attaches this one, and
+      # release-candidate.yml dispatches the variant once it is there.
+      - name: Build & push compat CUDA image
+        if: inputs.variant == 'compat-cuda'
+        uses: docker/build-push-action@v7
+        with:
+          context: packaging/docker
+          file: packaging/docker/Dockerfile.cuda
+          build-args: |
+            LILBEE_VERSION=${{ steps.info.outputs.version }}
+            CUDA_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04
+            CUDA_ASSET=lilbee-compat-linux-x86_64-cu124
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.version }}-compat-cuda
+            ghcr.io/${{ github.repository_owner }}/lilbee:compat-cuda
           push: true

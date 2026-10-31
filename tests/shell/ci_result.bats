@@ -120,7 +120,7 @@ path_group() {
   run path_group flake
   [ "$status" -eq 0 ]
   expected=$(printf '%s\n' flake.nix flake.lock sources.json sources-cuda.json sources-rocm.json \
-    sources-compat.json .github/workflows/ci.yml)
+    sources-compat.json sources-compat-cuda.json .github/workflows/ci.yml)
   [ "$output" = "${expected}" ]
 }
 
