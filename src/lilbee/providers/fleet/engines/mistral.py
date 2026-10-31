@@ -15,6 +15,7 @@ from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import (
+    PORT_SLOT,
     EngineName,
     LaunchRequest,
     RequestProfile,
@@ -33,6 +34,7 @@ _LICENCES = ["MIT"]
 # No pack of this engine is built yet, so no wheel can match this digest.
 _UNBUILT_SHA256 = "0" * 64
 _CPU = "cpu"
+_GGUF_SUFFIX = ".gguf"
 _METAL = "metal"
 _CUDA_DRIVER_FLOOR = (12, 8)
 # The compute capabilities the release publishes a CUDA 12.8 archive for.
@@ -120,7 +122,8 @@ class MistralAdapter:
                 True, "The OS or CPU architecture of this host could not be read.", known=False
             )
         if (host.os, host.arch) in _SUPPORTED_HOSTS:
-            return PASS
+            reason = self._archive(host, host.os).reason
+            return HostGate(True, reason) if reason else PASS
         return HostGate(False, f"mistral.rs is not offered on {host.os.value} {host.arch.value}.")
 
     def pick_build(self, host: HostCaps) -> BuildPick:
@@ -128,16 +131,20 @@ class MistralAdapter:
         gate = self.host_gate(host)
         if not gate.ok or host.os is None:
             return BuildPick(None, gate.reason)
-        if host.os is HostOS.MACOS:
+        return self._archive(host, host.os)
+
+    @staticmethod
+    def _archive(host: HostCaps, os: HostOS) -> BuildPick:
+        if os is HostOS.MACOS:
             return BuildPick(_METAL, "")
-        if host.os is HostOS.WINDOWS:
+        if os is HostOS.WINDOWS:
             return BuildPick(_CPU, "The release has no CUDA archive for Windows.")
         return _linux_pick(host)
 
     def pin_record(self) -> Mapping[str, Any]:
-        from lilbee.providers.fleet import host_caps
+        from lilbee.catalog.runnable import session_host
 
-        backend = self.pick_build(host_caps.detect()).backend or _CPU
+        backend = self.pick_build(session_host()).backend or _CPU
         return {
             "engine": self.name.value,
             "version": _VERSION,
@@ -174,14 +181,19 @@ class MistralAdapter:
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
         """The serve command; the engine places the model itself, so layers and context stay unset.
 
-        A role with devices caps the KV cache at a share of the card. The port is
-        appended by the caller.
+        A role with devices caps the KV cache at a share of the card. The port flag
+        belongs to ``serve``, so it sits before the model subcommand. A GGUF file
+        goes by ``-f`` with its folder as ``-m``; how the engine takes a folder with
+        several quantizations is open for slice 8.
         """
-        argv = [str(request.binary), "serve", "--host", _HOST]
+        argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
         if spec.role is WorkerRole.EMBED:
             argv.append("embedding")
         argv += ["--gpu-memory-utilization", _KV_CARD_SHARE] if request.devices else ["--cpu"]
-        return [*argv, "-m", str(request.model_path)]
+        path = request.model_path
+        if path.suffix.lower() == _GGUF_SUFFIX:
+            return [*argv, "-m", str(path.parent), "-f", path.name]
+        return [*argv, "-m", str(path)]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return DeviceProbe(devices=[], output="")

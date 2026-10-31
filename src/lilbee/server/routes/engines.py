@@ -79,7 +79,7 @@ async def engine_install_route(data: EngineInstallBody) -> EngineInstalledRespon
         raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=service.WHEEL_CLI_ONLY)
     built = await _call(lambda: service.install(data.engine))
     return EngineInstalledResponse(
-        engine=built.engine, version=built.version, backend=built.backend
+        engine=built.engine, version=built.version, backend=built.backend, note=built.note
     )
 
 

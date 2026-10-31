@@ -84,7 +84,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         engine_choice, "host_facts", lambda: HostFacts(system="linux", machine="x86_64")
     )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
-    monkeypatch.setattr(host_caps, "detect", _live_host)
+    monkeypatch.setattr(engine_service, "session_host", _live_host)
     yield
     mcp_server.set_http_mounted(False)
     for name in Config.model_fields:
@@ -253,7 +253,7 @@ def test_the_cli_installs_and_lists_the_engine(good: Path) -> None:
     code, body = _cli("install", ENGINE.value, "--wheel", str(good))
     assert (code, body) == (
         0,
-        {"command": "engine install", "installed": f"{ENGINE} {VERSION} (cpu)"},
+        {"command": "engine install", "installed": f"{ENGINE} {VERSION} (cpu)", "note": ""},
     )
     listing = CliRunner().invoke(cli_app, ["engine", "list"])
     assert f"{ENGINE} {VERSION} (cpu)" in listing.output
@@ -281,7 +281,7 @@ def test_rest_installs_a_pack_from_the_packs_folder(good: Path, root: Path) -> N
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
     assert _rest({"engine": ENGINE.value}) == (
         200,
-        {"engine": ENGINE.value, "version": VERSION, "backend": "cpu"},
+        {"engine": ENGINE.value, "version": VERSION, "backend": "cpu", "note": ""},
     )
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
@@ -310,6 +310,7 @@ def test_mcp_installs_and_refuses(good: Path, root: Path) -> None:
         "engine": ENGINE.value,
         "version": VERSION,
         "backend": "cpu",
+        "note": "",
     }
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
@@ -491,3 +492,28 @@ def test_mcp_refuses_a_wheel_argument_and_installs_nothing(good: Path, root: Pat
         "error": WHEEL_CLI_ONLY
     }
     assert _builds() == []
+
+
+NOTE = "This host has no NVIDIA GPU, so the CPU archive runs."
+
+
+def test_a_note_from_the_host_gate_reaches_every_install_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = engines_root(cfg.models_dir)
+    (root / "packs").mkdir(parents=True)
+    wheel = tmp_path / "noted.whl"
+    monkeypatch.setitem(
+        choice.ADAPTERS,
+        ENGINE,
+        StandIn(make_wheel(wheel), HostGate(True, NOTE)),  # type: ignore[arg-type]
+    )
+    assert engine_service.install(ENGINE.value, wheel).note == NOTE
+    code, body = _cli("install", ENGINE.value, "--wheel", str(wheel))
+    assert (code, body["note"]) == (0, NOTE)
+    text = CliRunner().invoke(cli_app, ["engine", "install", ENGINE.value, "--wheel", str(wheel)])
+    assert NOTE in text.output
+    (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(wheel.read_bytes())
+    assert _rest({"engine": ENGINE.value})[1]["note"] == NOTE
+    assert mcp_server.engine_install_tool(ENGINE.value)["note"] == NOTE
+    assert NOTE in run_engine_command(f"install {ENGINE.value}").text

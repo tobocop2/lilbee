@@ -68,7 +68,8 @@ def _run(verb: str, words: list[str]) -> EngineCommandResult:
     if verb == _INSTALL and len(words) == _INSTALL_ARGS:
         built = engine_service.install(words[0])
         label = f"{built.engine} {built.version} ({built.backend})"
-        return EngineCommandResult(True, msg.ENGINE_INSTALL_DONE.format(build=label))
+        done = msg.ENGINE_INSTALL_DONE.format(build=label)
+        return EngineCommandResult(True, f"{done} {built.note}" if built.note else done)
     return EngineCommandResult(False, USAGE)
 
 

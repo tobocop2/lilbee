@@ -79,15 +79,25 @@ class EngineChoice:
         return self.name
 
 
-def _default(fmt: ModelFormat, host: HostFacts, installed: InstalledEngines) -> EngineName | None:
-    """The first engine in the host's order that is installed and loads *fmt*."""
+def _serves(name: str, role: WorkerRole | None) -> bool:
+    """False only for a shipped adapter that does not serve *role*."""
+    adapter = next((a for n, a in ADAPTERS.items() if n == name), None)
+    return role is None or adapter is None or role in adapter.served_roles
+
+
+def _default(
+    fmt: ModelFormat, host: HostFacts, installed: InstalledEngines, role: WorkerRole | None
+) -> EngineName | None:
+    """The first engine in the host's order that is installed, loads *fmt* and serves *role*."""
     order: list[EngineName] = []
     if Accel.INTEL_NPU in host.accel:
         order.append(EngineName.OPENVINO)
     if host.system == _DARWIN and host.machine == _ARM64:
         order.append(EngineName.MLX)
     order.append(EngineName.LLAMA)
-    return next((e for e in order if e in installed and fmt in installed[e]), None)
+    return next(
+        (e for e in order if e in installed and fmt in installed[e] and _serves(e, role)), None
+    )
 
 
 def _request(preferred: str, override: str | None) -> tuple[str, NoticeKind] | None:
@@ -105,6 +115,21 @@ def _request(preferred: str, override: str | None) -> tuple[str, NoticeKind] | N
 def engines_loading(fmt: str, installed: InstalledEngines) -> list[EngineName]:
     """The installed engines whose adapter loads *fmt*."""
     return [name for name, formats in installed.items() if fmt in formats]
+
+
+def _by_default(
+    fmt: ModelFormat,
+    host: HostFacts,
+    installed: InstalledEngines,
+    role: WorkerRole | None,
+    of_model: str,
+) -> EngineChoice:
+    """The host default with no notice, or no engine and the notice that says why."""
+    default = _default(fmt, host, installed, role)
+    if default is not None:
+        return EngineChoice(default, None, None)
+    text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
+    return EngineChoice(None, NoticeKind.NONE, f"For {role.value}: {text}" if role else text)
 
 
 def choose_engine(
@@ -127,26 +152,29 @@ def choose_engine(
     request = _request(preferred, override)
     of_model = f" of {model}" if model else ""
     if request is None:
-        default = _default(fmt, host, installed)
-        if default is not None:
-            return EngineChoice(default, None, None)
-        text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
-        return EngineChoice(None, NoticeKind.NONE, f"For {role.value}: {text}" if role else text)
+        return _by_default(fmt, host, installed, role, of_model)
     name, kind = request
-    if name in engines_loading(fmt, installed):
+    loads = name in engines_loading(fmt, installed)
+    if loads and _serves(name, role):
         return EngineChoice(EngineName(name), None, None)
     subject = f"Engine {name} for {role.value}" if role else f"Engine {name}"
+    hint = ""
     if name not in installed:
         reason = f"{subject} is not installed."
         hint = f" {LIST_HINT}"
-    else:
+    elif not loads:
         reason = f"{subject} cannot load the {fmt} format{of_model}."
-        hint = ""
         if kind is NoticeKind.OVERRIDE_UNUSABLE:
             return EngineChoice(None, kind, f"{reason} Choose an engine that loads {fmt}.")
-    default = _default(fmt, host, installed)
+    else:
+        reason = f"{subject} does not serve this role."
+    default = _default(fmt, host, installed, role)
     if default is None:
-        return EngineChoice(None, kind, f"{reason} No installed engine loads the {fmt} format.")
+        left = "serves this role" if loads else f"loads the {fmt} format"
+        return EngineChoice(None, kind, f"{reason} No installed engine {left}.")
+    if loads and kind is NoticeKind.PREFERRED_UNUSABLE:
+        # A preference that skips a role leaves it on the next engine without a notice.
+        return EngineChoice(default, None, None)
     return EngineChoice(default, kind, f"{reason} Using {default}.{hint}")
 
 

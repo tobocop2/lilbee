@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from lilbee.app import engine_choice
 from lilbee.app.engine_choice import engine_for_format, host_facts, resolve_engines
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import Config, cfg
@@ -314,3 +315,78 @@ def test_an_adapter_that_never_states_bundled_is_reported_not_hidden(
     monkeypatch.setitem(ADAPTERS, EngineName.MISTRAL, _Forgot())  # type: ignore[arg-type]
     with pytest.raises(AttributeError, match="bundled"):
         installed_engines()
+
+
+GGUF = ModelFormat.GGUF
+BOTH = {EngineName.LLAMA: frozenset({GGUF}), EngineName.MISTRAL: frozenset({GGUF})}
+LINUX = HostFacts(system="linux", machine="x86_64")
+
+
+def _rule(role: WorkerRole, preferred: str = "auto", override: str | None = None) -> Any:
+    return choose_engine(
+        fmt=GGUF,
+        host=LINUX,
+        installed=BOTH,
+        preferred=preferred,
+        override=override,
+        role=role,
+        model="org/m",
+    )
+
+
+def test_a_preferred_engine_that_does_not_serve_rerank_leaves_rerank_on_the_next_engine() -> None:
+    rerank = _rule(WorkerRole.RERANK, preferred="mistral.rs")
+    assert (rerank.name, rerank.notice_kind, rerank.notice) == (EngineName.LLAMA, None, None)
+    for role in (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION):
+        assert _rule(role, preferred="mistral.rs").name is EngineName.MISTRAL
+
+
+def test_a_stored_override_for_an_unserved_role_falls_back_with_a_notice() -> None:
+    rerank = _rule(WorkerRole.RERANK, override="mistral.rs")
+    assert rerank.name is EngineName.LLAMA
+    assert rerank.notice == (
+        "Engine mistral.rs for rerank does not serve this role. Using llama.cpp."
+    )
+    assert _rule(WorkerRole.CHAT, override="mistral.rs").name is EngineName.MISTRAL
+
+
+class _NoChat(FakeAdapter):
+    served_roles = frozenset({WorkerRole.RERANK, WorkerRole.EMBED})
+
+
+def test_a_stand_in_with_no_chat_is_never_chosen_for_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(ADAPTERS, EngineName.TEI, _NoChat())  # type: ignore[arg-type]
+    installed = {**BOTH, EngineName.TEI: frozenset({GGUF})}
+    kwargs: dict[str, Any] = dict(fmt=GGUF, host=LINUX, installed=installed, override=None)
+    chat = choose_engine(**kwargs, preferred="tei", role=WorkerRole.CHAT)
+    embed = choose_engine(**kwargs, preferred="tei", role=WorkerRole.EMBED)
+    assert (chat.name, embed.name) == (EngineName.LLAMA, EngineName.TEI)
+
+
+def test_the_default_skips_an_engine_that_does_not_serve_the_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(ADAPTERS, EngineName.LLAMA, _NoChat())  # type: ignore[arg-type]
+    chat = _rule(WorkerRole.CHAT)
+    assert chat.name is None
+    assert chat.notice == "For chat: No installed engine loads the gguf format of org/m. " + (
+        "Run lilbee engine list to see the installed engines."
+    )
+    assert _rule(WorkerRole.EMBED).name is EngineName.LLAMA
+
+
+def test_the_launch_plan_puts_rerank_on_the_next_engine_after_the_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine_choice, "installed_engines", lambda: BOTH)
+    monkeypatch.setattr(engine_choice, "host_facts", lambda: LINUX)
+    config = Config()
+    config.preferred_engine = EngineSetting.MISTRAL
+    config.reranker_model = "org/rerank/r.gguf"
+    config.engine_choices = '{"org/rerank/r.gguf": "mistral.rs"}'
+    assignment = resolve_engines(config)
+    rerank = assignment.for_role(WorkerRole.RERANK)
+    assert (rerank.adapter, rerank.notice is not None) == (LLAMA, True)
+    assert assignment.for_role(WorkerRole.CHAT).name is EngineName.MISTRAL
+    config.engine_choices = None
+    assert resolve_engines(config).for_role(WorkerRole.RERANK).adapter is LLAMA

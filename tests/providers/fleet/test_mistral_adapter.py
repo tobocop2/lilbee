@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import stat
 import zipfile
 from pathlib import Path
@@ -13,13 +14,14 @@ import httpx
 import pytest
 
 from lilbee.app import engine_service
+from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet import host_caps
+from lilbee.providers.fleet import host_caps, swap_config
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
 from lilbee.providers.fleet.engines import mistral
-from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
+from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
@@ -158,16 +160,37 @@ def test_chat_and_vision_serve_on_the_cpu_without_devices(tmp_path: Path) -> Non
             "serve",
             "--host",
             "127.0.0.1",
+            "--port",
+            PORT_SLOT,
             "--cpu",
             "-m",
             str(tmp_path / "model"),
         ]
 
 
-def test_embed_names_the_embedding_command(tmp_path: Path) -> None:
+def test_embed_names_the_embedding_command_after_the_serve_flags(tmp_path: Path) -> None:
     spec = MISTRAL.role_spec(WorkerRole.EMBED, None, None)
     argv = MISTRAL.launch_argv(spec, request(tmp_path))
-    assert argv[1:6] == ["serve", "--host", "127.0.0.1", "embedding", "--cpu"]
+    assert argv[1:8] == ["serve", "--host", "127.0.0.1", "--port", PORT_SLOT, "embedding", "--cpu"]
+
+
+@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION])
+def test_the_swap_command_puts_the_port_before_the_subcommand(
+    role: WorkerRole, tmp_path: Path
+) -> None:
+    argv = MISTRAL.launch_argv(MISTRAL.role_spec(role, None, None), request(tmp_path))
+    words = shlex.split(swap_config._command_line(argv, 4321))
+    assert words.index("--port") < (words.index("embedding") if "embedding" in words else 99)
+    assert words[words.index("--port") + 1] == "4321"
+    assert words.count("--port") == 1
+    assert words[:2] == [str(tmp_path / "mistralrs"), "serve"]
+
+
+def test_a_gguf_goes_by_its_file_name_with_the_folder_as_the_model(tmp_path: Path) -> None:
+    model = tmp_path / "models" / "m-Q4_K_M.gguf"
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, model_path=model))
+    assert argv[-4:] == ["-m", str(model.parent), "-f", "m-Q4_K_M.gguf"]
 
 
 def test_devices_cap_the_kv_cache_instead_of_the_cpu_flag(tmp_path: Path) -> None:
@@ -271,7 +294,7 @@ def test_the_engine_counts_as_installed_only_with_a_record_and_finds_its_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
-    monkeypatch.setattr(host_caps, "detect", lambda: caps("Linux", "x86_64"))
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
     assert EngineName.MISTRAL not in installed_engines()
     with pytest.raises(ProviderError, match=r"engine install mistral\.rs"):
         MISTRAL.binary()
@@ -286,9 +309,45 @@ def test_the_engine_counts_as_installed_only_with_a_record_and_finds_its_tool(
 
 
 def test_the_unbuilt_pin_matches_no_wheel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(host_caps, "detect", lambda: caps("Linux", "x86_64"))
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
     sha = make_pack(tmp_path / "pack.whl")
     assert MISTRAL.pin_record()["sha256"] != sha
+
+
+@pytest.mark.parametrize(
+    ("host", "reason"),
+    [
+        (lambda: caps("Windows", "AMD64"), "The release has no CUDA archive for Windows."),
+        (
+            lambda: caps("Linux", "x86_64", gpus=[L4], cuda=(12, 4)),
+            "this driver offers CUDA 12.4, so the CPU archive runs.",
+        ),
+        (lambda: caps("Linux", "x86_64"), "so the CPU archive runs."),
+    ],
+)
+def test_the_reason_for_a_cpu_archive_reaches_the_user_through_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: Any, reason: str
+) -> None:
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    monkeypatch.setattr(engine_service, "session_host", host)
+    monkeypatch.setattr(runnable, "session_host", host)
+    sha = make_pack(tmp_path / "pack.whl")
+    monkeypatch.setattr(mistral, "_UNBUILT_SHA256", sha)
+    built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
+    assert (built.backend, reason in built.note) == ("cpu", True)
+
+
+def test_a_host_with_a_matching_card_adds_no_note_to_the_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    host = lambda: caps("Linux", "x86_64", gpus=[L4])  # noqa: E731
+    monkeypatch.setattr(engine_service, "session_host", host)
+    monkeypatch.setattr(runnable, "session_host", host)
+    sha = make_pack(tmp_path / "pack.whl")
+    monkeypatch.setattr(mistral, "_UNBUILT_SHA256", sha)
+    built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
+    assert (built.backend, built.note) == ("cuda128-sm89", "")
 
 
 def test_rerank_is_refused_for_the_engine_before_its_install_is_read(

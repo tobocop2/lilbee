@@ -622,3 +622,12 @@ def test_a_different_notice_for_a_role_is_logged_again(
     assert len(messages) == 2
     assert messages[0] == FALLBACK
     assert messages[1].startswith(UNREADABLE_NOTICE)
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_every_surface_refuses_an_engine_that_does_not_serve_the_role(surface: str) -> None:
+    cfg.reranker_model = GGUF_REF
+    expected = _service_refusal("rerank", GGUF_REF, "mistral.rs")
+    assert expected.startswith("Engine mistral.rs does not serve rerank.")
+    assert _refusal(surface, "rerank", GGUF_REF, "mistral.rs") == expected
+    assert _stored("engine_choices") is None
