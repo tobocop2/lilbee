@@ -61,6 +61,7 @@ from tests._crafted_titles import (
 )
 from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
+from tests._gguf_fixture import GGUF_MAGIC
 from tests._held import held_kinds, hold_failed
 from tests._mock_effects import repeat_last
 from tests.conftest import (
@@ -7546,7 +7547,7 @@ class TestSelfCheckHelpers:
         from lilbee.providers.roles import WorkerRole
 
         model = tmp_path / "embed.gguf"
-        model.write_bytes(b"x" * 1024)
+        model.write_bytes(GGUF_MAGIC + b"x" * 1024)
         swap = mock.MagicMock()
         swap.endpoint.return_value = "http://127.0.0.1:5800"
         monkeypatch.setattr(
@@ -7889,7 +7890,7 @@ def test_self_check_applies_expert_offload_to_embed_like_the_fleet(monkeypatch, 
     monkeypatch.setattr(real_cfg, "n_cpu_moe", None, raising=False)
 
     model = tmp_path / "embed.gguf"
-    model.write_bytes(b"")
+    model.write_bytes(GGUF_MAGIC)
     with contextlib.suppress(Exception):  # spawning the server is not under test
         setup_mod._self_check_server(WorkerRole.EMBED, model)
 

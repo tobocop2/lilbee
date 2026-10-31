@@ -25,6 +25,7 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import EngineBackend, RerankMode, WorkerRole
+from tests._gguf_fixture import GGUF_MAGIC
 
 _GB = 1024**3
 
@@ -1702,7 +1703,7 @@ class TestBuildFleetWiring:
 
     def _launch_rerank(self, tmp_path, monkeypatch, arch: str | None):
         model = tmp_path / "r.gguf"
-        model.write_bytes(b"x" * 1000)
+        model.write_bytes(GGUF_MAGIC + b"x" * 1000)
         meta = {"architecture": arch} if arch is not None else {}
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr(
@@ -1754,7 +1755,7 @@ class TestBuildFleetWiring:
 
     def test_estimate_role_rerank_threads_llm_mode_to_slots(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "r.gguf"
-        model.write_bytes(b"x" * 1000)
+        model.write_bytes(GGUF_MAGIC + b"x" * 1000)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
@@ -3571,7 +3572,7 @@ def test_estimate_offload_matches_what_the_launch_offloads(monkeypatch, tmp_path
     # The estimate and the launch must move the same tensors or the planner's
     # budget describes a configuration that never runs.
     model = tmp_path / "moe.gguf"
-    model.write_bytes(b"x" * 64)
+    model.write_bytes(GGUF_MAGIC + b"x" * 64)
     monkeypatch.setattr(
         "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
         lambda _p: {"expert_count": "128"},
