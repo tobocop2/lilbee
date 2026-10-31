@@ -120,7 +120,9 @@ def _screen_text(app) -> str:
 
 
 class TestRunPresetCommand:
-    @pytest.mark.parametrize("args", ["", "frob", "list extra", "add", "add x", "'open", "remove", "edit"])
+    @pytest.mark.parametrize(
+        "args", ["", "frob", "list extra", "add", "add x", "'open", "remove", "edit"]
+    )
     def test_a_malformed_command_gets_the_usage_text(self, args):
         result = run_preset_command(args)
         assert (result.ok, result.text) == (False, msg.PRESET_USAGE)

@@ -158,9 +158,7 @@ CASES: tuple[Case, ...] = (
         ok=False,
         stored=[OMLX_STORED],
     ),
-    Case(
-        "edit-no-field", "edit", (OMLX_SEED,), {"name": "omlx"}, ok=False, stored=[OMLX_STORED]
-    ),
+    Case("edit-no-field", "edit", (OMLX_SEED,), {"name": "omlx"}, ok=False, stored=[OMLX_STORED]),
     Case(
         "edit-missing",
         "edit",

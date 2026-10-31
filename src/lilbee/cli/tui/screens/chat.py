@@ -1436,6 +1436,7 @@ class ChatScreen(Screen[None]):
         if key_typed(args):
             self.notify(msg.PRESET_KEY_IN_DIALOG, severity="error")
             return
+
         def _notify_dialog_result(notice: str | None) -> None:
             if notice is not None:
                 self.notify(notice)
