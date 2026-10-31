@@ -21,18 +21,12 @@ from lilbee.providers.fleet.adapters import (
     FLAG_FIT_TARGET,
     FLAG_KV_UNIFIED_PER_SLOT,
     LLM_RERANK_CONCURRENCY,
-    ROLE_SPECS,
-    RoleServerSpec,
-    build_server_argv,
-    embed_spec,
-    rerank_spec,
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.binary import (
     engine_binary_identity,
     engine_build_id,
     llama_server_runtime_env,
-    resolve_llama_server,
 )
 from lilbee.providers.fleet.devices import (
     MIB,
@@ -42,6 +36,7 @@ from lilbee.providers.fleet.devices import (
     probe_devices,
     visible_env,
 )
+from lilbee.providers.fleet.engines import LLAMA, LaunchRequest
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import (
     InstancePlan,
@@ -522,7 +517,7 @@ def _engine_fits_chat_offload(model_path: Path, binary: Path | None) -> bool:
 def _engine_binary() -> Path | None:
     """The llama-server lilbee launches, or None on a host without one."""
     try:
-        return resolve_llama_server()
+        return LLAMA.binary()
     except ProviderError:
         return None
 
@@ -634,18 +629,6 @@ def _role_rerank_mode(role: WorkerRole, meta: dict[str, str] | None) -> RerankMo
     return _rerank_mode_for(meta) if role is WorkerRole.RERANK else None
 
 
-def _server_spec(
-    role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None
-) -> RoleServerSpec:
-    """The llama-server spec for a launch: rerank mode, decoder-aware embed pooling,
-    or the role default. EMBED forces ``--pooling last`` for decoder-only archs."""
-    if rerank_mode is not None:
-        return rerank_spec(rerank_mode)
-    if role is WorkerRole.EMBED:
-        return embed_spec(meta)
-    return ROLE_SPECS[role]
-
-
 def _pooled_batch_size(role: WorkerRole, rerank_mode: RerankMode | None, ctx: int) -> int | None:
     """The ``--batch-size``/``--ubatch-size`` the launch raises for pooled
     embed/cross-encoder rerank (the full context), or ``None`` for other roles."""
@@ -677,7 +660,7 @@ def probed_devices() -> tuple[FleetDevice, ...]:
     if probe is not None:
         return probe.devices
     try:
-        return tuple(_read_device_cache.get(resolve_llama_server()).devices)
+        return tuple(_read_device_cache.get(LLAMA.binary()).devices)
     except (ProviderError, OSError):
         return ()
 
@@ -698,7 +681,7 @@ def engine_backend() -> EngineBackend:
     if probe is not None:
         return probe.backend
     try:
-        return _read_device_cache.get(resolve_llama_server()).backend
+        return _read_device_cache.get(LLAMA.binary()).backend
     except (ProviderError, OSError):
         return EngineBackend.UNKNOWN
 
@@ -1462,7 +1445,7 @@ def placeable_total_vram() -> int:
     from lilbee.providers.base import ProviderError
 
     try:
-        return sum(d.total_bytes for d in resolve_devices(resolve_llama_server()))
+        return sum(d.total_bytes for d in resolve_devices(LLAMA.binary()))
     except (ProviderError, OSError):
         return 0
 
@@ -1723,7 +1706,7 @@ def _launch_for(
             device=placed_device,
         )
     )
-    spec = _server_spec(plan.role, rerank_mode, meta)
+    spec = LLAMA.role_spec(plan.role, rerank_mode, meta)
     # Where the engine's fit can move chat layers off the card, the readback
     # compares the host memory it reports with this to say so.
     fit_moves_chat = (
@@ -1732,9 +1715,8 @@ def _launch_for(
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
     # is generative and uses the default batching plus flash attention.
     cross_encoder_pooled = plan.role in _EMBED_ROLES and not is_llm_rerank
-    argv = build_server_argv(
+    request = LaunchRequest(
         binary=binary,
-        spec=spec,
         model_path=model_path,
         devices=plan.devices,
         n_gpu_layers=_role_gpu_layers(plan.role),
@@ -1757,7 +1739,7 @@ def _launch_for(
     )
     return InstanceLaunch(
         role=plan.role,
-        argv=argv,
+        argv=LLAMA.launch_argv(spec, request),
         env_overrides={**visible_env(chosen), **llama_server_runtime_env()},
         model=model_ref,
         # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
@@ -1797,7 +1779,7 @@ def build_single_role_launch(role: WorkerRole, model_path: Path) -> InstanceLaun
     Placement is the planner's, on the devices the plan snapshot holds, so the
     check runs on the card the role would really land on.
     """
-    binary = resolve_llama_server()
+    binary = LLAMA.binary()
     with _one_engine_per_pass():
         devices = _plan_devices(binary)
         by_index = {d.index: d for d in devices}
@@ -2309,7 +2291,7 @@ def _probe_engine_devices() -> DeviceReading:
     rather than silently degrading. Device enumeration reads no residency, so it is
     safe to run while an incumbent engine is still up.
     """
-    binary = resolve_llama_server()
+    binary = LLAMA.binary()
     reading = _read_devices(binary)
     if reading.devices:
         return reading
@@ -2367,7 +2349,7 @@ def _engine_identity() -> str:
     before the engine arrived never reads as one taken after.
     """
     try:
-        return engine_binary_identity(resolve_llama_server())
+        return engine_binary_identity(LLAMA.binary())
     except (ProviderError, OSError):
         return _NO_ENGINE_BINARY
 
@@ -2613,7 +2595,7 @@ def _device_sizing_budget(devices: Sequence[FleetDevice]) -> int:
 def _live_sizing_devices() -> list[FleetDevice]:
     """Devices to size against with no plan snapshot; empty when none can be read."""
     try:
-        return _read_device_cache.get(resolve_llama_server()).devices
+        return _read_device_cache.get(LLAMA.binary()).devices
     except (ProviderError, OSError):
         return []
 
@@ -2921,7 +2903,7 @@ def resolve_placement_plan(
     than the plan snapshot, so borrowing the snapshot's backend would pair a live
     device list with a backend read at fleet build.
     """
-    binary = resolve_llama_server()
+    binary = LLAMA.binary()
     reading = _read_device_cache.get(binary)
     devices = reading.devices
     unified_budget = _unified_memory_budget(devices)
@@ -3155,7 +3137,7 @@ def plan_all_launches() -> FleetPlan:
     Writes no environment: the probe child carries the Vulkan loader safety and any
     ``cfg.gpu_devices`` pin in its own env, and the plan reads the pin from there.
     """
-    binary = resolve_llama_server()
+    binary = LLAMA.binary()
     with _one_engine_per_pass():
         devices = _plan_devices(binary)
         by_index = {d.index: d for d in devices}

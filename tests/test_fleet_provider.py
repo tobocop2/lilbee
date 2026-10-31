@@ -1488,7 +1488,10 @@ def ocr_gated_engine(monkeypatch, tmp_path: Path):
     ocr_client.chat_abortable.return_value = "ocr text"
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: ocr_client)
     monkeypatch.setattr(planning_mod, "plan_all_launches", _real_plan_all_launches)
-    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+        lambda: Path("/bin/llama-server"),
+    )
     monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary: [])
     monkeypatch.setattr(planning_mod, "plan_launches", _plan)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")

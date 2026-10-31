@@ -235,7 +235,7 @@ def test_planning_on_a_worker_thread_writes_no_environment(
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [tmp_path / "wheel"])
     monkeypatch.setattr(gpu_select, "disable_conflicting_vulkan_icds", lambda: "icd.json")
     binary = tmp_path / "llama-server"
-    monkeypatch.setattr(planning, "resolve_llama_server", lambda: binary)
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: binary)
     monkeypatch.setattr(planning, "_plan_devices", lambda _binary: [])
     monkeypatch.setattr(planning, "_launched_roles", lambda: ())
     monkeypatch.setattr(planning, "plan_launches", lambda *_a, **_k: "plan")

@@ -38,7 +38,9 @@ def test_non_replicated_roles_always_run_one(monkeypatch) -> None:
 
 def test_gpu_device_count_returns_probe_length(monkeypatch) -> None:
     gpu_device_count.cache_clear()
-    monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_llama_server", lambda: object())
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: object()
+    )
     monkeypatch.setattr(
         "lilbee.providers.fleet.planning.resolve_devices", lambda _b: [object(), object(), object()]
     )
@@ -47,7 +49,9 @@ def test_gpu_device_count_returns_probe_length(monkeypatch) -> None:
 
 def test_gpu_device_count_floors_at_one_when_no_devices(monkeypatch) -> None:
     gpu_device_count.cache_clear()
-    monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_llama_server", lambda: object())
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: object()
+    )
     monkeypatch.setattr("lilbee.providers.fleet.planning.resolve_devices", lambda _b: [])
     assert gpu_device_count() == 1
 
@@ -62,7 +66,7 @@ def test_gpu_device_count_falls_back_when_engine_missing(monkeypatch) -> None:
     def _raise() -> object:
         raise ProviderError("llama-server binary not found")
 
-    monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_llama_server", _raise)
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _raise)
     assert gpu_device_count() == 1
     gpu_device_count.cache_clear()
 
@@ -75,7 +79,9 @@ def test_gpu_device_count_is_cached(monkeypatch) -> None:
         calls["n"] += 1
         return [object(), object()]
 
-    monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_llama_server", lambda: object())
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: object()
+    )
     monkeypatch.setattr("lilbee.providers.fleet.planning.resolve_devices", _probe)
     assert gpu_device_count() == 2
     assert gpu_device_count() == 2

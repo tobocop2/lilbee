@@ -155,7 +155,9 @@ class TestABootTimeEmptyAnswerIsRetried:
             devices = list(results[min(len(calls) - 1, len(results) - 1)])
             return planning_mod.DeviceReading(devices, EngineBackend.CUDA)
 
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         monkeypatch.setattr(planning_mod, "_read_devices", _resolve)
         monkeypatch.setattr(planning_mod, "_PROBE_RETRY_DELAY_S", 0.0)
         return calls

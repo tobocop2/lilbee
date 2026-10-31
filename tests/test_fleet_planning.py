@@ -19,6 +19,7 @@ from lilbee.providers.fleet.devices import (
     FleetDevice,
     visible_env,
 )
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.fleet.vram import GgufVramEstimate
@@ -856,7 +857,10 @@ class TestBuildFleetWiring:
     def test_plan_all_launches_plans_vision_only_when_ocr_can_use_it(
         self, monkeypatch, ocr_on: bool, granted: bool, planned: bool
     ) -> None:
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary: [])
         planned_roles: list[tuple[WorkerRole, ...] | None] = []
 
@@ -1645,7 +1649,10 @@ class TestBuildFleetWiring:
 
     def test_plan_all_launches_resolves_devices_and_plans(self, monkeypatch) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         monkeypatch.setattr(
             planning_mod,
             "probe_devices",
@@ -1676,7 +1683,10 @@ class TestBuildFleetWiring:
         # The plan surfaces a configured-but-missing chat model so the provider's
         # warm path can fail with a named reason instead of spinning.
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         monkeypatch.setattr(
             planning_mod,
             "probe_devices",
@@ -1715,7 +1725,10 @@ class TestBuildFleetWiring:
         from lilbee.providers.fleet.launch import InstanceLaunch
 
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         monkeypatch.setattr(
             planning_mod,
             "probe_devices",
@@ -1760,7 +1773,10 @@ class TestBuildFleetWiring:
         from lilbee.providers.fleet.launch import InstanceLaunch
 
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         monkeypatch.setattr(
             planning_mod,
             "probe_devices",
@@ -1799,7 +1815,10 @@ class TestBuildFleetWiring:
         import logging
 
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         monkeypatch.setattr(
             planning_mod,
             "probe_devices",
@@ -1839,7 +1858,10 @@ class TestBuildFleetWiring:
         # Embed and rerank warm before chat on card 0 and vision loads later: the
         # split headroom holds all three, chat's fit target only vision.
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 24 * _GB)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         monkeypatch.setattr(
             planning_mod,
             "probe_devices",
@@ -1901,7 +1923,10 @@ class TestBuildFleetWiring:
         assert client.mock_calls == []
 
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         # The engine could not answer at all, which is the only case the fallback
         # is for; a clean run listing nothing is a verdict and gets believed.
         monkeypatch.setattr(
@@ -2380,36 +2405,34 @@ class TestWeightsBytes:
         assert launch.weights_bytes == 2048  # both shards, not just the served file
 
 
-def test_server_spec_embed_decoder_forces_last_pooling() -> None:
-    spec = planning_mod._server_spec(WorkerRole.EMBED, None, {"architecture": "qwen3"})
+def test_llama_role_spec_embed_decoder_forces_last_pooling() -> None:
+    spec = LLAMA.role_spec(WorkerRole.EMBED, None, {"architecture": "qwen3"})
     assert spec.extra_args == ("--embeddings", "--pooling", "last")
 
 
-def test_server_spec_embed_honors_declared_pooling() -> None:
-    spec = planning_mod._server_spec(
-        WorkerRole.EMBED, None, {"architecture": "qwen3", "pooling_type": "1"}
-    )
+def test_llama_role_spec_embed_honors_declared_pooling() -> None:
+    spec = LLAMA.role_spec(WorkerRole.EMBED, None, {"architecture": "qwen3", "pooling_type": "1"})
     assert spec.extra_args == ("--embeddings", "--pooling", "mean")
 
 
-def test_server_spec_embed_without_meta_is_plain() -> None:
+def test_llama_role_spec_embed_without_meta_is_plain() -> None:
     from lilbee.providers.fleet.adapters import ROLE_SPECS
 
-    spec = planning_mod._server_spec(WorkerRole.EMBED, None, None)
+    spec = LLAMA.role_spec(WorkerRole.EMBED, None, None)
     assert spec is ROLE_SPECS[WorkerRole.EMBED]
 
 
-def test_server_spec_rerank_uses_rerank_spec() -> None:
+def test_llama_role_spec_rerank_uses_rerank_spec() -> None:
     from lilbee.providers.fleet.adapters import ROLE_SPECS
 
-    spec = planning_mod._server_spec(WorkerRole.RERANK, RerankMode.CROSS_ENCODER, None)
+    spec = LLAMA.role_spec(WorkerRole.RERANK, RerankMode.CROSS_ENCODER, None)
     assert spec is ROLE_SPECS[WorkerRole.RERANK]
 
 
-def test_server_spec_other_role_uses_role_default() -> None:
+def test_llama_role_spec_other_role_uses_role_default() -> None:
     from lilbee.providers.fleet.adapters import ROLE_SPECS
 
-    spec = planning_mod._server_spec(WorkerRole.CHAT, None, None)
+    spec = LLAMA.role_spec(WorkerRole.CHAT, None, None)
     assert spec is ROLE_SPECS[WorkerRole.CHAT]
 
 
@@ -2451,7 +2474,9 @@ class TestPlanProbe:
         monkeypatch.setattr(planning_mod, "resolve_devices", lambda _b: [card])
 
     def _capture(self, monkeypatch, *, total_vram: int, free_vram: int, free_ram: int) -> None:
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         # The capture takes devices and the all-refused fact from one probe run.
         monkeypatch.setattr(
             planning_mod,
@@ -2481,7 +2506,9 @@ class TestPlanProbe:
         assert planning_mod._plan_free_system_memory() == 2 * _GB
 
     def test_uncaptured_readers_pass_through_live_state(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         self._live_card(monkeypatch, 8 * _GB, 7 * _GB)
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 5 * _GB)
         assert planning_mod.plan_sizing_budget() == int(8 * _GB * cfg.gpu_memory_fraction)
@@ -2490,7 +2517,9 @@ class TestPlanProbe:
     def test_an_unreadable_probe_sizes_against_system_memory(self, monkeypatch) -> None:
         # No snapshot and no engine to ask: the fleet runs on the CPU, where system
         # memory is the honest budget rather than a stale guess at a card.
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
 
         def _no_engine(_binary):
             raise OSError("no engine")
@@ -2504,7 +2533,9 @@ class TestPlanSizingIsUnified:
     """Which memory model a single-device ctx fit charges its estimate against."""
 
     def _live(self, monkeypatch, devices) -> None:
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b: _reading(devices))
 
     def test_a_dedicated_card_is_charged_its_vram(self, monkeypatch) -> None:
@@ -2538,7 +2569,9 @@ class TestPlanSizingIsUnified:
             "_read_devices",
             lambda _b: _reading([FleetDevice("Metal", 0, "M", 24 * _GB, 24 * _GB, unified=True)]),
         )
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 32 * _GB)
         planning_mod.capture_plan_probe()
         try:
@@ -2601,7 +2634,10 @@ class TestChatWindowLeftToTheEngineFit:
         monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda: False)
         monkeypatch.setattr(planning_mod, "_role_expert_offload", lambda _p: ())
         monkeypatch.setattr(cfg, "n_gpu_layers", None)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         self.advertised: list[str] = []
 
         def _advertises(_binary, flag: str) -> bool:
@@ -2644,7 +2680,7 @@ class TestChatWindowLeftToTheEngineFit:
         def _missing() -> Path:
             raise ProviderError("llama-server binary not found.")
 
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", _missing)
+        monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _missing)
         fit, _probed = self._fit(512)
         monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
         assert self._window() == 512
@@ -2716,7 +2752,9 @@ class TestPlacementChargesAgainstFreeMemory:
     @staticmethod
     def _snapshot(monkeypatch, devices: list[FleetDevice]) -> None:
         """Capture the clean-box snapshot, where free bytes exclude only other tenants."""
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         monkeypatch.setattr(planning_mod, "_read_devices", lambda _b: _reading(devices))
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 64 * _GB)
         planning_mod.capture_plan_probe()
@@ -2885,7 +2923,9 @@ class TestSizingBudgetComesFromTheDevice:
     @staticmethod
     def _capture(monkeypatch, devices: list[FleetDevice], *, host_ram: int) -> None:
         """Snapshot *devices* on a host with *host_ram* bytes of system RAM."""
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         monkeypatch.setattr(planning_mod, "_read_devices", lambda _b: _reading(devices))
         monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: host_ram)
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: host_ram)
@@ -3450,7 +3490,7 @@ def test_placeable_total_vram_zero_when_unprobeable(monkeypatch) -> None:
     def _boom(*_a, **_k):
         raise ProviderError("no binary", provider="llama-server")
 
-    monkeypatch.setattr(planning_mod, "resolve_llama_server", _boom)
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _boom)
     assert planning_mod.placeable_total_vram() == 0
 
 
@@ -3814,7 +3854,9 @@ def test_capturing_the_plan_snapshot_probes_the_engine_once(monkeypatch) -> None
             spoke_protocol=True,
         )
 
-    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+    )
     monkeypatch.setattr(
         "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
     )
@@ -3842,7 +3884,9 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
 
     def test_the_read_cache_answers_when_no_snapshot_exists(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         monkeypatch.setattr(
             planning_mod._read_device_cache,
             "get",
@@ -3858,14 +3902,18 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
             raise ProviderError("probe wedged")
 
         monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         monkeypatch.setattr(planning_mod._read_device_cache, "get", _boom)
 
         assert planning_mod._fleet_backend() is None
 
     def test_a_host_with_no_devices_yields_no_backend(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b: _reading([]))
 
         assert planning_mod._fleet_backend() is None
@@ -4174,7 +4222,10 @@ class TestProbedDevices:
     def test_falls_back_to_the_read_cache(self, monkeypatch) -> None:
         card = _card(8 * _GB)
         monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
         monkeypatch.setattr(
             planning_mod._read_device_cache, "get", lambda _binary: _reading([card])
         )
@@ -4187,7 +4238,7 @@ class TestProbedDevices:
             raise ProviderError("no engine binary", provider="llama-server")
 
         monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", _boom)
+        monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _boom)
         assert planning_mod.probed_devices() == ()
 
 
@@ -4257,7 +4308,9 @@ class TestTheOneEngineBackendAnswer:
         whose probe failed a CPU box, which is what a diagnostics export is for.
         """
         monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
 
         monkeypatch.setattr(
             planning_mod._read_device_cache, "get", lambda _b: _reading([], EngineBackend.CPU)
@@ -4305,7 +4358,9 @@ class TestTheOneEngineBackendAnswer:
             raise ProviderError("probe wedged")
 
         monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
-        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
+        )
         monkeypatch.setattr(planning_mod._read_device_cache, "get", _boom)
 
         assert planning_mod.engine_backend() is EngineBackend.UNKNOWN
