@@ -50,6 +50,7 @@ from lilbee.data.store import CitationRecord, SourceSummary
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.availability import provider_sdk_available as _real_provider_sdk_available
 from lilbee.providers.fleet.binary import EngineTool
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.runtime.lock import _no_sync_running
 
 # The literal name, not read from the code under test: a wrong name must fail the tests.
@@ -150,12 +151,12 @@ def _download_without_a_child_process(request, monkeypatch):
     from lilbee.catalog import download_process
     from lilbee.runtime.cancellation import TaskCancelledError
 
-    def _in_process(entry, models_dir, token, *, on_progress, cancel):
+    def _in_process(entry, models_dir, token, engine, *, on_progress, cancel):
         from lilbee.catalog.download import fetch_model_files
 
         if cancel.is_set():
             raise TaskCancelledError
-        return fetch_model_files(entry, models_dir, token, on_progress=on_progress)
+        return fetch_model_files(entry, models_dir, token, on_progress=on_progress, engine=engine)
 
     monkeypatch.setattr(download_process, "download_in_subprocess", _in_process)
 
@@ -228,11 +229,14 @@ def _seal_provider_sdk_distribution(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fresh_engine_help():
     """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
+    from lilbee.providers.fleet.adapters import _warn_once
     from lilbee.providers.fleet.binary import engine_help
 
     engine_help.cache_clear()
+    _warn_once.cache_clear()
     yield
     engine_help.cache_clear()
+    _warn_once.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -712,6 +716,8 @@ def _default_store_mock():
     # No index identity persisted unless a test writes one.
     store.get_meta.return_value = None
     store.index_mismatch.return_value = None
+    store.embedding_mismatch.return_value = None
+    store.canary_mismatch.return_value = None
     store.upgrade_progress.return_value = None
     return store
 
@@ -866,6 +872,7 @@ def make_mock_services(**overrides):
     from lilbee.retrieval.query import Searcher
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
+    engine = overrides.pop("engine", None) or LLAMA
     provider = overrides.pop("provider", None) or _default_provider_mock()
     store = overrides.pop("store", None) or _default_store_mock()
     embedder = overrides.pop("embedder", None) or _default_embedder_mock()
@@ -876,7 +883,7 @@ def make_mock_services(**overrides):
         cfg, provider, store, embedder, reranker, concepts
     )
     registry = overrides.pop("registry", None) or MagicMock()
-    hf_client = overrides.pop("hf_client", None) or HfClient()
+    hf_client = overrides.pop("hf_client", None) or HfClient(engine)
     ingest_lock_registry = overrides.pop("ingest_lock_registry", None) or IngestLockRegistry()
     model_manager = overrides.pop("model_manager", None) or MagicMock()
     crawler_semaphore = overrides.pop("crawler_semaphore", None)
@@ -892,6 +899,7 @@ def make_mock_services(**overrides):
         clusterer=clusterer,
         searcher=searcher,
         registry=registry,
+        engine=engine,
         hf_client=hf_client,
         ingest_lock_registry=ingest_lock_registry,
         model_manager=model_manager,

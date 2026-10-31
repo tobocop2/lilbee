@@ -21,6 +21,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import cuda_runtime, gpu_env, gpu_select, planning
+from lilbee.providers.fleet.engines import LLAMA
 
 SOURCE = Path(planning.__file__).parents[2]
 
@@ -235,16 +236,16 @@ def test_planning_on_a_worker_thread_writes_no_environment(
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [tmp_path / "wheel"])
     monkeypatch.setattr(gpu_select, "disable_conflicting_vulkan_icds", lambda: "icd.json")
     binary = tmp_path / "llama-server"
-    monkeypatch.setattr(planning, "resolve_llama_server", lambda: binary)
-    monkeypatch.setattr(planning, "_plan_devices", lambda _binary: [])
-    monkeypatch.setattr(planning, "_launched_roles", lambda: ())
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: binary)
+    monkeypatch.setattr(planning, "_plan_devices", lambda _binary, engine: [])
+    monkeypatch.setattr(planning, "_launched_roles", lambda engine: ())
     monkeypatch.setattr(planning, "plan_launches", lambda *_a, **_k: "plan")
 
     recording = _RecordingEnviron(dict(os.environ))
     monkeypatch.setattr(os, "environ", recording)
     result: list[object] = []
     thread = threading.Thread(
-        target=lambda: result.append(planning.plan_all_launches()), name="fleet-warm-up"
+        target=lambda: result.append(planning.plan_all_launches(engine=LLAMA)), name="fleet-warm-up"
     )
     thread.start()
     thread.join(timeout=30)

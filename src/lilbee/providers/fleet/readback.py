@@ -437,10 +437,6 @@ def _report_per_device(
 # the readback mode off its presence.
 MEMORY_FLAG = "--memory"
 
-# The flag as --help advertises it. The lookahead keeps historic longer flags
-# (--memory-f32) from reading as support for the endpoint.
-_HELP_MEMORY_RE = re.compile(r"--memory(?!\S)")
-
 
 def supports_memory_readback(binary: Path) -> bool:
     """Whether *binary* serves ``GET /memory`` when launched with ``--memory``.
@@ -450,7 +446,7 @@ def supports_memory_readback(binary: Path) -> bool:
     carry it on advertisement it did not see. A binary that cannot run or answer
     reads as unsupported, which degrades to the log path rather than a failed launch.
     """
-    return bool(_HELP_MEMORY_RE.search(engine_help(binary)))
+    return engine_advertises(binary, MEMORY_FLAG)
 
 
 def engine_advertises(binary: Path, flag: str) -> bool:

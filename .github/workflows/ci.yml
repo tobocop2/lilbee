@@ -89,6 +89,9 @@ jobs:
       - name: Lint
         run: make lint
 
+      - name: Licence check
+        run: make license-check
+
       - name: Format check
         run: make format-check
 
@@ -118,6 +121,16 @@ jobs:
         with:
           node-version: '22'
 
+      # The licence check tests run the real checker through uv.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
       - name: Install actionlint and bats
         env:
           ACTIONLINT_VERSION: "1.7.12"
@@ -132,7 +145,7 @@ jobs:
       # make lint-shell skips a missing tool. Assert them here so a runner image
       # that drops one fails loudly.
       - name: Every tool the shell gate needs is present
-        run: shellcheck --version && actionlint --version && bats --version && yq --version
+        run: shellcheck --version && actionlint --version && bats --version && uv --version && yq --version
 
       - run: make lint-shell
       - run: make test-shell

@@ -20,6 +20,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg_module
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines import LLAMA
 from tests._async_wait import wait_for_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
@@ -381,7 +382,7 @@ class TestDownloadProgressSlow:
 
             def download_in_thread():
                 try:
-                    download_model(entry, on_progress=on_progress)
+                    download_model(entry, on_progress=on_progress, engine=LLAMA)
                 except Exception as e:
                     if not download_done[0]:
                         download_error[0] = e

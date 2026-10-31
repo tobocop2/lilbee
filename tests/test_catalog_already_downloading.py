@@ -154,7 +154,7 @@ async def test_the_disk_check_asks_the_hub_what_the_file_really_costs(
 
         asked: list[int] = []
         monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.resolve_filename", lambda _m: "acme-Q4_K_M.gguf"
+            "lilbee.cli.tui.screens.catalog.resolve_filename", lambda _m, engine: "acme-Q4_K_M.gguf"
         )
         monkeypatch.setattr(
             "lilbee.cli.tui.screens.catalog.download_bytes", lambda _repo, _name: 9_000_000_000
@@ -183,7 +183,7 @@ async def test_an_unresolvable_file_leaves_the_rows_own_figure(
         await pilot.pause()
         pilot.app.task_bar.queue = TaskQueue()
 
-        def _unreachable(_model_arg: object) -> str:
+        def _unreachable(_model_arg: object, engine) -> str:
             raise RuntimeError("offline")
 
         asked: list[int] = []

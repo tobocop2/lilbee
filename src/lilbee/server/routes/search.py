@@ -16,9 +16,10 @@ from litestar.params import FromQuery, QueryParameter
 from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
-from lilbee.data.store import EmbeddingModelMismatchError
+from lilbee.data.store import EmbeddingEngineChangedError, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
+from lilbee.runtime.progress import SseErrorCode
 from lilbee.server import handlers
 from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.concurrency import (
@@ -57,8 +58,13 @@ def _embedding_mismatch_http(exc: EmbeddingModelMismatchError) -> HTTPException:
 
     The client renders its own confirm-to-adopt prompt from ``extra`` and, on
     confirm, sets the embedder via ``PUT /api/models/embedding`` then retries.
-    The server never switches embedder unprompted.
+    The server never switches embedder unprompted. An engine change carries the
+    ``embedding_mismatch`` code and no adopt facts.
     """
+    if isinstance(exc, EmbeddingEngineChangedError):
+        return HTTPException(
+            status_code=409, detail=str(exc), extra={"code": SseErrorCode.EMBEDDING_MISMATCH}
+        )
     return HTTPException(
         status_code=409,
         detail=str(exc),
@@ -159,6 +165,8 @@ async def search_route(
     try:
         return await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
     except EmbeddingModelMismatchError as exc:
+        if isinstance(exc, EmbeddingEngineChangedError):
+            raise _embedding_mismatch_http(exc) from exc
         # ``adoptable`` is a bare yes/no on whether switching embedder alone
         # fixes the index, which is what a client renders its hint from. The
         # embedder names stay out of the generic 503.

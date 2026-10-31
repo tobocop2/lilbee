@@ -43,10 +43,11 @@ def embed_inflight_target() -> int:
     fits). Never raises -- a fleet that cannot be probed yet returns 0.
     """
     try:
+        from lilbee.app.services import get_services
         from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
         from lilbee.providers.roles import WorkerRole
 
-        slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
+        slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count(get_services().engine))
     except Exception:
         return 0
     return slots * _EMBED_INFLIGHT_PER_REPLICA if slots > 1 else 0

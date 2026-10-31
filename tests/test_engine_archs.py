@@ -20,6 +20,7 @@ from lilbee._generated.engine_archs import (
 )
 from lilbee.catalog.compat import classify
 from lilbee.catalog.types import ModelCompat
+from lilbee.providers.fleet.engines import LLAMA
 
 _ENGINE_ENV = Path(__file__).resolve().parents[1] / "engine-versions.env"
 
@@ -53,12 +54,12 @@ def test_unknown_sentinel_is_not_a_supported_arch() -> None:
     # LLM_ARCH_UNKNOWN's name is "(unknown)", which means "unrecognised", not a
     # model anything can load. It must never make a GGUF look pullable.
     assert "(unknown)" not in SUPPORTED_ARCHS
-    assert classify("(unknown)") is ModelCompat.UNSUPPORTED
+    assert classify("(unknown)", engine=LLAMA) is ModelCompat.UNSUPPORTED
 
 
 @pytest.mark.parametrize("arch", ["llama", "qwen3", "gemma3", "phi3"])
 def test_mainstream_architectures_are_supported(arch: str) -> None:
-    assert classify(arch) is ModelCompat.SUPPORTED
+    assert classify(arch, engine=LLAMA) is ModelCompat.SUPPORTED
 
 
 @pytest.mark.parametrize(
@@ -81,7 +82,7 @@ def test_architectures_the_engine_serves_ahead_of_the_gguf_package(arch: str) ->
     # but gguf enumerated only gemma4 (hand-allowlisted) and refused the rest at pull
     # time. The gguf package tracks its own release cadence, so it lags the engine by
     # a different amount at every version; reading the engine's table removes the lag.
-    assert classify(arch) is ModelCompat.SUPPORTED
+    assert classify(arch, engine=LLAMA) is ModelCompat.SUPPORTED
 
 
 def test_readme_arch_block_matches_the_generated_list() -> None:
