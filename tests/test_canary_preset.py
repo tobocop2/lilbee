@@ -170,21 +170,21 @@ def indexed(tmp_path, registry, spaces):
 
 class TestStopThroughTheStore:
     def test_a_url_edit_to_another_server_stops_search_and_asks_for_a_rebuild(self, indexed):
-        store, reopen, _ = indexed
+        _, reopen, _ = indexed
         presets.edit_preset("srv", url=URL_B, api_key=KEY)
 
         with pytest.raises(EmbeddingEngineChangedError, match="different vectors"):
             reopen().search([0.1] * cfg.embedding_dim)
 
     def test_a_url_edit_to_the_same_vectors_does_not_stop(self, indexed, spaces):
-        store, reopen, _ = indexed
+        _, reopen, _ = indexed
         spaces[URL_B] = Engine()
         presets.edit_preset("srv", url=URL_B, api_key=KEY)
 
         assert reopen().canary_mismatch() is None
 
     def test_a_key_edit_neither_stops_nor_embeds_a_canary(self, indexed):
-        store, reopen, embedder = indexed
+        _, reopen, embedder = indexed
         presets.edit_preset("srv", api_key="another-key-91")
         embedder.calls = 0
 
@@ -194,7 +194,7 @@ class TestStopThroughTheStore:
         assert embedder.calls == 0
 
     def test_the_stop_ends_when_the_url_returns(self, indexed):
-        store, reopen, _ = indexed
+        _, reopen, _ = indexed
         presets.edit_preset("srv", url=URL_B, api_key=KEY)
         assert reopen().canary_mismatch() is not None
 
