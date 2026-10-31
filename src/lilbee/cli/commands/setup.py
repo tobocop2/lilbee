@@ -188,9 +188,9 @@ def _self_check_server(
     engine = resolve_engines(cfg).for_role(role).adapter
     launch = build_single_role_launch(role, model_path, engine=engine)
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
-    swap = SwapManager(work_dir, SwapGroup(role.value), engine)
+    swap = SwapManager(work_dir, SwapGroup(role.value))
     try:
-        swap.start([launch])
+        swap.start([launch], engines={role: engine})
     except BaseException:
         # start() raises on engine-load failure (the case self-check exists to
         # catch); work_dir is never returned, so clean it here rather than orphan it.

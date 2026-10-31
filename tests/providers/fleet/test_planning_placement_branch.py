@@ -9,6 +9,7 @@ from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.placement import InstancePlan, Placement
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.roles import EngineBackend, WorkerRole
+from tests._fleet_engines import engines_for_all_roles
 
 GIB = 1024**3
 
@@ -71,8 +72,8 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
         "_resolve_placement",
         lambda *a, **k: Placement(instances=(), unplaceable_roles=()),
     )
-    planning.resolve_placement_plan(None, engine=LLAMA)
-    planning.resolve_placement_plan(None, engine=LLAMA)
+    planning.resolve_placement_plan(None, engines=engines_for_all_roles(LLAMA))
+    planning.resolve_placement_plan(None, engines=engines_for_all_roles(LLAMA))
     assert calls["n"] == 1
     planning.clear_read_device_cache()
 
@@ -108,7 +109,7 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
         {WorkerRole.CHAT: "ref"},
         devices,
         unified_budget=None,
-        engines=planning.engines_for_all_roles(LLAMA),
+        engines=engines_for_all_roles(LLAMA),
     )
 
     assert captured["spec"] is spec
@@ -129,7 +130,7 @@ def test_auto_planner_charged_against_total_capacity(monkeypatch):
 
     monkeypatch.setattr(planning, "plan_placement", fake_plan)
     planning._resolve_placement(
-        None, [], {}, devices, unified_budget=None, engines=planning.engines_for_all_roles(LLAMA)
+        None, [], {}, devices, unified_budget=None, engines=engines_for_all_roles(LLAMA)
     )
     assert captured["devs"] == [(0, 80 * GIB)]  # total, not the 5 GiB free
 
@@ -156,7 +157,7 @@ def test_saved_spec_that_no_longer_fits_falls_back_to_auto(monkeypatch, caplog):
             {WorkerRole.EMBED: "ref"},
             devices,
             unified_budget=None,
-            engines=planning.engines_for_all_roles(LLAMA),
+            engines=engines_for_all_roles(LLAMA),
         )
 
     assert placement is auto
@@ -179,7 +180,7 @@ def test_saved_spec_that_fits_is_applied(monkeypatch):
         {WorkerRole.CHAT: "ref"},
         devices,
         unified_budget=None,
-        engines=planning.engines_for_all_roles(LLAMA),
+        engines=engines_for_all_roles(LLAMA),
     )
 
     assert placement is manual
@@ -193,7 +194,7 @@ def test_no_saved_spec_is_not_reported_as_applied(monkeypatch):
     monkeypatch.setattr(planning, "_resolve_placement", lambda *_a, **_kw: auto)
 
     placement, spec_applied = planning._placement_or_auto(
-        None, [], {}, devices, unified_budget=None, engines=planning.engines_for_all_roles(LLAMA)
+        None, [], {}, devices, unified_budget=None, engines=engines_for_all_roles(LLAMA)
     )
 
     assert placement is auto
@@ -223,7 +224,7 @@ def test_interactive_resolve_still_raises(monkeypatch):
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
 
     with pytest.raises(PlacementError):
-        planning.resolve_placement_plan(spec, engine=LLAMA)
+        planning.resolve_placement_plan(spec, engines=engines_for_all_roles(LLAMA))
     planning.clear_read_device_cache()
 
 
@@ -251,7 +252,9 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     monkeypatch.setattr(planning, "_resolve_placement", refuse)
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
 
-    resolved = planning.resolve_placement_plan(spec, fall_back_to_auto=True, engine=LLAMA)
+    resolved = planning.resolve_placement_plan(
+        spec, fall_back_to_auto=True, engines=engines_for_all_roles(LLAMA)
+    )
 
     assert resolved.spec_applied is False
     planning.clear_read_device_cache()
@@ -267,7 +270,7 @@ def test_no_spec_uses_auto_planner(monkeypatch):
 
     monkeypatch.setattr(planning, "plan_placement", fake_plan)
     planning._resolve_placement(
-        None, [], {}, devices, unified_budget=None, engines=planning.engines_for_all_roles(LLAMA)
+        None, [], {}, devices, unified_budget=None, engines=engines_for_all_roles(LLAMA)
     )
     assert called.get("auto") is True
 
@@ -291,5 +294,5 @@ def test_a_tight_role_reaches_the_placement_view(monkeypatch, tmp_path) -> None:
         model_refs={WorkerRole.CHAT: "org/chat.gguf"},
         tight_roles={WorkerRole.CHAT: 3 * 1024**3},
     )
-    view = _view(resolved, LLAMA, manual=False, spec_json=None)
+    view = _view(resolved, engines_for_all_roles(LLAMA), manual=False, spec_json=None)
     assert [(t.role, t.shortfall_bytes) for t in view.tight] == [(WorkerRole.CHAT, 3 * 1024**3)]
