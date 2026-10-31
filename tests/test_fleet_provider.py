@@ -6709,7 +6709,9 @@ def served(monkeypatch, ocr_gated_engine, tmp_path: Path) -> FleetProvider:
     monkeypatch.setattr(cfg, "data_root", tmp_path)
     p = _provider_without_preload(monkeypatch)
     assert p._ensure_fleet()
-    monkeypatch.setattr(engine_service, "peek_services", lambda: SimpleNamespace(provider=p))
+    empty = SimpleNamespace(source_summary=lambda _n: SimpleNamespace(document_count=0))
+    services = SimpleNamespace(provider=p, store=empty)
+    monkeypatch.setattr(engine_service, "peek_services", lambda: services)
     return p
 
 
