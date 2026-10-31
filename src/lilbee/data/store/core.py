@@ -1323,12 +1323,16 @@ class Store:
     def _embed_canaries(self, probe: CanaryProbe) -> list[Vector] | None:
         """Embed the canary texts, or ``None`` when the embedder is down."""
         try:
-            return probe.embed(list(CANARY_TEXTS))
+            vectors = probe.embed(list(CANARY_TEXTS))
         except (ProviderError, OSError, RuntimeError, ValueError):
             log.warning(
                 "Canary check skipped: the embedder did not return usable vectors", exc_info=True
             )
             return None
+        if len(vectors) == 0:
+            log.warning("Canary check skipped: the embedder returned no vectors")
+            return None
+        return vectors
 
     def _new_baseline(self, *, verified: bool) -> CanaryState | None:
         """Canary vectors of the embedder now configured, to store as the baseline of an index."""
