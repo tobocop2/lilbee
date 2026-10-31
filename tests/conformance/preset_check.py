@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -27,10 +28,10 @@ from lilbee.providers.routing_provider import RoutingProvider
 from tests.conformance.harness import (
     BLUE,
     NEAR_COPY_COSINE,
-    answer_fault,
     cosine,
     json_fault,
     png,
+    reasoning_split_fault,
     tool_arguments_fault,
 )
 
@@ -38,6 +39,7 @@ PRESET = "check"
 FIXTURES = Path(__file__).with_name("fixtures") / "presets"
 ENGINE_FIXTURES = Path(__file__).with_name("fixtures") / "engines"
 _TIMEOUT_S = 600.0
+_NOT_NAME = re.compile(r"[^a-z0-9_-]")
 _OVERSIZE = "w " * 60000
 _CONVERSATION = [
     {"role": "system", "content": "You answer in one short sentence."},
@@ -96,6 +98,12 @@ class Setup:
     rerank_wire: str = "v1"
     embed_dim: int = 0
     strict: bool = False
+    server: str = ""
+
+    @property
+    def preset(self) -> str:
+        """The preset name: the recorded engine as a valid preset name, else the default."""
+        return _NOT_NAME.sub("-", self.server.lower()) if self.server else PRESET
 
 
 @contextmanager
@@ -104,7 +112,7 @@ def configured(url: str, setup: Setup, data_root: Path) -> Iterator[None]:
     snapshot = cfg.model_copy()
     cfg.data_root = data_root
     cfg.server_presets = None
-    presets.add_preset(PRESET, url, roles=setup.roles, rerank_wire=setup.rerank_wire)
+    presets.add_preset(setup.preset, url, roles=setup.roles, rerank_wire=setup.rerank_wire)
     try:
         yield
     finally:
@@ -113,7 +121,7 @@ def configured(url: str, setup: Setup, data_root: Path) -> Iterator[None]:
 
 
 def _ref(setup: Setup, role: str) -> str:
-    return f"{PRESET}/{setup.models[role]}"
+    return f"{setup.preset}/{setup.models[role]}"
 
 
 def _template(setup: Setup) -> Outcome:
@@ -221,10 +229,9 @@ def _reasoning_text(setup: Setup) -> Outcome:
         options={"max_tokens": 1024},
     )
     assert isinstance(result, ChatResult)
-    return Outcome(
-        not answer_fault(result.text) and result.finish_reason == "stop",
-        f"text_and_finish_only finish={result.finish_reason} {answer_fault(result.text)}".strip(),
-    )
+    fault = reasoning_split_fault(result.text)
+    ok = not fault and result.finish_reason == "stop"
+    return Outcome(ok, f"finish={result.finish_reason} {fault}".strip())
 
 
 class _LogTap(logging.Handler):
@@ -263,10 +270,11 @@ def _named(setup: Setup) -> Outcome:
     finally:
         logger.removeHandler(tap)
         logger.setLevel(level)
-    want = f"served by engine={PRESET} version=preset role={role} model={model}"
+    engine = setup.preset
+    want = f"served by engine={engine} version=preset role={role} model={model}"
     status = {row.role: row.engine for row in serving_roles()}
-    status_ok = status.get(WorkerRole(role)) == PRESET and (
-        role != "chat" or chat_engine() == PRESET
+    status_ok = status.get(WorkerRole(role)) == engine and (
+        role != "chat" or chat_engine() == engine
     )
     return Outcome(want in tap.messages and status_ok, f"log={tap.messages} status={status}")
 
@@ -471,6 +479,7 @@ def load_fixture(path: Path) -> tuple[Setup, dict[str, Outcome], list[Exchange],
         doc["rerank_wire"],
         doc["embed_dim"],
         doc.get("strict", False),
+        doc["server"],
     )
     results = {step: Outcome(**value) for step, value in doc["results"].items()}
     return setup, results, [Exchange(**e) for e in doc["exchanges"]], doc

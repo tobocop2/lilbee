@@ -340,6 +340,23 @@ def answer_fault(answer: str) -> str:
     return "" if rest.strip() else "no answer after the think block"
 
 
+def reasoning_split_fault(text: str) -> str:
+    """The reason *text* is not one reasoning block and then a clean answer, or an empty string.
+
+    The provider joins a reasoning field and the content as one think block and the answer.
+    A second tag, an open tag, no reasoning or an empty answer all fail.
+    """
+    answer = strip_think(text)
+    if answer is None:
+        return "the think tag is open, repeated or reversed"
+    if answer == text:
+        return "the reply holds no reasoning"
+    thought = text.split(_THINK_CLOSE, 1)[0].removeprefix(_THINK_OPEN)
+    if not thought.strip():
+        return "the reasoning is empty"
+    return "" if answer.strip() else "no answer after the reasoning"
+
+
 def reasoning_fault(message: Mapping[str, Any], finish: Any) -> str:
     """The reason a reasoning reply is not a clean split, or an empty string.
 

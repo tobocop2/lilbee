@@ -40,7 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def setup_from(args: argparse.Namespace) -> Setup:
     models = dict(pair.split("=", 1) for pair in args.models.split(","))
-    return Setup(tuple(args.roles.split(",")), models, args.wire, args.embed_dim, args.strict)
+    return Setup(
+        tuple(args.roles.split(",")), models, args.wire, args.embed_dim, args.strict, args.server
+    )
 
 
 def run_log(args: argparse.Namespace, results: dict[str, Outcome]) -> str:

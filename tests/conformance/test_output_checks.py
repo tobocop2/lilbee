@@ -207,12 +207,16 @@ def test_preset_embed_step_rejects_near_copies(
     [
         ("<think>hm</think>42", FinishReason.STOP, True),
         ("hm</think>42", FinishReason.STOP, True),
-        ("42", FinishReason.STOP, True),
+        ("<think>hm</think>42", FinishReason.LENGTH, False),
+        ("42", FinishReason.STOP, False),
         ("<think>hm 42", FinishReason.STOP, False),
-        ("42", FinishReason.LENGTH, False),
+        ("<think>hm</think><think>hm</think>42", FinishReason.STOP, False),
+        ("<think>hm</think>42</think>", FinishReason.STOP, False),
+        ("<think>hm</think>  ", FinishReason.STOP, False),
+        ("<think> </think>42", FinishReason.STOP, False),
     ],
 )
-def test_preset_reasoning_step_reads_text_and_finish_only(
+def test_preset_reasoning_step_needs_one_block_and_a_clean_answer(
     monkeypatch: pytest.MonkeyPatch, text: str, finish: FinishReason, ok: bool
 ) -> None:
     assert _outcome(monkeypatch, "reasoning", chat=_result(text, finish)) is ok
@@ -298,7 +302,21 @@ def test_named_step_reads_the_log_line_and_the_status_of_the_first_role(
 ) -> None:
     outcome = _named_outcome(monkeypatch, tmp_path, roles, **answers)
     assert outcome.ok, outcome.detail
-    assert f"role={roles[0]} model=check/m" in outcome.detail
+    assert f"engine=check version=preset role={roles[0]} model=check/m" in outcome.detail
+
+
+def test_named_step_reads_the_engine_of_the_recording(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        RoutingProvider, "_get_sdk_provider", lambda _s: _Provider(chat=_result("R"))
+    )
+    setup = Setup(("chat",), dict(_MODELS), strict=True, server="llama.cpp-cpu")
+    with preset_check.configured("http://127.0.0.1:1", setup, tmp_path):
+        outcome = preset_check._STEP_FUNCTIONS["named"](setup)
+    assert outcome.ok, outcome.detail
+    assert "engine=llama-cpp-cpu version=preset role=chat model=llama-cpp-cpu/m" in outcome.detail
+    assert "engine=check" not in outcome.detail
 
 
 def test_named_step_fails_when_status_names_no_engine(
@@ -307,6 +325,35 @@ def test_named_step_fails_when_status_names_no_engine(
     monkeypatch.setattr(preset_check, "serving_roles", lambda: [])
     outcome = _named_outcome(monkeypatch, tmp_path, ("chat",), chat=_result("Rome"))
     assert not outcome.ok
+
+
+def test_reasoning_step_names_the_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    leak = _result("<think>hm</think><think>hm</think>42")
+    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: _Provider(chat=leak))
+    setup = Setup(("chat",), dict(_MODELS), strict=True)
+    detail = preset_check._STEP_FUNCTIONS["reasoning"](setup).detail
+    assert "open, repeated or reversed" in detail
+
+
+def test_the_preset_is_named_after_the_recorded_engine() -> None:
+    assert Setup(("chat",), {}).preset == "check"
+    assert Setup(("chat",), {}, server="llama.cpp-cpu").preset == "llama-cpp-cpu"
+
+
+@pytest.mark.parametrize(
+    "path", sorted(ENGINE_FIXTURES.glob("**/*.json")), ids=lambda path: path.stem
+)
+def test_a_recording_names_its_own_engine(path: Path) -> None:
+    setup, recorded, _exchanges, doc = load_fixture(path)
+    head = dict(
+        line.split(": ", 1)
+        for line in path.with_suffix(".log").read_text(encoding="utf-8").splitlines()[:2]
+    )
+    assert doc["server"] == path.stem
+    assert head == {"engine": doc["server"], "version": doc["version"]}
+    assert doc["version"]
+    assert f"engine={setup.preset} version=preset" in recorded["named"].detail
+    assert "engine=check" not in recorded["named"].detail
 
 
 _ARGS = [
