@@ -211,6 +211,28 @@ def _retry_transient(work: Callable[[], _T]) -> _T:
     ) from last_error
 
 
+def retry_transfer(work: Callable[[], _T]) -> _T:
+    """Run *work* with the model download's retry rule: network and I/O faults retry.
+
+    A repository, revision or file the hub does not have is permanent and propagates at once.
+    """
+    from huggingface_hub.errors import (
+        EntryNotFoundError,
+        RepositoryNotFoundError,
+        RevisionNotFoundError,
+    )
+
+    def attempt() -> _T:
+        try:
+            return work()
+        except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError):
+            raise
+        except (httpx.TimeoutException, httpx.ConnectError, OSError) as exc:
+            raise _TransientDownloadError(f"Transfer failed: {exc}") from None
+
+    return _retry_transient(attempt)
+
+
 def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:
     """Run one file's transfer, retrying the faults another attempt can clear."""
     return _retry_transient(lambda: _hf_download_or_translate(entry, config))
