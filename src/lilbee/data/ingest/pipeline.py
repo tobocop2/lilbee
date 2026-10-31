@@ -36,6 +36,7 @@ from rich.progress import (
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import Config, active_config
+from lilbee.core.vectors import Vector
 from lilbee.core.web_names import is_web_source
 from lilbee.data.extract.chunk import ChunkLimitError
 from lilbee.data.extract.document import (
@@ -115,7 +116,7 @@ from lilbee.data.types import (
     SyncResult,
     _IngestResult,
 )
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
@@ -1066,16 +1067,26 @@ def _report_index_mismatch(store: Store) -> IndexMismatch | None:
 
 
 def _force_rebuild_store(store: Any) -> None:
-    """Drop the store and re-embed the preserved memories table (blocking).
+    """Re-embed the preserved memories, then drop the rest of the store (blocking).
 
-    Run off the event loop by ``sync``. ``drop_all`` keeps the memories table, so
-    its vectors are refreshed under the (possibly changed) embedding model;
-    a no-op when empty or no embedder.
+    Run off the event loop by ``sync``. The memories come first: if the embedder
+    cannot embed them, nothing is dropped, so no memory vector of the old
+    embedder outlives the stop that the dropped index row held. A store with no
+    memories needs no embedder.
     """
-    store.drop_all()
     embedder = get_services().embedder
-    if embedder.embedding_available():
-        store.rebuild_memory_embeddings(lambda texts: embedder.embed_batch(texts))
+
+    def embed(texts: list[str]) -> list[Vector]:
+        if not embedder.embedding_available():
+            raise ProviderError(
+                "The embedding model is not available, so the memories cannot be "
+                "re-embedded. Nothing was rebuilt.",
+                kind=ProviderErrorKind.NOT_FOUND,
+            )
+        return embedder.embed_batch(texts)
+
+    store.rebuild_memory_embeddings(embed)
+    store.drop_all()
 
 
 def _reconcile_missing(
