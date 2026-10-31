@@ -143,6 +143,7 @@ def test_the_executable_check_passes_only_the_asset_to_the_release_workflow() ->
 _BUILD_TOOLING = (
     "tools/wheel-build/**",
     ".github/release-cells.yml",
+    ".github/gpu-cells.yml",
     ".github/workflows/release.yml",
     ".github/workflows/build-gpu-executables.yml",
     ".github/workflows/flatpak-validate.yml",

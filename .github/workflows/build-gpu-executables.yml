@@ -19,6 +19,11 @@ on:
         description: "Build even if the smoke step fails (re-run past a known-flaky cell)."
         type: boolean
         default: false
+      only_asset:
+        # A dispatch with a tag attaches every cell it builds, which replaces assets that channels pin by hash.
+        description: "Build only the cell with this asset name (empty = every cell)."
+        required: false
+        default: ""
   workflow_call:
     inputs:
       ref:
@@ -33,6 +38,10 @@ on:
         description: "GH release tag to eagerly attach each built executable to (empty = artifacts only)."
         type: string
         default: ""
+      only_asset:
+        description: "Build only the cell with this asset name (empty = every cell)."
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -42,67 +51,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Reads the build cells from .github/gpu-cells.yml. A caller that sets
+  # only_asset gets that one cell, which is how a dispatch for a released tag
+  # builds a single executable without replacing the assets other channels
+  # already pin by hash. It checks out the workflow's own ref, never the tag,
+  # so a backfill at an old tag still reads the current cells file.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      cells: ${{ steps.plan.outputs.cells }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Select the build cells
+        id: plan
+        env:
+          ONLY_ASSET: ${{ inputs.only_asset }}
+        run: echo "cells=$(bash scripts/release_plan_cells.sh "${ONLY_ASSET}" .github/gpu-cells.yml)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: plan
     continue-on-error: true
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Linux CUDA cells run on ubuntu-22.04, not the manylinux container: install_gpu_toolkit.sh is apt-based, and glibc 2.35 stays above the README's 2.28 floor.
-          # cu121 pins upstream b9665 explicitly: CUDA 12.1's nvcc can't compile
-          # newer llama.cpp CUDA kernels (half-conversion in allreduce.cu), so
-          # this cell stays behind when the main pin advances. b9665 predates
-          # PR 26130, so this engine uses the log-parse readback.
-          - os: ubuntu-22.04
-            backend: cu121
-            cuda: "12.1.0"
-            asset_name: lilbee-linux-x86_64-cu121
-            llama-cpp-repo: "https://github.com/ggml-org/llama.cpp"
-            llama-cpp-ref: "b9665"
-          - os: ubuntu-22.04
-            backend: cu124
-            cuda: "12.4.0"
-            asset_name: lilbee-linux-x86_64-cu124
-          - os: ubuntu-22.04
-            backend: cu125
-            cuda: "12.5.0"
-            asset_name: lilbee-linux-x86_64-cu125
-          # Pre-Haswell-safe cell: swaps in lancedb==X.Y.Z+compat from the lilbee.sh/compat
-          # index and holds the launcher to an x86-64-v2 baseline, so the binary runs on
-          # Sandy Bridge / Bulldozer CPUs that SIGILL on the stock lancedb wheel. Fully
-          # self-contained -- no pyproject/uv.lock footprint, so it cannot affect any
-          # other cell or job. Fails at the override step until that index is live; the
-          # job's continue-on-error keeps that failure off the release path.
-          - os: ubuntu-22.04
-            backend: cu124
-            cuda: "12.4.0"
-            asset_name: lilbee-compat-linux-x86_64-cu124
-            compat: true
-            march: "x86-64-v2"
-          # Here, not release.yml's matrix, for the same reason as the CUDA cells:
-          # install_gpu_toolkit.sh is apt-based and manylinux is not. Linux only.
-          - os: ubuntu-22.04
-            backend: rocm
-            asset_name: lilbee-linux-x86_64-rocm
-          # Pre-Haswell-safe ROCm cell: same model as the compat CUDA cell above
-          # (stock lancedb swapped for +compat, launcher held to x86-64-v2). The
-          # ROCm engine is AVX-baseline (cmake_args.sh), so the practical floor
-          # is Sandy Bridge; ROCm itself also needs a board with PCIe atomics.
-          - os: ubuntu-22.04
-            backend: rocm
-            asset_name: lilbee-compat-linux-x86_64-rocm
-            compat: true
-            march: "x86-64-v2"
-          # Windows cu121 dropped: MSVC 14.44 on windows-2022 requires CUDA 12.4+.
-          - os: windows-2022
-            backend: cu124
-            cuda: "12.4.0"
-            asset_name: lilbee-windows-x86_64-cu124.exe
-          - os: windows-2022
-            backend: cu125
-            cuda: "12.5.0"
-            asset_name: lilbee-windows-x86_64-cu125.exe
+        include: ${{ fromJSON(needs.plan.outputs.cells) }}
 
     runs-on: ${{ matrix.os }}
 

@@ -1,0 +1,76 @@
+# The GPU executable build cells for build-gpu-executables.yml. The `plan` job
+# in that workflow reads this file and hands the cells to the `build` job as its
+# matrix, so a dispatch can narrow a run to one cell (the `only_asset` input)
+# and leave the assets of every other cell on the release untouched.
+#
+# `soft: true` marks a droppable cell. It is read by
+# scripts/release_required_assets.sh, so a cell cannot be droppable for one
+# gate and required by another.
+#
+# Linux CUDA cells run on ubuntu-22.04, not the manylinux container: install_gpu_toolkit.sh is apt-based, and glibc 2.35 stays above the README's 2.28 floor.
+# cu121 pins upstream b9665 explicitly: CUDA 12.1's nvcc can't compile
+# newer llama.cpp CUDA kernels (half-conversion in allreduce.cu), so
+# this cell stays behind when the main pin advances. b9665 predates
+# PR 26130, so this engine uses the log-parse readback.
+- os: ubuntu-22.04
+  backend: cu121
+  cuda: "12.1.0"
+  asset_name: lilbee-linux-x86_64-cu121
+  llama-cpp-repo: "https://github.com/ggml-org/llama.cpp"
+  llama-cpp-ref: "b9665"
+- os: ubuntu-22.04
+  backend: cu124
+  cuda: "12.4.0"
+  asset_name: lilbee-linux-x86_64-cu124
+- os: ubuntu-22.04
+  backend: cu125
+  cuda: "12.5.0"
+  asset_name: lilbee-linux-x86_64-cu125
+# Pre-Haswell-safe cell: swaps in lancedb==X.Y.Z+compat from the lilbee.sh/compat
+# index and holds the launcher to an x86-64-v2 baseline, so the binary runs on
+# Sandy Bridge / Bulldozer CPUs that SIGILL on the stock lancedb wheel. Fully
+# self-contained -- no pyproject/uv.lock footprint, so it cannot affect any
+# other cell or job. Fails at the override step until that index is live; the
+# job's continue-on-error keeps that failure off the release path. Soft: the
+# compat CUDA channels (flatpak, snap, brew, aur, nix) carry this binary, and a
+# dropped cell must not stall the release or the other flatpak variants.
+- os: ubuntu-22.04
+  backend: cu124
+  cuda: "12.4.0"
+  asset_name: lilbee-compat-linux-x86_64-cu124
+  compat: true
+  soft: true
+  march: "x86-64-v2"
+# Here, not release.yml's matrix, for the same reason as the CUDA cells:
+# install_gpu_toolkit.sh is apt-based and manylinux is not. Linux only.
+- os: ubuntu-22.04
+  backend: rocm
+  asset_name: lilbee-linux-x86_64-rocm
+# Pre-Haswell-safe ROCm cell: same model as the compat CUDA cell above
+# (stock lancedb swapped for +compat, launcher held to x86-64-v2). The
+# ROCm engine is AVX-baseline (cmake_args.sh), so the practical floor
+# is Sandy Bridge; ROCm itself also needs a board with PCIe atomics.
+- os: ubuntu-22.04
+  backend: rocm
+  asset_name: lilbee-compat-linux-x86_64-rocm
+  compat: true
+  march: "x86-64-v2"
+# Windows cu121 dropped: MSVC 14.44 on windows-2022 requires CUDA 12.4+.
+- os: windows-2022
+  backend: cu124
+  cuda: "12.4.0"
+  asset_name: lilbee-windows-x86_64-cu124.exe
+- os: windows-2022
+  backend: cu125
+  cuda: "12.5.0"
+  asset_name: lilbee-windows-x86_64-cu125.exe
+# Pre-AVX2 Windows host with a CUDA driver: the stock lancedb swapped for
+# +compat, on the Windows cu124 toolchain. No march: MSVC has no -march flag,
+# and the pre-Haswell baseline comes from the lancedb wheel. Soft, so a failed
+# cell never blocks the release; the Scoop manifest ships only when it exists.
+- os: windows-2022
+  backend: cu124
+  cuda: "12.4.0"
+  asset_name: lilbee-compat-windows-x86_64-cu124.exe
+  compat: true
+  soft: true
