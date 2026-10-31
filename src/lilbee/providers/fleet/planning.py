@@ -2634,11 +2634,12 @@ def _restated(probe: _PlanProbe, *, engine: EngineAdapter) -> _PlanProbe | None:
         len(devices),
         len(probe.devices),
     )
-    # Keyed on the card, not the whole record: another engine names the same card
-    # differently, and its clean free figure is still the host's.
-    snapshot_free = {(d.index, d.total_bytes): d.free_bytes for d in probe.devices}
+    # Keyed on the index alone: another engine names and sizes the same card
+    # differently, and its clean free figure is still the host's. A card can
+    # never have more free than it holds.
+    snapshot_free = {d.index: d.free_bytes for d in probe.devices}
     merged = tuple(
-        replace(d, free_bytes=snapshot_free.get((d.index, d.total_bytes), d.free_bytes))
+        replace(d, free_bytes=min(snapshot_free.get(d.index, d.free_bytes), d.total_bytes))
         for d in devices
     )
     return _PlanProbe(

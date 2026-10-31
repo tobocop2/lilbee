@@ -426,18 +426,32 @@ class TestAnEngineThatChangesUnderARunningServe:
         assert len(runs) == 2
 
     def test_a_second_stale_read_takes_the_first_ones_answer(self, monkeypatch, tmp_path) -> None:
-        # A reader that queues behind the restate takes its answer, not another probe.
+        # The restate holds its answer until the second reader queues behind its lock.
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"")
         runs = self._engine(monkeypatch, binary)
         healthy = planning_mod._read_devices
         planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
-        started = threading.Event()
-        release = threading.Event()
+        queued = threading.Event()
+
+        class _AnnouncingLock:
+            """A lock that says when a thread finds it held and starts to wait."""
+
+            def __init__(self) -> None:
+                self._lock = threading.Lock()
+
+            def __enter__(self) -> None:
+                if not self._lock.acquire(blocking=False):
+                    queued.set()
+                    self._lock.acquire()
+
+            def __exit__(self, *_exc: object) -> None:
+                self._lock.release()
+
+        monkeypatch.setattr(planning_mod._plan_probe_store, "_restate_lock", _AnnouncingLock())
 
         def _blocking(probed: Path, engine) -> planning_mod.DeviceReading:
-            started.set()
-            release.wait(10)
+            assert queued.wait(10)
             return healthy(probed, engine)
 
         monkeypatch.setattr(planning_mod, "_read_devices", _blocking)
@@ -452,11 +466,10 @@ class TestAnEngineThatChangesUnderARunningServe:
         ]
         for reader in readers:
             reader.start()
-        started.wait(10)
-        release.set()
         for reader in readers:
             reader.join(10)
 
+        assert queued.is_set()
         assert len(runs) == before + 1
         assert [len(devices) for devices in seen] == [2, 2]
 

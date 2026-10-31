@@ -4194,6 +4194,18 @@ class TestReloadSingleFlight:
         assert p._reload_pending is True
         p._reload_blocking()  # the in-flight thread runs to completion
         assert len(plans) == 2  # one pass per request: the change was applied
+
+    def test_a_reload_with_no_group_up_and_one_in_flight_is_queued(self) -> None:
+        p = FleetProvider()
+        p._reloading = True  # the in-flight pass has stopped every group
+        p.reload_placement()
+        assert p._reload_pending is True
+
+    def test_a_reload_with_no_group_up_and_none_in_flight_does_nothing(self) -> None:
+        p = FleetProvider()
+        p.reload_placement()
+        assert p._reload_pending is False
+        assert p._reloading is False
         assert p._reloading is False
         assert p._reload_pending is False
 
