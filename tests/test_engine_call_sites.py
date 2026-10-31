@@ -242,6 +242,21 @@ class TestPlansAskTheEngine:
         with pytest.raises(ProviderError, match="spy binary missing"):
             planning.plan_all_launches(engine=_binaryless(spy))
 
+    def test_plan_launches_builds_the_engine_argv(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/spy.gguf")
+        plan = planning.plan_launches(
+            (WorkerRole.CHAT,),
+            spy.binary(),
+            {SPY_DEVICE.index: SPY_DEVICE},
+            [SPY_DEVICE],
+            engine=spy,
+        )
+        assert plan.launches
+        assert all(launch.argv[0] == str(spy.binary()) for launch in plan.launches)
+        assert any("--spy-weights" in launch.argv for launch in plan.launches)
+
 
 class TestMemoryEstimates:
     def test_fit_single_ctx_takes_the_engine_footprint(
@@ -475,6 +490,72 @@ class TestProvider:
         client = provider._clients[WorkerRole.EMBED][0]
         assert client._profile.label == "fake-engine"
         assert client._profile.reasoning_field == "thoughts"
+
+    def _record_engine_use(
+        self, monkeypatch: pytest.MonkeyPatch, spy: SpyEngine, model_file: Path, tmp_path: Path
+    ) -> dict[str, list[Any]]:
+        """Stand in for the planner and the swap manager; record the engine each one gets."""
+        import lilbee.providers.fleet.provider as prov_mod
+
+        seen: dict[str, list[Any]] = {"probe": [], "plan": [], "refresh": [], "swap": []}
+        launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
+
+        class _Swap:
+            bound = False
+            log_path = tmp_path / "log"
+
+            def __init__(self, work_dir: Path, group: object, engine: Any) -> None:
+                seen["swap"].append(engine)
+
+            def start(self, launches: list[Any], **kwargs: object) -> None:
+                return None
+
+            def endpoint(self) -> str:
+                return "http://127.0.0.1:1"
+
+            def shutdown(self) -> None:
+                return None
+
+        monkeypatch.setattr(prov_mod, "SwapManager", _Swap)
+        monkeypatch.setattr(prov_mod, "reap_stale", lambda *args, **kwargs: None)
+        monkeypatch.setattr(prov_mod, "_engine_lifetime", lambda data_dir: None)
+        monkeypatch.setattr(prov_mod, "_warm_ttl_seconds", lambda *args, **kwargs: 0)
+        monkeypatch.setattr(
+            planning, "capture_plan_probe", lambda engine: seen["probe"].append(engine)
+        )
+        monkeypatch.setattr(
+            planning, "refresh_plan_devices", lambda engine: seen["refresh"].append(engine)
+        )
+
+        def _plan(*, engine: Any) -> planning.FleetPlan:
+            seen["plan"].append(engine)
+            return planning.FleetPlan((launch,))
+
+        monkeypatch.setattr(planning, "plan_all_launches", _plan)
+        return seen
+
+    def test_build_plans_and_spawns_with_the_provider_engine(
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
+        provider = FleetProvider(engine=spy)
+        assert provider._plan_and_spawn(tmp_path)
+        assert seen["probe"] == [spy]
+        assert seen["plan"] == [spy]
+        assert seen["swap"] == [spy]
+
+    def test_reload_replans_and_respawns_with_the_provider_engine(
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
+        provider = FleetProvider(engine=spy)
+        monkeypatch.setattr(provider, "_reload_dir", lambda: tmp_path)
+        monkeypatch.setattr(provider, "_preload_restarted", lambda restarted: None)
+        provider._reload_pass()
+        assert seen["refresh"] == [spy]
+        assert seen["probe"] == [spy]  # nothing was running, so the reload re-captures the box
+        assert seen["plan"] == [spy]
+        assert seen["swap"] == [spy]
 
 
 class TestSelfCheck:
