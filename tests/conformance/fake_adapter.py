@@ -52,6 +52,8 @@ class FakeAdapter:
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED})
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
+    bundled = False
+    backend: str | None = "cpu"
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures
@@ -69,7 +71,8 @@ class FakeAdapter:
         return {
             "engine": self.name,
             "version": "1.2.3",
-            "backend": "cpu",
+            "backend": self.backend,
+            "sha256": _SHA,
             "launch": ["{binary}", "--port", "{port}"],
             "platforms": {
                 "linux-x86_64": {
@@ -159,3 +162,9 @@ class FakeAdapter:
 
 
 FAKE = FakeAdapter()
+
+
+class BundledFakeAdapter(FakeAdapter):
+    """A fake engine that ships in the package, so it counts as installed with no store build."""
+
+    bundled = True

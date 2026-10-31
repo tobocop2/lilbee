@@ -319,7 +319,7 @@ class EngineStore:
         """Where a hand-copied wheel of *lock* is looked up."""
         return self.root / _PACK_DIR / f"{lock.engine}-{lock.version}-{lock.backend}.whl"
 
-    def _complete_build(self, lock: PinLock) -> Path | None:
+    def complete_build(self, lock: PinLock) -> Path | None:
         """The directory of the complete build of *lock*, None when absent or damaged."""
         existing = _read_record(self.build_dir(lock))
         if existing is None:
@@ -334,7 +334,7 @@ class EngineStore:
     def ensure(self, lock: PinLock, fetch: Callable[[PinLock, Path], Path]) -> Path:
         """Return the build of *lock*: installed, else from a pack, else from *fetch*."""
         _check_licences(lock)
-        found = self._complete_build(lock)
+        found = self.complete_build(lock)
         if found is not None:
             return found
         pack = self.pack_path(lock)
@@ -364,7 +364,7 @@ class EngineStore:
         _check_wheel(lock, wheel)
         final = self.build_dir(lock)
         with file_lock(self.root / _LOCK_DIR / lock.engine, _LOCK_TIMEOUT_S):
-            if self._complete_build(lock) is not None:
+            if self.complete_build(lock) is not None:
                 return final
             stage = final.parent / f"{_STAGE_PREFIX}{uuid.uuid4().hex}"
             final.parent.mkdir(parents=True, exist_ok=True)
@@ -384,7 +384,7 @@ class EngineStore:
         _check_licences(lock)
         final = self.build_dir(lock)
         with file_lock(self.root / _LOCK_DIR / lock.engine, _INSTALL_TIMEOUT_S):
-            if self._complete_build(lock) is not None:
+            if self.complete_build(lock) is not None:
                 return final
             stage = final.parent / f"{_STAGE_PREFIX}{uuid.uuid4().hex}"
             final.parent.mkdir(parents=True, exist_ok=True)
