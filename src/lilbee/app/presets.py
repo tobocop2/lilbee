@@ -9,6 +9,7 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any
 
+from lilbee.app.settings import config_write_failure_message
 from lilbee.core import settings
 from lilbee.core.blocked_networks import check_url_form, url_origin, validate_preset_url
 from lilbee.core.config import cfg
@@ -35,14 +36,25 @@ _KEY_STAYS_WITH_ORIGIN = (
 )
 
 
+_NOTHING_TO_CHANGE = "Nothing to change. Give a URL, roles, a key, a rerank wire or clear the key."
+_CLEAR_KEY_ALONE = "Clear the key in its own edit. Do not give other changes with it."
+
 _ListChange = Callable[[list[Entry]], list[Entry]]
+
+
+class PresetNotFoundError(ValueError):
+    """No stored preset has the requested name."""
+
+
+class PresetExistsError(ValueError):
+    """A stored preset already has the requested name."""
 
 
 @dataclass(frozen=True)
 class ServerPreset:
     """One preset as a surface shows it: it says whether a key is set and never holds one.
 
-    An entry no preset may hold has valid False and an empty base_url.
+    An entry no preset may hold has valid False, an empty base_url and no rerank_wire.
     """
 
     name: str
@@ -50,6 +62,7 @@ class ServerPreset:
     roles: tuple[WorkerRole, ...]
     has_key: bool
     valid: bool
+    rerank_wire: RerankWire | None
 
 
 def _check_name(name: str) -> None:
@@ -137,7 +150,8 @@ def _view(entry: Entry) -> ServerPreset:
     except ValueError:
         log.warning("The stored server preset %r is not valid and cannot be used.", entry.name)
         url = ""
-    return ServerPreset(entry.name or "", url, entry.roles, entry.has_key, bool(url))
+    wire = entry.rerank_wire if isinstance(entry, StoredPreset) and url else None
+    return ServerPreset(entry.name or "", url, entry.roles, entry.has_key, bool(url), wire)
 
 
 def _store(change: _ListChange) -> list[Entry]:
@@ -156,7 +170,7 @@ def _named(entries: list[Entry], name: str) -> Entry:
     for entry in entries:
         if entry.name == name:
             return entry
-    raise ValueError(f"No server preset is named {name!r}.")
+    raise PresetNotFoundError(f"No server preset is named {name!r}.")
 
 
 def _without_key(entry: Entry) -> Entry:
@@ -168,6 +182,11 @@ def _without_key(entry: Entry) -> Entry:
 def list_presets() -> list[ServerPreset]:
     """Every stored entry; a stored value that is no list of entries is refused."""
     return [_view(entry) for entry in stored_entries()]
+
+
+def get_preset(name: str) -> ServerPreset:
+    """The stored preset *name*; a name nothing holds is refused."""
+    return _view(_named(stored_entries(), name))
 
 
 def add_preset(
@@ -192,13 +211,21 @@ def add_preset(
 
     def change(entries: list[Entry]) -> list[Entry]:
         if any(existing.name == name for existing in entries):
-            raise ValueError(f"A server preset named {name!r} already exists.")
+            raise PresetExistsError(f"A server preset named {name!r} already exists.")
         changed = [*entries, entry]
         _check_list(changed)
         return changed
 
     _store(change)
     return _view(entry)
+
+
+def _check_edit_shape(given: int, clear_key: bool) -> None:
+    """Refuse an edit with no change, or a key clear that comes with *given* other changes."""
+    if clear_key and given:
+        raise ValueError(_CLEAR_KEY_ALONE)
+    if not (clear_key or given):
+        raise ValueError(_NOTHING_TO_CHANGE)
 
 
 def edit_preset(
@@ -208,12 +235,20 @@ def edit_preset(
     roles: Collection[str] | None = None,
     api_key: str | None = None,
     rerank_wire: str | None = None,
+    clear_key: bool = False,
 ) -> ServerPreset:
     """Change what is passed. An empty or omitted key keeps the stored key.
+
+    With *clear_key* the key is removed and nothing else may change in the same call. A call
+    that names no change is refused.
 
     A URL with a new scheme, host or port and no new key is refused: the stored key never
     follows the URL to a new origin. A key change alone checks only that preset's entry.
     """
+    given = sum(value is not None for value in (url, roles, rerank_wire)) + bool(api_key)
+    _check_edit_shape(given, clear_key)
+    if clear_key:
+        return _clear_key(name)
     changes: dict[str, Any] = {}
     if url is not None:
         validate_preset_url(url)
@@ -241,7 +276,7 @@ def edit_preset(
     return _view(_named(_store(change), name))
 
 
-def clear_key(name: str) -> ServerPreset:
+def _clear_key(name: str) -> ServerPreset:
     """Remove the stored key of the preset *name*. A clear adds nothing, so no entry can stop it."""
 
     def change(entries: list[Entry]) -> list[Entry]:
@@ -259,3 +294,26 @@ def remove_preset(name: str) -> None:
         return [entry for entry in entries if entry.name != name]
 
     _store(change)
+
+
+def split_roles(text: str) -> list[str]:
+    """The role names in a comma-separated *text*; an empty segment stays for the role check."""
+    if not text.strip():
+        return []
+    return [part.strip() for part in text.split(",")]
+
+
+def engines_refused_message() -> str:
+    """The refusal text for a preset change on the HTTP server while allow_http_engines is off."""
+    return (
+        "Changing presets on the HTTP server is unavailable: a preset sets where requests and "
+        "API keys go. Enable allow_http_engines (LILBEE_ALLOW_HTTP_ENGINES) on a deployment you "
+        "alone use, or change presets from the CLI or TUI."
+    )
+
+
+def failure_text(exc: ValueError | OSError) -> str:
+    """The text a surface shows for a failed preset call; no surface writes its own."""
+    if isinstance(exc, OSError):
+        return config_write_failure_message(exc)
+    return str(exc)

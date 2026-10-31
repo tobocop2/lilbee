@@ -771,6 +771,7 @@ async def test_settings_cycle_pane_wraps_through_strip():
     from textual.widgets import TabbedContent
 
     from lilbee.cli.tui.screens.settings import SettingsScreen
+    from lilbee.cli.tui.screens.settings_presets import PRESETS_PANE_ID
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -778,6 +779,7 @@ async def test_settings_cycle_pane_wraps_through_strip():
         assert isinstance(screen, SettingsScreen)
         tabs = screen.query_one("#settings-tabs", TabbedContent)
         pane_ids = screen._pane_ids
+        assert pane_ids[-1] == PRESETS_PANE_ID
         assert len(pane_ids) >= 2
         # Start on the first pane.
         first = pane_ids[0]

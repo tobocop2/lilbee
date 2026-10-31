@@ -39,6 +39,7 @@ from lilbee.app.status import held_out_sources
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.screens.profile_tab import ProfileSnapshot, ProfileTab, load_snapshot
+from lilbee.cli.tui.screens.settings_presets import PRESETS_PANE_ID, PresetsPane
 from lilbee.cli.tui.screens.settings_widgets import (
     ADVANCED_COLLAPSIBLE_CLASS,
     ADVANCED_COLLAPSIBLE_ID_PREFIX,
@@ -218,7 +219,7 @@ class SettingsScreen(Screen[None]):
             yield StableFooter()
 
     def _compose_group_tabs(self) -> ComposeResult:
-        """Yield one TabPane per setting group; bodies populate on activation."""
+        """Yield one TabPane per setting group, then Presets; bodies populate on activation."""
         for group_name, items in group_settings().items():
             pane_id = f"settings-tab-{group_name.lower().replace('-', '_')}"
             self._pane_groups[pane_id] = _PaneGroup(
@@ -230,6 +231,12 @@ class SettingsScreen(Screen[None]):
                 _LazyGroupBody(id=f"{pane_id}-body"),
                 id=pane_id,
             )
+        self._pane_ids.append(PRESETS_PANE_ID)
+        yield TabPane(
+            msg.SETTINGS_PRESETS_TAB,
+            PresetsPane(id=f"{PRESETS_PANE_ID}-body"),
+            id=PRESETS_PANE_ID,
+        )
 
     def on_mount(self) -> None:
         """Defer first-pane content mount until after the screen has painted.
@@ -957,7 +964,7 @@ class SettingsScreen(Screen[None]):
         tabs = self.query_one("#settings-tabs", TabbedContent)
         active_pane_id = tabs.active
         try:
-            body = self.query_one(f"#{active_pane_id}-body", _LazyGroupBody)
+            body = self.query_one(f"#{active_pane_id}-body", VerticalScroll)
         except Exception:
             self._focus_adjacent(direction)
             return
@@ -984,7 +991,7 @@ class SettingsScreen(Screen[None]):
 
     def _focus_pane_edge(self, pane_id: str, direction: int) -> None:
         try:
-            body = self.query_one(f"#{pane_id}-body", _LazyGroupBody)
+            body = self.query_one(f"#{pane_id}-body", VerticalScroll)
         except Exception:
             return
         focusables = self._focus_stops(body)
@@ -992,7 +999,7 @@ class SettingsScreen(Screen[None]):
             return
         focusables[0 if direction == 1 else -1].focus()
 
-    def _focus_stops(self, body: _LazyGroupBody) -> list[Widget]:
+    def _focus_stops(self, body: VerticalScroll) -> list[Widget]:
         """The widgets in *body* that Tab can reach, without the hidden ones."""
         return [
             w for w in self.focus_chain if body in w.ancestors and not isinstance(w, SettingRow)
