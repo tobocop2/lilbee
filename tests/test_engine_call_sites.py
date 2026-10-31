@@ -234,13 +234,13 @@ class TestDeviceReads:
 
 class TestPlansAskTheEngine:
     def test_plan_all_launches_probes_the_engine(self, spy: SpyEngine) -> None:
-        planning.plan_all_launches(engine=spy)
+        planning.plan_all_launches(engines=planning.engines_for_all_roles(spy))
         assert spy.probed
         assert set(spy.probed) == {spy.binary()}
 
     def test_plan_all_launches_needs_the_engine_binary(self, spy: SpyEngine) -> None:
         with pytest.raises(ProviderError, match="spy binary missing"):
-            planning.plan_all_launches(engine=_binaryless(spy))
+            planning.plan_all_launches(engines=planning.engines_for_all_roles(_binaryless(spy)))
 
     def test_plan_launches_builds_the_engine_argv(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
@@ -251,7 +251,7 @@ class TestPlansAskTheEngine:
             spy.binary(),
             {SPY_DEVICE.index: SPY_DEVICE},
             [SPY_DEVICE],
-            engine=spy,
+            engines=planning.engines_for_all_roles(spy),
         )
         assert plan.launches
         assert all(launch.argv[0] == str(spy.binary()) for launch in plan.launches)
@@ -362,21 +362,27 @@ class TestMemoryEstimates:
         assert placed.est_vram_bytes == last.ctx * 2 * BYTES_PER_CTX
 
     def test_peak_estimator_returns_the_engine_per_device_shares(self, spy: SpyEngine) -> None:
-        estimate = planning._peak_estimator({WorkerRole.EMBED: "embed-ref"}, spy)
+        estimate = planning._peak_estimator(
+            {WorkerRole.EMBED: "embed-ref"}, planning.engines_for_all_roles(spy)
+        )
         shares = estimate(WorkerRole.EMBED, (1, 1))
         assert spy.sized[-1].tensor_split == (1, 1)
         assert shares == spy.estimate_memory(spy.sized[-1]).per_device
         assert spy.sized[-1].expert_offload  # the engine's metadata names experts
 
     def test_peak_estimator_sizes_the_window_from_the_engine_metadata(self, spy: SpyEngine) -> None:
-        planning._peak_estimator({WorkerRole.EMBED: "embed-ref"}, spy)(WorkerRole.EMBED, (1, 1))
+        planning._peak_estimator(
+            {WorkerRole.EMBED: "embed-ref"}, planning.engines_for_all_roles(spy)
+        )(WorkerRole.EMBED, (1, 1))
         model_path = spy.sized[-1].model_path
         from_header = engine_params.resolve_embed_ctx(SPY_META, model_path)
         assert spy.sized[-1].ctx == planning.apply_ctx_downshift(WorkerRole.EMBED, from_header)
         assert from_header != engine_params.resolve_embed_ctx(None, model_path)
 
     def test_split_ctx_objective_targets_the_engine_window(self, spy: SpyEngine) -> None:
-        fitter, target = planning._chat_split_ctx_objective({WorkerRole.CHAT: "chat-ref"}, spy)
+        fitter, target = planning._chat_split_ctx_objective(
+            {WorkerRole.CHAT: "chat-ref"}, planning.engines_for_all_roles(spy)
+        )
         assert fitter is not None
         assert spy.meta_paths
         assert target == planning._placement_estimate_ctx(
@@ -551,8 +557,8 @@ class TestProvider:
             planning, "refresh_plan_devices", lambda engine: seen["refresh"].append(engine)
         )
 
-        def _plan(*, engine: Any) -> planning.FleetPlan:
-            seen["plan"].append(engine)
+        def _plan(*, engines: Any) -> planning.FleetPlan:
+            seen["plan"].append(engines)
             return planning.FleetPlan((launch,))
 
         monkeypatch.setattr(planning, "plan_all_launches", _plan)
@@ -565,7 +571,7 @@ class TestProvider:
         provider = FleetProvider(engine=spy)
         assert provider._plan_and_spawn(tmp_path)
         assert seen["probe"] == [spy]
-        assert seen["plan"] == [spy]
+        assert seen["plan"] == [planning.engines_for_all_roles(spy)]
         assert seen["swap"] == [spy]
 
     def test_reload_replans_and_respawns_with_the_provider_engine(
@@ -578,7 +584,7 @@ class TestProvider:
         provider._reload_pass()
         assert seen["refresh"] == [spy]
         assert seen["probe"] == [spy]  # nothing was running, so the reload re-captures the box
-        assert seen["plan"] == [spy]
+        assert seen["plan"] == [planning.engines_for_all_roles(spy)]
         assert seen["swap"] == [spy]
 
 

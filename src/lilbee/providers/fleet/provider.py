@@ -849,13 +849,14 @@ def _placeable_demand(engine: EngineAdapter) -> _EngineDemand:
     binary resolves: nothing is placeable, so the ladder serves nothing.
     """
     from lilbee.providers.fleet.planning import (
+        engines_for_all_roles,
         placeable_total_vram,
         plan_all_launches,
         role_model_placeable,
     )
 
     try:
-        plan = plan_all_launches(engine=engine)
+        plan = plan_all_launches(engines=engines_for_all_roles(engine))
     except ProviderError as exc:
         if exc.kind is ProviderErrorKind.NOT_FOUND:
             return _EngineDemand(set(), 0, {}, {})
@@ -1445,7 +1446,7 @@ class FleetProvider:
             # silent never-ready fleet.
             origin = _plan_origin()
             planning.capture_plan_probe(self.engine)
-            plan = planning.plan_all_launches(engine=self.engine)
+            plan = planning.plan_all_launches(engines=planning.engines_for_all_roles(self.engine))
         except ProviderError as exc:
             # Only a genuinely-missing engine binary keeps the quiet no-fleet path;
             # any other planning failure (a wedged GPU probe, an unusable CUDA
@@ -2910,7 +2911,9 @@ class FleetProvider:
                         # Nothing loaded (a resurrect after a failed pass): the box is
                         # clean, so refresh the plan snapshot like a first build would.
                         planning.capture_plan_probe(self.engine)
-                    plan = planning.plan_all_launches(engine=self.engine)
+                    plan = planning.plan_all_launches(
+                        engines=planning.engines_for_all_roles(self.engine)
+                    )
                 except ProviderError as exc:
                     # Same policy as the initial build: a genuinely-missing engine
                     # binary aborts the reload quietly (nothing to serve), while any
