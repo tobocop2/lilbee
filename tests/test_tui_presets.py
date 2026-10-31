@@ -15,9 +15,12 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict, runs_while_streaming
 from lilbee.cli.tui.preset_commands import (
     DialogRequest,
+    PresetCommandResult,
     dialog_request,
+    key_typed,
     remove_target,
     run_preset_command,
+    slash_text_carries_key,
 )
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.settings_presets import (
@@ -214,6 +217,41 @@ class TestRunPresetCommand:
         assert remove_target("remove omlx") == "omlx"
         assert remove_target("remove") is None
         assert remove_target("list") is None
+
+
+class TestKeyDetection:
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            (f"add x1 {LOCAL} --key abc", True),
+            (f"add x1 {LOCAL} --key=abc", True),
+            ("add 'x1 --key abc", True),
+            (f"add x1 {LOCAL} --roles chat", False),
+            ("add x1 --keyboard 1", False),
+            ("", False),
+        ],
+    )
+    def test_key_typed_finds_the_flag_in_either_form(self, args, expected):
+        assert key_typed(args) is expected
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("/preset add x1 u --key abc", True),
+            ("/PRESET add x1 u --key=abc", True),
+            ("/preset list", False),
+            ("/set --key abc", False),
+            ("hello --key abc", False),
+        ],
+    )
+    def test_only_a_preset_line_with_a_key_counts(self, text, expected):
+        assert slash_text_carries_key(text) is expected
+
+    @pytest.mark.parametrize("args", [f"add x1 {LOCAL} --key=abc", "edit omlx --key abc"])
+    def test_run_refuses_either_form_with_the_fixed_text(self, args):
+        _seed()
+        assert run_preset_command(args) == PresetCommandResult(False, msg.PRESET_KEY_IN_DIALOG)
+        assert len(_stored()) == 1
 
 
 class TestRegistry:
@@ -615,3 +653,64 @@ class TestPaneKeyboardAccess:
             )
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+
+
+SECRET = "SENTINEL-slash-key-5d7e"
+
+
+def _text_under(root) -> str:
+    """Every file below *root* as one text, so a leak into any store shows up."""
+    return "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in root.rglob("*")
+        if path.is_file()
+    )
+
+
+class TestSlashKeyStaysOutOfEveryStore:
+    @pytest.mark.parametrize(
+        "typed",
+        [
+            f"/preset add x1 {LOCAL} --roles chat --key {SECRET}",
+            f"/preset add x1 {LOCAL} --roles chat --key={SECRET}",
+            f"/preset edit omlx --key {SECRET}",
+        ],
+    )
+    async def test_a_typed_key_reaches_no_history_log_or_screen(self, typed, caplog):
+        _seed()
+        caplog.set_level("DEBUG")
+        app = _ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            chat = await await_chat(app, pilot)
+            chat._enter_insert_mode()
+            chat._input_history.append("earlier line")
+            chat._chat_input.value = typed
+            with (
+                mock.patch.object(chat, "notify") as notify,
+                mock.patch.object(chat, "_run_preset_command") as worker,
+            ):
+                chat._submit_draft(chat._chat_input, typed)
+                assert await wait_until(pilot, lambda: notify.called)
+            assert not worker.called
+            assert notify.call_args.args[0] == msg.PRESET_KEY_IN_DIALOG
+            assert SECRET not in repr(notify.mock_calls)
+            chat.action_history_prev()
+            assert chat._chat_input.value == "earlier line"
+            assert SECRET not in repr(chat._input_history)
+            assert SECRET not in repr(chat._history)
+            on_disk = _text_under(cfg.data_root)
+            assert KEY in on_disk
+            assert SECRET not in on_disk
+            assert SECRET not in caplog.text
+            assert SECRET not in _screen_text(app)
+        assert [e["api_key"] for e in _stored()] == [KEY]
+
+    async def test_a_command_without_a_key_stays_in_the_input_history(self):
+        _seed()
+        app = _ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            chat = await await_chat(app, pilot)
+            chat._enter_insert_mode()
+            with mock.patch.object(chat, "_run_preset_command"):
+                chat._submit_draft(chat._chat_input, "/preset list")
+            assert chat._input_history[-1] == "/preset list"

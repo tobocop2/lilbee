@@ -54,6 +54,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.command_registry import runs_while_streaming
 from lilbee.cli.tui.log_routing import tui_log_path
+from lilbee.cli.tui.preset_commands import slash_text_carries_key
 from lilbee.cli.tui.screens.chat_helpers import (
     add_indexed_anything,
     build_add_progress_callback,
@@ -683,7 +684,8 @@ class ChatScreen(Screen[None]):
         if not self._ready_to_submit(text):
             return
         chat_input.value = ""
-        self._input_history.append(text)
+        if not slash_text_carries_key(text):
+            self._input_history.append(text)
         self._history_index = -1
 
         if text.startswith("/"):
@@ -1428,9 +1430,12 @@ class ChatScreen(Screen[None]):
             )
 
     def _cmd_preset(self, args: str) -> None:
-        from lilbee.cli.tui.preset_commands import dialog_request, remove_target
+        from lilbee.cli.tui.preset_commands import dialog_request, key_typed, remove_target
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
+        if key_typed(args):
+            self.notify(msg.PRESET_KEY_IN_DIALOG, severity="error")
+            return
         def _notify_dialog_result(notice: str | None) -> None:
             if notice is not None:
                 self.notify(notice)

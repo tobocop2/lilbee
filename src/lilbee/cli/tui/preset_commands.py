@@ -18,6 +18,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.server_registry import RerankWire
 
+_COMMAND = "/preset"
 _KEY_FLAG = "--key"
 _VALUE_FLAGS = ("--url", "--roles", "--wire")
 _CLEAR_FLAG = "--clear-key"
@@ -74,6 +75,20 @@ def _tokens(args: str) -> list[str] | None:
         return shlex.split(args)
     except ValueError:
         return None
+
+
+def key_typed(args: str) -> bool:
+    """Whether *args* holds a `--key` flag, with the value joined by a space or an equals sign."""
+    words = _tokens(args)
+    if words is None:
+        words = args.split()
+    return any(word == _KEY_FLAG or word.startswith(f"{_KEY_FLAG}=") for word in words)
+
+
+def slash_text_carries_key(text: str) -> bool:
+    """Whether the chat line *text* is a /preset command that holds a typed key."""
+    command, _, args = text.partition(" ")
+    return command.lower() == _COMMAND and key_typed(args)
 
 
 def dialog_request(args: str) -> DialogRequest | None:
@@ -168,7 +183,7 @@ def run_preset_command(args: str) -> PresetCommandResult:
     if not words:
         return usage
     verb, rest = words[0], words[1:]
-    if _KEY_FLAG in rest:
+    if key_typed(args):
         return PresetCommandResult(False, msg.PRESET_KEY_IN_DIALOG)
     try:
         if verb == "list" and not rest:
