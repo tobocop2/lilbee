@@ -3602,11 +3602,20 @@ class TestLifecycleMethods:
         assert _provider_with_clients({}).cancel_inference() is None
 
     def test_reload_role_noop_when_swap_not_up(self, monkeypatch) -> None:
-        spawned = {"thread": False}
-        monkeypatch.setattr("threading.Thread", lambda *a, **k: spawned.__setitem__("thread", True))
-        p = FleetProvider()  # _swap is None
+        class _RunsInline:
+            def __init__(self, *, target, name, daemon) -> None:
+                self.target = target
+
+            def start(self) -> None:
+                self.target()
+
+        passes: list[object] = []
+        monkeypatch.setattr(prov_mod.threading, "Thread", _RunsInline)
+        p = FleetProvider()  # no group is up
+        monkeypatch.setattr(p, "_reload_pass", lambda *a, **k: passes.append(a))
         p.reload_role(WorkerRole.EMBED)
-        assert spawned["thread"] is False  # no background restart dispatched
+        assert passes == []  # no background restart ran
+        assert p._reloading is False
 
     def test_reload_role_dispatches_background_restart(self) -> None:
         done = threading.Event()
@@ -4194,6 +4203,8 @@ class TestReloadSingleFlight:
         assert p._reload_pending is True
         p._reload_blocking()  # the in-flight thread runs to completion
         assert len(plans) == 2  # one pass per request: the change was applied
+        assert p._reloading is False
+        assert p._reload_pending is False
 
     def test_a_reload_with_no_group_up_and_one_in_flight_is_queued(self) -> None:
         p = FleetProvider()
@@ -4201,13 +4212,14 @@ class TestReloadSingleFlight:
         p.reload_placement()
         assert p._reload_pending is True
 
-    def test_a_reload_with_no_group_up_and_none_in_flight_does_nothing(self) -> None:
+    def test_a_reload_with_no_group_up_and_none_in_flight_does_nothing(self, monkeypatch) -> None:
+        passes: list[object] = []
         p = FleetProvider()
-        p.reload_placement()
+        monkeypatch.setattr(p, "_reload_pass", lambda *a, **k: passes.append(a))
+        p.reload_placement(wait=True)
+        assert passes == []
         assert p._reload_pending is False
         assert p._reloading is False
-        assert p._reloading is False
-        assert p._reload_pending is False
 
     def test_fresh_reload_clears_a_stale_pending_flag(self, monkeypatch) -> None:
         threads: list[object] = []

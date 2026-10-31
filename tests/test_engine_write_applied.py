@@ -6,6 +6,7 @@ engine book, the plan, the reload and the engine service are the product's own.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -265,6 +266,145 @@ def test_a_write_while_a_reload_has_every_group_stopped_reaches_the_engines(
     assert set(launches) == {WorkerRole.CHAT, WorkerRole.EMBED}
     assert "--mlx" not in launches[WorkerRole.CHAT]
     assert "--mlx" in launches[WorkerRole.EMBED]
+
+
+def _chat_argv(local: FleetProvider) -> list[str]:
+    launches = {launch.role: launch.argv for group in local._launches.values() for launch in group}
+    return list(launches[WorkerRole.CHAT])
+
+
+def _write_in_thread(outcomes: dict[str, BaseException | None], name: str) -> threading.Thread:
+    def write() -> None:
+        try:
+            engine_service.prefer("mlx")
+            outcomes[name] = None
+        except engine_service.EngineNotAppliedError as exc:
+            outcomes[name] = exc
+
+    return threading.Thread(target=write)
+
+
+def _build_held_at_its_start(local: FleetProvider) -> threading.Thread:
+    """A first build that has made its plan and waits at the gate, with no group up."""
+    local.invalidate_load_cache()
+    _ProcessSwap.starting.clear()
+    _ProcessSwap.start_gate = threading.Event()
+
+    def build() -> None:
+        with contextlib.suppress(ProviderError):  # the build that fails tells its own caller
+            local._ensure_fleet()
+
+    builder = threading.Thread(target=build)
+    builder.start()
+    assert _ProcessSwap.starting.wait(_WAIT_S)
+    assert local._swaps == {}
+    return builder
+
+
+def test_a_write_during_the_first_build_waits_and_reaches_the_engines(fleet: Services) -> None:
+    local = _local(fleet)
+    builder = _build_held_at_its_start(local)
+    outcomes: dict[str, BaseException | None] = {}
+    writer = _write_in_thread(outcomes, "write")
+    writer.start()
+    _wait_for(lambda: local._reloading)
+    assert writer.is_alive()
+    assert outcomes == {}
+    assert _ProcessSwap.start_gate is not None
+    _ProcessSwap.start_gate.set()
+    builder.join(_WAIT_S)
+    writer.join(_WAIT_S)
+    assert not builder.is_alive()
+    assert not writer.is_alive()
+    assert outcomes == {"write": None}
+    assert "--mlx" in _chat_argv(local)
+    assert local.reload_notice() is None
+
+
+def test_a_write_during_a_first_build_that_fails_leaves_the_choice_for_the_next_use(
+    fleet: Services,
+) -> None:
+    local = _local(fleet)
+    _ProcessSwap.start_failure = ProviderError("engine did not start", provider="llama-server")
+    builder = _build_held_at_its_start(local)
+    outcomes: dict[str, BaseException | None] = {}
+    writer = _write_in_thread(outcomes, "write")
+    writer.start()
+    _wait_for(lambda: local._reloading)
+    assert writer.is_alive()
+    assert _ProcessSwap.start_gate is not None
+    _ProcessSwap.start_gate.set()
+    builder.join(_WAIT_S)
+    writer.join(_WAIT_S)
+    assert not builder.is_alive()
+    assert not writer.is_alive()
+    assert outcomes == {"write": None}
+    assert local._swaps == {}
+    assert local.reload_notice() is None
+    _ProcessSwap.start_failure = None
+    assert local._ensure_fleet() is True
+    assert "--mlx" in _chat_argv(local)
+
+
+def test_a_write_with_no_group_up_and_no_build_starts_nothing_and_the_next_use_reads_it(
+    fleet: Services,
+) -> None:
+    local = _local(fleet)
+    local.invalidate_load_cache()
+    _ProcessSwap.starting.clear()
+    engine_service.prefer("mlx")
+    assert _ProcessSwap.starting.is_set() is False
+    assert local._swaps == {}
+    assert local._reloading is False
+    assert local.reload_notice() is None
+    assert local._ensure_fleet() is True
+    assert "--mlx" in _chat_argv(local)
+
+
+def test_a_write_after_a_failed_reload_with_no_group_up_clears_the_failure(
+    fleet: Services,
+) -> None:
+    local = _local(fleet)
+    _ProcessSwap.start_failure = ProviderError("engine did not start", provider="llama-server")
+    with pytest.raises(engine_service.EngineNotAppliedError, match="engine did not start"):
+        engine_service.prefer("mlx")
+    assert local._swaps == {}
+    assert local.reload_notice() == RELOAD_FAILED_NOTICE
+    _ProcessSwap.start_failure = None
+    _ProcessSwap.starting.clear()
+    engine_service.prefer("auto")
+    assert _ProcessSwap.starting.is_set() is False
+    assert local.reload_notice() is None
+
+
+def test_a_write_that_joins_a_queued_write_does_not_hear_an_older_failure(
+    fleet: Services,
+) -> None:
+    local = _local(fleet)
+    _ProcessSwap.start_failure = ProviderError("engine did not start", provider="llama-server")
+    with pytest.raises(engine_service.EngineNotAppliedError, match="engine did not start"):
+        engine_service.prefer("mlx")
+    assert local.reload_notice() == RELOAD_FAILED_NOTICE
+    builder = _build_held_at_its_start(local)
+    outcomes: dict[str, BaseException | None] = {}
+    first = _write_in_thread(outcomes, "first")
+    first.start()
+    _wait_for(lambda: local._reloading)
+    second = _write_in_thread(outcomes, "second")
+    second.start()
+    _wait_for(lambda: local._reload_pending)
+    assert _ProcessSwap.start_gate is not None
+    _ProcessSwap.start_gate.set()
+    builder.join(_WAIT_S)
+    first.join(_WAIT_S)
+    second.join(_WAIT_S)
+    assert not builder.is_alive()
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert outcomes == {"first": None, "second": None}
+    assert local._reloading is False
+    assert local._reload_pending is False
+    assert local._swaps == {}
 
 
 def test_a_reload_that_fails_on_the_disk_is_not_applied(fleet: Services) -> None:

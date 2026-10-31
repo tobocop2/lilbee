@@ -1014,7 +1014,7 @@ class FleetProvider:
         # while one is in flight sets the pending flag instead of dispatching,
         # and the in-flight thread re-runs the plan loop once per pending flag.
         self._reloading = False
-        # True after the last reload pass failed and until a pass succeeds.
+        # True after the last reload pass failed, until a pass succeeds or a write finds no group.
         self._reload_failed = False
         # Set when a reload arrives mid-reload: the in-flight pass may have
         # already snapshotted its plan, so the change must be re-applied.
@@ -2514,8 +2514,9 @@ class FleetProvider:
 
         The fresh plan is diffed per role against the running fleet: a role whose
         devices (and so its launch argv) did not change keeps serving through the
-        change -- moving the embedder never unloads a 100GB chat model. When no
-        fleet is up, the next use plans fresh, so this returns at once.
+        change -- moving the embedder never unloads a 100GB chat model. When a build
+        or reload runs, this queues on it. When no group is up after that, the next
+        use plans fresh.
         """
         self._dispatch_reload("fleet-reload-placement", wait=wait)
 
@@ -2524,8 +2525,7 @@ class FleetProvider:
 
         Dispatched to a background thread because the slow restart (rewrite config +
         respawn + wait-ready) must not block the settings/model-picker callback.
-        If no group is up and no reload runs, the next use starts the fleet with
-        current cfg. Single-flight: a reload while one is in flight sets the pending flag (the
+        Single-flight: a reload while one is in flight sets the pending flag (the
         in-flight pass may have already snapshotted its plan), and the in-flight
         thread runs one more pass per pending flag so the change is applied, not
         dropped.
@@ -2539,7 +2539,6 @@ class FleetProvider:
         as well.
         """
         with self._lock:
-            # In flight comes first: a pass that has stopped every group has none up.
             if self._reloading:
                 self._reload_pending = True
                 if wait:
@@ -2550,8 +2549,6 @@ class FleetProvider:
                             "The engine reload that was already running failed.",
                             provider=_PROVIDER_NAME,
                         )
-                return
-            if not self._swaps:
                 return
             self._reloading = True
             self._reload_pending = False
@@ -2572,7 +2569,11 @@ class FleetProvider:
             log.error("The engine reload failed: %s", exc)
 
     def _reload_blocking(self) -> None:
-        """Run reload passes until no further reload arrived mid-pass.
+        """Queue on any build in flight, then run reload passes until none arrived mid-pass.
+
+        Every build holds the build lock until its groups are up, so a write cannot
+        pass one here. With no group up after it, nothing runs the old choice and the
+        next use reads the new one, so no pass runs and no earlier failure still holds.
 
         A failed pass with the pending flag set still runs the pending pass (the
         fresh plan may succeed under the new cfg); only the final pass's failure
@@ -2581,6 +2582,13 @@ class FleetProvider:
         acquisition, so a reload_role landing between them cannot be acknowledged
         and dropped.
         """
+        with self._build_lock, self._lock:
+            if not self._swaps:
+                self._reload_failed = False
+                self._reload_pending = False
+                self._reloading = False
+                self._reload_done.notify_all()
+                return
         while True:
             try:
                 self._reload_pass()
