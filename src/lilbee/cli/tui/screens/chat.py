@@ -62,7 +62,6 @@ from lilbee.cli.tui.command_registry import (
     runs_while_streaming,
 )
 from lilbee.cli.tui.log_routing import tui_log_path
-from lilbee.cli.tui.preset_commands import is_preset_line
 from lilbee.cli.tui.screens.analyze_report import open_report, start_analysis
 from lilbee.cli.tui.screens.chat_helpers import (
     add_indexed_anything,
@@ -75,6 +74,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     unregister_added_roots,
 )
 from lilbee.cli.tui.screens.profile_dialogs import run_profile_op, start_profile_switch
+from lilbee.cli.tui.secret_lines import carries_secret
 from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
@@ -745,7 +745,7 @@ class ChatScreen(Screen[None]):
         if not self._ready_to_submit(text):
             return
         chat_input.value = ""
-        if not is_preset_line(text):
+        if not carries_secret(text):
             self._input_history.append(text)
         self._history_index = -1
 

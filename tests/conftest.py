@@ -166,6 +166,12 @@ def _serve_never_ends_the_test_process(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_browser(monkeypatch):
+    """Stop a test from opening a page on the machine that runs the suite."""
+    monkeypatch.setattr("webbrowser.open", MagicMock())
+
+
+@pytest.fixture(autouse=True)
 def _download_without_a_child_process(request, monkeypatch):
     """Run a download's transfer in this process so a test's patches reach it.
 
