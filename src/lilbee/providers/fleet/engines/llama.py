@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF, SUPPORTED_ARCHS
+from lilbee.catalog.header_probe import GGUF_MAGIC
 from lilbee.providers.fleet.adapters import (
     FLAG_FIT_TARGET,
     FLAG_KV_UNIFIED_PER_SLOT,
@@ -51,9 +52,17 @@ _PROFILE = RequestProfile(
     unreadable_embedding_hint="base64 embedding responses need llama-server b4391 or newer.",
     reasoning_field="reasoning_content",
 )
-_GGUF_SUFFIX = ".gguf"
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
+
+
+def _starts_with_gguf_magic(path: Path) -> bool:
+    """Whether the file opens with the GGUF magic; the registry stores blobs with no suffix."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(len(GGUF_MAGIC)) == GGUF_MAGIC
+    except OSError:
+        return False
 
 
 class LlamaCppAdapter:
@@ -121,7 +130,7 @@ class LlamaCppAdapter:
         return probe_devices(binary)
 
     def model_meta(self, path: Path) -> dict[str, str] | None:
-        if path.suffix.lower() != _GGUF_SUFFIX:
+        if not _starts_with_gguf_magic(path):
             return None
         return read_gguf_metadata(path)
 

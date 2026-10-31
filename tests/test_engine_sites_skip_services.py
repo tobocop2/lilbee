@@ -74,9 +74,19 @@ def test_launcher_sizes_the_chat_window_with_the_selected_engine(
     assert seen == [LLAMA]
 
 
-def test_self_check_kv_flag_uses_the_selected_engine() -> None:
+def test_self_check_kv_flag_uses_the_selected_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    import lilbee.providers.fleet.planning as planning
+
+    seen: list[Any] = []
+
+    def _flag(engine: Any) -> str:
+        seen.append(engine)
+        return "flag-from-the-spy"
+
+    monkeypatch.setattr(planning, "chat_cache_type_flag", _flag)
     kwargs = setup_cmd._resolved_provider_kwargs()
-    assert kwargs["kv_cache_type"]
+    assert kwargs["kv_cache_type"] == "flag-from-the-spy"
+    assert seen == [LLAMA]
 
 
 def test_self_check_server_plans_with_the_selected_engine(
