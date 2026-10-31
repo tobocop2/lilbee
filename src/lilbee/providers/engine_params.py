@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
+    from lilbee.providers.fleet.engines import EngineAdapter
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.health_warnings import HealthWarning, WarningCode
@@ -187,7 +188,7 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
     )
 
 
-def chat_kv_elem_bytes() -> float:
+def chat_kv_elem_bytes(engine: EngineAdapter) -> float:
     """Per-element byte cost of the K and V cache a chat launch allocates.
 
     Reads the flag the launch passes for both K and V
@@ -197,7 +198,7 @@ def chat_kv_elem_bytes() -> float:
     # call-time import: planning imports this module at load
     from lilbee.providers.fleet.planning import chat_cache_type_flag
 
-    flag = chat_cache_type_flag()
+    flag = chat_cache_type_flag(engine)
     return KV_CACHE_TYPE_BYTES[KvCacheType(flag) if flag else KvCacheType.F16]
 
 
@@ -210,7 +211,11 @@ def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
 
 
 def resolve_chat_ctx(
-    model_path: Path, meta: dict[str, str] | None, *, available_bytes: int | None = None
+    model_path: Path,
+    meta: dict[str, str] | None,
+    *,
+    engine: EngineAdapter,
+    available_bytes: int | None = None,
 ) -> int:
     """Pick a single-GPU chat n_ctx aiming for ``cfg.chat_n_ctx_target``, clamped to model + host.
 
@@ -241,12 +246,15 @@ def resolve_chat_ctx(
     upper = min(training_ctx, ceiling, cfg.chat_n_ctx_target)
 
     try:
-        return fit_chat_ctx(model_path, meta, available_bytes=available_bytes, ctx_ceiling=upper)
+        return fit_chat_ctx(
+            model_path, meta, available_bytes=available_bytes, ctx_ceiling=upper, engine=engine
+        )
     except (ProviderError, OSError, ValueError):
         log.debug("gguf-parser ctx fit failed for %s, using header math", model_path, exc_info=True)
     return _header_math_chat_ctx(
         model_path,
         meta,
+        engine=engine,
         available_bytes=available_bytes,
         training_ctx=training_ctx,
         ceiling=ceiling,
@@ -257,6 +265,7 @@ def _header_math_chat_ctx(
     model_path: Path,
     meta: dict[str, str] | None,
     *,
+    engine: EngineAdapter,
     available_bytes: int,
     training_ctx: int,
     ceiling: int,
@@ -264,7 +273,7 @@ def _header_math_chat_ctx(
     """Window from GGUF header arithmetic: weights plus a dense-attention cache."""
     try:
         model_bytes = model_path.stat().st_size
-        elem_bytes = chat_kv_elem_bytes()
+        elem_bytes = chat_kv_elem_bytes(engine)
         kv_per_tok = kv_bytes_per_token(meta, elem_bytes, elem_bytes)
         return compute_dynamic_ctx(
             model_bytes=model_bytes,

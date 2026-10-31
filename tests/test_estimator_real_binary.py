@@ -15,6 +15,7 @@ import pytest
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet.binary import EngineTool, resolve_engine_tool
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.vram import estimate_instance_footprint
 
 # Opts out of the engine-binary seal on purpose: this is the one test whose
@@ -123,6 +124,7 @@ def test_the_single_device_fit_lands_on_the_last_window_that_fits(parser, tiny_g
         unified=False,
         ctx_ceiling=4096,
         expert_offload=(),
+        engine=LLAMA,
     )
     assert (fitted - _DYNAMIC_CTX_FLOOR) % _DYNAMIC_CTX_QUANTUM == 0
     assert _estimate(tiny_gguf, ctx=fitted, slots=1).vram_bytes <= budget

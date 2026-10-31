@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
@@ -17,7 +18,7 @@ class TestPlacementWarnings:
         from lilbee.core.health_warnings import HealthWarning, WarningCode
 
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: 2048)
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 2048)
         placed = HealthWarning(
             code=WarningCode.PLACEMENT_DIVERGED,
             message="The chat model did not land where it was planned.",
@@ -42,7 +43,7 @@ class TestPlacementWarnings:
             "load_model: initializing slots\n",
             encoding="utf-8",
         )
-        manager = sm.SwapManager(tmp_path, SwapGroup.CHAT)
+        manager = sm.SwapManager(tmp_path, SwapGroup.CHAT, engine=LLAMA)
         manager._log_path = tmp_path / "logs" / "llama-swap-chat.log"
         launch = InstanceLaunch(
             role=WorkerRole.CHAT,
@@ -77,7 +78,7 @@ class TestPlacementWarnings:
                 return _Resp()
 
         monkeypatch.setattr(sm, "_probe_client", lambda: _Client())
-        manager = sm.SwapManager(tmp_path, SwapGroup.CHAT)
+        manager = sm.SwapManager(tmp_path, SwapGroup.CHAT, engine=LLAMA)
         launch = InstanceLaunch(
             role=WorkerRole.CHAT,
             argv=["/bin/llama-server", MEMORY_FLAG],
@@ -96,6 +97,6 @@ class TestPlacementWarnings:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
-        routing = RoutingProvider()
+        routing = RoutingProvider(engine=LLAMA)
         assert routing._local is None
         assert routing.health_warnings() == []

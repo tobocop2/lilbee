@@ -22,6 +22,7 @@ from lilbee.app.services import reset_services as reset_provider
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.data.ingest import sync
+from lilbee.providers.fleet.engines import LLAMA
 from tests.integration.conftest import EMBED_ENTRY
 
 pytestmark = pytest.mark.slow
@@ -66,7 +67,7 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
 
     # Download embedding model
     embed_entry = EMBED_ENTRY
-    download_model(embed_entry)
+    download_model(embed_entry, engine=LLAMA)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
     # Run sync (will use Tesseract OCR if available, otherwise skip PDF)

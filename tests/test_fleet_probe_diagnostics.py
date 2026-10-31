@@ -10,6 +10,7 @@ import pytest
 
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import devices as devices_mod
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.roles import EngineBackend
 
@@ -122,7 +123,7 @@ class TestEveryVendorGetsTheWarning:
 
         self._probe_reporting_nothing(monkeypatch, {vendor_id})
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
-            planning_mod.resolve_devices(Path("/bin/llama-server"))
+            planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
         assert vendor in caplog.text
         assert "reported none" in caplog.text
 
@@ -131,7 +132,7 @@ class TestEveryVendorGetsTheWarning:
 
         self._probe_reporting_nothing(monkeypatch, set())
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
-            planning_mod.resolve_devices(Path("/bin/llama-server"))
+            planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
         assert "reported none" not in caplog.text
 
 
@@ -150,7 +151,7 @@ class TestABootTimeEmptyAnswerIsRetried:
 
         calls: list[int] = []
 
-        def _resolve(_binary):
+        def _resolve(_binary, engine):
             calls.append(1)
             devices = list(results[min(len(calls) - 1, len(results) - 1)])
             return planning_mod.DeviceReading(devices, EngineBackend.CUDA)
@@ -172,7 +173,7 @@ class TestABootTimeEmptyAnswerIsRetried:
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
             lambda: frozenset({0x10DE}),
         )
-        devices = planning_mod._probe_engine_devices().devices
+        devices = planning_mod._probe_engine_devices(engine=LLAMA).devices
         assert devices == [card]
         assert len(calls) == 3
 
@@ -183,7 +184,7 @@ class TestABootTimeEmptyAnswerIsRetried:
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids", frozenset
         )
-        devices = planning_mod._probe_engine_devices().devices
+        devices = planning_mod._probe_engine_devices(engine=LLAMA).devices
         assert devices == []
         assert len(calls) == 1
 
@@ -192,7 +193,7 @@ class TestABootTimeEmptyAnswerIsRetried:
         from lilbee.providers.fleet.devices import FleetDevice
 
         calls = self._answers(monkeypatch, [[FleetDevice("CUDA", 0, "gpu", 1, 1)]])
-        planning_mod._probe_engine_devices()
+        planning_mod._probe_engine_devices(engine=LLAMA)
         assert len(calls) == 1
 
     def test_a_card_that_never_appears_gives_up_and_says_nothing_is_there(
@@ -207,7 +208,7 @@ class TestABootTimeEmptyAnswerIsRetried:
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
             lambda: frozenset({0x1002}),
         )
-        devices = planning_mod._probe_engine_devices().devices
+        devices = planning_mod._probe_engine_devices(engine=LLAMA).devices
         assert devices == []
         assert len(calls) == 1 + planning_mod._PROBE_RETRIES
 

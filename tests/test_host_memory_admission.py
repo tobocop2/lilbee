@@ -11,6 +11,7 @@ import logging
 
 import pytest
 
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import WorkerRole
 
 _GB = 1024**3
@@ -111,7 +112,12 @@ class TestTheHostBoundReachesAdmission:
         monkeypatch.setattr(planning, "_host_memory_refuses", lambda *_a: True)
         assert (
             planning._admit_estimate(
-                _estimate(), WorkerRole.CHAT, _REF, total_vram=64 * _GB, ram_bytes=40 * _GB
+                _estimate(),
+                WorkerRole.CHAT,
+                _REF,
+                total_vram=64 * _GB,
+                ram_bytes=40 * _GB,
+                engine=LLAMA,
             )
             is None
         )
@@ -125,7 +131,12 @@ class TestTheHostBoundReachesAdmission:
         estimate = _estimate()
         assert (
             planning._admit_estimate(
-                estimate, WorkerRole.CHAT, _REF, total_vram=64 * _GB, ram_bytes=40 * _GB
+                estimate,
+                WorkerRole.CHAT,
+                _REF,
+                total_vram=64 * _GB,
+                ram_bytes=40 * _GB,
+                engine=LLAMA,
             )
             is estimate
         )
@@ -162,8 +173,15 @@ def test_the_estimators_own_host_figure_is_what_gets_judged(monkeypatch, tmp_pat
             vram_bytes=4 * _GB, unified_bytes=4 * _GB, ram_bytes=7 * _GB
         ),
     )
-    estimate = planning._estimate_role(WorkerRole.EMBED, _REF, slots=1, device_count=1)
+    estimate = planning._estimate_role(
+        WorkerRole.EMBED, _REF, slots=1, device_count=1, engine=LLAMA
+    )
     planning._admit_estimate(
-        estimate, WorkerRole.EMBED, _REF, total_vram=64 * _GB, ram_bytes=estimate.est_ram_bytes
+        estimate,
+        WorkerRole.EMBED,
+        _REF,
+        total_vram=64 * _GB,
+        ram_bytes=estimate.est_ram_bytes,
+        engine=LLAMA,
     )
     assert seen == [7 * _GB]

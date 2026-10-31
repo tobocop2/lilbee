@@ -192,12 +192,12 @@ class TestPlanFanout:
 
     def test_a_single_card_stays_in_this_process(self, monkeypatch):
         monkeypatch.setattr(fanout, "resolve_process_count", lambda devices: 1)
-        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda: 1)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 1)
         assert fanout.plan_fanout() == []
 
     def test_a_small_corpus_stays_in_this_process(self, monkeypatch):
         """Workers cost an interpreter, an engine and a store each; a small sync pays more."""
-        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda: 4)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 4)
         monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: False)
         assert fanout.plan_fanout() == []
 
@@ -208,7 +208,7 @@ class TestPlanFanout:
         monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: True)
         seen = {}
 
-        def counted():
+        def counted(_engine):
             import os
 
             from lilbee.providers.fleet.gpu_env import gpu_environ
@@ -223,7 +223,7 @@ class TestPlanFanout:
         assert [spec.visible_devices["CUDA_VISIBLE_DEVICES"] for spec in specs] == ["2", "3"]
 
     def test_a_big_corpus_on_several_cards_fans_out(self, monkeypatch):
-        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda: 4)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 4)
         monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: True)
         specs = fanout.plan_fanout()
         assert [spec.device for spec in specs] == [0, 1, 2, 3]

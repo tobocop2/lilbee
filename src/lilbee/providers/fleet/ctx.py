@@ -14,7 +14,7 @@ from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.engine_params import chat_ctx_ceiling
-from lilbee.providers.fleet.engines import LLAMA, MemoryRequest
+from lilbee.providers.fleet.engines import EngineAdapter, MemoryRequest
 from lilbee.providers.fleet.placement import _vram_proportional_split
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
@@ -44,6 +44,7 @@ def _largest_fitting_ctx(upper: int, fits: Callable[[int], bool]) -> int:
 def fit_single_ctx(
     model_path: Path,
     *,
+    engine: EngineAdapter,
     meta: dict[str, str] | None,
     slots: int,
     available_bytes: int,
@@ -72,7 +73,7 @@ def fit_single_ctx(
     upper = min(chat_ctx_ceiling(meta, model_path), ctx_ceiling)
 
     def _fits(per_slot: int) -> bool:
-        est = LLAMA.estimate_memory(
+        est = engine.estimate_memory(
             MemoryRequest(
                 model_path=model_path,
                 ctx=per_slot,
@@ -91,6 +92,7 @@ def fit_single_ctx(
 def fit_split_ctx(
     model_path: Path,
     *,
+    engine: EngineAdapter,
     meta: dict[str, str] | None,
     slots: int,
     ratio: tuple[int, ...],
@@ -136,7 +138,7 @@ def fit_split_ctx(
     upper = min(chat_ctx_ceiling(meta, model_path), ctx_ceiling)
 
     def _peak_fits(per_slot: int) -> bool:
-        est = LLAMA.estimate_memory(
+        est = engine.estimate_memory(
             MemoryRequest(
                 model_path=model_path,
                 ctx=per_slot,

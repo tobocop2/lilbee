@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines import LLAMA
 
 
 class TestTheChatServeBudgetCannotBecomeADiscount:
@@ -47,7 +48,7 @@ class TestANumCtxPinIsClampedToTheModel:
         monkeypatch.setattr(cfg, "num_ctx", 200_000)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
-            ctx = planning_mod._role_ctx(WorkerRole.CHAT, model, meta)
+            ctx = planning_mod._role_ctx(WorkerRole.CHAT, model, meta, engine=LLAMA)
         assert ctx == 8192
         assert "200000" in caplog.text.replace(",", "")
 
@@ -60,7 +61,7 @@ class TestANumCtxPinIsClampedToTheModel:
         monkeypatch.setattr(cfg, "num_ctx", 4096)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         meta = {"architecture": "qwen3", "context_length": "8192"}
-        assert planning_mod._role_ctx(WorkerRole.CHAT, model, meta) == 4096
+        assert planning_mod._role_ctx(WorkerRole.CHAT, model, meta, engine=LLAMA) == 4096
 
     def test_the_placement_estimate_clamps_the_same_way(self, monkeypatch, tmp_path) -> None:
         from lilbee.providers.fleet import planning as planning_mod
@@ -110,7 +111,7 @@ class TestANotAvailableUtilKeepsTheMemoryReading:
         model.write_bytes(b"x")
         monkeypatch.setattr(cfg, "num_ctx", 200_000)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
-        assert planning_mod._role_ctx(WorkerRole.CHAT, model, None) == 200_000
+        assert planning_mod._role_ctx(WorkerRole.CHAT, model, None, engine=LLAMA) == 200_000
 
     def test_num_ctx_max_still_caps_a_pin_without_metadata(self, monkeypatch, tmp_path) -> None:
         from lilbee.providers.fleet import planning as planning_mod
@@ -120,4 +121,4 @@ class TestANotAvailableUtilKeepsTheMemoryReading:
         model.write_bytes(b"x")
         monkeypatch.setattr(cfg, "num_ctx", 200_000)
         monkeypatch.setattr(cfg, "num_ctx_max", 16_384)
-        assert planning_mod._role_ctx(WorkerRole.CHAT, model, None) == 16_384
+        assert planning_mod._role_ctx(WorkerRole.CHAT, model, None, engine=LLAMA) == 16_384

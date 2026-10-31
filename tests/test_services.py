@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import WorkerRole
 
 
@@ -340,6 +341,7 @@ class TestServicesDataclass:
             crawler_semaphore=None,
             crawler_sync_state=CrawlerSyncState(),
             known_models=MagicMock(),
+            engine=LLAMA,
         )
         with pytest.raises(AttributeError):
             services.clusterer = MagicMock()  # type: ignore[misc]

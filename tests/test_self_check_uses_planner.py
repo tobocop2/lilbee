@@ -40,7 +40,7 @@ class TestTheSelfCheckAsksThePlanner:
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(
             "lilbee.providers.fleet.planning._plan_devices",
-            lambda _b: [FleetDevice("CUDA", 0, "gpu", 24 * 1024**3, 24 * 1024**3)],
+            lambda _b, engine: [FleetDevice("CUDA", 0, "gpu", 24 * 1024**3, 24 * 1024**3)],
         )
         captured: dict[str, object] = {}
 

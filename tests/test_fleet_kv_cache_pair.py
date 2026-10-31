@@ -15,6 +15,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.fleet.vram import GgufVramEstimate
@@ -31,13 +32,15 @@ def _chat_argv(tmp_path: Path, monkeypatch, *, backend: str, flash: bool | None,
     model.write_bytes(b"x" * 2048)
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
     monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: dict(meta))
-    monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
-    monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: backend)
+    monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
+    monkeypatch.setattr(planning_mod, "_fleet_backend", lambda engine: backend)
     monkeypatch.setattr(cfg, "flash_attention", flash)
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     device = FleetDevice(backend, 0, "gpu", 24 * _GB, 23 * _GB)
     plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
-    launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+    launch = planning_mod._launch_for(
+        plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
+    )
     return launch.argv
 
 
@@ -95,7 +98,7 @@ def test_chat_placement_estimate_sizes_the_kv_type_the_launch_sends(
     monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _record)
     monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 4096)
 
-    planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1)
+    planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1, engine=LLAMA)
 
     assert asked == [KvCacheType(_flag(argv, "--cache-type-k"))]
     assert _flag(argv, "--cache-type-v") == kv_type

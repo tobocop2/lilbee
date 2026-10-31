@@ -10,6 +10,7 @@ import re
 import threading
 import time
 from http import HTTPStatus
+from typing import TYPE_CHECKING
 
 import httpx
 from huggingface_hub import ModelInfo
@@ -25,6 +26,9 @@ from lilbee.catalog.models import (
     estimate_size_gb,
 )
 from lilbee.catalog.refs import GGUF_GLOB, rank_gguf_candidates
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
 
@@ -198,7 +202,8 @@ class HfClient:
     # repeats within the window stay at DEBUG.
     FETCH_FAILURE_WARN_INTERVAL_S: float = 300.0
 
-    def __init__(self) -> None:
+    def __init__(self, engine: EngineAdapter) -> None:
+        self._engine = engine
         self._cache: dict[str, tuple[float, HfPage]] = {}
         self._cache_lock = threading.Lock()
         self._arch_cache: dict[str, str] = {}
@@ -292,7 +297,7 @@ class HfClient:
                     trending_score=item.trending_score or 0,
                     task=task,
                     architecture=gguf_meta.architecture,
-                    compat=classify(gguf_meta.architecture),
+                    compat=classify(gguf_meta.architecture, self._engine),
                     params=gguf_meta.total,
                     safety_stripped=is_safety_stripped(item.tags or []),
                 )

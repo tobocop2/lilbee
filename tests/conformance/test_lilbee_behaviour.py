@@ -9,6 +9,8 @@ import pytest
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.roles import WorkerRole
 from tests.conformance.fake_engine import PROFILES, FakeEngine
 
 _TURN = [{"role": "user", "content": "Say ok."}]
@@ -27,7 +29,8 @@ def _error_of(call: Callable[[], Any]) -> Exception | None:
 
 
 def _client(engine: FakeEngine, model: str, **options: Any) -> LlamaServerClient:
-    return LlamaServerClient(engine.url, model, timeout=5.0, **options)
+    profile = LLAMA.request_profile(WorkerRole.CHAT)
+    return LlamaServerClient(engine.url, model, timeout=5.0, profile=profile, **options)
 
 
 @pytest.mark.xfail(strict=True, raises=_FAILS_AS_STATED, reason="L1, owner item 1180")

@@ -525,7 +525,6 @@ async def enforce_pull_arch_compat(
     from litestar.exceptions import HTTPException
 
     from lilbee.catalog.compat import UnsupportedArchError
-    from lilbee.providers.fleet.engines import LLAMA
 
     if _parse_source(source) is not ModelSource.NATIVE or allow_unsupported:
         return
@@ -533,6 +532,7 @@ async def enforce_pull_arch_compat(
     try:
         await asyncio.to_thread(manager.enforce_arch_compat, model)
     except UnsupportedArchError as exc:
+        engine = get_services().engine
         raise HTTPException(
             status_code=409,
             detail="unsupported_arch",
@@ -540,8 +540,8 @@ async def enforce_pull_arch_compat(
                 "code": "unsupported_arch",
                 "arch": exc.architecture,
                 "ref": exc.ref,
-                "supported_examples": sorted(LLAMA.architectures)[:5],
-                "total_supported": len(LLAMA.architectures),
+                "supported_examples": sorted(engine.architectures)[:5],
+                "total_supported": len(engine.architectures),
             },
         ) from exc
 
