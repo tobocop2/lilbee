@@ -82,4 +82,5 @@ itself is a couple of small ESM files around a native binary.
 
 - No download resume (retry restarts). Revisit on evidence.
 - No detached signature verification (peers don't either).
-- Windows has no CPU-baseline probe; `-compat` there is explicit-only.
+- Windows ships one compat GPU build, `compat-cu124`. A release without that asset
+  falls back to the plain `compat` build.

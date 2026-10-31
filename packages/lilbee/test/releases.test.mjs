@@ -146,6 +146,21 @@ test("compat hosts use the compat build as their baseline and compose the GPU fl
   assert.deepEqual(compatCuda.map((r) => [r.tag, r.assetName, r.variant]), [["v2", "lilbee-compat-linux-x86_64", "compat"]]);
 });
 
+test("a Windows host without AVX2 gets the compat CUDA build, and the compat build from a release without it", async () => {
+  const WINDOWS = { ...LINUX, platform: "win32", variant: "compat-cu124" };
+  const withAsset = ["lilbee-compat-windows-x86_64.exe", "lilbee-compat-windows-x86_64-cu124.exe"];
+  const gh = github({ pages: [[release("v2", withAsset), release("v1", ["lilbee-compat-windows-x86_64.exe"])]] });
+
+  const releases = await listReleases({ host: WINDOWS, fetch: gh.fetch });
+  assert.deepEqual(
+    releases.map((r) => [r.tag, r.assetName, r.variant]),
+    [
+      ["v2", "lilbee-compat-windows-x86_64-cu124.exe", "compat-cu124"],
+      ["v1", "lilbee-compat-windows-x86_64.exe", "compat"],
+    ],
+  );
+});
+
 test("a host lilbee publishes no build for sees no releases", async () => {
   const gh = github({ pages: [[release("v1", LINUX_ASSETS)]] });
   assert.deepEqual(await listReleases({ host: { ...LINUX, arch: "arm64" }, fetch: gh.fetch }), []);

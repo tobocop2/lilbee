@@ -104,7 +104,7 @@ Remote:
 | `LILBEE_TOKEN` | Session token for the remote server (from its `server.json`). |
 | `LILBEE_BIN` | Explicit path to a lilbee binary. |
 | `LILBEE_DATA_DIR` | Library location for `mcp`; same as `--data-dir`. |
-| `LILBEE_VARIANT` | Override the detected download variant: `default` (the plain build), `cu121`, `cu124`, `cu125`, `rocm`, `compat`. |
+| `LILBEE_VARIANT` | Override the detected download variant: `default` (the plain build), `cu121`, `cu124`, `cu125`, `rocm`, `compat`, `compat-cu124` (Linux, and Windows from release 0.6.90b691 on), `compat-rocm` (Linux). |
 | `LILBEE_RELEASE` | Run an exact lilbee release tag instead of the latest. `lilbee prepare <tag>` does the same for one install. |
 | `LILBEE_CHANNEL` | `stable` (default) or `dev`: whether "latest" may pick an in-development (`.dev`) build. |
 | `LILBEE_DEBUG` | `=1` prints binary resolution detail on every run. |
