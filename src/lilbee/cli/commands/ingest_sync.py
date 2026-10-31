@@ -53,6 +53,7 @@ from lilbee.core.text import strip_control_characters
 from lilbee.crawler import is_url
 from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import without_userinfo
+from lilbee.providers.base import ProviderError
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
 # The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
@@ -556,7 +557,7 @@ def rebuild(
 
     try:
         result = run_sync_with_signal_cancel(force_rebuild=True)
-    except RuntimeError as exc:
+    except (RuntimeError, ProviderError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
