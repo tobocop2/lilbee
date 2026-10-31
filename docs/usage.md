@@ -467,6 +467,9 @@ and the REST routes `GET /api/engines` and
 `DELETE /api/engines/{engine}/{version}/{backend}` do the same. On the HTTP
 server the removal needs `allow_http_engines`.
 
+If the build of an engine differs from the pin, `engine list` prints one line:
+the engine is not installed, and the line names the build that differs.
+
 #### The saved choice
 
 The engine commands write two keys to `config.toml`: `preferred_engine` and
@@ -523,7 +526,8 @@ An engine that is not bundled needs a pack. No pack of ik_llama.cpp, mistral.rs
 or TEI is published yet, so today all three engines refuse to install and print
 the no-pack text. Nothing is installed, and llama.cpp stays in use.
 
-When a pack exists, copy it into the `packs` folder of the engines folder, then run:
+When a pack exists, copy it into the `packs` folder of the engines folder. Name the file
+`<engine>-<version>-<backend>.whl`. Then run:
 
 ```bash
 lilbee engine install <engine>

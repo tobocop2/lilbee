@@ -265,6 +265,18 @@ def test_the_cli_installs_and_lists_the_engine(good: Path) -> None:
     assert f"{ENGINE} {VERSION} (cpu)" in listing.output
 
 
+def test_the_cli_lists_a_build_that_differs_from_the_pin_on_one_line(
+    good: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine_service.install(ENGINE.value, good)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn("0" * 64))  # type: ignore[arg-type]
+    output = " ".join(CliRunner().invoke(cli_app, ["engine", "list"]).output.split())
+    assert output.count(ENGINE.value) == 1
+    assert f"{ENGINE} not installed: the installed build {VERSION} (cpu) differs from the pin" in (
+        output
+    )
+
+
 def test_the_cli_text_mode_says_what_was_installed(good: Path) -> None:
     result = CliRunner().invoke(cli_app, ["engine", "install", ENGINE.value, "--wheel", str(good)])
     assert result.exit_code == 0

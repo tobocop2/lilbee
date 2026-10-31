@@ -68,10 +68,19 @@ def list_builds() -> None:
         return
     if not builds:
         console.print(engine_service.NO_BUILDS)
+    stale = {build.engine: build for build in reversed(builds) if build.engine in absent}
     for build in builds:
-        console.print(build.label)
+        if build.engine not in absent:
+            console.print(build.label)
     for name in absent:
-        console.print(f"{name} not installed")
+        if name in stale:
+            old = stale[name]
+            console.print(
+                f"{name} not installed: the installed build {old.version} ({old.backend}) "
+                "differs from the pin"
+            )
+        else:
+            console.print(f"{name} not installed")
 
 
 @engine_app.command("install")
