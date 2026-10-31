@@ -9,11 +9,12 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
-from lilbee.catalog.refs import model_format
 from lilbee.app.services import peek_services
+from lilbee.catalog.refs import model_format
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
     AUTO,
@@ -22,7 +23,6 @@ from lilbee.providers.fleet.engines.choice import (
     engines_loading,
     installed_engines,
 )
-from lilbee.providers.base import ProviderError
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
 log = logging.getLogger(__name__)

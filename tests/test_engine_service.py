@@ -384,9 +384,7 @@ class _RecordingProvider:
 @pytest.fixture
 def running(monkeypatch: pytest.MonkeyPatch) -> _RecordingProvider:
     provider = _RecordingProvider()
-    monkeypatch.setattr(
-        engine_service, "peek_services", lambda: SimpleNamespace(provider=provider)
-    )
+    monkeypatch.setattr(engine_service, "peek_services", lambda: SimpleNamespace(provider=provider))
     return provider
 
 

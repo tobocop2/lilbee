@@ -115,6 +115,10 @@ if TYPE_CHECKING:
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
+RELOADING_NOTICE = "A change to the engines is being applied; roles may run their previous engine."
+RELOAD_FAILED_NOTICE = (
+    "The last engine reload failed; the server keeps the engines it started with."
+)
 # No-healthy-replica message for a server that stopped answering at the transport.
 _NOT_RESPONDING_MESSAGE = (
     "The model server is not responding and no healthy replica is available. "
@@ -1331,6 +1335,7 @@ class FleetProvider:
             # client snapshot, and never closing leaks an httpx pool per replica.
             old_clients = list(self._clients.get(role, []))
             self._role_group[role] = group
+            profile = self._adopt_engine(role).request_profile(role)
             # token_cap truncates oversize embed/rerank inputs to the per-slot context
             # (the in-process backstop); the longer timeout covers a cold upstream load.
             self._clients[role] = [
@@ -1344,7 +1349,7 @@ class FleetProvider:
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
                     engine_log=_engine_log_of(launch, swap.log_path.parent),
                     model_ref=launch.model,
-                    profile=self._adopt_engine(role).request_profile(role),
+                    profile=profile,
                 )
                 for launch in role_launches
             ]
@@ -1565,9 +1570,9 @@ class FleetProvider:
         """What is true of the engines while a reload runs or after one failed, else None."""
         with self._lock:
             if self._reloading:
-                return "A change to the engines is being applied; roles may run their previous engine."
+                return RELOADING_NOTICE
             if self._reload_failed:
-                return "The last engine reload failed; the server keeps the engines it started with."
+                return RELOAD_FAILED_NOTICE
         return None
 
     def health_warnings(self) -> list[HealthWarning]:

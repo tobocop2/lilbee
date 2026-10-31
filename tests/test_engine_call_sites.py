@@ -30,6 +30,7 @@ from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
@@ -539,6 +540,35 @@ class TestProvider:
         client = provider._clients[WorkerRole.EMBED][0]
         assert client._profile.label == "fake-engine"
         assert client._profile.reasoning_field == "thoughts"
+
+    def test_each_role_client_carries_the_profile_of_its_own_engine(
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = planning.build_single_role_launch(WorkerRole.CHAT, model_file, engine=spy)
+        embed = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(_mixed_book(spy), {}))
+        provider = FleetProvider()
+        swap = SimpleNamespace(endpoint=lambda: "http://127.0.0.1:1", log_path=tmp_path / "log")
+        with provider._lock:
+            provider._adopt_group("chat", swap, [chat])  # type: ignore[arg-type]
+            provider._adopt_group("embed", swap, [embed])  # type: ignore[arg-type]
+        chat_profile = provider._clients[WorkerRole.CHAT][0]._profile
+        embed_profile = provider._clients[WorkerRole.EMBED][0]._profile
+        assert chat_profile.label == "fake-engine"
+        assert embed_profile.label == LLAMA.request_profile(WorkerRole.EMBED).label
+        assert chat_profile.label != embed_profile.label
+
+    def test_adopting_a_role_whose_engine_went_raises_the_engine_text(
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo#mlx")
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading({}, {}))
+        provider = FleetProvider()
+        swap = SimpleNamespace(endpoint=lambda: "http://127.0.0.1:1", log_path=tmp_path / "log")
+        with provider._lock, pytest.raises(NoEngineError, match="For embed: "):
+            provider._adopt_group("embed", swap, [launch])  # type: ignore[arg-type]
+        assert WorkerRole.EMBED not in provider._clients
 
     def _record_engine_use(
         self, monkeypatch: pytest.MonkeyPatch, spy: SpyEngine, model_file: Path, tmp_path: Path
