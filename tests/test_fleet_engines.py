@@ -236,15 +236,15 @@ def test_llama_model_meta_skips_a_file_with_no_gguf_header(monkeypatch: pytest.M
 
 def test_llama_assert_loadable_asks_the_gguf_parser_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, str, str | None]] = []
-    monkeypatch.setattr(
-        f"{_LLAMA_MODULE}.assert_engine_can_load", lambda *args: calls.append(args)
-    )
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.assert_engine_can_load", lambda *args: calls.append(args))
     LLAMA.assert_loadable("org/repo", "m.gguf", "tok")
     assert calls == [("org/repo", "m.gguf", "tok")]
 
 
 def test_llama_runtime_env_is_the_server_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(f"{_LLAMA_MODULE}.llama_server_runtime_env", lambda: {"LD_LIBRARY_PATH": "/x"})
+    monkeypatch.setattr(
+        f"{_LLAMA_MODULE}.llama_server_runtime_env", lambda: {"LD_LIBRARY_PATH": "/x"}
+    )
     assert LLAMA.runtime_env() == {"LD_LIBRARY_PATH": "/x"}
 
 
