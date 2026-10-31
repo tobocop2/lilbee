@@ -17,10 +17,10 @@ from lilbee.cli.tui.preset_commands import (
     DialogRequest,
     PresetCommandResult,
     dialog_request,
+    is_preset_line,
     key_typed,
     remove_target,
     run_preset_command,
-    slash_text_carries_key,
 )
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.settings_presets import (
@@ -260,15 +260,19 @@ class TestKeyDetection:
     @pytest.mark.parametrize(
         ("text", "expected"),
         [
-            ("/preset add x1 u --key abc", True),
-            ("/PRESET add x1 u --key=abc", True),
-            ("/preset list", False),
+            ("/preset list", True),
+            ("/preset\tadd x1 u --key abc", True),
+            ("/preset   add x1 u --api-key abc", True),
+            ("  /preset add x1 u --key=abc", True),
+            ("/PRESET", True),
+            ("/presets list", False),
             ("/set --key abc", False),
-            ("hello --key abc", False),
+            ("hello /preset", False),
+            ("", False),
         ],
     )
-    def test_only_a_preset_line_with_a_key_counts(self, text, expected):
-        assert slash_text_carries_key(text) is expected
+    def test_only_a_preset_line_counts_whatever_the_spacing(self, text, expected):
+        assert is_preset_line(text) is expected
 
     @pytest.mark.parametrize("args", [f"add x1 {LOCAL} --key=abc", "edit omlx --key abc"])
     def test_run_refuses_either_form_with_the_fixed_text(self, args):
@@ -715,6 +719,9 @@ class TestSlashKeyStaysOutOfEveryStore:
             f"/preset add x1 {LOCAL} --roles chat --key {SECRET}",
             f"/preset add x1 {LOCAL} --roles chat --key={SECRET}",
             f"/preset edit omlx --key {SECRET}",
+            f"/preset\tadd x1 {LOCAL} --roles chat --key {SECRET}",
+            f"/preset    add x1 {LOCAL} --roles chat --key {SECRET}",
+            f"  /preset add x1 {LOCAL} --roles chat --key {SECRET}",
         ],
     )
     async def test_a_typed_key_reaches_no_history_log_or_screen(self, typed, caplog):
@@ -746,12 +753,27 @@ class TestSlashKeyStaysOutOfEveryStore:
             assert SECRET not in _screen_text(app)
         assert [e["api_key"] for e in _stored()] == [KEY]
 
-    async def test_a_command_without_a_key_stays_in_the_input_history(self):
+    async def test_an_unknown_key_flag_stays_out_of_the_input_history(self):
         _seed()
         app = _ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             chat = await await_chat(app, pilot)
             chat._enter_insert_mode()
+            chat._input_history.append("earlier line")
+            typed = f"/preset add x1 {LOCAL} --roles chat --api-key {SECRET}"
             with mock.patch.object(chat, "_run_preset_command"):
+                chat._submit_draft(chat._chat_input, typed)
+            assert chat._input_history == ["earlier line"]
+            assert SECRET not in repr(chat._history)
+
+    async def test_a_plain_preset_line_stays_out_of_the_input_history_too(self):
+        _seed()
+        app = _ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            chat = await await_chat(app, pilot)
+            chat._enter_insert_mode()
+            chat._input_history.append("earlier line")
+            with mock.patch.object(chat, "_run_preset_command") as worker:
                 chat._submit_draft(chat._chat_input, "/preset list")
-            assert chat._input_history[-1] == "/preset list"
+            assert worker.called
+            assert chat._input_history == ["earlier line"]

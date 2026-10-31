@@ -85,10 +85,10 @@ def key_typed(args: str) -> bool:
     return any(word == _KEY_FLAG or word.startswith(f"{_KEY_FLAG}=") for word in words)
 
 
-def slash_text_carries_key(text: str) -> bool:
-    """Whether the chat line *text* is a /preset command that holds a typed key."""
-    command, _, args = text.partition(" ")
-    return command.lower() == _COMMAND and key_typed(args)
+def is_preset_line(text: str) -> bool:
+    """Whether the chat line *text* is a /preset command, with the dispatcher's word split."""
+    words = text.split()
+    return bool(words) and words[0].lower() == _COMMAND
 
 
 def dialog_request(args: str) -> DialogRequest | None:

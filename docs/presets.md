@@ -66,7 +66,7 @@ If you change the URL to a different scheme, host or port, lilbee refuses the ed
 
 In the chat, run `/preset list`, `/preset add NAME URL --roles ROLES`, `/preset edit NAME` or `/preset remove NAME`. `/preset add` accepts `--wire`. `/preset edit NAME` with no flag opens a dialog. In the dialog you enter or clear the key. `/preset edit` also accepts `--url`, `--roles`, `--wire` and `--clear-key`.
 
-The slash command refuses `--key`. Give the key in the dialog, so it stays out of the chat input history. The Presets tab in the settings screen shows the same list.
+The slash command refuses `--key`. Give the key in the dialog. No `/preset` line enters the chat input history, whatever its flags or spacing. The Presets tab in the settings screen shows the same list.
 
 ### REST
 
