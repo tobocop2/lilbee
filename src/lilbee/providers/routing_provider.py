@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from lilbee.app.services import get_services
-from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.vectors import Vector
@@ -24,14 +23,17 @@ from lilbee.providers.base import (
     require_role_ref,
 )
 from lilbee.providers.factory import create_sdk_provider
-from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
+from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
+from lilbee.providers.serving import ServingEngine, is_native_rerank_ref, log_name, served_by
 from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.engines.base import EngineAdapter
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
     from lilbee.providers.warm_progress import WarmProgress
+
+log = logging.getLogger(__name__)
 
 
 class RoutingProvider(LLMProvider):
@@ -83,8 +85,22 @@ class RoutingProvider(LLMProvider):
             return self._get_sdk_provider()
         return self._get_local()
 
+    def _log_served(self, role: WorkerRole, model: str, served: ServingEngine) -> None:
+        """Name the engine that serves this request."""
+        log.info(
+            "served by engine=%s version=%s role=%s model=%s",
+            served.engine,
+            served.version,
+            role.value,
+            log_name(model),
+        )
+
+    def _announce(self, role: WorkerRole, ref: ProviderModelRef) -> None:
+        self._log_served(role, ref.raw, served_by(ref.raw, self._engine, native=not ref.is_remote))
+
     def embed(self, texts: list[str]) -> list[Vector]:
         ref = parse_model_ref(require_role_ref(cfg.embedding_model, WorkerRole.EMBED))
+        self._announce(WorkerRole.EMBED, ref)
         return self._pick_backend(ref).embed(texts)
 
     def count_tokens(self, text: str) -> int:
@@ -141,6 +157,7 @@ class RoutingProvider(LLMProvider):
         tool_choice: str | dict[str, Any] | None = None,
     ) -> ChatResult | ClosableIterator[ChatStreamItem]:
         ref = parse_model_ref(require_role_ref(model or cfg.chat_model, WorkerRole.CHAT))
+        self._announce(WorkerRole.CHAT, ref)
         backend = self._pick_backend(ref)
         # Split on stream so each call resolves to a specific overload; the
         # base impl signature accepts bool but the @overloads on the LLMProvider
@@ -181,6 +198,7 @@ class RoutingProvider(LLMProvider):
     ) -> ChatToolResult:
         """Dispatch a tool-enabled chat turn to the backend the ref routes to."""
         ref = parse_model_ref(require_role_ref(model or cfg.chat_model, WorkerRole.CHAT))
+        self._announce(WorkerRole.CHAT, ref)
         backend = self._pick_backend(ref)
         return backend.chat_with_tools(
             messages, tools=tools, tool_choice=tool_choice, options=options, model=model
@@ -197,6 +215,7 @@ class RoutingProvider(LLMProvider):
     ) -> str:
         """Dispatch by ``model``'s ref prefix, same rules as :meth:`chat`."""
         ref = parse_model_ref(model)
+        self._announce(WorkerRole.VISION, ref)
         backend = self._pick_backend(ref)
         return backend.vision_ocr(png_bytes, model, prompt, timeout=timeout, cancel=cancel)
 
@@ -255,7 +274,13 @@ class RoutingProvider(LLMProvider):
         """
         if not cfg.reranker_model:
             raise ProviderError("No reranker configured. Set cfg.reranker_model first.")
-        if _is_native_rerank_ref(cfg.reranker_model, self._engine):
+        native = is_native_rerank_ref(cfg.reranker_model, self._engine)
+        self._log_served(
+            WorkerRole.RERANK,
+            cfg.reranker_model,
+            served_by(cfg.reranker_model, self._engine, native=native),
+        )
+        if native:
             return self._get_local().rerank(query, candidates)
         sdk = self._get_sdk_provider()
         if not sdk.supports_rerank():
@@ -279,7 +304,7 @@ class RoutingProvider(LLMProvider):
         model = cfg.reranker_model
         if not model:
             return True
-        if _is_native_rerank_ref(model, self._engine):
+        if is_native_rerank_ref(model, self._engine):
             return self._get_local().supports_rerank()
         return self._get_sdk_provider().supports_rerank()
 
@@ -417,32 +442,3 @@ class RoutingProvider(LLMProvider):
         before the first spawn, matching ``warm_up_pool``'s eager construction.
         """
         self._get_local().add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
-
-
-def _is_native_rerank_ref(model: str, engine: EngineAdapter) -> bool:
-    """Return True iff *model* should route to the native rerank path of *engine*.
-
-    Two acceptance paths:
-
-    1. :func:`routes_to_native_gguf` accepts the ref: a native GGUF shape that
-       no local-server prefix (``ollama/``, ``lm_studio/``) claims, matching
-       :func:`parse_model_ref`'s exemption.
-    2. The bare ``<org>/<repo>`` names a repo with an installed quant and no
-       server preset has the name ``<org>``.
-
-    The model's name is deliberately not consulted. Hosted rerankers are
-    usually called rerankers too (``cohere/rerank-english-v3.0``), so matching
-    on the name captures them and starves the SDK backend. The registry answers
-    "is this one of ours" without guessing. Non-GGUF refs without a known SDK
-    prefix still raise downstream through :func:`parse_model_ref`.
-
-    An empty registry reports nothing installed; a registry that cannot be read
-    raises, and the fault surfaces to the caller.
-    """
-    if not model or WorkerRole.RERANK not in engine.served_roles:
-        return False
-    if routes_to_native_gguf(model):
-        return True
-    if not is_bare_hf_repo(model) or parse_model_ref(model).is_preset:
-        return False
-    return get_services().registry.installed_ref_for_repo(model) is not None

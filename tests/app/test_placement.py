@@ -2,6 +2,7 @@ import pytest
 
 from lilbee.app import placement as app_placement
 from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.fleet.placement_spec import PlacementSpec, RolePlacement
 from lilbee.providers.fleet.planning import ResolvedPlacement
@@ -339,7 +340,7 @@ def test_view_multi_replica_unions_devices():
         unplaceable_roles=(),
         model_refs={WorkerRole.EMBED: "org/embed.gguf"},
     )
-    view = app_placement._view(resolved, manual=False, spec_json=None)
+    view = app_placement._view(resolved, LLAMA, manual=False, spec_json=None)
     embed_views = [r for r in view.roles if r.role is WorkerRole.EMBED]
     assert len(embed_views) == 1
     role_view = embed_views[0]
@@ -512,3 +513,10 @@ def test_request_engine_warm_kicks_the_provider(monkeypatch):
 def test_request_engine_warm_noop_without_services(monkeypatch):
     monkeypatch.setattr(app_placement, "peek_services", lambda: None)
     app_placement.request_engine_warm()  # nothing to warm; must not raise
+
+
+def test_get_placement_names_the_engine_that_serves_each_role(monkeypatch):
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    assert [r.engine for r in app_placement.get_placement().roles] == ["llama.cpp"]
+    assert [r.engine for r in app_placement.preview_placement().roles] == ["llama.cpp"]

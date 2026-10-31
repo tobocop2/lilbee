@@ -292,5 +292,5 @@ def test_a_tight_role_reaches_the_placement_view(monkeypatch, tmp_path) -> None:
         model_refs={WorkerRole.CHAT: "org/chat.gguf"},
         tight_roles={WorkerRole.CHAT: 3 * 1024**3},
     )
-    view = _view(resolved, manual=False, spec_json=None)
+    view = _view(resolved, LLAMA, manual=False, spec_json=None)
     assert [(t.role, t.shortfall_bytes) for t in view.tight] == [(WorkerRole.CHAT, 3 * 1024**3)]
