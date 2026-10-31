@@ -3298,7 +3298,9 @@ def never_answers(request):
 http = httpx.Client(base_url="http://engine", transport=httpx.MockTransport(never_answers))
 p = FleetProvider()
 p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-p._clients = {WorkerRole.CHAT: [LlamaServerClient("http://engine", "chat", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT))]}
+profile = LLAMA.request_profile(WorkerRole.CHAT)
+client = LlamaServerClient("http://engine", "chat", http=http, profile=profile)
+p._clients = {WorkerRole.CHAT: [client]}
 p._prewarm_chat_weights = lambda: None
 threading.Thread(target=p._preload_roles, daemon=True).start()
 assert in_flight.wait(10.0)

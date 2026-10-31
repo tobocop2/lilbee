@@ -350,7 +350,7 @@ def test_a_real_spawned_child_dies_on_terminate(
     real_start = dp._start_worker
 
     def _spy(entry: CatalogModel, models_dir: Path, token: str | None, engine) -> Any:
-        started = real_start(entry, models_dir, token)
+        started = real_start(entry, models_dir, token, engine)
         worker_seen.append(started[0])
         return started
 

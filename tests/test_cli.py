@@ -7565,7 +7565,8 @@ class TestSelfCheckHelpers:
             lambda: Path("/bin/llama-server"),
         )
         monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
+            lambda _p: {"architecture": "qwen3"},
         )
         monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b, engine: [])
         setup._self_check_server(WorkerRole.EMBED, model)
@@ -7868,7 +7869,7 @@ def test_self_check_applies_expert_offload_to_embed_like_the_fleet(monkeypatch, 
     # would leave the real one in the call path.
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.build_server_argv", _spy)
     monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.read_gguf_metadata",
+        "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
         lambda _p: {"architecture": "qwen3moe", "expert_count": "128"},
     )
     monkeypatch.setattr(
