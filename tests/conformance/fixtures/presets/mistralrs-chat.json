@@ -8,6 +8,7 @@
   "chat": "Qwen/Qwen3-0.6B"
  },
  "rerank_wire": "v1",
+ "embed_dim": 0,
  "results": {
   "template": {
    "ok": true,
@@ -18,8 +19,8 @@
    "detail": "tool_calls=['get_weather']"
   },
   "overflow": {
-   "ok": false,
-   "detail": "kind=bad_request"
+   "ok": true,
+   "detail": "kind=context_overflow"
   }
  },
  "exchanges": [
@@ -50,7 +51,7 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"1\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nRome.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, the user first asked about the capital of France, and I provided the answer. Now they're asking about Italy. I need to make sure I'm answering correctly. Let me think. Italy's capital is Rome. I should check if there's any recent change, but I don't think there's been any significant shift. So the answer should be Rome. Just a simple sentence.\\n\"},\"logprobs\":null}],\"created\":1793417327,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":87,\"prompt_tokens\":43,\"total_tokens\":130,\"avg_tok_per_sec\":9.679821,\"avg_prompt_tok_per_sec\":108.86076,\"avg_compl_tok_per_sec\":6.6743383,\"total_time_sec\":13.43,\"total_prompt_time_sec\":0.395,\"total_completion_time_sec\":13.035}}"
+   "body": "{\"id\":\"1\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nRome.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, the user first asked about the capital of France, and I provided the answer. Now they're asking about Italy. I need to make sure I'm answering correctly. Let me think. Italy's capital is Rome. I should check if there's any recent change, but I don't think there's been any significant shift. So the answer should be Rome. Just a simple sentence.\\n\"},\"logprobs\":null}],\"created\":1793429395,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":87,\"prompt_tokens\":43,\"total_tokens\":130,\"avg_tok_per_sec\":9.386281,\"avg_prompt_tok_per_sec\":99.76798,\"avg_compl_tok_per_sec\":6.4833446,\"total_time_sec\":13.85,\"total_prompt_time_sec\":0.431,\"total_completion_time_sec\":13.419}}"
   },
   {
    "method": "POST",
@@ -88,7 +89,7 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"2\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-bcc7b54f-578b-464e-a19b-1b7b8a6965ba\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}],\"reasoning_content\":\"\\nOkay, the user is asking about the weather in Paris. I need to use the get_weather function. The function requires the city parameter. Since they mentioned Paris, I should call the function with \\\"Paris\\\" as the city. Let me make sure there are no typos. Alright, the tool call should be correct.\\n\"},\"logprobs\":null}],\"created\":1793417340,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":90,\"prompt_tokens\":158,\"total_tokens\":248,\"prompt_tokens_details\":{\"cached_tokens\":3},\"avg_tok_per_sec\":17.055223,\"avg_prompt_tok_per_sec\":201.53061,\"avg_compl_tok_per_sec\":6.542124,\"total_time_sec\":14.541,\"total_prompt_time_sec\":0.784,\"total_completion_time_sec\":13.757}}"
+   "body": "{\"id\":\"2\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-4e485d25-6371-4028-a296-c57c4ee6f024\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}],\"reasoning_content\":\"\\nOkay, the user is asking about the weather in Paris. I need to use the get_weather function. The function requires the city parameter. Since they mentioned Paris, I should call the function with \\\"Paris\\\" as the city. Let me make sure there are no typos. Alright, the tool call should be correct.\\n\"},\"logprobs\":null}],\"created\":1793429409,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":90,\"prompt_tokens\":158,\"total_tokens\":248,\"prompt_tokens_details\":{\"cached_tokens\":3},\"avg_tok_per_sec\":16.739792,\"avg_prompt_tok_per_sec\":195.06172,\"avg_compl_tok_per_sec\":6.426276,\"total_time_sec\":14.815,\"total_prompt_time_sec\":0.81,\"total_completion_time_sec\":14.005}}"
   },
   {
    "method": "POST",

@@ -8,6 +8,7 @@
   "rerank": "BAAI/bge-reranker-base"
  },
  "rerank_wire": "tei",
+ "embed_dim": 0,
  "results": {
   "rerank": {
    "ok": true,

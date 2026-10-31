@@ -1,6 +1,6 @@
 {
  "server": "lemonade",
- "version": "lemonade 2026.44.1 llama.cpp b11393 cpu",
+ "version": "lemonade 2026.44.1 llama.cpp cpu backend",
  "roles": [
   "chat",
   "embed",
@@ -14,6 +14,7 @@
   "vision": "Qwen2.5-VL-3B-Instruct-GGUF"
  },
  "rerank_wire": "v1",
+ "embed_dim": 1024,
  "results": {
   "template": {
    "ok": true,
@@ -68,7 +69,7 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Paris.\",\"reasoning_content\":\"Okay, the user just asked about the capital of Italy, and I said Paris. Now they want to know the capital of France, which I already answered with Paris. But maybe they're testing if I can answer the capitals of multiple countries in one sentence, like in the previous answer. But the user might be confused or wants to confirm. Let me check the previous answer. The first answer was \\\"Paris.\\\" Now the second is asking about Italy's capital, which I answered with Paris. The user might be trying to see if I can handle multiple capitals in the same sentence, but the answer is straightforward. I should confirm the answer and maybe add a note to note that it's a common misconception. But since the user just asked, I need to provide the answer as per their query. So the final answer should be Paris for Italy and France, which is a common misconception. But since the user is asking the capital of Italy, I should answer that. So I'll state Paris for Italy and France.\\n\",\"role\":\"assistant\"}}],\"created\":1793418127,\"id\":\"chatcmpl-qrRo8hGgESDwodrS9yL2fBLqGFfB705A\",\"model\":\"Qwen3-0.6B-GGUF\",\"object\":\"chat.completion\",\"system_fingerprint\":\"b11393-dbe4c3ed4\",\"timings\":{\"cache_n\":0,\"predicted_ms\":1904.255,\"predicted_n\":211,\"predicted_per_second\":110.27934809151084,\"predicted_per_token_ms\":9.067880952380953,\"prompt_ms\":85.945,\"prompt_n\":43,\"prompt_per_second\":500.31997207516434,\"prompt_per_token_ms\":1.998720930232558},\"usage\":{\"completion_tokens\":211,\"prompt_tokens\":43,\"prompt_tokens_details\":{\"cached_tokens\":0},\"total_tokens\":254}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Rome.\",\"reasoning_content\":\"Okay, the user just asked about the capital of Italy and I said Paris. Now I need to make sure. Let me think. Italy's capital is Rome, right? I remember that Rome is the most important city in Europe, so that's correct. The user might be confirming or just needing the answer. Since they asked about Italy before, maybe they're testing my knowledge. I should just state the answer clearly. No need to add anything else. Make sure the sentence is concise and correct.\\n\",\"role\":\"assistant\"}}],\"created\":1793429374,\"id\":\"chatcmpl-Ap75Uji7FzjFHjm3Bxb8AtonVapqdVwB\",\"model\":\"Qwen3-0.6B-GGUF\",\"object\":\"chat.completion\",\"system_fingerprint\":\"b11393-dbe4c3ed4\",\"timings\":{\"cache_n\":0,\"predicted_ms\":1136.085,\"predicted_n\":109,\"predicted_per_second\":95.06330952349516,\"predicted_per_token_ms\":10.519305555555556,\"prompt_ms\":105.888,\"prompt_n\":43,\"prompt_per_second\":406.08945300695075,\"prompt_per_token_ms\":2.4625116279069768},\"usage\":{\"completion_tokens\":109,\"prompt_tokens\":43,\"prompt_tokens_details\":{\"cached_tokens\":0},\"total_tokens\":152}}"
   },
   {
    "method": "POST",
@@ -106,7 +107,7 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"content\":\"\",\"reasoning_content\":\"Okay, the user is asking for the weather in Paris. I need to use the get_weather function provided. Let me check the parameters: the function requires a city name, which in this case is Paris. So I should call the get_weather function with city set to Paris. I don't see any other parameters needed here, so the tool call should be straightforward. Just make sure the city is spelled correctly, which it is. Alright, that's all I need.\\n\",\"role\":\"assistant\",\"tool_calls\":[{\"function\":{\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\",\"name\":\"get_weather\"},\"id\":\"R7bZxSUi74qHMMSoV3tT1l2RcAfY3unC\",\"type\":\"function\"}]}}],\"created\":1793418129,\"id\":\"chatcmpl-KkpOrPXFn7E86tSiDsJJ3DpMchASdNCM\",\"model\":\"Qwen3-0.6B-GGUF\",\"object\":\"chat.completion\",\"system_fingerprint\":\"b11393-dbe4c3ed4\",\"timings\":{\"cache_n\":3,\"predicted_ms\":1286.014,\"predicted_n\":119,\"predicted_per_second\":91.75638834413934,\"predicted_per_token_ms\":10.898423728813558,\"prompt_ms\":293.436,\"prompt_n\":154,\"prompt_per_second\":524.8163142899986,\"prompt_per_token_ms\":1.9054285714285712},\"usage\":{\"completion_tokens\":119,\"prompt_tokens\":157,\"prompt_tokens_details\":{\"cached_tokens\":3},\"total_tokens\":276}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"content\":\"\",\"reasoning_content\":\"Okay, the user is asking for the weather in Paris. I need to use the get_weather function provided. Let me check the parameters. The function requires a city, and the user specified Paris. So I should call get_weather with city set to Paris. No other parameters are needed. Just make sure to format the tool call correctly within the XML tags.\\n\",\"role\":\"assistant\",\"tool_calls\":[{\"function\":{\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\",\"name\":\"get_weather\"},\"id\":\"mAcE5kL3HYKejG2owKaAF8VYVCyvfzN1\",\"type\":\"function\"}]}}],\"created\":1793429375,\"id\":\"chatcmpl-xevwW4Zx34tSEY7ZkIx0ZdBfkYAwhFT1\",\"model\":\"Qwen3-0.6B-GGUF\",\"object\":\"chat.completion\",\"system_fingerprint\":\"b11393-dbe4c3ed4\",\"timings\":{\"cache_n\":3,\"predicted_ms\":1101.551,\"predicted_n\":96,\"predicted_per_second\":86.24203509415361,\"predicted_per_token_ms\":11.595273684210525,\"prompt_ms\":363.92,\"prompt_n\":154,\"prompt_per_second\":423.1699274565838,\"prompt_per_token_ms\":2.3631168831168834},\"usage\":{\"completion_tokens\":96,\"prompt_tokens\":157,\"prompt_tokens_details\":{\"cached_tokens\":3},\"total_tokens\":253}}"
   },
   {
    "method": "POST",
@@ -181,7 +182,7 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Red\",\"role\":\"assistant\"}}],\"created\":1793418184,\"id\":\"chatcmpl-yxPXrgthcyR0IVhKeKs5BtqnaGqNdri2\",\"model\":\"Qwen2.5-VL-3B-Instruct-GGUF\",\"object\":\"chat.completion\",\"system_fingerprint\":\"b11393-dbe4c3ed4\",\"timings\":{\"cache_n\":0,\"predicted_ms\":42.561,\"predicted_n\":2,\"predicted_per_second\":23.4956885411527,\"predicted_per_token_ms\":42.561,\"prompt_ms\":708.695,\"prompt_n\":41,\"prompt_per_second\":57.85281397498218,\"prompt_per_token_ms\":17.285243902439024},\"usage\":{\"completion_tokens\":2,\"prompt_tokens\":41,\"prompt_tokens_details\":{\"cached_tokens\":0},\"total_tokens\":43}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Red\",\"role\":\"assistant\"}}],\"created\":1793429386,\"id\":\"chatcmpl-7G7hnApxKPvVAgXNbh8F4EMFWrJa8FJG\",\"model\":\"Qwen2.5-VL-3B-Instruct-GGUF\",\"object\":\"chat.completion\",\"system_fingerprint\":\"b11393-dbe4c3ed4\",\"timings\":{\"cache_n\":0,\"predicted_ms\":39.055,\"predicted_n\":2,\"predicted_per_second\":25.60491614389963,\"predicted_per_token_ms\":39.055,\"prompt_ms\":871.493,\"prompt_n\":41,\"prompt_per_second\":47.04570203088263,\"prompt_per_token_ms\":21.255926829268294},\"usage\":{\"completion_tokens\":2,\"prompt_tokens\":41,\"prompt_tokens_details\":{\"cached_tokens\":0},\"total_tokens\":43}}"
   }
  ]
 }

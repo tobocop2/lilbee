@@ -8,6 +8,7 @@
   "embed": "Qwen/Qwen3-Embedding-0.6B"
  },
  "rerank_wire": "v1",
+ "embed_dim": 1024,
  "results": {
   "embed": {
    "ok": true,
