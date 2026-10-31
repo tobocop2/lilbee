@@ -54,7 +54,6 @@ def test_L3_reasoning_field_is_read_as_well_as_reasoning_content() -> None:
     assert text.startswith("<think>")
 
 
-@pytest.mark.xfail(strict=True, raises=_FAILS_AS_STATED, reason="L4, owner item 1180")
 def test_L4_sequence_length_overflow_text_is_a_context_overflow() -> None:
     """The text "sequence length is greater than" classifies as context overflow, not unknown."""
     with FakeEngine(PROFILES["mistralrs_cpu"].behaviour) as engine:
