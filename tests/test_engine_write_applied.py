@@ -159,6 +159,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Services]
     assert services.provider.embed(["hi"])
     assert services.provider.chat(_MESSAGES)
     assert len(_ProcessSwap.live) > 0
+    _ProcessSwap.starting.clear()
     yield services
     services.provider.shutdown()
     for swap in _ProcessSwap.live.values():
@@ -201,8 +202,16 @@ def test_a_write_that_cannot_find_the_engine_binary_is_not_reported_as_applied(
     assert _local(fleet).reload_notice() == RELOAD_FAILED_NOTICE
 
 
+@pytest.mark.parametrize(
+    "first_write",
+    [
+        lambda: engine_service.use_for_role(WorkerRole.CHAT, GGUF_CHAT, "mlx"),
+        lambda: engine_service.prefer("mlx"),
+    ],
+    ids=["one-group-still-up", "every-group-stopped"],
+)
 def test_a_write_that_joins_a_reload_that_fails_reports_the_failure(
-    fleet: Services,
+    fleet: Services, first_write: Any
 ) -> None:
     gate = threading.Event()
     _ProcessSwap.start_gate = gate
@@ -215,10 +224,7 @@ def test_a_write_that_joins_a_reload_that_fails_reports_the_failure(
         except engine_service.EngineNotAppliedError as exc:
             outcomes[name] = exc
 
-    first = threading.Thread(
-        target=write,
-        args=("first", lambda: engine_service.use_for_role(WorkerRole.CHAT, GGUF_CHAT, "mlx")),
-    )
+    first = threading.Thread(target=write, args=("first", first_write))
     first.start()
     assert _ProcessSwap.starting.wait(_WAIT_S)
     second = threading.Thread(target=write, args=("second", lambda: engine_service.prefer("auto")))
@@ -233,6 +239,32 @@ def test_a_write_that_joins_a_reload_that_fails_reports_the_failure(
         "first": engine_service.EngineNotAppliedError,
         "second": engine_service.EngineNotAppliedError,
     }
+
+
+def test_a_write_while_a_reload_has_every_group_stopped_reaches_the_engines(
+    fleet: Services,
+) -> None:
+    gate = threading.Event()
+    _ProcessSwap.start_gate = gate
+    first = threading.Thread(target=engine_service.prefer, args=("mlx",))
+    first.start()
+    assert _ProcessSwap.starting.wait(_WAIT_S)
+    local = _local(fleet)
+    assert local._swaps == {}
+    second = threading.Thread(
+        target=engine_service.use_for_role, args=(WorkerRole.CHAT, GGUF_CHAT, "llama.cpp")
+    )
+    second.start()
+    _wait_for(lambda: local._reload_pending)
+    gate.set()
+    first.join(_WAIT_S)
+    second.join(_WAIT_S)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    launches = {launch.role: launch.argv for group in local._launches.values() for launch in group}
+    assert set(launches) == {WorkerRole.CHAT, WorkerRole.EMBED}
+    assert "--mlx" not in launches[WorkerRole.CHAT]
+    assert "--mlx" in launches[WorkerRole.EMBED]
 
 
 def test_a_reload_that_fails_on_the_disk_is_not_applied(fleet: Services) -> None:

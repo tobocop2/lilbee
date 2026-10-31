@@ -324,6 +324,8 @@ def test_no_role_is_written_with_a_model_cache_variable(
 _FREE = 20 << 30
 _LOW = 2 << 30
 _TOTAL = 24 << 30
+# llama.cpp prints whole MiB and the driver reports bytes, so one card has two totals.
+_TOTAL_IN_WHOLE_MIB = _TOTAL - (16 << 20)
 _FLEETS = [
     pytest.param(_LLAMA_ALL, id="llama"),
     pytest.param(_MISTRAL_WITH_LLAMA_RERANK, id="mistral-with-llama-rerank"),
@@ -347,7 +349,7 @@ class _Cards:
 
     def _llama_probe(self, _binary: Path) -> DeviceProbe:
         self.llama_reads += 1
-        card = FleetDevice(self._backend, 0, "gpu0", _TOTAL, self.free)
+        card = FleetDevice(self._backend, 0, "gpu0", _TOTAL_IN_WHOLE_MIB, self.free)
         return DeviceProbe(devices=[card], output="", spoke_protocol=True)
 
     def _driver_read(self) -> list[CardMemory]:
@@ -471,6 +473,22 @@ def test_an_engine_chosen_after_the_capture_keeps_the_clean_free_figure(
     assert probe is not None
     assert [(d.backend, d.free_bytes) for d in probe.devices] == [("CUDA", _FREE)]
     assert [d.backend for d in planning._current_plan_probe(llama.LLAMA).devices] == ["Vulkan"]
+
+
+def test_a_smaller_card_at_the_same_index_never_reads_more_free_than_it_holds(
+    host: dict[EngineName, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cards = _Cards(monkeypatch)
+    planning.capture_plan_probe({WorkerRole.CHAT: llama.LLAMA})
+    monkeypatch.setattr(
+        devices,
+        "read_card_memory",
+        lambda: [CardMemory("GPU-b", "gpu0", _LOW, _LOW - (1 << 20))],
+    )
+    probe = planning._current_plan_probe(mistral.MISTRAL)
+    assert probe is not None
+    assert [(d.total_bytes, d.free_bytes) for d in probe.devices] == [(_LOW, _LOW)]
+    assert cards.llama_reads == 1
 
 
 def test_a_failed_read_of_one_engine_names_it_and_a_lone_engine_raises_as_it_is(
