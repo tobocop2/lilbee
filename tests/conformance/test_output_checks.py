@@ -328,10 +328,6 @@ def test_every_engine_recording_sets_strict(path: Path) -> None:
     assert json.loads(path.read_text(encoding="utf-8")).get("strict") is True
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="slice 4 adds the first engine recording; remove this mark when it lands",
-)
 def test_the_engine_recordings_folder_is_not_empty() -> None:
     assert sorted(ENGINE_FIXTURES.glob("**/*.json"))
 
