@@ -194,7 +194,7 @@ def test_launch_raises_the_server_batch_limit_to_the_client_batch(tmp_path: Path
 def test_pin_names_the_picked_build_and_refuses_a_lock_with_no_pack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("lilbee.providers.fleet.engines.tei.detect", lambda: _caps(gpu=L4))
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=L4))
     pin = TEI.pin_record()
     assert (pin["engine"], pin["version"], pin["backend"]) == ("tei", "1.9.4", "cuda-sm89")
     assert pin["licenses"] == ["Apache-2.0"]
@@ -205,7 +205,7 @@ def test_pin_names_the_picked_build_and_refuses_a_lock_with_no_pack(
 def test_binary_comes_from_the_store_record_of_the_pin(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr("lilbee.providers.fleet.engines.tei.detect", lambda: _caps())
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     with pytest.raises(EngineNotInstalledError, match="Run lilbee engine install tei"):
         TEI.binary()
