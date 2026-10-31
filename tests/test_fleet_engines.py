@@ -13,18 +13,15 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet.engines import LLAMA, EngineName, LaunchRequest
-from lilbee.providers.fleet.engines.base import (
-    MemoryEstimate,
-    MemoryKind,
-    MemoryRequest,
-)
 from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import RerankMode, WorkerRole
 from tests._gguf_fixture import make_minimal_gguf
 
 _ROOT = Path(__file__).resolve().parents[1]
 _LLAMA_MODULE = "lilbee.providers.fleet.engines.llama"
+_MEMORY_MODULE = "lilbee.providers.fleet.model_memory"
 _SWEEP_INPUTS = 400
 
 
@@ -143,7 +140,7 @@ def test_llama_estimate_memory_passes_every_request_field(
             per_device_unified=(35, 25),
         )
 
-    monkeypatch.setattr(f"{_LLAMA_MODULE}.estimate_instance_footprint", estimate)
+    monkeypatch.setattr(f"{_MEMORY_MODULE}.estimate_instance_footprint", estimate)
     request = MemoryRequest(
         model_path=Path("/m/a.gguf"),
         ctx=8192,
@@ -201,7 +198,7 @@ def test_llama_memory_estimate_charges_what_the_parser_estimate_charged(
             per_device_unified=tuple(rng.randint(0, 10**10) for _ in range(width)),
         )
         monkeypatch.setattr(
-            f"{_LLAMA_MODULE}.estimate_instance_footprint",
+            f"{_MEMORY_MODULE}.estimate_instance_footprint",
             lambda *_a, _parsed=parsed, **_k: _parsed,
         )
         estimate = LLAMA.estimate_memory(request)

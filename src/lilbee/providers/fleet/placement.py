@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from functools import reduce
 from math import gcd
 
-from lilbee.providers.fleet.engines.base import MemoryKind
+from lilbee.providers.fleet.memory_types import MemoryKind
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole

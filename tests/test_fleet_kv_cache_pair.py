@@ -13,10 +13,10 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
+from lilbee.providers.fleet import model_memory as model_memory_mod
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
-from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import WorkerRole
@@ -95,7 +95,7 @@ def test_chat_placement_estimate_sizes_the_kv_type_the_launch_sends(
         asked.append(kv_cache_type)
         return _estimate()
 
-    monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _record)
+    monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _record)
     monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 4096)
 
     planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1, engine=LLAMA)

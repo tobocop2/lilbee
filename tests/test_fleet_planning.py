@@ -12,6 +12,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, OcrMode, RerankerType
 from lilbee.providers.fleet import binary as binary_mod
+from lilbee.providers.fleet import model_memory as model_memory_mod
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import (
     VULKAN_BACKEND,
@@ -83,7 +84,7 @@ def _slotted_estimator(*, base: int, per_slot: int):
 def _stub_estimator(monkeypatch) -> None:
     """Default: a cheap fixed footprint so tests never shell out to gguf-parser.
     Tests that exercise sizing override this with their own estimator."""
-    monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator())
+    monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _fixed_estimator())
 
 
 def test_vision_mmproj_returns_path_when_found(monkeypatch) -> None:
@@ -233,7 +234,9 @@ def test_slots_for_llm_rerank_uses_full_fanout_when_vram_ample(monkeypatch) -> N
 
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     monkeypatch.setattr(
-        llama_mod, "estimate_instance_footprint", _slotted_estimator(base=10**8, per_slot=10**7)
+        model_memory_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=10**8, per_slot=10**7),
     )
     n = planning_mod._slots_for(
         WorkerRole.RERANK,
@@ -250,7 +253,7 @@ def test_slots_for_llm_rerank_steps_down_when_vram_tight(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     # budget = 1e9 * 0.75 * _LLM_RERANK_VRAM_FRACTION(0.5) = 3.75e8; 4e8 base fits only 1.
     monkeypatch.setattr(
-        llama_mod,
+        model_memory_mod,
         "estimate_instance_footprint",
         _slotted_estimator(base=4 * 10**8, per_slot=2 * 10**8),
     )
@@ -270,7 +273,7 @@ def test_slots_for_chat_is_vram_aware(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     # budget = 24e9 * 0.75 = 18e9; a 17e9 base leaves no room for a second slot.
     monkeypatch.setattr(
-        llama_mod,
+        model_memory_mod,
         "estimate_instance_footprint",
         _slotted_estimator(base=17 * 10**9, per_slot=2 * 10**9),
     )
@@ -285,7 +288,7 @@ def test_slots_for_chat_is_vram_aware(monkeypatch) -> None:
 def test_resolve_chat_slots_uses_ceiling_when_vram_is_ample(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     monkeypatch.setattr(
-        llama_mod,
+        model_memory_mod,
         "estimate_instance_footprint",
         _slotted_estimator(base=17 * 10**9, per_slot=10**9),
     )
@@ -301,7 +304,7 @@ def test_resolve_chat_slots_drops_to_one_on_constrained_gpu(monkeypatch) -> None
     # 17 GB base footprint at >1 slots overruns a ~24GB Metal budget (18e9) -> 1.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     monkeypatch.setattr(
-        llama_mod,
+        model_memory_mod,
         "estimate_instance_footprint",
         _slotted_estimator(base=17 * 10**9, per_slot=2 * 10**9),
     )
@@ -318,7 +321,7 @@ def test_resolve_chat_slots_steps_down_to_fit_unified_budget(monkeypatch) -> Non
     # so the model loads at fewer slots instead of being refused at placement.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     monkeypatch.setattr(
-        llama_mod,
+        model_memory_mod,
         "estimate_instance_footprint",
         _slotted_estimator(base=17 * 10**9, per_slot=10**9),
     )
@@ -341,7 +344,7 @@ def test_resolve_chat_slots_claims_the_whole_serve_budget(monkeypatch) -> None:
     # exactly, and that here do not exist.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     monkeypatch.setattr(
-        llama_mod,
+        model_memory_mod,
         "estimate_instance_footprint",
         _slotted_estimator(base=17 * 10**9, per_slot=7 * 10**9),
     )
@@ -361,7 +364,7 @@ def test_resolve_chat_slots_still_yields_to_the_search_reservation(monkeypatch) 
     # still takes it away.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     monkeypatch.setattr(
-        llama_mod,
+        model_memory_mod,
         "estimate_instance_footprint",
         _slotted_estimator(base=17 * 10**9, per_slot=7 * 10**9),
     )
@@ -382,7 +385,7 @@ def test_resolve_chat_slots_reservation_shrinks_budget(monkeypatch) -> None:
     # fits 4 slots with no reservation steps down once embed/rerank are held back.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     monkeypatch.setattr(
-        llama_mod,
+        model_memory_mod,
         "estimate_instance_footprint",
         _slotted_estimator(base=30 * 10**9, per_slot=2 * 10**9),
     )
@@ -436,7 +439,7 @@ def test_resolve_vision_slots_uses_ceiling_when_vram_is_ample(monkeypatch) -> No
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.9)
     monkeypatch.setattr(
-        llama_mod,
+        model_memory_mod,
         "estimate_instance_footprint",
         _slotted_estimator(base=2 * 10**9, per_slot=10**9),
     )
@@ -453,7 +456,7 @@ def test_resolve_vision_slots_drops_to_one_on_small_gpu(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.9)
     monkeypatch.setattr(
-        llama_mod,
+        model_memory_mod,
         "estimate_instance_footprint",
         _slotted_estimator(base=2 * 10**9, per_slot=10**9),
     )
@@ -623,7 +626,7 @@ def test_estimate_role_carries_replica_count(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
-    monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
+    monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
     inp = planning_mod._estimate_role(
         WorkerRole.EMBED, "ref", slots=1, device_count=2, engine=LLAMA
     )
@@ -637,7 +640,7 @@ def test_estimate_role_auto_replicas_follow_device_count(monkeypatch, tmp_path) 
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
-    monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
+    monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
     inp = planning_mod._estimate_role(
         WorkerRole.EMBED, "ref", slots=1, device_count=3, engine=LLAMA
     )
@@ -704,7 +707,7 @@ def test_estimate_role_chat_footprint_sized_at_target_ctx(monkeypatch) -> None:
 
     monkeypatch.setattr(cfg, "num_ctx", None)
     monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
-    monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _est)
+    monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _est)
     monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 1)
     monkeypatch.setattr(
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
@@ -756,7 +759,7 @@ def test_peak_estimator_returns_per_device_vector(monkeypatch) -> None:
             vram_bytes=0, ram_bytes=0, unified_bytes=0, per_device_vram=(11, 22)
         )
 
-    monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _est)
+    monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _est)
     estimate = planning_mod._peak_estimator(
         {WorkerRole.CHAT: "ref"}, engines=planning_mod.engines_for_all_roles(LLAMA)
     )
@@ -780,7 +783,7 @@ def test_peak_estimator_vision_passes_mmproj(monkeypatch) -> None:
         seen["mmproj"] = mmproj_path
         return GgufVramEstimate(vram_bytes=0, ram_bytes=0, unified_bytes=0, per_device_vram=(5, 5))
 
-    monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _est)
+    monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _est)
     estimate = planning_mod._peak_estimator(
         {WorkerRole.VISION: "ref"}, engines=planning_mod.engines_for_all_roles(LLAMA)
     )
@@ -805,7 +808,7 @@ def test_peak_estimator_reserves_single_sequence_total_for_split_chat(monkeypatc
             vram_bytes=0, ram_bytes=0, unified_bytes=0, per_device_vram=(5, 5, 5)
         )
 
-    monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _est)
+    monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _est)
     planning_mod._peak_estimator(
         {WorkerRole.CHAT: "ref"}, engines=planning_mod.engines_for_all_roles(LLAMA)
     )(WorkerRole.CHAT, (1, 1, 1))
@@ -1016,7 +1019,7 @@ class TestBuildFleetWiring:
             seen["mmproj"] = mmproj_path
             return GgufVramEstimate(vram_bytes=1500, ram_bytes=0, unified_bytes=1500)
 
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _est)
+        monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _est)
         inp = planning_mod._estimate_role(WorkerRole.VISION, "ref", slots=1, engine=LLAMA)
         assert seen["mmproj"] == mmproj
         assert inp.est_vram_bytes == 1500
@@ -1032,7 +1035,9 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: None)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=4242))
+        monkeypatch.setattr(
+            model_memory_mod, "estimate_instance_footprint", _fixed_estimator(vram=4242)
+        )
         inp = planning_mod._estimate_role(
             WorkerRole.VISION, "ref", engine=LLAMA
         )  # slots resolved internally
@@ -1057,7 +1062,7 @@ class TestBuildFleetWiring:
             seen["flash"] = flash_attn
             return GgufVramEstimate(vram_bytes=10, ram_bytes=0, unified_bytes=10)
 
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _est)
+        monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _est)
         planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1, engine=LLAMA)
         assert seen["kv"] is KvCacheType.F16
         assert seen["flash"] is False
@@ -1074,7 +1079,9 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
         monkeypatch.setattr(
-            llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=9000, unified=900)
+            model_memory_mod,
+            "estimate_instance_footprint",
+            _fixed_estimator(vram=9000, unified=900),
         )
         shared = planning_mod._estimate_role(
             WorkerRole.EMBED, "ref", slots=1, unified_budget=10**9, engine=LLAMA
@@ -1099,7 +1106,9 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
         monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 1)
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=10000))
+        monkeypatch.setattr(
+            model_memory_mod, "estimate_instance_footprint", _fixed_estimator(vram=10000)
+        )
 
         chat = planning_mod._estimate_role(WorkerRole.CHAT, "ref", engine=LLAMA)
         embed = planning_mod._estimate_role(WorkerRole.EMBED, "ref", engine=LLAMA)
@@ -1135,7 +1144,9 @@ class TestBuildFleetWiring:
             "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
         )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=7777))
+        monkeypatch.setattr(
+            model_memory_mod, "estimate_instance_footprint", _fixed_estimator(vram=7777)
+        )
         inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=2, engine=LLAMA)
         assert inp.role == WorkerRole.EMBED
         assert inp.est_vram_bytes == 7777
@@ -1286,7 +1297,9 @@ class TestBuildFleetWiring:
         # The readback says chat spilled when the host holds more than this.
         monkeypatch.setattr(cfg, "n_gpu_layers", None)
         estimate = GgufVramEstimate(vram_bytes=4 * _GB, ram_bytes=900 << 20, unified_bytes=5 * _GB)
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", lambda *_a, **_k: estimate)
+        monkeypatch.setattr(
+            model_memory_mod, "estimate_instance_footprint", lambda *_a, **_k: estimate
+        )
         monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda engine: False)
         launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
         assert launch.est_host_bytes == 900 << 20
@@ -1297,7 +1310,9 @@ class TestBuildFleetWiring:
         # A numeric layer count stops the engine's fit: the host holds what the user asked.
         monkeypatch.setattr(cfg, "n_gpu_layers", 12)
         estimate = GgufVramEstimate(vram_bytes=4 * _GB, ram_bytes=900 << 20, unified_bytes=5 * _GB)
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", lambda *_a, **_k: estimate)
+        monkeypatch.setattr(
+            model_memory_mod, "estimate_instance_footprint", lambda *_a, **_k: estimate
+        )
         monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda engine: False)
         launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
         assert launch.est_host_bytes == 0
@@ -1311,7 +1326,7 @@ class TestBuildFleetWiring:
             raise ProviderError("gguf-parser could not read the file")
 
         monkeypatch.setattr(cfg, "n_gpu_layers", None)
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _unsized)
+        monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _unsized)
         monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda engine: False)
         launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
         assert launch.est_host_bytes == 0
@@ -2468,7 +2483,7 @@ class TestEstimateLaunchParity:
                 vram_bytes=1, ram_bytes=0, unified_bytes=1, per_device_vram=(1, 1)
             )
 
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _capture)
+        monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _capture)
         is_chat = role is WorkerRole.CHAT
         ratio = (1, 1) if is_chat else ()
         planning_mod._peak_estimator(
@@ -2549,7 +2564,7 @@ class TestEstimateLaunchParity:
             captured.update(kwargs, path=path)
             return GgufVramEstimate(vram_bytes=1, ram_bytes=0, unified_bytes=1)
 
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _capture)
+        monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _capture)
         device = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 80 * _GB)
         plan = InstancePlan(role=WorkerRole.RERANK, devices=(0,))
         launch = planning_mod._launch_for(
@@ -3113,7 +3128,7 @@ class TestSlotsAreChargedOnce:
         model.write_bytes(b"GGUF")
         vram_mod._cached_footprint.cache_clear()
         monkeypatch.setattr(
-            llama_mod, "estimate_instance_footprint", vram_mod.estimate_instance_footprint
+            model_memory_mod, "estimate_instance_footprint", vram_mod.estimate_instance_footprint
         )
         monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
 
@@ -3463,7 +3478,7 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
                 "unparseable", provider="llama-server", kind=ProviderErrorKind.SERVER
             )
 
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", boom)
+        monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", boom)
         slots = planning_mod._fit_slots(
             4,
             WorkerRole.CHAT,
@@ -4371,8 +4386,8 @@ class TestATightSplitSizesPerDeviceButLaunchesWithoutARatio:
                 per_device_vram=per_device,
             )
 
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _capture)
-        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _capture)
+        monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _capture)
+        monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _capture)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
         )

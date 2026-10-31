@@ -8,8 +8,6 @@ from lilbee.providers.fleet.engines.base import (
     EngineAdapter,
     EngineName,
     LaunchRequest,
-    MemoryEstimate,
-    MemoryRequest,
 )
 from lilbee.providers.fleet.engines.llama import LLAMA
 
@@ -27,7 +25,5 @@ __all__ = [
     "EngineAdapter",
     "EngineName",
     "LaunchRequest",
-    "MemoryEstimate",
-    "MemoryRequest",
     "select_engine",
 ]

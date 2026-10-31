@@ -12,14 +12,9 @@ from typing import Any, Literal
 
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
-from lilbee.providers.fleet.engines.base import (
-    LaunchRequest,
-    MemoryEstimate,
-    MemoryKind,
-    MemoryRequest,
-    RequestProfile,
-)
+from lilbee.providers.fleet.engines.base import LaunchRequest, RequestProfile
 from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _FAKE_BINARY = Path(__file__).with_name("fake_binary.py")
