@@ -34,6 +34,7 @@ from lilbee.providers.fleet.devices import (
     visible_env,
 )
 from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
+from lilbee.providers.fleet.engines.choice import LIST_HINT
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.placement import (
@@ -3498,7 +3499,9 @@ def _snapshot_engine(engines: Mapping[WorkerRole, EngineAdapter]) -> EngineAdapt
     """
     distinct = list({engine.name: engine for engine in engines.values()}.values())
     if not distinct:
-        raise ProviderError("No engine is assigned to any role, so there is nothing to plan.")
+        raise ProviderError(
+            f"No engine is assigned to any role, so there is nothing to plan. {LIST_HINT}"
+        )
     if len(distinct) == 1:
         return distinct[0]
     free_by_engine: list[tuple[int, EngineAdapter]] = []

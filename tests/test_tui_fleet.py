@@ -172,6 +172,32 @@ async def test_skipped_note_shows_a_bracketed_model_name_as_written(monkeypatch,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(140, 44), (80, 30)])
+async def test_a_role_with_no_engine_shows_its_notice(monkeypatch, size):
+    """A role no installed engine loads shows its notice, naming the fix, not an empty table."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.app.placement import SkippedNoEngine
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    notice = "No installed engine loads the mlx format. Run lilbee engine list to see them."
+    view = replace(
+        _make_view(), skipped_no_engine=(SkippedNoEngine(WorkerRole.CHAT, "org/m#mlx", notice),)
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        note = app.screen.query_one("#placement-skipped", Static)
+        assert note.display is True
+        assert str(note.render()) == f"chat: {notice}"
+
+
+@pytest.mark.asyncio
 async def test_no_skipped_note_when_all_models_installed(monkeypatch):
     """With every configured model installed the note stays hidden."""
     from textual.widgets import Static

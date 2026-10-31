@@ -270,17 +270,20 @@ class FleetBody(Widget):
             self.notify(msg.FLEET_SAVED_PLACEMENT_IGNORED, severity="warning")
 
     def _render_skipped(self, view: PlacementView) -> None:
-        """Show a 'not downloaded' line per role skipped for a missing model."""
+        """Show a line per role skipped for a missing model or for no engine."""
         widget = self.query_one(_SKIPPED_ID, Static)
-        widget.display = bool(view.skipped_not_installed)
-        widget.update(
-            "\n".join(
-                msg.FLEET_MODEL_NOT_DOWNLOADED.format(
-                    role=skipped.role.value, model=_clean_model_name(skipped.model)
-                )
-                for skipped in view.skipped_not_installed
+        lines = [
+            msg.FLEET_MODEL_NOT_DOWNLOADED.format(
+                role=skipped.role.value, model=_clean_model_name(skipped.model)
             )
+            for skipped in view.skipped_not_installed
+        ]
+        lines.extend(
+            msg.FLEET_ROLE_WITHOUT_ENGINE.format(role=skipped.role.value, notice=skipped.notice)
+            for skipped in view.skipped_no_engine
         )
+        widget.display = bool(lines)
+        widget.update("\n".join(lines))
 
     def _page_devices(self) -> tuple[int, ...]:
         """The GPU indices visible on the current page."""
