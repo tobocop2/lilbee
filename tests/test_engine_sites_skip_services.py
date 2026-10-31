@@ -19,12 +19,14 @@ from lilbee.providers.roles import WorkerRole
 
 @pytest.fixture(autouse=True)
 def _opening_a_store_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail the test when the services container is built, since that opens the store."""
+    """Fail the test when the services container is built, since that opens the store.
+
+    With no singleton set, every ``get_services`` call reaches ``build_services``.
+    """
 
     def _forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("the services container was built to pick an engine")
 
-    monkeypatch.setattr(services_mod, "get_services", _forbidden)
     monkeypatch.setattr(services_mod, "build_services", _forbidden)
     monkeypatch.setattr(services_mod._state, "singleton", None)
 
