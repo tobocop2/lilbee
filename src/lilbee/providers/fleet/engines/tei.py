@@ -11,7 +11,7 @@ from typing import Any, Literal
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.adapters import RoleServerSpec
-from lilbee.providers.fleet.devices import DeviceProbe
+from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
 from lilbee.providers.fleet.engine_store import (
     EngineNotInstalledError,
     EngineStore,
@@ -185,7 +185,11 @@ class TeiAdapter:
         ]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        return DeviceProbe(devices=[], output="", spoke_protocol=False)
+        from lilbee.catalog.runnable import session_host
+
+        if self.pick_build(session_host()).backend in (None, _CPU):
+            return DeviceProbe(devices=[], output="", spoke_protocol=False)
+        return DeviceProbe(devices=visible_nvidia_cards(), output="", spoke_protocol=False)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return MemoryEstimate(

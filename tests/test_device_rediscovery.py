@@ -10,7 +10,7 @@ import pytest
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import _REPORTED_BACKEND, FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
-from lilbee.providers.roles import EngineBackend
+from lilbee.providers.roles import EngineBackend, WorkerRole
 
 _GB = 1024**3
 
@@ -33,7 +33,7 @@ def _snapshot(monkeypatch, devices: list[FleetDevice], free_ram: int = 64 * _GB)
     )
     monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(devices))
     monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: free_ram)
-    planning_mod.capture_plan_probe(engine=LLAMA)
+    planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
 
 
 class TestAReloadRediscoversDevices:
@@ -50,7 +50,7 @@ class TestAReloadRediscoversDevices:
         assert len(planning_mod._plan_devices(Path("/bin/srv"), engine=LLAMA)) == 2
 
         monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(two[:1]))
-        planning_mod.refresh_plan_devices(engine=LLAMA)
+        planning_mod.refresh_plan_devices({WorkerRole.CHAT: LLAMA})
         assert [d.index for d in planning_mod._plan_devices(Path("/bin/srv"), engine=LLAMA)] == [0]
 
     def test_the_clean_box_memory_figures_survive_the_refresh(self, monkeypatch) -> None:
@@ -62,7 +62,7 @@ class TestAReloadRediscoversDevices:
         before = planning_mod._plan_free_system_memory(engine=LLAMA)
 
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1 * _GB)
-        planning_mod.refresh_plan_devices(engine=LLAMA)
+        planning_mod.refresh_plan_devices({WorkerRole.CHAT: LLAMA})
         assert planning_mod._plan_free_system_memory(engine=LLAMA) == before
 
     def test_a_refresh_without_a_snapshot_does_nothing(self, monkeypatch) -> None:
@@ -71,8 +71,8 @@ class TestAReloadRediscoversDevices:
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
-        planning_mod.refresh_plan_devices(engine=LLAMA)
-        assert planning_mod._plan_probe_store.get() is None
+        planning_mod.refresh_plan_devices({WorkerRole.CHAT: LLAMA})
+        assert planning_mod._plan_probe_store.get(LLAMA.name) is None
 
 
 class TestTheReloadPassAsksForRediscovery:
@@ -107,7 +107,7 @@ class TestARefreshThatCannotProbe:
             raise ProviderError("probe wedged")
 
         monkeypatch.setattr(planning_mod, "_read_devices", _wedged)
-        planning_mod.refresh_plan_devices(engine=LLAMA)
+        planning_mod.refresh_plan_devices({WorkerRole.CHAT: LLAMA})
         assert [d.index for d in planning_mod._plan_devices(Path("/bin/srv"), engine=LLAMA)] == [0]
 
     def test_an_unchanged_list_is_left_in_place(self, monkeypatch, caplog) -> None:
@@ -116,7 +116,7 @@ class TestARefreshThatCannotProbe:
         card = FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)
         _snapshot(monkeypatch, [card])
         with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.planning"):
-            planning_mod.refresh_plan_devices(engine=LLAMA)
+            planning_mod.refresh_plan_devices({WorkerRole.CHAT: LLAMA})
         assert "changed since" not in caplog.text
 
 
@@ -134,8 +134,8 @@ class TestTheRefreshKeepsThePerDeviceFreeFigures:
         deflated = [FleetDevice("CUDA", 0, "A", 24 * _GB, 2 * _GB)]
         monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(deflated))
         with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.planning"):
-            planning_mod.refresh_plan_devices(engine=LLAMA)
-        probe = planning_mod._plan_probe_store.get()
+            planning_mod.refresh_plan_devices({WorkerRole.CHAT: LLAMA})
+        probe = planning_mod._plan_probe_store.get(LLAMA.name)
         assert probe is not None
         assert [d.free_bytes for d in probe.devices] == [23 * _GB]
         # A free-memory swing is not a hardware change and must not read as one.
@@ -151,8 +151,8 @@ class TestTheRefreshKeepsThePerDeviceFreeFigures:
         _snapshot(monkeypatch, two)
         remaining = [FleetDevice("CUDA", 0, "A", 24 * _GB, 2 * _GB)]
         monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(remaining))
-        planning_mod.refresh_plan_devices(engine=LLAMA)
-        probe = planning_mod._plan_probe_store.get()
+        planning_mod.refresh_plan_devices({WorkerRole.CHAT: LLAMA})
+        probe = planning_mod._plan_probe_store.get(LLAMA.name)
         assert probe is not None
         assert [d.free_bytes for d in probe.devices] == [23 * _GB]
 
@@ -203,7 +203,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"")
         self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         assert planning_mod._plan_devices(binary, engine=LLAMA) == []
 
         binary.write_bytes(b"the real engine")
@@ -217,7 +217,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"the real engine")
         runs = self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         assert len(runs) == 1
 
         for _ in range(5):
@@ -233,7 +233,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"the real engine")
         self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         assert len(planning_mod._plan_devices(binary, engine=LLAMA)) == 2
 
         binary.write_bytes(b"")
@@ -247,7 +247,7 @@ class TestAnEngineThatChangesUnderARunningServe:
                 binary = tmp_path / name
                 binary.write_bytes(b"")
                 self._engine(patch, binary, backend)
-                planning_mod.capture_plan_probe(engine=LLAMA)
+                planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
                 assert planning_mod._plan_devices(binary, engine=LLAMA) == []
                 binary.write_bytes(b"the real engine")
                 return planning_mod._plan_devices(binary, engine=LLAMA)
@@ -270,7 +270,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary.write_bytes(b"")
         runs = self._engine(monkeypatch, binary)
         healthy = planning_mod._read_devices
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         assert planning_mod._plan_devices(binary, engine=LLAMA) == []
 
         binary.write_bytes(b"the real engine")
@@ -292,7 +292,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary.write_bytes(b"")
         runs = self._engine(monkeypatch, binary)
         healthy = planning_mod._read_devices
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         assert planning_mod._plan_devices(binary, engine=LLAMA) == []
 
         binary.write_bytes(b"an engine that cannot probe")
@@ -316,7 +316,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"")
         runs = self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         binary.write_bytes(b"the real engine")
         self._wedge(monkeypatch, runs)
         before = len(runs)
@@ -342,7 +342,7 @@ class TestAnEngineThatChangesUnderARunningServe:
             return answer
 
         monkeypatch.setattr(planning_mod, "_read_devices", _probe_then_install)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         monkeypatch.setattr(planning_mod, "_read_devices", healthy)
         probed_at_capture = len(runs)
 
@@ -359,7 +359,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"the real engine")
         self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         attempts: list[int] = []
         probe_engine = planning_mod._probe_engine_devices
 
@@ -390,7 +390,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"")
         self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
 
         binary.write_bytes(b"the real engine")
@@ -411,7 +411,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"the real engine")
         runs = self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
 
         with planning_mod._one_engine_per_pass(engine=LLAMA):
             pinned = planning_mod._pass_engine_identity(engine=LLAMA)
@@ -431,7 +431,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary.write_bytes(b"")
         runs = self._engine(monkeypatch, binary)
         healthy = planning_mod._read_devices
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         started = threading.Event()
         release = threading.Event()
 

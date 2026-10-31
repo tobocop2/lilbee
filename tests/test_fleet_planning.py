@@ -57,7 +57,7 @@ def _pin_snapshot(
         engine_devices_all_refused=engine_devices_all_refused,
         backend=backend,
     )
-    monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: probe)
+    monkeypatch.setattr(planning_mod._plan_probe_store, "_probes", {LLAMA.name: probe})
     monkeypatch.setattr(planning_mod, "_engine_identity", lambda engine: _ENGINE_ID)
 
 
@@ -2682,7 +2682,7 @@ class TestPlanProbe:
         )
         self._live_card(monkeypatch, total_vram, free_vram)
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: free_ram)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
 
     def test_readers_serve_the_snapshot_not_the_live_state(self, monkeypatch) -> None:
         self._capture(monkeypatch, total_vram=24 * _GB, free_vram=20 * _GB, free_ram=64 * _GB)
@@ -2782,7 +2782,7 @@ class TestPlanSizingIsUnified:
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 32 * _GB)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         try:
             self._live(monkeypatch, [FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)])
             assert planning_mod.plan_sizing_is_unified(engine=LLAMA)
@@ -2973,7 +2973,7 @@ class TestPlacementChargesAgainstFreeMemory:
         )
         monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(devices))
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 64 * _GB)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
 
     def test_a_tenant_holding_vram_is_not_planned_over(self, monkeypatch) -> None:
         # A desktop compositor and a browser hold 20 of the card's 24 GiB. Charged
@@ -3159,7 +3159,7 @@ class TestSizingBudgetComesFromTheDevice:
             raise AssertionError("sizing budget fell back to the host-memory read")
 
         monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", _host_read)
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
 
     def test_discrete_card_is_not_sized_against_host_ram(self, monkeypatch) -> None:
         # A 24 GiB AMD card in a 128 GiB host. There is no AMD VRAM query, so the
@@ -3751,7 +3751,7 @@ def test_placeable_total_vram_reuses_the_captured_probe(monkeypatch) -> None:
 def test_placeable_total_vram_zero_when_unprobeable(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError
 
-    monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+    monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
 
     def _boom(*_a, **_k):
         raise ProviderError("no binary", provider="llama-server")
@@ -3770,7 +3770,7 @@ def test_assert_engine_probeable_probes_without_capturing_a_snapshot(monkeypatch
     planning_mod._plan_probe_store.clear()
     planning_mod.assert_engine_probeable(engine=LLAMA)
     assert called == [True]  # it enumerated devices...
-    assert planning_mod._plan_probe_store.get() is None  # ...but took no snapshot
+    assert planning_mod._plan_probe_store.get(LLAMA.name) is None  # ...but took no snapshot
 
 
 def test_integrated_gpu_keeps_the_shared_ram_budget(monkeypatch) -> None:
@@ -4089,7 +4089,7 @@ class TestARefusedDeviceIsAlsoKeptFromTheEngine:
         assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
 
     def test_no_snapshot_means_no_claim(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
 
         assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
 
@@ -4133,7 +4133,7 @@ def test_capturing_the_plan_snapshot_probes_the_engine_once(monkeypatch) -> None
     monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 64 * _GB)
     planning_mod.clear_plan_probe()
     try:
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
     finally:
         planning_mod.clear_plan_probe()
 
@@ -4149,7 +4149,7 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
     """
 
     def test_the_read_cache_answers_when_no_snapshot_exists(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
@@ -4167,7 +4167,7 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
         def _boom(_b, engine):
             raise ProviderError("probe wedged")
 
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
@@ -4176,7 +4176,7 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
         assert planning_mod._fleet_backend(engine=LLAMA) is None
 
     def test_a_host_with_no_devices_yields_no_backend(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
@@ -4489,7 +4489,7 @@ class TestProbedDevices:
 
     def test_falls_back_to_the_read_cache(self, monkeypatch) -> None:
         card = _card(8 * _GB)
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server",
             lambda: Path("/bin/llama-server"),
@@ -4505,7 +4505,7 @@ class TestProbedDevices:
         def _boom() -> Path:
             raise ProviderError("no engine binary", provider="llama-server")
 
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
         monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _boom)
         assert planning_mod.probed_devices(engine=LLAMA) == ()
 
@@ -4575,7 +4575,7 @@ class TestTheOneEngineBackendAnswer:
         A surface that read the empty device list instead would call a CUDA box
         whose probe failed a CPU box, which is what a diagnostics export is for.
         """
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
@@ -4631,7 +4631,7 @@ class TestTheOneEngineBackendAnswer:
         def _boom(_b, engine):
             raise ProviderError("probe wedged")
 
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
