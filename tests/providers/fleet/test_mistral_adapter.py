@@ -307,15 +307,6 @@ def test_the_probes_answer_unknown_without_running_the_binary(tmp_path: Path) ->
     assert "mistral.rs" in MISTRAL.identity(tmp_path / "mistralrs")
 
 
-def test_the_model_cache_sits_under_the_models_folder(tmp_path: Path) -> None:
-    saved = cfg.models_dir
-    cfg.models_dir = tmp_path / "models"
-    try:
-        assert MISTRAL.runtime_env() == {"HF_HUB_CACHE": str(tmp_path / "models" / "mistralrs")}
-    finally:
-        cfg.models_dir = saved
-
-
 def make_pack(path: Path) -> str:
     """A wheel with one executable under pkg/bin and an MIT licence; returns its sha256."""
     with zipfile.ZipFile(path, "w") as archive:

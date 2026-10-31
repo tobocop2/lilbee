@@ -235,7 +235,7 @@ class MistralAdapter:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:
-        return {"HF_HUB_CACHE": str(cfg.models_dir / _TOOL)}
+        return {}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
         return {"useModelName": _SERVED_NAME}
