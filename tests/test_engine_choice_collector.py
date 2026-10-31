@@ -247,6 +247,7 @@ def test_an_unreadable_engines_folder_leaves_llama_chosen(
     def refuse(self: EngineStore, lock: PinLock) -> None:
         raise PermissionError("engines folder is locked")
 
+    _install_pinned(store_engine)
     monkeypatch.setattr(EngineStore, "complete_build", refuse)
     with caplog.at_level("WARNING"):
         installed = installed_engines()
@@ -254,6 +255,18 @@ def test_an_unreadable_engines_folder_leaves_llama_chosen(
     assert EngineName.LLAMA in installed
     assert "mistral.rs" in caplog.text
     assert "engines folder is locked" in caplog.text
+
+
+def test_a_build_of_an_engine_with_no_published_pack_is_not_installed(
+    store_engine: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _install_build(store_engine)
+    ADAPTERS[EngineName.MISTRAL].sha = None  # type: ignore[attr-defined]
+    with caplog.at_level("WARNING"):
+        installed = installed_engines()
+    assert EngineName.MISTRAL not in installed
+    assert EngineName.LLAMA in installed
+    assert caplog.text == ""
 
 
 def test_choice_still_picks_llama_when_a_store_read_fails(
@@ -297,6 +310,7 @@ def test_a_pin_that_cannot_be_parsed_leaves_only_that_engine_not_installed(
     drop: str | None,
     fault: str,
 ) -> None:
+    _install_build(store_engine)
     monkeypatch.setitem(ADAPTERS, EngineName.MISTRAL, _BadPinEngine(change, drop))  # type: ignore[arg-type]
     with caplog.at_level("WARNING"):
         installed = installed_engines()
