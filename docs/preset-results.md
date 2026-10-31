@@ -55,7 +55,7 @@ The models in the runs:
 
 **mistral.rs context overflow.** The server refuses an oversize prompt with the text "Prompt sequence length is greater than 40960". lilbee reports this error as a context overflow. The step passes.
 
-**TEI embed limit.** The output check passes for TEI embed. The server answers `encoding_format` values `float` and `base64` with HTTP 200, and the base64 text holds 384 floats. The wire check E8 of the conformance harness still fails, because its largest batch holds 33 inputs. TEI answers that request with HTTP 422 and the text "batch size 33 > maximum allowed batch size 32". Start TEI with `--max-client-batch-size 64` to remove the limit. This is a known difference of the TEI default, not a wire difference in the vector format.
+**TEI embed limit.** The output check passes for TEI embed. The server answers `encoding_format` values `float` and `base64` with HTTP 200, and the base64 text holds 384 floats. A stock TEI server refuses more than 32 inputs in one request: it answers HTTP 422 with "batch size 33 > maximum allowed batch size 32". lilbee sends at most 32 inputs per embed request to a preset, and joins the vectors in input order, so an ingest never meets this limit. The wire check E8 of the conformance harness still fails on a stock TEI server, because its largest batch holds 33 inputs and the harness sends it straight to the server. Start TEI with `--max-client-batch-size 64` only to make E8 pass.
 
 **TEI rerank wire.** TEI answers `POST /rerank` with `texts`. It answers `POST /v1/rerank` with HTTP 404. lilbee reports this 404 as "The provider doesn't offer ... on your account", which blames the account, not the wire. The fixture `tei-rerank-v1.json` records this failure. Use the `tei` wire for a TEI preset.
 

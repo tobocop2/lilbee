@@ -56,6 +56,10 @@ from lilbee.runtime.daemon_call import DaemonCall
 
 log = logging.getLogger(__name__)
 
+# Most inputs one embedding request carries. A stock TEI server refuses more than
+# 32 with HTTP 422; OpenAI-style servers allow far more, so this is the lowest limit.
+EMBED_MAX_INPUTS = 32
+
 _VISION_OCR_TIMEOUT_ERROR = "Vision OCR did not finish within {timeout:g} seconds."
 
 
@@ -116,27 +120,30 @@ class SdkLLMProvider(LLMProvider):
         self._initialized = True
 
     def embed(self, texts: list[str]) -> list[Vector]:
-        """Embed texts via the configured backend, converting its JSON floats to float32."""
+        """Embed texts in requests of at most EMBED_MAX_INPUTS, returning vectors in input order."""
         self._ensure_initialized()
         ref = parse_model_ref(
             require_role_ref(cfg.embedding_model, WorkerRole.EMBED, provider="sdk")
         )
         route = _checked_route(ref, WorkerRole.EMBED)
-        request = EmbeddingRequest(
-            ref=ref,
-            inputs=texts,
-            api_base=_api_base_for(ref, route),
-            api_key=_api_key_for(ref, route),
-        )
-        try:
-            result = self._backend.embed(request)
-        except ProviderError:
-            raise
-        except Exception as exc:
-            raise ProviderError(
-                f"Embedding failed: {exc}", provider=self._backend.provider_name
-            ) from exc
-        return [np.asarray(vec, dtype=np.float32) for vec in result.vectors]
+        vectors: list[Vector] = []
+        for start in range(0, len(texts), EMBED_MAX_INPUTS):
+            request = EmbeddingRequest(
+                ref=ref,
+                inputs=texts[start : start + EMBED_MAX_INPUTS],
+                api_base=_api_base_for(ref, route),
+                api_key=_api_key_for(ref, route),
+            )
+            try:
+                result = self._backend.embed(request)
+            except ProviderError:
+                raise
+            except Exception as exc:
+                raise ProviderError(
+                    f"Embedding failed: {exc}", provider=self._backend.provider_name
+                ) from exc
+            vectors.extend(np.asarray(vec, dtype=np.float32) for vec in result.vectors)
+        return vectors
 
     def count_tokens(self, text: str) -> int:
         """Cloud SDK backends expose no local tokenizer, so chunk sizing falls back
