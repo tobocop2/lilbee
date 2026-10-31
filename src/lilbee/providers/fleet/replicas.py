@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import functools
 import logging
+from typing import TYPE_CHECKING
 
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
 
@@ -35,8 +39,8 @@ def resolve_replica_count(role: WorkerRole, device_count: int) -> int:
 
 
 @functools.cache
-def gpu_device_count() -> int:
-    """Effective GPU count lilbee will use; fixed for the process lifetime (cached).
+def gpu_device_count(engine: EngineAdapter) -> int:
+    """Effective GPU count *engine* will use; fixed per engine for the process lifetime (cached).
 
     Resolved the same way planning does (binary ``--list-devices`` view), and
     floored at one so auto means "one replica" on a GPU-less host. Returns one
@@ -44,13 +48,12 @@ def gpu_device_count() -> int:
     ingest) degrade gracefully instead of raising.
     """
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.planning import resolve_devices
 
     try:
-        binary = LLAMA.binary()
+        binary = engine.binary()
     except ProviderError:
-        log.debug("llama-server not found; treating host as GPU-less for replica sizing")
+        log.debug("engine binary not found; treating host as GPU-less for replica sizing")
         return _MIN_REPLICAS
-    devices = resolve_devices(binary, LLAMA)
+    devices = resolve_devices(binary, engine)
     return max(_MIN_REPLICAS, len(devices))

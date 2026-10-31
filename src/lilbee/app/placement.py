@@ -6,10 +6,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from lilbee.app.services import peek_services
+from lilbee.app.services import get_services, peek_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.planning import (
     ResolvedPlacement,
@@ -163,7 +162,7 @@ def get_placement() -> PlacementView:
     nothing is using.
     """
     spec = _active_spec()
-    resolved = resolve_placement_plan(spec, engine=LLAMA, fall_back_to_auto=True)
+    resolved = resolve_placement_plan(spec, engine=get_services().engine, fall_back_to_auto=True)
     if spec is None:
         return _view(resolved, manual=False, spec_json=None)
     if not resolved.spec_applied:
@@ -173,7 +172,7 @@ def get_placement() -> PlacementView:
 
 def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:
     """Dry-run: what spec (or auto, when None) would place. No persistence or reload."""
-    resolved = resolve_placement_plan(spec, engine=LLAMA)
+    resolved = resolve_placement_plan(spec, engine=get_services().engine)
     return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
 
 
@@ -203,7 +202,7 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     fleet would report our own residency as unavailable and poison the chat
     context sizing, while charging stays against total capacity (bb-a8f).
     """
-    resolved = resolve_placement_plan(spec, engine=LLAMA)
+    resolved = resolve_placement_plan(spec, engine=get_services().engine)
     if spec is None:
         settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
         cfg.placement = None

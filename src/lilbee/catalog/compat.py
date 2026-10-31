@@ -19,17 +19,16 @@ from lilbee.catalog.types import ModelCompat
 
 if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 
-def classify(architecture: str) -> ModelCompat:
-    """Map a `general.architecture` string to a `ModelCompat` verdict."""
-    from lilbee.providers.fleet.engines import LLAMA
-
+def classify(architecture: str, engine: EngineAdapter) -> ModelCompat:
+    """Map a `general.architecture` string to *engine*'s `ModelCompat` verdict."""
     if not architecture:
         return ModelCompat.UNKNOWN
     return (
         ModelCompat.SUPPORTED
-        if LLAMA.supports_architecture(architecture)
+        if engine.supports_architecture(architecture)
         else ModelCompat.UNSUPPORTED
     )
 

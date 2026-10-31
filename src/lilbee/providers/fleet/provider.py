@@ -1190,7 +1190,7 @@ class FleetProvider:
             return False
         bound: dict[SwapGroup, tuple[SwapManager, list[InstanceLaunch]]] = {}
         for group, state, launches in candidates:
-            swap = SwapManager(engine_dir, group)
+            swap = SwapManager(engine_dir, group, self.engine)
             if not swap.bind(state):
                 for prior, _launches in bound.values():
                     prior.shutdown()
@@ -1272,7 +1272,7 @@ class FleetProvider:
                 lifetime, data_dir, hold_warm_for_session=self._hold_warm_for_session
             )
             for group, group_launches in by_group.items():
-                swap = SwapManager(data_dir, group)
+                swap = SwapManager(data_dir, group, self.engine)
                 swap.start(list(group_launches), ttl_seconds=ttl_seconds, lifetime=lifetime)
                 started[group] = swap
         except BaseException:
@@ -2659,7 +2659,7 @@ class FleetProvider:
                 # Start phase: spawn the changed groups present in the new plan.
                 for group in sorted(changed & set(new), key=lambda g: g.value):
                     group_launches = list(new[group])
-                    swap = SwapManager(reload_dir, group)
+                    swap = SwapManager(reload_dir, group, self.engine)
                     lifetime = _engine_lifetime(reload_dir)
                     swap.start(
                         group_launches,

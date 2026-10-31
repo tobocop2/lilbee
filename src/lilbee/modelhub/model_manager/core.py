@@ -5,6 +5,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from cachetools import TTLCache
 
@@ -18,6 +19,9 @@ from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.local_servers import LOCAL_SERVERS, local_server_for_key
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.runtime.cancellation import CancelSignal
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +49,9 @@ def _prefixed_source(model: str) -> ModelSource | None:
 class ModelManager:
     """Manages model lifecycle with distinct sources."""
 
-    def __init__(self, models_dir: Path) -> None:
+    def __init__(self, models_dir: Path, engine: "EngineAdapter") -> None:
         self._models_dir = models_dir
+        self._engine = engine
         self._registry = ModelRegistry(self._models_dir)
         # Memoize list_installed results to avoid walking the registry
         # filesystem and hitting the backend HTTP endpoint on every call.
@@ -226,7 +231,7 @@ class ModelManager:
         )
 
         arch = resolve_arch_for_pull(ref, get_services().hf_client)
-        if classify(arch) is ModelCompat.UNSUPPORTED:
+        if classify(arch, self._engine) is ModelCompat.UNSUPPORTED:
             raise UnsupportedArchError(ref, arch)
 
     def _pull_native(
@@ -250,13 +255,16 @@ class ModelManager:
             )
         entry = self._resolved_entry(entry, verify=not allow_unsupported)
         path = download_model(
-            entry, on_progress=on_bytes, on_complete=register_downloaded_model, cancel=cancel
+            entry,
+            self._engine,
+            on_progress=on_bytes,
+            on_complete=register_downloaded_model,
+            cancel=cancel,
         )
         log.info("Downloaded %s to %s", model, path)
         return path
 
-    @staticmethod
-    def _resolved_entry(entry: CatalogModel, *, verify: bool) -> CatalogModel:
+    def _resolved_entry(self, entry: CatalogModel, *, verify: bool) -> CatalogModel:
         """*entry* carrying the file the pull will fetch.
 
         Resolution happens here because the engine's verdict is part of choosing
@@ -272,15 +280,14 @@ class ModelManager:
         # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
         from lilbee.catalog.download import resolve_filename
         from lilbee.catalog.hf_client import hf_token
-        from lilbee.providers.fleet.loadability import assert_engine_can_load
 
         token = hf_token()
 
         def _can_load(hf_repo: str, filename: str) -> None:
-            assert_engine_can_load(hf_repo, filename, token)
+            self._engine.assert_loadable(hf_repo, filename, token)
 
         try:
-            filename = resolve_filename(entry, can_load=_can_load if verify else None)
+            filename = resolve_filename(entry, self._engine, can_load=_can_load if verify else None)
         except (PermissionError, RuntimeError) as exc:
             if isinstance(exc, UnsupportedQuantError):
                 raise

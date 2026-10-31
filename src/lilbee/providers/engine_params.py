@@ -188,7 +188,7 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
     )
 
 
-def chat_kv_elem_bytes() -> float:
+def chat_kv_elem_bytes(engine: EngineAdapter) -> float:
     """Per-element byte cost of the K and V cache a chat launch allocates.
 
     Reads the flag the launch passes for both K and V
@@ -196,10 +196,9 @@ def chat_kv_elem_bytes() -> float:
     granted window stays in step with the cache the engine allocates.
     """
     # call-time import: planning imports this module at load
-    from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.planning import chat_cache_type_flag
 
-    flag = chat_cache_type_flag(LLAMA)
+    flag = chat_cache_type_flag(engine)
     return KV_CACHE_TYPE_BYTES[KvCacheType(flag) if flag else KvCacheType.F16]
 
 
@@ -255,6 +254,7 @@ def resolve_chat_ctx(
     return _header_math_chat_ctx(
         model_path,
         meta,
+        engine=engine,
         available_bytes=available_bytes,
         training_ctx=training_ctx,
         ceiling=ceiling,
@@ -265,6 +265,7 @@ def _header_math_chat_ctx(
     model_path: Path,
     meta: dict[str, str] | None,
     *,
+    engine: EngineAdapter,
     available_bytes: int,
     training_ctx: int,
     ceiling: int,
@@ -272,7 +273,7 @@ def _header_math_chat_ctx(
     """Window from GGUF header arithmetic: weights plus a dense-attention cache."""
     try:
         model_bytes = model_path.stat().st_size
-        elem_bytes = chat_kv_elem_bytes()
+        elem_bytes = chat_kv_elem_bytes(engine)
         kv_per_tok = kv_bytes_per_token(meta, elem_bytes, elem_bytes)
         return compute_dynamic_ctx(
             model_bytes=model_bytes,

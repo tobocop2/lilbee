@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -130,8 +130,8 @@ class RequestProfile:
     """The response field that carries reasoning text apart from the answer."""
 
 
-class EngineAdapter(Protocol):
-    """One inference engine behind the fleet.
+class EngineAdapter(Protocol, Hashable):
+    """One inference engine behind the fleet; hashable, so per-engine caches can key on it.
 
     The provider holds one adapter. Call order: ``binary()`` resolves the
     executable, ``discover_devices`` probes it, ``estimate_memory`` sizes a

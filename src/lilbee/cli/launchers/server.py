@@ -160,9 +160,9 @@ def planned_chat_ctx() -> int | None:
     engine that is not up yet, and the served window wins once it is. A
     remote-served chat model has no local window to compute.
     """
+    from lilbee.app.services import get_services
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_chat_ctx, resolve_model_path
-    from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.planning import plan_sizing_budget
     from lilbee.providers.gguf_meta import read_gguf_metadata
     from lilbee.providers.model_ref import parse_model_ref
@@ -174,8 +174,12 @@ def planned_chat_ctx() -> int | None:
         return cfg.num_ctx
     try:
         path = resolve_model_path(ref)
+        engine = get_services().engine
         return resolve_chat_ctx(
-            path, read_gguf_metadata(path), engine=LLAMA, available_bytes=plan_sizing_budget(LLAMA)
+            path,
+            read_gguf_metadata(path),
+            engine=engine,
+            available_bytes=plan_sizing_budget(engine),
         )
     except (ProviderError, OSError, ValueError):
         # Sizing needs the model file and its GGUF header; an absent or unreadable

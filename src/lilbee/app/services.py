@@ -239,9 +239,9 @@ def build_services(
     concepts = ConceptGraph(config, store)
     clusterer = Clusterer(config, store)
     searcher = Searcher(config, provider, store, embedder, reranker, concepts)
-    hf_client = HfClient()
+    hf_client = HfClient(engine)
     ingest_lock_registry = IngestLockRegistry()
-    model_manager = ModelManager(config.models_dir)
+    model_manager = ModelManager(config.models_dir, engine)
     crawler_semaphore = (
         asyncio.Semaphore(config.crawl_max_concurrent) if config.crawl_max_concurrent > 0 else None
     )
