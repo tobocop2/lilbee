@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -34,14 +35,6 @@ class MemoryKind(StrEnum):
 
     SIZED = "sized"
     FIXED_RESERVE = "fixed_reserve"
-
-
-class ReadbackKind(StrEnum):
-    """How the fleet reads an instance's real memory use back from the engine."""
-
-    ENDPOINT = "endpoint"
-    LOG = "log"
-    NONE = "none"
 
 
 @dataclass(frozen=True)
@@ -125,6 +118,16 @@ class RequestProfile:
     tokenize_path: str
     detokenize_path: str
     apply_template_path: str
+    label: str
+    """The name of the engine's server in error messages."""
+    context_overflow: re.Pattern[str]
+    """Matches a 400 body that reports a prompt past the context window."""
+    batch_overflow: re.Pattern[str]
+    """Matches a 500 body that reports an input past the physical batch."""
+    unreadable_embedding_hint: str
+    """What to tell the user when embedding vectors do not decode."""
+    reasoning_field: str
+    """The response field that carries reasoning text apart from the answer."""
 
 
 class EngineAdapter(Protocol):
@@ -133,7 +136,7 @@ class EngineAdapter(Protocol):
     The provider holds one adapter. Call order: ``binary()`` resolves the
     executable, ``discover_devices`` probes it, ``estimate_memory`` sizes a
     plan, ``role_spec`` and ``launch_argv`` build each command line, and
-    ``readback`` says how the running instance reports its memory.
+    ``check_readback`` says whether the running instance reports its memory.
     """
 
     @property
@@ -144,7 +147,6 @@ class EngineAdapter(Protocol):
 
     architectures: frozenset[str]
     served_roles: frozenset[WorkerRole]
-    readback: ReadbackKind
 
     def supports_architecture(self, architecture: str) -> bool: ...
 
@@ -165,7 +167,7 @@ class EngineAdapter(Protocol):
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate: ...
 
     def check_readback(self, binary: Path) -> bool:
-        """Whether *binary* can report its memory use the way ``readback`` says."""
+        """Whether *binary* can report its memory use by endpoint."""
         ...
 
     def supports_fit_target(self, binary: Path) -> bool:
@@ -176,7 +178,17 @@ class EngineAdapter(Protocol):
         """Whether *binary* can give its slots one KV pool with a per-slot cap."""
         ...
 
-    def header_reader(self) -> Path: ...
+    def model_meta(self, path: Path) -> Mapping[str, str] | None:
+        """Header metadata of the model file at *path*, or ``None`` when it has none."""
+        ...
+
+    def assert_loadable(self, repo: str, filename: str, token: str | None) -> None:
+        """Raise ``UnsupportedQuantError`` when the engine cannot load the remote file."""
+        ...
+
+    def runtime_env(self) -> Mapping[str, str]:
+        """Extra environment variables for a spawned engine process."""
+        ...
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]: ...
 

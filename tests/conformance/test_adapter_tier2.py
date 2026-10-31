@@ -13,7 +13,6 @@ import pytest
 
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engines import LLAMA, EngineAdapter, EngineName, LaunchRequest
-from lilbee.providers.fleet.engines.base import ReadbackKind
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
@@ -37,8 +36,6 @@ def test_fake_adapter_passes_the_managed_rows_through_its_own_pin() -> None:
 def test_fake_adapter_is_a_second_engine() -> None:
     assert FAKE.name != EngineName.LLAMA
     assert FAKE.formats.isdisjoint(LLAMA.formats)
-    assert FAKE.readback is not LLAMA.readback
-    assert ReadbackKind.LOG is FAKE.readback
 
 
 def test_fake_argv_shares_no_flag_with_llama(tmp_path: Path) -> None:

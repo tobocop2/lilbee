@@ -17,7 +17,6 @@ from lilbee.providers.fleet.engines.base import (
     MemoryKind,
     MemoryRequest,
     ModelFormat,
-    ReadbackKind,
 )
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.vram import GgufVramEstimate
@@ -31,7 +30,6 @@ _SWEEP_INPUTS = 400
 def test_llama_identity_fields() -> None:
     assert LLAMA.name is EngineName.LLAMA
     assert LLAMA.formats == {ModelFormat.GGUF}
-    assert LLAMA.readback is ReadbackKind.ENDPOINT
 
 
 def test_llama_supports_known_and_rejects_unknown_architecture() -> None:
@@ -216,9 +214,38 @@ def test_llama_memory_estimate_charges_what_the_parser_estimate_charged(
     assert compared == 2 * _SWEEP_INPUTS
 
 
-def test_llama_header_reader_is_the_bundled_gguf_parser(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(f"{_LLAMA_MODULE}.resolve_gguf_parser", lambda: Path("/bin/gguf-parser"))
-    assert LLAMA.header_reader() == Path("/bin/gguf-parser")
+def test_llama_model_meta_reads_a_gguf_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Path] = []
+
+    def _read(path: Path) -> dict[str, str]:
+        seen.append(path)
+        return {"architecture": "llama"}
+
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.read_gguf_metadata", _read)
+    assert LLAMA.model_meta(Path("/m/model.GGUF")) == {"architecture": "llama"}
+    assert seen == [Path("/m/model.GGUF")]
+
+
+def test_llama_model_meta_skips_a_file_with_no_gguf_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _read(path: Path) -> dict[str, str]:
+        raise AssertionError(f"the parser must not run on {path}")
+
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.read_gguf_metadata", _read)
+    assert LLAMA.model_meta(Path("/m/model.safetensors")) is None
+
+
+def test_llama_assert_loadable_asks_the_gguf_parser_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        f"{_LLAMA_MODULE}.assert_engine_can_load", lambda *args: calls.append(args)
+    )
+    LLAMA.assert_loadable("org/repo", "m.gguf", "tok")
+    assert calls == [("org/repo", "m.gguf", "tok")]
+
+
+def test_llama_runtime_env_is_the_server_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.llama_server_runtime_env", lambda: {"LD_LIBRARY_PATH": "/x"})
+    assert LLAMA.runtime_env() == {"LD_LIBRARY_PATH": "/x"}
 
 
 def test_llama_swap_extras_is_empty() -> None:
@@ -235,3 +262,11 @@ def test_llama_request_profile_holds_the_client_constants() -> None:
         "/detokenize",
         "/apply-template",
     )
+    assert profile.label == "llama-server"
+    assert profile.reasoning_field == "reasoning_content"
+    assert profile.context_overflow.search("The request exceeds the available context size")
+    assert profile.context_overflow.search('{"type": "exceed_context_size_error"}')
+    assert not profile.context_overflow.search("bad request")
+    assert profile.batch_overflow.search("input (4096 tokens) is too large to process")
+    assert not profile.batch_overflow.search("out of memory")
+    assert "llama-server b4391" in profile.unreadable_embedding_hint
