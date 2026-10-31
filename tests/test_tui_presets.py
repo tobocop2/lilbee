@@ -120,7 +120,7 @@ def _screen_text(app) -> str:
 
 
 class TestRunPresetCommand:
-    @pytest.mark.parametrize("args", ["", "frob", "list extra", "add", "add x", "'open", "remove"])
+    @pytest.mark.parametrize("args", ["", "frob", "list extra", "add", "add x", "'open", "remove", "edit"])
     def test_a_malformed_command_gets_the_usage_text(self, args):
         result = run_preset_command(args)
         assert (result.ok, result.text) == (False, msg.PRESET_USAGE)
@@ -181,7 +181,28 @@ class TestRunPresetCommand:
         _seed()
         result = run_preset_command(f"edit omlx --url {LOCAL}/x --roles chat --wire tei")
         assert (result.ok, result.text) == (True, "Updated server preset 'omlx'.")
-        assert list_presets()[0].has_key
+        assert _stored() == [
+            {
+                "name": "omlx",
+                "url": f"{LOCAL}/x",
+                "roles": ["chat"],
+                "rerank_wire": "tei",
+                "api_key": KEY,
+            }
+        ]
+
+    def test_edit_changes_only_the_flags_it_is_given(self):
+        add_preset("rr", LOCAL, roles=["rerank"], rerank_wire="tei", api_key=KEY)
+        assert run_preset_command("edit rr --roles rerank,chat").ok
+        assert _stored() == [
+            {
+                "name": "rr",
+                "url": LOCAL,
+                "roles": ["rerank", "chat"],
+                "rerank_wire": "tei",
+                "api_key": KEY,
+            }
+        ]
 
     def test_edit_clear_key(self):
         _seed()
@@ -475,6 +496,24 @@ class TestPane:
             assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
         stored = _stored()
         assert (stored[0]["roles"], stored[0]["api_key"]) == (["embed", "chat", "vision"], KEY)
+
+    async def test_edit_with_a_new_url_sends_the_url_and_keeps_the_key(self):
+        _seed()
+        app = _ChatApp()
+        async with app.run_test(size=(120, 50)) as pilot:
+            pane = await _open_pane(pilot, app)
+            assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
+            _press(app, ".preset-edit")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))
+            app.screen.query_one("#preset-url-input", Input).value = f"{LOCAL}/x"
+            _press(app, "#preset-save")
+            assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
+        stored = _stored()
+        assert (stored[0]["url"], stored[0]["roles"], stored[0]["api_key"]) == (
+            f"{LOCAL}/x",
+            ["chat", "embed"],
+            KEY,
+        )
 
     async def test_edit_with_no_change_shows_the_nothing_to_change_text(self):
         _seed()
