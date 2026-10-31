@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from lilbee.catalog.types import ModelFormat
+from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engine_store import (
+    EngineConflictError,
+    EngineStore,
+    PinLock,
+    engines_root,
+)
 from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.roles import WorkerRole
+
+log = logging.getLogger(__name__)
 
 AUTO = "auto"
 _DARWIN = "darwin"
@@ -139,8 +150,42 @@ def choose_engine(
 
 
 def installed_engines() -> InstalledEngines:
-    """The formats each shipped adapter loads, read from the adapter."""
-    return {name: adapter.formats for name, adapter in ADAPTERS.items()}
+    """The formats of each adapter that ships in the package or has a complete store build."""
+    store = EngineStore(engines_root(cfg.models_dir))
+    return {
+        name: adapter.formats
+        for name, adapter in ADAPTERS.items()
+        if _is_installed(name, adapter, store)
+    }
+
+
+class PinError(Exception):
+    """An adapter's pin record cannot name a build."""
+
+
+def _pin_lock(pin: Mapping[str, Any]) -> PinLock:
+    """The lock for *pin*; raises ``PinError`` for a missing field or an unusable name."""
+    try:
+        return PinLock(pin["engine"], pin["version"], pin["backend"], {}, (), pin["sha256"])
+    except (KeyError, ValueError, TypeError) as exc:
+        raise PinError(f"the pin record is not usable ({exc!r})") from exc
+
+
+def _is_installed(name: EngineName, adapter: EngineAdapter, store: EngineStore) -> bool:
+    """True for the engine in the package, or an adapter whose pin has a complete build.
+
+    A read that fails (unreadable folder, a build of another wheel) leaves that
+    engine not installed and is logged; it never touches the engine in the package.
+    """
+    if adapter.bundled:
+        return True
+    try:
+        pin = adapter.pin_record()
+        lock = _pin_lock(pin)
+        return store.complete_build(lock) is not None
+    except (OSError, EngineConflictError, PinError) as exc:
+        log.warning("Engine %s counts as not installed: %s", name, exc)
+        return False
 
 
 @dataclass(frozen=True)

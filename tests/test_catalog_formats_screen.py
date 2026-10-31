@@ -21,7 +21,7 @@ from lilbee.cli.tui.widgets.format_picker import FormatPicker
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from tests._lilbee_app_test_host import LilbeeAppHost
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 
 class _App(LilbeeAppHost):
@@ -29,7 +29,7 @@ class _App(LilbeeAppHost):
         yield Static("host")
 
 
-class _SafetensorsEngine(FakeAdapter):
+class _SafetensorsEngine(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf", "safetensors"})
     architectures = frozenset({"gguf_arch"})

@@ -239,6 +239,7 @@ def test_chat_answers_when_the_pin_lookup_fails(monkeypatch: pytest.MonkeyPatch)
     engine = MagicMock()
     engine.name = "llama.cpp"
     engine.pin_record.side_effect = OSError("gone")
+    engine.bundled = True
     engine.formats = frozenset({"gguf"})
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, engine)
     provider = RoutingProvider()

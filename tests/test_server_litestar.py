@@ -1160,9 +1160,9 @@ class TestModelsPullByFormat:
         from lilbee.providers.fleet.engines import choice
         from lilbee.providers.fleet.engines.base import EngineName
         from lilbee.providers.fleet.engines.choice import HostFacts
-        from tests.conformance.fake_adapter import FakeAdapter
+        from tests.conformance.fake_adapter import BundledFakeAdapter
 
-        class _MlxEngine(FakeAdapter):
+        class _MlxEngine(BundledFakeAdapter):
             name = "mlx"
             formats = frozenset({"mlx"})
 
