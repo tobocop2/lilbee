@@ -8,7 +8,6 @@ import contextlib
 import json
 import logging
 import math
-import re
 import ssl
 import threading
 import time
@@ -36,6 +35,7 @@ from lilbee.providers.base import (
     TokenUsage,
     ToolCall,
     ToolCallDelta,
+    is_prompt_length_overflow,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
 from lilbee.providers.fleet.engines import LLAMA
@@ -95,8 +95,6 @@ _UPSTREAM_DIED_MARKER = "exited prematurely"
 _BIND_FAILURE_MARKER = "couldn't bind HTTP server socket"
 # llama-server's 500 body when one input exceeds the physical batch (n_batch).
 _BATCH_OVERFLOW_MARKER = "too large to process"
-# The 400 message of a server that refuses a prompt longer than its window.
-_PROMPT_LENGTH_OVERFLOW = re.compile(r"Prompt sequence length is greater than \d+")
 
 
 class _ChatToolSpecFunction(TypedDict, total=False):
@@ -576,7 +574,7 @@ class LlamaServerClient:
         if resp.status_code == _HTTP_BAD_REQUEST and (
             "exceed_context_size" in body.lower()
             or "context size" in body.lower()
-            or _PROMPT_LENGTH_OVERFLOW.search(body)
+            or is_prompt_length_overflow(body)
         ):
             raise ProviderError(
                 "The conversation exceeds this model's context window. "
