@@ -244,6 +244,9 @@ def _default(
     # with their own (post-subcommand) flags, and re-applying None is a no-op,
     # so ``--data-dir`` / ``--model`` / ``--global`` work in either position.
     apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
+    from lilbee.providers.fleet.engine_store import sweep_engines
+
+    sweep_engines(cfg.models_dir)
     # Backend-level logging toggles are applied lazily by SdkLLMProvider
     # on first use, so nothing else is needed here.
     if ctx.invoked_subcommand is None:

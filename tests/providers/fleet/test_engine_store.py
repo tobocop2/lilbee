@@ -521,3 +521,455 @@ def test_wheel_whose_tool_is_a_symlink_is_refused(store: EngineStore, tmp_path: 
     with pytest.raises(UnsafeWheelError, match="as a symbolic link"):
         store.install_from_wheel(pin(sha), path)
     assert not store.root.exists()
+
+
+# --- package route -----------------------------------------------------------------------
+
+
+def extract_into_target(wheel_path: Path):
+    """A stand-in for the installer: unpack the wheel into the folder named by --target."""
+    seen: list[list[str]] = []
+
+    def run(argv: list[str], requirements: str) -> None:
+        seen.append(argv)
+        with zipfile.ZipFile(wheel_path) as archive:
+            archive.extractall(argv[argv.index("--target") + 1])
+        for tool in Path(argv[argv.index("--target") + 1]).glob("*/bin/*"):
+            tool.chmod(0o755)
+
+    return run, seen
+
+
+def test_package_route_installs_the_staged_tree(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    run, seen = extract_into_target(path)
+    build = store.install_via_package(pin(sha), run=run)
+    assert build == store.root / "fx" / "1-cpu"
+    assert [b.binary for b in store.installed()] == [build / "lilbee_engine_fx" / "bin" / "server"]
+    assert "--require-hashes" in seen[0]
+    assert names(store.root / "fx") == ["1-cpu"]
+
+
+def test_package_route_skips_the_installer_for_a_complete_build(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    store.install_from_wheel(pin(sha), path)
+    run = mock.Mock()
+    assert store.install_via_package(pin(sha), run=run) == store.root / "fx" / "1-cpu"
+    run.assert_not_called()
+
+
+def test_package_route_refuses_a_licence_before_it_runs_the_installer(
+    store: EngineStore,
+) -> None:
+    run = mock.Mock()
+    with pytest.raises(LicenceRefusedError, match=r"GPL-3\.0-only"):
+        store.install_via_package(pin("0" * 64, licences=("GPL-3.0-only",)), run=run)
+    run.assert_not_called()
+
+
+def test_package_route_refuses_a_wheel_licence_the_pin_does_not_show(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "gpl.whl"
+    sha = make_wheel(path, licence="GPL-3.0-only")
+    run, _ = extract_into_target(path)
+    with pytest.raises(LicenceRefusedError, match=r"GPL-3\.0-only"):
+        store.install_via_package(pin(sha), run=run)
+    assert names(store.root / "fx") == []
+
+
+def test_package_route_refuses_a_wheel_without_a_licence(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "none.whl"
+    sha = make_wheel(path, licence=None)
+    run, _ = extract_into_target(path)
+    with pytest.raises(LicenceRefusedError, match="declares the licence ''"):
+        store.install_via_package(pin(sha), run=run)
+    assert names(store.root / "fx") == []
+
+
+def test_package_route_refuses_a_link_that_leaves_the_stage(
+    store: EngineStore, wheel: tuple[Path, str], tmp_path: Path
+) -> None:
+    path, sha = wheel
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    inner, _ = extract_into_target(path)
+
+    def run(argv: list[str], requirements: str) -> None:
+        inner(argv, requirements)
+        (Path(argv[argv.index("--target") + 1]) / "escape").symlink_to(outside)
+
+    with pytest.raises(UnsafeWheelError, match="escape"):
+        store.install_via_package(pin(sha), run=run)
+    assert names(store.root / "fx") == []
+    assert outside.read_text(encoding="utf-8") == "secret"
+
+
+def test_package_route_refuses_a_tool_that_is_a_link(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    inner, _ = extract_into_target(path)
+
+    def run(argv: list[str], requirements: str) -> None:
+        inner(argv, requirements)
+        stage = Path(argv[argv.index("--target") + 1])
+        tool = stage / "lilbee_engine_fx" / "bin" / "server"
+        tool.unlink()
+        tool.symlink_to(stage / "lilbee_engine_fx" / "data.txt")
+
+    with pytest.raises(UnsafeWheelError, match="symbolic link"):
+        store.install_via_package(pin(sha), run=run)
+    assert names(store.root / "fx") == []
+
+
+def test_package_route_leaves_nothing_when_the_installer_fails(store: EngineStore) -> None:
+    def run(argv: list[str], requirements: str) -> None:
+        raise engine_store.PackageInstallError("The engine installer failed: no index")
+
+    with pytest.raises(engine_store.PackageInstallError, match="no index"):
+        store.install_via_package(pin("0" * 64), run=run)
+    assert names(store.root / "fx") == []
+
+
+def test_installer_runner_passes_the_requirement_on_standard_input(tmp_path: Path) -> None:
+    out = tmp_path / "stdin.txt"
+    script = f"import sys, pathlib; pathlib.Path({str(out)!r}).write_text(sys.stdin.read())"
+    engine_store._run_installer([sys.executable, "-c", script], "pkg==1 --hash=sha256:ab\n")
+    assert out.read_text(encoding="utf-8") == "pkg==1 --hash=sha256:ab\n"
+
+
+def test_installer_runner_reports_the_last_line_of_a_failure() -> None:
+    script = "import sys; sys.stderr.write('warn\\nno matching index\\n'); sys.exit(2)"
+    with pytest.raises(engine_store.PackageInstallError, match="no matching index"):
+        engine_store._run_installer([sys.executable, "-c", script], "")
+
+
+def test_installer_runner_reports_a_failure_without_output() -> None:
+    with pytest.raises(engine_store.PackageInstallError, match="no output"):
+        engine_store._run_installer([sys.executable, "-c", "import sys; sys.exit(1)"], "")
+
+
+@pytest.mark.parametrize(("uv", "want"), [("/bin/uv", "uv"), (None, "pip")])
+def test_installer_prefers_uv_then_pip(uv: str | None, want: str) -> None:
+    with mock.patch.object(engine_store.shutil, "which", return_value=uv):
+        assert engine_store.installer() == want
+
+
+# --- removal, prune, sweep ---------------------------------------------------------------
+
+
+def installed_store(store: EngineStore, tmp_path: Path, versions: tuple[str, ...] = ("1",)) -> str:
+    path = tmp_path / "fx.whl"
+    sha = make_wheel(path)
+    for version in versions:
+        store.install_from_wheel(pin(sha, version=version), path)
+    return sha
+
+
+def test_remove_refuses_a_build_in_use_and_keeps_it(store: EngineStore, tmp_path: Path) -> None:
+    installed_store(store, tmp_path)
+    with pytest.raises(engine_store.EngineInUseError, match="lilbee engine stop"):
+        store.remove("fx", "1", "cpu", in_use=lambda *_: True)
+    assert (store.root / "fx" / "1-cpu" / RECORD_NAME).is_file()
+
+
+def test_remove_deletes_an_idle_build_with_a_canary_warning(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    installed_store(store, tmp_path)
+    seen: list[tuple[str, str, str]] = []
+    result = store.remove("fx", "1", "cpu", in_use=lambda e, v, b: seen.append((e, v, b)) or False)
+    assert seen == [("fx", "1", "cpu")]
+    assert result.canary_warning is True
+    assert names(store.root / "fx") == []
+    assert store.installed() == []
+
+
+def test_remove_leaves_a_locked_folder_in_trash_and_the_sweep_takes_it(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    installed_store(store, tmp_path)
+    with mock.patch.object(engine_store.shutil, "rmtree"):
+        store.remove("fx", "1", "cpu", in_use=lambda *_: False)
+    left = names(store.root / "fx")
+    assert len(left) == 1
+    assert left[0].startswith(".trash-")
+    assert store.installed() == []
+    assert [p.name for p in store.sweep()] == left
+    assert names(store.root / "fx") == []
+
+
+def test_remove_refuses_the_bundled_engine(store: EngineStore) -> None:
+    with pytest.raises(engine_store.BundledEngineError, match="inside the executable"):
+        store.remove("llama.cpp", "bundled", "bundled", in_use=lambda *_: False)
+
+
+def test_remove_reports_a_build_that_is_not_installed(store: EngineStore) -> None:
+    with pytest.raises(engine_store.EngineNotInstalledError, match="fx 7"):
+        store.remove("fx", "7", "cpu", in_use=lambda *_: False)
+
+
+@pytest.mark.parametrize("bad", ["../x", "a/b", "", ".hidden", "a b"])
+def test_remove_refuses_a_name_that_could_leave_the_root(
+    store: EngineStore, tmp_path: Path, bad: str
+) -> None:
+    victim = tmp_path / "engines" / "x"
+    victim.mkdir(parents=True)
+    with pytest.raises(engine_store.StorePathError):
+        store.remove(bad, "1", "cpu", in_use=lambda *_: False)
+    with pytest.raises(engine_store.StorePathError):
+        store.remove("fx", bad, "cpu", in_use=lambda *_: False)
+    assert victim.is_dir()
+
+
+def test_remove_refuses_a_build_folder_that_is_a_link_out_of_the_root(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    (outside / "file.txt").write_text("data", encoding="utf-8")
+    (store.root / "fx").mkdir(parents=True)
+    (store.root / "fx" / "1-cpu").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(engine_store.StorePathError, match="not inside"):
+        store.remove("fx", "1", "cpu", in_use=lambda *_: False)
+    assert (outside / "file.txt").read_text(encoding="utf-8") == "data"
+
+
+def test_prune_keeps_the_release_pin_and_the_pin_in_use(store: EngineStore, tmp_path: Path) -> None:
+    installed_store(store, tmp_path, ("1", "2", "3"))
+    gone = store.prune(keep={("fx", "3", "cpu")}, in_use=lambda e, v, b: v == "2")
+    assert [p.name for p in gone] == ["1-cpu"]
+    assert [b.version for b in store.installed()] == ["2", "3"]
+
+
+def test_prune_skips_a_build_it_cannot_delete(store: EngineStore, tmp_path: Path) -> None:
+    installed_store(store, tmp_path, ("1",))
+    with mock.patch.object(EngineStore, "remove", side_effect=OSError("busy")):
+        assert store.prune(keep={("fx", "9", "cpu")}, in_use=lambda *_: False) == []
+    assert [b.version for b in store.installed()] == ["1"]
+
+
+_HOLD = textwrap.dedent(
+    """
+    import sys
+    from pathlib import Path
+    from lilbee.core.security import file_lock
+
+    with file_lock(Path(sys.argv[1]), 30):
+        print("held", flush=True)
+        sys.stdin.readline()
+    """
+)
+
+
+def hold_lock(tmp_path: Path, lock_path: Path) -> subprocess.Popen[str]:
+    script = tmp_path / "hold.py"
+    script.write_text(_HOLD, encoding="utf-8")
+    child = subprocess.Popen(
+        [sys.executable, str(script), str(lock_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    assert child.stdout is not None
+    assert child.stdout.readline().strip() == "held"
+    return child
+
+
+def release(child: subprocess.Popen[str]) -> None:
+    assert child.stdin is not None
+    child.stdin.write("\n")
+    child.stdin.flush()
+    child.wait(timeout=30)
+
+
+def test_sweep_removes_leftovers_that_no_install_holds_however_new(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    installed_store(store, tmp_path)
+    for leftover in (".stage-aa", ".trash-bb"):
+        (store.root / "fx" / leftover).mkdir()
+        (store.root / "fx" / leftover / "f").write_text("x", encoding="utf-8")
+    (store.root / ".download-cc").mkdir()
+    (store.root / "packs").mkdir()
+    (store.root / "packs" / "fx-1-cpu.whl").write_text("pack", encoding="utf-8")
+    gone = store.sweep()
+    assert sorted(p.name for p in gone) == [".download-cc", ".stage-aa", ".trash-bb"]
+    assert names(store.root / "fx") == ["1-cpu"]
+    assert (store.root / "packs" / "fx-1-cpu.whl").is_file()
+    assert len(store.installed()) == 1
+
+
+def test_sweep_keeps_the_stage_of_an_install_that_holds_the_engine_lock(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    (store.root / "fx" / ".stage-live").mkdir(parents=True)
+    (store.root / "other" / ".stage-dead").mkdir(parents=True)
+    child = hold_lock(tmp_path, store.root / ".locks" / "fx")
+    try:
+        gone = store.sweep()
+        assert [p.name for p in gone] == [".stage-dead"]
+        assert (store.root / "fx" / ".stage-live").is_dir()
+    finally:
+        release(child)
+    assert [p.name for p in store.sweep()] == [".stage-live"]
+
+
+def test_sweep_keeps_the_download_folder_of_a_live_install(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    (store.root / ".download-live").mkdir(parents=True)
+    (store.root / ".download-live" / "part").write_text("x", encoding="utf-8")
+    child = hold_lock(tmp_path, store.root / ".locks" / ".download-live")
+    try:
+        assert store.sweep() == []
+        assert (store.root / ".download-live" / "part").is_file()
+    finally:
+        release(child)
+    assert [p.name for p in store.sweep()] == [".download-live"]
+    assert not (store.root / ".locks" / ".download-live.lock").exists()
+
+
+def test_sweep_ignores_a_root_that_does_not_exist(store: EngineStore) -> None:
+    assert store.sweep() == []
+
+
+def test_sweep_does_not_follow_a_stage_link_out_of_the_root(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    (outside / "file.txt").write_text("data", encoding="utf-8")
+    (store.root / "fx").mkdir(parents=True)
+    (store.root / "fx" / ".stage-link").symlink_to(outside, target_is_directory=True)
+    assert store.sweep() == []
+    assert (outside / "file.txt").read_text(encoding="utf-8") == "data"
+
+
+def test_sweep_does_not_follow_a_download_link_out_of_the_root(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    (outside / "file.txt").write_text("data", encoding="utf-8")
+    store.root.mkdir()
+    (store.root / ".download-link").symlink_to(outside, target_is_directory=True)
+    assert store.sweep() == []
+    assert (outside / "file.txt").read_text(encoding="utf-8") == "data"
+
+
+def test_sweep_does_not_follow_an_engine_link_out_of_the_root(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    outside = tmp_path / "keep"
+    (outside / ".stage-x").mkdir(parents=True)
+    (outside / ".stage-x" / "file.txt").write_text("data", encoding="utf-8")
+    (outside / ".trash-y").mkdir()
+    store.root.mkdir()
+    (store.root / "fx").symlink_to(outside, target_is_directory=True)
+    assert store.sweep() == []
+    assert (outside / ".stage-x" / "file.txt").read_text(encoding="utf-8") == "data"
+    assert (outside / ".trash-y").is_dir()
+
+
+def test_sweep_skips_one_bad_link_and_clears_the_other_leftovers(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    (outside / "file.txt").write_text("data", encoding="utf-8")
+    engine = store.root / "fx"
+    (engine / ".stage-real").mkdir(parents=True)
+    (engine / ".trash-real").mkdir()
+    (engine / ".stage-link").symlink_to(outside, target_is_directory=True)
+    (engine / ".trash-link").symlink_to(outside, target_is_directory=True)
+    gone = store.sweep()
+    assert sorted(p.name for p in gone) == [".stage-real", ".trash-real"]
+    assert names(engine) == [".stage-link", ".trash-link"]
+    assert (outside / "file.txt").read_text(encoding="utf-8") == "data"
+
+
+def test_prune_refuses_an_empty_keep_set(store: EngineStore, tmp_path: Path) -> None:
+    installed_store(store, tmp_path, ("1", "2"))
+    with pytest.raises(ValueError, match="at least one build to keep"):
+        store.prune(keep=set(), in_use=lambda *_: False)
+    assert [b.version for b in store.installed()] == ["1", "2"]
+
+
+def test_ensure_holds_a_download_lock_while_it_fetches(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    during: list[list[Path]] = []
+
+    def fetch(lock: PinLock, dest: Path) -> Path:
+        dest.mkdir(parents=True)
+        during.append(store.sweep())
+        return path
+
+    store.ensure(pin(sha), fetch)
+    assert during == [[]]
+    assert names(store.root) == [".locks", "fx"]
+    assert sorted(p.name for p in (store.root / ".locks").iterdir()) == ["fx.lock"]
+
+
+def test_sweep_engines_ignores_a_relative_models_dir(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "engines" / "fx" / ".stage-x").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    assert engine_store.sweep_engines(Path("models")) == []
+    assert (tmp_path / "engines" / "fx" / ".stage-x").is_dir()
+
+
+def test_sweep_engines_sweeps_the_folder_beside_the_models(tmp_path: Path) -> None:
+    (tmp_path / "engines" / "fx" / ".stage-x").mkdir(parents=True)
+    gone = engine_store.sweep_engines(tmp_path / "models")
+    assert [p.name for p in gone] == [".stage-x"]
+
+
+def test_sweep_engines_is_a_no_op_with_nothing_installed(tmp_path: Path) -> None:
+    assert engine_store.sweep_engines(tmp_path / "models") == []
+    assert names(tmp_path) == []
+
+
+def test_launch_uses_engine_reads_the_user_locks_of_the_machine_engine(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    assert engine_store.launch_uses_engine("fx", "1", "cpu") is False
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        assert engine_store.launch_uses_engine("fx", "1", "cpu") is True
+    finally:
+        hold.release_and_check_last()
+
+
+def test_sweep_never_raises_when_the_root_cannot_be_read(store: EngineStore) -> None:
+    store.root.mkdir()
+    with mock.patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
+        assert store.sweep() == []
+
+
+def test_prune_also_clears_a_damaged_build(store: EngineStore, tmp_path: Path) -> None:
+    installed_store(store, tmp_path, ("1", "2"))
+    (store.root / "fx" / "1-cpu" / RECORD_NAME).unlink()
+    (store.root / "fx" / "stray-file").write_text("x", encoding="utf-8")
+    (store.root / "packs").mkdir()
+    (store.root / "packs" / "fx-1-cpu.whl").write_text("pack", encoding="utf-8")
+    gone = store.prune(keep={("fx", "2", "cpu")}, in_use=lambda *_: False)
+    assert [p.name for p in gone] == ["1-cpu"]
+    assert names(store.root / "fx") == ["2-cpu", "stray-file"]
+    assert (store.root / "packs" / "fx-1-cpu.whl").is_file()
+
+
+def test_prune_with_no_root_removes_nothing(store: EngineStore) -> None:
+    assert store.prune(keep={("fx", "1", "cpu")}, in_use=lambda *_: False) == []
