@@ -42,8 +42,10 @@ def test_replay_gives_the_recorded_results(path: Path, tmp_path: Path) -> None:
 
 def _chat_bodies(exchanges: list[Exchange]) -> Iterator[tuple[Exchange, dict[str, Any]]]:
     for exchange in exchanges:
-        if exchange.path.endswith("/chat/completions") and exchange.body.startswith("{"):
-            yield exchange, json.loads(exchange.body)
+        if exchange.status == 200 and exchange.path.endswith("/chat/completions"):
+            body = json.loads(exchange.body)
+            if body.get("choices"):
+                yield exchange, body
 
 
 def _replayed_after(

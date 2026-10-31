@@ -9,7 +9,7 @@ STEP mistralrs-cpu tool ok=True tool_calls=['get_weather']
 STEP mistralrs-cpu overflow ok=True kind=context_overflow
 STEP mistralrs-cpu json_object ok=True finish=stop
 STEP mistralrs-cpu json_schema ok=True finish=stop
-STEP mistralrs-cpu reasoning ok=True text_and_finish_only finish=stop
+STEP mistralrs-cpu reasoning ok=True finish=stop
 STEP mistralrs-cpu embed ok=True dims=[1024]
 STEP mistralrs-cpu vision ok=True red_named=True blue_called_red=False
-STEP mistralrs-cpu named ok=True log=['served by engine=check version=preset role=chat model=check/Qwen/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'check', <WorkerRole.EMBED: 'embed'>: 'check'}
+STEP mistralrs-cpu named ok=True log=['served by engine=mistralrs-cpu version=preset role=chat model=mistralrs-cpu/Qwen/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'mistralrs-cpu', <WorkerRole.EMBED: 'embed'>: 'mistralrs-cpu'}
