@@ -405,6 +405,38 @@ class TestRebuild:
         assert result.exit_code != 0
         assert "Error: locked: notes[draft].txt" in result.output
 
+    def test_rebuild_provider_error_prints_the_message_not_a_traceback(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError(
+            "The embedding model is not available. Nothing was rebuilt.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=refused
+        ):
+            result = runner.invoke(app, ["rebuild"])
+        assert result.exit_code == 1
+        assert "Error: The embedding model is not available" in result.output
+        assert "Traceback" not in result.output
+        assert isinstance(result.exception, SystemExit)
+
+    def test_rebuild_provider_error_json_carries_the_message(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError(
+            "The embedding model is not available. Nothing was rebuilt.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=refused
+        ):
+            result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {
+            "error": "The embedding model is not available. Nothing was rebuilt."
+        }
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_rebuild_processes_sets_ingest_processes(self, mock_sync, isolated_env):
         result = runner.invoke(app, ["rebuild", "--processes", "2"])

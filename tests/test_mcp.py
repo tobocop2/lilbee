@@ -391,6 +391,28 @@ class TestALibraryRefusal:
 
         assert result == {"error": "The library cannot be locked"}
 
+    async def test_a_rebuild_the_embedder_cannot_serve_returns_the_plain_message(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError(
+            "The embedding model is not available. Nothing was rebuilt.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            result = await sync(force_rebuild=True)
+
+        assert result == {"error": str(refused)}
+
+    async def test_a_refused_rebuild_reaches_a_client_as_the_plain_message(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError("Nothing was rebuilt.", kind=ProviderErrorKind.NOT_FOUND)
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            async with mcp_client() as (session, _init, _drop):
+                result = await session.call_tool("sync", {"force_rebuild": True})
+
+        assert json.loads(result.content[0].text) == {"error": "Nothing was rebuilt."}
+
     async def test_sync_that_cannot_open_its_sync_lock_returns_an_error(self):
         cfg.data_root.mkdir(parents=True, exist_ok=True)
         before = sorted(cfg.data_root.rglob("*"))
