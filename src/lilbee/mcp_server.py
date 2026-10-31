@@ -218,10 +218,14 @@ def _tool(fn: _F) -> _F:
 
 
 def _tool_named(name: str) -> Callable[[_F], _F]:
-    """Register an MCP tool under an explicit wire *name* (sync handlers offloaded)."""
+    """Register an MCP tool under an explicit wire *name* (sync handlers offloaded).
+
+    The preset tools carry the ``mcp_presets_enabled`` gate, evaluated at server build.
+    """
+    when = _presets_enabled if name in _PRESET_TOOL_NAMES else None
 
     def deco(fn: _F) -> _F:
-        _REGISTRATIONS.append((_offload_sync(fn), name, None))
+        _REGISTRATIONS.append((_offload_sync(fn), name, when))
         return fn
 
     return deco
@@ -248,11 +252,26 @@ def _tool_if(when: Callable[[], bool]) -> Callable[[_F], _F]:
 # one over ``settings_set`` persists it, but the tool list only changes on the
 # next connection: MCP sends no ``tools/list_changed`` from here. The settings
 # reference documents that, and generates the list from this set.
-TOOL_GATE_SETTINGS: frozenset[str] = frozenset({"wiki", "memory_enabled", "mcp_sessions_enabled"})
+TOOL_GATE_SETTINGS: frozenset[str] = frozenset(
+    {"wiki", "memory_enabled", "mcp_sessions_enabled", "mcp_presets_enabled"}
+)
+
+PRESETS_DISABLED_ERROR = (
+    "Server presets are off over MCP. Turn them on with settings_set mcp_presets_enabled "
+    "true, /set mcp_presets_enabled true in the TUI, or mcp_presets_enabled = true in "
+    "config.toml."
+)
+_PRESET_TOOL_NAMES: frozenset[str] = frozenset(
+    {"preset_list", "preset_add", "preset_edit", "preset_remove"}
+)
 
 
 def _wiki_enabled() -> bool:
     return cfg.wiki
+
+
+def _presets_enabled() -> bool:
+    return cfg.mcp_presets_enabled
 
 
 def _error(msg: str) -> dict[str, Any]:
@@ -1766,8 +1785,17 @@ def _preset_result(action: Callable[[], BaseModel]) -> dict[str, Any]:
         return _error(failure_text(exc))
 
 
+def _preset_read_refused() -> dict[str, Any] | None:
+    """The refusal for any preset tool once ``mcp_presets_enabled`` is off, even mid-process."""
+    if not cfg.mcp_presets_enabled:
+        return _error(PRESETS_DISABLED_ERROR)
+    return None
+
+
 def _preset_write_refused() -> dict[str, Any] | None:
-    """The refusal for a preset change over the shared HTTP transport while the flag is off."""
+    """The refusal for a preset change: the tools are off, or the HTTP flag is off."""
+    if (refused := _preset_read_refused()) is not None:
+        return refused
     if _transport.http_mounted and not cfg.allow_http_engines:
         return _error(engines_refused_message())
     return None
@@ -1778,6 +1806,8 @@ def preset_list_tool() -> dict[str, Any]:
     """List the server presets."""
     from lilbee.server.models import PresetListResponse, PresetResponse
 
+    if (refused := _preset_read_refused()) is not None:
+        return refused
     return _preset_result(
         lambda: PresetListResponse(presets=[PresetResponse.from_view(p) for p in list_presets()])
     )

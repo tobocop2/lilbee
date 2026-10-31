@@ -21,6 +21,7 @@ def _isolated_config(tmp_path, monkeypatch):
     cfg.data_root = tmp_path
     cfg.server_presets = None
     cfg.allow_http_engines = False
+    cfg.mcp_presets_enabled = True
     yield
     mcp_server.set_http_mounted(False)
     for name in Config.model_fields:
@@ -37,9 +38,47 @@ def _stored() -> list[dict]:
     return json.loads(raw) if raw else []
 
 
-def test_the_four_tools_are_registered_by_name():
-    names = {tool.name for tool in mcp_server.build_mcp_server()._tool_manager.list_tools()}
-    assert {"preset_list", "preset_add", "preset_edit", "preset_remove"} <= names
+PRESET_TOOLS = {"preset_list", "preset_add", "preset_edit", "preset_remove"}
+
+
+def _wire_names() -> set[str]:
+    return {tool.name for tool in mcp_server.build_mcp_server()._tool_manager.list_tools()}
+
+
+def test_the_four_tools_are_registered_by_name_when_the_setting_is_on():
+    assert _wire_names() >= PRESET_TOOLS
+
+
+def test_the_tools_are_off_the_wire_by_default():
+    assert Config.model_fields["mcp_presets_enabled"].default is False
+    cfg.mcp_presets_enabled = Config.model_fields["mcp_presets_enabled"].default
+    names = _wire_names()
+    assert names, "the server registered no tools at all"
+    assert names.isdisjoint(PRESET_TOOLS)
+    assert "search" in names
+
+
+def test_settings_set_turns_the_tools_on_after_a_rebuild():
+    cfg.mcp_presets_enabled = False
+    assert _wire_names().isdisjoint(PRESET_TOOLS)
+    out = mcp_server.settings_set({"mcp_presets_enabled": True})
+    assert out["updated"] == ["mcp_presets_enabled"]
+    assert cfg.mcp_presets_enabled is True
+    assert _wire_names() >= PRESET_TOOLS
+
+
+def test_settings_set_off_refuses_every_tool_of_a_live_server():
+    mcp_server.settings_set({"mcp_presets_enabled": False})
+    calls = {
+        "preset_list": lambda: mcp_server.preset_list_tool(),
+        "preset_add": lambda: mcp_server.preset_add_tool("omlx", LOCAL, ["chat"]),
+        "preset_edit": lambda: mcp_server.preset_edit_tool("omlx", url=OTHER),
+        "preset_remove": lambda: mcp_server.preset_remove_tool("omlx"),
+    }
+    assert set(calls) == PRESET_TOOLS
+    for name, call in calls.items():
+        assert call() == {"error": mcp_server.PRESETS_DISABLED_ERROR}, name
+    assert _stored() == []
 
 
 def test_list_empty():

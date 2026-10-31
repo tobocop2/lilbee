@@ -129,6 +129,8 @@ when the user asks.
 
 ### Server presets
 
+These tools register only when the user turns on `mcp_presets_enabled` (off by default).
+
 | Tool | Use |
 |---|---|
 | `lilbee_preset_list()` | The stored server presets: name, URL, roles, rerank wire, and `has_key`. A key is never returned. |
@@ -282,8 +284,8 @@ For a clean slate: `lilbee_reset(confirm=true)` via the worker.
 written reference: every setting, its default, and a column per surface saying whether
 MCP can set it. Three cases need an extra step after the write succeeds.
 
-**A setting that changes the tool list needs a reconnect.** `wiki`, `memory_enabled` and
-`mcp_sessions_enabled` decide which tools register, and that is decided once, when the
+**A setting that changes the tool list needs a reconnect.** `wiki`, `memory_enabled`,
+`mcp_sessions_enabled` and `mcp_presets_enabled` decide which tools register, and that is decided once, when the
 server starts. `lilbee_settings_set({"wiki": true})` succeeds and persists, and the
 `lilbee_wiki_*` tools still are not there. Tell the user to restart the lilbee MCP server;
 do not report the feature as broken. `lilbee_wiki_status` works either way, so read it to
