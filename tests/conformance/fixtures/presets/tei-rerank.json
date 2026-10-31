@@ -1,0 +1,35 @@
+{
+ "server": "tei-rerank",
+ "version": "1.9.4 BAAI/bge-reranker-base cpu-1.9",
+ "roles": [
+  "rerank"
+ ],
+ "models": {
+  "rerank": "BAAI/bge-reranker-base"
+ },
+ "rerank_wire": "tei",
+ "results": {
+  "rerank": {
+   "ok": true,
+   "detail": "best=1"
+  }
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/rerank",
+   "request": {
+    "model": "BAAI/bge-reranker-base",
+    "query": "What is the capital of France?",
+    "texts": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ]
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "[{\"index\":1,\"score\":0.9978866},{\"index\":2,\"score\":0.000037398808},{\"index\":0,\"score\":0.000037297585}]"
+  }
+ ]
+}
