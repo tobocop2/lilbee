@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import math
+import re
 import ssl
 import threading
 import time
@@ -94,6 +95,8 @@ _UPSTREAM_DIED_MARKER = "exited prematurely"
 _BIND_FAILURE_MARKER = "couldn't bind HTTP server socket"
 # llama-server's 500 body when one input exceeds the physical batch (n_batch).
 _BATCH_OVERFLOW_MARKER = "too large to process"
+# The 400 message of a server that refuses a prompt longer than its window.
+_PROMPT_LENGTH_OVERFLOW = re.compile(r"Prompt sequence length is greater than \d+")
 
 
 class _ChatToolSpecFunction(TypedDict, total=False):
@@ -571,7 +574,9 @@ class LlamaServerClient:
         # (400) instead of a generic internal_error -- a long conversation that fills
         # the window then reads as "too long", not "Internal server error".
         if resp.status_code == _HTTP_BAD_REQUEST and (
-            "exceed_context_size" in body.lower() or "context size" in body.lower()
+            "exceed_context_size" in body.lower()
+            or "context size" in body.lower()
+            or _PROMPT_LENGTH_OVERFLOW.search(body)
         ):
             raise ProviderError(
                 "The conversation exceeds this model's context window. "

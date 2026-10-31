@@ -1040,6 +1040,46 @@ def test_raise_for_status_tags_context_overflow_400() -> None:
     assert "context window" in str(excinfo.value).lower()
 
 
+# The 400 body mistral.rs 0.9.5 returned for a prompt past its window, as recorded.
+_MISTRALRS_OVERFLOW_BODY = (
+    '{"error":{"message":"Prompt sequence length is greater than 40960, '
+    'perhaps consider using `truncate_sequence`?",'
+    '"type":"invalid_request_error","param":null,"code":null}}'
+)
+
+
+def test_raise_for_status_tags_recorded_prompt_length_400_as_overflow() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    with pytest.raises(ProviderError, match="context window") as excinfo:
+        _raise_for_status(httpx.Response(400, text=_MISTRALRS_OVERFLOW_BODY))
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"error":{"message":"Unknown field `foo`","type":"invalid_request_error"}}',
+        '{"error":{"message":"Sequence length must be positive","type":"invalid_request_error"}}',
+        '{"error":{"message":"Prompt sequence length is invalid","type":"invalid_request_error"}}',
+    ],
+)
+def test_raise_for_status_keeps_unrelated_400_a_bad_request(body: str) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(httpx.Response(400, text=body))
+    assert excinfo.value.kind is not ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+def test_prompt_length_text_on_a_non_400_is_not_an_overflow() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(httpx.Response(500, text=_MISTRALRS_OVERFLOW_BODY))
+    assert excinfo.value.kind is not ProviderErrorKind.CONTEXT_OVERFLOW
+
+
 _PREMATURE_BODY = (
     '{"src":"llama-swap", "error": "unspecific error: upstream command exited prematurely"}'
 )
