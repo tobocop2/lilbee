@@ -1,4 +1,4 @@
-"""Tests that fail when the planner or the download child reaches for the llama adapter instead of the one it was given."""
+"""Tests that fail when a caller reaches for the llama adapter, not the one it was given."""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ def test_device_group_asks_the_engine_it_was_given(tmp_path: Path) -> None:
 
 
 def test_llama_adapter_survives_a_pickle_round_trip() -> None:
-    restored = pickle.loads(pickle.dumps(LLAMA))
+    restored = pickle.loads(pickle.dumps(LLAMA))  # noqa: S301  # round trip of our own adapter
     assert type(restored) is type(LLAMA)
     assert restored.name == LLAMA.name
     assert restored.formats == LLAMA.formats
@@ -136,4 +136,4 @@ def test_download_child_is_started_with_the_callers_engine(
     entry = type("Entry", (), {"hf_repo": "org/repo"})()
     download_process._start_worker(entry, tmp_path, None, FAKE)  # type: ignore[arg-type]
     assert seen["args"][-1] is FAKE
-    assert pickle.loads(pickle.dumps(seen["args"][-1])) is not None
+    assert pickle.loads(pickle.dumps(seen["args"][-1])) is not None  # noqa: S301  # our own adapter

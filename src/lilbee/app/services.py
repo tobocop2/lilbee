@@ -212,7 +212,7 @@ def build_services(
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.modelhub.role_validator import warn_unregistered_role_refs
     from lilbee.providers.factory import create_provider
-    from lilbee.providers.fleet.engines import LLAMA
+    from lilbee.providers.fleet.engines import select_engine
     from lilbee.retrieval.canary_probe import canary_probe
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
@@ -221,7 +221,7 @@ def build_services(
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    engine = LLAMA
+    engine = select_engine(config)
     provider = provider or create_provider(config, engine=engine, hold_warm=interactive)
     from lilbee.data.extract.backends import sync_xberg_backends
 
