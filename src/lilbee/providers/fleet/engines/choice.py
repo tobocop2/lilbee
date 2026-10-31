@@ -90,6 +90,11 @@ def _request(preferred: str, override: str | None) -> tuple[str, NoticeKind] | N
     return None
 
 
+def engines_loading(fmt: str, installed: InstalledEngines) -> list[EngineName]:
+    """The installed engines whose adapter loads *fmt*."""
+    return [name for name, formats in installed.items() if fmt in formats]
+
+
 def choose_engine(
     *,
     fmt: ModelFormat,
@@ -116,7 +121,7 @@ def choose_engine(
         text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
         return EngineChoice(None, NoticeKind.NONE, f"For {role.value}: {text}" if role else text)
     name, kind = request
-    if name in installed and fmt in installed[EngineName(name)]:
+    if name in engines_loading(fmt, installed):
         return EngineChoice(EngineName(name), None, None)
     subject = f"Engine {name} for {role.value}" if role else f"Engine {name}"
     if name not in installed:

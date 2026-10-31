@@ -18,6 +18,7 @@ from lilbee.providers.fleet.engines.choice import (
     AUTO,
     LIST_HINT,
     InstalledEngines,
+    engines_loading,
     installed_engines,
 )
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
@@ -96,6 +97,11 @@ def roles(config: Config = cfg) -> list[RoleView]:
     return views
 
 
+def engine_names(model: str) -> list[str]:
+    """The names a surface may offer for *model*: ``auto`` and each engine that loads it."""
+    return [AUTO, *engines_loading(model_format(model), installed_engines())]
+
+
 def prefer(name: str) -> str:
     """Store the global engine preference; refuses an unknown or uninstalled engine."""
     try:
@@ -156,7 +162,7 @@ def use(model: str, name: str) -> str:
         installed = installed_engines()
         _require_installed(engine, installed)
         fmt = model_format(model)
-        if fmt not in installed[engine]:
+        if engine not in engines_loading(fmt, installed):
             raise EngineRefusedError(
                 f"Engine {name} cannot load the {fmt} format of {model}. "
                 f"Choose an engine that loads {fmt}."

@@ -24,6 +24,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Label, Static
 
+from lilbee.app import engine_service
 from lilbee.app.placement import (
     get_placement,
     preview_placement,
@@ -31,6 +32,7 @@ from lilbee.app.placement import (
     wait_chat_ready,
 )
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.engine_commands import ENGINE_SETTING_KEYS, chips_text
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
@@ -38,6 +40,7 @@ from lilbee.providers.roles import REPLICATED_ROLES, WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
+    from lilbee.cli.tui.app import LilbeeApp
 
 log = logging.getLogger(__name__)
 
@@ -152,6 +155,7 @@ class _RoleEdit:
 class FleetBody(Widget):
     """Live fleet GPU table and interactive placement editor."""
 
+    app: LilbeeApp  # type: ignore[assignment]
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     applying: reactive[bool] = reactive(False)
@@ -217,10 +221,25 @@ class FleetBody(Widget):
                 yield FleetPill(msg.FLEET_CMD_PREVIEW, id=_CMD_PREVIEW, classes="cmd-pill")
                 yield FleetPill(msg.FLEET_CMD_APPLY, id=_CMD_APPLY, classes="cmd-pill")
                 yield FleetPill(msg.FLEET_CMD_AUTO, id=_CMD_AUTO, classes="cmd-pill")
+            yield Static("", id="placement-engines", markup=False)
             yield Static(_HINT, id="placement-hint")
 
     def on_mount(self) -> None:
+        self._paint_engines()
+        self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
         self._load_worker()
+
+    def _on_settings_changed(self, payload: tuple[str, object]) -> None:
+        if payload[0] in ENGINE_SETTING_KEYS:
+            self._paint_engines()
+
+    def _paint_engines(self) -> None:
+        """Show the engine of each role, and the notice for a role that fell back."""
+        views = engine_service.roles()
+        notices = list(dict.fromkeys(v.notice for v in views if v.notice))
+        self.query_one("#placement-engines", Static).update(
+            "\n".join([chips_text(views), *notices])
+        )
 
     @work(thread=True, exit_on_error=False)
     def _load_worker(self) -> None:
