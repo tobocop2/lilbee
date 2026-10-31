@@ -1,6 +1,7 @@
 """Canary vectors: the store stops search and writes when the embedder gives other vectors."""
 
 import logging
+from unittest import mock
 
 import lancedb
 import numpy as np
@@ -644,3 +645,117 @@ class TestEngineChangedMessage:
         assert "lilbee rebuild" in str(error)
         assert "earlier engine" in str(error)
         assert "verified baseline" not in str(error)
+
+
+class TestWrongShapeCanaryVectors:
+    @pytest.mark.parametrize(
+        "vectors",
+        [
+            pytest.param([[1.0, 0.0] for _ in CANARY_TEXTS], id="other-dimension"),
+            pytest.param([[1.0] * DIM for _ in CANARY_TEXTS[:3]], id="fewer-vectors"),
+        ],
+    )
+    def test_vectors_of_another_shape_read_as_a_mismatch(self, store, engine, vectors):
+        store.add_chunks(_make_records())
+        engine.trigger_name = "B"
+        store._canary_probe = CanaryProbe(embed=lambda texts: vectors, trigger=engine.trigger)
+
+        mismatch = store.canary_mismatch()
+
+        assert isinstance(mismatch, EmbeddingEngineChangedError)
+        assert "lilbee rebuild" in str(mismatch)
+        with pytest.raises(EmbeddingEngineChangedError):
+            store.search([0.1] * store._config.embedding_dim)
+
+    def test_no_vectors_is_not_a_stop(self, store, engine):
+        store.add_chunks(_make_records())
+        engine.trigger_name = "B"
+        store._canary_probe = CanaryProbe(embed=lambda texts: [], trigger=engine.trigger)
+
+        assert store.canary_mismatch() is None
+
+    def test_the_distance_of_vectors_that_do_not_compare_is_the_largest_possible(self):
+        assert canary_distance([[1.0, 0.0]], [[1.0, 0.0, 0.0]]) == 2.0
+
+
+class TestRebuildKeepsMemoriesStopped:
+    """A forced rebuild never leaves memory vectors of the old embedder behind a lifted stop."""
+
+    @pytest.fixture()
+    def rebuilt_with(self, store, engine, monkeypatch):
+        from lilbee.data.ingest import pipeline
+
+        def run(*, available=True, failure=None):
+            embedder = mock.MagicMock()
+            embedder.embedding_available.return_value = available
+            embedder.embed_batch.side_effect = failure or (
+                lambda texts: [np.eye(store._config.embedding_dim)[1] for _ in texts]
+            )
+            monkeypatch.setattr(pipeline, "get_services", lambda: mock.MagicMock(embedder=embedder))
+            pipeline._force_rebuild_store(store)
+
+        store.add_chunks(_make_records())
+        store.add_memory(_memory(store._config))
+        engine.trigger_name, engine.distance = "B", 2 * T
+        return run
+
+    def _recall(self, store):
+        return store.search_memories(
+            _memory(store._config).vector,
+            owner_predicate="owner = 'local'",
+            top_k=3,
+            max_distance=1.0,
+        )
+
+    def test_an_embedder_that_is_down_stops_the_rebuild_before_it_drops_anything(
+        self, store, rebuilt_with
+    ):
+        with pytest.raises(ProviderError, match="embedding model"):
+            rebuilt_with(available=False)
+
+        assert store.has_chunks()
+        assert store.get_meta() is not None
+        with pytest.raises(EmbeddingEngineChangedError):
+            self._recall(store)
+
+    def test_an_embedder_that_fails_stops_the_rebuild_before_it_drops_anything(
+        self, store, rebuilt_with
+    ):
+        with pytest.raises(ProviderError, match="worker died"):
+            rebuilt_with(failure=ProviderError("worker died"))
+
+        assert store.has_chunks()
+        assert store.get_meta() is not None
+        with pytest.raises(EmbeddingEngineChangedError):
+            self._recall(store)
+
+    def test_a_rebuild_with_a_working_embedder_gives_the_memories_new_vectors(
+        self, store, rebuilt_with
+    ):
+        rebuilt_with()
+
+        assert not store.has_chunks()
+        assert store.get_meta() is None
+        old = store.search_memories(
+            _memory(store._config).vector,
+            owner_predicate="owner = 'local'",
+            top_k=3,
+            max_distance=0.1,
+        )
+        assert old == []
+        store.add_chunks(_make_records())
+        recalled = store.search_memories(
+            np.eye(store._config.embedding_dim)[1].tolist(),
+            owner_predicate="owner = 'local'",
+            top_k=3,
+            max_distance=0.1,
+        )
+        assert [m.text for m in recalled] == ["fact"]
+        assert store.search([0.1] * store._config.embedding_dim)
+
+    def test_a_rebuild_with_no_memories_needs_no_embedder(self, store, engine, rebuilt_with):
+        store.delete_memory("m0", owner="local")
+
+        rebuilt_with(available=False)
+
+        assert not store.has_chunks()

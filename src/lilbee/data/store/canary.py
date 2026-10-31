@@ -26,6 +26,7 @@ CANARY_TEXTS: tuple[str, ...] = (
 
 # Cosine distance. The same model measured 3.46e-2 apart across backends; 0.05 sits clear of that.
 CANARY_MAX_DISTANCE = 0.05
+MAX_COSINE_DISTANCE = 2.0
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,12 @@ class CanaryProbe:
 
 
 def canary_distance(baseline: list[list[float]], fresh: list[Vector]) -> float:
-    """The largest cosine distance between a baseline vector and the vector of the same canary."""
+    """The largest cosine distance between a baseline vector and the vector of the same canary.
+
+    Sets of another shape do not compare: that is 2.0, the largest cosine distance.
+    """
+    if np.shape(baseline) != np.shape(fresh):
+        return MAX_COSINE_DISTANCE
     a = np.asarray(baseline, dtype=np.float64)
     b = np.asarray(fresh, dtype=np.float64)
     cos = (a * b).sum(axis=1) / (np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1))

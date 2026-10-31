@@ -36,6 +36,7 @@ from rich.progress import (
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import Config, active_config
+from lilbee.core.vectors import Vector
 from lilbee.core.web_names import is_web_source
 from lilbee.data.extract.chunk import ChunkLimitError
 from lilbee.data.extract.document import (
@@ -116,7 +117,7 @@ from lilbee.data.types import (
     SyncResult,
     _IngestResult,
 )
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
@@ -1081,21 +1082,31 @@ def _report_index_mismatch(store: Store) -> IndexMismatch | None:
 def _prepare_forced_rebuild(store: Any) -> bool:
     """Ready the index for a forced rebuild; True when the rebuild runs in place (blocking).
 
-    A store with chunks and no embedder mismatch, with or without a stamp, is rebuilt in
-    place and a file that fails keeps its chunks. An empty store, or one built by another
-    embedder, is dropped after one probe request. Memories are re-embedded either way.
-    Run off the event loop.
+    A store with chunks and no embedder mismatch (name or engine), with or without a stamp,
+    is rebuilt in place and a file that fails keeps its chunks. An empty store, or one built
+    by another embedder or engine, is dropped after its memories are re-embedded, or after
+    one probe request when it holds none. Nothing is dropped when the embedder cannot embed
+    the memories. Run off the event loop.
     """
-    in_place = store.index_mismatch() is None and (
+    in_place = store.embedding_mismatch() is None and (
         store.get_meta() is not None or store.count_chunks() > 0
     )
     if not in_place:
         _require_embedding_model()
     embedder = get_services().embedder
+
+    def embed(texts: list[str]) -> list[Vector]:
+        if not embedder.embedding_available():
+            raise ProviderError(
+                "The embedding model is not available, so the memories cannot be re-embedded.",
+                kind=ProviderErrorKind.NOT_FOUND,
+            )
+        return embedder.embed_batch(texts)
+
     try:
         refreshed = 0
-        if embedder.embedding_available():
-            refreshed = store.rebuild_memory_embeddings(lambda texts: embedder.embed_batch(texts))
+        if not in_place or embedder.embedding_available():
+            refreshed = store.rebuild_memory_embeddings(embed)
         if not (in_place or refreshed):
             embedder.embed_batch([_REBUILD_PROBE])
     except Exception as error:
