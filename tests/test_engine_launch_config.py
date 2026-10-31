@@ -293,3 +293,17 @@ def test_only_mistral_roles_are_written_with_the_served_model_name(
     else:
         assert "useModelName" not in entry
     assert "cmd" in entry
+
+
+@pytest.mark.parametrize(("fleet", "role"), _ROWS)
+def test_no_role_is_written_with_a_model_cache_variable(
+    fleet: _Fleet,
+    role: WorkerRole,
+    host: dict[EngineName, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure(fleet, tmp_path, monkeypatch)
+    entry = _entries_by_role(_config_from_the_provider(tmp_path, monkeypatch))[role]
+    assert not [item for item in entry.get("env", []) if item.startswith("HF_HUB_CACHE=")]
+    assert "cmd" in entry
