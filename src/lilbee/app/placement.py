@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from lilbee.app.services import peek_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.providers.fleet.engines import select_engine
+from lilbee.providers.fleet.engines import EngineAdapter, select_engine
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.planning import (
     ResolvedPlacement,
@@ -51,6 +51,7 @@ class RolePlacementView:
     devices: tuple[int, ...]
     tensor_split: tuple[int, ...] | None
     replicas: int
+    engine: str
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ def _active_spec() -> PlacementSpec | None:
 
 def _view(
     resolved: ResolvedPlacement,
+    engine: EngineAdapter,
     *,
     manual: bool,
     spec_json: str | None,
@@ -134,6 +136,7 @@ def _view(
                 devices=plan.devices,
                 tensor_split=plan.tensor_split or None,
                 replicas=1,
+                engine=str(engine.name),
             )
     return PlacementView(
         gpus=gpus,
@@ -163,18 +166,24 @@ def get_placement() -> PlacementView:
     nothing is using.
     """
     spec = _active_spec()
-    resolved = resolve_placement_plan(spec, engine=select_engine(cfg), fall_back_to_auto=True)
+    engine = select_engine(cfg)
+    resolved = resolve_placement_plan(spec, engine=engine, fall_back_to_auto=True)
     if spec is None:
-        return _view(resolved, manual=False, spec_json=None)
+        return _view(resolved, engine, manual=False, spec_json=None)
     if not resolved.spec_applied:
-        return _view(resolved, manual=False, spec_json=None, rejected_spec_json=spec.to_json())
-    return _view(resolved, manual=True, spec_json=spec.to_json())
+        return _view(
+            resolved, engine, manual=False, spec_json=None, rejected_spec_json=spec.to_json()
+        )
+    return _view(resolved, engine, manual=True, spec_json=spec.to_json())
 
 
 def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:
     """Dry-run: what spec (or auto, when None) would place. No persistence or reload."""
-    resolved = resolve_placement_plan(spec, engine=select_engine(cfg))
-    return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+    engine = select_engine(cfg)
+    resolved = resolve_placement_plan(spec, engine=engine)
+    return _view(
+        resolved, engine, manual=spec is not None, spec_json=spec.to_json() if spec else None
+    )
 
 
 def placement_refused_message() -> str:
@@ -203,7 +212,8 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     fleet would report our own residency as unavailable and poison the chat
     context sizing, while charging stays against total capacity (bb-a8f).
     """
-    resolved = resolve_placement_plan(spec, engine=select_engine(cfg))
+    engine = select_engine(cfg)
+    resolved = resolve_placement_plan(spec, engine=engine)
     if spec is None:
         settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
         cfg.placement = None
@@ -216,7 +226,9 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
         clear_read_device_cache()  # nothing running; let the next boot probe fresh
     else:
         services.provider.reload_placement(wait=True)
-    return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+    return _view(
+        resolved, engine, manual=spec is not None, spec_json=spec.to_json() if spec else None
+    )
 
 
 def wait_chat_ready(

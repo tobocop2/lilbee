@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from lilbee.core.config import cfg
 from lilbee.providers.base import ChatResult, FinishReason, ToolCall
-from tests.conformance import preset_check
+from lilbee.providers.routing_provider import RoutingProvider
+from tests.conformance import preset_check, record_presets
 from tests.conformance.fake_engine import Behaviour, FakeEngine
 from tests.conformance.harness import (
     NEAR_COPY_COSINE,
@@ -22,7 +24,7 @@ from tests.conformance.harness import (
     run,
     tool_arguments_fault,
 )
-from tests.conformance.preset_check import FIXTURES, Setup, load_fixture, steps_for
+from tests.conformance.preset_check import ENGINE_FIXTURES, FIXTURES, Setup, load_fixture, steps_for
 
 _SCHEMA = {
     "type": "object",
@@ -163,7 +165,7 @@ class _Provider:
     def embed(self, _texts: list[str]) -> list[list[float]]:
         return self.answers["embed"]
 
-    def vision_ocr(self, _png: bytes, _model: str, _prompt: str) -> str:
+    def vision_ocr(self, _png: bytes, _model: str, _prompt: str, **_kw: Any) -> str:
         return self.answers["vision"].pop(0)
 
 
@@ -270,4 +272,76 @@ def test_a_recording_without_the_strict_flag_keeps_its_steps() -> None:
         "json_schema",
         "reasoning",
         "vision",
+        "named",
     ]
+
+
+def _named_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, roles: tuple[str, ...], **answers: Any
+) -> preset_check.Outcome:
+    monkeypatch.setattr(RoutingProvider, "_get_sdk_provider", lambda _self: _Provider(**answers))
+    setup = Setup(roles, dict(_MODELS), embed_dim=2, strict=True)
+    with preset_check.configured("http://127.0.0.1:1", setup, tmp_path):
+        return preset_check._STEP_FUNCTIONS["named"](setup)
+
+
+@pytest.mark.parametrize(
+    ("roles", "answers"),
+    [
+        (("chat", "embed"), {"chat": _result("Rome")}),
+        (("embed",), {"embed": [[1.0, 0.0]]}),
+        (("vision",), {"vision": ["red"]}),
+    ],
+)
+def test_named_step_reads_the_log_line_and_the_status_of_the_first_role(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, roles: tuple[str, ...], answers: dict[str, Any]
+) -> None:
+    outcome = _named_outcome(monkeypatch, tmp_path, roles, **answers)
+    assert outcome.ok, outcome.detail
+    assert f"role={roles[0]} model=check/m" in outcome.detail
+
+
+def test_named_step_fails_when_status_names_no_engine(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(preset_check, "serving_roles", lambda: [])
+    outcome = _named_outcome(monkeypatch, tmp_path, ("chat",), chat=_result("Rome"))
+    assert not outcome.ok
+
+
+_ARGS = [
+    "--server", "e", "--version", "1", "--url", "http://x", "--roles", "chat,embed",
+    "--models", "chat=a,embed=b", "--out", "o.json",
+]  # fmt: skip
+
+
+def test_the_recorder_sets_strict_only_when_asked() -> None:
+    parser = record_presets.build_parser()
+    assert record_presets.setup_from(parser.parse_args([*_ARGS, "--strict"])).strict is True
+    assert record_presets.setup_from(parser.parse_args(_ARGS)).strict is False
+
+
+@pytest.mark.parametrize(
+    "path", sorted(ENGINE_FIXTURES.glob("**/*.json")), ids=lambda path: path.stem
+)
+def test_every_engine_recording_sets_strict(path: Path) -> None:
+    assert json.loads(path.read_text(encoding="utf-8")).get("strict") is True
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="slice 4 adds the first engine recording; remove this mark when it lands",
+)
+def test_the_engine_recordings_folder_is_not_empty() -> None:
+    assert sorted(ENGINE_FIXTURES.glob("**/*.json"))
+
+
+def test_the_recorder_log_names_the_run(tmp_path: Path) -> None:
+    args = record_presets.build_parser().parse_args(
+        [*_ARGS[:-2], "--backend", "cuda", "--out", str(tmp_path / "e.json")]
+    )
+    log = record_presets.run_log(args, {"chat": preset_check.Outcome(True, "Rome")})
+    assert log.splitlines()[:2] == ["engine: e", "version: 1"]
+    assert "backend: cuda" in log
+    assert "models: chat=a,embed=b" in log
+    assert "STEP e chat ok=True Rome" in log

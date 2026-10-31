@@ -267,6 +267,15 @@ Every spike row maps to a requirement or has a reason. Rows 7 and 49 are an llam
 | 54 | E8 | works |
 | 55 | E7 | real run, see E7 |
 
+## Recordings of a real engine
+
+A recording of a real engine is a file under `tests/conformance/fixtures/engines/`. Take it with `python -m tests.conformance.record_presets` and the `--strict` flag. The flag adds the steps `json_object`, `json_schema`, `reasoning` and `named`, and a two-image `vision` step. The file stores `"strict": true`, and a test fails for each recording that does not. The replay tests run each recording through the real provider with no server, in the `integration` job.
+
+The step `named` sends one request through the routing provider. It passes when the log line `served by engine=<name> version=<version> role=<role> model=<id>` and the `serving` entry of the status for that role both name the engine. A server preset has the preset name as its engine name and `preset` as its version. A managed engine has its name and its pin.
+
+The 7 preset recordings in `tests/conformance/fixtures/presets/` are not strict and have no `reasoning` step. The `reasoning` step of a strict recording reads the answer text and the finish reason through the provider. It does not read `reasoning_content` or `reasoning`. A pass of the preset `reasoning` step does not prove that the engine splits reasoning from the answer. Row E6 of the wire harness proves the split.
+
+
 ## Add an engine
 
 Add a profile to `tests/conformance/fake_engine.py` that replays the measured behaviour, and add a golden file only for a new requirement. The harness in `tests/conformance/harness.py` does not change for a new engine.

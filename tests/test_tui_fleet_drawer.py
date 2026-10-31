@@ -20,8 +20,8 @@ def _make_view(*, manual: bool = False):  # type: ignore[no-untyped-def]
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(2)
         ),
         roles=(
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1, "llama.cpp"),
         ),
         unplaceable=(),
         manual=manual,
@@ -308,8 +308,8 @@ def _make_view3():  # type: ignore[no-untyped-def]
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(3)
         ),
         roles=(
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), None, 1, "llama.cpp"),
         ),
         unplaceable=(),
         manual=False,
@@ -447,8 +447,8 @@ async def test_single_gpu_collapses_editor_to_a_note(monkeypatch) -> None:
     view = PlacementView(
         gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A40", 44 * GIB, 44 * GIB),),
         roles=(
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),
         ),
         manual=False,
         unplaceable=(),

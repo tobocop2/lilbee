@@ -3670,18 +3670,18 @@ class TestRoutingProviderRerank:
 
     def test_uninstalled_bare_repo_is_not_native(self) -> None:
         """Nothing can vouch for an uninstalled bare repo, so it goes hosted."""
-        from lilbee.providers.routing_provider import _is_native_rerank_ref
+        from lilbee.providers.serving import is_native_rerank_ref
 
-        assert _is_native_rerank_ref("gpustack/bge-reranker-v2-m3-GGUF", engine=LLAMA) is False
+        assert is_native_rerank_ref("gpustack/bge-reranker-v2-m3-GGUF", engine=LLAMA) is False
 
     def test_native_ref_is_not_native_when_the_engine_serves_no_rerank_role(self) -> None:
         from lilbee.providers.fleet.engines import LLAMA
-        from lilbee.providers.routing_provider import _is_native_rerank_ref
+        from lilbee.providers.serving import is_native_rerank_ref
         from tests.conformance.fake_adapter import FAKE
 
         ref = "pyarn/bge-reranker-v2-gemma-Q4_K_M-GGUF/bge-reranker-v2-gemma-q4_k_m.gguf"
-        assert _is_native_rerank_ref(ref, LLAMA) is True
-        assert _is_native_rerank_ref(ref, FAKE) is False
+        assert is_native_rerank_ref(ref, LLAMA) is True
+        assert is_native_rerank_ref(ref, FAKE) is False
 
     def test_unreadable_registry_refuses_instead_of_going_hosted(self, tmp_path: Path) -> None:
         """A registry that cannot be read fails the rerank; it never reroutes it."""
@@ -3737,9 +3737,9 @@ class TestRoutingProviderRerank:
 
     def test_empty_reranker_model_routes_to_sdk(self) -> None:
         """An empty ``cfg.reranker_model`` is treated as non-native (hosted)."""
-        from lilbee.providers.routing_provider import _is_native_rerank_ref
+        from lilbee.providers.serving import is_native_rerank_ref
 
-        assert _is_native_rerank_ref("", engine=LLAMA) is False
+        assert is_native_rerank_ref("", engine=LLAMA) is False
 
     def test_native_gguf_ref_routes_native_even_when_not_featured(self) -> None:
         """Any 3+ slash, .gguf-ending ref is recognised as a native reranker.
@@ -3749,10 +3749,10 @@ class TestRoutingProviderRerank:
         provider and surfaces a misleading 'hosted rerank backend not
         available' error to the user (bb-4zvk).
         """
-        from lilbee.providers.routing_provider import _is_native_rerank_ref
+        from lilbee.providers.serving import is_native_rerank_ref
 
         assert (
-            _is_native_rerank_ref(
+            is_native_rerank_ref(
                 "pyarn/bge-reranker-v2-gemma-Q4_K_M-GGUF/bge-reranker-v2-gemma-q4_k_m.gguf",
                 engine=LLAMA,
             )
@@ -3761,16 +3761,16 @@ class TestRoutingProviderRerank:
 
     def test_non_gguf_two_part_ref_is_not_native(self) -> None:
         """Two-part refs (e.g. ``cohere/rerank-v3``) still go to the SDK."""
-        from lilbee.providers.routing_provider import _is_native_rerank_ref
+        from lilbee.providers.serving import is_native_rerank_ref
 
-        assert _is_native_rerank_ref("cohere/rerank-english-v3.0", engine=LLAMA) is False
+        assert is_native_rerank_ref("cohere/rerank-english-v3.0", engine=LLAMA) is False
 
     def test_lm_studio_gguf_path_reranker_is_not_native(self) -> None:
         """A local-server-prefixed GGUF path keeps the prefix exemption, like chat refs."""
-        from lilbee.providers.routing_provider import _is_native_rerank_ref
+        from lilbee.providers.serving import is_native_rerank_ref
 
         assert (
-            _is_native_rerank_ref("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf", engine=LLAMA)
+            is_native_rerank_ref("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf", engine=LLAMA)
             is False
         )
 
