@@ -948,7 +948,7 @@ class FleetProvider:
         self._launches: dict[SwapGroup, tuple[InstanceLaunch, ...]] = {}
         # Engine dirs this provider holds membership in (machine slot and/or
         # the private overflow), and the dir each running group lives in.
-        self.engine_holds: dict[Path, UserLockHold] = {}
+        self._engine_holds: dict[Path, UserLockHold] = {}
         self._group_dirs: dict[SwapGroup, Path] = {}
         # Latched once shutdown runs. A discarded provider (reset_services swaps
         # in a new one) can still have an in-flight warm-up or reload daemon
@@ -1225,8 +1225,8 @@ class FleetProvider:
         """
         from lilbee.core.config import cfg
 
-        if engine_dir not in self.engine_holds:
-            self.engine_holds[engine_dir] = hold_user_lock(engine_dir)
+        if engine_dir not in self._engine_holds:
+            self._engine_holds[engine_dir] = hold_user_lock(engine_dir)
         if cfg.keep_engine_warm:
             request_keep_warm(engine_dir, cfg.data_root, cfg.engine_idle_ttl_minutes)
 
@@ -1638,7 +1638,7 @@ class FleetProvider:
         """
         from lilbee.core.config import cfg
 
-        for engine_dir, hold in list(self.engine_holds.items()):
+        for engine_dir, hold in list(self._engine_holds.items()):
             with build_lock(engine_dir, best_effort=True):
                 last = hold.release_and_check_last()
                 # A flip after binding never re-acquires, so reconcile our own mark
@@ -1662,7 +1662,7 @@ class FleetProvider:
                     log.info("Engine left warm at %s (last user out)", engine_dir)
                 elif config_changed:
                     log.info("Engine left running at %s (still in use by peers)", engine_dir)
-        self.engine_holds = {}
+        self._engine_holds = {}
 
     def _release_holds(self) -> None:
         """Drop this process's engine memberships without stopping any engine.
@@ -1675,9 +1675,9 @@ class FleetProvider:
         Nothing is stopped here: a live engine is rebound by the retry, and a dead
         one is cleared by the rebuild that retry triggers.
         """
-        for hold in list(self.engine_holds.values()):
+        for hold in list(self._engine_holds.values()):
             hold.release_and_check_last()
-        self.engine_holds = {}
+        self._engine_holds = {}
 
     def _drop_swap_refs(self, *, close_all: bool = False) -> None:
         """Clear every group's swap/clients and the chat capacity so the next call rebuilds.
