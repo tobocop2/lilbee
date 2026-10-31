@@ -28,6 +28,7 @@ from lilbee.app.settings import OCR_SETTING_KEYS, reset_settings
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup, get_default
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
+from lilbee.cli.tui.screens.settings_presets import PRESETS_PANE_ID, PresetsPane
 from lilbee.cli.tui.screens.settings_widgets import (
     API_KEYS_GROUP,
     API_KEYS_WARNING_CLASS,
@@ -204,6 +205,11 @@ class SettingsScreen(Screen[None]):
             if first:
                 first = False
                 self._eagerly_populate = pane_id
+        yield TabPane(
+            msg.SETTINGS_PRESETS_TAB,
+            PresetsPane(id=f"{PRESETS_PANE_ID}-body"),
+            id=PRESETS_PANE_ID,
+        )
 
     def on_mount(self) -> None:
         """Defer first-pane content mount until after the screen has painted.

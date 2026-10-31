@@ -915,3 +915,10 @@ class TestNoGeneralPath:
             assert len(dumped) > 20
             assert self.FIELD not in dumped
             assert KEY not in repr(dumped)
+
+
+def test_get_preset_returns_the_stored_view_and_refuses_a_missing_name():
+    presets.add_preset("omlx", URL, roles=["chat"])
+    assert presets.get_preset("omlx").base_url == URL
+    with pytest.raises(presets.PresetNotFoundError, match="No server preset is named 'nope'"):
+        presets.get_preset("nope")

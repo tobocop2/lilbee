@@ -1427,6 +1427,56 @@ class ChatScreen(Screen[None]):
                 self, self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
             )
 
+    def _cmd_preset(self, args: str) -> None:
+        from lilbee.cli.tui.preset_commands import dialog_request, remove_target
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        def _notify_dialog_result(notice: str | None) -> None:
+            if notice is not None:
+                self.notify(notice)
+
+        if (request := dialog_request(args)) is not None:
+            self._open_preset_dialog(request.name, _notify_dialog_result)
+            return
+        if (name := remove_target(args)) is not None:
+
+            def _on_confirm(confirmed: bool | None) -> None:
+                if confirmed:
+                    self._run_preset_command(args)
+
+            self.app.push_screen(
+                ConfirmDialog(
+                    msg.PRESET_REMOVE_CONFIRM_TITLE,
+                    msg.PRESET_REMOVE_CONFIRM_MESSAGE.format(name=name),
+                ),
+                _on_confirm,
+            )
+            return
+        self._run_preset_command(args)
+
+    @work(thread=True)
+    def _open_preset_dialog(self, name: str | None, on_done: Callable[[str | None], None]) -> None:
+        from lilbee.app.presets import failure_text, get_preset
+        from lilbee.cli.tui.screens.settings_presets import PresetDialog
+
+        preset = None
+        if name is not None:
+            try:
+                preset = get_preset(name)
+            except (ValueError, OSError) as exc:
+                call_from_thread(self, self.notify, failure_text(exc), severity="error")
+                return
+        call_from_thread(self, self.app.push_screen, PresetDialog(preset), on_done)
+
+    @work(thread=True)
+    def _run_preset_command(self, args: str) -> None:
+        from lilbee.cli.tui.preset_commands import run_preset_command
+
+        result = run_preset_command(args)
+        call_from_thread(
+            self, self.notify, result.text, severity="information" if result.ok else "error"
+        )
+
     def _cmd_rebuild(self, _args: str) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 

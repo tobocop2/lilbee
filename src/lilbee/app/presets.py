@@ -184,6 +184,11 @@ def list_presets() -> list[ServerPreset]:
     return [_view(entry) for entry in stored_entries()]
 
 
+def get_preset(name: str) -> ServerPreset:
+    """The stored preset *name*; a name nothing holds is refused."""
+    return _view(_named(stored_entries(), name))
+
+
 def add_preset(
     name: str,
     url: str,
