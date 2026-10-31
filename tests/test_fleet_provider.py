@@ -178,7 +178,9 @@ def _install_engine(
         prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
     )
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan(tuple(launches))
+        planning_mod,
+        "plan_all_launches",
+        lambda *, engines: planning_mod.FleetPlan(tuple(launches)),
     )
     return swap
 
@@ -649,7 +651,7 @@ def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch, tmp_p
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED),),
             skipped_not_installed={WorkerRole.CHAT: "org/repo/missing-chat.gguf"},
         ),
@@ -684,7 +686,7 @@ def test_ensure_fleet_records_skipped_unusable_ctx_from_plan(monkeypatch, tmp_pa
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED),),
             skipped_unusable_ctx={WorkerRole.CHAT: "chat model serves only 512 tokens"},
         ),
@@ -787,7 +789,7 @@ def test_reload_of_a_bound_engine_reacquires_instead_of_duplicating(monkeypatch)
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
     reacquired: list[bool] = []
 
@@ -925,7 +927,7 @@ def test_adopt_group_threads_rerank_mode(monkeypatch) -> None:
         planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
     )
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan((launch,))
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     FleetProvider()._ensure_fleet()
     assert captured["rerank_mode"] is RerankMode.LLM
@@ -948,7 +950,7 @@ def test_adopt_group_gives_each_client_its_engine_request_profile(monkeypatch) -
         planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
     )
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan((launch,))
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     sentinel = object()
     monkeypatch.setattr(prov_mod.LLAMA, "request_profile", lambda _role: sentinel)
@@ -965,7 +967,7 @@ def test_adopt_group_logs_the_embed_window_warning(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group, engine: _FakeSwap())
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda *_a, **_kw: _fake_client())
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan((launch,))
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     monkeypatch.setattr(planning_mod, "warn_when_embed_window_below_chunk", seen.append)
     FleetProvider()._ensure_fleet()
@@ -1516,7 +1518,7 @@ def ocr_gated_engine(monkeypatch, tmp_path: Path):
     by_role = {role: _fake_launch(role) for role in (WorkerRole.CHAT, WorkerRole.VISION)}
     plans: list[set[WorkerRole]] = []
 
-    def _plan(roles, *_args, engine) -> planning_mod.FleetPlan:
+    def _plan(roles, *_args, engines) -> planning_mod.FleetPlan:
         plans.append(set(roles))
         return planning_mod.FleetPlan(tuple(by_role[role] for role in by_role if role in roles))
 
@@ -1629,12 +1631,12 @@ def test_concurrent_vision_ocr_with_ocr_off_starts_vision_once(
 
     plan = planning_mod.plan_launches
 
-    def _held_plan(roles, *args, engine) -> planning_mod.FleetPlan:
+    def _held_plan(roles, *args, engines) -> planning_mod.FleetPlan:
         if WorkerRole.VISION in roles:
             # Hold the first vision re-plan until every page is inside the start.
             with arrived:
                 assert arrived.wait_for(lambda: arrivals["n"] == pages, timeout=10)
-        return plan(roles, *args, engine=engine)
+        return plan(roles, *args, engines=engines)
 
     monkeypatch.setattr(p, "_serve_vision_on_request", _counted_serve)
     monkeypatch.setattr(planning_mod, "plan_launches", _held_plan)
@@ -1975,7 +1977,7 @@ def test_request_through_the_fleet_names_the_model_and_the_engine_own_log(
         planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
     )
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan((launch,))
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     monkeypatch.setattr(
         prov_mod,
@@ -2236,7 +2238,7 @@ class _OrderedReapSwap(_FakeSwap):
 def _ordered_planner(order: list[str], launches: list) -> object:
     """A plan_all_launches stand-in appending to the shared order log."""
 
-    def _plan(*, engine) -> planning_mod.FleetPlan:
+    def _plan(*, engines) -> planning_mod.FleetPlan:
         order.append("plan")
         return planning_mod.FleetPlan(tuple(launches))
 
@@ -2285,7 +2287,7 @@ def test_reload_pass_refreshes_the_skip_reasons_from_the_new_plan(monkeypatch) -
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED),),
             skipped_unusable_ctx={WorkerRole.CHAT: "chat model serves only 512 tokens"},
         ),
@@ -2321,7 +2323,7 @@ def test_ensure_fleet_returns_none_when_engine_binary_unavailable(monkeypatch) -
 
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group, engine: _FakeSwap())
 
-    def _no_binary(*, engine) -> list:
+    def _no_binary(*, engines) -> list:
         raise ProviderError("llama-server binary not found.", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
@@ -2334,7 +2336,7 @@ def _captured_client_kwargs(monkeypatch, launch) -> dict:
     """Build the engine around *launch* and return the client constructor kwargs."""
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g, engine: _FakeSwap())
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan((launch,))
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     captured: list[dict] = []
 
@@ -2410,7 +2412,7 @@ def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
     p = FleetProvider()
     assert p.chat([{"role": "user", "content": "hi"}]).text == "ok"
@@ -2564,7 +2566,7 @@ def test_a_reload_restart_hands_the_engine_to_its_users(monkeypatch, tmp_path: P
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
     p = FleetProvider()
     p._swaps = {SwapGroup.CHAT: _FakeSwap()}
@@ -2590,7 +2592,7 @@ def test_a_reload_restart_of_a_session_engine_takes_no_hold_when_shared(
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
     p = FleetProvider(hold_warm=True)
     p._swaps = {SwapGroup.CHAT: _FakeSwap()}
@@ -2622,7 +2624,7 @@ def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
     p = FleetProvider()
     barrier = threading.Barrier(8)
@@ -2765,7 +2767,7 @@ def test_warm_up_pool_noop_when_swap_already_up_and_ready(monkeypatch, tmp_path:
 
 
 def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) -> None:
-    def _boom(*, engine) -> list:
+    def _boom(*, engines) -> list:
         raise RuntimeError("plan failed")
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _boom)
@@ -2802,7 +2804,7 @@ def test_warm_up_blocking_stamps_error_with_the_real_reason(monkeypatch) -> None
     """
     from lilbee.providers.warm_progress import WarmPhase
 
-    def _boom(*, engine) -> list:
+    def _boom(*, engines) -> list:
         raise RuntimeError("engine exited before it was ready")
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _boom)
@@ -2825,7 +2827,7 @@ def test_warm_up_blocking_surfaces_a_probe_failure(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
     from lilbee.providers.warm_progress import WarmPhase
 
-    def _wedged(*, engine) -> list:
+    def _wedged(*, engines) -> list:
         raise ProviderError(
             "The GPU device probe (llama-server --list-devices) did not respond within 60s",
             kind=ProviderErrorKind.SERVER,
@@ -2852,7 +2854,7 @@ def test_ensure_fleet_propagates_a_probe_failure_to_on_demand_callers(monkeypatc
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
 
     def _wedged(engine) -> None:
@@ -2871,7 +2873,7 @@ def test_ensure_fleet_stays_quiet_when_the_binary_is_missing(monkeypatch) -> Non
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
 
-    def _no_binary(*, engine) -> None:
+    def _no_binary(*, engines) -> None:
         raise ProviderError("llama-server binary not found.", kind=ProviderErrorKind.NOT_FOUND)
 
     # A missing binary surfaces first when the placeable set is planned; nothing
@@ -2982,7 +2984,7 @@ def _chat_that_cannot_load(monkeypatch, tmp_path: Path, argv: list[str]) -> Flee
     swap.log_path = tmp_path / "logs" / "llama-swap-chat.log"
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g, engine: swap)
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan((launch,))
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
 
     def _build(_endpoint, model, **kwargs):
@@ -3078,7 +3080,7 @@ def test_warm_up_blocking_swallows_interpreter_shutdown_race(monkeypatch, caplog
     # A fast CLI exit tears down the interpreter mid-warm; starting a thread then
     # raises RuntimeError. During finalization this must be dropped quietly, not
     # logged as a scary WARNING traceback.
-    def _shutdown_race(*, engine) -> list:
+    def _shutdown_race(*, engines) -> list:
         raise RuntimeError("can't create new thread at interpreter shutdown")
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _shutdown_race)
@@ -3594,7 +3596,7 @@ class TestLifecycleMethods:
         monkeypatch.setattr(
             planning_mod,
             "plan_all_launches",
-            lambda *, engine: planning_mod.FleetPlan(tuple(launches)),
+            lambda *, engines: planning_mod.FleetPlan(tuple(launches)),
         )
         monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
         fresh = _FakeSwap()
@@ -3615,7 +3617,7 @@ class TestLifecycleMethods:
 
     def test_reload_blocking_noop_when_swap_cleared(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan(())
+            planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan(())
         )
         p = FleetProvider()  # _swap stays None
         p._reload_blocking()  # must not raise
@@ -4146,7 +4148,7 @@ class TestReloadSingleFlight:
     def test_reload_requested_mid_flight_runs_a_second_pass(self, monkeypatch) -> None:
         plans: list[int] = []
 
-        def _plan(*, engine) -> planning_mod.FleetPlan:
+        def _plan(*, engines) -> planning_mod.FleetPlan:
             plans.append(len(plans))
             # fresh object -> differs -> restarts
             return planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),))
@@ -4191,7 +4193,7 @@ class TestReloadSingleFlight:
 
         plans: list[int] = []
 
-        def _plan(*, engine) -> planning_mod.FleetPlan:
+        def _plan(*, engines) -> planning_mod.FleetPlan:
             plans.append(len(plans))
             return planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),))
 
@@ -4228,7 +4230,7 @@ class TestReloadSingleFlight:
         monkeypatch.setattr(
             planning_mod,
             "plan_all_launches",
-            lambda *, engine: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+            lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
         )
         p = FleetProvider()
         monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
@@ -4253,7 +4255,7 @@ class TestReloadSingleFlight:
         monkeypatch.setattr(
             planning_mod,
             "plan_all_launches",
-            lambda *, engine: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+            lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
         )
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
@@ -4270,7 +4272,7 @@ class TestReloadSingleFlight:
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
         p._reloading = True
 
-        def _broken_plan(*, engine) -> list:
+        def _broken_plan(*, engines) -> list:
             raise RuntimeError("no devices")
 
         monkeypatch.setattr(planning_mod, "plan_all_launches", _broken_plan)
@@ -4287,7 +4289,7 @@ class TestReloadSingleFlight:
         p._reloading = True
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
         monkeypatch.setattr(
-            planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan(())
+            planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan(())
         )
         p._reload_blocking()
         assert swap.shutdowns == 1  # nothing planned -> the running group stops
@@ -4300,7 +4302,7 @@ class TestReloadSingleFlight:
         # guard is still released.
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
         monkeypatch.setattr(
-            planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan(())
+            planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan(())
         )
         p = FleetProvider()
         p._reloading = True
@@ -4325,7 +4327,7 @@ class TestReloadSingleFlight:
 
         reload_entered = threading.Event()
 
-        def _slow_plan(*, engine) -> planning_mod.FleetPlan:
+        def _slow_plan(*, engines) -> planning_mod.FleetPlan:
             reload_entered.set()
             gate.wait(5.0)
             return planning_mod.FleetPlan(())
@@ -4566,7 +4568,7 @@ def test_rebuild_role_restarts_only_that_role(monkeypatch) -> None:
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan((chat_launch, embed_launch)),
+        lambda *, engines: planning_mod.FleetPlan((chat_launch, embed_launch)),
     )
     p = FleetProvider()
     monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
@@ -4613,7 +4615,7 @@ def test_co_tenant_roles_share_one_swap_process(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (chat, vision, embed),
             co_tenants=frozenset({WorkerRole.CHAT, WorkerRole.VISION}),
         ),
@@ -4654,7 +4656,7 @@ def test_ensure_fleet_partial_failure_tears_down_started_groups(monkeypatch) -> 
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.CHAT), _fake_launch(WorkerRole.EMBED))
         ),
     )
@@ -4687,7 +4689,7 @@ def test_reload_placement_dispatches_the_diff_reload(monkeypatch) -> None:
 def test_reload_pass_refuses_after_terminal_shutdown(monkeypatch) -> None:
     """A reload queued behind a terminal shutdown must not resurrect the fleet."""
     plans: list[int] = []
-    monkeypatch.setattr(planning_mod, "plan_all_launches", lambda *, engine: plans.append(1) or [])
+    monkeypatch.setattr(planning_mod, "plan_all_launches", lambda *, engines: plans.append(1) or [])
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
     p = FleetProvider()
     p._shut_down = True
@@ -4718,7 +4720,7 @@ class TestPlanProbeLifecycle:
         monkeypatch.setattr(
             planning_mod,
             "plan_all_launches",
-            lambda *, engine: (
+            lambda *, engines: (
                 order.append("plan") or planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),))
             ),
         )
@@ -4928,7 +4930,9 @@ def _install_ladder(
         prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
     )
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda *, engine: planning_mod.FleetPlan(tuple(launches))
+        planning_mod,
+        "plan_all_launches",
+        lambda *, engines: planning_mod.FleetPlan(tuple(launches)),
     )
     return swap, machine, built_dirs
 
@@ -5963,7 +5967,7 @@ def test_placeable_demand_drops_roles_the_plan_does_not_place(monkeypatch) -> No
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (
                 _fake_launch(WorkerRole.EMBED, model="m-embed"),
                 _fake_launch(WorkerRole.RERANK, model="m-rerank"),
@@ -6004,7 +6008,7 @@ def test_demanded_chat_ctx_not_capped_by_a_split_plan(monkeypatch) -> None:
 def test_placeable_demand_is_empty_without_an_engine_binary(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _no_binary(*, engine) -> planning_mod.FleetPlan:
+    def _no_binary(*, engines) -> planning_mod.FleetPlan:
         raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
@@ -6015,7 +6019,7 @@ def test_placeable_demand_is_empty_without_an_engine_binary(monkeypatch) -> None
 def test_placeable_demand_propagates_a_real_planning_failure(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _wedged(*, engine) -> planning_mod.FleetPlan:
+    def _wedged(*, engines) -> planning_mod.FleetPlan:
         raise ProviderError("wedged probe", kind=ProviderErrorKind.SERVER)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _wedged)
@@ -6030,7 +6034,7 @@ def test_placeable_demand_carries_not_installed_skips(monkeypatch) -> None:
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (), skipped_not_installed={WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
         ),
     )
@@ -6577,7 +6581,7 @@ class TestChatPrefillProgress:
         monkeypatch.setattr(
             planning_mod,
             "plan_all_launches",
-            lambda *, engine: planning_mod.FleetPlan(tuple(launches)),
+            lambda *, engines: planning_mod.FleetPlan(tuple(launches)),
         )
         p = FleetProvider()
         p._ensure_fleet()
