@@ -249,25 +249,37 @@ def service(op: str, args: Args) -> Outcome:
     return Outcome(True, data, "")
 
 
+def _cli_argv(op: str, args: Args) -> list[str]:
+    """The words after `lilbee --json preset` for *op*; the key flag is added by the caller."""
+    if op == "list":
+        return ["list"]
+    if op == "remove":
+        return ["remove", args["name"], "--yes"]
+    if op == "add":
+        return [
+            "add",
+            args["name"],
+            args["url"],
+            "--roles",
+            ",".join(args["roles"]),
+            "--wire",
+            args.get("wire", "v1"),
+        ]
+    argv = ["edit", args["name"]]
+    for flag, field_name in (("--url", "url"), ("--wire", "wire")):
+        if field_name in args:
+            argv += [flag, args[field_name]]
+    if "roles" in args:
+        argv += ["--roles", ",".join(args["roles"])]
+    if args.get("clear_key"):
+        argv.append("--clear-key")
+    return argv
+
+
 def cli(op: str, args: Args) -> Outcome:
     """`lilbee --json preset ...` through the root app; the key goes in on stdin."""
-    argv = ["--json", "preset", op]
+    argv = ["--json", "preset", *_cli_argv(op, args)]
     stdin = None
-    if op == "add":
-        argv += [args["name"], args["url"], "--roles", ",".join(args["roles"])]
-        argv += ["--wire", args.get("wire", "v1")]
-    elif op in ("edit", "remove"):
-        argv.append(args["name"])
-    if op == "edit":
-        for flag, field_name in (("--url", "url"), ("--wire", "wire")):
-            if field_name in args:
-                argv += [flag, args[field_name]]
-        if "roles" in args:
-            argv += ["--roles", ",".join(args["roles"])]
-        if args.get("clear_key"):
-            argv.append("--clear-key")
-    if op == "remove":
-        argv.append("--yes")
     if "key" in args:
         argv.append("--key-stdin")
         stdin = args["key"] + "\n"
