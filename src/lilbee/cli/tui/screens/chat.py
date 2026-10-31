@@ -1491,12 +1491,10 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _run_engine_command(self, args: str) -> None:
-        from lilbee.cli.tui.engine_commands import run_engine_command
+        from lilbee.cli.tui.engine_commands import announce, run_engine_command
 
         result = run_engine_command(args)
-        call_from_thread(
-            self, self.notify, result.text, severity="information" if result.ok else "error"
-        )
+        call_from_thread(self, announce, self.app, result)
 
     def _cmd_rebuild(self, _args: str) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog

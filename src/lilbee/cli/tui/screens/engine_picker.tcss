@@ -1,0 +1,34 @@
+EnginePickerModal {
+    align: center middle;
+    background: black 50%;
+}
+
+#engine-picker-root {
+    width: 80%;
+    max-width: 60;
+    height: auto;
+    max-height: 90%;
+    background: $surface;
+    border: $rail-heavy $primary;
+    padding: 1 2;
+}
+
+#engine-picker-title {
+    text-style: bold;
+    color: $primary;
+}
+
+#engine-picker-model {
+    color: $text-muted;
+    padding: 0 0 1 0;
+}
+
+#engine-picker-list {
+    height: auto;
+    max-height: 12;
+}
+
+#engine-picker-hint {
+    color: $text-muted;
+    padding: 1 0 0 0;
+}

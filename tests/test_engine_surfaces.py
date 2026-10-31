@@ -19,6 +19,7 @@ import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
 from lilbee.app.engine_choice import engine_for_ref
 from lilbee.cli import app as cli_app
+from lilbee.cli.tui import messages as tui_messages
 from lilbee.cli.tui.engine_commands import USAGE, run_engine_command
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
@@ -565,9 +566,11 @@ def test_an_unknown_role_on_rest_names_the_valid_roles() -> None:
 def test_the_success_text_says_a_running_server_needs_a_restart() -> None:
     use = run_engine_command(f"use chat {GGUF_REF} llama.cpp")
     prefer = run_engine_command("prefer llama.cpp")
-    assert use.text.endswith(engine_service.RESTART_NOTE)
-    assert prefer.text.endswith(engine_service.RESTART_NOTE)
-    assert engine_service.RESTART_NOTE == "A running server uses the choice after a restart."
+    assert use.text.endswith(tui_messages.ENGINE_RESTART_NOTE)
+    assert prefer.text.endswith(tui_messages.ENGINE_RESTART_NOTE)
+    assert (
+        tui_messages.ENGINE_RESTART_NOTE == "This lilbee process uses the choice after a restart."
+    )
 
 
 def test_a_rest_write_runs_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:

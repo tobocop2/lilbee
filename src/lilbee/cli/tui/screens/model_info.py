@@ -10,8 +10,19 @@ from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Markdown, Static
 
+from lilbee.app.engine_choice import engine_for_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines.choice import NoEngineError
+
+
+def _engine_for(ref: str) -> str:
+    """The engine a run of *ref* would use now, or the text that says none can load it."""
+    try:
+        return engine_for_ref(ref, cfg).name
+    except NoEngineError as exc:
+        return str(exc)
 
 
 class ModelInfoModal(ModalScreen[None]):
@@ -57,6 +68,7 @@ class ModelInfoModal(ModalScreen[None]):
             lines.append("**Downloads:** " + row.downloads)
         if row.installed:
             lines.append("**Status:** installed")
+        lines.append(msg.MODEL_INFO_ENGINE.format(engine=_engine_for(row.ref)))
         if cm is not None and cm.gguf_filename and cm.gguf_filename != cm.hf_repo:
             lines.append("**GGUF file:** `" + cm.gguf_filename + "`")
         lines.append("")
