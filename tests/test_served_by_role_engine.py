@@ -17,7 +17,7 @@ from lilbee.providers.fleet.engines.choice import HostFacts, NoEngineError
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.serving import UNKNOWN_ENGINE
-from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 MLX_REF = "org/repo#mlx"
 GGUF_REF = "org/repo/file.gguf"
