@@ -547,3 +547,71 @@ class TestPane:
             assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
             names = {b.name for b in pane.query(".preset-edit, .preset-remove")}
             assert names == {"omlx"}
+
+
+async def _open_settings(pilot, app) -> TabbedContent:
+    """The Settings tab strip with the first group active, opened with no click."""
+    await await_chat(app, pilot)
+    app.push_screen(SettingsScreen())
+    assert await wait_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+    assert await wait_until(pilot, lambda: bool(app.screen.query("#settings-tabs")))
+    return app.screen.query_one("#settings-tabs", TabbedContent)
+
+
+class TestPaneKeyboardAccess:
+    async def test_greater_than_walks_every_group_then_reaches_presets_then_wraps(self):
+        app = _ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            tabs = await _open_settings(pilot, app)
+            groups = list(app.screen._pane_groups)
+            assert len(groups) > 1 and tabs.active == groups[0]
+            seen = [tabs.active]
+            for _ in groups:
+                await pilot.press(">")
+                assert await wait_until(pilot, lambda: tabs.active != seen[-1])
+                seen.append(tabs.active)
+            assert seen == [*groups, PRESETS_PANE_ID]
+            await pilot.press(">")
+            assert await wait_until(pilot, lambda: tabs.active == groups[0])
+
+    async def test_less_than_from_the_first_group_reaches_presets(self):
+        app = _ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            tabs = await _open_settings(pilot, app)
+            await pilot.press("<")
+            assert await wait_until(pilot, lambda: tabs.active == PRESETS_PANE_ID)
+
+    async def test_tab_past_the_last_group_field_reaches_presets_and_back(self):
+        _seed()
+        app = _ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            tabs = await _open_settings(pilot, app)
+            screen = app.screen
+            last_group = list(screen._pane_groups)[-1]
+            tabs.active = last_group
+            assert await wait_until(pilot, lambda: bool(screen.query(f"#{last_group}-body > *")))
+            screen._focus_pane_edge(last_group, -1)
+            await pilot.press("tab")
+            assert await wait_until(pilot, lambda: tabs.active == PRESETS_PANE_ID)
+            assert await wait_until(
+                pilot, lambda: getattr(app.focused, "id", None) == "presets-add"
+            )
+            await pilot.press("shift+tab")
+            assert await wait_until(pilot, lambda: tabs.active == last_group)
+
+    async def test_tab_inside_presets_reaches_a_row_button_by_keys_alone(self):
+        _seed()
+        app = _ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            tabs = await _open_settings(pilot, app)
+            await pilot.press("<")
+            assert await wait_until(pilot, lambda: tabs.active == PRESETS_PANE_ID)
+            pane = app.screen.query_one(PresetsPane)
+            assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
+            pane.query_one("#presets-add", Button).focus()
+            await pilot.press("tab")
+            assert await wait_until(
+                pilot, lambda: "preset-edit" in getattr(app.focused, "classes", ())
+            )
+            await pilot.press("enter")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, PresetDialog))

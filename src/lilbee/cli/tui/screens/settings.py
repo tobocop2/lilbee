@@ -665,6 +665,10 @@ class SettingsScreen(Screen[None]):
         """Shift+Tab inside a pane; on underflow retreat to the previous group tab."""
         self._move_focus_within_pane(direction=-1)
 
+    def _tab_ids(self) -> list[str]:
+        """The ids of every tab in cycle order: the setting groups, then Presets."""
+        return [*self._pane_groups, PRESETS_PANE_ID]
+
     def action_cycle_pane(self, delta: int) -> None:
         """Step the active settings tab by *delta*, wrapping around the strip.
 
@@ -678,9 +682,7 @@ class SettingsScreen(Screen[None]):
             tabs = self.query_one("#settings-tabs", TabbedContent)
         except Exception:
             return
-        pane_ids = list(self._pane_groups)
-        if not pane_ids:
-            return
+        pane_ids = self._tab_ids()
         try:
             current = pane_ids.index(tabs.active)
         except ValueError:
@@ -701,7 +703,7 @@ class SettingsScreen(Screen[None]):
         tabs = self.query_one("#settings-tabs", TabbedContent)
         active_pane_id = tabs.active
         try:
-            body = self.query_one(f"#{active_pane_id}-body", _LazyGroupBody)
+            body = self.query_one(f"#{active_pane_id}-body", VerticalScroll)
         except Exception:
             self._focus_adjacent(direction)
             return
@@ -715,7 +717,7 @@ class SettingsScreen(Screen[None]):
             focusables[next_index].focus()
             return
         # At the boundary: advance to the next/previous pane.
-        pane_ids = list(self._pane_groups.keys())
+        pane_ids = self._tab_ids()
         if active_pane_id not in pane_ids:
             return
         target_index = (pane_ids.index(active_pane_id) + direction) % len(pane_ids)
@@ -728,7 +730,7 @@ class SettingsScreen(Screen[None]):
 
     def _focus_pane_edge(self, pane_id: str, direction: int) -> None:
         try:
-            body = self.query_one(f"#{pane_id}-body", _LazyGroupBody)
+            body = self.query_one(f"#{pane_id}-body", VerticalScroll)
         except Exception:
             return
         focusables = [w for w in body.query("*") if w.focusable]
