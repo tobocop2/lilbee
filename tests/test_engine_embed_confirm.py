@@ -215,4 +215,26 @@ def test_the_slash_command_refuses_and_leaves_the_file_unchanged(
     out = run_engine_command(f"use embed {MODEL} openvino")
     assert out.ok is False
     assert "3 documents" in out.text
+    assert out.text.endswith("Run the command again with --yes.")
     assert _stored("engine_choices") is None
+
+
+def test_the_slash_command_writes_with_the_yes_word(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    from lilbee.cli.tui.engine_commands import run_engine_command
+
+    out = run_engine_command(f"use embed {MODEL} openvino --yes")
+    assert out.ok is True
+    assert json.loads(str(_stored("engine_choices"))) == {MODEL: "openvino"}
+
+
+def test_the_slash_command_prefer_writes_with_the_yes_word(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    from lilbee.cli.tui.engine_commands import run_engine_command
+
+    assert run_engine_command("prefer openvino").ok is False
+    assert _stored("preferred_engine") is None
+    assert run_engine_command("prefer --yes openvino").ok is True
+    assert _stored("preferred_engine") == "openvino"

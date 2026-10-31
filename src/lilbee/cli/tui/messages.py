@@ -838,6 +838,13 @@ ENGINE_CHIP_NONE = "no engine"
 ENGINE_NO_MODEL = "No {role} model is set. Pick a {role} model before you choose its engine."
 ENGINE_USE_DONE = "{role} model {model} uses engine {engine}."
 ENGINE_PREFER_DONE = "The preferred engine is {engine}."
+ENGINE_CONFIRM_REFUSED = "{reason} Run the command again with {yes}."
+ENGINE_EMBED_CONFIRM_TITLE = "Change the embedding engine?"
+ENGINE_EMBED_CONFIRM_MESSAGE = (
+    "Library {library} holds {documents} documents. The new engine can make their vectors "
+    "unusable by the index. Continue?"
+)
+ENGINE_EMBED_CANCELLED = "The engine is unchanged."
 MODEL_INFO_ENGINE = "**Engine:** {engine}"
 MODEL_VALUE_NONE = "(none)"
 MODEL_PICKER_DISABLE_LABEL = "(disabled, no model)"
