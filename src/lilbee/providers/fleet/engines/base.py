@@ -147,6 +147,8 @@ class EngineAdapter(Protocol):
 
     architectures: frozenset[str]
     served_roles: frozenset[WorkerRole]
+    memory_kind: MemoryKind
+    """How far this engine's memory figures can be trusted, known without an estimate."""
 
     def supports_architecture(self, architecture: str) -> bool: ...
 

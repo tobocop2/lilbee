@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import functools
 import logging
 import re
 import threading
@@ -69,31 +70,38 @@ _LOADED_BEFORE_CHAT = frozenset({WorkerRole.EMBED, WorkerRole.RERANK})
 _NO_DEVICES = "none"
 
 
-def log_engine_launch(launch: InstanceLaunch, *, owner_pid: int | None = None) -> None:
+def log_engine_launch(
+    launch: InstanceLaunch, *, engine: EngineAdapter, owner_pid: int | None = None
+) -> None:
     """Log the binary, build, backend and devices serving *launch*.
 
     *owner_pid* is the engine's owner when this process adopted it rather than
     spawned it.
     """
     if owner_pid is None:
-        log.info("Launched %s serving %s on %s", launch.model_id, launch.model, _engine_id(launch))
+        log.info(
+            "Launched %s serving %s on %s",
+            launch.model_id,
+            launch.model,
+            _engine_id(launch, engine),
+        )
         return
     log.info(
         "Adopted %s serving %s from engine pid %d on %s",
         launch.model_id,
         launch.model,
         owner_pid,
-        _engine_id(launch),
+        _engine_id(launch, engine),
     )
 
 
-def _engine_id(launch: InstanceLaunch) -> str:
+def _engine_id(launch: InstanceLaunch, engine: EngineAdapter) -> str:
     """*launch*'s binary with the engine build, backend, and probed devices."""
-    devices = probed_devices()
+    devices = probed_devices(engine)
     names = ", ".join(f"{d.backend}{d.index}: {d.name}" for d in devices) or _NO_DEVICES
     return (
         f"{launch.binary} (build {engine_build_id()}, "
-        f"backend {engine_backend().value}, devices: {names})"
+        f"backend {engine_backend(engine).value}, devices: {names})"
     )
 
 
@@ -350,7 +358,7 @@ def _resolve_chat_slots(
     fraction on top charged that room twice and left a fifth of the card unused
     on a box with no search roles at all.
     """
-    budget = _slot_budget(unified_budget, device) - chat_reservation
+    budget = _slot_budget(unified_budget, device, engine=engine) - chat_reservation
     return _fit_slots(
         _CHAT_SLOTS,
         WorkerRole.CHAT,
@@ -386,7 +394,9 @@ def _resolve_vision_slots(
         ctx,
         mmproj_path=mmproj_path,
         unified=unified_budget is not None,
-        budget=_slot_budget(unified_budget, device, vram_fraction=_VISION_VRAM_FRACTION),
+        budget=_slot_budget(
+            unified_budget, device, engine=engine, vram_fraction=_VISION_VRAM_FRACTION
+        ),
         engine=engine,
     )
 
@@ -408,7 +418,9 @@ def _resolve_llm_rerank_slots(
         ctx,
         mmproj_path=None,
         unified=unified_budget is not None,
-        budget=_slot_budget(unified_budget, device, vram_fraction=_LLM_RERANK_VRAM_FRACTION),
+        budget=_slot_budget(
+            unified_budget, device, engine=engine, vram_fraction=_LLM_RERANK_VRAM_FRACTION
+        ),
         engine=engine,
         rerank_mode=RerankMode.LLM,
     )
@@ -418,6 +430,7 @@ def _slot_budget(
     unified_budget: int | None,
     device: FleetDevice | None = None,
     *,
+    engine: EngineAdapter,
     vram_fraction: float = 1.0,
 ) -> int:
     """Memory budget for slot sizing: the usable memory on *device* (the fleet's
@@ -428,7 +441,7 @@ def _slot_budget(
     *vram_fraction* takes less than the whole for a role that shares its card by
     design. Chat takes all of it and subtracts what the search roles were sized
     at, which is the same room stated as a measurement rather than a share."""
-    budget = int(plan_sizing_budget(device) * vram_fraction)
+    budget = int(plan_sizing_budget(engine, device) * vram_fraction)
     if unified_budget is not None:
         budget = min(budget, unified_budget)
     return budget
@@ -458,8 +471,8 @@ def _fit_slots(
                     ctx=ctx,
                     slots=slots,
                     gpu_layers=_role_gpu_layers(role),
-                    flash_attn=_role_flash(role, rerank_mode),
-                    kv_cache_type=_role_kv_cache_type(role),
+                    flash_attn=_role_flash(role, rerank_mode, engine=engine),
+                    kv_cache_type=_role_kv_cache_type(role, engine=engine),
                     mmproj_path=mmproj_path,
                     expert_offload=_role_expert_offload(model_path),
                 )
@@ -496,9 +509,9 @@ def fit_chat_ctx(
         slots=1,
         available_bytes=available_bytes,
         gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
-        flash_attn=_role_flash(WorkerRole.CHAT),
-        kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-        unified=plan_sizing_is_unified(),
+        flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
+        kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
+        unified=plan_sizing_is_unified(engine),
         ctx_ceiling=ctx_ceiling,
         expert_offload=_role_expert_offload(model_path),
     )
@@ -523,7 +536,7 @@ def _engine_fits_chat_offload(model_path: Path, binary: Path | None, engine: Eng
     return (
         _role_gpu_layers(WorkerRole.CHAT) == engine_params.N_GPU_LAYERS_AUTO
         and not _role_expert_offload(model_path)
-        and not plan_sizing_is_unified()
+        and not plan_sizing_is_unified(engine)
         and binary is not None
         and engine.supports_fit_target(binary)
     )
@@ -546,8 +559,8 @@ def _chat_host_estimate(model_path: Path, ctx: int, slots: int, engine: EngineAd
                 ctx=ctx,
                 slots=slots,
                 gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
-                flash_attn=_role_flash(WorkerRole.CHAT),
-                kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+                flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
+                kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
                 expert_offload=_role_expert_offload(model_path),
             )
         )
@@ -562,11 +575,13 @@ def _declared_reserve(engine: EngineAdapter, request: MemoryRequest, *, unified:
     A self-check launch is not placed, so a sized engine owes it no charge. A
     fixed-reserve engine declares its figure whatever the placement.
     """
+    if engine.memory_kind is not MemoryKind.FIXED_RESERVE:
+        return 0
     try:
         estimate = engine.estimate_memory(request)
     except (ProviderError, OSError):
         return 0
-    return estimate.footprint(unified=unified) if estimate.kind is MemoryKind.FIXED_RESERVE else 0
+    return estimate.footprint(unified=unified)
 
 
 def _role_ctx(
@@ -592,7 +607,7 @@ def _role_ctx(
     if cfg.num_ctx is not None:
         return _pinned_chat_ctx(model_path, meta)
     return engine_params.resolve_chat_ctx(
-        model_path, meta, engine=engine, available_bytes=plan_sizing_budget(device)
+        model_path, meta, engine=engine, available_bytes=plan_sizing_budget(engine, device)
     )
 
 
@@ -687,22 +702,22 @@ def _flash_enabled() -> bool:
     return cfg.flash_attention is not False
 
 
-def probed_devices() -> tuple[FleetDevice, ...]:
+def probed_devices(engine: EngineAdapter) -> tuple[FleetDevice, ...]:
     """Devices the engine enumerated, empty when they could not be read.
 
     Prefers the plan snapshot so a whole planning pass answers consistently, and
     falls back to the short-TTL read cache rather than a fresh probe.
     """
-    probe = _current_plan_probe()
+    probe = _current_plan_probe(engine)
     if probe is not None:
         return probe.devices
     try:
-        return tuple(_read_device_cache.get(LLAMA.binary()).devices)
+        return tuple(_read_device_cache.get(engine.binary(), engine).devices)
     except (ProviderError, OSError):
         return ()
 
 
-def engine_backend() -> EngineBackend:
+def engine_backend(engine: EngineAdapter) -> EngineBackend:
     """The backend the engine selected, UNKNOWN when it could not be asked.
 
     Prefers the plan snapshot so a whole planning pass answers consistently, and
@@ -714,38 +729,40 @@ def engine_backend() -> EngineBackend:
     from instead (:func:`resolve_placement_plan`), so one payload never pairs a
     live device list with a snapshot's backend.
     """
-    probe = _current_plan_probe()
+    probe = _current_plan_probe(engine)
     if probe is not None:
         return probe.backend
     try:
-        return _read_device_cache.get(LLAMA.binary()).backend
+        return _read_device_cache.get(engine.binary(), engine).backend
     except (ProviderError, OSError):
         return EngineBackend.UNKNOWN
 
 
-def _fleet_backend() -> str | None:
+def _fleet_backend(engine: EngineAdapter) -> str | None:
     """The engine backend this host plans onto, or ``None`` when unknown."""
-    return next((device.backend for device in probed_devices()), None)
+    return next((device.backend for device in probed_devices(engine)), None)
 
 
-def _flash_attention_is_trusted() -> bool:
+def _flash_attention_is_trusted(engine: EngineAdapter) -> bool:
     """Whether to ask for flash attention outright rather than let the engine decide.
 
     Unknown backends answer yes, which keeps every host that works today on the
     argv it has now; only the backends known to lag get the engine's own auto.
     """
-    backend = _fleet_backend()
+    backend = _fleet_backend(engine)
     return backend is None or backend in _TRUSTED_FLASH_BACKENDS
 
 
-def flash_attn_flag() -> str:
+def flash_attn_flag(engine: EngineAdapter) -> str:
     """``--flash-attn`` argv value for chat and vision."""
     if not _flash_enabled():
         return _FLASH_OFF
-    return _FLASH_ON if _flash_attention_is_trusted() else _FLASH_AUTO
+    return _FLASH_ON if _flash_attention_is_trusted(engine) else _FLASH_AUTO
 
 
-def _role_launches_with_flash(role: WorkerRole, rerank_mode: RerankMode | None = None) -> bool:
+def _role_launches_with_flash(
+    role: WorkerRole, rerank_mode: RerankMode | None = None, *, engine: EngineAdapter
+) -> bool:
     """Whether the launch asks the engine for flash attention on *role*.
 
     The one place that answers this. The registry marks RERANK as a non-flash
@@ -757,17 +774,22 @@ def _role_launches_with_flash(role: WorkerRole, rerank_mode: RerankMode | None =
     return role in _FLASH_ROLES
 
 
-def _role_flash(role: WorkerRole, rerank_mode: RerankMode | None = None) -> bool:
+def _role_flash(
+    role: WorkerRole, rerank_mode: RerankMode | None = None, *, engine: EngineAdapter
+) -> bool:
     """Whether the estimate may assume flash attention for *role*.
 
     The launch's own answer, narrowed to a definite ``on``. Under ``auto`` the
     engine decides at load time, and assuming it would size the KV cache below
     what the launch may need.
     """
-    return _role_launches_with_flash(role, rerank_mode) and flash_attn_flag() == _FLASH_ON
+    return (
+        _role_launches_with_flash(role, rerank_mode, engine=engine)
+        and flash_attn_flag(engine) == _FLASH_ON
+    )
 
 
-def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
+def _role_kv_cache_type(role: WorkerRole, *, engine: EngineAdapter) -> KvCacheType:
     """The one KV cache type *role* launches with, for both K and V.
 
     Chat carries ``cfg.kv_cache_type`` only under flash attention ``on``; every
@@ -777,7 +799,7 @@ def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
     """
     from lilbee.core.config import cfg
 
-    if role is WorkerRole.CHAT and flash_attn_flag() == _FLASH_ON:
+    if role is WorkerRole.CHAT and flash_attn_flag(engine) == _FLASH_ON:
         return cfg.kv_cache_type
     return KvCacheType.F16
 
@@ -787,9 +809,9 @@ def _replica_count(role: WorkerRole, device_count: int) -> int:
     return resolve_replica_count(role, device_count)
 
 
-def chat_cache_type_flag() -> str | None:
+def chat_cache_type_flag(engine: EngineAdapter) -> str | None:
     """``--cache-type-k`` and ``--cache-type-v`` for chat; ``None`` leaves the f16 default."""
-    kind = _role_kv_cache_type(WorkerRole.CHAT)
+    kind = _role_kv_cache_type(WorkerRole.CHAT, engine=engine)
     return None if kind is KvCacheType.F16 else kind.value
 
 
@@ -849,8 +871,8 @@ def _estimate_role(
             ctx=ctx,
             slots=slots,
             gpu_layers=_role_gpu_layers(role),
-            flash_attn=_role_flash(role, rerank_mode),
-            kv_cache_type=_role_kv_cache_type(role),
+            flash_attn=_role_flash(role, rerank_mode, engine=engine),
+            kv_cache_type=_role_kv_cache_type(role, engine=engine),
             mmproj_path=mmproj,
             batch_size=_pooled_batch_size(role, rerank_mode, ctx),
             expert_offload=_role_expert_offload(path),
@@ -953,8 +975,8 @@ def _peak_estimator(model_refs: dict[WorkerRole, str], engine: EngineAdapter) ->
                 ctx=ctx,
                 slots=slots,
                 gpu_layers=_role_gpu_layers(role),
-                flash_attn=_role_flash(role, rerank_mode),
-                kv_cache_type=_role_kv_cache_type(role),
+                flash_attn=_role_flash(role, rerank_mode, engine=engine),
+                kv_cache_type=_role_kv_cache_type(role, engine=engine),
                 mmproj_path=mmproj,
                 tensor_split=ratio,
                 batch_size=_pooled_batch_size(role, rerank_mode, ctx),
@@ -992,8 +1014,8 @@ def _chat_split_ctx_objective(
             ratio=ratio,
             per_device_free_bytes=per_device_free_bytes,
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
-            flash_attn=_role_flash(WorkerRole.CHAT),
-            kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+            flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
+            kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
             ctx_ceiling=target,
             expert_offload=_role_expert_offload(path),
         )
@@ -1174,6 +1196,7 @@ def _estimate_or_fallback(
             exc,
             device_count=device_count,
             total_vram=total_vram,
+            engine=engine,
             host_committed=host_committed,
         )
     return _admit_estimate(
@@ -1213,7 +1236,13 @@ def _admit_estimate(
 
 
 def _analytic_footprint_floor(
-    weights: int, *, role: WorkerRole, meta: dict[str, str] | None, ctx: int, slots: int
+    weights: int,
+    *,
+    role: WorkerRole,
+    meta: dict[str, str] | None,
+    ctx: int,
+    slots: int,
+    engine: EngineAdapter,
 ) -> int:
     """The least this instance can occupy: weights, its KV cache, and overhead.
 
@@ -1233,8 +1262,8 @@ def _analytic_footprint_floor(
     kv_bytes = (
         model_cache.kv_bytes_per_token(
             meta,
-            KV_CACHE_TYPE_BYTES[_role_kv_cache_type(role)],
-            KV_CACHE_TYPE_BYTES[_role_kv_cache_type(role)],
+            KV_CACHE_TYPE_BYTES[_role_kv_cache_type(role, engine=engine)],
+            KV_CACHE_TYPE_BYTES[_role_kv_cache_type(role, engine=engine)],
         )
         * ctx
         * max(slots, 1)
@@ -1291,6 +1320,7 @@ def _sizing_failure_fallback(
     *,
     device_count: int,
     total_vram: int,
+    engine: EngineAdapter,
     host_committed: int = 0,
 ) -> ModelPlacementInput | None:
     """Analytic-floor placement input for an installed model the estimator cannot
@@ -1306,7 +1336,7 @@ def _sizing_failure_fallback(
     if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref)):
         _warn_weights_exceed(role, ref, weights, total_vram)
         return None
-    floor = _fallback_floor_for(role, ref, weights)
+    floor = _fallback_floor_for(role, ref, weights, engine=engine)
     log.warning(
         "Could not size the %s model %s (%s). Charging %.1f GiB, its weights plus the "
         "cache and buffers it will allocate, which is a floor rather than an estimate: "
@@ -1323,7 +1353,7 @@ def _sizing_failure_fallback(
     )
 
 
-def _fallback_floor_for(role: WorkerRole, ref: str, weights: int) -> int:
+def _fallback_floor_for(role: WorkerRole, ref: str, weights: int, *, engine: EngineAdapter) -> int:
     """:func:`_analytic_footprint_floor` for *role*, reading what metadata it can."""
     from lilbee.providers.base import ProviderError
     from lilbee.providers.gguf_meta import read_gguf_metadata
@@ -1336,7 +1366,12 @@ def _fallback_floor_for(role: WorkerRole, ref: str, weights: int) -> int:
         path = None
     ctx = _placement_estimate_ctx(role, path, meta) if path is not None else _MIN_USABLE_CHAT_CTX
     return _analytic_footprint_floor(
-        weights, role=role, meta=meta, ctx=ctx, slots=_placement_estimate_slots(role, meta)
+        weights,
+        role=role,
+        meta=meta,
+        ctx=ctx,
+        slots=_placement_estimate_slots(role, meta),
+        engine=engine,
     )
 
 
@@ -1478,7 +1513,7 @@ def _warn_weights_spill(role: WorkerRole, ref: str, weights: int, total_vram: in
     )
 
 
-def placeable_total_vram() -> int:
+def placeable_total_vram(engine: EngineAdapter) -> int:
     """Physical VRAM across all cards, for the weights-exceed placeability bound.
 
     Physical total is box-state-independent (a running incumbent doesn't skew
@@ -1486,13 +1521,13 @@ def placeable_total_vram() -> int:
     one is captured; otherwise probes best-effort and returns ``0`` on failure,
     which disables only the weights-exceed filter (its own ``total > 0`` guard).
     """
-    probe = _current_plan_probe()
+    probe = _current_plan_probe(engine)
     if probe is not None:
         return sum(d.total_bytes for d in probe.devices)
     from lilbee.providers.base import ProviderError
 
     try:
-        return sum(d.total_bytes for d in resolve_devices(LLAMA.binary()))
+        return sum(d.total_bytes for d in resolve_devices(engine.binary(), engine))
     except (ProviderError, OSError):
         return 0
 
@@ -1725,8 +1760,8 @@ def _launch_for(
                 ratio=plan.tensor_split,
                 per_device_free_bytes=per_device_free,
                 gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
-                flash_attn=_role_flash(WorkerRole.CHAT),
-                kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+                flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
+                kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
                 ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
                 expert_offload=_role_expert_offload(model_path),
             )
@@ -1780,13 +1815,15 @@ def _launch_for(
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
         mmproj=mmproj,
-        flash_attn=flash_attn_flag() if _role_launches_with_flash(plan.role, rerank_mode) else None,
-        cache_type=chat_cache_type_flag() if is_chat else None,
+        flash_attn=flash_attn_flag(engine)
+        if _role_launches_with_flash(plan.role, rerank_mode, engine=engine)
+        else None,
+        cache_type=chat_cache_type_flag(engine) if is_chat else None,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
         cpu_moe=expert_offload_all(meta),
         n_cpu_moe=expert_offload_layers(meta),
-        device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(),
+        device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(engine),
         memory_endpoint=LLAMA.check_readback(binary),
         fit_target_mib=(
             _chat_fit_target_mib(binary, chosen, reserved_after_chat or {}) if is_chat else ()
@@ -1801,8 +1838,8 @@ def _launch_for(
                 ctx=ctx,
                 slots=slots,
                 gpu_layers=_role_gpu_layers(plan.role),
-                flash_attn=_role_flash(plan.role, rerank_mode),
-                kv_cache_type=_role_kv_cache_type(plan.role),
+                flash_attn=_role_flash(plan.role, rerank_mode, engine=engine),
+                kv_cache_type=_role_kv_cache_type(plan.role, engine=engine),
                 mmproj_path=mmproj,
                 expert_offload=_role_expert_offload(model_path),
             ),
@@ -1853,9 +1890,9 @@ def build_single_role_launch(
     Placement is the planner's, on the devices the plan snapshot holds, so the
     check runs on the card the role would really land on.
     """
-    binary = LLAMA.binary()
+    binary = engine.binary()
     with _one_engine_per_pass(engine=engine):
-        devices = _plan_devices(binary)
+        devices = _plan_devices(binary, engine)
         by_index = {d.index: d for d in devices}
         # The whole machine, since nothing else is resident during a self-check.
         placed = (min(by_index),) if by_index else ()
@@ -1865,15 +1902,15 @@ def build_single_role_launch(
             str(model_path),
             binary,
             by_index,
-            unified_budget=_unified_memory_budget(devices),
+            unified_budget=_unified_memory_budget(devices, engine),
             model_path=model_path,
             engine=engine,
         )
 
 
-def resolve_devices(binary: Path) -> list[FleetDevice]:
+def resolve_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
     """Enumerate devices in the binary's index space, or the Vulkan VRAM probe."""
-    return _read_devices(binary).devices
+    return _read_devices(binary, engine).devices
 
 
 # The visibility variable each vendor's runtime reads, named in the warning so
@@ -1936,7 +1973,7 @@ class DeviceReading:
     refused_all: bool = False
 
 
-def _read_devices(binary: Path) -> DeviceReading:
+def _read_devices(binary: Path, engine: EngineAdapter) -> DeviceReading:
     """Enumerate devices, the selected backend, and whether every GPU was refused.
 
     One function because all three answers come from one ``--list-devices`` run,
@@ -1956,7 +1993,7 @@ def _read_devices(binary: Path) -> DeviceReading:
     from lilbee.providers.fleet.gpu_select import enumerate_gpu_vram
     from lilbee.providers.fleet.rocm_runtime import assert_rocm_devices_usable
 
-    probe = LLAMA.discover_devices(binary)
+    probe = engine.discover_devices(binary)
     # An engine that answered but listed no device while a GPU is physically
     # present may be hitting a transient init error (the card momentarily held by
     # another process, e.g. an embedder served alongside -- the "ggml_cuda_init:
@@ -1969,7 +2006,7 @@ def _read_devices(binary: Path) -> DeviceReading:
         if probe.devices or not probe.spoke_protocol or not installed_gpu_vendor_ids():
             break
         time.sleep(_DEVICE_PROBE_EMPTY_RETRY_DELAY_S)
-        probe = LLAMA.discover_devices(binary)
+        probe = engine.discover_devices(binary)
     devices = probe.devices
     # A GPU build that links a runtime it cannot serve the host's GPU with must
     # fail loud, not silently fall back to CPU (the Vulkan VRAM probe below
@@ -2069,17 +2106,17 @@ class _ReadDeviceCache:
         ttl = self._ttl_s if self._failure is None else self._failure_ttl_s
         return self._at is not None and self._engine == engine and time.monotonic() - self._at < ttl
 
-    def get(self, binary: Path) -> DeviceReading:
-        engine = engine_binary_identity(binary)
+    def get(self, binary: Path, engine: EngineAdapter) -> DeviceReading:
+        identity = engine_binary_identity(binary)
         with self._lock:
-            fresh = self._is_fresh(engine)
+            fresh = self._is_fresh(identity)
             if fresh and self._failure is not None:
                 raise self._failure
             if self._reading is None or not fresh:
                 self._at = time.monotonic()
-                self._engine = engine
+                self._engine = identity
                 try:
-                    self._reading = _read_devices(binary)
+                    self._reading = _read_devices(binary, engine)
                 except ProviderError as exc:
                     self._reading = None
                     self._failure = exc
@@ -2358,7 +2395,7 @@ def clear_ctx_downshift(role: WorkerRole | None = None) -> None:
     _ctx_downshift_store.clear(role)
 
 
-def _probe_engine_devices() -> DeviceReading:
+def _probe_engine_devices(engine: EngineAdapter) -> DeviceReading:
     """Resolve the binary and enumerate devices.
 
     This is the wedge point: a missing binary raises NOT_FOUND, and a CUDA build
@@ -2366,14 +2403,16 @@ def _probe_engine_devices() -> DeviceReading:
     rather than silently degrading. Device enumeration reads no residency, so it is
     safe to run while an incumbent engine is still up.
     """
-    binary = LLAMA.binary()
-    reading = _read_devices(binary)
+    binary = engine.binary()
+    reading = _read_devices(binary, engine)
     if reading.devices:
         return reading
-    return _reprobe_while_a_gpu_is_installed(binary, reading)
+    return _reprobe_while_a_gpu_is_installed(binary, reading, engine)
 
 
-def _reprobe_while_a_gpu_is_installed(binary: Path, reading: DeviceReading) -> DeviceReading:
+def _reprobe_while_a_gpu_is_installed(
+    binary: Path, reading: DeviceReading, engine: EngineAdapter
+) -> DeviceReading:
     """Ask again when the host has a GPU the engine did not list.
 
     The plan snapshot is taken once, on a clean box, and is not retaken until a
@@ -2399,13 +2438,13 @@ def _reprobe_while_a_gpu_is_installed(binary: Path, reading: DeviceReading) -> D
         )
         time.sleep(_PROBE_RETRY_DELAY_S)
         clear_read_device_cache()
-        reading = _read_devices(binary)
+        reading = _read_devices(binary, engine)
         if reading.devices:
             return reading
     return reading
 
 
-def assert_engine_probeable() -> None:
+def assert_engine_probeable(engine: EngineAdapter) -> None:
     """Raise if the engine cannot be probed; capture no snapshot.
 
     A build precondition that must run BEFORE stopping a replaceable incumbent:
@@ -2414,7 +2453,7 @@ def assert_engine_probeable() -> None:
     stop, in capture_plan_probe). resolve_devices caches within its TTL, so the
     follow-up capture reuses this enumeration rather than re-probing the hardware.
     """
-    _probe_engine_devices()
+    _probe_engine_devices(engine)
 
 
 def _engine_identity(engine: EngineAdapter) -> str:
@@ -2455,32 +2494,31 @@ def _one_engine_per_pass(*, engine: EngineAdapter) -> Iterator[None]:
         _pass_engine.reset(token)
 
 
-def _pass_engine_identity() -> str:
+def _pass_engine_identity(engine: EngineAdapter) -> str:
     """The engine this read answers about: the pass's binary, or the live one outside a pass."""
     pinned = _pass_engine.get()
-    return pinned if pinned is not None else _engine_identity(LLAMA)
+    return pinned if pinned is not None else _engine_identity(engine)
 
 
-def _probe_engine_devices_and_identity() -> tuple[str, DeviceReading]:
+def _probe_engine_devices_and_identity(engine: EngineAdapter) -> tuple[str, DeviceReading]:
     """The engine's reading, tagged with the identity read before the probe ran.
 
     The identity is read first so a binary replaced while the probe runs tags the
     answer with the binary that gave it, and the next read restates. The other
     order tags the outgoing binary's answer with the incoming binary.
     """
-    engine = _engine_identity(LLAMA)
-    return engine, _probe_engine_devices()
+    return _engine_identity(engine), _probe_engine_devices(engine)
 
 
-def capture_plan_probe() -> None:
+def capture_plan_probe(engine: EngineAdapter) -> None:
     """Snapshot devices and memory for planning; call only on a clean box."""
-    engine, reading = _probe_engine_devices_and_identity()
+    identity, reading = _probe_engine_devices_and_identity(engine)
     _plan_probe_store.set(
         _PlanProbe(
             devices=tuple(reading.devices),
             sizing_budget=_device_sizing_budget(reading.devices),
             free_system=model_cache.free_system_memory(),
-            engine=engine,
+            engine=identity,
             engine_devices_all_refused=reading.refused_all,
             backend=reading.backend,
         )
@@ -2497,7 +2535,7 @@ def _structural(devices: Iterable[FleetDevice]) -> tuple[FleetDevice, ...]:
     return tuple(replace(d, free_bytes=0) for d in devices)
 
 
-def refresh_plan_devices() -> None:
+def refresh_plan_devices(engine: EngineAdapter) -> None:
     """Re-read which devices exist, keeping the clean-box memory figures.
 
     The snapshot is captured once and only a full teardown clears it, so an eGPU
@@ -2515,14 +2553,14 @@ def refresh_plan_devices() -> None:
     in the build, not here. A reload asks to look again, so it probes even inside
     the failure wait that holds the read path off.
     """
-    _plan_probe_store.restate(_restated, _engine_identity(LLAMA))
+    _plan_probe_store.restate(functools.partial(_restated, engine=engine), _engine_identity(engine))
 
 
-def _restated(probe: _PlanProbe) -> _PlanProbe | None:
+def _restated(probe: _PlanProbe, *, engine: EngineAdapter) -> _PlanProbe | None:
     """*probe* re-read against the hardware, or ``None`` when the probe could not run."""
     clear_read_device_cache()
     try:
-        engine, reading = _probe_engine_devices_and_identity()
+        identity, reading = _probe_engine_devices_and_identity(engine)
     except (ProviderError, OSError) as exc:
         log.debug("Device rediscovery could not run, keeping the previous list: %s", exc)
         return None
@@ -2534,7 +2572,7 @@ def _restated(probe: _PlanProbe) -> _PlanProbe | None:
         # CPU pin off and let ggml fall back onto the adapter just refused.
         return replace(
             probe,
-            engine=engine,
+            engine=identity,
             engine_devices_all_refused=reading.refused_all,
             backend=reading.backend,
         )
@@ -2553,13 +2591,13 @@ def _restated(probe: _PlanProbe) -> _PlanProbe | None:
         devices=merged,
         sizing_budget=_device_sizing_budget(merged),
         free_system=probe.free_system,
-        engine=engine,
+        engine=identity,
         engine_devices_all_refused=reading.refused_all,
         backend=reading.backend,
     )
 
 
-def _current_plan_probe() -> _PlanProbe | None:
+def _current_plan_probe(engine: EngineAdapter) -> _PlanProbe | None:
     """The plan snapshot, restated first when another engine binary is now in place.
 
     The snapshot carries the identity of the binary that answered, so an engine
@@ -2568,12 +2606,12 @@ def _current_plan_probe() -> _PlanProbe | None:
     probe = _plan_probe_store.get()
     if probe is None:
         return None
-    engine = _pass_engine_identity()
-    return probe if probe.engine == engine else _restate_plan_probe(engine)
+    identity = _pass_engine_identity(engine)
+    return probe if probe.engine == identity else _restate_plan_probe(identity, engine)
 
 
-def _restate_plan_probe(engine: str) -> _PlanProbe | None:
-    """Restate the snapshot for *engine*, once per burst of stale reads.
+def _restate_plan_probe(identity: str, engine: EngineAdapter) -> _PlanProbe | None:
+    """Restate the snapshot for the binary *identity*, once per burst of stale reads.
 
     An engine whose probe keeps raising is re-probed at most once per failure
     wait on this read path, so a broken binary costs the retry ladder
@@ -2584,7 +2622,7 @@ def _restate_plan_probe(engine: str) -> _PlanProbe | None:
     so a binary repaired in place is retried without a reload as soon as its
     content changes, whatever its stat fields do.
     """
-    return _plan_probe_store.restate_if_stale(_restated, engine)
+    return _plan_probe_store.restate_if_stale(functools.partial(_restated, engine=engine), identity)
 
 
 def clear_plan_probe() -> None:
@@ -2592,7 +2630,7 @@ def clear_plan_probe() -> None:
     _plan_probe_store.clear()
 
 
-def _cpu_pin_when_every_device_was_refused() -> tuple[str, ...]:
+def _cpu_pin_when_every_device_was_refused(engine: EngineAdapter) -> tuple[str, ...]:
     """``("none",)`` when the engine offered GPUs that lilbee refused, else empty.
 
     Dropping a device from lilbee's view does not stop the engine using it. With
@@ -2602,7 +2640,7 @@ def _cpu_pin_when_every_device_was_refused() -> tuple[str, ...]:
     placement budgeted against system RAM. Naming no device keeps the engine on
     the CPU the plan was shaped for.
     """
-    probe = _current_plan_probe()
+    probe = _current_plan_probe(engine)
     if probe is None or not probe.engine_devices_all_refused:
         return ()
     log.warning(
@@ -2613,25 +2651,25 @@ def _cpu_pin_when_every_device_was_refused() -> tuple[str, ...]:
     return (_NO_DEVICE,)
 
 
-def _plan_devices(binary: Path) -> list[FleetDevice]:
+def _plan_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
     """Devices the plan paths size against: the snapshot, else a live probe."""
-    probe = _current_plan_probe()
-    return list(probe.devices) if probe is not None else resolve_devices(binary)
+    probe = _current_plan_probe(engine)
+    return list(probe.devices) if probe is not None else resolve_devices(binary, engine)
 
 
-def plan_sizing_budget(device: FleetDevice | None = None) -> int:
+def plan_sizing_budget(engine: EngineAdapter, device: FleetDevice | None = None) -> int:
     """Usable memory for ctx/slot sizing: *device*'s own, else the snapshot, else live."""
     from lilbee.core.config import cfg
 
     if device is not None:
         return int(device.total_bytes * cfg.gpu_memory_fraction)
-    probe = _current_plan_probe()
+    probe = _current_plan_probe(engine)
     if probe is not None:
         return probe.sizing_budget
-    return _device_sizing_budget(_live_sizing_devices())
+    return _device_sizing_budget(_live_sizing_devices(engine))
 
 
-def plan_sizing_is_unified() -> bool:
+def plan_sizing_is_unified(engine: EngineAdapter) -> bool:
     """Whether ctx sizing charges the shared-memory footprint rather than VRAM.
 
     True when no device has memory of its own -- an integrated GPU, an Apple
@@ -2640,8 +2678,8 @@ def plan_sizing_is_unified() -> bool:
     under-reports the load by everything it maps. The same test decides the pool
     placement charges against (:func:`_unified_memory_budget`).
     """
-    probe = _current_plan_probe()
-    devices = list(probe.devices) if probe is not None else _live_sizing_devices()
+    probe = _current_plan_probe(engine)
+    devices = list(probe.devices) if probe is not None else _live_sizing_devices(engine)
     return all(dev.unified for dev in devices)
 
 
@@ -2667,17 +2705,17 @@ def _device_sizing_budget(devices: Sequence[FleetDevice]) -> int:
     return int(model_cache.total_system_memory() * cfg.gpu_memory_fraction)
 
 
-def _live_sizing_devices() -> list[FleetDevice]:
+def _live_sizing_devices(engine: EngineAdapter) -> list[FleetDevice]:
     """Devices to size against with no plan snapshot; empty when none can be read."""
     try:
-        return _read_device_cache.get(LLAMA.binary()).devices
+        return _read_device_cache.get(engine.binary(), engine).devices
     except (ProviderError, OSError):
         return []
 
 
-def _plan_free_system_memory() -> int:
+def _plan_free_system_memory(engine: EngineAdapter) -> int:
     """Free system RAM for the unified-memory budget: the snapshot, else live."""
-    probe = _current_plan_probe()
+    probe = _current_plan_probe(engine)
     return probe.free_system if probe is not None else model_cache.free_system_memory()
 
 
@@ -2742,7 +2780,7 @@ def _device_names(devices: tuple[FleetDevice, ...]) -> tuple[str, ...]:
     return tuple(f"{d.backend}{d.index}" for d in devices)
 
 
-def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
+def _unified_memory_budget(devices: list[FleetDevice], engine: EngineAdapter) -> int | None:
     """Shared-RAM placement budget (free RAM minus the OS floor), or ``None``.
 
     ``None`` once any device has memory of its own, since dedicated VRAM is the
@@ -2757,11 +2795,11 @@ def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
     if any(not device.unified for device in devices):
         return None
     return _capped_by_device_memory(
-        max(0, _plan_free_system_memory() - _system_memory_floor()), devices
+        max(0, _plan_free_system_memory(engine) - _system_memory_floor()), devices
     )
 
 
-def _unified_admission_budget(devices: list[FleetDevice]) -> int | None:
+def _unified_admission_budget(devices: list[FleetDevice], engine: EngineAdapter) -> int | None:
     """Shared-RAM pool a role set is *admitted* against, or ``None`` if dedicated.
 
     Total installed RAM minus the OS floor, not what happens to be free. Sizing
@@ -2772,7 +2810,7 @@ def _unified_admission_budget(devices: list[FleetDevice]) -> int | None:
     the moment, which is what happened. The GPU path already charges total
     capacity for exactly this reason.
     """
-    if _unified_memory_budget(devices) is None:
+    if _unified_memory_budget(devices, engine) is None:
         return None
     return _capped_by_device_memory(
         max(0, model_cache.total_system_memory() - _system_memory_floor()), devices
@@ -2986,16 +3024,16 @@ def resolve_placement_plan(
     device list with a backend read at fleet build.
     """
     binary = LLAMA.binary()
-    reading = _read_device_cache.get(binary)
+    reading = _read_device_cache.get(binary, LLAMA)
     devices = reading.devices
-    unified_budget = _unified_memory_budget(devices)
+    unified_budget = _unified_memory_budget(devices, LLAMA)
     inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
         None,
         engine=LLAMA,
         unified_budget=unified_budget,
         total_vram=sum(d.total_bytes for d in devices),
     )
-    admission_budget = _unified_admission_budget(devices)
+    admission_budget = _unified_admission_budget(devices, LLAMA)
     if fall_back_to_auto:
         resolved, spec_applied = _placement_or_auto(
             placement, inputs, model_refs, devices, engine=LLAMA, unified_budget=admission_budget
@@ -3114,7 +3152,7 @@ def _planned_launches(
     """The placement and launches for *roles*, sized and placed against one snapshot."""
     from lilbee.core.config import cfg
 
-    unified_budget = _unified_memory_budget(devices)
+    unified_budget = _unified_memory_budget(devices, engine)
     inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
         roles,
         engine=engine,
@@ -3129,10 +3167,10 @@ def _planned_launches(
         model_refs,
         devices,
         engine=engine,
-        unified_budget=_unified_admission_budget(devices),
+        unified_budget=_unified_admission_budget(devices, engine),
         # Only the clean-box snapshot's free bytes mean "what other tenants hold";
         # a live probe here would also be missing the fleet's own residency.
-        charge_against_free=_current_plan_probe() is not None,
+        charge_against_free=_current_plan_probe(engine) is not None,
     )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
@@ -3228,6 +3266,6 @@ def plan_all_launches() -> FleetPlan:
     """
     binary = LLAMA.binary()
     with _one_engine_per_pass(engine=LLAMA):
-        devices = _plan_devices(binary)
+        devices = _plan_devices(binary, LLAMA)
         by_index = {d.index: d for d in devices}
         return plan_launches(_launched_roles(), binary, by_index, devices)

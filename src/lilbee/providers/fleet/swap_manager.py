@@ -31,6 +31,7 @@ from lilbee.core.health_warnings import HealthWarning
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.gpu_env import engine_environ
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
@@ -336,7 +337,7 @@ class SwapManager:
         self._write_state()
         self._await_health()
         for launch in launches:
-            log_engine_launch(launch)
+            log_engine_launch(launch, engine=LLAMA)
 
     def reap_stale(self) -> None:
         """Kill every dead or unhealthy recorded engine; see :func:`reap_stale`."""

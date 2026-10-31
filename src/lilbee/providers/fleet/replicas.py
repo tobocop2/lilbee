@@ -52,5 +52,5 @@ def gpu_device_count() -> int:
     except ProviderError:
         log.debug("llama-server not found; treating host as GPU-less for replica sizing")
         return _MIN_REPLICAS
-    devices = resolve_devices(binary)
+    devices = resolve_devices(binary, LLAMA)
     return max(_MIN_REPLICAS, len(devices))

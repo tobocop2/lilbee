@@ -175,7 +175,7 @@ def planned_chat_ctx() -> int | None:
     try:
         path = resolve_model_path(ref)
         return resolve_chat_ctx(
-            path, read_gguf_metadata(path), engine=LLAMA, available_bytes=plan_sizing_budget()
+            path, read_gguf_metadata(path), engine=LLAMA, available_bytes=plan_sizing_budget(LLAMA)
         )
     except (ProviderError, OSError, ValueError):
         # Sizing needs the model file and its GGUF header; an absent or unreadable

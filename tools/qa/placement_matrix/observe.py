@@ -92,7 +92,7 @@ from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.engines import LLAMA
 plan = planning.plan_all_launches()
 chat = next((l for l in plan.launches if l.role.value == "chat"), None)
-devices = planning.resolve_devices(LLAMA.binary())
+devices = planning.resolve_devices(LLAMA.binary(), LLAMA)
 out = {
     "refusal": next((v for k, v in plan.skipped_unusable_ctx.items() if k.value == "chat"), None),
     "min_usable_ctx": engine_params.min_usable_chat_ctx(),

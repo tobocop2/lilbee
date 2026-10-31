@@ -196,9 +196,10 @@ def chat_kv_elem_bytes() -> float:
     granted window stays in step with the cache the engine allocates.
     """
     # call-time import: planning imports this module at load
+    from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.planning import chat_cache_type_flag
 
-    flag = chat_cache_type_flag()
+    flag = chat_cache_type_flag(LLAMA)
     return KV_CACHE_TYPE_BYTES[KvCacheType(flag) if flag else KvCacheType.F16]
 
 

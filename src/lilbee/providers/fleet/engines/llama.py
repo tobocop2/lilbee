@@ -63,6 +63,7 @@ class LlamaCppAdapter:
     formats = frozenset({ModelFormat.GGUF})
     architectures = frozenset(SUPPORTED_ARCHS)
     served_roles = frozenset(role for role, spec in ROLE_SPECS.items() if spec.server_capable)
+    memory_kind = MemoryKind.SIZED
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures
@@ -144,7 +145,7 @@ class LlamaCppAdapter:
             expert_offload=request.expert_offload,
         )
         return MemoryEstimate(
-            kind=MemoryKind.SIZED,
+            kind=self.memory_kind,
             device_bytes=parsed.vram_bytes,
             host_bytes=parsed.ram_bytes,
             shared_bytes=parsed.unified_bytes,

@@ -53,6 +53,7 @@ class FakeAdapter:
     formats = frozenset({"safetensors"})
     architectures = frozenset({"fakearch"})
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED})
+    memory_kind = MemoryKind.FIXED_RESERVE
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures
@@ -110,7 +111,7 @@ class FakeAdapter:
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return MemoryEstimate(
-            kind=MemoryKind.FIXED_RESERVE,
+            kind=self.memory_kind,
             device_bytes=0,
             host_bytes=_RESERVE_BYTES,
             shared_bytes=_RESERVE_BYTES,

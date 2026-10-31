@@ -148,6 +148,7 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
     chose without grepping debug logs.
     """
     from lilbee.core.config.enums import KvCacheType
+    from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.planning import chat_cache_type_flag
 
     return {
@@ -155,7 +156,7 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
         "num_ctx_max": cfg.num_ctx_max,
         "chat_n_ctx_target": cfg.chat_n_ctx_target,
         "flash_attention": cfg.flash_attention,
-        "kv_cache_type": chat_cache_type_flag() or KvCacheType.F16.value,
+        "kv_cache_type": chat_cache_type_flag(LLAMA) or KvCacheType.F16.value,
         "n_gpu_layers": cfg.n_gpu_layers,
         "cpu_moe": cfg.cpu_moe,
         "n_cpu_moe": cfg.n_cpu_moe,

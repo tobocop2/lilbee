@@ -290,7 +290,7 @@ def _log_adopted_launches(
     """Name the engine every bound instance now runs on, and the pid that owns it."""
     for _group, state, launches in candidates:
         for launch in launches:
-            planning.log_engine_launch(launch, owner_pid=state.pid)
+            planning.log_engine_launch(launch, engine=LLAMA, owner_pid=state.pid)
 
 
 class _PrimedStream:
@@ -793,7 +793,7 @@ def _placeable_demand() -> _EngineDemand:
             return _EngineDemand(set(), 0, {}, {})
         raise
     placed = {launch.role for launch in plan.launches}
-    total_vram = placeable_total_vram()
+    total_vram = placeable_total_vram(LLAMA)
     pairs = {
         (role, model)
         for role in WorkerRole
@@ -863,7 +863,7 @@ def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
     if not wanted:
         return False
     try:
-        planning.assert_engine_probeable()
+        planning.assert_engine_probeable(LLAMA)
     except ProviderError as exc:
         # A genuinely-missing engine binary keeps the quiet serve-nothing path;
         # every other probe failure must propagate (fail loud) rather than be read
@@ -1245,7 +1245,7 @@ class FleetProvider:
             # (a wedged GPU probe, an unusable CUDA runtime) propagates so the
             # warm tracker and the caller report the real reason instead of a
             # silent never-ready fleet.
-            planning.capture_plan_probe()
+            planning.capture_plan_probe(LLAMA)
             plan = planning.plan_all_launches()
         except ProviderError as exc:
             # Only a genuinely-missing engine binary keeps the quiet no-fleet path;
@@ -2591,7 +2591,7 @@ class FleetProvider:
             # figures beside it are deliberately not re-taken: this fleet is
             # resident, and charging it against itself is what the snapshot exists
             # to prevent.
-            planning.refresh_plan_devices()
+            planning.refresh_plan_devices(LLAMA)
             with self._lock:
                 if self._shut_down:
                     # Terminal shutdown landed while this reload was queued; a
@@ -2621,7 +2621,7 @@ class FleetProvider:
                     if not running:
                         # Nothing loaded (a resurrect after a failed pass): the box is
                         # clean, so refresh the plan snapshot like a first build would.
-                        planning.capture_plan_probe()
+                        planning.capture_plan_probe(LLAMA)
                     plan = planning.plan_all_launches()
                 except ProviderError as exc:
                     # Same policy as the initial build: a genuinely-missing engine
