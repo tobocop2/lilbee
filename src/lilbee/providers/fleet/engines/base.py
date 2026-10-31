@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.launch import InstanceLaunch
 
 
+# Stands for the port value in an argv whose port flag must sit before a subcommand.
+PORT_SLOT = "{port}"
+
+
 class EngineName(StrEnum):
     """The engines the fleet can launch."""
 

@@ -42,12 +42,14 @@ class _GgufEngine(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf"})
     architectures = frozenset({"gguf_arch"})
+    served_roles = frozenset(WorkerRole)
 
 
 class _MlxEngine(BundledFakeAdapter):
     name = "mlx"
     formats = frozenset({"mlx"})
     architectures = frozenset({"mlx_arch_a", "mlx_arch_b"})
+    served_roles = frozenset(WorkerRole)
 
 
 GGUF_ENGINE = _GgufEngine()

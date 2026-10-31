@@ -14,6 +14,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from lilbee.data.offload import max_workers
+from lilbee.providers.fleet.engines.base import PORT_SLOT
 from lilbee.providers.fleet.readback import engine_log_env, writes_engine_log
 from lilbee.providers.roles import WorkerRole
 
@@ -164,8 +165,8 @@ def _command_line(argv: list[str], port: int) -> str:
     rules on Windows (POSIX single quotes would stay literal in the paths and
     the spawn fails with "file does not exist"), POSIX everywhere else.
     """
-    if sys.platform == "win32":
-        rendered = subprocess.list2cmdline(argv)
-    else:
-        rendered = shlex.join(argv)
-    return f"{rendered} {PORT_FLAG} {port}"
+    slotted = PORT_SLOT in argv
+    full = [str(port) if arg == PORT_SLOT else arg for arg in argv]
+    if not slotted:
+        full += [PORT_FLAG, str(port)]
+    return subprocess.list2cmdline(full) if sys.platform == "win32" else shlex.join(full)
