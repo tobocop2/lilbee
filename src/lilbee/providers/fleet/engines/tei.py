@@ -24,7 +24,7 @@ from lilbee.providers.fleet.engines.base import (
     RequestProfile,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
-from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS, detect
+from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, WorkerRole
@@ -150,10 +150,12 @@ class TeiAdapter:
         return f"{self.name}@{_VERSION}"
 
     def pin_record(self) -> Mapping[str, Any]:
+        from lilbee.catalog.runnable import session_host
+
         return {
             "engine": self.name.value,
             "version": _VERSION,
-            "backend": self.pick_build(detect()).backend,
+            "backend": self.pick_build(session_host()).backend,
             "sha256": PACK_SHA256,
             "launch": _PIN_LAUNCH,
             "platforms": {},

@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
+from lilbee.catalog import runnable
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import run_engine_command
 from lilbee.core.config import Config, cfg
@@ -87,7 +88,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         engine_choice, "host_facts", lambda: HostFacts(system="linux", machine="x86_64")
     )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
-    monkeypatch.setattr(engine_service, "session_host", _live_host)
+    monkeypatch.setattr(runnable, "detect", _live_host)
     yield
     mcp_server.set_http_mounted(False)
     for name in Config.model_fields:
@@ -180,7 +181,9 @@ def test_an_unknown_name_is_refused_naming_the_engines() -> None:
 
 
 def test_an_engine_with_no_adapter_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delitem(choice.ADAPTERS, ENGINE, raising=False)
+    without = {name: adapter for name, adapter in choice.ADAPTERS.items() if name != ENGINE}
+    assert len(without) == len(choice.ADAPTERS) - 1
+    monkeypatch.setattr(choice, "ADAPTERS", without)
     with pytest.raises(engine_service.EngineRefusedError, match="has no build to install"):
         engine_service.install(ENGINE.value)
 

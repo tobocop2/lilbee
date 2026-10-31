@@ -13,7 +13,7 @@ from typing import TypeVar
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.app.services import peek_services
 from lilbee.catalog.refs import model_format
-from lilbee.catalog.runnable import session_host
+from lilbee.catalog.runnable import refresh_session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
@@ -269,7 +269,7 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         )
     if adapter.bundled:
         raise EngineRefusedError(f"Engine {name} ships with lilbee. There is nothing to install.")
-    gate = adapter.host_gate(session_host())
+    gate = adapter.host_gate(refresh_session_host())
     if not gate.ok:
         raise EngineRefusedError(f"Engine {name} cannot run on this host. {gate.reason}")
     try:

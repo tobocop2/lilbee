@@ -333,8 +333,7 @@ def test_the_reason_for_a_cpu_archive_reaches_the_user_through_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: Any, reason: str
 ) -> None:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
-    monkeypatch.setattr(engine_service, "session_host", host)
-    monkeypatch.setattr(runnable, "session_host", host)
+    monkeypatch.setattr(runnable, "detect", host)
     sha = make_pack(tmp_path / "pack.whl")
     monkeypatch.setattr(mistral, "PACK_SHA256", sha)
     built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
@@ -346,12 +345,36 @@ def test_a_host_with_a_matching_card_adds_no_note_to_the_install(
 ) -> None:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     host = lambda: caps("Linux", "x86_64", gpus=[L4])  # noqa: E731
-    monkeypatch.setattr(engine_service, "session_host", host)
-    monkeypatch.setattr(runnable, "session_host", host)
+    monkeypatch.setattr(runnable, "detect", host)
     sha = make_pack(tmp_path / "pack.whl")
     monkeypatch.setattr(mistral, "PACK_SHA256", sha)
     built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
     assert (built.backend, built.note) == ("cuda128-sm89", "")
+
+
+def test_an_install_reads_the_host_now_and_a_list_reads_the_cached_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    reads: list[bool] = []
+    has_gpu = [False]
+
+    def detect_now() -> host_caps.HostCaps:
+        reads.append(has_gpu[0])
+        return caps("Linux", "x86_64", gpus=[L4] if has_gpu[0] else [])
+
+    monkeypatch.setattr(runnable, "detect", detect_now)
+    monkeypatch.setattr(host_caps, "detect", detect_now)
+    runnable.session_host()
+    has_gpu[0] = True
+    sha = make_pack(tmp_path / "pack.whl")
+    monkeypatch.setattr(mistral, "PACK_SHA256", sha)
+    installed_engines()
+    assert reads == [False]
+    built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
+    assert (built.backend, reads) == ("cuda128-sm89", [False, True])
+    assert EngineName.MISTRAL in installed_engines()
+    assert reads == [False, True]
 
 
 def test_rerank_is_refused_for_the_engine_before_its_install_is_read(
