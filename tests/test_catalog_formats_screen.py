@@ -80,10 +80,13 @@ async def test_grid_scroll_hint_says_how_many_rows_are_hidden(
         screen = CatalogScreen()
         await pilot.app.push_screen(screen)
         shown = await wait_until(
-            pilot, lambda: "1 hidden (no engine for mlx)" in _screen_text(screen)
+            pilot,
+            lambda: (
+                "1 hidden (no engine for mlx)" in _screen_text(screen)
+                and "All 1 models loaded" in _screen_text(screen)
+            ),
         )
         assert shown, _screen_text(screen)
-        assert "All 1 models loaded" in _screen_text(screen)
         assert "b/mlx-only" not in _screen_text(screen)
 
 
