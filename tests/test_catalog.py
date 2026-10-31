@@ -3677,7 +3677,7 @@ class TestUnsendableHfToken:
             return "m.gguf"
 
         monkeypatch.setattr("lilbee.catalog.download.resolve_filename", _resolve)
-        ModelManager(tmp_path, engine=LLAMA)._resolved_entry(PICKS_VISION[0], verify=True)
+        ModelManager(tmp_path, cfg)._resolved_entry(PICKS_VISION[0], LLAMA, verify=True)
         assert check.call_args.args[2] is False
 
     def test_no_authorization_header_reaches_the_wire(

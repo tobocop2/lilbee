@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Literal
 from cachetools import TTLCache
 from pydantic import BaseModel
 
-from lilbee.app.engine_choice import engine_for_ref
 from lilbee.app.models import list_models_data
 from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
@@ -546,7 +545,7 @@ async def enforce_pull_arch_compat(
     try:
         await asyncio.to_thread(manager.enforce_arch_compat, model)
     except UnsupportedArchError as exc:
-        engine = engine_for_ref(model)
+        engine = get_services().engines.for_ref(model)
         raise HTTPException(
             status_code=409,
             detail="unsupported_arch",

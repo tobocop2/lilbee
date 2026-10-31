@@ -22,6 +22,7 @@ from lilbee.providers.model_ref import parse_model_ref
 from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
+    from lilbee.core.config import Config
     from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
@@ -50,9 +51,9 @@ def _prefixed_source(model: str) -> ModelSource | None:
 class ModelManager:
     """Manages model lifecycle with distinct sources."""
 
-    def __init__(self, models_dir: Path, engine: "EngineAdapter") -> None:
+    def __init__(self, models_dir: Path, config: "Config") -> None:
         self._models_dir = models_dir
-        self._engine = engine
+        self._config = config
         self._registry = ModelRegistry(self._models_dir)
         # Memoize list_installed results to avoid walking the registry
         # filesystem and hitting the backend HTTP endpoint on every call.
@@ -207,21 +208,25 @@ class ModelManager:
                 f"lilbee runs {where} models but doesn't download them. "
                 f"Add the model in {where}, then pick it here."
             )
-        self.require_engine(model)
+        engine = self.require_engine(model)
         if not allow_unsupported:
             self.enforce_arch_compat(model)
         try:
             return self._pull_native(
-                model, on_bytes=on_bytes, cancel=cancel, allow_unsupported=allow_unsupported
+                model,
+                engine,
+                on_bytes=on_bytes,
+                cancel=cancel,
+                allow_unsupported=allow_unsupported,
             )
         finally:
             self._invalidate_installed_cache()
 
-    def require_engine(self, ref: str) -> None:
-        """Raise ``NoEngineError`` when no installed engine loads the format of *ref*."""
+    def require_engine(self, ref: str) -> "EngineAdapter":
+        """The engine that loads the format of *ref*; raises ``NoEngineError`` when none does."""
         from lilbee.app.engine_choice import engine_for_ref
 
-        engine_for_ref(ref)
+        return engine_for_ref(ref, self._config)
 
     def enforce_arch_compat(self, ref: str) -> None:
         """Raise UnsupportedArchError if *ref*'s architecture isn't in the supported set.
@@ -241,12 +246,13 @@ class ModelManager:
         )
 
         arch = resolve_arch_for_pull(ref, get_services().hf_client)
-        if classify(arch, self._engine) is ModelCompat.UNSUPPORTED:
+        if classify(arch, self.require_engine(ref)) is ModelCompat.UNSUPPORTED:
             raise UnsupportedArchError(ref, arch)
 
     def _pull_native(
         self,
         model: str,
+        engine: "EngineAdapter",
         *,
         on_bytes: Callable[[int, int], None] | None = None,
         cancel: CancelSignal | None = None,
@@ -263,10 +269,10 @@ class ModelManager:
                 f"Model '{model}' not recognized. "
                 "Pass a HuggingFace repo id (owner/name) or a featured model name."
             )
-        entry = self._resolved_entry(entry, verify=not allow_unsupported)
+        entry = self._resolved_entry(entry, engine, verify=not allow_unsupported)
         path = download_model(
             entry,
-            self._engine,
+            engine,
             on_progress=on_bytes,
             on_complete=register_downloaded_model,
             cancel=cancel,
@@ -274,7 +280,9 @@ class ModelManager:
         log.info("Downloaded %s to %s", model, path)
         return path
 
-    def _resolved_entry(self, entry: CatalogModel, *, verify: bool) -> CatalogModel:
+    def _resolved_entry(
+        self, entry: CatalogModel, engine: "EngineAdapter", *, verify: bool
+    ) -> CatalogModel:
         """*entry* carrying the file the pull will fetch.
 
         Resolution happens here because the engine's verdict is part of choosing
@@ -296,10 +304,10 @@ class ModelManager:
         token = hf_token()
 
         def _can_load(hf_repo: str, filename: str) -> None:
-            self._engine.assert_loadable(hf_repo, filename, token)
+            engine.assert_loadable(hf_repo, filename, token)
 
         try:
-            filename = resolve_filename(entry, self._engine, can_load=_can_load if verify else None)
+            filename = resolve_filename(entry, engine, can_load=_can_load if verify else None)
         except (PermissionError, RuntimeError) as exc:
             if isinstance(exc, UnsupportedQuantError):
                 raise

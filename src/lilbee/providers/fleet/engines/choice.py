@@ -15,6 +15,8 @@ from lilbee.providers.roles import WorkerRole
 AUTO = "auto"
 _DARWIN = "darwin"
 _ARM64 = "arm64"
+# The only command that shows the installed engines: no install command exists yet.
+LIST_HINT = "Run lilbee engine list to see the installed engines."
 
 # The adapters this build ships, by engine name.
 ADAPTERS: Mapping[EngineName, EngineAdapter] = {EngineName(a.name): a for a in (LLAMA,)}
@@ -96,34 +98,39 @@ def choose_engine(
     preferred: str,
     override: str | None,
     role: WorkerRole | None = None,
+    model: str | None = None,
 ) -> EngineChoice:
     """Pick the engine for *fmt*: the override, else the preference, else the host default.
 
     The result never names an engine that cannot load *fmt*. A preference that
     is unusable gives the host default, with a notice. An override that is
-    installed but cannot load *fmt* gives no engine. A notice names *role* when given.
+    installed but cannot load *fmt* gives no engine. A notice names *role* and
+    *model* when given.
     """
     request = _request(preferred, override)
+    of_model = f" of {model}" if model else ""
     if request is None:
         default = _default(fmt, host, installed)
         if default is not None:
             return EngineChoice(default, None, None)
-        text = f"No installed engine loads the {fmt} format. Install an engine that loads {fmt}."
+        text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
         return EngineChoice(None, NoticeKind.NONE, f"For {role.value}: {text}" if role else text)
     name, kind = request
     if name in installed and fmt in installed[EngineName(name)]:
         return EngineChoice(EngineName(name), None, None)
     subject = f"Engine {name} for {role.value}" if role else f"Engine {name}"
     if name not in installed:
-        reason = f"{subject} is not installed. Install {name} to use it."
+        reason = f"{subject} is not installed."
+        hint = f" {LIST_HINT}"
     else:
-        reason = f"{subject} cannot load the {fmt} format."
+        reason = f"{subject} cannot load the {fmt} format{of_model}."
+        hint = ""
         if kind is NoticeKind.OVERRIDE_UNUSABLE:
             return EngineChoice(None, kind, f"{reason} Choose an engine that loads {fmt}.")
     default = _default(fmt, host, installed)
     if default is None:
         return EngineChoice(None, kind, f"{reason} No installed engine loads the {fmt} format.")
-    return EngineChoice(default, kind, f"{reason} Using {default}.")
+    return EngineChoice(default, kind, f"{reason} Using {default}.{hint}")
 
 
 def installed_engines() -> InstalledEngines:

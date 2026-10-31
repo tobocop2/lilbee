@@ -205,9 +205,8 @@ def build_services(
     process-wide slot, so every container (singleton or per-instance library)
     binds its own, not only get_services.
     """
-    from lilbee.app.engine_choice import EngineBook, engine_for_format
+    from lilbee.app.engine_choice import EngineBook
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.catalog.types import ModelFormat
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
@@ -243,10 +242,9 @@ def build_services(
     concepts = ConceptGraph(config, store)
     clusterer = Clusterer(config, store)
     searcher = Searcher(config, provider, store, embedder, reranker, concepts)
-    pull_engine = engine_for_format(ModelFormat.GGUF)
-    hf_client = HfClient(pull_engine)
+    hf_client = HfClient(config)
     ingest_lock_registry = IngestLockRegistry()
-    model_manager = ModelManager(config.models_dir, pull_engine)
+    model_manager = ModelManager(config.models_dir, config)
     crawler_semaphore = (
         asyncio.Semaphore(config.crawl_max_concurrent) if config.crawl_max_concurrent > 0 else None
     )

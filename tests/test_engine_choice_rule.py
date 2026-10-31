@@ -10,6 +10,7 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
+    LIST_HINT,
     Accel,
     EngineChoice,
     HostFacts,
@@ -116,7 +117,7 @@ def test_auto_never_picks_the_opt_in_engine() -> None:
 def test_not_installed_override_falls_back_with_a_notice() -> None:
     got = _ask(override=M)
     assert got.notice_kind is NoticeKind.OVERRIDE_UNUSABLE
-    assert got.notice == "Engine mlx is not installed. Install mlx to use it. Using llama.cpp."
+    assert got.notice == f"Engine mlx is not installed. Using llama.cpp. {LIST_HINT}"
 
 
 def test_override_that_cannot_load_the_format_gives_no_engine() -> None:
@@ -153,8 +154,7 @@ def test_not_installed_with_no_fallback_names_the_format() -> None:
     got = _ask(fmt=ST, override=M)
     assert got.name is None
     assert got.notice == (
-        "Engine mlx is not installed. Install mlx to use it. "
-        "No installed engine loads the safetensors format."
+        "Engine mlx is not installed. No installed engine loads the safetensors format."
     )
 
 
@@ -162,10 +162,7 @@ def test_auto_with_no_engine_returns_text_and_require_raises() -> None:
     got = _ask(fmt=ST)
     assert got.name is None
     assert got.notice_kind is NoticeKind.NONE
-    assert got.notice == (
-        "No installed engine loads the safetensors format. "
-        "Install an engine that loads safetensors."
-    )
+    assert got.notice == (f"No installed engine loads the safetensors format. {LIST_HINT}")
     with pytest.raises(NoEngineError, match="No installed engine loads the safetensors"):
         got.require()
 

@@ -18,12 +18,27 @@ from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 from lilbee.cli.tui.widgets.catalog_detail import CatalogDetailDrawer
 from lilbee.cli.tui.widgets.format_picker import FormatPicker
+from lilbee.providers.fleet.engines import choice
+from lilbee.providers.fleet.engines.base import EngineName
 from tests._lilbee_app_test_host import LilbeeAppHost
+from tests.conformance.fake_adapter import FakeAdapter
 
 
 class _App(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         yield Static("host")
+
+
+class _SafetensorsEngine(FakeAdapter):
+    name = "llama.cpp"
+    formats = frozenset({"gguf", "safetensors"})
+    architectures = frozenset({"gguf_arch"})
+
+
+@pytest.fixture
+def safetensors_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install an engine that loads safetensors, so a pull of that format has an engine."""
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, _SafetensorsEngine())  # type: ignore[arg-type]
 
 
 def _row(repo: str, formats: frozenset[ModelFormat]) -> CatalogModel:
@@ -119,7 +134,7 @@ def _quiet(monkeypatch: pytest.MonkeyPatch, screen: CatalogScreen) -> None:
 
 
 async def test_install_of_a_two_format_row_offers_the_formats_and_pulls_the_chosen_one(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, safetensors_engine: None
 ) -> None:
     model = _row("acme/two", frozenset({ModelFormat.GGUF, ModelFormat.SAFETENSORS}))
     async with _App().run_test(size=(120, 40)) as pilot:
@@ -150,6 +165,28 @@ async def test_install_of_a_two_format_row_offers_the_formats_and_pulls_the_chos
         assert [(m.format, m.pull_ref) for m in started] == [
             (ModelFormat.SAFETENSORS, "acme/two#safetensors")
         ]
+
+
+async def test_install_of_a_format_no_engine_loads_refuses_and_starts_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a gguf engine is installed, so the safetensors pick is refused before any download."""
+    model = _row("acme/two", frozenset({ModelFormat.GGUF, ModelFormat.SAFETENSORS}))
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        started = _record_downloads(pilot.app)
+        _quiet(monkeypatch, screen)
+        notices: list[str] = []
+        monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
+
+        screen._install_model(model)
+        assert await wait_until(pilot, lambda: isinstance(pilot.app.screen, FormatPicker))
+        await pilot.press("down", "enter")
+        assert await wait_until(pilot, lambda: bool(notices))
+        assert "No installed engine loads the safetensors format" in notices[0]
+        assert started == []
 
 
 async def test_escape_in_the_format_picker_installs_nothing(
