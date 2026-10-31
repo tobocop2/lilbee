@@ -255,7 +255,6 @@ class TestPlansAskTheEngine:
         monkeypatch.setattr(cfg, "chat_model", "org/repo/spy.gguf")
         plan = planning.plan_launches(
             (WorkerRole.CHAT,),
-            spy.binary(),
             {SPY_DEVICE.index: SPY_DEVICE},
             [SPY_DEVICE],
             engines=engines_for_all_roles(spy),
