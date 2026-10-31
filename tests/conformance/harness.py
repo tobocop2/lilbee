@@ -340,6 +340,24 @@ def answer_fault(answer: str) -> str:
     return "" if rest.strip() else "no answer after the think block"
 
 
+def reasoning_split_fault(message: Mapping[str, Any], finish: Any) -> str:
+    """The reason a reply is not a clean reasoning split, or an empty string.
+
+    A reasoning field needs an answer with no think tag in it. With no field, the answer is
+    one closed think block and then text. A reply with neither reasoning form fails.
+    """
+    answer = str(message.get("content") or "")
+    if finish != _FINISH_STOP:
+        return f"finish is {finish}, not stop"
+    if any(str(message.get(name) or "").strip() for name in _REASONING_FIELDS):
+        if _THINK_OPEN in answer or _THINK_CLOSE in answer:
+            return "the reasoning field is set and the answer also holds a think tag"
+        return "" if answer.strip() else "reasoning with an empty answer"
+    if _THINK_CLOSE not in answer:
+        return "no reasoning field and no closed think block"
+    return answer_fault(answer)
+
+
 def reasoning_fault(message: Mapping[str, Any], finish: Any) -> str:
     """The reason a reasoning reply is not a clean split, or an empty string.
 
