@@ -1317,6 +1317,7 @@ class FleetProvider:
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
                     engine_log=_engine_log_of(launch, swap.log_path.parent),
                     model_ref=launch.model,
+                    profile=LLAMA.request_profile(role),
                 )
                 for launch in role_launches
             ]

@@ -18,8 +18,6 @@ from lilbee.providers import engine_params, model_cache
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import ctx as fleet_ctx
 from lilbee.providers.fleet.adapters import (
-    FLAG_FIT_TARGET,
-    FLAG_KV_UNIFIED_PER_SLOT,
     LLM_RERANK_CONCURRENCY,
     resolve_rerank_mode,
 )
@@ -47,7 +45,6 @@ from lilbee.providers.fleet.placement import (
     plan_placement,
 )
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
-from lilbee.providers.fleet.readback import engine_advertises, supports_memory_readback
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.model_cache import free_system_memory, total_system_memory
@@ -511,7 +508,7 @@ def _engine_fits_chat_offload(model_path: Path, binary: Path | None) -> bool:
         and not _role_expert_offload(model_path)
         and not plan_sizing_is_unified()
         and binary is not None
-        and engine_advertises(binary, FLAG_FIT_TARGET)
+        and LLAMA.supports_fit_target(binary)
     )
 
 
@@ -1602,7 +1599,7 @@ def _chat_fit_target_mib(
     that load after chat. Empty for an engine without ``--fit-target`` and on
     shared memory, where a layer moved off the device frees nothing.
     """
-    if any(device.unified for device in chosen) or not engine_advertises(binary, FLAG_FIT_TARGET):
+    if any(device.unified for device in chosen) or not LLAMA.supports_fit_target(binary):
         return ()
     return tuple(
         ENGINE_FIT_MARGIN_MIB + -(-reserved.get(device.index, 0) // MIB) for device in chosen
@@ -1611,7 +1608,7 @@ def _chat_fit_target_mib(
 
 def _engine_shares_kv(binary: Path) -> bool:
     """Whether *binary* can give its slots one KV pool with a per-slot cap."""
-    return engine_advertises(binary, FLAG_KV_UNIFIED_PER_SLOT)
+    return LLAMA.supports_shared_kv(binary)
 
 
 def _launch_for(
@@ -1738,13 +1735,13 @@ def _launch_for(
         cpu_moe=expert_offload_all(meta),
         n_cpu_moe=expert_offload_layers(meta),
         device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(),
-        memory_endpoint=supports_memory_readback(binary),
+        memory_endpoint=LLAMA.check_readback(binary),
         fit_target_mib=(
             _chat_fit_target_mib(binary, chosen, reserved_after_chat or {}) if is_chat else ()
         ),
         kv_unified_per_slot=ctx if is_chat and _engine_shares_kv(binary) else None,
     )
-    return InstanceLaunch(
+    launch = InstanceLaunch(
         role=plan.role,
         argv=LLAMA.launch_argv(spec, request),
         env_overrides={**visible_env(chosen), **llama_server_runtime_env()},
@@ -1772,6 +1769,7 @@ def _launch_for(
         est_unreported_bytes=_unreported_bytes(plan.role, mmproj),
         est_host_bytes=_chat_host_estimate(model_path, ctx, slots) if fit_moves_chat else 0,
     )
+    return replace(launch, swap_extras=LLAMA.swap_extras(launch))
 
 
 def build_single_role_launch(role: WorkerRole, model_path: Path) -> InstanceLaunch:

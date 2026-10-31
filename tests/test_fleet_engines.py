@@ -228,8 +228,8 @@ def test_llama_swap_extras_is_empty() -> None:
 
 def test_llama_request_profile_holds_the_client_constants() -> None:
     profile = LLAMA.request_profile(WorkerRole.EMBED)
-    assert profile.embd_normalize == -1
-    assert profile.return_progress is True
+    assert dict(profile.embed_fields) == {"embd_normalize": -1}
+    assert dict(profile.stream_fields) == {"return_progress": True}
     assert (profile.tokenize_path, profile.detokenize_path, profile.apply_template_path) == (
         "/tokenize",
         "/detokenize",

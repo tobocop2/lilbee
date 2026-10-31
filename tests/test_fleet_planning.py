@@ -1052,7 +1052,9 @@ class TestBuildFleetWiring:
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr(planning_mod, "engine_advertises", lambda _b, _flag: advertised)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.engine_advertises", lambda _b, _flag: advertised
+        )
         calls: list = []
 
         def _fit(*_a, **kwargs):
@@ -1097,6 +1099,13 @@ class TestBuildFleetWiring:
         launch, calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=4096)
         assert launch.argv[launch.argv.index("--n-gpu-layers") + 1] == "-1"
         assert calls == []
+
+    def test_launch_for_carries_the_swap_keys_the_engine_asks_for(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(LLAMA, "swap_extras", lambda _launch: {"checkEndpoint": "/live"})
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert launch.swap_extras == {"checkEndpoint": "/live"}
 
     def test_launch_for_chat_alone_on_its_card_gets_the_engine_default_fit_target(
         self, tmp_path, monkeypatch
@@ -1193,7 +1202,9 @@ class TestBuildFleetWiring:
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr(planning_mod, "engine_advertises", lambda _b, _flag: True)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.engine_advertises", lambda _b, _flag: True
+        )
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *a, **k: 8192)
         monkeypatch.setattr(cfg, "num_ctx", None)
         device = FleetDevice("Metal", 0, "M3", 24 * _GB, 24 * _GB, unified=True)
@@ -2639,7 +2650,7 @@ class TestChatWindowLeftToTheEngineFit:
             self.advertised.append(flag)
             return True
 
-        monkeypatch.setattr(planning_mod, "engine_advertises", _advertises)
+        monkeypatch.setattr("lilbee.providers.fleet.engines.llama.engine_advertises", _advertises)
         self.model = tmp_path / "chat.gguf"
         self.model.write_bytes(b"x" * 1024)
         self.meta = {"block_count": "28"}
@@ -2664,7 +2675,9 @@ class TestChatWindowLeftToTheEngineFit:
     def test_an_engine_without_the_fit_keeps_the_window(self, monkeypatch) -> None:
         # A bring-your-own llama-server older than the fit loads every layer, so
         # a raised window would not fit beside them: it starts with the base window.
-        monkeypatch.setattr(planning_mod, "engine_advertises", lambda _b, _flag: False)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.engine_advertises", lambda _b, _flag: False
+        )
         fit, _probed = self._fit(512)
         monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
         assert self._window() == 512

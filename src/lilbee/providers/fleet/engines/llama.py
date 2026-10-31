@@ -8,6 +8,8 @@ from typing import Any
 
 from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF, SUPPORTED_ARCHS
 from lilbee.providers.fleet.adapters import (
+    FLAG_FIT_TARGET,
+    FLAG_KV_UNIFIED_PER_SLOT,
     ROLE_SPECS,
     RoleServerSpec,
     build_server_argv,
@@ -31,13 +33,13 @@ from lilbee.providers.fleet.engines.base import (
     RequestProfile,
 )
 from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.readback import engine_advertises, supports_memory_readback
 from lilbee.providers.fleet.vram import estimate_instance_footprint
 from lilbee.providers.roles import RerankMode, WorkerRole
 
-_EMBD_NORMALIZE_NONE = -1
 _PROFILE = RequestProfile(
-    embd_normalize=_EMBD_NORMALIZE_NONE,
-    return_progress=True,
+    embed_fields={"embd_normalize": -1},
+    stream_fields={"return_progress": True},
     tokenize_path="/tokenize",
     detokenize_path="/detokenize",
     apply_template_path="/apply-template",
@@ -134,6 +136,15 @@ class LlamaCppAdapter:
             per_device=parsed.per_device_vram,
             per_device_shared=parsed.per_device_unified,
         )
+
+    def check_readback(self, binary: Path) -> bool:
+        return supports_memory_readback(binary)
+
+    def supports_fit_target(self, binary: Path) -> bool:
+        return engine_advertises(binary, FLAG_FIT_TARGET)
+
+    def supports_shared_kv(self, binary: Path) -> bool:
+        return engine_advertises(binary, FLAG_KV_UNIFIED_PER_SLOT)
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
         return {}

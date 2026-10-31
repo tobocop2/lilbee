@@ -925,6 +925,29 @@ def test_adopt_group_threads_rerank_mode(monkeypatch) -> None:
     assert captured["rerank_mode"] is RerankMode.LLM
 
 
+def test_adopt_group_gives_each_client_its_engine_request_profile(monkeypatch) -> None:
+    launch = _fake_launch(WorkerRole.EMBED)
+    captured: dict[str, object] = {}
+
+    def _capture(_endpoint, _model, **kw):
+        captured["profile"] = kw.get("profile")
+        return _fake_client()
+
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m" if role is WorkerRole.EMBED else ""
+    )
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
+    )
+    sentinel = object()
+    monkeypatch.setattr(prov_mod.LLAMA, "request_profile", lambda _role: sentinel)
+    FleetProvider()._ensure_fleet()
+    assert captured["profile"] is sentinel
+
+
 def test_adopt_group_logs_the_embed_window_warning(monkeypatch) -> None:
     """Every serving process passes through adoption, so the window check fires there."""
     launch = _fake_launch(WorkerRole.EMBED)

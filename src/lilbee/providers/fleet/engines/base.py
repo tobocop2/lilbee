@@ -118,8 +118,10 @@ class MemoryEstimate:
 class RequestProfile:
     """The request fields and paths the client uses against an engine's server."""
 
-    embd_normalize: int | None
-    return_progress: bool
+    embed_fields: Mapping[str, Any]
+    """Extra fields on every embeddings request body."""
+    stream_fields: Mapping[str, Any]
+    """Extra fields on a streamed chat request body."""
     tokenize_path: str
     detokenize_path: str
     apply_template_path: str
@@ -134,8 +136,12 @@ class EngineAdapter(Protocol):
     ``readback`` says how the running instance reports its memory.
     """
 
-    name: EngineName
-    formats: frozenset[ModelFormat]
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def formats(self) -> frozenset[str]: ...
+
     architectures: frozenset[str]
     served_roles: frozenset[WorkerRole]
     readback: ReadbackKind
@@ -157,6 +163,18 @@ class EngineAdapter(Protocol):
     def discover_devices(self, binary: Path) -> DeviceProbe: ...
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate: ...
+
+    def check_readback(self, binary: Path) -> bool:
+        """Whether *binary* can report its memory use the way ``readback`` says."""
+        ...
+
+    def supports_fit_target(self, binary: Path) -> bool:
+        """Whether *binary* places layers itself, leaving a stated margin free."""
+        ...
+
+    def supports_shared_kv(self, binary: Path) -> bool:
+        """Whether *binary* can give its slots one KV pool with a per-slot cap."""
+        ...
 
     def header_reader(self) -> Path: ...
 
