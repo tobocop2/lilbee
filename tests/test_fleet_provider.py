@@ -717,9 +717,9 @@ def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) ->
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
 
 
-def test_reload_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> None:
-    # A missing binary on the reload resurrect path aborts quietly (nothing to
-    # serve), mirroring the build path rather than raising.
+def test_reload_fails_loud_when_the_engine_binary_is_missing(monkeypatch) -> None:
+    # A reload that cannot find the engine binary did not apply the change, so it
+    # raises; the caller of a write must not report success.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
@@ -731,7 +731,8 @@ def test_reload_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> No
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
     p = FleetProvider()
-    p._reload_pass()  # must not raise
+    with pytest.raises(ProviderError, match="no engine binary"):
+        p._reload_pass()
     assert p._swaps == {}
 
 
@@ -6678,7 +6679,7 @@ def test_a_failed_reload_leaves_the_notice_until_a_pass_succeeds(
     with pytest.raises(ProviderError, match="engine refused"):
         p.reload_placement(wait=True)
     assert p.reload_notice() == (
-        "The last engine reload failed; the server keeps the engines it started with."
+        "The last engine reload failed; a role may still run its previous engine."
     )
     p.reload_placement(wait=True)
     assert p.reload_notice() is None
@@ -6728,7 +6729,7 @@ def test_a_failed_engine_write_leaves_the_running_role_working_and_says_so(
         engine_service.prefer("llama.cpp")
     assert served._require_clients(WorkerRole.CHAT)[0] is working
     assert served.reload_notice() == (
-        "The last engine reload failed; the server keeps the engines it started with."
+        "The last engine reload failed; a role may still run its previous engine."
     )
 
 

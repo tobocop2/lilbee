@@ -75,7 +75,7 @@ def choose_engine_for_role(role: WorkerRole, engine: str) -> EngineCommandResult
     model = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
     try:
         return _use(role, model, engine)
-    except (engine_service.EngineRefusedError, engine_service.EngineNotSavedError) as exc:
+    except engine_service.WRITE_FAILURES as exc:
         return EngineCommandResult(False, str(exc))
 
 
@@ -89,7 +89,7 @@ def run_engine_command(args: str) -> EngineCommandResult:
         return EngineCommandResult(True, _roles_text())
     try:
         return _run(words[0], words[1:])
-    except (engine_service.EngineRefusedError, engine_service.EngineNotSavedError) as exc:
+    except engine_service.WRITE_FAILURES as exc:
         return EngineCommandResult(False, str(exc))
 
 

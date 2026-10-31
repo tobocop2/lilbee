@@ -116,9 +116,7 @@ if TYPE_CHECKING:
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
 RELOADING_NOTICE = "A change to the engines is being applied; roles may run their previous engine."
-RELOAD_FAILED_NOTICE = (
-    "The last engine reload failed; the server keeps the engines it started with."
-)
+RELOAD_FAILED_NOTICE = "The last engine reload failed; a role may still run its previous engine."
 # No-healthy-replica message for a server that stopped answering at the transport.
 _NOT_RESPONDING_MESSAGE = (
     "The model server is not responding and no healthy replica is available. "
@@ -2537,7 +2535,8 @@ class FleetProvider:
         pass) has finished and the proxies are healthy again, so a caller already
         off the event loop gets a real completion signal. A restarted role's model
         still loads lazily (the reload kicks an off-thread warm). It propagates a
-        reload failure as an exception.
+        reload failure as an exception, to a caller that joined an in-flight reload
+        as well.
         """
         with self._lock:
             if not self._swaps:
@@ -2547,6 +2546,11 @@ class FleetProvider:
                 if wait:
                     while self._reloading:
                         self._reload_done.wait()
+                    if self._reload_failed:
+                        raise ProviderError(
+                            "The engine reload that was already running failed.",
+                            provider=_PROVIDER_NAME,
+                        )
                 return
             self._reloading = True
             self._reload_pending = False
@@ -2669,24 +2673,17 @@ class FleetProvider:
             # build a second fleet into the same dir, double-allocating VRAM.
             with build_lock(reload_dir):
                 reap_stale(reload_dir)
-                try:
-                    if not running:
-                        # Nothing loaded (a resurrect after a failed pass): the box is
-                        # clean, so refresh the plan snapshot like a first build would.
-                        planning.capture_plan_probe(self._host_engine())
-                    engines = self._engines()
-                    plan = planning.plan_all_launches(engines=engines)
-                except ProviderError as exc:
-                    # Same policy as the initial build: a genuinely-missing engine
-                    # binary aborts the reload quietly (nothing to serve), while any
-                    # other planning failure (a wedged GPU probe, an unusable CUDA
-                    # runtime) propagates to fail loud. The raise lands before the
-                    # stop phase, so a running fleet is left intact rather than half
-                    # torn down.
-                    if exc.kind is not ProviderErrorKind.NOT_FOUND:
-                        raise
-                    log.debug("Engine binary unavailable; reload left the fleet as-is")
-                    return
+                # A planning failure (a missing engine binary, a wedged GPU probe, an
+                # unusable CUDA runtime) propagates: the change was not applied, and a
+                # caller that wrote the choice must hear that. The raise lands before
+                # the stop phase, so a running fleet is left intact rather than half
+                # torn down.
+                if not running:
+                    # Nothing loaded (a resurrect after a failed pass): the box is
+                    # clean, so refresh the plan snapshot like a first build would.
+                    planning.capture_plan_probe(self._host_engine())
+                engines = self._engines()
+                plan = planning.plan_all_launches(engines=engines)
                 # Keep the skip reasons in step with the fresh plan.
                 self._skipped_not_installed = dict(plan.skipped_not_installed)
                 self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)

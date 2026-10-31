@@ -29,18 +29,22 @@ log = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 PREFERRED_KEY = "preferred_engine"
+NOT_APPLIED_CODE = "engine_not_applied"
 
 
 class EngineRefusedError(ValueError):
     """The engine service refuses a write; the text names the problem and the fix."""
 
 
-class EngineNotAppliedError(EngineRefusedError):
-    """The choice is saved but the running server could not apply it."""
+class EngineNotAppliedError(Exception):
+    """The choice is saved but the running server could not apply it; a fault, not a refusal."""
 
 
 class EngineNotSavedError(Exception):
     """The choice could not be written to the settings file; the text holds no path."""
+
+
+WRITE_FAILURES = (EngineRefusedError, EngineNotSavedError, EngineNotAppliedError)
 
 
 @dataclass(frozen=True)
@@ -94,11 +98,11 @@ def _apply_to_running() -> None:
         return
     try:
         services.provider.reload_placement(wait=True)
-    except ProviderError as exc:
+    except (ProviderError, OSError) as exc:
         log.warning("The running server did not apply the engine choice: %s", exc)
         raise EngineNotAppliedError(
-            "The engine choice is saved, but the running server could not apply it and keeps "
-            f"the engine it started with: {exc}. Restart lilbee to use the choice."
+            "The engine choice is saved, but the running server could not apply it: "
+            f"{exc}. Restart lilbee to use the choice."
         ) from exc
 
 

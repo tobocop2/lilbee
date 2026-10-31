@@ -417,5 +417,23 @@ def test_a_failed_reload_keeps_the_saved_choice_and_tells_the_user(
     running.failure = ProviderError("engine refused", provider="llama-server")
     with pytest.raises(engine_service.EngineNotAppliedError, match="engine refused") as raised:
         engine_service.prefer("llama.cpp")
-    assert "keeps the engine it started with" in str(raised.value)
+    assert "started with" not in str(raised.value)
+    assert "Restart lilbee to use the choice." in str(raised.value)
     assert _stored(engine_service.PREFERRED_KEY) == "llama.cpp"
+
+
+def test_a_reload_that_fails_on_the_disk_is_reported_as_not_applied(
+    with_mlx: None, running: _RecordingProvider
+) -> None:
+    running.failure = OSError("config file is locked")
+    with pytest.raises(engine_service.EngineNotAppliedError, match="config file is locked"):
+        engine_service.prefer("llama.cpp")
+    assert _stored(engine_service.PREFERRED_KEY) == "llama.cpp"
+
+
+def test_a_bug_in_the_reload_is_not_reported_as_a_missing_engine(
+    with_mlx: None, running: _RecordingProvider
+) -> None:
+    running.failure = RuntimeError("bug in the reload")
+    with pytest.raises(RuntimeError, match="bug in the reload"):
+        engine_service.prefer("llama.cpp")

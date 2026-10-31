@@ -427,17 +427,17 @@ class RoutingProvider(LLMProvider):
     def _engine_fallbacks(self) -> list[HealthWarning]:
         """One warning for each role whose engine choice did not hold.
 
-        While a reload runs or after one failed, the live choice is not what the
-        server holds, so the warning says that instead.
+        While a reload runs or after one failed, the live choice may not be what the
+        server holds, so a warning says that before the per-role warnings.
         """
         notice = self.reload_notice()
-        if notice is not None:
-            return [HealthWarning(code=WarningCode.ENGINE_FALLBACK, message=notice)]
-        return [
-            HealthWarning(code=WarningCode.ENGINE_FALLBACK, message=choice.notice)
+        warnings = [] if notice is None else [notice]
+        warnings.extend(
+            choice.notice
             for choice in resolve_engines(cfg).choices.values()
             if choice.notice is not None
-        ]
+        )
+        return [HealthWarning(code=WarningCode.ENGINE_FALLBACK, message=m) for m in warnings]
 
     def _local_warnings(self) -> list[HealthWarning]:
         """Serving degradations of the local engine; the embed warning needs a local embedder."""
