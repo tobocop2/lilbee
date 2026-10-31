@@ -180,6 +180,32 @@ class TestGate:
         res = _add(client, roles=["chatt"])
         assert (res.status_code, res.json()["detail"]) == (409, engines_refused_message())
 
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        [
+            ("post", "/api/presets", {"name": ["x"], "url": 7, "roles": "chat", "api_key": [KEY]}),
+            ("post", "/api/presets", {"url": LOCAL}),
+            ("put", "/api/presets/omlx", {"clear_key": None, "rerank_wire": None}),
+            ("put", "/api/presets/omlx", {"roles": 5}),
+        ],
+    )
+    def test_the_gate_runs_before_the_body_is_checked(self, client, method, path, body):
+        cfg.allow_http_engines = False
+        res = getattr(client, method)(path, json=body)
+        assert (res.status_code, res.json()["detail"]) == (409, engines_refused_message())
+        assert KEY not in res.text
+
+    def test_a_body_that_is_not_json_meets_the_gate_first(self, client):
+        cfg.allow_http_engines = False
+        res = client.post(
+            "/api/presets", content=b"{not json", headers={"content-type": "text/plain"}
+        )
+        assert (res.status_code, res.json()["detail"]) == (409, engines_refused_message())
+
+    def test_a_wrong_shape_is_400_when_the_flag_is_on(self, client):
+        res = client.post("/api/presets", json={"url": LOCAL})
+        assert res.status_code == 400
+
 
 def test_no_log_line_holds_the_key(client, caplog):
     caplog.set_level(logging.DEBUG)

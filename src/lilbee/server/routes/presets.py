@@ -7,7 +7,9 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from litestar import delete, get, post, put
+from litestar.connection import ASGIConnection
 from litestar.exceptions import HTTPException
+from litestar.handlers.base import BaseRouteHandler
 
 import lilbee.app.presets as service
 from lilbee.core.config import cfg
@@ -39,6 +41,12 @@ async def _call(action: Callable[[], _T]) -> _T:
         ) from exc
 
 
+def _require_engines_enabled(_connection: ASGIConnection, _handler: BaseRouteHandler) -> None:
+    """Refuse a write while allow_http_engines is off. A guard runs before the body is parsed."""
+    if not cfg.allow_http_engines:
+        raise HTTPException(status_code=_HTTP_CONFLICT, detail=service.engines_refused_message())
+
+
 @get("/api/presets")
 async def presets_list_route() -> PresetListResponse:
     """The stored server presets. A key shows as has_key and never as a value."""
@@ -46,11 +54,9 @@ async def presets_list_route() -> PresetListResponse:
     return PresetListResponse(presets=[PresetResponse.from_view(p) for p in presets])
 
 
-@post("/api/presets", status_code=201)
+@post("/api/presets", status_code=201, guards=[_require_engines_enabled])
 async def presets_add_route(data: PresetAddBody) -> PresetResponse:
     """Add a server preset. Refused unless allow_http_engines is enabled."""
-    if not cfg.allow_http_engines:
-        raise HTTPException(status_code=_HTTP_CONFLICT, detail=service.engines_refused_message())
     preset = await _call(
         lambda: service.add_preset(
             data.name,
@@ -63,11 +69,9 @@ async def presets_add_route(data: PresetAddBody) -> PresetResponse:
     return PresetResponse.from_view(preset)
 
 
-@put("/api/presets/{name:str}", status_code=200)
+@put("/api/presets/{name:str}", status_code=200, guards=[_require_engines_enabled])
 async def presets_edit_route(name: str, data: PresetEditBody) -> PresetResponse:
     """Change a server preset. Refused unless allow_http_engines is enabled."""
-    if not cfg.allow_http_engines:
-        raise HTTPException(status_code=_HTTP_CONFLICT, detail=service.engines_refused_message())
     preset = await _call(
         lambda: service.edit_preset(
             name,
@@ -81,10 +85,8 @@ async def presets_edit_route(name: str, data: PresetEditBody) -> PresetResponse:
     return PresetResponse.from_view(preset)
 
 
-@delete("/api/presets/{name:str}", status_code=200)
+@delete("/api/presets/{name:str}", status_code=200, guards=[_require_engines_enabled])
 async def presets_remove_route(name: str) -> PresetRemovedResponse:
     """Remove a server preset. Refused unless allow_http_engines is enabled."""
-    if not cfg.allow_http_engines:
-        raise HTTPException(status_code=_HTTP_CONFLICT, detail=service.engines_refused_message())
     await _call(lambda: service.remove_preset(name))
     return PresetRemovedResponse(removed=name)
