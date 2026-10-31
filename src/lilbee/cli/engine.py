@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
-import typer
+import sys
+from collections.abc import Callable
+from typing import Annotated
 
+import typer
+from rich.text import Text
+
+from lilbee.app import engine_service
+from lilbee.cli import theme
 from lilbee.cli.app import console, json_out
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.swap_manager import stop_engine
+from lilbee.providers.roles import WorkerRole
+from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.engine_lock import build_lock, machine_engine_dir, private_engine_dir
 
 engine_app = typer.Typer(
@@ -17,6 +26,7 @@ engine_app = typer.Typer(
 
 _STOPPED = "Stopped the engine and freed its memory."
 _NOTHING_RUNNING = "No engine is running."
+_NO_BUILDS = "No engine builds are installed."
 
 
 @engine_app.command("stop")
@@ -38,3 +48,159 @@ def stop() -> None:
         json_out({"command": "engine stop", "stopped": sorted(set(stopped))})
         return
     console.print(_STOPPED if stopped else _NOTHING_RUNNING)
+
+
+@engine_app.command("list")
+def list_builds() -> None:
+    """List the engine builds installed beside the models."""
+    from lilbee.providers.fleet.engine_store import EngineStore, engines_root
+
+    builds = EngineStore(engines_root(cfg.models_dir)).installed()
+    if cfg.json_mode:
+        json_out(
+            {
+                "command": "engine list",
+                "builds": [
+                    {"engine": b.engine, "version": b.version, "backend": b.backend} for b in builds
+                ],
+            }
+        )
+        return
+    if not builds:
+        console.print(_NO_BUILDS)
+    for build in builds:
+        console.print(f"{build.engine} {build.version} ({build.backend})")
+
+
+@engine_app.command("remove")
+def remove(
+    engine: str = typer.Argument(help="Engine name, as 'lilbee engine list' shows it."),
+    version: str = typer.Argument(help="Build version."),
+    backend: str = typer.Argument(help="Build backend."),
+) -> None:
+    """Remove one installed engine build."""
+    from lilbee.providers.fleet.engine_store import (
+        BundledEngineError,
+        EngineInUseError,
+        EngineNotInstalledError,
+        EngineStore,
+        StorePathError,
+        engines_root,
+        launch_uses_engine,
+    )
+
+    store = EngineStore(engines_root(cfg.models_dir))
+    try:
+        store.remove(engine, version, backend, in_use=launch_uses_engine)
+    except (
+        BundledEngineError,
+        EngineInUseError,
+        EngineNotInstalledError,
+        StorePathError,
+    ) as exc:
+        if cfg.json_mode:
+            json_out({"command": "engine remove", "error": str(exc)})
+        else:
+            PlainConsole(stderr=True).print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
+        raise typer.Exit(1) from exc
+    if cfg.json_mode:
+        json_out({"command": "engine remove", "removed": f"{engine} {version} ({backend})"})
+        return
+    console.print(f"Removed engine {engine} {version} ({backend}).")
+
+
+def _refuse(command: str, exc: Exception) -> typer.Exit:
+    """Show a refusal from the engine service on the surface and return the exit."""
+    if cfg.json_mode:
+        json_out({"command": command, "error": str(exc)})
+    else:
+        PlainConsole(stderr=True).print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
+    return typer.Exit(1)
+
+
+_YES_OPTION = typer.Option(
+    False, "--yes", help="Confirm a change that can make the index vectors unusable."
+)
+
+
+def _interactive() -> bool:
+    """True when a person can answer a prompt on this terminal."""
+    return sys.stdin.isatty()
+
+
+def _confirming(action: Callable[[bool], str], yes: bool) -> str:
+    """Run *action*; ask once to confirm, or refuse and name ``--yes`` when none can answer."""
+    try:
+        return action(yes)
+    except engine_service.EmbedConfirmRequiredError as exc:
+        if cfg.json_mode or not _interactive():
+            raise engine_service.EngineRefusedError(
+                f"{exc} Run the command again with --yes."
+            ) from exc
+        if not typer.confirm(f"{exc} Continue?", default=False):
+            raise engine_service.EngineRefusedError("The engine is unchanged.") from exc
+        return action(True)
+
+
+@engine_app.command("roles")
+def roles() -> None:
+    """Show the engine of each role, with the notice when it fell back."""
+    views = engine_service.roles()
+    if cfg.json_mode:
+        json_out(
+            {
+                "command": "engine roles",
+                "roles": [
+                    {
+                        "role": str(v.role),
+                        "model": v.model,
+                        "format": v.format,
+                        "engine": v.engine,
+                        "notice": v.notice,
+                    }
+                    for v in views
+                ],
+            }
+        )
+        return
+    for view in views:
+        console.print(f"{view.role}: {view.model} ({view.format}) on {view.engine or 'no engine'}")
+        if view.notice:
+            console.print(view.notice)
+
+
+@engine_app.command("use")
+def use(
+    role: Annotated[WorkerRole, typer.Argument(help="Role: chat, embed, rerank or vision.")],
+    model: str = typer.Argument(help="The model of that role."),
+    engine: str = typer.Argument(help="Engine name, or 'auto' to remove the choice."),
+    yes: bool = _YES_OPTION,
+) -> None:
+    """Choose the engine that runs the model of one role."""
+    try:
+        chosen = _confirming(
+            lambda confirmed: engine_service.use_for_role(role, model, engine, confirmed=confirmed),
+            yes,
+        )
+    except engine_service.WRITE_FAILURES as exc:
+        raise _refuse("engine use", exc) from exc
+    if cfg.json_mode:
+        json_out({"command": "engine use", "role": str(role), "model": model, "engine": chosen})
+        return
+    console.print(f"{role} model {model} uses engine {chosen}.")
+
+
+@engine_app.command("prefer")
+def prefer(
+    name: str = typer.Argument(help="Engine name, or 'auto' for the default for each model."),
+    yes: bool = _YES_OPTION,
+) -> None:
+    """Set the engine to use for every model that has no choice of its own."""
+    try:
+        chosen = _confirming(lambda confirmed: engine_service.prefer(name, confirmed), yes)
+    except engine_service.WRITE_FAILURES as exc:
+        raise _refuse("engine prefer", exc) from exc
+    if cfg.json_mode:
+        json_out({"command": "engine prefer", "engine": chosen})
+        return
+    console.print(f"The preferred engine is {chosen}.")

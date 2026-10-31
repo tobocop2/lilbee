@@ -25,6 +25,16 @@ def _origin_and_path(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc.rpartition('@')[2]}{parts.path}"
 
 
+def _engine_suffix(config: Config) -> str:
+    """The name of a non-default embed engine, so a switch of engine changes the trigger."""
+    from lilbee.app.engine_choice import resolve_engines
+    from lilbee.providers.fleet.engines.base import EngineName
+    from lilbee.providers.roles import WorkerRole
+
+    name = resolve_engines(config).choices[WorkerRole.EMBED].name
+    return "" if name in (None, EngineName.LLAMA) else f"|engine={name}"
+
+
 def embedder_trigger(config: Config, registry: ModelRegistry) -> str | None:
     """Name the engine build and the model file that embed, or the process for a remote embedder.
 
@@ -46,7 +56,7 @@ def embedder_trigger(config: Config, registry: ModelRegistry) -> str | None:
         stat = path.stat()
     except (ProviderError, OSError):
         return None
-    return f"{engine_build_id()}|{path}@{stat.st_size}-{stat.st_mtime_ns}"
+    return f"{engine_build_id()}|{path}@{stat.st_size}-{stat.st_mtime_ns}{_engine_suffix(config)}"
 
 
 def canary_probe(config: Config, embedder: Embedder, registry: ModelRegistry) -> CanaryProbe:

@@ -160,16 +160,18 @@ def text_response(
     finish: str = "stop",
     usage: Usage | None = None,
     parts: list[tuple[str, str]] | None = None,
+    reasoning: str | None = None,
 ) -> Any:
     """A chat response whose first choice carries *content* (``None`` for no content).
 
-    With *parts*, the reply is a parts reply and *content* is ignored.
+    With *parts*, the reply is a parts reply and *content* is ignored. *reasoning* is the
+    server-extracted reasoning text the message carries.
     """
     if parts is not None:
         body: Any = AssistantContent.from_parts(parts)
     else:
         body = None if content is None else AssistantContent.from_text(content)
-    message = _ns(content=body, tool_calls=None)
+    message = _ns(content=body, tool_calls=None, reasoning_content=reasoning)
     return _ns(
         model=model,
         choices=[_ns(message=message, finish_reason=finish_member(finish))],
@@ -180,7 +182,7 @@ def text_response(
 def tool_call_response(call_id: str, name: str, arguments: str) -> Any:
     """A chat response whose first choice asks for one tool call."""
     call = _ns(id=call_id, function=_ns(name=name, arguments=arguments))
-    message = _ns(content=None, tool_calls=[call])
+    message = _ns(content=None, tool_calls=[call], reasoning_content=None)
     return _ns(
         model="fake-model",
         choices=[_ns(message=message, finish_reason=FinishReason.TOOL_CALLS)],
@@ -193,9 +195,10 @@ def chunk(
     *,
     finish: str | None = None,
     tool_calls: list[Any] | None = None,
+    reasoning: str | None = None,
 ) -> Any:
-    """A streaming chunk with one choice."""
-    delta = _ns(content=content, tool_calls=tool_calls)
+    """A streaming chunk with one choice; *reasoning* is the extracted reasoning delta."""
+    delta = _ns(content=content, tool_calls=tool_calls, reasoning_content=reasoning)
     reason = finish_member(finish) if finish is not None else None
     return _ns(choices=[_ns(delta=delta, finish_reason=reason)], usage=None)
 

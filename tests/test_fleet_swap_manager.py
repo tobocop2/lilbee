@@ -20,6 +20,7 @@ from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_manager import EngineLifetime, SwapManager
 from lilbee.providers.roles import EngineBackend, WorkerRole
+from tests._fleet_engines import engines_for_all_roles
 
 # All lifecycle tests run one manager for the chat group unless stated otherwise.
 _GROUP = SwapGroup.CHAT
@@ -105,8 +106,8 @@ class TestStart:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         assert mgr.log_path == tmp_path / "logs" / "llama-swap-chat.log"
         assert mgr.log_path.is_file()
 
@@ -115,8 +116,11 @@ class TestStart:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start(
+            [_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)],
+            engines=engines_for_all_roles(LLAMA),
+        )
         # Config was written and the endpoint is live.
         config = json.loads(mgr._config_path.read_text())
         assert mgr.endpoint().startswith("http://127.0.0.1:")
@@ -147,8 +151,9 @@ class TestStart:
         )
 
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
-            SwapManager(tmp_path, _GROUP, engine=LLAMA).start(
-                [_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)]
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)],
+                engines=engines_for_all_roles(LLAMA),
             )
 
         launched = [r.message for r in caplog.records if r.message.startswith("Launched")]
@@ -177,8 +182,8 @@ class TestStart:
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
 
         log_path = tmp_path / "logs" / "llama-swap-chat.log"
         assert log_path.exists()
@@ -230,8 +235,8 @@ class TestStart:
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).start(
-            [_launch(WorkerRole.CHAT)], lifetime=lifetime
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA), lifetime=lifetime
         )
 
         assert captured["bind_lifetime"] is bound
@@ -243,7 +248,9 @@ class TestStart:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=1))  # already exited
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
         with pytest.raises(ProviderError, match="exited before it was ready"):
-            SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
 
     def test_raises_when_never_healthy_in_time(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -261,7 +268,9 @@ class TestStart:
         clock = itertools.count(0.0, 10.4)
         monkeypatch.setattr(sm.time, "monotonic", lambda: next(clock))
         with pytest.raises(ProviderError, match="did not start in time"):
-            SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
 
 
 class TestBootFailureLog:
@@ -290,7 +299,9 @@ class TestBootFailureLog:
         )
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
         with pytest.raises(ProviderError) as excinfo:
-            SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
         message = str(excinfo.value)
         assert "exited before it was ready" in message
         assert "bind: address already in use" in message
@@ -305,7 +316,9 @@ class TestBootFailureLog:
         self._spawn_writing(monkeypatch, _FakeProc(poll_result=1), b"fresh boot output\n")
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
         with pytest.raises(ProviderError) as excinfo:
-            SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
         assert "fresh boot output" in str(excinfo.value)
         assert "old boot noise" not in str(excinfo.value)
 
@@ -316,7 +329,9 @@ class TestBootFailureLog:
         self._spawn_writing(monkeypatch, _FakeProc(poll_result=1), output)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
         with pytest.raises(ProviderError) as excinfo:
-            SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
         assert "FINAL-LINE" in str(excinfo.value)
         assert "EARLIEST-LINE" not in str(excinfo.value)
 
@@ -326,7 +341,9 @@ class TestBootFailureLog:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=1))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
         with pytest.raises(ProviderError) as excinfo:
-            SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
         assert str(excinfo.value) == "The local model engine exited before it was ready."
 
     def test_timeout_failure_also_carries_the_tail(
@@ -342,28 +359,30 @@ class TestBootFailureLog:
         clock = itertools.count(0.0, 10.4)
         monkeypatch.setattr(sm.time, "monotonic", lambda: next(clock))
         with pytest.raises(ProviderError) as excinfo:
-            SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
         message = str(excinfo.value)
         assert "did not start in time" in message
         assert "still loading the model" in message
 
     def test_unreadable_log_reads_as_empty(self, tmp_path: Path) -> None:
         # No start() ran, so the log file does not exist.
-        assert SwapManager(tmp_path, _GROUP, engine=LLAMA)._boot_log_tail() == ""
+        assert SwapManager(tmp_path, _GROUP)._boot_log_tail() == ""
 
 
 class TestEndpoint:
     def test_raises_before_start(self, tmp_path: Path) -> None:
         with pytest.raises(ProviderError, match="not running"):
-            SwapManager(tmp_path, _GROUP, engine=LLAMA).endpoint()
+            SwapManager(tmp_path, _GROUP).endpoint()
 
 
 class TestRoleReady:
     def _started(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, responder) -> SwapManager:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         _patch_http(monkeypatch, responder)
         return mgr
 
@@ -402,13 +421,13 @@ class TestRoleReady:
     def test_false_when_shutdown_clears_port_mid_probe(self, tmp_path: Path) -> None:
         # A concurrent shutdown clears _port, so endpoint() raises
         # ProviderError; the read-only probe must report False, not throw.
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)  # never started -> _port is None
+        mgr = SwapManager(tmp_path, _GROUP)  # never started -> _port is None
         assert mgr.role_ready(WorkerRole.CHAT) is False
 
 
 class TestLifecycle:
     def test_shutdown_is_noop_when_not_started(self, tmp_path: Path) -> None:
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).shutdown()  # must not raise
+        SwapManager(tmp_path, _GROUP).shutdown()  # must not raise
 
     def test_shutdown_reaps_owned_fleet_even_without_a_tracked_proc(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -418,7 +437,7 @@ class TestLifecycle:
         Teardown runs even when no swap is tracked."""
         reaped: list[Path] = []
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: reaped.append(cfg))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         mgr.shutdown()  # never started -> _proc is None
         assert reaped == [mgr._config_path]  # the config-path reaper still ran
 
@@ -429,8 +448,8 @@ class TestLifecycle:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: terminated.append(cfg))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         mgr.shutdown()
         assert terminated  # the owned fleet was torn down
         with pytest.raises(ProviderError):
@@ -447,8 +466,8 @@ class TestLifecycle:
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         released: list[int] = []
         monkeypatch.setattr(sm, "release_death_pipe", released.append)
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         mgr.shutdown()
         assert released == [proc.pid]
 
@@ -729,7 +748,9 @@ class TestCrossRunReaping:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         state = json.loads(_own_state_path(tmp_path).read_text())
         assert state["pid"] == 4321
         assert state["name"] == "llama-swap"
@@ -739,8 +760,8 @@ class TestCrossRunReaping:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         assert _own_state_path(tmp_path).exists()
         mgr.shutdown()
         assert not _own_state_path(tmp_path).exists()
@@ -754,7 +775,9 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert stopped == []  # nothing alive to kill
         # the stale file is gone; this owner's own file records the NEW swap
         assert not (tmp_path / "llama-swap.state.json").exists()
@@ -770,7 +793,9 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert [state.pid for state in stopped] == [7777]
 
     def test_pid_reuse_with_foreign_cmdline_is_not_killed(
@@ -784,7 +809,9 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert stopped == []
 
     def test_corrupt_state_file_is_skipped_not_deleted(
@@ -796,14 +823,16 @@ class TestCrossRunReaping:
         corrupt.write_text("{not json")
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert corrupt.read_text() == "{not json"
         assert json.loads(_own_state_path(tmp_path).read_text())["pid"] == 4321
 
     def test_torn_state_file_is_left_in_place_by_reap(self, tmp_path: Path) -> None:
         torn = tmp_path / "llama-swap.state.json"
         torn.write_text('{"pid": 77')  # a sibling's write, caught mid-flight
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert torn.read_text() == '{"pid": 77'
 
     def test_load_state_returns_none_when_absent(self, tmp_path: Path) -> None:
@@ -837,7 +866,7 @@ class TestCrossRunReaping:
         _patch_psutil_process(monkeypatch, {7777: other_swap})
         stopped: list[object] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert stopped == []
 
     def test_swap_with_matching_create_time_is_killed(
@@ -848,7 +877,7 @@ class TestCrossRunReaping:
         _patch_psutil_process(monkeypatch, {7777: stale})
         stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
 
     def test_legacy_state_without_swap_create_time_falls_back_to_cmdline(
@@ -859,7 +888,7 @@ class TestCrossRunReaping:
         _patch_psutil_process(monkeypatch, {7777: stale})
         stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
 
     def test_start_records_the_swap_create_time(
@@ -870,7 +899,9 @@ class TestCrossRunReaping:
         )
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert json.loads(_own_state_path(tmp_path).read_text())["created_at"] == 777.0
 
     def test_start_records_the_swap_pgid_on_posix(
@@ -881,7 +912,9 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm.os, "getpgid", lambda pid: 999, raising=False)
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert json.loads(_own_state_path(tmp_path).read_text())["pgid"] == 999
 
     def test_healthy_engine_is_spared_whoever_started_it(
@@ -894,7 +927,7 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm, "state_is_healthy", lambda _state: True)
         stopped: list[object] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert stopped == []
         assert state_path.read_text() == original
 
@@ -908,7 +941,9 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert [state.pid for state in stopped] == [7777]
 
     def test_two_writers_records_coexist_while_healthy(
@@ -927,8 +962,8 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm, "state_is_healthy", lambda _state: True)
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr_b = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr_b.start([_launch(WorkerRole.CHAT)])
+        mgr_b = SwapManager(tmp_path, _GROUP)
+        mgr_b.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         assert a_path.read_text() == original  # A's record untouched
         assert _own_state_path(tmp_path).exists()  # B wrote its own
         mgr_b.shutdown()
@@ -943,7 +978,7 @@ class TestCrossRunReaping:
         _patch_psutil_process(monkeypatch, {7777: swap})  # owner pid 999 is gone
         stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
         assert not state_path.exists()
 
@@ -956,10 +991,10 @@ class TestCrossRunReaping:
         _patch_psutil_process(monkeypatch, {7777: swap})
         stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
         assert not legacy.exists()
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert len(stopped) == 1  # nothing left to reap a second time
 
 
@@ -1061,7 +1096,9 @@ class TestAtomicStateWrite:
         monkeypatch.setattr(sm.os, "replace", _spy)
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         config_path = tmp_path / f"llama-swap-{_GROUP.value}.{os.getpid()}.json"
         assert replaced == [str(config_path), str(_own_state_path(tmp_path))]
         assert json.loads(_own_state_path(tmp_path).read_text())["pid"] == 4321
@@ -1072,7 +1109,7 @@ class TestAtomicStateWrite:
         # record nor removed; dead-writer leftovers are TestStaleTmpCleanup's.
         in_flight = tmp_path / f".llama-swap.state.{os.getpid()}.json.tmp"
         in_flight.write_text('{"pid":')
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert in_flight.exists()
 
 
@@ -1136,8 +1173,11 @@ class TestOrphanServerReaping:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start(
+            [_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)],
+            engines=engines_for_all_roles(LLAMA),
+        )
         config = json.loads(mgr._config_path.read_text())
         expected = sorted(
             int(entry["cmd"].rsplit(" ", 1)[-1]) for entry in config["models"].values()
@@ -1162,7 +1202,7 @@ class TestOrphanServerReaping:
             lambda *a, **k: iter([orphan, recycled, other_port, no_port, vanished]),
         )
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert orphan.terminated is True
         assert recycled.terminated is False  # recycled port, foreign binary
         assert other_port.terminated is False
@@ -1183,7 +1223,7 @@ class TestOrphanServerReaping:
         )
         monkeypatch.setattr(sm.psutil, "process_iter", lambda *a, **k: iter([adopted]))
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert adopted.terminated is False
         assert not (tmp_path / "llama-swap.state.json").exists()
 
@@ -1206,7 +1246,7 @@ class TestOrphanServerReaping:
             sm.psutil, "process_iter", lambda *a, **k: iter([orphan, parent_vanished])
         )
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert orphan.terminated is True
         assert parent_vanished.terminated is True
 
@@ -1220,7 +1260,7 @@ class TestOrphanServerReaping:
             raise AssertionError("process_iter must not run without recorded ports")
 
         monkeypatch.setattr(sm.psutil, "process_iter", _forbidden)
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert not (tmp_path / "llama-swap.state.json").exists()
 
 
@@ -1231,7 +1271,7 @@ class TestStaleTmpCleanup:
         stale = tmp_path / ".llama-swap.state.424242.json.tmp"
         stale.write_text("{partial")
         monkeypatch.setattr(sm.psutil, "pid_exists", lambda pid: False)
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert not stale.exists()
 
     def test_live_writers_tmp_file_is_kept(
@@ -1240,13 +1280,13 @@ class TestStaleTmpCleanup:
         in_flight = tmp_path / f".llama-swap.state.{os.getpid()}.json.tmp"
         in_flight.write_text("{partial")
         monkeypatch.setattr(sm.psutil, "pid_exists", lambda pid: True)
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert in_flight.exists()
 
     def test_tmp_file_without_a_pid_is_kept(self, tmp_path: Path) -> None:
         legacy = tmp_path / ".llama-swap.state.json.tmp"
         legacy.write_text("{partial")
-        SwapManager(tmp_path, _GROUP, engine=LLAMA).reap_stale()
+        SwapManager(tmp_path, _GROUP).reap_stale()
         assert legacy.exists()
 
 
@@ -1257,7 +1297,7 @@ def test_state_owner_pid_parses_state_and_tmp_names() -> None:
 
 
 def test_write_state_is_noop_without_a_process(tmp_path: Path) -> None:
-    mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+    mgr = SwapManager(tmp_path, _GROUP)
     mgr._write_state()
     assert not _own_state_path(tmp_path).exists()
 
@@ -1267,9 +1307,9 @@ def test_running_reflects_the_spawned_process(
 ) -> None:
     _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
     _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-    mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+    mgr = SwapManager(tmp_path, _GROUP)
     assert mgr.running is False
-    mgr.start([_launch(WorkerRole.CHAT)])
+    mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
     assert mgr.running is True
     mgr.shutdown()
     assert mgr.running is False
@@ -1279,7 +1319,7 @@ class TestIsLive:
     def test_true_when_proc_alive_and_running_answers(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         mgr._port = 41999
         mgr._proc = _FakeProc(poll_result=None)  # type: ignore[assignment]
         monkeypatch.setattr(
@@ -1290,14 +1330,14 @@ class TestIsLive:
         assert mgr.is_live() is True
 
     def test_false_when_proc_is_none(self, tmp_path: Path) -> None:
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         assert mgr._proc is None
         assert mgr.is_live() is False
 
     def test_false_when_proc_has_exited(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         mgr._port = 41999
         mgr._proc = _FakeProc(poll_result=1)  # type: ignore[assignment]
         assert mgr.is_live() is False
@@ -1305,7 +1345,7 @@ class TestIsLive:
     def test_false_when_running_probe_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         mgr._port = 41999
         mgr._proc = _FakeProc(poll_result=None)  # type: ignore[assignment]
 
@@ -1319,7 +1359,7 @@ class TestIsLive:
         # Startup-window race: _proc is alive (poll() returns None) but _port is
         # still None. is_live() must return False, not let endpoint()'s
         # ProviderError escape a -> bool method.
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         mgr._proc = _FakeProc(poll_result=None)  # type: ignore[assignment]
         assert mgr._port is None
         result = mgr.is_live()
@@ -1332,10 +1372,10 @@ class TestPerGroupNaming:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        chat = SwapManager(tmp_path, SwapGroup.CHAT, engine=LLAMA)
-        embed = SwapManager(tmp_path, SwapGroup.EMBED, engine=LLAMA)
-        chat.start([_launch(WorkerRole.CHAT)])
-        embed.start([_launch(WorkerRole.EMBED)])
+        chat = SwapManager(tmp_path, SwapGroup.CHAT)
+        embed = SwapManager(tmp_path, SwapGroup.EMBED)
+        chat.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        embed.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
         # Each group runs against its own config, so stopping one group's fleet
         # (keyed on config-path identity) can never touch the other's servers.
         assert (tmp_path / sm._config_filename(os.getpid(), "chat")).exists()
@@ -1376,8 +1416,8 @@ class TestStateFilePersistenceKeys:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         state = sm._load_state(mgr._state_path)
         assert state is not None
         assert state.proxy_port == mgr._port
@@ -1387,8 +1427,8 @@ class TestStateFilePersistenceKeys:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         state = sm._load_state(mgr._state_path)
         assert state is not None and state.pid == 4321
 
@@ -1410,8 +1450,8 @@ class TestLiveStateLaunchContract:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         state = sm._load_state(mgr._state_path)
         assert state is not None
         assert len(state.launches) == 1
@@ -1426,8 +1466,8 @@ class TestEnginePinInState:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         monkeypatch.setattr(sm, "engine_pin", lambda: "llama-cpp-1.2.3+swap-v9+gguf-v1")
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         state = sm._load_state(mgr._state_path)
         assert state is not None
         assert state.engine_pin == "llama-cpp-1.2.3+swap-v9+gguf-v1"
@@ -1465,7 +1505,7 @@ class TestBindToLiveEngine:
     ) -> None:
         state_path = self._live_state(tmp_path)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         state = sm._load_state(state_path)
         assert state is not None
         assert mgr.bind(state) is True
@@ -1473,7 +1513,7 @@ class TestBindToLiveEngine:
         assert mgr.bound is True
 
     def test_bind_refuses_a_state_without_a_proxy_port(self, tmp_path: Path) -> None:
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         state = sm.SwapState(pid=1, pgid=None)
         assert mgr.bind(state) is False
         assert mgr.bound is False
@@ -1483,7 +1523,7 @@ class TestBindToLiveEngine:
     ) -> None:
         state_path = self._live_state(tmp_path)
         _patch_http(monkeypatch, _raise_connect_error)
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         state = sm._load_state(state_path)
         assert state is not None
         assert mgr.bind(state) is False
@@ -1494,7 +1534,7 @@ class TestBindToLiveEngine:
     ) -> None:
         state_path = self._live_state(tmp_path)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         state = sm._load_state(state_path)
         assert state is not None
         assert mgr.bind(state) is True
@@ -1508,7 +1548,7 @@ class TestBindToLiveEngine:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         stopped: list[object] = []
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda *a: stopped.append(a))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         state = sm._load_state(state_path)
         assert state is not None
         assert mgr.bind(state) is True
@@ -1522,7 +1562,7 @@ class TestBindToLiveEngine:
     ) -> None:
         state_path = self._live_state(tmp_path)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         state = sm._load_state(state_path)
         assert state is not None
         assert mgr.bind(state) is True
@@ -1806,7 +1846,7 @@ class TestEstimateReadback:
         from lilbee.providers.fleet.groups import SwapGroup
         from lilbee.providers.fleet.swap_manager import SwapManager
 
-        return SwapManager(tmp_path, SwapGroup.CHAT, engine=LLAMA)
+        return SwapManager(tmp_path, SwapGroup.CHAT)
 
     @staticmethod
     def _launch(est: int):

@@ -7480,9 +7480,7 @@ class TestSelfCheckHelpers:
 
         monkeypatch.setattr("lilbee.providers.fleet.planning.build_single_role_launch", _launch)
         swap.endpoint.return_value = "http://127.0.0.1:5800"
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g, engine: swap
-        )
+        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
         monkeypatch.setattr(
             "lilbee.providers.fleet.client.LlamaServerClient",
             lambda _endpoint, _model, **_kw: client,
@@ -7576,9 +7574,7 @@ class TestSelfCheckHelpers:
         model.write_bytes(GGUF_MAGIC + b"x" * 1024)
         swap = mock.MagicMock()
         swap.endpoint.return_value = "http://127.0.0.1:5800"
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g, engine: swap
-        )
+        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
         monkeypatch.setattr(
             "lilbee.providers.fleet.client.LlamaServerClient",
             lambda _e, _m, **_k: mock.MagicMock(),

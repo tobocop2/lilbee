@@ -23,8 +23,6 @@ import numpy.typing as npt
 from lilbee.core.config import cfg
 from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
-    THINK_CLOSE_TAG,
-    THINK_OPEN_TAG,
     ChatResult,
     ChatToolResult,
     ClosableIterator,
@@ -40,6 +38,7 @@ from lilbee.providers.base import (
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
 from lilbee.providers.fleet.engines.base import RequestProfile
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
+from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import RerankMode
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
@@ -705,7 +704,7 @@ class LlamaServerClient:
     def _chat_stream(
         self, payload: dict[str, Any], timeout: Any = httpx.USE_CLIENT_DEFAULT
     ) -> Iterator[str]:
-        inliner = _ThinkInliner(enabled=self._inline_reasoning)
+        inliner = ThinkInliner(enabled=self._inline_reasoning)
         with (
             self._track(),
             self._http.stream(
@@ -769,7 +768,7 @@ class LlamaServerClient:
             return chat.result()
 
     async def _stream_text(self, http: httpx.AsyncClient, payload: dict[str, Any]) -> str:
-        inliner = _ThinkInliner(enabled=self._inline_reasoning)
+        inliner = ThinkInliner(enabled=self._inline_reasoning)
         parts: list[str] = []
         async with http.stream("POST", _CHAT_PATH, json=payload) as resp:
             if not resp.is_success:
@@ -905,7 +904,7 @@ class LlamaServerClient:
     ) -> Generator[str | ToolCallDelta | TokenUsage | StreamFinish]:
         """Open one SSE chat stream and yield its frames; raises before the first frame."""
         payload = self._chat_payload(messages, tools, tool_choice, options, stream=True)
-        inliner = _ThinkInliner(enabled=self._inline_reasoning)
+        inliner = ThinkInliner(enabled=self._inline_reasoning)
         on_prefill = self._on_prefill
         prefilling = False
         try:
@@ -1436,54 +1435,12 @@ def _parse_sse_deltas(line: str, reasoning_field: str) -> tuple[str, str]:
     return str(delta.get(reasoning_field) or ""), str(delta.get("content") or "")
 
 
-class _ThinkInliner:
-    """Re-inlines server-extracted reasoning deltas as inline ``<think>`` text.
-
-    The server parses each model's reasoning format natively (``--reasoning-format``)
-    and streams it as ``reasoning_content``; lilbee's pipeline speaks inline
-    ``<think>`` text, so the chat boundary opens the tag on the first reasoning
-    delta and closes it when the answer starts (or at end of stream). Disabled
-    (the non-chat roles), reasoning is dropped and content passes through, matching
-    the server-extracted default those roles already ran with.
-    """
-
-    def __init__(self, *, enabled: bool) -> None:
-        self._enabled = enabled
-        self._in_think = False
-
-    def feed(self, reasoning: str, content: str) -> str:
-        if not self._enabled:
-            return content
-        parts: list[str] = []
-        if reasoning:
-            if not self._in_think:
-                self._in_think = True
-                parts.append(THINK_OPEN_TAG)
-            parts.append(reasoning)
-        if content:
-            if self._in_think:
-                self._in_think = False
-                parts.append(THINK_CLOSE_TAG)
-            parts.append(content)
-        return "".join(parts)
-
-    def finish(self) -> str:
-        """Close an unterminated think block at end of stream."""
-        if self._in_think:
-            self._in_think = False
-            return THINK_CLOSE_TAG
-        return ""
-
-
 def _inline_message_reasoning(
     message: Mapping[str, Any], *, enabled: bool, reasoning_field: str
 ) -> str:
     """A non-streaming message's text with any extracted reasoning re-inlined."""
-    content = str(message.get("content") or "")
     reasoning = str(message.get(reasoning_field) or "") if enabled else ""
-    if reasoning:
-        return f"{THINK_OPEN_TAG}{reasoning}{THINK_CLOSE_TAG}{content}"
-    return content
+    return inline_reasoning(reasoning, str(message.get("content") or ""))
 
 
 def _cached_prompt_tokens(usage: Mapping[str, Any]) -> int:
@@ -1567,7 +1524,7 @@ def _prefill_progress(line: str) -> tuple[int, int] | None:
 
 
 def _parse_sse_stream_items(
-    line: str, inliner: _ThinkInliner, reasoning_field: str
+    line: str, inliner: ThinkInliner, reasoning_field: str
 ) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
     """Yield text tokens, tool-call deltas, and the finish frame from one SSE line.
 

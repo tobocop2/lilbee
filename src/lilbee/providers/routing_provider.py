@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from lilbee.app.services import get_services
-from lilbee.catalog.refs import is_bare_hf_repo
+from lilbee.app.engine_choice import resolve_engines
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.vectors import Vector
@@ -24,14 +24,23 @@ from lilbee.providers.base import (
     require_role_ref,
 )
 from lilbee.providers.factory import create_sdk_provider
-from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
+from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
+from lilbee.providers.serving import (
+    ServingEngine,
+    is_native_rerank_ref,
+    log_name,
+    role_engine,
+    role_serving,
+    served_by,
+)
 from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
-    from lilbee.providers.fleet.engines.base import EngineAdapter
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
     from lilbee.providers.warm_progress import WarmProgress
+
+log = logging.getLogger(__name__)
 
 
 class RoutingProvider(LLMProvider):
@@ -44,8 +53,8 @@ class RoutingProvider(LLMProvider):
     unchanged, rather than silently falling through to a remote backend.
     """
 
-    def __init__(self, *, engine: EngineAdapter, hold_warm: bool = False) -> None:
-        self._engine = engine
+    def __init__(self, *, hold_warm: bool = False) -> None:
+        self._noticed: dict[WorkerRole, str] = {}
         self._local: LLMProvider | None = None
         self._sdk_provider: SdkLLMProvider | None = None
         # Carried until the local fleet is lazily built, so a provider created for
@@ -67,7 +76,7 @@ class RoutingProvider(LLMProvider):
                 if self._local is None:
                     from lilbee.providers.fleet.provider import FleetProvider
 
-                    self._local = FleetProvider(engine=self._engine, hold_warm=self._hold_warm)
+                    self._local = FleetProvider(hold_warm=self._hold_warm)
         return self._local
 
     def _get_sdk_provider(self) -> SdkLLMProvider:
@@ -83,8 +92,33 @@ class RoutingProvider(LLMProvider):
             return self._get_sdk_provider()
         return self._get_local()
 
+    def _log_served(self, role: WorkerRole, model: str, served: ServingEngine) -> None:
+        """Name the engine that serves this request."""
+        log.info(
+            "served by engine=%s version=%s role=%s model=%s",
+            served.engine,
+            served.version,
+            role.value,
+            log_name(model),
+        )
+
+    def _warn_once(self, role: WorkerRole) -> None:
+        """Log why *role* did not get the engine asked for, once for each notice text."""
+        notice = resolve_engines(cfg).choices[role].notice
+        if notice is not None and self._noticed.get(role) != notice:
+            self._noticed[role] = notice
+            log.warning("%s", notice)
+
+    def _announce(self, role: WorkerRole, ref: ProviderModelRef) -> None:
+        """Log what serves *role*, and refuse a local run when it has no engine."""
+        self._warn_once(role)
+        self._log_served(role, ref.raw, role_serving(role, ref.raw))
+        if not ref.is_remote:
+            resolve_engines(cfg).for_role(role)
+
     def embed(self, texts: list[str]) -> list[Vector]:
         ref = parse_model_ref(require_role_ref(cfg.embedding_model, WorkerRole.EMBED))
+        self._announce(WorkerRole.EMBED, ref)
         return self._pick_backend(ref).embed(texts)
 
     def count_tokens(self, text: str) -> int:
@@ -141,6 +175,7 @@ class RoutingProvider(LLMProvider):
         tool_choice: str | dict[str, Any] | None = None,
     ) -> ChatResult | ClosableIterator[ChatStreamItem]:
         ref = parse_model_ref(require_role_ref(model or cfg.chat_model, WorkerRole.CHAT))
+        self._announce(WorkerRole.CHAT, ref)
         backend = self._pick_backend(ref)
         # Split on stream so each call resolves to a specific overload; the
         # base impl signature accepts bool but the @overloads on the LLMProvider
@@ -181,6 +216,7 @@ class RoutingProvider(LLMProvider):
     ) -> ChatToolResult:
         """Dispatch a tool-enabled chat turn to the backend the ref routes to."""
         ref = parse_model_ref(require_role_ref(model or cfg.chat_model, WorkerRole.CHAT))
+        self._announce(WorkerRole.CHAT, ref)
         backend = self._pick_backend(ref)
         return backend.chat_with_tools(
             messages, tools=tools, tool_choice=tool_choice, options=options, model=model
@@ -197,6 +233,7 @@ class RoutingProvider(LLMProvider):
     ) -> str:
         """Dispatch by ``model``'s ref prefix, same rules as :meth:`chat`."""
         ref = parse_model_ref(model)
+        self._announce(WorkerRole.VISION, ref)
         backend = self._pick_backend(ref)
         return backend.vision_ocr(png_bytes, model, prompt, timeout=timeout, cancel=cancel)
 
@@ -238,13 +275,11 @@ class RoutingProvider(LLMProvider):
 
     def show_model(self, model: str) -> dict[str, Any] | None:
         """Show model info from the backend selected by the ref prefix."""
-        ref = parse_model_ref(model)
-        return self._pick_backend(ref).show_model(model)
+        return self._pick_backend(parse_model_ref(model)).show_model(model)
 
     def get_capabilities(self, model: str) -> list[str]:
         """Return capability tags from the backend selected by the ref prefix."""
-        ref = parse_model_ref(model)
-        return self._pick_backend(ref).get_capabilities(model)
+        return self._pick_backend(parse_model_ref(model)).get_capabilities(model)
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Dispatch rerank to the backend that owns ``cfg.reranker_model``.
@@ -255,7 +290,12 @@ class RoutingProvider(LLMProvider):
         """
         if not cfg.reranker_model:
             raise ProviderError("No reranker configured. Set cfg.reranker_model first.")
-        if _is_native_rerank_ref(cfg.reranker_model, self._engine):
+        model = cfg.reranker_model
+        engine = role_engine(WorkerRole.RERANK)
+        native = is_native_rerank_ref(model, engine)
+        self._warn_once(WorkerRole.RERANK)
+        self._log_served(WorkerRole.RERANK, model, served_by(model, engine, native=native))
+        if native:
             return self._get_local().rerank(query, candidates)
         sdk = self._get_sdk_provider()
         if not sdk.supports_rerank():
@@ -279,7 +319,7 @@ class RoutingProvider(LLMProvider):
         model = cfg.reranker_model
         if not model:
             return True
-        if _is_native_rerank_ref(model, self._engine):
+        if is_native_rerank_ref(model, role_engine(WorkerRole.RERANK)):
             return self._get_local().supports_rerank()
         return self._get_sdk_provider().supports_rerank()
 
@@ -318,6 +358,10 @@ class RoutingProvider(LLMProvider):
         """Forward to the native engine; the SDK side has no per-role servers."""
         if self._local is not None:
             self._local.reload_role(role, wait=wait)
+
+    def reload_notice(self) -> str | None:
+        """The reload notice of the native engine, or None when none exists."""
+        return None if self._local is None else self._local.reload_notice()
 
     def reload_placement(self, *, wait: bool = False) -> None:
         """Forward to the native engine; the SDK side has no GPU placement."""
@@ -377,6 +421,25 @@ class RoutingProvider(LLMProvider):
         return None if local is None else local.embed_token_cap()
 
     def health_warnings(self) -> list[HealthWarning]:
+        """Engine fallbacks plus the serving degradations of the local engine."""
+        return [*self._engine_fallbacks(), *self._local_warnings()]
+
+    def _engine_fallbacks(self) -> list[HealthWarning]:
+        """One warning for each role whose engine choice did not hold.
+
+        While a reload runs or after one failed, the live choice may not be what the
+        server holds, so a warning says that before the per-role warnings.
+        """
+        notice = self.reload_notice()
+        warnings = [] if notice is None else [notice]
+        warnings.extend(
+            choice.notice
+            for choice in resolve_engines(cfg).choices.values()
+            if choice.notice is not None
+        )
+        return [HealthWarning(code=WarningCode.ENGINE_FALLBACK, message=m) for m in warnings]
+
+    def _local_warnings(self) -> list[HealthWarning]:
         """Serving degradations of the local engine; the embed warning needs a local embedder."""
         local = self._local_embedder()
         if local is not None:
@@ -417,32 +480,3 @@ class RoutingProvider(LLMProvider):
         before the first spawn, matching ``warm_up_pool``'s eager construction.
         """
         self._get_local().add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
-
-
-def _is_native_rerank_ref(model: str, engine: EngineAdapter) -> bool:
-    """Return True iff *model* should route to the native rerank path of *engine*.
-
-    Two acceptance paths:
-
-    1. :func:`routes_to_native_gguf` accepts the ref: a native GGUF shape that
-       no local-server prefix (``ollama/``, ``lm_studio/``) claims, matching
-       :func:`parse_model_ref`'s exemption.
-    2. The bare ``<org>/<repo>`` names a repo with an installed quant and no
-       server preset has the name ``<org>``.
-
-    The model's name is deliberately not consulted. Hosted rerankers are
-    usually called rerankers too (``cohere/rerank-english-v3.0``), so matching
-    on the name captures them and starves the SDK backend. The registry answers
-    "is this one of ours" without guessing. Non-GGUF refs without a known SDK
-    prefix still raise downstream through :func:`parse_model_ref`.
-
-    An empty registry reports nothing installed; a registry that cannot be read
-    raises, and the fault surfaces to the caller.
-    """
-    if not model or WorkerRole.RERANK not in engine.served_roles:
-        return False
-    if routes_to_native_gguf(model):
-        return True
-    if not is_bare_hf_repo(model) or parse_model_ref(model).is_preset:
-        return False
-    return get_services().registry.installed_ref_for_repo(model) is not None

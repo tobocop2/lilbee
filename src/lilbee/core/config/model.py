@@ -38,6 +38,7 @@ from .enums import (
     ChatMode,
     ClustererBackend,
     CrawlRenderMode,
+    EngineSetting,
     FtsLanguage,
     KvCacheType,
     LlmProvider,
@@ -106,7 +107,7 @@ _TAKES_DEFAULT_WHEN_REFUSED = frozenset(
 )
 
 # Only their own service writes these: no variable and no general settings path sets them.
-SERVICE_ONLY_FIELDS = frozenset({"server_presets"})
+SERVICE_ONLY_FIELDS = frozenset({"server_presets", "preferred_engine", "engine_choices"})
 
 # A key that is not a setting, by name, and what to use instead. A stored or
 # exported one is refused out loud rather than silently ignored.
@@ -878,6 +879,10 @@ class Config(BaseSettings):
     # schema on every request. REST, the CLI and the slash command are unchanged.
     mcp_presets_enabled: bool = ConfigField(default=False, writable=True)
 
+    # The three engine tools, off by default: the default tool list has a byte
+    # budget. REST, the CLI and the slash command are unchanged.
+    mcp_engines_enabled: bool = ConfigField(default=False, writable=True)
+
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM
@@ -963,6 +968,31 @@ class Config(BaseSettings):
         description=(
             "User-defined OpenAI-compatible servers, with their API keys. "
             "Edit them with the preset commands, not the settings list"
+        ),
+    )
+
+    # Only the engine service writes these two; the general settings paths refuse them.
+    preferred_engine: EngineSetting = ConfigField(
+        default=EngineSetting.AUTO,
+        writable=True,
+        public=False,
+        from_env=False,
+        description=(
+            "The engine for every model that has no engine of its own. auto picks one "
+            "from the model format and the host. Change it with the engine commands, "
+            "not the settings list"
+        ),
+    )
+
+    # The per-model engine override, a JSON scalar {model_ref: engine_name}, stored as placement is.
+    engine_choices: str | None = ConfigField(
+        default=None,
+        writable=True,
+        public=False,
+        from_env=False,
+        description=(
+            "The engine chosen for each model, by model reference. Change it with "
+            "the engine commands, not the settings list"
         ),
     )
 
@@ -1336,6 +1366,12 @@ class Config(BaseSettings):
     @classmethod
     def _server_presets_as_text(cls, v: Any) -> Any:
         """Text for any TOML type: a refused value is printed, and this one holds API keys."""
+        return v if v is None or isinstance(v, str) else json.dumps(v, default=str)
+
+    @field_validator("engine_choices", mode="before")
+    @classmethod
+    def _engine_choices_as_text(cls, v: Any) -> Any:
+        """Text for any TOML type, so a refused value is printed."""
         return v if v is None or isinstance(v, str) else json.dumps(v, default=str)
 
     @field_validator("placement", mode="before")

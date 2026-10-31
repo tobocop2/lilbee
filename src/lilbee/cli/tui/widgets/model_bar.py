@@ -20,12 +20,19 @@ from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Static
 
+from lilbee.app import engine_service
 from lilbee.app.services import peek_services, reset_services
 from lilbee.app.settings import config_write_failure_message
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_setting
+from lilbee.cli.tui.engine_commands import (
+    ENGINE_SETTING_KEYS,
+    EngineCommandResult,
+    announce,
+    chips_text,
+)
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -34,6 +41,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
 from lilbee.retrieval.embedder import is_model_available, is_model_installed
 
@@ -224,6 +232,8 @@ _SCOPE_TO_TOOLTIP: dict[str, str] = {
 _CSS_FILE = Path(__file__).parent / "model_bar.tcss"
 
 _CLOUD_WARNING_ID = "model-bar-cloud-warning"
+_ENGINE_CHIPS_ID = "model-bar-engine-chips"
+_ENGINE_NOTICE_ID = "model-bar-engine-notice"
 
 # Below this width the bar degrades: disabled role rows hide, picker labels
 # compact, and the mode toggle docks right so it never clips off-screen.
@@ -253,9 +263,11 @@ _OFF_PILL_COLORS: tuple[str, str] = ("$surface-lighten-2", "$text-muted")
 class ModelPickerButton(Static, can_focus=True):
     """Pill button that opens a ModelPickerModal scoped to one of the four roles."""
 
+    app: LilbeeApp  # type: ignore[assignment]
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "open_picker", "Pick model", show=False),
         Binding("space", "open_picker", "Pick model", show=False),
+        Binding("e", "pick_engine", "Pick engine", show=False),
     ]
 
     def __init__(self, *, scope: PickerScope, button_id: str) -> None:
@@ -263,7 +275,7 @@ class ModelPickerButton(Static, can_focus=True):
         self._scope: PickerScope = scope
         self._key: str = config_key_for_scope(scope)
         self._options: list[ModelOption] = []
-        self.tooltip = _SCOPE_TO_TOOLTIP[scope]
+        self.tooltip = f"{_SCOPE_TO_TOOLTIP[scope]} {msg.ENGINE_KEY_HINT}"
 
     def on_mount(self) -> None:
         self._refresh()
@@ -293,9 +305,8 @@ class ModelPickerButton(Static, can_focus=True):
         self.set_class(missing, "-missing")
         if missing:
             label = msg.MODEL_BAR_NOT_INSTALLED.format(name=label)
-        self.tooltip = (
-            msg.MODEL_BAR_NOT_INSTALLED_TOOLTIP if missing else _SCOPE_TO_TOOLTIP[self._scope]
-        )
+        base = msg.MODEL_BAR_NOT_INSTALLED_TOOLTIP if missing else _SCOPE_TO_TOOLTIP[self._scope]
+        self.tooltip = f"{base} {msg.ENGINE_KEY_HINT}"
         self.update(label)
 
     def repaint(self) -> None:
@@ -308,6 +319,59 @@ class ModelPickerButton(Static, can_focus=True):
 
     def action_open_picker(self) -> None:
         self.open_picker()
+
+    def action_pick_engine(self) -> None:
+        """Open the engine picker for the model of this role."""
+        from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
+
+        role = WorkerRole(self._scope)
+        view = next(v for v in engine_service.roles() if v.role is role)
+        if not view.model.strip():
+            self.notify(msg.ENGINE_NO_MODEL.format(role=role), severity="warning")
+            return
+        modal = EnginePickerModal(view, engine_service.engine_names(view.model))
+        self.app.push_screen(modal, lambda name: self._on_engine_picked(role, name))
+
+    def _on_engine_picked(self, role: WorkerRole, name: str | None) -> None:
+        self._focus_chat_prompt()
+        if name is not None:
+            self._save_engine(role, name)
+
+    @work(thread=True)
+    def _save_engine(self, role: WorkerRole, name: str, confirmed: bool = False) -> None:
+        """Write the choice through the engine service off the UI thread."""
+        from lilbee.cli.tui.engine_commands import choose_engine_for_role
+
+        try:
+            result = choose_engine_for_role(role, name, confirmed)
+        except engine_service.EmbedConfirmRequiredError as exc:
+            call_from_thread(self, self._confirm_engine, role, name, exc)
+            return
+        call_from_thread(self, self._after_engine_save, result)
+
+    def _confirm_engine(
+        self, role: WorkerRole, name: str, asked: engine_service.EmbedConfirmRequiredError
+    ) -> None:
+        """Ask before a change that can make the index vectors unusable."""
+        from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog
+
+        dialog = CancelFirstConfirmDialog(
+            msg.ENGINE_EMBED_CONFIRM_TITLE,
+            msg.ENGINE_EMBED_CONFIRM_MESSAGE.format(
+                library=asked.library, documents=asked.documents
+            ),
+        )
+        self.app.push_screen(dialog, lambda yes: self._on_engine_confirmed(role, name, yes))
+
+    def _on_engine_confirmed(self, role: WorkerRole, name: str, yes: bool | None) -> None:
+        self._focus_chat_prompt()
+        if yes:
+            self._save_engine(role, name, True)
+        else:
+            self.notify(msg.ENGINE_EMBED_CANCELLED)
+
+    def _after_engine_save(self, result: EngineCommandResult) -> None:
+        announce(self.app, result)
 
     def _is_nullable(self) -> bool:
         from lilbee.app.settings_map import SETTINGS_MAP
@@ -653,10 +717,13 @@ class ModelBar(Widget, can_focus=False):
             for scope in self._SCOPES:
                 yield RoleRow(scope=scope)
             yield ChatModeToggle()
+        yield Static("", id=_ENGINE_CHIPS_ID, classes="engine-chips", markup=False)
+        yield Static("", id=_ENGINE_NOTICE_ID, classes="engine-notice", markup=False)
         yield Static("", id=_CLOUD_WARNING_ID, classes="cloud-warning")
 
     def on_mount(self) -> None:
         self._refresh_cloud_warning()
+        self.refresh_engines()
         self._scan_models()
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
@@ -666,12 +733,16 @@ class ModelBar(Widget, can_focus=False):
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
         key, _ = payload
+        if key in ENGINE_SETTING_KEYS:
+            self.refresh_engines()
+            return
         scope = model_field_to_picker_scope().get(key)
         if scope is None:
             return
         for row in self.query(RoleRow):
             if row.scope == scope:
                 row.refresh_state()
+        self.refresh_engines()
         if key == "chat_model":
             self._refresh_cloud_warning()
 
@@ -702,6 +773,17 @@ class ModelBar(Widget, can_focus=False):
                     continue
                 self._options_cache[row.scope] = fingerprint
         self._refresh_cloud_warning()
+
+    def refresh_engines(self) -> None:
+        """Repaint the engine chips and the fallback notices from the engine service."""
+        views = [v for v in engine_service.roles() if v.model.strip()]
+        chips = chips_text(views)
+        notices = list(dict.fromkeys(v.notice for v in views if v.notice))
+        with contextlib.suppress(NoMatches):
+            self.query_one(f"#{_ENGINE_CHIPS_ID}", Static).update(chips)
+            notice = self.query_one(f"#{_ENGINE_NOTICE_ID}", Static)
+            notice.update("\n".join(notices))
+            notice.set_class(bool(notices), "-visible")
 
     def _refresh_cloud_warning(self) -> None:
         """Show a warning if the active chat model routes to a cloud provider."""

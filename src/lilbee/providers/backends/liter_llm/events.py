@@ -49,6 +49,11 @@ def _text(content: Any) -> str:
     return ""
 
 
+def _reasoning(part: Any) -> str:
+    """Return the server-extracted reasoning a reply message or stream delta carries."""
+    return str(part.reasoning_content or "")
+
+
 def _finish_reason(reason: Any) -> str | None:
     """Return a ``FinishReason`` member as its wire string, or ``None``."""
     if reason is None:

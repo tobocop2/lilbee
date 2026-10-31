@@ -1001,7 +1001,16 @@ touching the running fleet.
   `swap: true` group evicts same-group siblings, so a second replica inside it would
   evict the first). Interleaving a query with an ingest costs a model reload each
   way. With the VRAM to hold everything at once, no swap group forms and every role
-  pins to its own group. On GPUs the estimate advises but does not gate the load: a
+  pins to its own group. A plan with several engines on discrete cards gives each
+  role a named card or a refusal, and a refused role takes no card. It checks three
+  causes in order: the engine cannot be pinned on several cards (it reports another
+  backend, or takes neither the visible-devices variable nor device names), the role
+  is larger than the largest card and no split holds it, or no card has room beside
+  the other roles. If small roles spread over the cards block a large one, a second
+  pass places the largest role first, and it wins only when it refuses a strict
+  subset of the roles. The warning names the engine and the cause. A plan with
+  several engines on shared memory stays on the shared-memory budget below. With one
+  engine, the estimate advises but does not gate the load on GPUs: a
   role that does not fit even beside the one embedder its own phase needs is still
   **placed tight** (best-effort) on the emptiest card, anchoring the swap group so the load
   starts against as much free VRAM as possible, with a memory-is-tight warning

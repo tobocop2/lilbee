@@ -90,7 +90,8 @@ if sys.argv[5] != "none":
 from lilbee.providers import engine_params
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.engines import LLAMA
-plan = planning.plan_all_launches(engine=LLAMA)
+from lilbee.providers.roles import ROLE_REGISTRY
+plan = planning.plan_all_launches(engines=dict.fromkeys(ROLE_REGISTRY, LLAMA))
 chat = next((l for l in plan.launches if l.role.value == "chat"), None)
 devices = planning.resolve_devices(LLAMA.binary(), LLAMA)
 out = {

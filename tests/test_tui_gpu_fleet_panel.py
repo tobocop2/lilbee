@@ -661,7 +661,7 @@ async def test_update_fleet_panel_noop_when_panel_not_mounted(
 
     view = PlacementView(
         gpus=(GpuInfo(0, "CUDA", "CUDA0", "A40", 44 * GIB, 44 * GIB),),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=False,
         spec_json=None,

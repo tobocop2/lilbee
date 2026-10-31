@@ -1,0 +1,251 @@
+"""Surface-agnostic use-cases for choosing the engine of a model."""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TypeVar
+
+from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
+from lilbee.app.services import peek_services
+from lilbee.catalog.refs import model_format
+from lilbee.core import settings
+from lilbee.core.config import Config, cfg
+from lilbee.core.config.enums import EngineSetting
+from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.engines.choice import (
+    AUTO,
+    LIST_HINT,
+    InstalledEngines,
+    engines_loading,
+    installed_engines,
+)
+from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
+from lilbee.retrieval.canary_probe import embedder_trigger
+
+log = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
+PREFERRED_KEY = "preferred_engine"
+NOT_APPLIED_CODE = "engine_not_applied"
+
+
+class EngineRefusedError(ValueError):
+    """The engine service refuses a write; the text names the problem and the fix."""
+
+
+class EngineNotAppliedError(Exception):
+    """The choice is saved but the running server could not apply it; a fault, not a refusal."""
+
+
+class EngineNotSavedError(Exception):
+    """The choice could not be written to the settings file; the text holds no path."""
+
+
+class EmbedConfirmRequiredError(Exception):
+    """The change can make vectors the index cannot use; the caller confirms or drops it."""
+
+    def __init__(self, library: str, documents: int) -> None:
+        self.library = library
+        self.documents = documents
+        super().__init__(
+            f"This change can make the vectors of library {library!r} ({documents} documents) "
+            "unusable by the index. Confirm it, or keep the current engine."
+        )
+
+
+WRITE_FAILURES = (
+    EngineRefusedError,
+    EngineNotSavedError,
+    EngineNotAppliedError,
+    EmbedConfirmRequiredError,
+)
+CONFIRM_CODE = "embed_engine_confirm_required"
+
+
+@dataclass(frozen=True)
+class RoleView:
+    """What a surface shows of one role: its model, the engine it runs on and why."""
+
+    role: WorkerRole
+    model: str
+    format: str
+    engine: str | None
+    notice: str | None
+
+
+def _unknown(name: str) -> EngineRefusedError:
+    known = ", ".join([AUTO, *EngineName])
+    return EngineRefusedError(f"No engine is named {name!r}. Choose one of: {known}.")
+
+
+def _engine_name(name: str) -> EngineName:
+    try:
+        return EngineName(name)
+    except ValueError:
+        raise _unknown(name) from None
+
+
+def _require_installed(name: EngineName, installed: InstalledEngines) -> None:
+    if name not in installed:
+        raise EngineRefusedError(f"Engine {name} is not installed. {LIST_HINT}")
+
+
+def _store(
+    key: str,
+    apply: Callable[[object], tuple[object, _T]],
+    commit: Callable[[_T], None],
+) -> None:
+    """Write one setting; the live value changes only after the file is written."""
+    try:
+        settings.mutate_value(cfg.data_root, key, apply, commit)
+    except OSError as exc:
+        log.warning("The engine choice was not saved: %s", exc)
+        raise EngineNotSavedError(
+            "The engine choice was not saved. Check that the data folder is writable "
+            "and that no other lilbee process holds the settings file."
+        ) from exc
+
+
+def _apply_to_running() -> None:
+    """Reload the roles of a running server whose engine changed; no services means nothing runs."""
+    services = peek_services()
+    if services is None:
+        return
+    try:
+        services.provider.reload_placement(wait=True)
+    except (ProviderError, OSError) as exc:
+        log.warning("The running server did not apply the engine choice: %s", exc)
+        raise EngineNotAppliedError(
+            "The engine choice is saved, but the running server could not apply it: "
+            f"{exc}. Restart lilbee to use the choice."
+        ) from exc
+
+
+def _check_embed_identity(candidate: Config, confirmed: bool) -> None:
+    """Refuse unless *confirmed* when the write changes the trigger of the embedder."""
+    services = peek_services()
+    if services is None or confirmed:
+        return
+    documents = services.store.source_summary(0).document_count
+    if documents == 0:
+        return
+    registry = services.registry
+    if embedder_trigger(cfg, registry) != embedder_trigger(candidate, registry):
+        raise EmbedConfirmRequiredError(cfg.data_root.name, documents)
+
+
+def roles(config: Config = cfg) -> list[RoleView]:
+    """The engine of every role, with the notice for a role that fell back or has none."""
+    assignment = resolve_engines(config)
+    views = []
+    for role, info in ROLE_REGISTRY.items():
+        ref = str(getattr(config, info.config_field))
+        choice = assignment.choices[role]
+        views.append(
+            RoleView(
+                role, ref, str(model_format(ref)), choice.name and str(choice.name), choice.notice
+            )
+        )
+    return views
+
+
+def engine_names(model: str) -> list[str]:
+    """The names a surface may offer for *model*: ``auto`` and each engine that loads it."""
+    return [AUTO, *engines_loading(model_format(model), installed_engines())]
+
+
+def prefer(name: str, confirmed: bool = False) -> str:
+    """Store the global engine preference; refuses an unknown or uninstalled engine."""
+    try:
+        setting = EngineSetting(name)
+    except ValueError:
+        raise _unknown(name) from None
+    if setting is not EngineSetting.AUTO:
+        _require_installed(EngineName(setting.value), installed_engines())
+    _check_embed_identity(cfg.model_copy(update={"preferred_engine": setting}), confirmed)
+
+    def apply(_raw: object) -> tuple[str, str]:
+        return setting.value, setting.value
+
+    def commit(_chosen: str) -> None:
+        cfg.preferred_engine = setting
+
+    _store(PREFERRED_KEY, apply, commit)
+    _apply_to_running()
+    return setting.value
+
+
+def http_refused_message() -> str:
+    """The refusal text for an engine choice on the HTTP server while allow_http_engines is off."""
+    return (
+        "Changing the engine on the HTTP server is unavailable: the choice applies to every "
+        "connected client. Enable allow_http_engines (LILBEE_ALLOW_HTTP_ENGINES) on a "
+        "deployment you alone use, or change the engine from the CLI or TUI."
+    )
+
+
+def parse_role(text: str) -> WorkerRole:
+    """The role named by *text*; a surface that reads free text calls this once."""
+    try:
+        return WorkerRole(text)
+    except ValueError:
+        known = ", ".join(WorkerRole)
+        raise EngineRefusedError(f"No role is named {text!r}. Choose one of: {known}.") from None
+
+
+def use_for_role(
+    role: WorkerRole, model: str, name: str, config: Config = cfg, confirmed: bool = False
+) -> str:
+    """Store the engine for the model of *role*; refuses a model that is not the role's model."""
+    current = str(getattr(config, ROLE_REGISTRY[role].config_field))
+    if not current.strip():
+        raise EngineRefusedError(
+            f"No {role} model is set. Choose a {role} model before you choose its engine."
+        )
+    if model != current:
+        raise EngineRefusedError(
+            f"The {role} model is {current}, not {model}. Choose the engine for {current}."
+        )
+    return use(model, name, confirmed)
+
+
+def use(model: str, name: str, confirmed: bool = False) -> str:
+    """Store the engine for *model*; ``auto`` removes it. Refuses an engine that cannot run it."""
+    if not model.strip():
+        raise EngineRefusedError("Give the model to choose an engine for.")
+    if name != AUTO:
+        engine = _engine_name(name)
+        installed = installed_engines()
+        _require_installed(engine, installed)
+        fmt = model_format(model)
+        if engine not in engines_loading(fmt, installed):
+            raise EngineRefusedError(
+                f"Engine {name} cannot load the {fmt} format of {model}. "
+                f"Choose an engine that loads {fmt}."
+            )
+
+    def merged(raw: str | None) -> str | None:
+        chosen = stored_choices(raw)
+        if name == AUTO:
+            chosen.pop(model, None)
+        else:
+            chosen[model] = name
+        return json.dumps(chosen, sort_keys=True) if chosen else None
+
+    candidate = cfg.model_copy(update={"engine_choices": merged(cfg.engine_choices)})
+    _check_embed_identity(candidate, confirmed)
+
+    def apply(raw: object) -> tuple[str | None, str | None]:
+        encoded = merged(raw if isinstance(raw, str) else None)
+        return encoded, encoded
+
+    def commit(encoded: str | None) -> None:
+        cfg.engine_choices = encoded
+
+    _store(CHOICES_KEY, apply, commit)
+    _apply_to_running()
+    return name

@@ -18,7 +18,7 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import TYPE_CHECKING, Literal
 
 from lilbee.app.services import get_services
-from lilbee.app.status import gather_status
+from lilbee.app.status import chat_engine, gather_status
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
@@ -135,6 +135,7 @@ async def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
         version=get_version(),
+        chat_engine=chat_engine(),
         chat_ready=provider.role_ready(WorkerRole.CHAT),
         chat_status=chat_status,
         chat_error=chat_error,

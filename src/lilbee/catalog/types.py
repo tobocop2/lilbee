@@ -14,6 +14,15 @@ class ModelTask(StrEnum):
     RERANK = "rerank"
 
 
+class ModelFormat(StrEnum):
+    """A weight file format an engine loads."""
+
+    GGUF = "gguf"
+    MLX = "mlx"
+    OPENVINO = "openvino"
+    SAFETENSORS = "safetensors"
+
+
 class ModelSource(StrEnum):
     """Where a model is stored.
 

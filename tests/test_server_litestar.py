@@ -1151,6 +1151,41 @@ class TestModelsPullRoute:
         assert resp.status_code == 201
 
 
+class TestModelsPullByFormat:
+    """A pull names the weight format with the ``<repo>#<format>`` reference."""
+
+    def test_pull_of_a_repo_hash_mlx_fetches_the_mlx_files(self, client, tmp_path, monkeypatch):
+        from lilbee.app import engine_choice
+        from lilbee.catalog.types import ModelFormat
+        from lilbee.providers.fleet.engines import choice
+        from lilbee.providers.fleet.engines.base import EngineName
+        from lilbee.providers.fleet.engines.choice import HostFacts
+        from tests.conformance.fake_adapter import FakeAdapter
+
+        class _MlxEngine(FakeAdapter):
+            name = "mlx"
+            formats = frozenset({"mlx"})
+
+        monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, _MlxEngine())
+        monkeypatch.setattr(
+            engine_choice, "host_facts", lambda: HostFacts(system="darwin", machine="arm64")
+        )
+        fetched = []
+
+        def _download(entry, engine, **_kw):
+            fetched.append((entry.hf_repo, entry.format))
+            return tmp_path / "unused"
+
+        with mock.patch("lilbee.catalog.download_model", _download):
+            resp = client.post(
+                "/api/models/pull", json={"model": "acme/two#mlx", "source": "native"}
+            )
+        events = parse_sse_events(resp.content)
+        assert resp.status_code == 201
+        assert [e for e in events if e[0] == "error"] == []
+        assert fetched == [("acme/two", ModelFormat.MLX)]
+
+
 class TestModelsShowRoute:
     @mock.patch(
         "lilbee.server.handlers.models_show",

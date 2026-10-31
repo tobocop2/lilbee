@@ -144,7 +144,12 @@ def delete_values(data_root: Path, keys: list[str]) -> None:
         save(data_root, current)
 
 
-def mutate_value(data_root: Path, key: str, fn: Callable[[Any], tuple[Any, T]]) -> T:
+def mutate_value(
+    data_root: Path,
+    key: str,
+    fn: Callable[[Any], tuple[Any, T]],
+    after_save: Callable[[T], None] | None = None,
+) -> T:
     """Read-modify-write a single key under the config lock, atomically.
 
     ``fn`` receives the key's persisted value (or None if absent) read *inside*
@@ -152,12 +157,17 @@ def mutate_value(data_root: Path, key: str, fn: Callable[[Any], tuple[Any, T]]) 
     the result is returned. Unlike a read-then-:func:`set_value`, the whole
     compound update is serialized across threads and processes, so two callers
     updating a dict-valued key cannot lose each other's change.
+
+    ``after_save`` receives the result once the file is written, still inside
+    the lock, so a live value changes only when the write succeeded.
     """
     with _config_write_lock(data_root):
         current = load(data_root)
         new_value, result = fn(current.get(key))
         current[key] = new_value
         save(data_root, current)
+        if after_save is not None:
+            after_save(result)
     return result
 
 
