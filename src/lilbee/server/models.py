@@ -903,6 +903,26 @@ class PresetRemovedResponse(BaseModel):
     removed: str
 
 
+class PresetAddBody(BaseModel):
+    """Request body for adding a server preset. The key is write only."""
+
+    name: str
+    url: str
+    roles: list[str]
+    api_key: str | None = None
+    rerank_wire: str = RerankWire.V1
+
+
+class PresetEditBody(BaseModel):
+    """Request body for changing a server preset. Send only what changes."""
+
+    url: str | None = None
+    roles: list[str] | None = None
+    api_key: str | None = None
+    rerank_wire: str | None = None
+    clear_key: bool = False
+
+
 class PlacementSpecBody(BaseModel):
     """Request body for placement routes that accept a manual spec."""
 

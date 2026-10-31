@@ -40,6 +40,14 @@ from lilbee.app.placement import (
     preview_placement,
     set_placement,
 )
+from lilbee.app.presets import (
+    add_preset,
+    edit_preset,
+    engines_refused_message,
+    failure_text,
+    list_presets,
+    remove_preset,
+)
 from lilbee.app.search import clean_result
 from lilbee.app.services import (
     exit_on_signals_in_loop,
@@ -116,6 +124,8 @@ from lilbee.wiki.shared import (
 )
 
 if TYPE_CHECKING:
+    from pydantic import BaseModel
+
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
 log = logging.getLogger(__name__)
@@ -1746,6 +1756,94 @@ def clear_placement_tool() -> dict[str, Any]:
     if _transport.http_mounted and not cfg.allow_http_placement:
         return _error(placement_refused_message())
     return _placement_result(lambda: set_placement(None))
+
+
+def _preset_result(action: Callable[[], BaseModel]) -> dict[str, Any]:
+    """Run a preset call and serialize its result; a refusal returns the service's text."""
+    try:
+        return action().model_dump(mode="json")
+    except (ValueError, OSError) as exc:
+        return _error(failure_text(exc))
+
+
+def _preset_write_refused() -> dict[str, Any] | None:
+    """The refusal for a preset change over the shared HTTP transport while the flag is off."""
+    if _transport.http_mounted and not cfg.allow_http_engines:
+        return _error(engines_refused_message())
+    return None
+
+
+@_tool_named("preset_list")
+def preset_list_tool() -> dict[str, Any]:
+    """List the server presets."""
+    from lilbee.server.models import PresetListResponse, PresetResponse
+
+    return _preset_result(
+        lambda: PresetListResponse(presets=[PresetResponse.from_view(p) for p in list_presets()])
+    )
+
+
+@_tool_named("preset_add")
+def preset_add_tool(
+    name: str,
+    url: str,
+    roles: list[str],
+    api_key: str | None = None,
+    rerank_wire: str = "v1",
+) -> dict[str, Any]:
+    """Add a server preset. rerank_wire is v1 or tei."""
+    from lilbee.server.models import PresetResponse
+
+    if (refused := _preset_write_refused()) is not None:
+        return refused
+    return _preset_result(
+        lambda: PresetResponse.from_view(
+            add_preset(name, url, roles=roles, api_key=api_key, rerank_wire=rerank_wire)
+        )
+    )
+
+
+@_tool_named("preset_edit")
+def preset_edit_tool(
+    name: str,
+    url: str | None = None,
+    roles: list[str] | None = None,
+    api_key: str | None = None,
+    rerank_wire: str | None = None,
+    clear_key: bool = False,
+) -> dict[str, Any]:
+    """Change a server preset. Give only what changes."""
+    from lilbee.server.models import PresetResponse
+
+    if (refused := _preset_write_refused()) is not None:
+        return refused
+    return _preset_result(
+        lambda: PresetResponse.from_view(
+            edit_preset(
+                name,
+                url=url,
+                roles=roles,
+                api_key=api_key,
+                rerank_wire=rerank_wire,
+                clear_key=clear_key,
+            )
+        )
+    )
+
+
+@_tool_named("preset_remove")
+def preset_remove_tool(name: str) -> dict[str, Any]:
+    """Remove a server preset."""
+    from lilbee.server.models import PresetRemovedResponse
+
+    if (refused := _preset_write_refused()) is not None:
+        return refused
+
+    def remove() -> PresetRemovedResponse:
+        remove_preset(name)
+        return PresetRemovedResponse(removed=name)
+
+    return _preset_result(remove)
 
 
 def build_mcp_server() -> LilbeeMCP:

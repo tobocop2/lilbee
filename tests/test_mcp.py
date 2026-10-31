@@ -3105,6 +3105,10 @@ _DEFAULT_TOOL_NAMES = frozenset(
         "model_pull",
         "model_rm",
         "model_show",
+        "preset_add",
+        "preset_edit",
+        "preset_list",
+        "preset_remove",
         "preview_placement",
         "remove",
         "reset",
@@ -3242,8 +3246,9 @@ class TestToolsSchemaSize:
         # mcp_sessions_enabled (off by default) takes them off the default wire
         # and drops it to 6_996. 7_500 leaves room for a tool or two. Each
         # tool's docstring becomes its schema description, so trim verbose Args
-        # sections before raising this.
-        ceiling = 7_500
+        # sections before raising this. The four preset tools measured 8_523
+        # with one-line docstrings; 8_600 holds them and nothing more.
+        ceiling = 8_600
         assert total_bytes <= ceiling, (
             f"Default OpenAI tools schema is {total_bytes} bytes, exceeds {ceiling}."
         )

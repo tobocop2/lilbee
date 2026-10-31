@@ -127,6 +127,19 @@ On the shared HTTP daemon, `set`/`clear` are refused unless the host enables
 `get`/`preview` always work. Prefer preview-then-set, and only change placement
 when the user asks.
 
+### Server presets
+
+| Tool | Use |
+|---|---|
+| `lilbee_preset_list()` | The stored server presets: name, URL, roles, rerank wire, and `has_key`. A key is never returned. |
+| `lilbee_preset_add(name, url, roles, api_key, rerank_wire)` | Add a preset for the roles `embed`, `rerank`, `chat` or `vision`. `rerank_wire` is `v1` or `tei`. |
+| `lilbee_preset_edit(name, url, roles, api_key, rerank_wire, clear_key)` | Change a preset. Give only what changes. `clear_key` removes the stored key and stands alone. |
+| `lilbee_preset_remove(name)` | Remove a preset. |
+
+On the shared HTTP daemon, `add`/`edit`/`remove` are refused unless the host enables
+`allow_http_engines` (a preset sets where requests and API keys go); `list` always works.
+Change presets only when the user asks.
+
 (Wiki tools are documented at the end of this skill. Wiki and memory tools are only registered when their subsystems are enabled, so they may be absent from your tool list.)
 
 ## Common workflows
