@@ -99,10 +99,45 @@ def test_an_empty_library_asks_nothing(library: SimpleNamespace, with_openvino: 
     assert json.loads(str(_stored("engine_choices"))) == {MODEL: "openvino"}
 
 
-def test_a_library_with_no_baseline_asks(library: SimpleNamespace, with_openvino: None) -> None:
+def test_a_library_with_no_baseline_asks_nothing_for_a_chat_engine_change(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    library.store.trigger = None
+    engine_service.use(GGUF_REF, "openvino")
+    assert json.loads(str(_stored("engine_choices"))) == {GGUF_REF: "openvino"}
+
+
+def test_an_old_build_in_the_baseline_asks_nothing_without_an_embed_change(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    library.store.trigger = "old-build|/gone/embed.gguf@1-1"
+    engine_service.use(GGUF_REF, "openvino")
+    engine_service.use(MODEL, "llama.cpp")
+    assert json.loads(str(_stored("engine_choices"))) == {GGUF_REF: "openvino", MODEL: "llama.cpp"}
+    assert engine_service.prefer("auto") == "auto"
+
+
+def test_a_library_with_no_baseline_still_asks_for_an_embed_change(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
     library.store.trigger = None
     with pytest.raises(engine_service.EmbedConfirmRequiredError):
-        engine_service.use(MODEL, "llama.cpp")
+        engine_service.use(MODEL, "openvino")
+
+
+def test_a_chat_engine_change_asks_nothing_on_a_library_with_documents(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    assert library.store.documents == 3
+    assert engine_service.use(GGUF_REF, "openvino") == "openvino"
+    assert _stored("preferred_engine") is None
+
+
+def test_prefer_asks_nothing_when_the_embed_model_has_its_own_engine(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    engine_service.use(MODEL, "llama.cpp")
+    assert engine_service.prefer("openvino") == "openvino"
 
 
 def test_prefer_asks_when_it_changes_the_embed_engine(
@@ -163,7 +198,7 @@ def test_rest_prefer_asks_the_same_question(library: SimpleNamespace, with_openv
 
 
 def test_mcp_returns_its_own_shape_then_writes_when_confirmed(
-    library: SimpleNamespace, with_openvino: None
+    library: SimpleNamespace, with_openvino: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from lilbee.providers.roles import WorkerRole
 
@@ -176,9 +211,10 @@ def test_mcp_returns_its_own_shape_then_writes_when_confirmed(
         WorkerRole.EMBED, MODEL, "openvino", confirm_embed_change=True
     )
     assert done == {"engine": "openvino"}
-    asked = mcp_server.engine_prefer_tool("llama.cpp")
+    monkeypatch.setattr(cfg, "engine_choices", None)
+    asked = mcp_server.engine_prefer_tool("openvino")
     assert asked["code"] == "embed_engine_confirm_required"
-    assert mcp_server.engine_prefer_tool("llama.cpp", True) == {"engine": "llama.cpp"}
+    assert mcp_server.engine_prefer_tool("openvino", True) == {"engine": "openvino"}
 
 
 def test_the_cli_refuses_without_a_terminal_and_names_the_flag(

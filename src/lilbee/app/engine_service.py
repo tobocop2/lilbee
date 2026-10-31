@@ -126,17 +126,15 @@ def _apply_to_running() -> None:
 
 
 def _check_embed_identity(candidate: Config, confirmed: bool) -> None:
-    """Ask the index identity: refuse unless *confirmed* when the candidate embedder differs."""
+    """Refuse unless *confirmed* when the write changes the trigger of the embedder."""
     services = peek_services()
     if services is None or confirmed:
         return
-    store = services.store
-    documents = store.source_summary(0).document_count
+    documents = services.store.source_summary(0).document_count
     if documents == 0:
         return
-    baseline = store.canary_state()
-    stored = baseline.trigger if baseline is not None else None
-    if stored != embedder_trigger(candidate, services.registry):
+    registry = services.registry
+    if embedder_trigger(cfg, registry) != embedder_trigger(candidate, registry):
         raise EmbedConfirmRequiredError(cfg.data_root.name, documents)
 
 
