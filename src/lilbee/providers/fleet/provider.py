@@ -2028,8 +2028,8 @@ class FleetProvider:
     # --- model management: registry / GGUF reads, no running server needed ---
 
     def supports_rerank(self) -> bool:
-        """Serve a cross-encoder (rank pooling) or an LLM reranker (yes/no logprob)."""
-        return True
+        """Report whether the engine serves the rerank role."""
+        return WorkerRole.RERANK in self.engine.served_roles
 
     def list_models(self) -> list[str]:
         """List installed models from the registry."""

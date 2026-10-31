@@ -24,6 +24,7 @@ from lilbee.providers.base import ProviderErrorKind
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
@@ -31,6 +32,7 @@ from lilbee.providers.fleet.swap_manager import EngineLifetime
 from lilbee.providers.roles import RerankMode, WorkerRole
 from tests._exit_probe import assert_probe_exits
 from tests._prior_run import request_keep_warm_in_prior_run
+from tests.conformance.fake_adapter import FAKE
 
 _GB = 1024**3
 _real_plan_all_launches = planning_mod.plan_all_launches
@@ -2021,9 +2023,13 @@ def test_chat_stream_close_before_iteration_releases_the_request() -> None:
     assert closed == [True]  # the source stream (and its request slot) was released
 
 
-def test_supports_rerank_always_true() -> None:
-    # llama-server reranks any cross-encoder GGUF via --pooling rank.
-    assert FleetProvider().supports_rerank() is True
+def test_supports_rerank_when_the_engine_serves_the_rerank_role() -> None:
+    assert FleetProvider(engine=LLAMA).supports_rerank() is True
+
+
+def test_supports_rerank_is_false_when_the_engine_serves_no_rerank_role() -> None:
+    assert WorkerRole.RERANK not in FAKE.served_roles
+    assert FleetProvider(engine=FAKE).supports_rerank() is False
 
 
 def test_list_chat_models_empty() -> None:

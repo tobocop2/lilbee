@@ -3673,6 +3673,15 @@ class TestRoutingProviderRerank:
 
         assert _is_native_rerank_ref("gpustack/bge-reranker-v2-m3-GGUF") is False
 
+    def test_native_ref_is_not_native_when_the_engine_serves_no_rerank_role(self) -> None:
+        from lilbee.providers.fleet.engines import LLAMA
+        from lilbee.providers.routing_provider import _is_native_rerank_ref
+        from tests.conformance.fake_adapter import FAKE
+
+        ref = "pyarn/bge-reranker-v2-gemma-Q4_K_M-GGUF/bge-reranker-v2-gemma-q4_k_m.gguf"
+        assert _is_native_rerank_ref(ref, LLAMA) is True
+        assert _is_native_rerank_ref(ref, FAKE) is False
+
     def test_unreadable_registry_refuses_instead_of_going_hosted(self, tmp_path: Path) -> None:
         """A registry that cannot be read fails the rerank; it never reroutes it."""
         from conftest import make_mock_services
