@@ -59,6 +59,10 @@ _WEATHER = {
         },
     },
 }
+_REASONING_ASK = {
+    "role": "user",
+    "content": "Think it through, then answer: what is 17 plus 25?",
+}
 _RERANK_QUERY = "What is the capital of France?"
 _RERANK_DOCS = ["Bananas are yellow.", "Paris is the capital of France.", "Dogs bark."]
 _ROLE_STEPS = {
@@ -223,15 +227,20 @@ def _json_schema(setup: Setup) -> Outcome:
 
 
 def _reasoning_text(setup: Setup) -> Outcome:
-    result = create_sdk_provider().chat(
-        [{"role": "user", "content": "Think it through, then answer: what is 17 plus 25?"}],
-        model=_ref(setup, "chat"),
-        options={"max_tokens": 1024},
+    """Ask for a reasoned answer and judge the reply as the server sent it.
+
+    The provider drops the reasoning field, so the step reads the wire message itself.
+    """
+    body = {"messages": [_REASONING_ASK], "model": setup.models["chat"], "stream": False}
+    request = urllib.request.Request(  # noqa: S310  a local server under test
+        presets.get_preset(setup.preset).base_url + "/v1/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
     )
-    assert isinstance(result, ChatResult)
-    fault = reasoning_split_fault(result.text)
-    ok = not fault and result.finish_reason == "stop"
-    return Outcome(ok, f"finish={result.finish_reason} {fault}".strip())
+    with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as resp:  # noqa: S310
+        choice = json.loads(resp.read())["choices"][0]
+    fault = reasoning_split_fault(choice["message"], choice.get("finish_reason"))
+    return Outcome(not fault, f"finish={choice.get('finish_reason')} {fault}".strip())
 
 
 class _LogTap(logging.Handler):

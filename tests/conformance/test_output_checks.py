@@ -202,24 +202,48 @@ def test_preset_embed_step_rejects_near_copies(
     assert _outcome(monkeypatch, "embed", embed=vectors) is ok
 
 
+def _reasoning_outcome(
+    tmp_path: Path, message: dict[str, Any], finish: str = "stop"
+) -> preset_check.Outcome:
+    """Run the reasoning step against a server that sends *message* as its one reply."""
+    setup = Setup(("chat",), dict(_MODELS), strict=True)
+    request = {"messages": [preset_check._REASONING_ASK], "model": "m", "stream": False}
+    reply = {"choices": [{"message": message, "finish_reason": finish}]}
+    exchange = preset_check.Exchange(
+        "POST", "/v1/chat/completions", request, 200, "application/json", json.dumps(reply)
+    )
+    with (
+        preset_check.replaying([exchange]) as url,
+        preset_check.configured(url, setup, tmp_path),
+    ):
+        return preset_check._STEP_FUNCTIONS["reasoning"](setup)
+
+
 @pytest.mark.parametrize(
-    ("text", "finish", "ok"),
+    ("message", "finish", "fault"),
     [
-        ("<think>hm</think>42", FinishReason.STOP, True),
-        ("hm</think>42", FinishReason.STOP, True),
-        ("<think>hm</think>42", FinishReason.LENGTH, False),
-        ("42", FinishReason.STOP, False),
-        ("<think>hm 42", FinishReason.STOP, False),
-        ("<think>hm</think><think>hm</think>42", FinishReason.STOP, False),
-        ("<think>hm</think>42</think>", FinishReason.STOP, False),
-        ("<think>hm</think>  ", FinishReason.STOP, False),
-        ("<think> </think>42", FinishReason.STOP, False),
+        ({"content": "42", "reasoning_content": "hm"}, "stop", ""),
+        ({"content": "42", "reasoning": "hm"}, "stop", ""),
+        ({"content": "<think>hm</think>42"}, "stop", ""),
+        ({"content": "hm</think>42"}, "stop", ""),
+        ({"content": "<think>hm</think>42", "reasoning_content": "hm"}, "stop", "think tag"),
+        ({"content": "hm</think>42", "reasoning_content": "hm"}, "stop", "think tag"),
+        ({"content": "<think>hm 42", "reasoning_content": "hm"}, "stop", "think tag"),
+        ({"content": "", "reasoning_content": "hm"}, "stop", "empty answer"),
+        ({"content": "42"}, "stop", "no reasoning field"),
+        ({"content": "42", "reasoning_content": " "}, "stop", "no reasoning field"),
+        ({"content": "<think>hm 42"}, "stop", "no closed think block"),
+        ({"content": "<think>hm</think><think>hm</think>42"}, "stop", "repeated"),
+        ({"content": "<think>hm</think>  "}, "stop", "no answer"),
+        ({"content": "42", "reasoning_content": "hm"}, "length", "not stop"),
     ],
 )
-def test_preset_reasoning_step_needs_one_block_and_a_clean_answer(
-    monkeypatch: pytest.MonkeyPatch, text: str, finish: FinishReason, ok: bool
+def test_preset_reasoning_step_needs_a_clean_split(
+    tmp_path: Path, message: dict[str, Any], finish: str, fault: str
 ) -> None:
-    assert _outcome(monkeypatch, "reasoning", chat=_result(text, finish)) is ok
+    outcome = _reasoning_outcome(tmp_path, message, finish)
+    assert outcome.ok is (fault == ""), outcome.detail
+    assert fault in outcome.detail
 
 
 @pytest.mark.parametrize(
@@ -325,14 +349,6 @@ def test_named_step_fails_when_status_names_no_engine(
     monkeypatch.setattr(preset_check, "serving_roles", lambda: [])
     outcome = _named_outcome(monkeypatch, tmp_path, ("chat",), chat=_result("Rome"))
     assert not outcome.ok
-
-
-def test_reasoning_step_names_the_cause(monkeypatch: pytest.MonkeyPatch) -> None:
-    leak = _result("<think>hm</think><think>hm</think>42")
-    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: _Provider(chat=leak))
-    setup = Setup(("chat",), dict(_MODELS), strict=True)
-    detail = preset_check._STEP_FUNCTIONS["reasoning"](setup).detail
-    assert "open, repeated or reversed" in detail
 
 
 def test_the_preset_is_named_after_the_recorded_engine() -> None:
