@@ -158,6 +158,12 @@ def roles(config: Config = cfg) -> list[RoleView]:
     return views
 
 
+def not_installed() -> list[str]:
+    """The names of the engines this build knows that have no installed build."""
+    installed = installed_engines()
+    return [str(name) for name in choice.ADAPTERS if name not in installed]
+
+
 def engine_names(model: str) -> list[str]:
     """The names a surface may offer for *model*: ``auto`` and each engine that loads it."""
     return [AUTO, *engines_loading(model_format(model), installed_engines())]

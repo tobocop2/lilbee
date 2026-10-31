@@ -553,8 +553,6 @@ def _every_optional_flag_argv(
 
 _OPTIONAL = sorted(adapters._OPTIONAL_FLAGS)
 _ALWAYS_WRITTEN = [
-    "--device",
-    "--tensor-split",
     "--embeddings",
     "--fit-target",
     "--kv-unified-per-slot",
@@ -585,6 +583,22 @@ _FULL_ARGV_CPU_MOE = _argv(
     "deepseek --no-prefill-assistant --pooling rank"
 )
 _ARGV_WITHOUT = {
+    "--device": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 "
+        "--ubatch-size 512 --mmproj /models/mmproj.gguf --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--tensor-split": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 "
+        "--ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
     "--flash-attn": _argv(
         "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
@@ -702,7 +716,7 @@ _ARGV_WITHOUT = {
 
 
 def test_the_optional_flag_table_is_not_empty() -> None:
-    assert len(_OPTIONAL) == 14
+    assert len(_OPTIONAL) == 16
 
 
 def test_the_literal_argv_table_names_every_optional_flag() -> None:
@@ -754,10 +768,14 @@ def test_a_flag_quoted_in_a_description_does_not_count_as_listed(monkeypatch) ->
     assert "--jinja" not in _every_optional_flag_argv(monkeypatch, help_text)
 
 
-def test_placement_and_embedding_flags_are_written_whatever_the_help_says(monkeypatch) -> None:
+def test_placement_flags_are_dropped_when_the_help_lists_neither(monkeypatch) -> None:
     argv = _every_optional_flag_argv(monkeypatch, _help_listing(["--model"]))
-    assert "--device" in argv
-    assert "--tensor-split" in argv
+    assert "--device" not in argv
+    assert "--tensor-split" not in argv
+    assert "CUDA0,CUDA1" not in argv
+
+
+def test_the_embeddings_flag_is_written_whatever_the_help_says() -> None:
     embed = build_server_argv(
         binary=Path("/bin/llama-server"),
         spec=ROLE_SPECS[WorkerRole.EMBED],
