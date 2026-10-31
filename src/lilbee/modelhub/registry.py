@@ -3,7 +3,8 @@
 Canonical ref: ``<hf_repo>/<gguf_filename>``. Two quants of the same
 repo are two distinct installations. Manifests live at
 ``manifests/<repo--repo>/<filename>.json``; blobs at
-``models--<repo--repo>/blobs/<sha>``.
+``models--<repo--repo>/blobs/<sha>``. A model of another format is keyed by
+``(hf_repo, format)``: ref ``<org>/<repo>#<format>``, manifest ``<format>.json``.
 """
 
 from __future__ import annotations
@@ -16,20 +17,23 @@ import os
 import re
 import shutil
 import tempfile
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lilbee.catalog.formats import select_files
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import (
-    GGUF_SUFFIX,
-    NATIVE_GGUF_REF_MIN_SLASHES,
+    ModelRef,
     format_native_gguf_ref,
     is_bare_hf_repo,
+    is_gguf_filename,
+    parse_model_ref,
     split_shard_filenames,
 )
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 
@@ -44,9 +48,10 @@ _REPO_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
 # in e.g. ``Q4_K_M/Model-...-00001-of-00003.gguf``). Path separators are allowed;
 # ``..`` and absolute paths are rejected in the validator to stay inside the repo.
 _FILENAME_RE = re.compile(r"^[a-zA-Z0-9._/-]+\.gguf$")
+_ENTRY_FILENAME_RE = re.compile(r"^[a-zA-Z0-9._/-]+$")
 
 REPO_DIR_SEPARATOR = "--"
-_MANIFEST_SUFFIX = f"{GGUF_SUFFIX}.json"
+_MANIFEST_SUFFIX = ".json"
 
 
 def _validate_hf_repo(hf_repo: str) -> str:
@@ -56,14 +61,13 @@ def _validate_hf_repo(hf_repo: str) -> str:
     return hf_repo
 
 
-def _validate_gguf_filename(filename: str) -> str:
-    """Validate a ``.gguf`` filename, allowing repo subdirectories but no traversal."""
-    if (
-        not filename
-        or not _FILENAME_RE.match(filename)
-        or ".." in filename
-        or filename.startswith("/")
-    ):
+def _validate_gguf_filename(filename: str, fmt: ModelFormat = ModelFormat.GGUF) -> str:
+    """Validate an entry filename, allowing repo subdirectories but no traversal.
+
+    A GGUF filename ends in ``.gguf``; the entry file of another format takes any suffix.
+    """
+    pattern = _FILENAME_RE if fmt == ModelFormat.GGUF else _ENTRY_FILENAME_RE
+    if not filename or not pattern.match(filename) or ".." in filename or filename.startswith("/"):
         raise ValueError(f"Invalid gguf_filename: {filename!r}")
     return filename
 
@@ -78,12 +82,34 @@ def parse_hf_ref(ref: str) -> tuple[str, str]:
     after is the filename, which may include repo subdirectories (unsloth stores
     quants under e.g. ``Q4_K_M/Model-...-00001-of-00003.gguf``).
     """
-    if not ref.endswith(GGUF_SUFFIX) or ref.count("/") < NATIVE_GGUF_REF_MIN_SLASHES:
+    parsed = parse_model_ref(ref)
+    if not parsed.filename:
         raise ValueError(f"Model ref {ref!r} is not a HuggingFace ref. {_REF_SHAPE_HINT}")
-    parts = ref.split("/")
-    hf_repo = "/".join(parts[:NATIVE_GGUF_REF_MIN_SLASHES])
-    gguf_filename = "/".join(parts[NATIVE_GGUF_REF_MIN_SLASHES:])
-    return _validate_hf_repo(hf_repo), _validate_gguf_filename(gguf_filename)
+    return _validate_hf_repo(parsed.hf_repo), _validate_gguf_filename(parsed.filename)
+
+
+def _ref_key(ref: str) -> tuple[str, str, ModelFormat]:
+    """The ``(hf_repo, gguf_filename, format)`` that keys the manifest of *ref*.
+
+    A non-GGUF ref names no entry file: the repo and the format identify it.
+    """
+    non_gguf = _non_gguf_repo(ref)
+    if non_gguf is not None:
+        return non_gguf[0], "", non_gguf[1]
+    hf_repo, gguf_filename = parse_hf_ref(ref)
+    return hf_repo, gguf_filename, ModelFormat.GGUF
+
+
+def _non_gguf_repo(ref: str) -> tuple[str, ModelFormat] | None:
+    """``(hf_repo, format)`` when *ref* is ``<org>/<repo>#<format>`` of a non-GGUF format.
+
+    ``None`` for every other string, so those keep their GGUF handling. Raises
+    ``ValueError`` for a malformed qualifier or an invalid repo id.
+    """
+    parsed = parse_model_ref(ref)
+    if parsed.format == ModelFormat.GGUF:
+        return None
+    return _validate_hf_repo(parsed.hf_repo), parsed.format
 
 
 def repo_to_dir(hf_repo: str) -> str:
@@ -106,10 +132,14 @@ class ModelManifest:
     # ``shard_blobs`` are the non-primary shard digests, so removal frees them all.
     total_size_bytes: int | None = None
     shard_blobs: list[str] = field(default_factory=list)
+    format: ModelFormat = ModelFormat.GGUF
+
+    def __post_init__(self) -> None:
+        self.format = ModelFormat(self.format)
 
     @property
     def ref(self) -> str:
-        return format_native_gguf_ref(self.hf_repo, self.gguf_filename)
+        return ModelRef(self.hf_repo, self.gguf_filename, self.format).canonical
 
     @property
     def disk_size_bytes(self) -> int:
@@ -205,7 +235,10 @@ class ModelRegistry:
         return self._root / f"models--{repo_to_dir(hf_repo)}"
 
     def resolve(self, ref: str) -> Path:
-        """Return the loadable GGUF path for *ref*; ``KeyError`` if not installed.
+        """Return the loadable path for *ref*; ``KeyError`` if not installed.
+
+        ``<org>/<repo>#<format>`` of a non-GGUF format resolves to the snapshot
+        directory of that model. The rest of this text covers GGUF refs.
 
         A single-file GGUF resolves to its content-hashed blob (the snapshot
         file on a cache without symlinks); a split GGUF to its first shard's
@@ -222,6 +255,13 @@ class ModelRegistry:
         upgrade keep working without anyone purging their lilbee data dir; it is
         deliberately the exception here, not a pattern to follow elsewhere.
         """
+        non_gguf = _non_gguf_repo(ref)
+        if non_gguf is not None:
+            return self._resolve_file_set(ref, *non_gguf)
+        return self._resolve_gguf(ref)
+
+    def _resolve_gguf(self, ref: str) -> Path:
+        """Resolve a GGUF ref, or a bare ``<org>/<repo>``, to a loadable path."""
         if is_bare_hf_repo(ref):
             return self._resolve_repo_only(_validate_hf_repo(ref))
         hf_repo, gguf_filename = parse_hf_ref(ref)
@@ -253,6 +293,20 @@ class ModelRegistry:
                 f"{manifest.size_bytes} bytes; re-download required"
             )
         raise KeyError(f"Blob file missing for {ref}: {manifest.blob}")
+
+    def _resolve_file_set(self, ref: str, hf_repo: str, fmt: ModelFormat) -> Path:
+        """The snapshot directory of the installed *fmt* model of *hf_repo*.
+
+        A non-GGUF engine loads a directory holding the weights, config and
+        tokenizer files together, not one blob. ``KeyError`` if not installed.
+        """
+        manifest = self._read_manifest(hf_repo, "", fmt)
+        if manifest is None or self._manifest_backing_file(manifest) is None:
+            raise KeyError(f"Model {ref} not installed")
+        entry = self._snapshot_gguf_path(hf_repo, manifest.gguf_filename)
+        if entry is None:
+            raise KeyError(f"Snapshot files missing for {ref}")
+        return _snapshot_root(entry)
 
     def _resolve_split(self, ref: str, hf_repo: str, shards: list[str]) -> Path:
         """Resolve a split GGUF to its first shard's snapshot symlink.
@@ -291,7 +345,7 @@ class ModelRegistry:
         if manifest_dir.is_dir():
             for mf in _manifest_files(manifest_dir):
                 manifest = self._load_manifest_file(mf)
-                if manifest is None:
+                if manifest is None or manifest.format != ModelFormat.GGUF:
                     continue
                 backing = self._manifest_backing_file(manifest)
                 if backing is not None:
@@ -329,7 +383,7 @@ class ModelRegistry:
             if repo.repo_id == hf_repo
             for rev in repo.revisions
             for f in rev.files
-            if f.file_name.endswith(GGUF_SUFFIX)
+            if is_gguf_filename(f.file_name)
         }
 
     def _snapshot_gguf_path(self, hf_repo: str, gguf_filename: str) -> Path | None:
@@ -430,6 +484,7 @@ class ModelRegistry:
                     blob=blob_path.name if blob_path.parent.name == "blobs" else None,
                     total_size_bytes=total_size,
                     shard_blobs=shard_blobs,
+                    format=ModelFormat.GGUF,
                 )
             )
             log.info("Recovered manifest for %s from the model cache", ref)
@@ -473,6 +528,7 @@ class ModelRegistry:
             # caller from the full shard set); install only rewrites the primary.
             total_size_bytes=manifest.total_size_bytes,
             shard_blobs=manifest.shard_blobs,
+            format=manifest.format,
         )
         self._write_manifest(updated)
         return blob_path
@@ -487,21 +543,24 @@ class ModelRegistry:
         deleted model leaves no orphan bytes behind.
         """
         try:
-            hf_repo, gguf_filename = parse_hf_ref(ref)
+            hf_repo, gguf_filename, fmt = _ref_key(ref)
         except ValueError:
             return False
-        manifest = self._read_manifest(hf_repo, gguf_filename)
+        manifest = self._read_manifest(hf_repo, gguf_filename, fmt)
         if manifest is None:
             return False
         # Manifests written before shard accounting existed have no shard_blobs, so
         # recover them from the cache *before* unlinking (resolve needs the manifest).
-        shard_blobs = manifest.shard_blobs or self._recover_legacy_shard_blobs(ref)
-        manifest_path = self._manifest_path(hf_repo, gguf_filename)
+        shard_blobs = manifest.shard_blobs
+        if not shard_blobs and fmt == ModelFormat.GGUF:
+            shard_blobs = self._recover_legacy_shard_blobs(ref)
+        manifest_path = self._manifest_path(hf_repo, gguf_filename, fmt)
         manifest_path.unlink()
         repo_dir = manifest_path.parent
         if repo_dir.exists() and not any(repo_dir.iterdir()):
             repo_dir.rmdir()
-        self._unlink_snapshot_entries(manifest)
+        if fmt == ModelFormat.GGUF:
+            self._unlink_snapshot_entries(manifest)
         # Free the primary blob and every extra shard blob; a split GGUF has more
         # than one, and leaving the others orphans them when a sibling quant keeps
         # the repo cache dir alive. The surviving manifests for this repo are read
@@ -510,6 +569,9 @@ class ModelRegistry:
         # unused repo cache dir is pruned.
         siblings = [m for m in self.list_installed() if m.hf_repo == manifest.hf_repo]
         digests: list[str | None] = [d for d in [manifest.blob, *shard_blobs] if d is not None]
+        if fmt != ModelFormat.GGUF:
+            self._unlink_freed_snapshot_entries(manifest, digests, siblings)
+            self._unlink_freed_snapshot_files(manifest, siblings)
         for digest in digests or [None]:
             self._gc_blob(manifest.hf_repo, digest, siblings=siblings)
         log.info("Removed model %s", ref)
@@ -526,6 +588,50 @@ class ModelRegistry:
             snapshot_entry = self._snapshot_gguf_path(manifest.hf_repo, shard)
             if snapshot_entry is not None:
                 snapshot_entry.unlink(missing_ok=True)
+
+    def _unlink_freed_snapshot_entries(
+        self, manifest: ModelManifest, digests: list[str | None], siblings: list[ModelManifest]
+    ) -> None:
+        """Drop the snapshot links of the blobs only *manifest* used.
+
+        Another model of the same repo keeps loading from the snapshot
+        directory, so a link to a blob that model still lists stays.
+        """
+        kept = {d for m in siblings for d in [m.blob, *m.shard_blobs]}
+        freed = {d for d in digests if d is not None and d not in kept}
+        snapshots = self._repo_cache_dir(manifest.hf_repo) / _HF_SNAPSHOTS_DIR
+        if not snapshots.is_dir():
+            return
+        for link in snapshots.rglob("*"):
+            if link.is_symlink() and link.resolve().name in freed:
+                link.unlink()
+
+    def _unlink_freed_snapshot_files(
+        self, manifest: ModelManifest, siblings: list[ModelManifest]
+    ) -> None:
+        """Drop the real snapshot files that only *manifest* names.
+
+        A cache with no symlinks keeps its bytes in the snapshot, so nothing
+        else frees them. A file that a remaining manifest names stays. When
+        a name cannot be worked out, nothing is removed.
+        """
+        snapshots = self._repo_cache_dir(manifest.hf_repo) / _HF_SNAPSHOTS_DIR
+        if not snapshots.is_dir():
+            return
+        for root in (d for d in snapshots.iterdir() if d.is_dir()):
+            files = {
+                p.relative_to(root).as_posix(): p
+                for p in root.rglob("*")
+                if p.is_file() and not p.is_symlink()
+            }
+            try:
+                freed = _manifest_file_names(manifest, files)
+                for sibling in siblings:
+                    freed -= _manifest_file_names(sibling, files)
+            except ValueError:
+                return
+            for name in freed:
+                files[name].unlink()
 
     def _recover_legacy_shard_blobs(self, ref: str) -> list[str]:
         """Extra shard blob digests for a pre-accounting split GGUF, best-effort.
@@ -631,10 +737,10 @@ class ModelRegistry:
     def get_manifest(self, ref: str) -> ModelManifest | None:
         """Return the manifest for *ref* or None if not installed."""
         try:
-            hf_repo, gguf_filename = parse_hf_ref(ref)
+            hf_repo, gguf_filename, fmt = _ref_key(ref)
         except ValueError:
             return None
-        return self._read_manifest(hf_repo, gguf_filename)
+        return self._read_manifest(hf_repo, gguf_filename, fmt)
 
     def installed_ref_for_repo(self, hf_repo: str) -> str | None:
         """Full ``<repo>/<file>.gguf`` ref of an installed quant of *hf_repo*, or None.
@@ -642,23 +748,38 @@ class ModelRegistry:
         Alphabetical-first when several quants are installed, matching
         ``_resolve_repo_only``'s determinism.
         """
-        refs = sorted(m.ref for m in self.list_installed() if m.hf_repo == hf_repo)
+        refs = sorted(
+            m.ref
+            for m in self.list_installed()
+            if m.hf_repo == hf_repo and m.format == ModelFormat.GGUF
+        )
         return refs[0] if refs else None
 
-    def _manifest_path(self, hf_repo: str, gguf_filename: str) -> Path:
+    def _manifest_path(
+        self, hf_repo: str, gguf_filename: str, fmt: ModelFormat = ModelFormat.GGUF
+    ) -> Path:
         repo = _validate_hf_repo(hf_repo)
-        filename = _validate_gguf_filename(gguf_filename)
-        path = self._manifests_dir / repo_to_dir(repo) / f"{filename}.json"
+        if fmt == ModelFormat.GGUF:
+            name = f"{_validate_gguf_filename(gguf_filename)}.json"
+        else:
+            name = f"{fmt.value}.json"
+        path = self._manifests_dir / repo_to_dir(repo) / name
         validate_path_within(path, self._manifests_dir)
         return path
 
-    def _read_manifest(self, hf_repo: str, gguf_filename: str) -> ModelManifest | None:
-        return self._load_manifest_file(self._manifest_path(hf_repo, gguf_filename))
+    def _read_manifest(
+        self, hf_repo: str, gguf_filename: str, fmt: ModelFormat = ModelFormat.GGUF
+    ) -> ModelManifest | None:
+        return self._load_manifest_file(self._manifest_path(hf_repo, gguf_filename, fmt))
 
     def _write_manifest(self, manifest: ModelManifest) -> None:
-        path = self._manifest_path(manifest.hf_repo, manifest.gguf_filename)
+        _validate_gguf_filename(manifest.gguf_filename, manifest.format)
+        path = self._manifest_path(manifest.hf_repo, manifest.gguf_filename, manifest.format)
         path.parent.mkdir(parents=True, exist_ok=True)
-        data = json.dumps(asdict(manifest), indent=2)
+        fields = asdict(manifest)
+        if manifest.format == ModelFormat.GGUF:
+            del fields["format"]
+        data = json.dumps(fields, indent=2)
         tmp_path: str | None = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -679,7 +800,8 @@ class ModelRegistry:
             data = json.loads(path.read_text(encoding="utf-8"))
             return ModelManifest(**data)
         # UnicodeDecodeError is a ValueError, not a JSONDecodeError.
-        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, KeyError):
+        # An unknown format name is a ValueError, as a bad key is a TypeError.
+        except (ValueError, TypeError, KeyError):
             log.warning("Corrupt manifest: %s", path)
             return None
 
@@ -728,6 +850,37 @@ def _shard_accounting(first_shard_path: Path) -> tuple[int | None, list[str]]:
     return total, shard_blobs
 
 
+def _snapshot_root(entry_path: Path) -> Path:
+    """The ``snapshots/<revision>`` directory that holds *entry_path*."""
+    parts = entry_path.parts
+    return Path(*parts[: parts.index(_HF_SNAPSHOTS_DIR) + 2])
+
+
+def _file_set_accounting(fmt: ModelFormat, entry_path: Path) -> tuple[int, list[str]]:
+    """Total on-disk size and the blob digests of every file but the entry file.
+
+    The selected file set sits in the snapshot directory the entry file lives in,
+    so the set is the same selection a pull makes over that directory's listing.
+    """
+    root = _snapshot_root(entry_path)
+    relative = {p.relative_to(root).as_posix(): p for p in root.rglob("*") if p.is_file()}
+    entry_name = entry_path.relative_to(root).as_posix()
+    total = 0
+    shard_blobs: list[str] = []
+    for name in select_files(fmt, relative):
+        total += relative[name].stat().st_size
+        if name != entry_name:
+            shard_blobs.append(_blob_digest(relative[name]))
+    return total, shard_blobs
+
+
+def _manifest_file_names(manifest: ModelManifest, files: Iterable[str]) -> set[str]:
+    """The names among *files* that *manifest* uses, found the way a pull selects them."""
+    if manifest.format == ModelFormat.GGUF:
+        return set(split_shard_filenames(manifest.gguf_filename)) & set(files)
+    return set(select_files(manifest.format, files))
+
+
 def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     """Write a registry manifest for a freshly downloaded GGUF.
 
@@ -737,7 +890,10 @@ def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     """
     registry = ModelRegistry(cfg.models_dir)
     gguf_filename = _repo_relative_gguf_name(file_path)
-    total_size, shard_blobs = _shard_accounting(file_path)
+    if entry.format == ModelFormat.GGUF:
+        total_size, shard_blobs = _shard_accounting(file_path)
+    else:
+        total_size, shard_blobs = _file_set_accounting(entry.format, file_path)
     manifest = ModelManifest(
         hf_repo=entry.hf_repo,
         gguf_filename=gguf_filename,
@@ -746,6 +902,7 @@ def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
         downloaded_at=datetime.now(UTC).isoformat(),
         total_size_bytes=total_size,
         shard_blobs=shard_blobs,
+        format=entry.format,
     )
     try:
         registry.install(entry.hf_repo, gguf_filename, file_path, manifest)

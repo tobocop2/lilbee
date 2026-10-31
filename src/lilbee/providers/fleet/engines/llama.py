@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF, SUPPORTED_ARCHS
 from lilbee.catalog.header_probe import GGUF_MAGIC
+from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.adapters import (
     FLAG_FIT_TARGET,
     FLAG_KV_UNIFIED_PER_SLOT,
@@ -27,16 +28,15 @@ from lilbee.providers.fleet.devices import DeviceProbe, probe_devices
 from lilbee.providers.fleet.engines.base import (
     EngineName,
     LaunchRequest,
-    MemoryEstimate,
-    MemoryKind,
-    MemoryRequest,
-    ModelFormat,
     RequestProfile,
 )
+from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.loadability import assert_engine_can_load
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import estimate_memory
 from lilbee.providers.fleet.readback import engine_advertises, supports_memory_readback
-from lilbee.providers.fleet.vram import estimate_instance_footprint
 from lilbee.providers.gguf_meta import read_gguf_metadata
 from lilbee.providers.roles import RerankMode, WorkerRole
 
@@ -73,9 +73,13 @@ class LlamaCppAdapter:
     architectures = frozenset(SUPPORTED_ARCHS)
     served_roles = frozenset(role for role, spec in ROLE_SPECS.items() if spec.server_capable)
     memory_kind = MemoryKind.SIZED
+    takes_device_names = True
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return PASS
 
     def binary(self) -> Path:
         return resolve_llama_server()
@@ -141,26 +145,7 @@ class LlamaCppAdapter:
         return llama_server_runtime_env()
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        parsed = estimate_instance_footprint(
-            request.model_path,
-            ctx=request.ctx,
-            slots=request.slots,
-            gpu_layers=request.gpu_layers,
-            flash_attn=request.flash_attn,
-            kv_cache_type=request.kv_cache_type,
-            mmproj_path=request.mmproj_path,
-            tensor_split=request.tensor_split,
-            batch_size=request.batch_size,
-            expert_offload=request.expert_offload,
-        )
-        return MemoryEstimate(
-            kind=self.memory_kind,
-            device_bytes=parsed.vram_bytes,
-            host_bytes=parsed.ram_bytes,
-            shared_bytes=parsed.unified_bytes,
-            per_device=parsed.per_device_vram,
-            per_device_shared=parsed.per_device_unified,
-        )
+        return estimate_memory(ModelFormat.GGUF, request)
 
     def check_readback(self, binary: Path) -> bool:
         return supports_memory_readback(binary)

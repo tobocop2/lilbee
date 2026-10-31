@@ -2,7 +2,8 @@
 
 import heapq
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from dataclasses import replace
 from itertools import islice
 from typing import Any
 
@@ -12,16 +13,25 @@ from lilbee.app.services import get_services
 from lilbee.catalog.models import (
     CatalogModel,
     CatalogResult,
+    HiddenModel,
     page_window,
 )
 from lilbee.catalog.picks import get_picks
 from lilbee.catalog.refs import (
     GGUF_GLOB,
-    GGUF_SUFFIX,
-    NATIVE_GGUF_REF_MIN_SLASHES,
     hf_repo_from_ref,
+    is_native_gguf_shape,
+    parse_model_ref,
 )
-from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
+from lilbee.catalog.runnable import (
+    EngineOffer,
+    default_offers,
+    explain,
+    runnable_formats,
+    session_host,
+)
+from lilbee.catalog.types import CatalogSize, CatalogSort, ModelFormat, ModelTask
+from lilbee.providers.fleet.host_caps import HostCaps
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +94,10 @@ def get_catalog(
     makes no HuggingFace request. The browse total is unknown because
     HuggingFace exposes no count, so it is None.
     """
-    picks = get_picks()
+    all_picks = get_picks()
+    host, offers = session_host(), default_offers()
+    refused: list[tuple[CatalogModel, HiddenModel]] = []
+    picks = list(_runnable_rows(all_picks, host, offers, refused))
     keep = _row_filter(
         task=task,
         search=search,
@@ -96,10 +109,16 @@ def get_catalog(
     leading = _sort_models([m for m in picks if keep(m)], sort)
     wanted = offset + limit + 1 - len(leading)
     hf_matches: list[CatalogModel] = []
-    scan = _HfScan(task, search)
+    scan = _HfScan(
+        task, search, sorted({ModelFormat(f) for o in offers for f in o.adapter.formats})
+    )
     if not featured and wanted > 0:
-        pick_repos = {m.hf_repo for m in picks}
-        rows = (m for m in scan.rows() if m.hf_repo not in pick_repos)
+        pick_repos = {m.hf_repo for m in all_picks}
+        rows = (
+            m
+            for m in _runnable_rows(scan.rows(), host, offers, refused)
+            if m.hf_repo not in pick_repos
+        )
         hf_matches = list(islice(filter(keep, rows), wanted))
     window = page_window(len(leading), offset, limit)
     hf_page = hf_matches[window.rest_offset : window.rest_offset + window.rest_limit]
@@ -110,28 +129,47 @@ def get_catalog(
         models=leading[offset : offset + limit] + _sort_models(hf_page, sort),
         has_more=len(leading) + len(hf_matches) > offset + limit,
         truncated=scan.truncated,
+        hidden=tuple({h.hf_repo: h for m, h in refused if keep(m)}.values()),
     )
+
+
+def _runnable_rows(
+    rows: Iterable[CatalogModel],
+    host: HostCaps,
+    offers: Sequence[EngineOffer],
+    refused: list[tuple[CatalogModel, HiddenModel]],
+) -> Iterator[CatalogModel]:
+    """Rows an engine can run here, with their runnable formats; the others go to *refused*."""
+    for model in rows:
+        why = explain(model.formats, host, offers)
+        if why is None:
+            yield replace(model, formats=runnable_formats(model.formats, host, offers))
+        else:
+            refused.append((model, HiddenModel(model.hf_repo, why.reason.value, why.text)))
 
 
 class _HfScan:
     """A lazy read of the HuggingFace rows for one browse, bounded per pipeline tag."""
 
-    def __init__(self, task: ModelTask | None, search: str) -> None:
+    def __init__(self, task: ModelTask | None, search: str, formats: Sequence[ModelFormat]) -> None:
         self._task = task
+        self._formats = formats
         self._search = search
         self.truncated = False
 
     def rows(self) -> Iterator[CatalogModel]:
         """Rows across the task's pipeline tags, most downloaded first, deduped."""
         hf_tags, hf_library = task_to_pipeline(self._task)
-        streams = [self._tag_rows(tag, hf_library) for tag in hf_tags]
+        streams = [self._tag_rows(tag, hf_library, fmt) for tag in hf_tags for fmt in self._formats]
         seen: set[str] = set()
         for model in heapq.merge(*streams, key=_by_downloads_desc):
             if model.hf_repo not in seen:
                 seen.add(model.hf_repo)
                 yield model
 
-    def _tag_rows(self, pipeline_tag: str, library: str | None) -> Iterator[CatalogModel]:
+    def _tag_rows(
+        self, pipeline_tag: str, library: str | None, fmt: ModelFormat
+    ) -> Iterator[CatalogModel]:
         """Rows for one pipeline tag; sets ``truncated`` when the bound leaves pages unread."""
         hf_client = get_services().hf_client
         cursor: str | None = None
@@ -142,6 +180,7 @@ class _HfScan:
                 library=library,
                 search=self._search,
                 cursor=cursor,
+                fmt=fmt,
             )
             yield from page.models
             if page.next_cursor is None:
@@ -269,6 +308,7 @@ def build_adhoc_entry(
     *,
     gguf_filename: str = GGUF_GLOB,
     task: ModelTask = ModelTask.CHAT,
+    fmt: ModelFormat = ModelFormat.GGUF,
 ) -> CatalogModel:
     """Minimal CatalogModel for a HuggingFace GGUF repo.
 
@@ -285,7 +325,16 @@ def build_adhoc_entry(
         featured=False,
         downloads=0,
         task=task,
+        format=fmt,
     )
+
+
+def _format_pull_target(hf_repo: str, fmt: ModelFormat) -> CatalogModel | None:
+    """The pullable entry for ``<repo>#<format>``, or None when the repo id is malformed."""
+    if not _is_hf_repo_id(hf_repo):
+        return None
+    task = ModelTask(reclassify_by_name(hf_repo, ModelTask.CHAT))
+    return build_adhoc_entry(hf_repo, task=task, fmt=fmt)
 
 
 def resolve_pull_target(model: str) -> CatalogModel | None:
@@ -298,7 +347,13 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
     # circular: modelhub.registry imports catalog.query at top
     from lilbee.modelhub.registry import parse_hf_ref
 
-    if model.endswith(GGUF_SUFFIX) and model.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
+    try:
+        parsed = parse_model_ref(model)
+    except ValueError:
+        return None
+    if parsed.format is not ModelFormat.GGUF:
+        return _format_pull_target(parsed.hf_repo, parsed.format)
+    if is_native_gguf_shape(model):
         try:
             hf_repo, gguf_filename = parse_hf_ref(model)
         except ValueError:

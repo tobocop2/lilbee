@@ -111,6 +111,12 @@ A role the engine does not claim answers 400, 404, 405 or 501, or answers with a
 
 Evidence: row 32, row 33, row 46, row 47. Row 33 is a chat model that answers 501 on rerank.
 
+### E14 Response format and JSON schema
+
+A chat request with `response_format` of type `json_object` gets content that parses whole to an object, with no code fence and no trailing text. A request of type `json_schema` gets content that also holds every required key with the declared type and no other key. An engine that ignores the field fails. The row runs only when the engine claims `json`. No caller in `src/lilbee` sends the field today, so a failure does not refuse the engine.
+
+Evidence: no spike row. Issue 1190 lists the field.
+
 ### L1 No tokenize route
 
 Without `/tokenize` or `/detokenize` the client estimates the token count. Embed and rerank do not fail.
@@ -260,6 +266,15 @@ Every spike row maps to a requirement or has a reason. Rows 7 and 49 are an llam
 | 53 | L1 | |
 | 54 | E8 | works |
 | 55 | E7 | real run, see E7 |
+
+## Recordings of a real engine
+
+A recording of a real engine is a file under `tests/conformance/fixtures/engines/`. Take it with `python -m tests.conformance.record_presets` and the `--strict` flag. The flag adds the steps `json_object`, `json_schema`, `reasoning` and `named`, and a two-image `vision` step. The file stores `"strict": true`, and a test fails for each recording that does not. The replay tests run each recording through the real provider with no server, in the `integration` job.
+
+The step `named` sends one request through the routing provider. It passes when the log line `served by engine=<name> version=<version> role=<role> model=<id>` and the `serving` entry of the status for that role both name the engine. A server preset has the preset name as its engine name and `preset` as its version. A managed engine has its name and its pin.
+
+The 7 preset recordings in `tests/conformance/fixtures/presets/` are not strict and have no `reasoning` step. The `reasoning` step of a strict recording reads the answer text and the finish reason through the provider. It does not read `reasoning_content` or `reasoning`. A pass of the preset `reasoning` step does not prove that the engine splits reasoning from the answer. Row E6 of the wire harness proves the split.
+
 
 ## Add an engine
 

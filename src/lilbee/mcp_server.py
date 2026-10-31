@@ -65,6 +65,7 @@ from lilbee.app.settings import (
     requires_services_reset,
     reset_settings,
 )
+from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
@@ -93,6 +94,7 @@ from lilbee.data.store import (
     agent_owner,
     scope_to_chunk_type,
 )
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.runtime.lock import ResetRefusedError
@@ -1282,6 +1284,8 @@ def catalog_browse(
         "offset": result.offset,
         "has_more": result.has_more,
         "truncated": result.truncated,
+        "hidden": [asdict(h) for h in result.hidden],
+        "hidden_summary": hidden_summary([h.text for h in result.hidden]),
         "models": [
             {
                 "ref": m.hf_repo,
@@ -1295,6 +1299,7 @@ def catalog_browse(
                 "architecture": m.architecture,
                 "compat": m.compat.value,
                 "safety_stripped": m.safety_stripped,
+                "formats": sorted(f.value for f in m.formats),
             }
             for m in result.models
         ],
@@ -1374,7 +1379,7 @@ async def model_pull(
                 cancel=cancel,
             )
         except UnsupportedArchError as exc:
-            engine = get_services().engine
+            engine = get_services().engines.for_ref(model)
             return {
                 "ok": False,
                 "command": "model_pull",
@@ -1386,7 +1391,7 @@ async def model_pull(
                     "total_supported": len(engine.architectures),
                 },
             }
-        except (RuntimeError, PermissionError) as exc:
+        except (RuntimeError, PermissionError, NoEngineError) as exc:
             return _error(str(exc))
     return result.model_dump()
 

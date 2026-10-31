@@ -141,10 +141,11 @@ def plan_fanout() -> list[ShardSpec]:
     from lilbee.app.services import get_services
     from lilbee.data.ingest.discovery import corpus_has_at_least
     from lilbee.providers.fleet.replicas import gpu_device_count
+    from lilbee.providers.roles import WorkerRole
 
     # The count runs the device probe under the pin, so a gpu_devices pin is the
     # space the workers are dealt in: they are never dealt a card the pin excludes.
-    devices = gpu_device_count(get_services().engine)
+    devices = gpu_device_count(get_services().engines.for_role(WorkerRole.EMBED).adapter)
     processes = resolve_process_count(devices)
     if processes < _MIN_FANOUT_WORKERS or not corpus_has_at_least(_MIN_FILES_FOR_FANOUT):
         return []

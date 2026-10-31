@@ -49,11 +49,12 @@ def create_sdk_provider() -> SdkLLMProvider:
 
 
 def create_provider(
-    config: Config, *, engine: EngineAdapter, hold_warm: bool = False
+    config: Config, *, engine: Callable[[], EngineAdapter], hold_warm: bool = False
 ) -> LLMProvider:
     """Create a new LLM provider instance from the given config.
 
-    *engine* is the inference engine a local fleet runs on.
+    *engine* returns the inference engine a local fleet runs on, and raises when the
+    chat model has none; it runs on the first local use, not at creation.
 
     *hold_warm* marks the provider as serving an interactive session, so a local
     fleet bound to that session keeps its weights resident instead of

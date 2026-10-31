@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar, NamedTuple
 
 from textual import getters, on, work
@@ -32,8 +32,10 @@ from lilbee.catalog import (
     resolve_filename,
 )
 from lilbee.catalog.download import _BYTES_PER_GB, download_bytes
-from lilbee.catalog.models import estimate_min_ram_gb
-from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
+from lilbee.catalog.models import CatalogResult, estimate_min_ram_gb
+from lilbee.catalog.refs import is_gguf_filename
+from lilbee.catalog.runnable import hidden_summary
+from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_grouping import (
@@ -76,6 +78,7 @@ from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.catalog_detail import CatalogDetailDrawer
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
+from lilbee.cli.tui.widgets.format_picker import FormatPicker
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -85,6 +88,7 @@ from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import RemoteModel, classify_all_remote_models
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD
 from lilbee.runtime.hardware import available_memory_for_fit, chip_for_size
 
@@ -326,6 +330,7 @@ class CatalogScreen(Screen[None]):
         self._search_offset: int = 0
         self._search_has_more: bool = False
         self._search_truncated: bool = False
+        self._hidden_texts: dict[str, str] = {}
         self._frontier_rows: list[FrontierCatalogRow] = []
         # Bumped on every worker callback so the _all_*_rows caches
         # invalidate even when collection lengths happen to coincide.
@@ -655,6 +660,15 @@ class CatalogScreen(Screen[None]):
         """
         return self._active_listing_flag(self._search_has_more, self._hf_has_more_by_task)
 
+    def _note_hidden(self, result: CatalogResult) -> None:
+        """Remember the rows the listing hid, keyed by repo, with the reason text."""
+        self._hidden_texts.update({h.hf_repo: h.text for h in result.hidden})
+
+    def _hidden_note(self) -> str:
+        """The hidden-row count and reasons, worded as the server lists them; empty when none."""
+        summary = hidden_summary(list(self._hidden_texts.values()))
+        return msg.CATALOG_HIDDEN_NOTE.format(summary=summary) if summary else ""
+
     def _active_task_truncated(self) -> bool:
         """True iff the active task tab's listing stopped at the scan bound with rows unread."""
         return self._active_listing_flag(self._search_truncated, self._hf_truncated_by_task)
@@ -877,6 +891,7 @@ class CatalogScreen(Screen[None]):
         )
         self._hf_has_more_by_task[task] = result.has_more
         self._hf_truncated_by_task[task] = result.truncated
+        self._note_hidden(result)
         existing_repos = {m.hf_repo for m in self._hf_models}
         return [m for m in result.models if not m.featured and m.hf_repo not in existing_repos]
 
@@ -950,6 +965,7 @@ class CatalogScreen(Screen[None]):
         )
         self._search_has_more = result.has_more
         self._search_truncated = result.truncated
+        self._note_hidden(result)
         return [m for m in result.models if not m.featured and m.hf_repo not in existing_repos]
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
@@ -1538,10 +1554,10 @@ class CatalogScreen(Screen[None]):
         if self._loading_more:
             return msg.CATALOG_GRID_LOADING_MORE.format(frame=SPINNER_FRAMES[self._spinner_frame])
         if self._active_task_has_more():
-            return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count)
+            return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count) + self._hidden_note()
         if self._active_task_truncated():
-            return msg.CATALOG_GRID_CUT_SHORT.format(count=hf_count)
-        return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
+            return msg.CATALOG_GRID_CUT_SHORT.format(count=hf_count) + self._hidden_note()
+        return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count) + self._hidden_note()
 
     def _mount_grid_ctas(self, *, hf_count: int) -> None:
         try:
@@ -1955,6 +1971,7 @@ class CatalogScreen(Screen[None]):
             count = msg.CATALOG_LIST_CUT_SHORT.format(count=n_total)
         else:
             count = msg.CATALOG_LIST_COUNT.format(count=n_total)
+        count += self._hidden_note()
         hint = msg.CATALOG_SEARCHING_HF if self._search_in_flight else msg.CATALOG_VIEW_TOGGLE_LIST
         label.update(f"Sort: {self._sort_column} ({direction})  |  {count}  |  {hint}")
 
@@ -2136,6 +2153,17 @@ class CatalogScreen(Screen[None]):
         self._install_model(entry)
 
     def _install_model(self, model: CatalogModel) -> None:
+        if len(model.formats) > 1:
+
+            def _after_pick(chosen: ModelFormat | None) -> None:
+                if chosen is not None:
+                    self._install_format(replace(model, format=chosen))
+
+            self.app.push_screen(FormatPicker(model.display_name, model.formats), _after_pick)
+            return
+        self._install_format(model)
+
+    def _install_format(self, model: CatalogModel) -> None:
         if self.app.task_bar.pending_download(model) is not None:
             self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
             return
@@ -2143,12 +2171,17 @@ class CatalogScreen(Screen[None]):
         # file is named here, so the check asks HuggingFace what it really costs.
         needed = int(model.size_gb * _BYTES_PER_GB)
         try:
-            filename = resolve_filename(model, get_services().engine)
-            dest = cfg.models_dir / filename
-            if dest.exists():
-                self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
-                return
-            needed = download_bytes(model.hf_repo, filename)
+            engine = get_services().engines.for_ref(model.pull_ref)
+            if model.format is ModelFormat.GGUF:
+                filename = resolve_filename(model, engine)
+                dest = cfg.models_dir / filename
+                if dest.exists():
+                    self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
+                    return
+                needed = download_bytes(model.hf_repo, filename)
+        except NoEngineError as exc:
+            self.notify(str(exc), severity="error")
+            return
         except Exception:
             log.debug("Could not resolve filename", exc_info=True)
 
@@ -2212,7 +2245,7 @@ class CatalogScreen(Screen[None]):
         field = _model_field_for_task(model.task)
         if getattr(cfg, field):
             return
-        apply_active_model(self.app, field, model.ref)
+        apply_active_model(self.app, field, model.pull_ref)
         if field == "chat_model":
             self.app.notify(msg.CHAT_READY_TOAST)
 
@@ -2307,7 +2340,7 @@ class CatalogScreen(Screen[None]):
         resolve to the lexicographically-first matching installed
         manifest; full refs and remote names pass through.
         """
-        if "/" in identity and identity.endswith(".gguf"):
+        if "/" in identity and is_gguf_filename(identity):
             return identity
         prefix = identity + "/"
         matches = sorted(n for n in self._installed_names if n.startswith(prefix))

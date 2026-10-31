@@ -64,7 +64,7 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engine: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engines: ([], {}, 0, {}),
     )
     monkeypatch.setattr(
         planning,
@@ -103,7 +103,12 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
 
     placement = planning._resolve_placement(
-        spec, [], {WorkerRole.CHAT: "ref"}, devices, unified_budget=None, engine=LLAMA
+        spec,
+        [],
+        {WorkerRole.CHAT: "ref"},
+        devices,
+        unified_budget=None,
+        engines=planning.engines_for_all_roles(LLAMA),
     )
 
     assert captured["spec"] is spec
@@ -123,7 +128,9 @@ def test_auto_planner_charged_against_total_capacity(monkeypatch):
         return Placement(instances=(), unplaceable_roles=())
 
     monkeypatch.setattr(planning, "plan_placement", fake_plan)
-    planning._resolve_placement(None, [], {}, devices, unified_budget=None, engine=LLAMA)
+    planning._resolve_placement(
+        None, [], {}, devices, unified_budget=None, engines=planning.engines_for_all_roles(LLAMA)
+    )
     assert captured["devs"] == [(0, 80 * GIB)]  # total, not the 5 GiB free
 
 
@@ -144,7 +151,12 @@ def test_saved_spec_that_no_longer_fits_falls_back_to_auto(monkeypatch, caplog):
 
     with caplog.at_level(logging.WARNING):
         placement, spec_applied = planning._placement_or_auto(
-            spec, [], {WorkerRole.EMBED: "ref"}, devices, unified_budget=None, engine=LLAMA
+            spec,
+            [],
+            {WorkerRole.EMBED: "ref"},
+            devices,
+            unified_budget=None,
+            engines=planning.engines_for_all_roles(LLAMA),
         )
 
     assert placement is auto
@@ -162,7 +174,12 @@ def test_saved_spec_that_fits_is_applied(monkeypatch):
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
 
     placement, spec_applied = planning._placement_or_auto(
-        spec, [], {WorkerRole.CHAT: "ref"}, devices, unified_budget=None, engine=LLAMA
+        spec,
+        [],
+        {WorkerRole.CHAT: "ref"},
+        devices,
+        unified_budget=None,
+        engines=planning.engines_for_all_roles(LLAMA),
     )
 
     assert placement is manual
@@ -176,7 +193,7 @@ def test_no_saved_spec_is_not_reported_as_applied(monkeypatch):
     monkeypatch.setattr(planning, "_resolve_placement", lambda *_a, **_kw: auto)
 
     placement, spec_applied = planning._placement_or_auto(
-        None, [], {}, devices, unified_budget=None, engine=LLAMA
+        None, [], {}, devices, unified_budget=None, engines=planning.engines_for_all_roles(LLAMA)
     )
 
     assert placement is auto
@@ -196,7 +213,7 @@ def test_interactive_resolve_still_raises(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engine: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engines: ([], {}, 0, {}),
     )
 
     def refuse(*_a, **_kw):
@@ -223,7 +240,7 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engine: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engines: ([], {}, 0, {}),
     )
 
     def refuse(spec, *_a, **_kw):
@@ -243,14 +260,15 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
 def test_no_spec_uses_auto_planner(monkeypatch):
     devices = [FleetDevice("CUDA", 0, "A", 80 * GIB, 80 * GIB)]
     called = {}
-    monkeypatch.setattr(
-        planning,
-        "plan_placement",
-        lambda inputs, devs, *, estimate_peak, unified_budget, **_kw: (
-            called.setdefault("auto", True) or Placement(instances=(), unplaceable_roles=())
-        ),
+
+    def fake_plan(inputs, devs, *, estimate_peak, unified_budget, **_kw):
+        called["auto"] = True
+        return Placement(instances=(), unplaceable_roles=())
+
+    monkeypatch.setattr(planning, "plan_placement", fake_plan)
+    planning._resolve_placement(
+        None, [], {}, devices, unified_budget=None, engines=planning.engines_for_all_roles(LLAMA)
     )
-    planning._resolve_placement(None, [], {}, devices, unified_budget=None, engine=LLAMA)
     assert called.get("auto") is True
 
 
@@ -273,5 +291,5 @@ def test_a_tight_role_reaches_the_placement_view(monkeypatch, tmp_path) -> None:
         model_refs={WorkerRole.CHAT: "org/chat.gguf"},
         tight_roles={WorkerRole.CHAT: 3 * 1024**3},
     )
-    view = _view(resolved, manual=False, spec_json=None)
+    view = _view(resolved, LLAMA, manual=False, spec_json=None)
     assert [(t.role, t.shortfall_bytes) for t in view.tight] == [(WorkerRole.CHAT, 3 * 1024**3)]

@@ -21,7 +21,6 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
 from lilbee.providers.roles import WorkerRole
-from lilbee.providers.routing_provider import _is_native_rerank_ref
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     CompletionResult,
@@ -39,6 +38,7 @@ from lilbee.providers.server_registry import (
     decode_entries,
     route_for,
 )
+from lilbee.providers.serving import is_native_rerank_ref
 from tests import _fake_sdk as fakes
 
 PRESET_KEY = "SENTINEL-preset-key-77aa"
@@ -275,10 +275,10 @@ class TestRegistryRef:
     def test_a_bare_repo_under_a_preset_name_is_not_a_native_rerank_ref(self) -> None:
         services = mock.MagicMock()
         services.registry.installed_ref_for_repo.return_value = "org/repo/q.gguf"
-        with mock.patch("lilbee.providers.routing_provider.get_services", return_value=services):
-            assert _is_native_rerank_ref("wired/repo", LLAMA) is True
+        with mock.patch("lilbee.providers.serving.get_services", return_value=services):
+            assert is_native_rerank_ref("wired/repo", LLAMA) is True
             _store(_preset())
-            assert _is_native_rerank_ref("wired/repo", LLAMA) is False
+            assert is_native_rerank_ref("wired/repo", LLAMA) is False
 
 
 class TestSdkProviderRouting:

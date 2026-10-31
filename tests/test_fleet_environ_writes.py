@@ -239,18 +239,23 @@ def test_planning_on_a_worker_thread_writes_no_environment(
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: binary)
     monkeypatch.setattr(planning, "_plan_devices", lambda _binary, engine: [])
     monkeypatch.setattr(planning, "_launched_roles", lambda engine: ())
-    monkeypatch.setattr(planning, "plan_launches", lambda *_a, **_k: "plan")
+    monkeypatch.setattr(
+        planning, "plan_launches", lambda *_a, **_k: planning.FleetPlan(launches=())
+    )
 
     recording = _RecordingEnviron(dict(os.environ))
     monkeypatch.setattr(os, "environ", recording)
     result: list[object] = []
     thread = threading.Thread(
-        target=lambda: result.append(planning.plan_all_launches(engine=LLAMA)), name="fleet-warm-up"
+        target=lambda: result.append(
+            planning.plan_all_launches(engines=planning.engines_for_all_roles(LLAMA))
+        ),
+        name="fleet-warm-up",
     )
     thread.start()
     thread.join(timeout=30)
 
-    assert result == ["plan"]
+    assert [plan.launches for plan in result] == [()]
     assert recording.writes == []
 
 

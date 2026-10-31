@@ -33,9 +33,9 @@ from lilbee.providers.fleet.devices import (
     host_lacks_nvlink,
     visible_env,
 )
-from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest, MemoryRequest
-from lilbee.providers.fleet.engines.base import MemoryKind
+from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.placement import (
     InstancePlan,
     ModelPlacementInput,
@@ -951,7 +951,9 @@ def _placement_estimate_slots(role: WorkerRole, meta: dict[str, str] | None) -> 
     return _AUX_SLOTS
 
 
-def _peak_estimator(model_refs: dict[WorkerRole, str], engine: EngineAdapter) -> PeakEstimator:
+def _peak_estimator(
+    model_refs: dict[WorkerRole, str], engines: Mapping[WorkerRole, EngineAdapter]
+) -> PeakEstimator:
     """Per-device VRAM-vector estimator for the planner, bound to the configured models.
 
     Estimates each role at its launch ceiling (ctx x slots) with the candidate
@@ -959,6 +961,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str], engine: EngineAdapter) ->
     """
 
     def estimate_peak(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
+        engine = engines[role]
         path = engine_params.resolve_model_path(model_refs[role])
         meta = engine.model_meta(path)
         mmproj = _vision_mmproj(model_refs[role]) if role is WorkerRole.VISION else None
@@ -985,7 +988,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str], engine: EngineAdapter) ->
 
 
 def _chat_split_ctx_objective(
-    model_refs: dict[WorkerRole, str], engine: EngineAdapter
+    model_refs: dict[WorkerRole, str], engines: Mapping[WorkerRole, EngineAdapter]
 ) -> tuple[SplitCtxFitter | None, int]:
     """The chat split's context fitter and target, or ``(None, 0)`` with no chat model.
 
@@ -995,6 +998,7 @@ def _chat_split_ctx_objective(
     """
     if WorkerRole.CHAT not in model_refs:
         return None, 0
+    engine = engines[WorkerRole.CHAT]
     path = engine_params.resolve_model_path(model_refs[WorkerRole.CHAT])
     meta = engine.model_meta(path)
     target = _placement_estimate_ctx(WorkerRole.CHAT, path, meta)
@@ -1547,12 +1551,15 @@ def role_model_placeable(
 def _server_model_inputs(
     roles: tuple[WorkerRole, ...] | None = None,
     *,
-    engine: EngineAdapter,
+    engines: Mapping[WorkerRole, EngineAdapter],
     unified_budget: int | None = None,
     device_count: int = 0,
     total_vram: int = 0,
 ) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int, dict[WorkerRole, str]]:
     """Build placement inputs for the configured server roles.
+
+    Each role is sized by its own engine in *engines*; a role with no engine there
+    is not planned.
 
     The search and vision roles are estimated first; chat is then sized against the
     budget minus the search footprint (the ``reservation``) so a large chat cannot
@@ -1572,7 +1579,7 @@ def _server_model_inputs(
     skipped_not_installed: dict[WorkerRole, str] = {}
 
     def consider(role: WorkerRole, *, chat_reservation: int = 0) -> None:
-        if roles is not None and role not in roles:
+        if (roles is not None and role not in roles) or role not in engines:
             return
         # Any role may be "" (unconfigured) -> skipped, so that role has no
         # server and no not-installed complaint.
@@ -1586,7 +1593,7 @@ def _server_model_inputs(
         estimate = _estimate_or_fallback(
             role,
             ref,
-            engine=engine,
+            engine=engines[role],
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
             device_count=device_count,
@@ -2892,14 +2899,18 @@ def _resolve_placement(
     model_refs: dict[WorkerRole, str],
     devices: list[FleetDevice],
     *,
-    engine: EngineAdapter,
+    engines: Mapping[WorkerRole, EngineAdapter],
     unified_budget: int | None,
     charge_against_free: bool = False,
 ) -> Placement:
     """Resolve a Placement from the manual spec when set, else the auto planner."""
-    estimate_peak = _peak_estimator(model_refs, engine)
+    estimate_peak = _peak_estimator(model_refs, engines)
     capacity = _device_capacity(devices, charge_against_free)
+    unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
     if placement is not None:
+        if unpinnable:
+            names = ", ".join(role.value for role in unpinnable)
+            raise PlacementError(f"the engine of {names} cannot be told which GPU to use")
         return placement_from_spec(
             placement,
             tuple(model_refs),
@@ -2910,19 +2921,55 @@ def _resolve_placement(
     # launch sizes its context against) so placement and launch agree. A split needs
     # >=2 GPUs, so skip the chat model's gguf read entirely below that.
     chat_ctx_fit, chat_ctx_target = (
-        _chat_split_ctx_objective(model_refs, engine)
+        _chat_split_ctx_objective(model_refs, engines)
         if len(capacity) >= _MIN_SPLIT_GPUS
         else (None, 0)
     )
-    return plan_placement(
-        inputs,
+    placed = plan_placement(
+        [model for model in inputs if model.role not in unpinnable],
         [(idx, budget) for idx, budget in capacity.items()],
         estimate_peak=estimate_peak,
         unified_budget=unified_budget,
         chat_ctx_fit=chat_ctx_fit,
         chat_ctx_target=chat_ctx_target,
         free_headroom={d.index: d.free_bytes for d in devices},
+        refuse_oversize=_is_mixed(engines),
     )
+    return replace(placed, unplaceable_roles=(*placed.unplaceable_roles, *unpinnable))
+
+
+def _roles_without_a_pin(
+    inputs: list[ModelPlacementInput],
+    devices: list[FleetDevice],
+    engines: Mapping[WorkerRole, EngineAdapter],
+    unified_budget: int | None,
+) -> tuple[WorkerRole, ...]:
+    """Roles of a mixed plan on several discrete cards whose engine a pin cannot reach."""
+    if unified_budget is not None or len(devices) < _MIN_SPLIT_GPUS or not _is_mixed(engines):
+        return ()
+    return tuple(
+        model.role
+        for model in inputs
+        if model.est_vram_bytes > 0 and not _pin_reaches(engines[model.role], devices)
+    )
+
+
+def _pin_reaches(engine: EngineAdapter, devices: list[FleetDevice]) -> bool:
+    """Whether a pin to one of *devices* names the same card for a process of *engine*.
+
+    An index means a card only in the backend it was read from, so the engine must
+    report the backend of the plan's *devices*, and then take the pin by environment
+    or by device name. The engine's own reading is asked for, since a planning pass
+    answers every snapshot read about one engine.
+    """
+    try:
+        reported = _read_device_cache.get(engine.binary(), engine).devices
+    except (ProviderError, OSError, RuntimeError):
+        return False
+    if not reported or reported[0].backend != devices[0].backend:
+        return False
+    one = (devices[0],)
+    return bool(visible_env(one)) or (engine.takes_device_names and bool(_device_names(one)))
 
 
 def _placement_or_auto(
@@ -2931,7 +2978,7 @@ def _placement_or_auto(
     model_refs: dict[WorkerRole, str],
     devices: list[FleetDevice],
     *,
-    engine: EngineAdapter,
+    engines: Mapping[WorkerRole, EngineAdapter],
     unified_budget: int | None,
     charge_against_free: bool = False,
 ) -> tuple[Placement, bool]:
@@ -2951,7 +2998,7 @@ def _placement_or_auto(
             inputs,
             model_refs,
             devices,
-            engine=engine,
+            engines=engines,
             unified_budget=unified_budget,
             charge_against_free=charge_against_free,
         ), False
@@ -2961,7 +3008,7 @@ def _placement_or_auto(
             inputs,
             model_refs,
             devices,
-            engine=engine,
+            engines=engines,
             unified_budget=unified_budget,
             charge_against_free=charge_against_free,
         ), True
@@ -2976,7 +3023,7 @@ def _placement_or_auto(
         inputs,
         model_refs,
         devices,
-        engine=engine,
+        engines=engines,
         unified_budget=unified_budget,
         charge_against_free=charge_against_free,
     ), False
@@ -3024,21 +3071,22 @@ def resolve_placement_plan(
     binary = engine.binary()
     reading = _read_device_cache.get(binary, engine)
     devices = reading.devices
+    engines = engines_for_all_roles(engine)
     unified_budget = _unified_memory_budget(devices, engine)
     inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
         None,
-        engine=engine,
+        engines=engines,
         unified_budget=unified_budget,
         total_vram=sum(d.total_bytes for d in devices),
     )
     admission_budget = _unified_admission_budget(devices, engine)
     if fall_back_to_auto:
         resolved, spec_applied = _placement_or_auto(
-            placement, inputs, model_refs, devices, engine=engine, unified_budget=admission_budget
+            placement, inputs, model_refs, devices, engines=engines, unified_budget=admission_budget
         )
     else:
         resolved = _resolve_placement(
-            placement, inputs, model_refs, devices, engine=engine, unified_budget=admission_budget
+            placement, inputs, model_refs, devices, engines=engines, unified_budget=admission_budget
         )
         spec_applied = placement is not None
     return ResolvedPlacement(
@@ -3067,22 +3115,83 @@ class FleetPlan:
     # Launches refused for a window below the minimum grounded prompt
     # (role -> user-facing reason with the numbers).
     skipped_unusable_ctx: dict[WorkerRole, str] = field(default_factory=dict)
+    # Configured roles whose engine mapping has no engine (role -> ref); the plan
+    # warns for each. Left out of the repr so a one-engine plan reads as it always did.
+    skipped_no_engine: dict[WorkerRole, str] = field(default_factory=dict, repr=False)
 
 
-def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, str]) -> None:
-    """Warn about placements that exceed the memory budget.
+def _is_mixed(engines: Mapping[WorkerRole, EngineAdapter]) -> bool:
+    """Whether *engines* holds more than one engine."""
+    return len({engine.name for engine in engines.values()}) > 1
 
-    Shared-memory roles that fit nowhere get no server (loading them would OOM the
-    host). GPU roles are never refused: one whose estimate exceeds the free VRAM
-    still loads on demand, with a warning carrying the shortfall.
+
+def _log_refused_roles(
+    placement: Placement,
+    model_refs: dict[WorkerRole, str],
+    engines: Mapping[WorkerRole, EngineAdapter],
+    inputs: list[ModelPlacementInput],
+    devices: list[FleetDevice],
+    *,
+    unified_budget: int | None,
+    capacity: dict[int, int],
+) -> None:
+    """Warn for each role that gets no server, with its cause and the next step.
+
+    On one pool the budget is the cause. On discrete cards the causes are checked
+    in order: a pin that cannot reach the engine, a role larger than the largest
+    card with no split that holds it, and a role with no room beside the others.
     """
+    mixed = _is_mixed(engines)
+    unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
+    charges = {model.role: model.est_vram_bytes for model in inputs}
+    largest_usable = max(capacity.values(), default=0) * usable_vram_fraction()
     for role in placement.unplaceable_roles:
-        log.warning(
-            "%s model %s does not fit available memory and will not be served; "
-            "free up memory or use a smaller model.",
-            role.value,
-            model_refs[role],
-        )
+        engine = engines[role].name
+        model = f"{model_refs[role]} ({engine})" if mixed else model_refs[role]
+        if unified_budget is not None:
+            log.warning(
+                "%s model %s does not fit available memory and will not be served; "
+                "free up memory or use a smaller model.",
+                role.value,
+                model,
+            )
+        elif role in unpinnable:
+            log.warning(
+                "%s model %s will not be served: this host has %d GPUs and %s cannot be "
+                "told which one to use. Use another engine for this role.",
+                role.value,
+                model,
+                len(devices),
+                engine,
+            )
+        elif charges[role] > largest_usable:
+            log.warning(
+                "%s model %s needs %.1f GiB, more than any one GPU can hold (%.1f GiB "
+                "usable), and no split across the GPUs holds it, so it will not be "
+                "served. Use a smaller model.",
+                role.value,
+                model,
+                charges[role] / 1024**3,
+                largest_usable / 1024**3,
+            )
+        else:
+            log.warning(
+                "%s model %s does not fit beside the other models in GPU memory and will "
+                "not be served; free up GPU memory or use a smaller model.",
+                role.value,
+                model,
+            )
+
+
+def _log_placement_findings(
+    placement: Placement,
+    model_refs: dict[WorkerRole, str],
+) -> None:
+    """Warn about a role that loads over its estimate and about roles that share a card.
+
+    With one engine a GPU role is never refused: one whose estimate exceeds the free
+    VRAM still loads on demand, with a warning carrying the shortfall.
+    """
     for role, shortfall in placement.tight_roles.items():
         log.warning(
             "Memory is tight for the %s model %s: it is estimated to need %.1f GiB more "
@@ -3135,11 +3244,27 @@ def plan_launches(
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
     *,
-    engine: EngineAdapter,
+    engines: Mapping[WorkerRole, EngineAdapter],
 ) -> FleetPlan:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
-    with _one_engine_per_pass(engine=engine):
-        return _planned_launches(roles, binary, by_index, devices, engine)
+    snapshot_engine = _snapshot_engine(engines)
+    with _one_engine_per_pass(engine=snapshot_engine):
+        plan = _planned_launches(roles, binary, by_index, devices, engines, snapshot_engine)
+    plan = replace(plan, skipped_no_engine=_roles_without_engine(roles, engines))
+    _log_roles_without_engine(plan)
+    return plan
+
+
+def _log_roles_without_engine(plan: FleetPlan) -> None:
+    """Warn for each configured role that *plan* leaves without an engine."""
+    for role, ref in plan.skipped_no_engine.items():
+        log.warning(
+            "The %s model %s has no engine assigned and will not be served; "
+            "choose an engine for the %s role.",
+            role.value,
+            ref,
+            role.value,
+        )
 
 
 def _planned_launches(
@@ -3147,30 +3272,42 @@ def _planned_launches(
     binary: Path,
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
-    engine: EngineAdapter,
+    engines: Mapping[WorkerRole, EngineAdapter],
+    snapshot_engine: EngineAdapter,
 ) -> FleetPlan:
     """The placement and launches for *roles*, sized and placed against one snapshot."""
     from lilbee.core.config import cfg
 
-    unified_budget = _unified_memory_budget(devices, engine)
+    unified_budget = _unified_memory_budget(devices, snapshot_engine)
     inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
         roles,
-        engine=engine,
+        engines=engines,
         unified_budget=unified_budget,
         device_count=len(devices),
         total_vram=sum(d.total_bytes for d in devices),
     )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
+    admission_budget = _unified_admission_budget(devices, snapshot_engine)
+    # Only the clean-box snapshot's free bytes mean "what other tenants hold";
+    # a live probe here would also be missing the fleet's own residency.
+    charge_against_free = _current_plan_probe(snapshot_engine) is not None
     placement, _spec_applied = _placement_or_auto(
         spec,
         inputs,
         model_refs,
         devices,
-        engine=engine,
-        unified_budget=_unified_admission_budget(devices, engine),
-        # Only the clean-box snapshot's free bytes mean "what other tenants hold";
-        # a live probe here would also be missing the fleet's own residency.
-        charge_against_free=_current_plan_probe(engine) is not None,
+        engines=engines,
+        unified_budget=admission_budget,
+        charge_against_free=charge_against_free,
+    )
+    _log_refused_roles(
+        placement,
+        model_refs,
+        engines,
+        inputs,
+        devices,
+        unified_budget=admission_budget,
+        capacity=_device_capacity(devices, charge_against_free),
     )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
@@ -3186,14 +3323,16 @@ def _planned_launches(
         launch = _launch_for(
             plan,
             model_refs[plan.role],
-            binary,
+            binary
+            if engines[plan.role].name == snapshot_engine.name
+            else engines[plan.role].binary(),
             by_index,
             unified_budget=unified_budget,
             chat_reservation=reservation,
             reserved_by_device=reserved_by_device,
             reserved_after_chat=reserved_after_chat,
             est_vram_bytes=charged.get(plan.role, 0),
-            engine=engine,
+            engine=engines[plan.role],
         )
         reason = _unusable_chat_ctx_reason(launch)
         if reason is not None:
@@ -3247,26 +3386,84 @@ def vision_role_wanted(ref: str) -> bool:
     return chosen is OcrBackendUsed.VISION or _vision_request_grant.granted
 
 
-def _launched_roles(engine: EngineAdapter) -> tuple[WorkerRole, ...]:
-    """The roles a launch plan may serve: the engine's roles, vision only while OCR can reach it."""
+def _launched_roles(engines: Mapping[WorkerRole, EngineAdapter]) -> tuple[WorkerRole, ...]:
+    """The roles a launch plan covers, vision only with OCR.
+
+    A role is covered when its engine serves it or when it has no engine, so the
+    plan reports that role as left without one.
+    """
     from lilbee.core.config import cfg
 
     return tuple(
         role
         for role in ROLE_REGISTRY
-        if role in engine.served_roles
+        if (role not in engines or role in engines[role].served_roles)
         and (role is not WorkerRole.VISION or vision_role_wanted(str(cfg.vision_model)))
     )
 
 
-def plan_all_launches(*, engine: EngineAdapter) -> FleetPlan:
-    """Probe devices and plan launches for the configured roles.
+def engines_for_all_roles(engine: EngineAdapter) -> dict[WorkerRole, EngineAdapter]:
+    """The engine mapping that gives *engine* every role."""
+    return dict.fromkeys(ROLE_REGISTRY, engine)
+
+
+def _snapshot_engine(engines: Mapping[WorkerRole, EngineAdapter]) -> EngineAdapter:
+    """The engine whose device snapshot the plan reads: the one that sees least free memory.
+
+    The devices belong to the host, so engines that disagree are planned against
+    the tightest reading rather than overcommitting on the generous one. An
+    engine that reports no device (CPU only) does not take part; when none
+    reports a device the plan is a CPU plan.
+    """
+    distinct = list({engine.name: engine for engine in engines.values()}.values())
+    if not distinct:
+        raise ProviderError("No engine is assigned to any role, so there is nothing to plan.")
+    if len(distinct) == 1:
+        return distinct[0]
+    free_by_engine: list[tuple[int, EngineAdapter]] = []
+    for engine in distinct:
+        try:
+            devices = _plan_devices(engine.binary(), engine)
+        except (ProviderError, OSError, RuntimeError) as exc:
+            raise ProviderError(
+                f"Cannot read the GPUs of the {engine.name} engine: {exc}. "
+                "Check that the engine is installed and works, or pick another engine."
+            ) from exc
+        if devices:
+            free_by_engine.append((sum(d.free_bytes for d in devices), engine))
+    if not free_by_engine:
+        return distinct[0]
+    return min(free_by_engine, key=lambda pair: pair[0])[1]
+
+
+def plan_all_launches(*, engines: Mapping[WorkerRole, EngineAdapter]) -> FleetPlan:
+    """Probe devices and plan launches for the configured roles, each on its own engine.
 
     Writes no environment: the probe child carries the Vulkan loader safety and any
     ``cfg.gpu_devices`` pin in its own env, and the plan reads the pin from there.
     """
-    binary = engine.binary()
-    with _one_engine_per_pass(engine=engine):
-        devices = _plan_devices(binary, engine)
+    snapshot_engine = _snapshot_engine(engines)
+    binary = snapshot_engine.binary()
+    with _one_engine_per_pass(engine=snapshot_engine):
+        devices = _plan_devices(binary, snapshot_engine)
         by_index = {d.index: d for d in devices}
-        return plan_launches(_launched_roles(engine), binary, by_index, devices, engine=engine)
+        return plan_launches(_launched_roles(engines), binary, by_index, devices, engines=engines)
+
+
+def _roles_without_engine(
+    roles: tuple[WorkerRole, ...] | None, engines: Mapping[WorkerRole, EngineAdapter]
+) -> dict[WorkerRole, str]:
+    """Configured local roles in *roles* that *engines* leaves without an engine (role -> ref)."""
+    from lilbee.core.config import cfg
+
+    missing: dict[WorkerRole, str] = {}
+    for role in ROLE_REGISTRY if roles is None else roles:
+        if role in engines:
+            continue
+        ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
+        if not ref or parse_model_ref(ref).is_remote:
+            continue
+        if role is WorkerRole.VISION and not vision_role_wanted(ref):
+            continue
+        missing[role] = ref
+    return missing
