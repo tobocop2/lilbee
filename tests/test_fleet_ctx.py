@@ -8,6 +8,7 @@ from pathlib import Path
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import ctx as ctx_mod
 from lilbee.providers.fleet.ctx import fit_split_ctx
+from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
 
@@ -50,21 +51,21 @@ def _fit(model_path: Path, **overrides: object) -> int:
 class TestFitSplitCtx:
     def test_returns_floor_when_bottleneck_nonpositive(self, monkeypatch) -> None:
         # No usable headroom on the busiest card -> the floor, without estimating.
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1))
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1))
         assert _fit(Path("/m.gguf"), per_device_free_bytes=[0, 0]) == _DYNAMIC_CTX_FLOOR
 
     def test_returns_floor_when_even_floor_overflows(self, monkeypatch) -> None:
         # The smallest context already exceeds the budget -> launch at the floor anyway.
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
         monkeypatch.setattr(
-            ctx_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 999 * _GB)
+            llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 999 * _GB)
         )
         assert _fit(Path("/m.gguf")) == _DYNAMIC_CTX_FLOOR
 
     def test_returns_quantized_ceiling_when_everything_fits(self, monkeypatch) -> None:
         # Every probe fits -> the largest grid point at or below the ceiling.
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 32768)
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1))
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1))
         result = _fit(Path("/m.gguf"))
         assert (result - _DYNAMIC_CTX_FLOOR) % _DYNAMIC_CTX_QUANTUM == 0
         assert 32768 - _DYNAMIC_CTX_QUANTUM < result <= 32768
@@ -73,7 +74,7 @@ class TestFitSplitCtx:
         # peak == total ctx, so the per-slot value is gated at bottleneck / slots.
         bottleneck_free = 36000  # *0.9 usable -> 32400 budget; slots=4 -> per_slot <= 8100
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _peak_estimator(lambda c: c))
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _peak_estimator(lambda c: c))
         result = _fit(
             Path("/m.gguf"), slots=4, per_device_free_bytes=[bottleneck_free, bottleneck_free]
         )
@@ -97,7 +98,7 @@ class TestFitSplitCtx:
             )
 
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", fake)
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", fake)
         result = _fit(
             Path("/m.gguf"),
             slots=1,
@@ -121,7 +122,7 @@ class TestFitSplitCtx:
         # trained ceiling is 262144, planned for a 24576 ctx_ceiling, is capped there
         # so it can't over-commit VRAM and OOM under load.
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 262144)
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1))
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1))
         result = _fit(Path("/m.gguf"), ctx_ceiling=24576)
         assert 24576 - _DYNAMIC_CTX_QUANTUM < result <= 24576
 
@@ -129,7 +130,7 @@ class TestFitSplitCtx:
         # An estimate with no usable per-device breakdown gates the peak against
         # the tightest card (the conservative direction).
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _peak_estimator(lambda c: c))
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _peak_estimator(lambda c: c))
         result = _fit(Path("/m.gguf"), slots=1, per_device_free_bytes=[40000, 10000])
         assert result <= int(10000 * 0.9)
 
@@ -154,7 +155,7 @@ class TestFitSplitCtx:
             )
 
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 32768)
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", fake)
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", fake)
         result = _fit(
             Path("/m.gguf"), slots=1, ratio=(), per_device_free_bytes=[24 * _GB, 24 * _GB]
         )
@@ -173,7 +174,7 @@ class TestFitSplitCtx:
             )
 
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 8192)
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", fake)
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", fake)
         _fit(Path("/m.gguf"), slots=1, ratio=(), per_device_free_bytes=[24 * _GB])
         assert seen and all(r == () for r in seen)
 
@@ -218,19 +219,23 @@ def _fit_single(model_path: Path, **overrides: object) -> int:
 
 class TestFitSingleCtx:
     def test_returns_floor_when_there_is_no_budget(self, monkeypatch) -> None:
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 1))
+        monkeypatch.setattr(
+            llama_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 1)
+        )
         assert _fit_single(Path("/m.gguf"), available_bytes=0) == _DYNAMIC_CTX_FLOOR
 
     def test_returns_floor_when_even_the_floor_overflows(self, monkeypatch) -> None:
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
         monkeypatch.setattr(
-            ctx_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 999 * _GB)
+            llama_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 999 * _GB)
         )
         assert _fit_single(Path("/m.gguf")) == _DYNAMIC_CTX_FLOOR
 
     def test_returns_the_quantized_ceiling_when_everything_fits(self, monkeypatch) -> None:
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 32768)
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 1))
+        monkeypatch.setattr(
+            llama_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 1)
+        )
         result = _fit_single(Path("/m.gguf"))
         assert (result - _DYNAMIC_CTX_FLOOR) % _DYNAMIC_CTX_QUANTUM == 0
         assert 32768 - _DYNAMIC_CTX_QUANTUM < result <= 32768
@@ -239,7 +244,7 @@ class TestFitSingleCtx:
         # 1 GiB of weights plus 1 MiB per token: 20 GiB backs just under 19456 tokens.
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
         monkeypatch.setattr(
-            ctx_mod,
+            llama_mod,
             "estimate_instance_footprint",
             _single_estimator(lambda c: _GB + c * 1024**2),
         )
@@ -251,7 +256,7 @@ class TestFitSingleCtx:
         # so a fit that read the wrong field would return the ceiling.
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
         monkeypatch.setattr(
-            ctx_mod,
+            llama_mod,
             "estimate_instance_footprint",
             _single_estimator(lambda _c: 0, unified_for=lambda c: _GB + c * 1024**2),
         )
@@ -268,7 +273,7 @@ class TestTheFitChargesWhatTheLaunchRuns:
         seen: list[dict] = []
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 4096)
         monkeypatch.setattr(
-            ctx_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 1, seen=seen)
+            llama_mod, "estimate_instance_footprint", _single_estimator(lambda _c: 1, seen=seen)
         )
         _fit_single(Path("/m.gguf"), expert_offload=("blk.*ffn.*exps.*=CPU",))
         assert seen, "the fit never called the estimator"
@@ -284,7 +289,7 @@ class TestTheFitChargesWhatTheLaunchRuns:
             )
 
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 4096)
-        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", fake)
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", fake)
         _fit(Path("/m.gguf"), expert_offload=("blk.*ffn.*exps.*=CPU",))
         assert seen, "the fit never called the estimator"
         assert all(kw["expert_offload"] == ("blk.*ffn.*exps.*=CPU",) for kw in seen)

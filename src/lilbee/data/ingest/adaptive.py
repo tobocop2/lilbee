@@ -393,10 +393,10 @@ def enumerate_fleet_devices() -> Sequence[DeviceLike]:
     caller treats as "no fleet to feed" and falls back to the static limit.
     """
     try:
-        from lilbee.providers.fleet.binary import resolve_llama_server
+        from lilbee.providers.fleet.engines import LLAMA
         from lilbee.providers.fleet.planning import resolve_devices
 
-        return resolve_devices(resolve_llama_server())
+        return resolve_devices(LLAMA.binary())
     except Exception:
         log.debug("adaptive ingest: device enumeration failed; using static limit", exc_info=True)
         return []

@@ -115,6 +115,7 @@ def build_swap_config(
             env.update(engine_log_env(engine_log_dir, launch.model_id))
         if env:
             entry[_KEY_ENV] = [f"{key}={value}" for key, value in env.items()]
+        entry.update(launch.swap_extras)
         models[launch.model_id] = entry
     config: dict[str, object] = {
         _KEY_HEALTH_TIMEOUT: _health_check_timeout_s(launches),

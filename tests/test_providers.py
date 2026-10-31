@@ -2582,7 +2582,8 @@ def _stub_gguf_parser(monkeypatch: pytest.MonkeyPatch, kv: dict[str, tuple[objec
         }
     }
     monkeypatch.setattr(
-        "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+        "lilbee.providers.fleet.engines.llama.resolve_gguf_parser",
+        lambda: Path("/fake/gguf-parser"),
     )
     monkeypatch.setattr(
         "lilbee.providers.fleet.proc.run_bounded", lambda *a, **k: (_json.dumps(payload), 0)
@@ -2659,7 +2660,7 @@ class TestReadGgufMetadata:
         def _no_parser() -> Path:
             raise RuntimeError("no engine installed")
 
-        monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_gguf_parser", _no_parser)
+        monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_gguf_parser", _no_parser)
         (tmp_path / "model.gguf").write_bytes(b"GGUF")
         assert read_gguf_metadata(tmp_path / "model.gguf") is None
 
@@ -2673,7 +2674,8 @@ class TestReadGgufMetadata:
             raise OSError("cannot spawn")
 
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+            "lilbee.providers.fleet.engines.llama.resolve_gguf_parser",
+            lambda: Path("/fake/gguf-parser"),
         )
         monkeypatch.setattr("lilbee.providers.fleet.proc.run_bounded", _boom)
         (tmp_path / "model.gguf").write_bytes(b"GGUF")
@@ -2690,7 +2692,8 @@ class TestReadGgufMetadata:
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+            "lilbee.providers.fleet.engines.llama.resolve_gguf_parser",
+            lambda: Path("/fake/gguf-parser"),
         )
         monkeypatch.setattr("lilbee.providers.fleet.proc.run_bounded", lambda *a, **k: ("", 1))
         (tmp_path / "model.gguf").write_bytes(b"GGUF")
@@ -2703,7 +2706,8 @@ class TestReadGgufMetadata:
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+            "lilbee.providers.fleet.engines.llama.resolve_gguf_parser",
+            lambda: Path("/fake/gguf-parser"),
         )
         monkeypatch.setattr(
             "lilbee.providers.fleet.proc.run_bounded", lambda *a, **k: ("not json", 0)
@@ -3933,7 +3937,8 @@ def test_parser_kv_skips_array_fields(tmp_path: Path, monkeypatch: pytest.Monkey
         gguf_meta, "_kv_via_parser", gguf_meta._kv_via_parser
     )  # keep the real function
     monkeypatch.setattr(
-        "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+        "lilbee.providers.fleet.engines.llama.resolve_gguf_parser",
+        lambda: Path("/fake/gguf-parser"),
     )
     monkeypatch.setattr(
         "lilbee.providers.fleet.proc.run_bounded",

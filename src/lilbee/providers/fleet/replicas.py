@@ -44,11 +44,11 @@ def gpu_device_count() -> int:
     ingest) degrade gracefully instead of raising.
     """
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.fleet.binary import resolve_llama_server
+    from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.planning import resolve_devices
 
     try:
-        binary = resolve_llama_server()
+        binary = LLAMA.binary()
     except ProviderError:
         log.debug("llama-server not found; treating host as GPU-less for replica sizing")
         return _MIN_REPLICAS

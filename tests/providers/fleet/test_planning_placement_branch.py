@@ -56,7 +56,9 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
         calls["n"] += 1
         return planning.DeviceReading([], EngineBackend.CPU)
 
-    monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/fake")
+    )
     monkeypatch.setattr(planning, "_read_devices", counting)
     monkeypatch.setattr(
         planning,
@@ -182,7 +184,9 @@ def test_interactive_resolve_still_raises(monkeypatch):
     """Without the fallback opt-in an unfittable spec raises, so an apply fails loud."""
 
     planning.clear_read_device_cache()
-    monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/fake")
+    )
     monkeypatch.setattr(
         planning, "_read_devices", lambda _b: planning.DeviceReading([], EngineBackend.CPU)
     )
@@ -207,7 +211,9 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     """The view path opts into the fallback and marks the spec as not applied."""
 
     planning.clear_read_device_cache()
-    monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/fake")
+    )
     monkeypatch.setattr(
         planning, "_read_devices", lambda _b: planning.DeviceReading([], EngineBackend.CPU)
     )
