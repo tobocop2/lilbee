@@ -509,17 +509,30 @@ class TestLaunchBuild:
 
 
 class TestProvider:
-    def test_unusable_reason_names_the_engine_binary_problem(self, spy: SpyEngine) -> None:
-        assert FleetProvider(engine=spy)._unusable_engine_reason() is None
-        reason = FleetProvider(engine=_binaryless(spy))._unusable_engine_reason()
+    def test_unusable_reason_names_the_engine_binary_problem(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            EngineBook, "read", lambda self: BookReading(engines_for_all_roles(spy), {})
+        )
+        assert FleetProvider()._unusable_engine_reason() is None
+        monkeypatch.setattr(
+            EngineBook,
+            "read",
+            lambda self: BookReading(engines_for_all_roles(_binaryless(spy)), {}),
+        )
+        reason = FleetProvider()._unusable_engine_reason()
         assert reason is not None
         assert "spy binary missing" in reason
 
     def test_clients_carry_the_engine_request_profile(
-        self, spy: SpyEngine, model_file: Path, tmp_path: Path
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
-        provider = FleetProvider(engine=spy)
+        monkeypatch.setattr(
+            EngineBook, "read", lambda self: BookReading(engines_for_all_roles(spy), {})
+        )
+        provider = FleetProvider()
         swap = SimpleNamespace(endpoint=lambda: "http://127.0.0.1:1", log_path=tmp_path / "log")
         with provider._lock:
             provider._adopt_group("embed", swap, [launch])  # type: ignore[arg-type]
@@ -536,6 +549,7 @@ class TestProvider:
         seen: dict[str, list[Any]] = {"probe": [], "plan": [], "refresh": [], "swap": []}
         launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
         monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(_mixed_book(spy), {}))
+        monkeypatch.setattr(planning, "snapshot_engine", lambda engines: spy)
 
         class _Swap:
             bound = False
@@ -578,7 +592,7 @@ class TestProvider:
         self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         seen = self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
-        provider = FleetProvider(engine=spy)
+        provider = FleetProvider()
         assert provider._plan_and_spawn(tmp_path)
         assert seen["probe"] == [spy]
         assert seen["plan"] == [_mixed_book(spy)]
@@ -588,7 +602,7 @@ class TestProvider:
         self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         seen = self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
-        provider = FleetProvider(engine=spy)
+        provider = FleetProvider()
         monkeypatch.setattr(provider, "_reload_dir", lambda: tmp_path)
         monkeypatch.setattr(provider, "_preload_restarted", lambda restarted: None)
         provider._reload_pass()
@@ -616,8 +630,8 @@ class TestProvider:
                 (launch,), skipped_no_engine={WorkerRole.CHAT: "org/repo#mlx"}
             ),
         )
-        routing = RoutingProvider(engine=lambda: spy)
-        routing._local = FleetProvider(engine=spy)
+        routing = RoutingProvider()
+        routing._local = FleetProvider()
         return routing
 
     def _no_engine_warnings(self, routing: RoutingProvider) -> list[tuple[WarningCode, str]]:

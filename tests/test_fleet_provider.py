@@ -954,7 +954,7 @@ def test_adopt_group_gives_each_client_its_engine_request_profile(monkeypatch) -
         planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     sentinel = object()
-    monkeypatch.setattr(prov_mod.LLAMA, "request_profile", lambda _role: sentinel)
+    monkeypatch.setattr(LLAMA, "request_profile", lambda _role: sentinel)
     FleetProvider()._ensure_fleet()
     assert captured["profile"] is sentinel
 
@@ -2044,13 +2044,37 @@ def test_chat_stream_close_before_iteration_releases_the_request() -> None:
     assert closed == [True]  # the source stream (and its request slot) was released
 
 
-def test_supports_rerank_when_the_engine_serves_the_rerank_role() -> None:
-    assert FleetProvider(engine=LLAMA).supports_rerank() is True
+def _book_of(monkeypatch: pytest.MonkeyPatch, engine: object) -> None:
+    from lilbee.app.engine_choice import BookReading, EngineBook
+
+    monkeypatch.setattr(
+        EngineBook, "read", lambda self: BookReading(engines_for_all_roles(engine), {})
+    )
 
 
-def test_supports_rerank_is_false_when_the_engine_serves_no_rerank_role() -> None:
+def test_supports_rerank_when_the_engine_serves_the_rerank_role(monkeypatch) -> None:
+    _book_of(monkeypatch, LLAMA)
+    assert FleetProvider().supports_rerank() is True
+
+
+def test_supports_rerank_is_false_when_the_engine_serves_no_rerank_role(monkeypatch) -> None:
     assert WorkerRole.RERANK not in FAKE.served_roles
-    assert FleetProvider(engine=FAKE).supports_rerank() is False
+    _book_of(monkeypatch, FAKE)
+    assert FleetProvider().supports_rerank() is False
+
+
+def test_supports_rerank_is_false_when_no_role_has_an_engine(monkeypatch) -> None:
+    from lilbee.app.engine_choice import BookReading, EngineBook
+
+    monkeypatch.setattr(EngineBook, "read", lambda self: BookReading({}, {}))
+    assert FleetProvider().supports_rerank() is False
+
+
+def test_embed_token_cap_is_none_when_no_role_has_an_engine(monkeypatch) -> None:
+    from lilbee.app.engine_choice import BookReading, EngineBook
+
+    monkeypatch.setattr(EngineBook, "read", lambda self: BookReading({}, {}))
+    assert FleetProvider().embed_token_cap() is None
 
 
 def test_list_chat_models_empty() -> None:
@@ -3557,7 +3581,7 @@ def test_routing_provider_local_engine_is_fleet() -> None:
     # is a fleet-of-one). Construction is side-effect-free; no swap is started.
     from lilbee.providers.routing_provider import RoutingProvider
 
-    assert isinstance(RoutingProvider(engine=lambda: LLAMA)._get_local(), FleetProvider)
+    assert isinstance(RoutingProvider()._get_local(), FleetProvider)
 
 
 def test_get_capabilities_unresolved_model_returns_completion(monkeypatch) -> None:
@@ -3812,7 +3836,7 @@ class TestRoutingProviderEmbedCap:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", embedding_model)
-        routing = RoutingProvider(engine=lambda: LLAMA)
+        routing = RoutingProvider()
         local = MagicMock()
         local.embed_token_cap.return_value = 504
         local.health_warnings.return_value = [
@@ -3845,7 +3869,7 @@ class TestRoutingProviderEmbedCap:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
-        routing = RoutingProvider(engine=lambda: LLAMA)
+        routing = RoutingProvider()
         local = MagicMock()
         local.health_warnings.return_value = [
             HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut"),

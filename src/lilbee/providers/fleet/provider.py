@@ -53,7 +53,6 @@ from lilbee.providers.fleet.contract import (
     served_pairs,
     vision_slots_cover,
 )
-from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
@@ -927,8 +926,7 @@ def _reaper_unloads_weights(engine_dir: Path) -> bool:
 class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
-    def __init__(self, *, engine: EngineAdapter = LLAMA, hold_warm: bool = False) -> None:
-        self.engine = engine
+    def __init__(self, *, hold_warm: bool = False) -> None:
         # An interactive session (the TUI) owns this process for its whole
         # lifetime, so a fleet bound to it stays resident instead of idle-unloading
         # under a user who is still in the app; closing lilbee releases it. A
@@ -1022,6 +1020,10 @@ class FleetProvider:
         # run its pending pass) has finished.
         self._reload_done = threading.Condition(self._lock)
 
+    def _host_engine(self) -> EngineAdapter:
+        """The engine whose device snapshot a plan reads; raises when no role has an engine."""
+        return planning.snapshot_engine(self._engines())
+
     def _engines(self) -> dict[WorkerRole, EngineAdapter]:
         """The adapter of each role now, read from the engine book at this call."""
         from lilbee.app.engine_choice import EngineBook
@@ -1037,7 +1039,7 @@ class FleetProvider:
         mid-session from being reported as still missing.
         """
         try:
-            self.engine.binary()
+            self._host_engine().binary()
         except ProviderError as exc:
             return str(exc)
         return None
@@ -1084,7 +1086,7 @@ class FleetProvider:
         races an arrival.
         """
         pin = engine_pin()
-        demand = _placeable_demand(self.engine, self._engines())
+        demand = _placeable_demand(self._host_engine(), self._engines())
         # Record the demand plan's skips before walking the ladder: a bind or an
         # early serve-nothing exit never reaches _plan_and_spawn, and the warm
         # tracker must still be able to say "chat model X is not installed"
@@ -1150,7 +1152,7 @@ class FleetProvider:
                 # than kill the incumbent or load a second fleet's weights beside it
                 # (an OOM on a small-VRAM box).
                 return None if not is_overflow else False
-            if not _can_build_engine(wanted, self.engine):
+            if not _can_build_engine(wanted, self._host_engine()):
                 return False
             # No live user holds this dir now (or it is ours to rebuild): reap dead
             # leftovers and stop any recorded engine so planning sees true free VRAM
@@ -1253,7 +1255,7 @@ class FleetProvider:
             # (a wedged GPU probe, an unusable CUDA runtime) propagates so the
             # warm tracker and the caller report the real reason instead of a
             # silent never-ready fleet.
-            planning.capture_plan_probe(self.engine)
+            planning.capture_plan_probe(self._host_engine())
             engines = self._engines()
             plan = planning.plan_all_launches(engines=engines)
         except ProviderError as exc:
@@ -1331,7 +1333,7 @@ class FleetProvider:
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
                     engine_log=_engine_log_of(launch, swap.log_path.parent),
                     model_ref=launch.model,
-                    profile=self.engine.request_profile(role),
+                    profile=self._engines()[role].request_profile(role),
                 )
                 for launch in role_launches
             ]
@@ -1542,7 +1544,11 @@ class FleetProvider:
             launches = self._role_launches(WorkerRole.EMBED)
         if launches:
             return launches[0].token_cap
-        return planning.planned_embed_token_cap(cfg.embedding_model, engine=self.engine)
+        try:
+            engine = self._host_engine()
+        except ProviderError:
+            return None
+        return planning.planned_embed_token_cap(cfg.embedding_model, engine=engine)
 
     def health_warnings(self) -> list[HealthWarning]:
         """Serving degradations: the embed window and any placement divergences."""
@@ -2043,7 +2049,10 @@ class FleetProvider:
 
     def supports_rerank(self) -> bool:
         """Report whether the engine serves the rerank role."""
-        return WorkerRole.RERANK in self.engine.served_roles
+        try:
+            return WorkerRole.RERANK in self._host_engine().served_roles
+        except ProviderError:
+            return False
 
     def list_models(self) -> list[str]:
         """List installed models from the registry."""
@@ -2607,7 +2616,7 @@ class FleetProvider:
             # figures beside it are deliberately not re-taken: this fleet is
             # resident, and charging it against itself is what the snapshot exists
             # to prevent.
-            planning.refresh_plan_devices(self.engine)
+            planning.refresh_plan_devices(self._host_engine())
             with self._lock:
                 if self._shut_down:
                     # Terminal shutdown landed while this reload was queued; a
@@ -2637,7 +2646,7 @@ class FleetProvider:
                     if not running:
                         # Nothing loaded (a resurrect after a failed pass): the box is
                         # clean, so refresh the plan snapshot like a first build would.
-                        planning.capture_plan_probe(self.engine)
+                        planning.capture_plan_probe(self._host_engine())
                     engines = self._engines()
                     plan = planning.plan_all_launches(engines=engines)
                 except ProviderError as exc:

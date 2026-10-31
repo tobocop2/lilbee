@@ -3096,7 +3096,7 @@ def resolve_placement_plan(
     than the plan snapshot, so borrowing the snapshot's backend would pair a live
     device list with a backend read at fleet build.
     """
-    engine = _snapshot_engine(engines)
+    engine = snapshot_engine(engines)
     binary = engine.binary()
     reading = _read_device_cache.get(binary, engine)
     devices = reading.devices
@@ -3334,9 +3334,9 @@ def plan_launches(
     engines: Mapping[WorkerRole, EngineAdapter],
 ) -> FleetPlan:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
-    snapshot_engine = _snapshot_engine(engines)
-    with _one_engine_per_pass(engine=snapshot_engine):
-        plan = _planned_launches(roles, binary, by_index, devices, engines, snapshot_engine)
+    host_engine = snapshot_engine(engines)
+    with _one_engine_per_pass(engine=host_engine):
+        plan = _planned_launches(roles, binary, by_index, devices, engines, host_engine)
     plan = replace(plan, skipped_no_engine=_roles_without_engine(roles, engines))
     _log_roles_without_engine(plan)
     return plan
@@ -3489,7 +3489,7 @@ def _launched_roles(engines: Mapping[WorkerRole, EngineAdapter]) -> tuple[Worker
     )
 
 
-def _snapshot_engine(engines: Mapping[WorkerRole, EngineAdapter]) -> EngineAdapter:
+def snapshot_engine(engines: Mapping[WorkerRole, EngineAdapter]) -> EngineAdapter:
     """The engine whose device snapshot the plan reads: the one that sees least free memory.
 
     The devices belong to the host, so engines that disagree are planned against
@@ -3526,10 +3526,10 @@ def plan_all_launches(*, engines: Mapping[WorkerRole, EngineAdapter]) -> FleetPl
     Writes no environment: the probe child carries the Vulkan loader safety and any
     ``cfg.gpu_devices`` pin in its own env, and the plan reads the pin from there.
     """
-    snapshot_engine = _snapshot_engine(engines)
-    binary = snapshot_engine.binary()
-    with _one_engine_per_pass(engine=snapshot_engine):
-        devices = _plan_devices(binary, snapshot_engine)
+    host_engine = snapshot_engine(engines)
+    binary = host_engine.binary()
+    with _one_engine_per_pass(engine=host_engine):
+        devices = _plan_devices(binary, host_engine)
         by_index = {d.index: d for d in devices}
         return plan_launches(_launched_roles(engines), binary, by_index, devices, engines=engines)
 

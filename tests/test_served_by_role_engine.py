@@ -50,10 +50,6 @@ def two_engines(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "")
 
 
-def _chat_engine() -> FakeAdapter:
-    return engine_choice.EngineBook(cfg).for_role(WorkerRole.CHAT).adapter  # type: ignore[return-value]
-
-
 def _served(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.getMessage().startswith("served by")]
 
@@ -61,7 +57,7 @@ def _served(caplog: pytest.LogCaptureFixture) -> list[str]:
 def test_one_request_names_each_roles_engine_in_log_status_and_launch(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    provider = RoutingProvider(engine=_chat_engine)
+    provider = RoutingProvider()
     local = MagicMock()
     local.embed.return_value = [[0.0]]
     local.chat.return_value = "Rome"
@@ -78,17 +74,10 @@ def test_one_request_names_each_roles_engine_in_log_status_and_launch(
     assert chat_engine() == "mlx"
 
 
-def test_the_launch_runs_the_chat_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    built = MagicMock()
-    monkeypatch.setattr("lilbee.providers.fleet.provider.FleetProvider", built)
-    RoutingProvider(engine=_chat_engine)._get_local()
-    assert built.call_args.kwargs["engine"] is MLX_ENGINE
-
-
 def test_the_log_follows_a_config_change_at_the_next_call(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    provider = RoutingProvider(engine=_chat_engine)
+    provider = RoutingProvider()
     monkeypatch.setattr(provider, "_get_local", lambda: MagicMock())
     with caplog.at_level(logging.INFO, logger="lilbee.providers.routing_provider"):
         provider.chat([], model=None)
@@ -103,7 +92,7 @@ def test_a_role_with_no_engine_still_reports_the_text(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.delitem(choice.ADAPTERS, EngineName.MLX)
-    provider = RoutingProvider(engine=_chat_engine)
+    provider = RoutingProvider()
     with (
         caplog.at_level(logging.INFO, logger="lilbee.providers.routing_provider"),
         pytest.raises(NoEngineError, match="For chat: No installed engine loads the mlx"),

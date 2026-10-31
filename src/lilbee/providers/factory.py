@@ -13,7 +13,6 @@ from lilbee.providers.base import ProviderError
 if TYPE_CHECKING:
     from lilbee.core.config import Config
     from lilbee.providers.base import LLMProvider
-    from lilbee.providers.fleet.engines.base import EngineAdapter
     from lilbee.providers.sdk_backend import LlmSdkBackend
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
@@ -48,13 +47,8 @@ def create_sdk_provider() -> SdkLLMProvider:
     return SdkLLMProvider(sdk_library().create_backend())
 
 
-def create_provider(
-    config: Config, *, engine: Callable[[], EngineAdapter], hold_warm: bool = False
-) -> LLMProvider:
+def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
     """Create a new LLM provider instance from the given config.
-
-    *engine* returns the inference engine a local fleet runs on, and raises when the
-    chat model has none; it runs on the first local use, not at creation.
 
     *hold_warm* marks the provider as serving an interactive session, so a local
     fleet bound to that session keeps its weights resident instead of
@@ -67,7 +61,7 @@ def create_provider(
             # circular: routing_provider -> factory via create_sdk_provider
             from lilbee.providers.routing_provider import RoutingProvider
 
-            return RoutingProvider(engine=engine, hold_warm=hold_warm)
+            return RoutingProvider(hold_warm=hold_warm)
 
         case LlmProvider.REMOTE:
             if not availability.provider_sdk_available():

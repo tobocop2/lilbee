@@ -359,7 +359,7 @@ def test_a_pull_refusal_holds_only_the_no_engine_text(no_mlx: None) -> None:
 
 
 def _provider() -> RoutingProvider:
-    return RoutingProvider(engine=lambda: GGUF_ENGINE)  # type: ignore[arg-type,return-value]
+    return RoutingProvider()
 
 
 def test_the_first_request_of_a_role_shows_the_notice_once(
