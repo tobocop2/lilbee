@@ -57,7 +57,7 @@ CATALOG_GROUPS: tuple[CatalogGroup, ...] = (
     ),
     CatalogGroup(
         "MODELS",
-        ("/model", "/models", "/preset", "/setup"),
+        ("/model", "/models", "/engine", "/preset", "/setup"),
     ),
     CatalogGroup(
         "KNOWLEDGE",

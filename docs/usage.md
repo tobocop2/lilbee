@@ -199,6 +199,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/models` | `/m`, `/catalog` | Browse the full model catalog |
 | `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
+| `/engine [subcommand]` | | Show the engine of each role (`roles`), or choose it (`use ROLE MODEL ENGINE`, `prefer ENGINE`) |
 | `/preset <subcommand>` | | List, add, edit or remove server presets (edit opens a dialog) |
 | `/delete <name>` | | Remove a document from the index |
 | `/prune-ignored` | | Drop indexed documents a `.lilbeeignore` now excludes |
@@ -423,6 +424,28 @@ lilbee engine stop
 
 It reports whether anything was running, frees the GPU immediately, and is safe
 to run at any time.
+
+### Choose the engine
+
+Each model runs on the engine that loads its format. Use these commands to see
+or change the choice:
+
+```bash
+lilbee engine roles
+lilbee engine use chat <model> <engine>
+lilbee engine prefer <engine>
+```
+
+`engine roles` shows the engine of each role, with a notice when a role fell
+back to another engine. `engine use` sets the engine for the model of one role.
+`engine prefer` sets the engine for every model with no choice of its own. Give
+`auto` to either command to remove the choice. The same actions exist as the
+`/engine` chat command, the MCP tools `engine_roles`, `engine_use` and
+`engine_prefer`, and the REST routes `GET /api/engines/roles`,
+`PUT /api/engines/roles/{role}` and `PUT /api/engines/preferred`. On the HTTP
+server the two writes need `allow_http_engines`. The three MCP tools need the
+setting `mcp_engines_enabled`. It is off by default. Turn it on, then restart the
+MCP server.
 
 ## Memory
 

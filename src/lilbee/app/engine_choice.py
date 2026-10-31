@@ -68,7 +68,7 @@ def _choice_for(config: Config, ref: str, role: WorkerRole | None = None) -> Eng
         role=role,
         model=ref,
     )
-    if stored is None:
+    if stored is None and role is not None:
         return replace(chosen, notice=f"{_UNREADABLE_CHOICES} {chosen.notice or ''}".strip())
     return chosen
 

@@ -142,6 +142,19 @@ On the shared HTTP daemon, `add`/`edit`/`remove` are refused unless the host ena
 `allow_http_engines` (a preset sets where requests and API keys go); `list` always works.
 Change presets only when the user asks.
 
+### Engine choice
+
+These tools register only when the user turns on `mcp_engines_enabled` (off by default).
+
+| Tool | Use |
+|---|---|
+| `lilbee_engine_roles()` | The engine of each role: model, format, engine and the notice when the role fell back or has no engine. |
+| `lilbee_engine_use(role, model, engine)` | Choose the engine for the model of a role. `engine` `auto` removes the choice. |
+| `lilbee_engine_prefer(engine)` | Set the engine for every model with no choice of its own. `auto` picks by model format. |
+
+On the shared HTTP daemon, `use`/`prefer` are refused unless the host enables
+`allow_http_engines`; `roles` always works. Change the engine only when the user asks.
+
 (Wiki tools are documented at the end of this skill. Wiki and memory tools are only registered when their subsystems are enabled, so they may be absent from your tool list.)
 
 ## Common workflows
@@ -285,7 +298,7 @@ written reference: every setting, its default, and a column per surface saying w
 MCP can set it. Three cases need an extra step after the write succeeds.
 
 **A setting that changes the tool list needs a reconnect.** `wiki`, `memory_enabled`,
-`mcp_sessions_enabled` and `mcp_presets_enabled` decide which tools register, and that is decided once, when the
+`mcp_sessions_enabled`, `mcp_presets_enabled` and `mcp_engines_enabled` decide which tools register, and that is decided once, when the
 server starts. `lilbee_settings_set({"wiki": true})` succeeds and persists, and the
 `lilbee_wiki_*` tools still are not there. Tell the user to restart the lilbee MCP server;
 do not report the feature as broken. `lilbee_wiki_status` works either way, so read it to
