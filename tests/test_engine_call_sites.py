@@ -328,6 +328,30 @@ class TestMemoryEstimates:
         )
         assert planning._declared_reserve(spy, request, unified=False) == 10 * BYTES_PER_CTX
 
+    @pytest.mark.parametrize(
+        "failure", [ProviderError("no estimate", provider="spy"), OSError("gone")]
+    )
+    def test_declared_reserve_is_zero_when_the_engine_cannot_estimate(
+        self,
+        spy: SpyEngine,
+        model_file: Path,
+        failure: Exception,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def _fail(request: MemoryRequest) -> MemoryEstimate:
+            raise failure
+
+        monkeypatch.setattr(spy, "estimate_memory", _fail)
+        request = MemoryRequest(
+            model_path=model_file,
+            ctx=10,
+            slots=1,
+            gpu_layers=0,
+            flash_attn=False,
+            kv_cache_type=cfg.kv_cache_type,
+        )
+        assert planning._declared_reserve(spy, request, unified=False) == 0
+
     def test_estimate_role_charges_the_engine_footprint_at_the_engine_window(
         self, spy: SpyEngine
     ) -> None:
