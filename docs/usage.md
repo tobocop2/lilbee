@@ -831,6 +831,9 @@ key. There are two ways to use cloud models when you want to:
 Either way your files and the index never leave the machine; only the queries
 and the snippets the model needs to answer cross the wire when you opt in.
 
+To use a server that you run yourself, add a server preset. See
+[Server presets](presets.md).
+
 ---
 
 ## Reference for advanced users
