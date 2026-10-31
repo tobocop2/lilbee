@@ -36,7 +36,6 @@ from lilbee.app.analyze import (
     tip_state,
 )
 from lilbee.app.config_follow import ConfigFileFollower
-from lilbee.app.engine_choice import engine_for_ref
 from lilbee.app.memory import (
     MEMORY_DISABLED_HINT,
     forget,
@@ -1706,7 +1705,7 @@ async def model_pull(
                 cancel=cancel,
             )
         except UnsupportedArchError as exc:
-            engine = engine_for_ref(model)
+            engine = get_services().engines.for_ref(model)
             return {
                 "ok": False,
                 "command": "model_pull",

@@ -19,7 +19,7 @@ from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.cli.commands import setup as setup_cmd
 from lilbee.cli.launchers import server as launcher
-from lilbee.core.config import Config
+from lilbee.core.config import Config, cfg
 from lilbee.data import offload
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as ingest_pipeline
@@ -259,10 +259,10 @@ def _row(task: ModelTask) -> CatalogModel:
 def test_a_pull_uses_the_engine_of_the_format_of_the_model_not_of_a_role() -> None:
     config = _config(WorkerRole.CHAT)
     assert _tag(EngineBook(config).for_role(WorkerRole.CHAT).adapter) == "mlx"
-    assert _tag(engine_for_ref("acme/embedder-GGUF")) == "gguf"
-    assert _tag(engine_for_ref("acme/embedder/model.gguf")) == "gguf"
-    assert _tag(engine_for_ref("acme/mlx-model#mlx")) == "mlx"
-    assert _tag(engine_choice.engine_for_format(ModelFormat.GGUF)) == "gguf"
+    assert _tag(engine_for_ref("acme/embedder-GGUF", cfg)) == "gguf"
+    assert _tag(engine_for_ref("acme/embedder/model.gguf", cfg)) == "gguf"
+    assert _tag(engine_for_ref("acme/mlx-model#mlx", cfg)) == "mlx"
+    assert _tag(engine_choice.engine_for_format(ModelFormat.GGUF, cfg)) == "gguf"
 
 
 def test_a_pull_of_a_format_no_engine_loads_raises_the_user_text(
@@ -270,7 +270,7 @@ def test_a_pull_of_a_format_no_engine_loads_raises_the_user_text(
 ) -> None:
     monkeypatch.delitem(choice.ADAPTERS, EngineName.MLX)
     with pytest.raises(NoEngineError, match="No installed engine loads the mlx format"):
-        engine_for_ref("acme/mlx-model#mlx")
+        engine_for_ref("acme/mlx-model#mlx", cfg)
 
 
 @pytest.mark.asyncio
@@ -471,7 +471,7 @@ def pulls(no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     from lilbee.modelhub.model_manager.core import ModelManager
 
     started: list[str] = []
-    manager = ModelManager(no_mlx_engine, GGUF_ENGINE)  # type: ignore[arg-type]
+    manager = ModelManager(no_mlx_engine, cfg)
     services = SimpleNamespace(model_manager=manager)
     monkeypatch.setattr("lilbee.app.models.get_services", lambda: services)
     monkeypatch.setattr("lilbee.server.handlers.models.get_services", lambda: services)
@@ -528,7 +528,7 @@ def test_the_task_bar_download_of_a_format_nothing_loads_fails_with_the_text(
     from lilbee.cli.tui.widgets.task_bar_controller import _download_target
 
     with pytest.raises(RuntimeError, match=_NO_MLX_TEXT):
-        _download_target(SimpleNamespace(), SimpleNamespace(ref=MLX_REF, display_name="m"))  # type: ignore[arg-type]
+        _download_target(SimpleNamespace(), SimpleNamespace(pull_ref=MLX_REF, display_name="m"))  # type: ignore[arg-type]
     assert pulls == []
     assert not no_mlx_engine.exists()
 
