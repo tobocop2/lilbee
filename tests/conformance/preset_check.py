@@ -18,7 +18,6 @@ from lilbee.app import presets
 from lilbee.core.config import Config, cfg
 from lilbee.providers.base import ChatResult, ProviderError
 from lilbee.providers.factory import create_sdk_provider
-from lilbee.providers.roles import WorkerRole
 from tests.conformance.harness import png
 
 PRESET = "check"
@@ -166,7 +165,7 @@ def run_steps(setup: Setup) -> dict[str, Outcome]:
     for step in steps_for(setup):
         try:
             results[step] = _STEP_FUNCTIONS[step](setup)
-        except Exception as exc:  # noqa: BLE001  a failed step is a result, not a crash
+        except Exception as exc:  # a failed step is a result, not a crash
             results[step] = Outcome(False, f"{type(exc).__name__}: {str(exc)[:200]}")
     return results
 
@@ -330,5 +329,3 @@ def load_fixture(path: Path) -> tuple[Setup, dict[str, Outcome], list[Exchange],
     setup = Setup(tuple(doc["roles"]), doc["models"], doc["rerank_wire"])
     results = {step: Outcome(**value) for step, value in doc["results"].items()}
     return setup, results, [Exchange(**e) for e in doc["exchanges"]], doc
-
-
