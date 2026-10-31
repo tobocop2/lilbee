@@ -979,9 +979,13 @@ class EngineChosenResponse(BaseModel):
 
 
 class EngineInstallBody(BaseModel):
-    """Request body for installing an engine build from its pack."""
+    """Request body for installing an engine build from its pack.
+
+    ``wheel`` is a command line option; a request that sets it is refused.
+    """
 
     engine: str
+    wheel: str | None = None
 
 
 class EngineInstalledResponse(BaseModel):

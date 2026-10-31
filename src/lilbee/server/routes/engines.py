@@ -75,6 +75,8 @@ async def engine_use_route(role: FromPath[str], data: EngineUseBody) -> EngineCh
 @post("/api/engines/install", status_code=200, guards=[_require_engines_enabled])
 async def engine_install_route(data: EngineInstallBody) -> EngineInstalledResponse:
     """Install an engine build from its pack. Refused unless allow_http_engines is enabled."""
+    if data.wheel is not None:
+        raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=service.WHEEL_CLI_ONLY)
     built = await _call(lambda: service.install(data.engine))
     return EngineInstalledResponse(
         engine=built.engine, version=built.version, backend=built.backend

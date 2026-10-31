@@ -371,3 +371,123 @@ def test_the_server_app_serves_the_install_route() -> None:
 
     paths = {route.path for route in create_app().routes}
     assert "/api/engines/install" in paths
+
+
+# ------------------------------------------------------------------ review answers
+
+WHEEL_CLI_ONLY = "The wheel option works only with the lilbee engine install command."
+
+
+def _pinned(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha))  # type: ignore[arg-type]
+
+
+def _damaged_wheel(path: Path, kind: str) -> None:
+    """A wheel that is a zip file but fails when the store reads it."""
+    with zipfile.ZipFile(path, "w") as archive:
+        data = b"\xff\xfe" if kind == "non-utf8" else b"License-Expression: MIT\n"
+        archive.writestr("lilbee_engine_fx-1.dist-info/METADATA", data)
+    patches = {"encrypted": ((6, 1), (8, 1)), "compression": ((8, 99), (10, 99))}
+    if kind in patches:
+        raw = bytearray(path.read_bytes())
+        markers = (b"PK\x03\x04", b"PK\x01\x02")
+        for marker, (offset, value) in zip(markers, patches[kind], strict=True):
+            at = raw.find(marker) + offset
+            raw[at : at + 2] = value.to_bytes(2, "little")
+        path.write_bytes(bytes(raw))
+
+
+DAMAGED = ["non-utf8", "encrypted", "compression"]
+
+
+@pytest.mark.parametrize("kind", DAMAGED)
+def test_a_pinned_wheel_the_store_cannot_read_is_refused_on_every_surface(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "damaged.whl"
+    _damaged_wheel(wheel, kind)
+    _pinned(monkeypatch, wheel)
+    with pytest.raises(engine_service.EngineRefusedError, match="was not installed") as exc:
+        engine_service.install(ENGINE.value, wheel)
+    expected = str(exc.value)
+    assert _cli("install", ENGINE.value, "--wheel", str(wheel)) == (
+        1,
+        {"command": "engine install", "error": expected},
+    )
+    root_dir = engines_root(cfg.models_dir)
+    (root_dir / "packs").mkdir(parents=True)
+    (root_dir / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(wheel.read_bytes())
+    code, body = _rest({"engine": ENGINE.value})
+    assert (code, body["detail"]) == (422, expected)
+    assert mcp_server.engine_install_tool(ENGINE.value) == {"error": expected}
+    slash = run_engine_command(f"install {ENGINE.value}")
+    assert (slash.ok, slash.text) == (False, expected)
+    assert _builds() == []
+
+
+def test_auto_is_refused_as_not_installable_and_is_left_out_of_the_list() -> None:
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install("auto")
+    text = str(exc.value)
+    assert "auto" in text.split("Choose one of:")[0]
+    assert "cannot be installed" in text
+    assert "auto" not in text.split("Choose one of:")[1]
+    assert _cli("install", "auto")[1]["error"] == text
+    assert _rest({"engine": "auto"})[1]["detail"] == text
+    assert mcp_server.engine_install_tool("auto") == {"error": text}
+    assert run_engine_command("install auto").text == text
+
+
+def test_the_unknown_name_list_for_install_leaves_out_auto() -> None:
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install("nonesuch")
+    assert "llama.cpp" in str(exc.value)
+    assert "auto" not in str(exc.value)
+
+
+def test_the_cli_takes_only_a_regular_file_as_the_wheel(good: Path, tmp_path: Path) -> None:
+    missing = tmp_path / "absent.whl"
+    code, body = _cli("install", ENGINE.value, "--wheel", str(missing))
+    assert (code, body) == (
+        1,
+        {"command": "engine install", "error": f"{missing} is not a file. Name a wheel file."},
+    )
+    assert "Errno" not in body["error"]
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    assert _cli("install", ENGINE.value, "--wheel", str(folder))[1]["error"] == (
+        f"{folder} is not a file. Name a wheel file."
+    )
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "mkfifo"), reason="needs a POSIX fifo")
+def test_the_cli_returns_at_once_for_a_fifo_as_the_wheel(good: Path, tmp_path: Path) -> None:
+    import os
+
+    fifo = tmp_path / "pipe.whl"
+    os.mkfifo(fifo)
+    held = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        assert _cli("install", ENGINE.value, "--wheel", str(fifo))[1]["error"] == (
+            f"{fifo} is not a file. Name a wheel file."
+        )
+    finally:
+        os.close(held)
+
+
+def test_rest_refuses_a_wheel_field_and_installs_nothing(good: Path, root: Path) -> None:
+    (root / "packs").mkdir(parents=True)
+    (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
+    code, body = _rest({"engine": ENGINE.value, "wheel": str(good)})
+    assert (code, body["detail"]) == (422, WHEEL_CLI_ONLY)
+    assert _builds() == []
+
+
+def test_mcp_refuses_a_wheel_argument_and_installs_nothing(good: Path, root: Path) -> None:
+    (root / "packs").mkdir(parents=True)
+    (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
+    assert mcp_server.engine_install_tool(ENGINE.value, wheel=str(good)) == {
+        "error": WHEEL_CLI_ONLY
+    }
+    assert _builds() == []

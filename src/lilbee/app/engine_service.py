@@ -87,8 +87,31 @@ _STORE_REFUSALS = (
 )
 
 
+# What the zip reader raises for a pinned file the store cannot read: a bad archive,
+# METADATA that is not UTF-8, an encrypted member, a compression method it lacks.
+_UNREADABLE_WHEEL = (
+    OSError,
+    zipfile.BadZipFile,
+    UnicodeDecodeError,
+    RuntimeError,
+    NotImplementedError,
+)
+
+WHEEL_CLI_ONLY = "The wheel option works only with the lilbee engine install command."
+
+
 def _unknown(name: str) -> EngineRefusedError:
     known = ", ".join([AUTO, *EngineName])
+    return EngineRefusedError(f"No engine is named {name!r}. Choose one of: {known}.")
+
+
+def _not_installable(name: str) -> EngineRefusedError:
+    """The refusal for a name install cannot take; the list leaves out auto."""
+    known = ", ".join(EngineName)
+    if name == AUTO:
+        return EngineRefusedError(
+            f"{AUTO!r} picks an engine for you and cannot be installed. Choose one of: {known}."
+        )
     return EngineRefusedError(f"No engine is named {name!r}. Choose one of: {known}.")
 
 
@@ -170,7 +193,10 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
     The host gate of the engine runs first. The store checks the digest, the licence
     and the files of the wheel and writes the record.
     """
-    engine = _engine_name(name)
+    try:
+        engine = EngineName(name)
+    except ValueError:
+        raise _not_installable(name) from None
     adapter = choice.ADAPTERS.get(engine)
     if adapter is None:
         raise EngineRefusedError(
@@ -193,7 +219,7 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
             store.install_from_wheel(lock, wheel)
     except _STORE_REFUSALS as exc:
         raise EngineRefusedError(str(exc)) from exc
-    except (OSError, zipfile.BadZipFile) as exc:
+    except _UNREADABLE_WHEEL as exc:
         raise EngineRefusedError(f"Engine {name} was not installed: {exc}") from exc
     return InstalledBuild(lock.engine, lock.version, lock.backend)
 

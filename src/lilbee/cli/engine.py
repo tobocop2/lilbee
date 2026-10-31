@@ -80,6 +80,11 @@ def install(
     ] = None,
 ) -> None:
     """Install an engine build from its wheel or from a pack in the packs folder."""
+    if wheel is not None and not wheel.is_file():
+        raise _refuse(
+            "engine install",
+            engine_service.EngineRefusedError(f"{wheel} is not a file. Name a wheel file."),
+        )
     try:
         built = engine_service.install(name, wheel)
     except engine_service.EngineRefusedError as exc:

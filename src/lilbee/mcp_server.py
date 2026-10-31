@@ -1976,12 +1976,17 @@ def engine_prefer_tool(engine: str) -> dict[str, Any]:
 
 
 @_tool_named("engine_install")
-def engine_install_tool(engine: str) -> dict[str, Any]:
-    """Install an engine build from its pack; the host must pass the engine's gate."""
+def engine_install_tool(engine: str, wheel: str | None = None) -> dict[str, Any]:
+    """Install an engine build from its pack; the host must pass the engine's gate.
+
+    ``wheel`` is a command line option; a call that sets it is refused.
+    """
     from lilbee.server.models import EngineInstalledResponse
 
     if (refused := _engine_write_refused()) is not None:
         return refused
+    if wheel is not None:
+        return _error(engine_service.WHEEL_CLI_ONLY)
 
     def install() -> EngineInstalledResponse:
         built = engine_service.install(engine)
