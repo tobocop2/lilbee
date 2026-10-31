@@ -456,6 +456,63 @@ one Enter keeps the engine. The REST routes and the MCP tools take
 `embed_engine_confirm_required`, the library name and the document count. Send
 the request again with `confirm_embed_change` set to `true` to write the change.
 
+#### See the installed engines
+
+Run `lilbee engine list` to see the engine builds installed beside the models.
+If none is installed, it prints `No engine builds are installed.` Run
+`lilbee engine remove <engine> <version> <backend>` to delete one build. Use
+the three values that `engine list` shows.
+
+#### The saved choice
+
+The engine commands write two keys to `config.toml`: `preferred_engine` and
+`engine_choices`. `preferred_engine` is `auto` by default. `engine_choices`
+maps a model reference to an engine name and is empty by default. Only the
+engine commands write these keys. Do not edit them in the settings list.
+
+An `engine_choices` entry for a model wins. `preferred_engine` covers the
+models with no entry. Three cases follow.
+
+- If an `engine_choices` entry names an engine that is not installed, lilbee
+  uses the default engine for the format and shows a notice, for example
+  `Engine ik_llama.cpp is not installed. Using llama.cpp.`
+- If `preferred_engine` names an engine that is not installed, lilbee also uses
+  the default engine for the format and shows a notice.
+- If an `engine_choices` entry names an installed engine that cannot load the
+  format, the role has no engine and a notice shows, for example `Engine
+  llama.cpp cannot load the mlx format of org/repo#mlx.`
+
+#### Pick the engine in the TUI
+
+Focus a model button on the model bar and press `e`. The engine picker opens for
+the model of that role. A role with no model shows a message instead.
+
+In insert mode the prompt takes the key as text. Press Esc to leave insert mode,
+then focus the button and press `e`.
+
+#### A running server
+
+A running server reloads a role when its engine changes.
+
+If the server saves the choice but cannot apply it, the REST write answers 503
+with the code `engine_not_applied` and `saved` set to `true`. The choice stays
+in `config.toml`. Restart lilbee to use it. A 503 without that code means the
+choice was not saved.
+
+#### Pull a model with no engine
+
+If no installed engine loads the format of a model, `lilbee model pull` stops
+before it downloads a file. For the reference `org/repo#openvino`, it prints:
+
+```
+Error: No installed engine loads the openvino format of org/repo#openvino. Run lilbee engine list to see the installed engines.
+```
+
+To pull a model in a format other than GGUF, add the format name to the
+reference as `org/repo#format`. Here `openvino` and `mlx` are names of weight
+formats, not engines. The format name is `gguf`, `mlx`, `openvino` or
+`safetensors`. A reference with no `#format` is GGUF.
+
 ## Memory
 
 lilbee can remember durable facts about you and standing preferences for how
