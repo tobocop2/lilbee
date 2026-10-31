@@ -25,6 +25,8 @@ class EngineName(StrEnum):
 
     LLAMA = "llama.cpp"
     IK_LLAMA = "ik_llama.cpp"
+    MISTRAL = "mistral.rs"
+    TEI = "tei"
     MLX = "mlx"
     OPENVINO = "openvino"
 
@@ -95,6 +97,8 @@ class EngineAdapter(Protocol, Hashable):
     served_roles: frozenset[WorkerRole]
     memory_kind: MemoryKind
     """How far this engine's memory figures can be trusted, known without an estimate."""
+    bundled: bool
+    """Whether the engine ships in the package, so it needs no build in the engine store."""
     takes_device_names: bool
     """Whether ``launch_argv`` puts ``LaunchRequest.device_names`` on the command line."""
 

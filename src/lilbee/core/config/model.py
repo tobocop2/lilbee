@@ -1080,7 +1080,8 @@ class Config(BaseSettings):
         public=False,
         from_env=False,
         description=(
-            "The engine for every model that has no engine of its own. auto picks one "
+            "The engine for every model that has no engine of its own: "
+            f"{', '.join(EngineSetting)}. auto picks one "
             "from the model format and the host. Change it with the engine commands, "
             "not the settings list"
         ),
