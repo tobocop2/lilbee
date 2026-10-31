@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from pydantic import ValidationError
 
 from lilbee.app.settings_map import CHUNK_LIMIT_KEY, SETTINGS_MAP, SettingDef, SettingGroup
+from lilbee.catalog.hf_client import is_hf_token_sendable
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS,
     PUBLIC_CONFIG_FIELDS,
@@ -360,6 +361,9 @@ def _validate(updates: dict[str, Any]) -> None:
     if refusal is not None:
         raise ValueError(refusal)
     _validate_crawl_login(updates)
+    hf_token = updates.get("hf_token")
+    if isinstance(hf_token, str) and not is_hf_token_sendable(hf_token):
+        raise ValueError("hf_token holds a character that cannot be sent. Copy it again.")
     new_ttl = _as_int_setting(updates.get("engine_idle_ttl_minutes"))
     if new_ttl is not None and new_ttl < 0:
         raise ValueError("engine_idle_ttl_minutes must be >= 0 (0 keeps weights loaded)")
