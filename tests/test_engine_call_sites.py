@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 import pytest
 
-from lilbee.app.engine_choice import BookReading, EngineBook
+from lilbee.app.engine_choice import BookReading, EngineBook, resolve_engines
 from lilbee.catalog.compat import classify
 from lilbee.catalog.types import ModelCompat
 from lilbee.core.config import cfg
@@ -33,6 +33,7 @@ from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
+from lilbee.providers.routing_provider import RoutingProvider
 from tests._fleet_engines import engines_for_all_roles
 from tests.conformance.fake_adapter import FakeAdapter
 
@@ -596,18 +597,17 @@ class TestProvider:
         assert seen["plan"] == [_mixed_book(spy)]
         assert seen["swap"] == [_mixed_book(spy)]
 
-    def _no_engine_plan(
+    def _no_engine_provider(
         self, monkeypatch: pytest.MonkeyPatch, spy: SpyEngine, model_file: Path
-    ) -> None:
-        """A book whose chat role has no engine, and a plan that leaves chat out."""
+    ) -> RoutingProvider:
+        """The routing provider over a fleet whose chat model no installed engine loads."""
+        monkeypatch.setattr(cfg, "chat_model", "org/repo#mlx")
+        notice = resolve_engines(cfg).choices[WorkerRole.CHAT].notice or ""
         launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
         monkeypatch.setattr(
             EngineBook,
             "read",
-            lambda self: BookReading(
-                {WorkerRole.EMBED: spy},
-                {WorkerRole.CHAT: "For chat: no engine loads org/repo#mlx."},
-            ),
+            lambda self: BookReading({WorkerRole.EMBED: spy}, {WorkerRole.CHAT: notice}),
         )
         monkeypatch.setattr(
             planning,
@@ -616,31 +616,42 @@ class TestProvider:
                 (launch,), skipped_no_engine={WorkerRole.CHAT: "org/repo#mlx"}
             ),
         )
+        routing = RoutingProvider(engine=lambda: spy)
+        routing._local = FleetProvider(engine=spy)
+        return routing
 
-    def test_build_reports_a_role_with_no_engine_as_a_health_warning(
+    def _no_engine_warnings(self, routing: RoutingProvider) -> list[tuple[WarningCode, str]]:
+        """Every warning, whatever its code, that speaks of the chat model with no engine."""
+        return [
+            (w.code, w.message) for w in routing.health_warnings() if "org/repo#mlx" in w.message
+        ]
+
+    def test_build_gives_one_warning_for_a_role_with_no_engine(
         self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
-        self._no_engine_plan(monkeypatch, spy, model_file)
-        provider = FleetProvider(engine=spy)
-        assert provider._plan_and_spawn(tmp_path)
-        warnings = provider.health_warnings()
-        assert [
-            (w.code, w.message) for w in warnings if w.code is WarningCode.ROLE_WITHOUT_ENGINE
-        ] == [(WarningCode.ROLE_WITHOUT_ENGINE, "For chat: no engine loads org/repo#mlx.")]
+        routing = self._no_engine_provider(monkeypatch, spy, model_file)
+        assert isinstance(routing._local, FleetProvider)
+        assert routing._local._plan_and_spawn(tmp_path)
+        warnings = self._no_engine_warnings(routing)
+        assert len(warnings) == 1
+        code, message = warnings[0]
+        assert code is WarningCode.ENGINE_FALLBACK
+        assert message.startswith("For chat: No installed engine loads the mlx format")
+        assert "Run lilbee engine list" in message
 
-    def test_reload_reports_a_role_with_no_engine_as_a_health_warning(
+    def test_reload_gives_one_warning_for_a_role_with_no_engine(
         self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
-        self._no_engine_plan(monkeypatch, spy, model_file)
-        provider = FleetProvider(engine=spy)
+        routing = self._no_engine_provider(monkeypatch, spy, model_file)
+        provider = routing._local
+        assert isinstance(provider, FleetProvider)
         monkeypatch.setattr(provider, "_reload_dir", lambda: tmp_path)
         monkeypatch.setattr(provider, "_preload_restarted", lambda restarted: None)
         provider._reload_pass()
-        assert [w.message for w in provider.health_warnings()] == [
-            "For chat: no engine loads org/repo#mlx."
-        ]
+        warnings = self._no_engine_warnings(routing)
+        assert [code for code, _ in warnings] == [WarningCode.ENGINE_FALLBACK]
 
 
 class TestSelfCheck:
