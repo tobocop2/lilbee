@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the strict steps and the named step; every engine recording sets it.",
     )
     parser.add_argument("--backend", default="cpu", help="Backend of the run: cpu, cuda, metal.")
+    parser.add_argument("--front", default="", help="Proxy in front of the server, if any.")
     parser.add_argument("--out", required=True, type=Path)
     return parser
 
@@ -51,6 +52,8 @@ def run_log(args: argparse.Namespace, results: dict[str, Outcome]) -> str:
         f"backend: {args.backend}",
         f"models: {args.models}",
     ]
+    if args.front:
+        lines.append(f"front: {args.front}")
     lines += [f"STEP {args.server} {step} ok={o.ok} {o.detail}" for step, o in results.items()]
     return "\n".join(lines) + "\n"
 

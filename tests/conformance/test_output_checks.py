@@ -332,6 +332,18 @@ def test_the_engine_recordings_folder_is_not_empty() -> None:
     assert sorted(ENGINE_FIXTURES.glob("**/*.json"))
 
 
+def test_the_recorder_log_names_the_front_only_when_one_is_set(tmp_path: Path) -> None:
+    parser = record_presets.build_parser()
+    out = ["--out", str(tmp_path / "e.json")]
+    results = {"chat": preset_check.Outcome(True, "Rome")}
+    plain = record_presets.run_log(parser.parse_args([*_ARGS, *out]), results)
+    fronted = record_presets.run_log(
+        parser.parse_args([*_ARGS, "--front", "llama-swap v267", *out]), results
+    )
+    assert "front:" not in plain
+    assert fronted.splitlines()[5] == "front: llama-swap v267"
+
+
 def test_the_recorder_log_names_the_run(tmp_path: Path) -> None:
     args = record_presets.build_parser().parse_args(
         [*_ARGS[:-2], "--backend", "cuda", "--out", str(tmp_path / "e.json")]
