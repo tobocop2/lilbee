@@ -56,6 +56,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         help_text="List, add, edit or remove server presets (edit opens a dialog)",
     ),
     SlashCommand(
+        "/engine",
+        "_cmd_engine",
+        aliases=(),
+        args_hint="[subcommand]",
+        help_text="Show or choose the engine of each role",
+    ),
+    SlashCommand(
         "/delete",
         "_cmd_delete",
         aliases=(),

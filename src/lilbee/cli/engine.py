@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import typer
 from rich.text import Text
 
+from lilbee.app import engine_service
 from lilbee.cli import theme
 from lilbee.cli.app import console, json_out
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.swap_manager import stop_engine
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.engine_lock import build_lock, machine_engine_dir, private_engine_dir
 
@@ -101,3 +105,71 @@ def remove(
         json_out({"command": "engine remove", "removed": f"{engine} {version} ({backend})"})
         return
     console.print(f"Removed engine {engine} {version} ({backend}).")
+
+
+def _refuse(command: str, exc: Exception) -> typer.Exit:
+    """Show a refusal from the engine service on the surface and return the exit."""
+    if cfg.json_mode:
+        json_out({"command": command, "error": str(exc)})
+    else:
+        PlainConsole(stderr=True).print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
+    return typer.Exit(1)
+
+
+@engine_app.command("roles")
+def roles() -> None:
+    """Show the engine of each role, with the notice when it fell back."""
+    views = engine_service.roles()
+    if cfg.json_mode:
+        json_out(
+            {
+                "command": "engine roles",
+                "roles": [
+                    {
+                        "role": str(v.role),
+                        "model": v.model,
+                        "format": v.format,
+                        "engine": v.engine,
+                        "notice": v.notice,
+                    }
+                    for v in views
+                ],
+            }
+        )
+        return
+    for view in views:
+        console.print(f"{view.role}: {view.model} ({view.format}) on {view.engine or 'no engine'}")
+        if view.notice:
+            console.print(view.notice)
+
+
+@engine_app.command("use")
+def use(
+    role: Annotated[WorkerRole, typer.Argument(help="Role: chat, embed, rerank or vision.")],
+    model: str = typer.Argument(help="The model of that role."),
+    engine: str = typer.Argument(help="Engine name, or 'auto' to remove the choice."),
+) -> None:
+    """Choose the engine that runs the model of one role."""
+    try:
+        chosen = engine_service.use_for_role(role, model, engine)
+    except (engine_service.EngineRefusedError, engine_service.EngineNotSavedError) as exc:
+        raise _refuse("engine use", exc) from exc
+    if cfg.json_mode:
+        json_out({"command": "engine use", "role": str(role), "model": model, "engine": chosen})
+        return
+    console.print(f"{role} model {model} uses engine {chosen}. {engine_service.RESTART_NOTE}")
+
+
+@engine_app.command("prefer")
+def prefer(
+    name: str = typer.Argument(help="Engine name, or 'auto' for the default for each model."),
+) -> None:
+    """Set the engine to use for every model that has no choice of its own."""
+    try:
+        chosen = engine_service.prefer(name)
+    except (engine_service.EngineRefusedError, engine_service.EngineNotSavedError) as exc:
+        raise _refuse("engine prefer", exc) from exc
+    if cfg.json_mode:
+        json_out({"command": "engine prefer", "engine": chosen})
+        return
+    console.print(f"The preferred engine is {chosen}. {engine_service.RESTART_NOTE}")

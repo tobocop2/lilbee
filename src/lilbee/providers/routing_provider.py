@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
+from lilbee.app.engine_choice import resolve_engines
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.vectors import Vector
@@ -55,6 +56,7 @@ class RoutingProvider(LLMProvider):
 
     def __init__(self, *, engine: Callable[[], EngineAdapter], hold_warm: bool = False) -> None:
         self._engine = engine
+        self._noticed: dict[WorkerRole, str] = {}
         self._local: LLMProvider | None = None
         self._sdk_provider: SdkLLMProvider | None = None
         # Carried until the local fleet is lazily built, so a provider created for
@@ -102,7 +104,15 @@ class RoutingProvider(LLMProvider):
             log_name(model),
         )
 
+    def _warn_once(self, role: WorkerRole) -> None:
+        """Log why *role* did not get the engine asked for, once for each notice text."""
+        notice = resolve_engines(cfg).choices[role].notice
+        if notice is not None and self._noticed.get(role) != notice:
+            self._noticed[role] = notice
+            log.warning("%s", notice)
+
     def _announce(self, role: WorkerRole, ref: ProviderModelRef) -> None:
+        self._warn_once(role)
         self._log_served(role, ref.raw, role_serving(role, ref.raw))
 
     def embed(self, texts: list[str]) -> list[Vector]:
@@ -284,6 +294,7 @@ class RoutingProvider(LLMProvider):
         model = cfg.reranker_model
         engine = role_engine(WorkerRole.RERANK)
         native = is_native_rerank_ref(model, engine)
+        self._warn_once(WorkerRole.RERANK)
         self._log_served(WorkerRole.RERANK, model, served_by(model, engine, native=native))
         if native:
             return self._get_local().rerank(query, candidates)
@@ -407,6 +418,18 @@ class RoutingProvider(LLMProvider):
         return None if local is None else local.embed_token_cap()
 
     def health_warnings(self) -> list[HealthWarning]:
+        """Engine fallbacks plus the serving degradations of the local engine."""
+        return [*self._engine_fallbacks(), *self._local_warnings()]
+
+    def _engine_fallbacks(self) -> list[HealthWarning]:
+        """One warning for each role whose engine choice did not hold."""
+        return [
+            HealthWarning(code=WarningCode.ENGINE_FALLBACK, message=choice.notice)
+            for choice in resolve_engines(cfg).choices.values()
+            if choice.notice is not None
+        ]
+
+    def _local_warnings(self) -> list[HealthWarning]:
         """Serving degradations of the local engine; the embed warning needs a local embedder."""
         local = self._local_embedder()
         if local is not None:

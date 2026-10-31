@@ -25,6 +25,7 @@ import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import Tool as MCPTool
 
+from lilbee.app import engine_service
 from lilbee.app.memory import (
     MEMORY_DISABLED_HINT,
     forget,
@@ -95,6 +96,7 @@ from lilbee.data.store import (
     scope_to_chunk_type,
 )
 from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.runtime.lock import ResetRefusedError
@@ -224,7 +226,11 @@ def _tool_named(name: str) -> Callable[[_F], _F]:
 
     The preset tools carry the ``mcp_presets_enabled`` gate, evaluated at server build.
     """
-    when = _presets_enabled if name in _PRESET_TOOL_NAMES else None
+    when = None
+    if name in _PRESET_TOOL_NAMES:
+        when = _presets_enabled
+    elif name in _ENGINE_TOOL_NAMES:
+        when = _engines_enabled
 
     def deco(fn: _F) -> _F:
         _REGISTRATIONS.append((_offload_sync(fn), name, when))
@@ -255,8 +261,21 @@ def _tool_if(when: Callable[[], bool]) -> Callable[[_F], _F]:
 # next connection: MCP sends no ``tools/list_changed`` from here. The settings
 # reference documents that, and generates the list from this set.
 TOOL_GATE_SETTINGS: frozenset[str] = frozenset(
-    {"wiki", "memory_enabled", "mcp_sessions_enabled", "mcp_presets_enabled"}
+    {
+        "wiki",
+        "memory_enabled",
+        "mcp_sessions_enabled",
+        "mcp_presets_enabled",
+        "mcp_engines_enabled",
+    }
 )
+
+ENGINES_DISABLED_ERROR = (
+    "The engine tools are off over MCP. Turn them on with settings_set mcp_engines_enabled "
+    "true, /set mcp_engines_enabled true in the TUI, or mcp_engines_enabled = true in "
+    "config.toml."
+)
+_ENGINE_TOOL_NAMES: frozenset[str] = frozenset({"engine_roles", "engine_use", "engine_prefer"})
 
 PRESETS_DISABLED_ERROR = (
     "Server presets are off over MCP. Turn them on with settings_set mcp_presets_enabled "
@@ -274,6 +293,10 @@ def _wiki_enabled() -> bool:
 
 def _presets_enabled() -> bool:
     return cfg.mcp_presets_enabled
+
+
+def _engines_enabled() -> bool:
+    return cfg.mcp_engines_enabled
 
 
 def _error(msg: str) -> dict[str, Any]:
@@ -1879,6 +1902,75 @@ def preset_remove_tool(name: str) -> dict[str, Any]:
         return PresetRemovedResponse(removed=name)
 
     return _preset_result(remove)
+
+
+def _engine_result(action: Callable[[], BaseModel]) -> dict[str, Any]:
+    """Run an engine call and serialize its result; a refusal returns the service's text."""
+    try:
+        return action().model_dump(mode="json")
+    except (engine_service.EngineRefusedError, engine_service.EngineNotSavedError) as exc:
+        return _error(str(exc))
+
+
+def _engine_read_refused() -> dict[str, Any] | None:
+    """The refusal for any engine tool once ``mcp_engines_enabled`` is off, even mid-process."""
+    if not cfg.mcp_engines_enabled:
+        return _error(ENGINES_DISABLED_ERROR)
+    return None
+
+
+def _engine_write_refused() -> dict[str, Any] | None:
+    """The refusal for an engine choice: the tools are off, or the HTTP flag is off."""
+    if (refused := _engine_read_refused()) is not None:
+        return refused
+    if _transport.http_mounted and not cfg.allow_http_engines:
+        return _error(engine_service.http_refused_message())
+    return None
+
+
+@_tool_named("engine_roles")
+def engine_roles_tool() -> dict[str, Any]:
+    """The engine of every role: model, format, engine and the notice when it fell back."""
+    from lilbee.server.models import EngineRoleResponse, EngineRolesResponse
+
+    if (refused := _engine_read_refused()) is not None:
+        return refused
+    return _engine_result(
+        lambda: EngineRolesResponse(
+            roles=[
+                EngineRoleResponse(
+                    role=v.role,
+                    model=v.model,
+                    format=v.format,
+                    engine=v.engine,
+                    notice=v.notice,
+                )
+                for v in engine_service.roles()
+            ]
+        )
+    )
+
+
+@_tool_named("engine_use")
+def engine_use_tool(role: WorkerRole, model: str, engine: str) -> dict[str, Any]:
+    """Choose the engine for the model of a role; engine ``auto`` removes the choice."""
+    from lilbee.server.models import EngineChosenResponse
+
+    if (refused := _engine_write_refused()) is not None:
+        return refused
+    return _engine_result(
+        lambda: EngineChosenResponse(engine=engine_service.use_for_role(role, model, engine))
+    )
+
+
+@_tool_named("engine_prefer")
+def engine_prefer_tool(engine: str) -> dict[str, Any]:
+    """Set the engine for every model with no choice of its own; ``auto`` picks by format."""
+    from lilbee.server.models import EngineChosenResponse
+
+    if (refused := _engine_write_refused()) is not None:
+        return refused
+    return _engine_result(lambda: EngineChosenResponse(engine=engine_service.prefer(engine)))
 
 
 def build_mcp_server() -> LilbeeMCP:

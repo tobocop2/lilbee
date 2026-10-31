@@ -930,6 +930,41 @@ class PresetRemovedResponse(BaseModel):
     removed: str
 
 
+class EngineRoleResponse(BaseModel):
+    """The engine of one role: its model, the engine it runs on and the notice, if any."""
+
+    role: WorkerRole
+    model: str
+    format: str
+    engine: str | None
+    notice: str | None
+
+
+class EngineRolesResponse(BaseModel):
+    """Response for the engine of every role."""
+
+    roles: list[EngineRoleResponse]
+
+
+class EngineUseBody(BaseModel):
+    """Request body that chooses the engine for the model of one role."""
+
+    model: str
+    engine: str
+
+
+class EnginePreferBody(BaseModel):
+    """Request body that sets the global engine preference."""
+
+    engine: str
+
+
+class EngineChosenResponse(BaseModel):
+    """Response for an engine write: the engine now stored."""
+
+    engine: str
+
+
 class PresetAddBody(BaseModel):
     """Request body for adding a server preset. The key is write only."""
 

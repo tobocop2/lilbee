@@ -879,6 +879,10 @@ class Config(BaseSettings):
     # schema on every request. REST, the CLI and the slash command are unchanged.
     mcp_presets_enabled: bool = ConfigField(default=False, writable=True)
 
+    # The three engine tools, off by default: the default tool list has a byte
+    # budget. REST, the CLI and the slash command are unchanged.
+    mcp_engines_enabled: bool = ConfigField(default=False, writable=True)
+
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM

@@ -854,3 +854,29 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
         from lilbee.cli.tui.secret_lines import carries_secret
 
         assert carries_secret(text) is expected
+
+
+class TestEngineHandler:
+    async def test_the_slash_command_notifies_the_roles_through_the_service(self):
+        app = _ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            chat = await await_chat(app, pilot)
+            with mock.patch.object(chat, "notify") as notify:
+                chat._cmd_engine("roles")
+                assert await wait_until(pilot, lambda: notify.called)
+        assert "chat: " in notify.call_args.args[0]
+        assert notify.call_args.kwargs == {"severity": "information"}
+
+    async def test_a_refusal_notifies_as_an_error(self):
+        app = _ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            chat = await await_chat(app, pilot)
+            with mock.patch.object(chat, "notify") as notify:
+                chat._cmd_engine("prefer nonesuch")
+                assert await wait_until(pilot, lambda: notify.called)
+        assert "No engine is named 'nonesuch'" in notify.call_args.args[0]
+        assert notify.call_args.kwargs == {"severity": "error"}
+
+    def test_engine_is_registered_and_not_allowed_mid_answer(self):
+        assert build_dispatch_dict()["/engine"] == "_cmd_engine"
+        assert runs_while_streaming("/engine") is False

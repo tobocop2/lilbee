@@ -32,6 +32,7 @@ from lilbee.server.chat_completions_api.errors import CompletionsErrorCode, comp
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.mcp_mount import build_mcp_mount
+from lilbee.server.routes import engines as engine_routes
 from lilbee.server.routes import presets as preset_routes
 from lilbee.server.routes.agent_config import (
     agent_config_index_route,
@@ -417,6 +418,9 @@ def create_app() -> Litestar:
             placement_clear_route,
             gpus_route,
             gpu_stats_stream_route,
+            engine_routes.engine_roles_route,
+            engine_routes.engine_use_route,
+            engine_routes.engine_prefer_route,
             preset_routes.presets_list_route,
             preset_routes.presets_add_route,
             preset_routes.presets_edit_route,

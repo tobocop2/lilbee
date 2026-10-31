@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TypeVar
 
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.catalog.refs import model_format
@@ -19,11 +22,19 @@ from lilbee.providers.fleet.engines.choice import (
 )
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
+log = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
 PREFERRED_KEY = "preferred_engine"
+RESTART_NOTE = "A running server uses the choice after a restart."
 
 
 class EngineRefusedError(ValueError):
     """The engine service refuses a write; the text names the problem and the fix."""
+
+
+class EngineNotSavedError(Exception):
+    """The choice could not be written to the settings file; the text holds no path."""
 
 
 @dataclass(frozen=True)
@@ -54,6 +65,22 @@ def _require_installed(name: EngineName, installed: InstalledEngines) -> None:
         raise EngineRefusedError(f"Engine {name} is not installed. {LIST_HINT}")
 
 
+def _store(
+    key: str,
+    apply: Callable[[object], tuple[object, _T]],
+    commit: Callable[[_T], None],
+) -> None:
+    """Write one setting; the live value changes only after the file is written."""
+    try:
+        settings.mutate_value(cfg.data_root, key, apply, commit)
+    except OSError as exc:
+        log.warning("The engine choice was not saved: %s", exc)
+        raise EngineNotSavedError(
+            "The engine choice was not saved. Check that the data folder is writable "
+            "and that no other lilbee process holds the settings file."
+        ) from exc
+
+
 def roles(config: Config = cfg) -> list[RoleView]:
     """The engine of every role, with the notice for a role that fell back or has none."""
     assignment = resolve_engines(config)
@@ -79,10 +106,45 @@ def prefer(name: str) -> str:
         _require_installed(EngineName(setting.value), installed_engines())
 
     def apply(_raw: object) -> tuple[str, str]:
-        cfg.preferred_engine = setting
         return setting.value, setting.value
 
-    return settings.mutate_value(cfg.data_root, PREFERRED_KEY, apply)
+    def commit(_chosen: str) -> None:
+        cfg.preferred_engine = setting
+
+    _store(PREFERRED_KEY, apply, commit)
+    return setting.value
+
+
+def http_refused_message() -> str:
+    """The refusal text for an engine choice on the HTTP server while allow_http_engines is off."""
+    return (
+        "Changing the engine on the HTTP server is unavailable: the choice applies to every "
+        "connected client. Enable allow_http_engines (LILBEE_ALLOW_HTTP_ENGINES) on a "
+        "deployment you alone use, or change the engine from the CLI or TUI."
+    )
+
+
+def parse_role(text: str) -> WorkerRole:
+    """The role named by *text*; a surface that reads free text calls this once."""
+    try:
+        return WorkerRole(text)
+    except ValueError:
+        known = ", ".join(WorkerRole)
+        raise EngineRefusedError(f"No role is named {text!r}. Choose one of: {known}.") from None
+
+
+def use_for_role(role: WorkerRole, model: str, name: str, config: Config = cfg) -> str:
+    """Store the engine for the model of *role*; refuses a model that is not the role's model."""
+    current = str(getattr(config, ROLE_REGISTRY[role].config_field))
+    if not current.strip():
+        raise EngineRefusedError(
+            f"No {role} model is set. Choose a {role} model before you choose its engine."
+        )
+    if model != current:
+        raise EngineRefusedError(
+            f"The {role} model is {current}, not {model}. Choose the engine for {current}."
+        )
+    return use(model, name)
 
 
 def use(model: str, name: str) -> str:
@@ -100,14 +162,17 @@ def use(model: str, name: str) -> str:
                 f"Choose an engine that loads {fmt}."
             )
 
-    def apply(raw: object) -> tuple[str | None, str]:
+    def apply(raw: object) -> tuple[str | None, str | None]:
         chosen = stored_choices(raw if isinstance(raw, str) else None)
         if name == AUTO:
             chosen.pop(model, None)
         else:
             chosen[model] = name
         encoded = json.dumps(chosen, sort_keys=True) if chosen else None
-        cfg.engine_choices = encoded
-        return encoded, name
+        return encoded, encoded
 
-    return settings.mutate_value(cfg.data_root, CHOICES_KEY, apply)
+    def commit(encoded: str | None) -> None:
+        cfg.engine_choices = encoded
+
+    _store(CHOICES_KEY, apply, commit)
+    return name
