@@ -1,0 +1,6 @@
+{
+  "id": "M5",
+  "rows": [],
+  "request": null,
+  "assert": "The licence list is not empty, has no empty entry and no GPL or AGPL entry."
+}

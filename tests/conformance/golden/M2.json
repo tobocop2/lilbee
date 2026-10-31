@@ -1,0 +1,11 @@
+{
+  "id": "M2",
+  "rows": [
+    5,
+    16,
+    25,
+    42
+  ],
+  "request": null,
+  "assert": "--list-devices prints device lines, or the pin declares a backend (fallback)."
+}
