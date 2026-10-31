@@ -1,0 +1,15 @@
+{
+  "id": "E5",
+  "rows": [
+    36
+  ],
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Say ok."
+      }
+    ]
+  },
+  "assert": "stream: data frames with choices, no error frame, at least one frame with content text (reasoning text alone counts only when the finish_reason is length), last line data: [DONE]."
+}
