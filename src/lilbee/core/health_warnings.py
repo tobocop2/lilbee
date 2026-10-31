@@ -27,8 +27,6 @@ class WarningCode(StrEnum):
     """Embed window below chunk budget: semantic chunks lose text; token-sized ones are capped."""
     PLACEMENT_DIVERGED = "placement_diverged"
     """The engine allocated materially more or less GPU memory than planned."""
-    ROLE_WITHOUT_ENGINE = "role_without_engine"
-    """A configured role is not served because no installed engine loads its model."""
     LIBRARY_UPGRADING = "library_upgrading"
     """A first open is upgrading the library's format; requests that need it wait."""
     ENGINE_FALLBACK = "engine_fallback"

@@ -508,7 +508,10 @@ def test_the_gpu_stream_route_starts_while_one_role_has_no_engine(
     assert response.status_code == 200
 
 
-_NO_ENGINE_ANYWHERE = "No engine is assigned to any role, so there is nothing to plan."
+_NO_ENGINE_ANYWHERE = (
+    "No engine is assigned to any role, so there is nothing to plan. "
+    "Run lilbee engine list to see the installed engines."
+)
 
 
 @pytest.fixture
