@@ -57,6 +57,7 @@ def list_builds() -> None:
     from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 
     builds = EngineStore(engines_root(cfg.models_dir)).installed()
+    absent = engine_service.not_installed()
     if cfg.json_mode:
         json_out(
             {
@@ -64,6 +65,7 @@ def list_builds() -> None:
                 "builds": [
                     {"engine": b.engine, "version": b.version, "backend": b.backend} for b in builds
                 ],
+                "not_installed": absent,
             }
         )
         return
@@ -71,6 +73,8 @@ def list_builds() -> None:
         console.print(_NO_BUILDS)
     for build in builds:
         console.print(f"{build.engine} {build.version} ({build.backend})")
+    for name in absent:
+        console.print(f"{name} not installed")
 
 
 @engine_app.command("install")
