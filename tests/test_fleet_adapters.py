@@ -564,7 +564,8 @@ _ALWAYS_WRITTEN = [
 # Literal argv, written by hand from the engine's flag grammar: each flag and its values
 # leave together. They do not read the width from the flag table under test.
 def _argv(text: str) -> list[str]:
-    return text.split()
+    # A path token renders with the platform separator (backslash on Windows), as str(Path) does.
+    return [str(Path(token)) if token.startswith("/") else token for token in text.split()]
 
 
 _FULL_ARGV = _argv(
