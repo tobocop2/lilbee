@@ -13,7 +13,14 @@ from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.planning import FleetPlan
 from lilbee.providers.roles import WorkerRole
-from tests._fleet_engines import GIB, CardEngine, Role, cards_of, prepare_host
+from tests._fleet_engines import (
+    GIB,
+    CardEngine,
+    Role,
+    cards_of,
+    engines_for_all_roles,
+    prepare_host,
+)
 
 GOLDEN = Path(__file__).parent / "fleet_one_engine_cards_golden.json"
 C, E, R, V = WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION
@@ -49,7 +56,7 @@ SCENARIOS = {
 
 def plan_one_engine(engine: CardEngine):
     """Plan every configured role on *engine*."""
-    return planning.plan_all_launches(engines=planning.engines_for_all_roles(engine))
+    return planning.plan_all_launches(engines=engines_for_all_roles(engine))
 
 
 def run_scenario(

@@ -34,8 +34,8 @@ def _opening_a_store_fails(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_placement_views_plan_with_the_selected_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[Any] = []
 
-    def _resolve(spec: object, *, engine: Any, **kwargs: object) -> Any:
-        seen.append(engine)
+    def _resolve(spec: object, *, engines: Any, **kwargs: object) -> Any:
+        seen.append(engines)
         raise PlacementError("stop after the engine is chosen")
 
     monkeypatch.setattr(placement, "resolve_placement_plan", _resolve)
@@ -44,7 +44,7 @@ def test_placement_views_plan_with_the_selected_engine(monkeypatch: pytest.Monke
             call()
     with pytest.raises(PlacementError, match="stop after the engine is chosen"):
         placement.set_placement(None)
-    assert seen == [LLAMA, LLAMA, LLAMA]
+    assert [set(engines.values()) for engines in seen] == [{LLAMA}] * 3
 
 
 def test_launcher_sizes_the_chat_window_with_the_selected_engine(
@@ -101,11 +101,11 @@ def test_self_check_server_plans_with_the_selected_engine(
         return _Launch()
 
     class _Swap:
-        def __init__(self, work_dir: Path, group: object, engine: Any) -> None:
-            seen.append(engine)
+        def __init__(self, work_dir: Path, group: object) -> None:
+            pass
 
-        def start(self, launches: list[Any]) -> None:
-            return None
+        def start(self, launches: list[Any], *, engines: Any) -> None:
+            seen.extend(engines.values())
 
         def endpoint(self) -> str:
             return "http://127.0.0.1:1"

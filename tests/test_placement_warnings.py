@@ -43,7 +43,7 @@ class TestPlacementWarnings:
             "load_model: initializing slots\n",
             encoding="utf-8",
         )
-        manager = sm.SwapManager(tmp_path, SwapGroup.CHAT, engine=LLAMA)
+        manager = sm.SwapManager(tmp_path, SwapGroup.CHAT)
         manager._log_path = tmp_path / "logs" / "llama-swap-chat.log"
         launch = InstanceLaunch(
             role=WorkerRole.CHAT,
@@ -78,7 +78,7 @@ class TestPlacementWarnings:
                 return _Resp()
 
         monkeypatch.setattr(sm, "_probe_client", lambda: _Client())
-        manager = sm.SwapManager(tmp_path, SwapGroup.CHAT, engine=LLAMA)
+        manager = sm.SwapManager(tmp_path, SwapGroup.CHAT)
         launch = InstanceLaunch(
             role=WorkerRole.CHAT,
             argv=["/bin/llama-server", MEMORY_FLAG],
