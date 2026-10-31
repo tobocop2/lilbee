@@ -21,7 +21,12 @@ _USE = "use"
 _PREFER = "prefer"
 _USE_ARGS = 3
 _PREFER_ARGS = 1
-USAGE = "Use /engine roles, /engine use ROLE MODEL ENGINE, or /engine prefer ENGINE."
+_INSTALL = "install"
+_INSTALL_ARGS = 1
+USAGE = (
+    "Use /engine roles, /engine use ROLE MODEL ENGINE, /engine prefer ENGINE, "
+    "or /engine install ENGINE."
+)
 
 
 @dataclass(frozen=True)
@@ -60,6 +65,10 @@ def _run(verb: str, words: list[str]) -> EngineCommandResult:
         chosen = engine_service.prefer(words[0])
         text = msg.ENGINE_PREFER_DONE.format(engine=chosen, note=msg.ENGINE_RESTART_NOTE)
         return EngineCommandResult(True, text, engine_service.PREFERRED_KEY)
+    if verb == _INSTALL and len(words) == _INSTALL_ARGS:
+        built = engine_service.install(words[0])
+        label = f"{built.engine} {built.version} ({built.backend})"
+        return EngineCommandResult(True, msg.ENGINE_INSTALL_DONE.format(build=label))
     return EngineCommandResult(False, USAGE)
 
 

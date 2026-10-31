@@ -421,6 +421,7 @@ def create_app() -> Litestar:
             engine_routes.engine_roles_route,
             engine_routes.engine_use_route,
             engine_routes.engine_prefer_route,
+            engine_routes.engine_install_route,
             preset_routes.presets_list_route,
             preset_routes.presets_add_route,
             preset_routes.presets_edit_route,

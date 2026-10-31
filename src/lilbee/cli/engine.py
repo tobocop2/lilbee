@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -68,6 +69,31 @@ def list_builds() -> None:
         console.print(_NO_BUILDS)
     for build in builds:
         console.print(f"{build.engine} {build.version} ({build.backend})")
+
+
+@engine_app.command("install")
+def install(
+    name: str = typer.Argument(help="Engine name, as 'lilbee engine roles' shows it."),
+    wheel: Annotated[
+        Path | None,
+        typer.Option("--wheel", help="Install from this wheel file instead of the packs folder."),
+    ] = None,
+) -> None:
+    """Install an engine build from its wheel or from a pack in the packs folder."""
+    if wheel is not None and not wheel.is_file():
+        raise _refuse(
+            "engine install",
+            engine_service.EngineRefusedError(f"{wheel} is not a file. Name a wheel file."),
+        )
+    try:
+        built = engine_service.install(name, wheel)
+    except engine_service.EngineRefusedError as exc:
+        raise _refuse("engine install", exc) from exc
+    label = f"{built.engine} {built.version} ({built.backend})"
+    if cfg.json_mode:
+        json_out({"command": "engine install", "installed": label})
+        return
+    console.print(f"Installed engine {label}.")
 
 
 @engine_app.command("remove")
