@@ -119,10 +119,13 @@ def format_remote_ref(name: str, provider: str) -> str:
     *provider* may be a routing key (``"ollama"``) or a backend display
     name (``"LM Studio"``); local-server labels are normalised to the
     routing key so the prefix survives. API providers fall through to
-    their lowercase key unchanged.
+    their lowercase key unchanged. A label that is no built-in routing key
+    (``"Remote"``) adds no prefix: the name stays as the server reported it.
     """
     spec = local_server_for_label(provider)
     key = spec.key if spec is not None else provider.lower()
+    if key not in BUILTIN_PREFIXES:
+        return name
     return ProviderModelRef(raw=name, provider=key, name=name).for_openai_prefix()
 
 
