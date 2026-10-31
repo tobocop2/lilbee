@@ -1,0 +1,9 @@
+engine: tei-cpu
+version: 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cpu-1.9
+host: Linux-7.0.0-1014-gcp-x86_64-with-glibc2.39
+backend: cpu
+models: embed=BAAI/bge-small-en-v1.5,rerank=BAAI/bge-reranker-base
+front: llama-swap v267, one TEI container per model, request bodies pass through unchanged
+STEP tei-cpu embed ok=True dims=[384]
+STEP tei-cpu rerank ok=True best=1
+STEP tei-cpu named ok=True log=['served by engine=check version=preset role=embed model=check/BAAI/bge-small-en-v1.5'] status={<WorkerRole.EMBED: 'embed'>: 'check', <WorkerRole.RERANK: 'rerank'>: 'check'}
