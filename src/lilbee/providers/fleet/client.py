@@ -1074,6 +1074,8 @@ class LlamaServerClient:
         """
         if not candidates:
             return []
+        if self._profile.rerank_path is not None:
+            return self._rerank_route(self._profile.rerank_path, query, candidates)
         if self._rerank_mode is RerankMode.LLM:
             return self._rerank_llm(query, candidates)
         pairs = [
@@ -1085,6 +1087,26 @@ class LlamaServerClient:
             data = self._rerank_batch(pairs[start : start + _EMBED_N_SEQ_MAX])
             scores.extend(_rerank_score(item, self._profile) for item in data)
         return scores
+
+    def _rerank_route(self, path: str, query: str, candidates: list[str]) -> list[float]:
+        """Scores from the engine's rerank route, in candidate order."""
+
+        def _call() -> list[dict[str, Any]]:
+            with self._track():
+                resp = self._http.post(path, json={"query": query, "texts": candidates})
+                self._raise_for_status(resp)
+                return list(resp.json())
+
+        by_index = {
+            int(item["index"]): float(item["score"]) for item in retry_on_gateway_error(_call)
+        }
+        if sorted(by_index) != list(range(len(candidates))):
+            raise ProviderError(
+                "The reranker did not return one score for each of the "
+                f"{len(candidates)} candidates.",
+                provider=self._profile.label,
+            )
+        return [by_index[i] for i in range(len(candidates))]
 
     def _fit_estimated(self, text: str) -> str:
         """Truncate *text* to the token cap only when its char estimate exceeds it."""
@@ -1211,10 +1233,13 @@ class LlamaServerClient:
         trusted (no ``/tokenize``); only an over-cap estimate is confirmed against
         the server tokenizer and truncated if it really exceeds the cap.
         """
-        if estimate:
+        if estimate or self._profile.tokenize_path is None:
             est = _estimate_tokens(text)
             if est <= cap:
                 return text, est
+            if self._profile.tokenize_path is None:
+                log.warning("Truncating oversize embed input: ~%d tokens > cap %d", est, cap)
+                return text[: cap * _EMBED_EST_CHARS_PER_TOKEN], cap
         tokens = self._tokenize(text)
         if len(tokens) > cap:
             log.warning("Truncating oversize embed input: %d tokens > cap %d", len(tokens), cap)
@@ -1232,9 +1257,11 @@ class LlamaServerClient:
     def _tokenize(self, text: str, *, parse_special: bool = _TOKENIZE_PARSE_SPECIAL) -> list[int]:
         """Token ids for *text*; a gateway error is retried like an embedding."""
 
+        path = self._require_route(self._profile.tokenize_path, "tokenize")
+
         def _call() -> list[int]:
             resp = self._http.post(
-                self._native_route(self._profile.tokenize_path),
+                self._native_route(path),
                 json={
                     "content": text,
                     "add_special": _TOKENIZE_ADD_SPECIAL,
@@ -1247,8 +1274,17 @@ class LlamaServerClient:
         return retry_on_gateway_error(_call)
 
     def count_tokens(self, text: str) -> int:
-        """Number of tokens *text* encodes to under the server's tokenizer."""
+        """Tokens in *text* under the server's tokenizer, or a character estimate with no route."""
+        if self._profile.tokenize_path is None:
+            return _estimate_tokens(text)
         return len(self._tokenize(text))
+
+    @staticmethod
+    def _require_route(path: str | None, route: str) -> str:
+        """*path*, or ``NotImplementedError`` when the engine has no such route."""
+        if path is None:
+            raise NotImplementedError(f"This inference engine has no {route} route.")
+        return path
 
     def count_chat_prompt_tokens(
         self,
@@ -1265,6 +1301,7 @@ class LlamaServerClient:
         Special-token strings in the rendered text are parsed, matching how the
         server tokenizes its own prompt.
         """
+        self._require_route(self._profile.tokenize_path, "tokenize")
         rendered = self._render_chat_prompt(messages, tools, tool_choice, options)
         return len(self._tokenize(rendered, parse_special=True))
 
@@ -1302,9 +1339,8 @@ class LlamaServerClient:
         return retry_on_gateway_error(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
-        resp = self._http.post(
-            self._native_route(self._profile.detokenize_path), json={"tokens": tokens}
-        )
+        path = self._require_route(self._profile.detokenize_path, "detokenize")
+        resp = self._http.post(self._native_route(path), json={"tokens": tokens})
         self._raise_for_status(resp)
         return str(resp.json()["content"])
 
