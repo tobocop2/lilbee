@@ -74,6 +74,12 @@ def session_host() -> HostCaps:
         )
 
 
+def refresh_session_host() -> HostCaps:
+    """Read the host now and make it the session host; an engine install calls this."""
+    session_host.cache_clear()
+    return session_host()
+
+
 def _names(adapter: EngineAdapter, formats: Collection[str]) -> bool:
     return bool(adapter.formats & set(formats))
 

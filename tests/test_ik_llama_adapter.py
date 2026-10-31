@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from lilbee.app import engine_choice, engine_service
+from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat
 from lilbee.cli import app as cli_app
 from lilbee.core.config import cfg
@@ -179,7 +180,7 @@ def test_an_unreadable_architecture_stays_selectable_but_never_automatic() -> No
 def test_install_on_a_host_without_avx2_is_refused_and_writes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(host_caps, "detect", lambda: _host("Linux", "x86_64", ["avx"]))
+    monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx"]))
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install("ik_llama.cpp")
     assert "AVX2" in str(exc.value)
@@ -195,7 +196,7 @@ def test_the_adapter_records_no_pack_digest_until_a_pack_is_published() -> None:
 def test_install_with_no_published_pack_says_so_for_a_wheel_and_the_packs_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(host_caps, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
+    monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
     wheel = tmp_path / "ik.whl"
     _make_wheel(wheel)
     packs = engines_root(cfg.models_dir) / "packs"
@@ -211,7 +212,7 @@ def test_install_with_no_published_pack_says_so_for_a_wheel_and_the_packs_folder
 def test_install_from_a_pack_with_the_pinned_digest_lists_the_engine(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(host_caps, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
+    monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
     wheel = tmp_path / "ik.whl"
     monkeypatch.setattr(ik_llama, "PACK_SHA256", _make_wheel(wheel))
     built = engine_service.install("ik_llama.cpp", wheel)

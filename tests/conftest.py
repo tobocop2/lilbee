@@ -232,6 +232,16 @@ def _seal_provider_sdk_distribution(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_session_host():
+    """Read the host afresh per test; an engine install replaces the cached host."""
+    from lilbee.catalog.runnable import session_host
+
+    session_host.cache_clear()
+    yield
+    session_host.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_engine_help():
     """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
     from lilbee.providers.fleet.adapters import _warn_once
