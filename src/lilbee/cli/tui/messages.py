@@ -845,6 +845,7 @@ ENGINE_EMBED_CONFIRM_MESSAGE = (
     "unusable by the index. Continue?"
 )
 ENGINE_EMBED_CANCELLED = "The engine is unchanged."
+ENGINE_INSTALL_DONE = "Installed engine {build}."
 MODEL_INFO_ENGINE = "**Engine:** {engine}"
 MODEL_VALUE_NONE = "(none)"
 MODEL_PICKER_DISABLE_LABEL = "(disabled, no model)"

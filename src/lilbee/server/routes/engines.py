@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 from typing import TypeVar
 
-from litestar import get, put
+from litestar import get, post, put
 from litestar.connection import ASGIConnection
 from litestar.exceptions import HTTPException
 from litestar.handlers.base import BaseRouteHandler
@@ -16,6 +16,8 @@ import lilbee.app.engine_service as service
 from lilbee.core.config import cfg
 from lilbee.server.models import (
     EngineChosenResponse,
+    EngineInstallBody,
+    EngineInstalledResponse,
     EnginePreferBody,
     EngineRoleResponse,
     EngineRolesResponse,
@@ -88,6 +90,17 @@ async def engine_use_route(role: FromPath[str], data: EngineUseBody) -> EngineCh
         )
     )
     return EngineChosenResponse(engine=chosen)
+
+
+@post("/api/engines/install", status_code=200, guards=[_require_engines_enabled])
+async def engine_install_route(data: EngineInstallBody) -> EngineInstalledResponse:
+    """Install an engine build from its pack. Refused unless allow_http_engines is enabled."""
+    if data.wheel is not None:
+        raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=service.WHEEL_CLI_ONLY)
+    built = await _call(lambda: service.install(data.engine))
+    return EngineInstalledResponse(
+        engine=built.engine, version=built.version, backend=built.backend
+    )
 
 
 @put("/api/engines/preferred", status_code=200, guards=[_require_engines_enabled])

@@ -443,7 +443,7 @@ back to another engine. `engine use` sets the engine for the model of one role.
 `/engine` chat command, the MCP tools `engine_roles`, `engine_use` and
 `engine_prefer`, and the REST routes `GET /api/engines/roles`,
 `PUT /api/engines/roles/{role}` and `PUT /api/engines/preferred`. On the HTTP
-server the two writes need `allow_http_engines`. The three MCP tools need the
+server the writes need `allow_http_engines`. The MCP tools need the
 setting `mcp_engines_enabled`. It is off by default. Turn it on, then restart the
 MCP server.
 
@@ -512,6 +512,22 @@ To pull a model in a format other than GGUF, add the format name to the
 reference as `org/repo#format`. Here `openvino` and `mlx` are names of weight
 formats, not engines. The format name is `gguf`, `mlx`, `openvino` or
 `safetensors`. A reference with no `#format` is GGUF.
+
+### Install an engine
+
+An engine that is not bundled needs a pack. Copy the pack into the `packs` folder
+of the engines folder, then run:
+
+```bash
+lilbee engine install <engine>
+lilbee engine install <engine> --wheel /path/to/pack.whl
+```
+
+The install checks that the host can run the engine, then checks the digest and
+the licence of the wheel. If the host fails the check, the command names the
+feature it lacks and installs nothing. Nothing downloads on first use. The same
+action exists as `/engine install ENGINE`, the MCP tool `engine_install` and the
+REST route `POST /api/engines/install`.
 
 ## Memory
 

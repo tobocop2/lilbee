@@ -980,6 +980,24 @@ class EngineChosenResponse(BaseModel):
     engine: str
 
 
+class EngineInstallBody(BaseModel):
+    """Request body for installing an engine build from its pack.
+
+    ``wheel`` is a command line option; a request that sets it is refused.
+    """
+
+    engine: str
+    wheel: str | None = None
+
+
+class EngineInstalledResponse(BaseModel):
+    """Response for an engine install: the build now in the store."""
+
+    engine: str
+    version: str
+    backend: str
+
+
 class PresetAddBody(BaseModel):
     """Request body for adding a server preset. The key is write only."""
 
