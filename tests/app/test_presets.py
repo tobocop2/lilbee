@@ -17,6 +17,7 @@ from lilbee.core import blocked_networks, settings
 from lilbee.core.config import Config, cfg
 from lilbee.providers import server_registry
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.server_registry import RerankWire
 from lilbee.server.handlers.config import get_config, get_config_defaults
 
 KEY = "SENTINEL-key-5d1e"
@@ -288,7 +289,7 @@ class TestAdd:
     def test_it_stores_one_json_scalar_with_the_key(self):
         view = presets.add_preset("alpha", URL, roles=["chat", "embed"], api_key=KEY)
         assert view == presets.ServerPreset(
-            "alpha", URL, (WorkerRole.CHAT, WorkerRole.EMBED), True, True
+            "alpha", URL, (WorkerRole.CHAT, WorkerRole.EMBED), True, True, RerankWire.V1
         )
         assert isinstance(settings.load(cfg.data_root)["server_presets"], str)
         assert _stored() == [
@@ -440,7 +441,7 @@ class TestEdit:
         assert _stored()[1]["api_key"] == KEY
 
     def test_a_preset_with_no_key_can_move(self):
-        presets.clear_key("alpha")
+        presets.edit_preset("alpha", clear_key=True)
         assert presets.edit_preset("alpha", url=OTHER_URL).base_url == OTHER_URL
         assert KEY not in (cfg.data_root / "config.toml").read_text(encoding="utf-8")
 
@@ -493,7 +494,7 @@ class TestEdit:
 class TestClearKey:
     def test_the_key_leaves_the_file_the_config_and_every_read(self):
         presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
-        view = presets.clear_key("alpha")
+        view = presets.edit_preset("alpha", clear_key=True)
         assert view.has_key is False
         assert KEY not in (cfg.data_root / "config.toml").read_text(encoding="utf-8")
         assert KEY not in cfg.server_presets
@@ -503,12 +504,128 @@ class TestClearKey:
     def test_it_leaves_the_other_presets_alone(self):
         presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
         presets.add_preset("beta", OTHER_URL, roles=["embed"], api_key=KEY + "-beta")
-        presets.clear_key("alpha")
+        presets.edit_preset("alpha", clear_key=True)
         assert [entry.has_key for entry in presets.list_presets()] == [False, True]
 
     def test_an_unknown_name_is_refused(self):
         with pytest.raises(ValueError, match="No server preset is named 'nobody'"):
-            presets.clear_key("nobody")
+            presets.edit_preset("nobody", clear_key=True)
+
+
+class TestClearKeyAlone:
+    @pytest.fixture(autouse=True)
+    def _alpha(self):
+        presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"url": URL},
+            {"roles": ["chat"]},
+            {"api_key": KEY + "-2"},
+            {"rerank_wire": "tei"},
+        ],
+    )
+    def test_any_other_change_with_it_is_refused_and_the_key_stays(self, change):
+        with pytest.raises(ValueError, match="Clear the key in its own edit"):
+            presets.edit_preset("alpha", clear_key=True, **change)
+        assert _stored()[0]["api_key"] == KEY
+
+    def test_an_empty_key_beside_it_is_no_change(self):
+        assert presets.edit_preset("alpha", api_key="", clear_key=True).has_key is False
+
+
+class TestEditNamesAChange:
+    @pytest.fixture(autouse=True)
+    def _alpha(self):
+        presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
+
+    @pytest.mark.parametrize("empty", [{}, {"api_key": ""}, {"api_key": None}])
+    def test_a_call_with_no_change_is_refused_and_writes_nothing(self, empty):
+        before = (cfg.data_root / "config.toml").read_bytes()
+        with pytest.raises(ValueError, match="Nothing to change"):
+            presets.edit_preset("alpha", **empty)
+        assert (cfg.data_root / "config.toml").read_bytes() == before
+
+    def test_an_empty_role_list_is_a_change_that_the_role_check_refuses(self):
+        with pytest.raises(ValueError, match="at least one role"):
+            presets.edit_preset("alpha", roles=[])
+
+    def test_a_wire_alone_is_a_change(self):
+        view = presets.edit_preset("alpha", rerank_wire="tei")
+        assert view.rerank_wire is RerankWire.TEI
+        assert _stored()[0]["rerank_wire"] == "tei"
+
+
+class TestViewWire:
+    def test_a_valid_entry_shows_its_wire(self):
+        presets.add_preset("alpha", URL, roles=["rerank"], rerank_wire="tei")
+        assert [view.rerank_wire for view in presets.list_presets()] == [RerankWire.TEI]
+
+    def test_an_invalid_entry_shows_no_wire(self):
+        _store({"name": "bad", "url": "ftp://x.test/", "roles": ["chat"]})
+        view = presets.list_presets()[0]
+        assert (view.valid, view.rerank_wire) == (False, None)
+
+
+class TestErrorKinds:
+    def test_a_taken_name_is_the_exists_kind_and_a_value_error(self):
+        presets.add_preset("alpha", URL, roles=["chat"])
+        with pytest.raises(presets.PresetExistsError, match="already exists") as info:
+            presets.add_preset("alpha", URL, roles=["chat"])
+        assert isinstance(info.value, ValueError)
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda: presets.edit_preset("nope", url=URL),
+            lambda: presets.edit_preset("nope", clear_key=True),
+            lambda: presets.remove_preset("nope"),
+        ],
+    )
+    def test_a_missing_name_is_the_not_found_kind(self, call):
+        with pytest.raises(presets.PresetNotFoundError, match="No server preset is named 'nope'"):
+            call()
+
+    def test_a_bad_role_is_neither_kind(self):
+        with pytest.raises(ValueError, match="Unknown role") as info:
+            presets.add_preset("alpha", URL, roles=["chatt"])
+        assert not isinstance(info.value, (presets.PresetExistsError, presets.PresetNotFoundError))
+
+
+class TestSurfaceHelpers:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("chat,embed", ["chat", "embed"]),
+            (" chat , embed ", ["chat", "embed"]),
+            ("chat", ["chat"]),
+            ("", []),
+            ("  ", []),
+            ("chat,,embed", ["chat", "", "embed"]),
+            ("chat,", ["chat", ""]),
+        ],
+    )
+    def test_split_roles(self, text, expected):
+        assert presets.split_roles(text) == expected
+
+    def test_an_empty_segment_reaches_the_role_check(self):
+        with pytest.raises(ValueError, match="Unknown role ''"):
+            presets.add_preset("alpha", URL, roles=presets.split_roles("chat,"))
+
+    def test_the_refusal_text_names_the_flag_and_the_fix(self):
+        text = presets.engines_refused_message()
+        assert "allow_http_engines" in text
+        assert "LILBEE_ALLOW_HTTP_ENGINES" in text
+        assert "CLI or TUI" in text
+
+    def test_a_value_error_shows_its_own_text(self):
+        assert presets.failure_text(ValueError("the service said so")) == "the service said so"
+
+    def test_a_write_failure_shows_the_config_write_text(self):
+        exc = PermissionError(13, "denied")
+        assert presets.failure_text(exc) == app_settings.config_write_failure_message(exc)
+        assert "Could not write config.toml" in presets.failure_text(exc)
 
 
 class TestRemove:
@@ -592,7 +709,7 @@ class TestOneBadEntry:
         assert KEY not in f"{shown!r} {caplog.text}"
 
     def test_clear_key_on_the_other_preset_works(self, bad):
-        assert presets.clear_key("good").has_key is False
+        assert presets.edit_preset("good", clear_key=True).has_key is False
         assert "api_key" not in _stored()[0]
         assert _stored()[1] == bad
 
@@ -602,7 +719,7 @@ class TestOneBadEntry:
         assert _stored()[1] == bad
 
     def test_clear_key_on_the_bad_entry_works_and_the_key_leaves_the_file(self, bad):
-        view = presets.clear_key("bad")
+        view = presets.edit_preset("bad", clear_key=True)
         assert view.has_key is False
         assert "api_key" not in _stored()[1]
         assert _stored()[0]["api_key"] == KEY
@@ -661,7 +778,7 @@ class TestOneBadEntry:
 
     def test_a_clear_on_a_repeated_name_clears_every_copy(self):
         _store(_entry("twin") | {"api_key": KEY}, _entry("twin") | {"api_key": KEY + "-2"})
-        presets.clear_key("twin")
+        presets.edit_preset("twin", clear_key=True)
         assert all("api_key" not in entry for entry in _stored())
 
     @pytest.mark.parametrize("row", [7, "text", {"url": URL}, {"name": 7, "api_key": KEY}])
@@ -671,7 +788,7 @@ class TestOneBadEntry:
         assert good.valid is True
         assert (shown.name, shown.base_url, shown.roles, shown.valid) == ("", "", (), False)
         assert shown.has_key is (isinstance(row, dict) and "api_key" in row)
-        presets.clear_key("good")
+        presets.edit_preset("good", clear_key=True)
         assert _stored()[1] == row
 
 
@@ -699,7 +816,7 @@ class TestDnsAndTheLock:
         monkeypatch.setattr(blocked_networks.socket, "getaddrinfo", getaddrinfo)
         presets.add_preset("beta", OTHER_URL, roles=["chat"])
         presets.edit_preset("alpha", roles=["embed"])
-        presets.clear_key("alpha")
+        presets.edit_preset("alpha", clear_key=True)
         presets.remove_preset("beta")
         assert asked == []
 
@@ -719,7 +836,9 @@ class TestList:
     def test_an_entry_says_a_key_is_set_and_holds_no_key(self):
         presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
         view = presets.list_presets()[0]
-        assert view == presets.ServerPreset("alpha", URL, (WorkerRole.CHAT,), True, True)
+        assert view == presets.ServerPreset(
+            "alpha", URL, (WorkerRole.CHAT,), True, True, RerankWire.V1
+        )
         assert not hasattr(view, "api_key")
         assert KEY not in f"{view!r} {dataclasses.asdict(view)}"
 
