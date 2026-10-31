@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 
 def test_vulkan_properties_struct_matches_the_driver_abi() -> None:
     """The driver fills this buffer using its own layout, not ours.
@@ -579,3 +581,37 @@ class TestProvingADiscreteCardFromAVendor:
         monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: None)
 
         assert gpu_select.discrete_gpu_from_vendor(0x1002) is None
+
+
+class TestProbesWithoutDevices:
+    """A host with no Vulkan loader, or a loader that lists nothing, gives empty answers."""
+
+    @pytest.mark.parametrize("reading", [None, []], ids=["loader-unreachable", "no-adapters"])
+    def test_free_bytes_by_name_is_empty(self, monkeypatch, reading) -> None:
+        from lilbee.providers.fleet import gpu_select
+
+        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: reading)
+
+        assert gpu_select.vulkan_free_bytes_by_name() == {}
+
+    @pytest.mark.parametrize("reading", [None, []], ids=["loader-unreachable", "no-adapters"])
+    def test_device_types_by_name_is_empty(self, monkeypatch, reading) -> None:
+        from lilbee.providers.fleet import gpu_select
+
+        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: reading)
+        gpu_select.vulkan_device_types_by_name.cache_clear()
+        try:
+            assert gpu_select.vulkan_device_types_by_name() == {}
+        finally:
+            gpu_select.vulkan_device_types_by_name.cache_clear()
+
+    @pytest.mark.parametrize("reading", [None, []], ids=["loader-unreachable", "no-adapters"])
+    def test_integrated_indices_are_empty(self, monkeypatch, reading) -> None:
+        from lilbee.providers.fleet import gpu_select
+
+        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: reading)
+        gpu_select.integrated_vulkan_indices.cache_clear()
+        try:
+            assert gpu_select.integrated_vulkan_indices() == frozenset()
+        finally:
+            gpu_select.integrated_vulkan_indices.cache_clear()

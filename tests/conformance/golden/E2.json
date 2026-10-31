@@ -1,0 +1,9 @@
+{
+  "id": "E2",
+  "rows": [
+    36,
+    37
+  ],
+  "request": null,
+  "assert": "One request with max_tokens 1 for each claimed role gets 200 with that role's shape."
+}

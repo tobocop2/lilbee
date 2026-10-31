@@ -132,17 +132,19 @@ def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
 
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(1,))})
     monkeypatch.setattr(app_placement, "_active_spec", lambda: spec)
-    monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/fake")
+    )
     # The read path's only probe seam. Stubbing resolve_devices instead left the
     # real probe on the call path, so this test spawned a subprocess against
     # /fake and planned against whatever cards the host's Vulkan loader offered.
     monkeypatch.setattr(
-        planning, "_read_devices", lambda _b: planning.DeviceReading([], EngineBackend.CPU)
+        planning, "_read_devices", lambda _b, engine: planning.DeviceReading([], EngineBackend.CPU)
     )
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engine: ([], {}, 0, {}),
     )
 
     def refuse(placement, *_a, **_kw):
@@ -205,7 +207,7 @@ def test_preview_passes_candidate_spec(monkeypatch):
     monkeypatch.setattr(
         app_placement,
         "resolve_placement_plan",
-        lambda spec: seen.update({"spec": spec}) or _resolved(),
+        lambda spec, *, engine: seen.update({"spec": spec}) or _resolved(),
     )
     cand = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
     app_placement.preview_placement(cand)
@@ -311,7 +313,7 @@ def test_set_none_clears(monkeypatch):
 def test_set_validates_before_persist(monkeypatch):
     from lilbee.providers.fleet.placement_spec import PlacementError
 
-    def boom(spec):
+    def boom(spec, *, engine):
         raise PlacementError("chat needs 70 GiB but device 0 has 40 GiB free")
 
     monkeypatch.setattr(app_placement, "resolve_placement_plan", boom)

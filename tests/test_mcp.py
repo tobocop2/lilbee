@@ -249,6 +249,17 @@ class TestSearch:
         assert result["adoptable"] is True
         assert "modelA" in result["error"]
 
+    def test_engine_change_carries_the_shared_code(self, mock_svc):
+        from lilbee.data.store import EmbeddingEngineChangedError
+
+        mock_svc.searcher.search.side_effect = EmbeddingEngineChangedError(
+            model="m", dim=8, distance=0.2, verified=True
+        )
+        result = search("q")
+        assert result["code"] == "embedding_mismatch"
+        assert "lilbee rebuild" in result["error"]
+        assert "adoptable" not in result
+
     def test_omitted_top_k_falls_back_to_cfg(self, mock_svc):
         """settings_set top_k must govern search calls that omit the arg."""
         cfg.top_k = 15
@@ -335,6 +346,7 @@ class TestStatus:
         assert result["index"] == {
             "embedding_model": "org/embed-GGUF/embed.Q4_K_M.gguf",
             "embedding_dim": 768,
+            "engine_mismatch": None,
         }
 
     def test_status_index_is_none_before_any_sync(self, mock_svc):
@@ -378,6 +390,28 @@ class TestALibraryRefusal:
             result = await sync(retry_skipped=True)
 
         assert result == {"error": "The library cannot be locked"}
+
+    async def test_a_rebuild_the_embedder_cannot_serve_returns_the_plain_message(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError(
+            "The embedding model is not available. Nothing was rebuilt.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            result = await sync(force_rebuild=True)
+
+        assert result == {"error": str(refused)}
+
+    async def test_a_refused_rebuild_reaches_a_client_as_the_plain_message(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError("Nothing was rebuilt.", kind=ProviderErrorKind.NOT_FOUND)
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            async with mcp_client() as (session, _init, _drop):
+                result = await session.call_tool("sync", {"force_rebuild": True})
+
+        assert json.loads(result.content[0].text) == {"error": "Nothing was rebuilt."}
 
     async def test_sync_that_cannot_open_its_sync_lock_returns_an_error(self):
         cfg.data_root.mkdir(parents=True, exist_ok=True)

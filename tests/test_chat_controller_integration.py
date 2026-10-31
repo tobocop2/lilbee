@@ -2607,3 +2607,33 @@ async def test_a_queued_task_that_is_cancelled_keeps_no_target(canceller: str) -
             assert set(controller._task_targets) == {running}
         finally:
             release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_the_embedder_cannot_serve_fails_the_task_with_the_message() -> None:
+    """The task row of a failed rebuild carries the provider's plain message as its detail."""
+    from unittest.mock import AsyncMock
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    refused = ProviderError(
+        "The embedding model is not available. Nothing was rebuilt.",
+        kind=ProviderErrorKind.NOT_FOUND,
+    )
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        screen = ChatScreen.__new__(ChatScreen)
+        with patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            task_id = controller.start_task(
+                "Rebuild",
+                TaskType.SYNC,
+                lambda reporter: screen._do_sync(reporter, force_rebuild=True),
+            )
+            await wait_until(
+                pilot,
+                lambda: controller.queue.get_task(task_id).status is TaskStatus.FAILED,
+                timeout=5.0,
+            )
+        assert controller.queue.get_task(task_id).detail == str(refused)

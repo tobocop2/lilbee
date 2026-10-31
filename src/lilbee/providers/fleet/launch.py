@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 from lilbee.providers.roles import RerankMode, WorkerRole
 
@@ -66,6 +68,8 @@ class InstanceLaunch:
     The readback says the engine left chat weights in system memory when the
     host holds more than this. 0 where the engine's fit does not run.
     """
+    swap_extras: Mapping[str, Any] = field(default_factory=dict)
+    """Keys the engine adds to its llama-swap model entry; empty for llama.cpp."""
 
     def to_state(self) -> dict:
         """JSON-safe form written into every engine state file so a guest lilbee
@@ -87,6 +91,7 @@ class InstanceLaunch:
             "est_vram_by_device": dict(self.est_vram_by_device),
             "est_unreported_bytes": self.est_unreported_bytes,
             "est_host_bytes": self.est_host_bytes,
+            "swap_extras": dict(self.swap_extras),
         }
 
     @classmethod
@@ -112,6 +117,7 @@ class InstanceLaunch:
             built_slots_target=int(payload.get("built_slots_target") or 0),
             replica=int(payload.get("replica") or 0),
             rerank_mode=RerankMode(raw_mode) if raw_mode else None,
+            swap_extras=dict(payload.get("swap_extras") or {}),
         )
 
     @property

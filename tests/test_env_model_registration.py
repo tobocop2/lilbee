@@ -29,6 +29,7 @@ from lilbee.modelhub.role_validator import (
     validate_model_task_assignment,
     warn_unregistered_role_refs,
 )
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import MODEL_ROLE_FIELDS
 from lilbee.retrieval.embedder import is_model_installed
 
@@ -75,7 +76,7 @@ class TestPullReportsWhatItDid:
     def test_handbuilt_layout_is_not_installed(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         _handbuilt_repo_layout(models_dir)
-        manager = ModelManager(models_dir)
+        manager = ModelManager(models_dir, engine=LLAMA)
 
         assert manager.is_installed(_REF, ModelSource.NATIVE) is False
         assert ModelRegistry(models_dir).list_installed() == []
@@ -86,7 +87,7 @@ class TestPullReportsWhatItDid:
         models_dir = tmp_path / "models"
         _handbuilt_repo_layout(models_dir, "other/Repo/other.gguf")
         _install(models_dir)
-        manager = ModelManager(models_dir)
+        manager = ModelManager(models_dir, engine=LLAMA)
 
         listed = manager.list_installed(ModelSource.NATIVE)
         assert listed == [_REF]
@@ -97,7 +98,7 @@ class TestPullReportsWhatItDid:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         (models_dir / "llama3-8b.gguf").write_bytes(_BLOB)
-        manager = ModelManager(models_dir)
+        manager = ModelManager(models_dir, engine=LLAMA)
 
         assert manager.is_installed("llama3-8b.gguf", ModelSource.NATIVE) is False
         assert manager.get_source("llama3-8b.gguf") is None
@@ -108,7 +109,7 @@ class TestPullReportsWhatItDid:
         models_dir.mkdir()
         stray = models_dir / "llama3-8b.gguf"
         stray.write_bytes(_BLOB)
-        manager = ModelManager(models_dir)
+        manager = ModelManager(models_dir, engine=LLAMA)
 
         assert manager.remove("llama3-8b.gguf") is True
         assert not stray.exists()
@@ -119,7 +120,7 @@ class TestPullReportsWhatItDid:
         models_dir.mkdir()
         _install(models_dir)
 
-        assert ModelManager(models_dir).is_installed(_REF, ModelSource.NATIVE) is True
+        assert ModelManager(models_dir, engine=LLAMA).is_installed(_REF, ModelSource.NATIVE) is True
 
 
 def _build_config(tmp_path: Path, roles: dict[str, str]) -> Config:

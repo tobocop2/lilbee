@@ -1,0 +1,30 @@
+{
+  "id": "E4",
+  "rows": [
+    6,
+    26,
+    36
+  ],
+  "request": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Be brief."
+      },
+      {
+        "role": "user",
+        "content": "Say ok."
+      },
+      {
+        "role": "assistant",
+        "content": "ok"
+      },
+      {
+        "role": "user",
+        "content": "Again."
+      }
+    ],
+    "max_tokens": 1024
+  },
+  "assert": "200, choices[0].message.content is a non-empty string and choices[0].finish_reason is stop, with a token budget large enough for a reasoning model to think and answer."
+}

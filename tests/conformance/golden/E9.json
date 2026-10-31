@@ -1,0 +1,21 @@
+{
+  "id": "E9",
+  "rows": [
+    10,
+    19,
+    20,
+    21,
+    32,
+    33,
+    46,
+    47
+  ],
+  "request": {
+    "query": "capital of France",
+    "documents": [
+      "Paris is the capital of France",
+      "Bananas are yellow fruit"
+    ]
+  },
+  "assert": "results of index and relevance_score, finite, not all equal; with quality the relevant document scores higher."
+}

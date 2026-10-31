@@ -4930,16 +4930,17 @@ def _path_keyed_tables(config):
 
 
 def _meta_rows(config, stamped):
-    """The ``_meta`` row of a library stamped schema version *stamped*."""
+    """The ``_meta`` row of a library stamped schema version *stamped*, as before canary columns."""
     from lilbee.data.store.schema import _meta_schema
 
+    legacy = pa.schema([_meta_schema().field(n) for n in _meta_schema().names[:4]])
     row = {
         "embedding_model": config.embedding_model,
         "embedding_dim": config.embedding_dim,
         "schema_version": stamped,
         "updated_at": "2026-01-01T00:00:00+00:00",
     }
-    return pa.Table.from_pylist([row], schema=_meta_schema())
+    return pa.Table.from_pylist([row], schema=legacy)
 
 
 def _untimed(dump):
@@ -5335,10 +5336,10 @@ class TestOpenTimeMigration:
 
         assert Store(test_config).get_meta()["schema_version"] == 3
 
-    def test_the_stamped_schema_version_is_three(self):
+    def test_the_stamped_schema_version_is_four(self):
         from lilbee.data.store.types import META_SCHEMA_VERSION
 
-        assert META_SCHEMA_VERSION == 3
+        assert META_SCHEMA_VERSION == 4
 
 
 def _shared_key_tables(config):
