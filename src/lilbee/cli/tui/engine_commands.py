@@ -75,11 +75,18 @@ def chips_text(views: list[engine_service.RoleView]) -> str:
     )
 
 
-def choose_engine_for_role(role: WorkerRole, engine: str) -> EngineCommandResult:
-    """Store *engine* for the current model of *role*; a refusal comes back as its text."""
+def choose_engine_for_role(
+    role: WorkerRole, engine: str, confirmed: bool = False
+) -> EngineCommandResult:
+    """Store *engine* for the current model of *role*; a refusal comes back as its text.
+
+    A change that needs the user's confirmation raises ``EmbedConfirmRequiredError``.
+    """
     model = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
     try:
-        return _use(role, model, engine)
+        return _use(role, model, engine, confirmed)
+    except engine_service.EmbedConfirmRequiredError:
+        raise
     except engine_service.WRITE_FAILURES as exc:
         return EngineCommandResult(False, str(exc))
 

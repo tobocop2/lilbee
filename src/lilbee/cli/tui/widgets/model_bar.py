@@ -338,12 +338,37 @@ class ModelPickerButton(Static, can_focus=True):
             self._save_engine(role, name)
 
     @work(thread=True)
-    def _save_engine(self, role: WorkerRole, name: str) -> None:
+    def _save_engine(self, role: WorkerRole, name: str, confirmed: bool = False) -> None:
         """Write the choice through the engine service off the UI thread."""
         from lilbee.cli.tui.engine_commands import choose_engine_for_role
 
-        result = choose_engine_for_role(role, name)
+        try:
+            result = choose_engine_for_role(role, name, confirmed)
+        except engine_service.EmbedConfirmRequiredError as exc:
+            call_from_thread(self, self._confirm_engine, role, name, exc)
+            return
         call_from_thread(self, self._after_engine_save, result)
+
+    def _confirm_engine(
+        self, role: WorkerRole, name: str, asked: engine_service.EmbedConfirmRequiredError
+    ) -> None:
+        """Ask before a change that can make the index vectors unusable."""
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        dialog = ConfirmDialog(
+            msg.ENGINE_EMBED_CONFIRM_TITLE,
+            msg.ENGINE_EMBED_CONFIRM_MESSAGE.format(
+                library=asked.library, documents=asked.documents
+            ),
+        )
+        self.app.push_screen(dialog, lambda yes: self._on_engine_confirmed(role, name, yes))
+
+    def _on_engine_confirmed(self, role: WorkerRole, name: str, yes: bool | None) -> None:
+        self._focus_chat_prompt()
+        if yes:
+            self._save_engine(role, name, True)
+        else:
+            self.notify(msg.ENGINE_EMBED_CANCELLED)
 
     def _after_engine_save(self, result: EngineCommandResult) -> None:
         announce(self.app, result)
