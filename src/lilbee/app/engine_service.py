@@ -9,10 +9,12 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
+from lilbee.app.services import peek_services
 from lilbee.catalog.refs import model_format
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
     AUTO,
@@ -27,15 +29,22 @@ log = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 PREFERRED_KEY = "preferred_engine"
-RESTART_NOTE = "A running server uses the choice after a restart."
+NOT_APPLIED_CODE = "engine_not_applied"
 
 
 class EngineRefusedError(ValueError):
     """The engine service refuses a write; the text names the problem and the fix."""
 
 
+class EngineNotAppliedError(Exception):
+    """The choice is saved but the running server could not apply it; a fault, not a refusal."""
+
+
 class EngineNotSavedError(Exception):
     """The choice could not be written to the settings file; the text holds no path."""
+
+
+WRITE_FAILURES = (EngineRefusedError, EngineNotSavedError, EngineNotAppliedError)
 
 
 @dataclass(frozen=True)
@@ -82,6 +91,21 @@ def _store(
         ) from exc
 
 
+def _apply_to_running() -> None:
+    """Reload the roles of a running server whose engine changed; no services means nothing runs."""
+    services = peek_services()
+    if services is None:
+        return
+    try:
+        services.provider.reload_placement(wait=True)
+    except (ProviderError, OSError) as exc:
+        log.warning("The running server did not apply the engine choice: %s", exc)
+        raise EngineNotAppliedError(
+            "The engine choice is saved, but the running server could not apply it: "
+            f"{exc}. Restart lilbee to use the choice."
+        ) from exc
+
+
 def roles(config: Config = cfg) -> list[RoleView]:
     """The engine of every role, with the notice for a role that fell back or has none."""
     assignment = resolve_engines(config)
@@ -118,6 +142,7 @@ def prefer(name: str) -> str:
         cfg.preferred_engine = setting
 
     _store(PREFERRED_KEY, apply, commit)
+    _apply_to_running()
     return setting.value
 
 
@@ -181,4 +206,5 @@ def use(model: str, name: str) -> str:
         cfg.engine_choices = encoded
 
     _store(CHOICES_KEY, apply, commit)
+    _apply_to_running()
     return name

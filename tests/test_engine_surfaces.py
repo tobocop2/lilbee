@@ -19,7 +19,6 @@ import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
 from lilbee.app.engine_choice import engine_for_ref
 from lilbee.cli import app as cli_app
-from lilbee.cli.tui import messages as tui_messages
 from lilbee.cli.tui.engine_commands import USAGE, run_engine_command
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
@@ -359,7 +358,7 @@ def test_a_pull_refusal_holds_only_the_no_engine_text(no_mlx: None) -> None:
 
 
 def _provider() -> RoutingProvider:
-    return RoutingProvider(engine=lambda: GGUF_ENGINE)  # type: ignore[arg-type,return-value]
+    return RoutingProvider()
 
 
 def test_the_first_request_of_a_role_shows_the_notice_once(
@@ -428,12 +427,12 @@ def test_the_cli_prints_plain_lines_for_a_write_and_a_refusal() -> None:
     use = runner.invoke(cli_app, ["engine", "use", "chat", GGUF_REF, "llama.cpp"])
     assert (use.exit_code, " ".join(use.stdout.split())) == (
         0,
-        f"chat model {GGUF_REF} uses engine llama.cpp. {engine_service.RESTART_NOTE}",
+        f"chat model {GGUF_REF} uses engine llama.cpp.",
     )
     prefer = runner.invoke(cli_app, ["engine", "prefer", "llama.cpp"])
     assert (prefer.exit_code, " ".join(prefer.stdout.split())) == (
         0,
-        f"The preferred engine is llama.cpp. {engine_service.RESTART_NOTE}",
+        "The preferred engine is llama.cpp.",
     )
     refused = runner.invoke(cli_app, ["engine", "prefer", "nonesuch"])
     assert refused.exit_code == 1
@@ -563,14 +562,11 @@ def test_an_unknown_role_on_rest_names_the_valid_roles() -> None:
     )
 
 
-def test_the_success_text_says_a_running_server_needs_a_restart() -> None:
+def test_the_success_text_carries_no_restart_note() -> None:
     use = run_engine_command(f"use chat {GGUF_REF} llama.cpp")
     prefer = run_engine_command("prefer llama.cpp")
-    assert use.text.endswith(tui_messages.ENGINE_RESTART_NOTE)
-    assert prefer.text.endswith(tui_messages.ENGINE_RESTART_NOTE)
-    assert (
-        tui_messages.ENGINE_RESTART_NOTE == "This lilbee process uses the choice after a restart."
-    )
+    assert use.text == f"chat model {GGUF_REF} uses engine llama.cpp."
+    assert prefer.text == "The preferred engine is llama.cpp."
 
 
 def test_a_rest_write_runs_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -622,3 +618,65 @@ def test_a_different_notice_for_a_role_is_logged_again(
     assert len(messages) == 2
     assert messages[0] == FALLBACK
     assert messages[1].startswith(UNREADABLE_NOTICE)
+
+
+class _FailingServer:
+    """A running server whose reload fails with the error it is given."""
+
+    def __init__(self, failure: BaseException) -> None:
+        self.failure = failure
+
+    def reload_placement(self, *, wait: bool = False) -> None:
+        raise self.failure
+
+
+@pytest.fixture
+def server_cannot_apply(monkeypatch: pytest.MonkeyPatch) -> str:
+    """A running server that cannot apply a write; returns the service's own text."""
+    from types import SimpleNamespace
+
+    from lilbee.providers.base import ProviderError
+
+    server = _FailingServer(ProviderError("engine refused", provider="llama-server"))
+    monkeypatch.setattr(engine_service, "peek_services", lambda: SimpleNamespace(provider=server))
+    with pytest.raises(engine_service.EngineNotAppliedError) as exc:
+        engine_service.prefer("llama.cpp")
+    return str(exc.value)
+
+
+def test_a_saved_but_not_applied_write_is_not_a_refusal() -> None:
+    assert not issubclass(engine_service.EngineNotAppliedError, engine_service.EngineRefusedError)
+
+
+def test_rest_answers_503_with_its_own_body_for_a_choice_the_server_could_not_apply(
+    server_cannot_apply: str,
+) -> None:
+    code, body = _rest("PUT", "/api/engines/preferred", {"engine": "llama.cpp"})
+    assert code == 503
+    assert body["detail"] == server_cannot_apply
+    assert body["extra"] == {"code": "engine_not_applied", "saved": True}
+    code, body = _rest("PUT", "/api/engines/preferred", {"engine": "nonesuch"})
+    assert code == 422
+    assert "extra" not in body
+
+
+def test_mcp_returns_its_own_shape_for_a_choice_the_server_could_not_apply(
+    server_cannot_apply: str,
+) -> None:
+    result = mcp_server.engine_prefer_tool("llama.cpp")
+    assert result == {"error": server_cannot_apply, "code": "engine_not_applied", "saved": True}
+    assert mcp_server.engine_prefer_tool("nonesuch").keys() == {"error"}
+
+
+def test_the_cli_exits_with_the_not_applied_text_and_the_choice_saved(
+    server_cannot_apply: str,
+) -> None:
+    code, body = _run_cli("prefer", "llama.cpp")
+    assert (code, body["error"]) == (1, server_cannot_apply)
+    assert _stored("preferred_engine") == "llama.cpp"
+
+
+def test_the_slash_command_shows_the_not_applied_text(server_cannot_apply: str) -> None:
+    out = run_engine_command("prefer llama.cpp")
+    assert (out.ok, out.text) == (False, server_cannot_apply)
+    assert _stored("preferred_engine") == "llama.cpp"

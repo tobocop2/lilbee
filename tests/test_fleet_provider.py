@@ -717,9 +717,9 @@ def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) ->
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
 
 
-def test_reload_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> None:
-    # A missing binary on the reload resurrect path aborts quietly (nothing to
-    # serve), mirroring the build path rather than raising.
+def test_reload_fails_loud_when_the_engine_binary_is_missing(monkeypatch) -> None:
+    # A reload that cannot find the engine binary did not apply the change, so it
+    # raises; the caller of a write must not report success.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
@@ -731,7 +731,8 @@ def test_reload_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> No
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
     p = FleetProvider()
-    p._reload_pass()  # must not raise
+    with pytest.raises(ProviderError, match="no engine binary"):
+        p._reload_pass()
     assert p._swaps == {}
 
 
@@ -954,7 +955,7 @@ def test_adopt_group_gives_each_client_its_engine_request_profile(monkeypatch) -
         planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     sentinel = object()
-    monkeypatch.setattr(prov_mod.LLAMA, "request_profile", lambda _role: sentinel)
+    monkeypatch.setattr(LLAMA, "request_profile", lambda _role: sentinel)
     FleetProvider()._ensure_fleet()
     assert captured["profile"] is sentinel
 
@@ -2044,13 +2045,37 @@ def test_chat_stream_close_before_iteration_releases_the_request() -> None:
     assert closed == [True]  # the source stream (and its request slot) was released
 
 
-def test_supports_rerank_when_the_engine_serves_the_rerank_role() -> None:
-    assert FleetProvider(engine=LLAMA).supports_rerank() is True
+def _book_of(monkeypatch: pytest.MonkeyPatch, engine: object) -> None:
+    from lilbee.app.engine_choice import BookReading, EngineBook
+
+    monkeypatch.setattr(
+        EngineBook, "read", lambda self: BookReading(engines_for_all_roles(engine), {})
+    )
 
 
-def test_supports_rerank_is_false_when_the_engine_serves_no_rerank_role() -> None:
+def test_supports_rerank_when_the_engine_serves_the_rerank_role(monkeypatch) -> None:
+    _book_of(monkeypatch, LLAMA)
+    assert FleetProvider().supports_rerank() is True
+
+
+def test_supports_rerank_is_false_when_the_engine_serves_no_rerank_role(monkeypatch) -> None:
     assert WorkerRole.RERANK not in FAKE.served_roles
-    assert FleetProvider(engine=FAKE).supports_rerank() is False
+    _book_of(monkeypatch, FAKE)
+    assert FleetProvider().supports_rerank() is False
+
+
+def test_supports_rerank_is_false_when_no_role_has_an_engine(monkeypatch) -> None:
+    from lilbee.app.engine_choice import BookReading, EngineBook
+
+    monkeypatch.setattr(EngineBook, "read", lambda self: BookReading({}, {}))
+    assert FleetProvider().supports_rerank() is False
+
+
+def test_embed_token_cap_is_none_when_no_role_has_an_engine(monkeypatch) -> None:
+    from lilbee.app.engine_choice import BookReading, EngineBook
+
+    monkeypatch.setattr(EngineBook, "read", lambda self: BookReading({}, {}))
+    assert FleetProvider().embed_token_cap() is None
 
 
 def test_list_chat_models_empty() -> None:
@@ -3557,7 +3582,7 @@ def test_routing_provider_local_engine_is_fleet() -> None:
     # is a fleet-of-one). Construction is side-effect-free; no swap is started.
     from lilbee.providers.routing_provider import RoutingProvider
 
-    assert isinstance(RoutingProvider(engine=lambda: LLAMA)._get_local(), FleetProvider)
+    assert isinstance(RoutingProvider()._get_local(), FleetProvider)
 
 
 def test_get_capabilities_unresolved_model_returns_completion(monkeypatch) -> None:
@@ -3812,9 +3837,10 @@ class TestRoutingProviderEmbedCap:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", embedding_model)
-        routing = RoutingProvider(engine=lambda: LLAMA)
+        routing = RoutingProvider()
         local = MagicMock()
         local.embed_token_cap.return_value = 504
+        local.reload_notice.return_value = None
         local.health_warnings.return_value = [
             HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut")
         ]
@@ -3845,8 +3871,9 @@ class TestRoutingProviderEmbedCap:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
-        routing = RoutingProvider(engine=lambda: LLAMA)
+        routing = RoutingProvider()
         local = MagicMock()
+        local.reload_notice.return_value = None
         local.health_warnings.return_value = [
             HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut"),
             HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan"),
@@ -6612,3 +6639,150 @@ def test_demanded_vision_slots_follows_the_configured_concurrency(
 
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     assert _demanded_vision_slots(pairs) == expected
+
+
+def test_the_reload_notice_is_none_when_no_reload_ran(monkeypatch) -> None:
+    p = _provider_without_preload(monkeypatch)
+    assert p.reload_notice() is None
+
+
+def test_the_reload_notice_says_roles_may_run_the_previous_engine_while_a_reload_runs(
+    monkeypatch,
+) -> None:
+    p = _provider_without_preload(monkeypatch)
+    p._swaps = {SwapGroup.CHAT: _FakeSwap()}
+    seen: list[str | None] = []
+    monkeypatch.setattr(p, "_reload_pass", lambda *a, **k: seen.append(p.reload_notice()))
+    p.reload_placement(wait=True)
+    notice = "A change to the engines is being applied; roles may run their previous engine."
+    assert seen == [notice]
+    assert p.reload_notice() is None
+
+
+def test_a_failed_reload_leaves_the_notice_until_a_pass_succeeds(
+    monkeypatch, ocr_gated_engine
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_without_preload(monkeypatch)
+    p._ensure_fleet()
+    reload_pass = p._reload_pass
+    failures = iter([ProviderError("engine refused", provider="llama-server")])
+
+    def _fail_once(*args, **kwargs) -> None:
+        failure = next(failures, None)
+        if failure is not None:
+            raise failure
+        reload_pass(*args, **kwargs)
+
+    monkeypatch.setattr(p, "_reload_pass", _fail_once)
+    with pytest.raises(ProviderError, match="engine refused"):
+        p.reload_placement(wait=True)
+    assert p.reload_notice() == (
+        "The last engine reload failed; a role may still run its previous engine."
+    )
+    p.reload_placement(wait=True)
+    assert p.reload_notice() is None
+
+
+def test_the_engine_warning_reads_the_reload_state_not_the_live_setting(monkeypatch) -> None:
+    from lilbee.core.health_warnings import WarningCode
+    from lilbee.providers.routing_provider import RoutingProvider
+
+    routing = RoutingProvider()
+    assert routing.reload_notice() is None
+    local = MagicMock()
+    local.reload_notice.return_value = "The last engine reload failed; kept."
+    local.health_warnings.return_value = []
+    routing._local = local
+    warnings = routing.health_warnings()
+    assert [(w.code, w.message) for w in warnings] == [
+        (WarningCode.ENGINE_FALLBACK, "The last engine reload failed; kept.")
+    ]
+
+
+@pytest.fixture
+def served(monkeypatch, ocr_gated_engine, tmp_path: Path) -> FleetProvider:
+    """A started provider that the engine service reaches as the running server's provider."""
+    from lilbee.app import engine_service
+
+    monkeypatch.setattr(cfg, "data_root", tmp_path)
+    p = _provider_without_preload(monkeypatch)
+    assert p._ensure_fleet()
+    monkeypatch.setattr(engine_service, "peek_services", lambda: SimpleNamespace(provider=p))
+    return p
+
+
+def test_a_failed_engine_write_leaves_the_running_role_working_and_says_so(
+    monkeypatch, served: FleetProvider
+) -> None:
+    from lilbee.app import engine_service
+    from lilbee.providers.base import ProviderError
+
+    working = served._require_clients(WorkerRole.CHAT)[0]
+
+    def _refuse(*args, **kwargs) -> None:
+        raise ProviderError("engine refused", provider="llama-server")
+
+    monkeypatch.setattr(served, "_reload_pass", _refuse)
+    with pytest.raises(engine_service.EngineNotAppliedError, match="Restart lilbee"):
+        engine_service.prefer("llama.cpp")
+    assert served._require_clients(WorkerRole.CHAT)[0] is working
+    assert served.reload_notice() == (
+        "The last engine reload failed; a role may still run its previous engine."
+    )
+
+
+def test_two_close_engine_writes_each_return_after_the_second_pass(
+    monkeypatch, served: FleetProvider
+) -> None:
+    from lilbee.app import engine_service
+
+    passes: list[int] = []
+    entered, release = threading.Event(), threading.Event()
+
+    def _pass(force=frozenset()) -> None:
+        passes.append(1)
+        if len(passes) == 1:
+            entered.set()
+            assert release.wait(10)
+
+    monkeypatch.setattr(served, "_reload_pass", _pass)
+    returned: list[str] = []
+    writes = [
+        threading.Thread(target=lambda: returned.append(engine_service.prefer("llama.cpp")))
+        for _ in range(2)
+    ]
+    writes[0].start()
+    assert entered.wait(10)
+    writes[1].start()
+    deadline = time.monotonic() + 10
+    while not served._reload_pending and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert served._reload_pending  # the second write queued behind the first pass
+    release.set()
+    for write in writes:
+        write.join(10)
+    assert returned == ["llama.cpp", "llama.cpp"]
+    assert len(passes) == 2  # the second write ran its own pass, not the first one's
+    assert served.reload_notice() is None
+
+
+def test_an_engine_write_during_a_chat_leaves_the_chat_client_open(
+    monkeypatch, served: FleetProvider
+) -> None:
+    from lilbee.app import engine_service
+
+    streaming = _fake_client(in_flight=1)
+    served._clients[WorkerRole.CHAT] = [streaming]
+    reload_pass = served._reload_pass
+    monkeypatch.setattr(
+        served, "_reload_pass", lambda force=frozenset(): reload_pass(frozenset({WorkerRole.CHAT}))
+    )
+    engine_service.prefer("llama.cpp")
+    streaming.close.assert_not_called()
+    assert streaming in served._retiring_clients
+    assert served._require_clients(WorkerRole.CHAT)[0] is not streaming
+    streaming.in_flight = 0
+    engine_service.prefer("llama.cpp")  # the next reload closes the finished stream's client
+    streaming.close.assert_called_once_with()

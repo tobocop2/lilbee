@@ -213,7 +213,6 @@ def build_services(
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.modelhub.role_validator import warn_unregistered_role_refs
     from lilbee.providers.factory import create_provider
-    from lilbee.providers.roles import WorkerRole
     from lilbee.retrieval.canary_probe import canary_probe
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
@@ -223,9 +222,7 @@ def build_services(
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     engines = EngineBook(config)
-    provider = provider or create_provider(
-        config, engine=lambda: engines.for_role(WorkerRole.CHAT).adapter, hold_warm=interactive
-    )
+    provider = provider or create_provider(config, hold_warm=interactive)
     from lilbee.data.extract.backends import sync_xberg_backends
 
     sync_xberg_backends(provider)

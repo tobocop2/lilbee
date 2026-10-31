@@ -15,7 +15,6 @@ from lilbee.catalog.types import KeyStatus
 from lilbee.core.config import cfg
 from lilbee.providers import key_check
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.sdk_backend import PROVIDER_API_KEY_ENV
 from tests import _fake_sdk as fakes
@@ -68,14 +67,14 @@ class TestWhichKeyIsSent:
     def test_provider_key_alone_is_sent(self, wire: _Wire, model: str) -> None:
         field = f"{model.split('/')[0]}_api_key"
         setattr(cfg, field, "provider-key")
-        _chat(RoutingProvider(engine=lambda: LLAMA), model)
+        _chat(RoutingProvider(), model)
         assert wire.last_key() == "provider-key"
 
     def test_llm_api_key_alone_is_not_sent(self, wire: _Wire, model: str) -> None:
         provider = model.split("/")[0]
         cfg.llm_api_key = "generic-key"
         with pytest.raises(ProviderError):
-            _chat(RoutingProvider(engine=lambda: LLAMA), model)
+            _chat(RoutingProvider(), model)
         assert not wire.requests
         assert key_check.provider_key_status(provider) is KeyStatus.MISSING_KEY
 
@@ -83,7 +82,7 @@ class TestWhichKeyIsSent:
         provider = model.split("/")[0]
         setattr(cfg, f"{provider}_api_key", "provider-key")
         cfg.llm_api_key = "generic-key"
-        _chat(RoutingProvider(engine=lambda: LLAMA), model)
+        _chat(RoutingProvider(), model)
         assert wire.last_key() == "provider-key"
         assert key_check.provider_api_key_in_use(provider) == "provider-key"
 
@@ -93,14 +92,14 @@ class TestWhichKeyIsSent:
         provider = model.split("/")[0]
         monkeypatch.setenv(PROVIDER_API_KEY_ENV[provider], "shell-key")
         setattr(cfg, f"{provider}_api_key", "config-key")
-        _chat(RoutingProvider(engine=lambda: LLAMA), model)
+        _chat(RoutingProvider(), model)
         assert wire.last_key() == "shell-key"
         assert key_check.provider_api_key_in_use(provider) == "shell-key"
 
 
 class TestKeyChangedInSettings:
     def test_changed_key_is_checked_and_sent_without_a_restart(self, wire: _Wire) -> None:
-        provider = RoutingProvider(engine=lambda: LLAMA)
+        provider = RoutingProvider()
         checked: list[str] = []
 
         def _record(url: str, *, headers: dict[str, str]) -> httpx.Response:
@@ -121,7 +120,7 @@ class TestKeyChangedInSettings:
         assert wire.last_key() == "new-key"
 
     def test_cleared_key_is_no_longer_sent(self, wire: _Wire) -> None:
-        provider = RoutingProvider(engine=lambda: LLAMA)
+        provider = RoutingProvider()
         apply_settings_update({"gemini_api_key": "old-key"})
         _chat(provider, GEMINI_MODEL)
         assert wire.last_key() == "old-key"
@@ -139,14 +138,14 @@ class TestKeyChangedInSettings:
         self, wire: _Wire, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("GEMINI_API_KEY", "shell-key")
-        provider = RoutingProvider(engine=lambda: LLAMA)
+        provider = RoutingProvider()
         apply_settings_update({"gemini_api_key": "config-key"})
         _chat(provider, GEMINI_MODEL)
         assert wire.last_key() == "shell-key"
         assert os.environ["GEMINI_API_KEY"] == "shell-key"
 
     def test_changed_llm_api_key_is_sent_without_a_restart(self, wire: _Wire) -> None:
-        provider = RoutingProvider(engine=lambda: LLAMA)
+        provider = RoutingProvider()
         apply_settings_update({"llm_api_key": "old-generic"})
         _chat(provider, LM_STUDIO_MODEL)
         assert wire.last_key() == "old-generic"

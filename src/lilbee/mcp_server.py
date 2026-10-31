@@ -1905,11 +1905,13 @@ def preset_remove_tool(name: str) -> dict[str, Any]:
 
 
 def _engine_result(action: Callable[[], BaseModel]) -> dict[str, Any]:
-    """Run an engine call and serialize its result; a refusal returns the service's text."""
+    """Run an engine call and serialize its result; a failure returns the service's text."""
     try:
         return action().model_dump(mode="json")
     except (engine_service.EngineRefusedError, engine_service.EngineNotSavedError) as exc:
         return _error(str(exc))
+    except engine_service.EngineNotAppliedError as exc:
+        return {**_error(str(exc)), "code": engine_service.NOT_APPLIED_CODE, "saved": True}
 
 
 def _engine_read_refused() -> dict[str, Any] | None:

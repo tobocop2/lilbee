@@ -30,6 +30,7 @@ from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
@@ -509,23 +510,65 @@ class TestLaunchBuild:
 
 
 class TestProvider:
-    def test_unusable_reason_names_the_engine_binary_problem(self, spy: SpyEngine) -> None:
-        assert FleetProvider(engine=spy)._unusable_engine_reason() is None
-        reason = FleetProvider(engine=_binaryless(spy))._unusable_engine_reason()
+    def test_unusable_reason_names_the_engine_binary_problem(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            EngineBook, "read", lambda self: BookReading(engines_for_all_roles(spy), {})
+        )
+        assert FleetProvider()._unusable_engine_reason() is None
+        monkeypatch.setattr(
+            EngineBook,
+            "read",
+            lambda self: BookReading(engines_for_all_roles(_binaryless(spy)), {}),
+        )
+        reason = FleetProvider()._unusable_engine_reason()
         assert reason is not None
         assert "spy binary missing" in reason
 
     def test_clients_carry_the_engine_request_profile(
-        self, spy: SpyEngine, model_file: Path, tmp_path: Path
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
-        provider = FleetProvider(engine=spy)
+        monkeypatch.setattr(
+            EngineBook, "read", lambda self: BookReading(engines_for_all_roles(spy), {})
+        )
+        provider = FleetProvider()
         swap = SimpleNamespace(endpoint=lambda: "http://127.0.0.1:1", log_path=tmp_path / "log")
         with provider._lock:
             provider._adopt_group("embed", swap, [launch])  # type: ignore[arg-type]
         client = provider._clients[WorkerRole.EMBED][0]
         assert client._profile.label == "fake-engine"
         assert client._profile.reasoning_field == "thoughts"
+
+    def test_each_role_client_carries_the_profile_of_its_own_engine(
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = planning.build_single_role_launch(WorkerRole.CHAT, model_file, engine=spy)
+        embed = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(_mixed_book(spy), {}))
+        provider = FleetProvider()
+        swap = SimpleNamespace(endpoint=lambda: "http://127.0.0.1:1", log_path=tmp_path / "log")
+        with provider._lock:
+            provider._adopt_group("chat", swap, [chat])  # type: ignore[arg-type]
+            provider._adopt_group("embed", swap, [embed])  # type: ignore[arg-type]
+        chat_profile = provider._clients[WorkerRole.CHAT][0]._profile
+        embed_profile = provider._clients[WorkerRole.EMBED][0]._profile
+        assert chat_profile.label == "fake-engine"
+        assert embed_profile.label == LLAMA.request_profile(WorkerRole.EMBED).label
+        assert chat_profile.label != embed_profile.label
+
+    def test_adopting_a_role_whose_engine_went_raises_the_engine_text(
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo#mlx")
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading({}, {}))
+        provider = FleetProvider()
+        swap = SimpleNamespace(endpoint=lambda: "http://127.0.0.1:1", log_path=tmp_path / "log")
+        with provider._lock, pytest.raises(NoEngineError, match="For embed: "):
+            provider._adopt_group("embed", swap, [launch])  # type: ignore[arg-type]
+        assert WorkerRole.EMBED not in provider._clients
 
     def _record_engine_use(
         self, monkeypatch: pytest.MonkeyPatch, spy: SpyEngine, model_file: Path, tmp_path: Path
@@ -536,6 +579,7 @@ class TestProvider:
         seen: dict[str, list[Any]] = {"probe": [], "plan": [], "refresh": [], "swap": []}
         launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
         monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(_mixed_book(spy), {}))
+        monkeypatch.setattr(planning, "snapshot_engine", lambda engines: spy)
 
         class _Swap:
             bound = False
@@ -578,7 +622,7 @@ class TestProvider:
         self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         seen = self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
-        provider = FleetProvider(engine=spy)
+        provider = FleetProvider()
         assert provider._plan_and_spawn(tmp_path)
         assert seen["probe"] == [spy]
         assert seen["plan"] == [_mixed_book(spy)]
@@ -588,7 +632,7 @@ class TestProvider:
         self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         seen = self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
-        provider = FleetProvider(engine=spy)
+        provider = FleetProvider()
         monkeypatch.setattr(provider, "_reload_dir", lambda: tmp_path)
         monkeypatch.setattr(provider, "_preload_restarted", lambda restarted: None)
         provider._reload_pass()
@@ -616,8 +660,8 @@ class TestProvider:
                 (launch,), skipped_no_engine={WorkerRole.CHAT: "org/repo#mlx"}
             ),
         )
-        routing = RoutingProvider(engine=lambda: spy)
-        routing._local = FleetProvider(engine=spy)
+        routing = RoutingProvider()
+        routing._local = FleetProvider()
         return routing
 
     def _no_engine_warnings(self, routing: RoutingProvider) -> list[tuple[WarningCode, str]]:

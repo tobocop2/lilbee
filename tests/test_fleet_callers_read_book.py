@@ -37,7 +37,7 @@ class TestTwoAdaptersOnePlan:
         chat, embed = _pair(tmp_path, device, 8, 2)
         _book(monkeypatch, chat, embed)
         monkeypatch.setattr(placement, "cfg", cfg)
-        provider = FleetProvider(engine=chat)
+        provider = FleetProvider()
 
         view = placement.get_placement()
         plan = planning.plan_all_launches(engines=provider._engines())
@@ -98,7 +98,7 @@ class TestProviderReadsTheBook:
 
         monkeypatch.setattr(prov_mod, "_placeable_demand", record)
         monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
-        provider = FleetProvider(engine=chat)
+        provider = FleetProvider()
         monkeypatch.setattr(provider, "_acquire_in_dir", lambda *_a, **_k: False)
         provider._acquire_engine(tmp_path)
 
