@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import threading
 import urllib.error
@@ -16,9 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.app import presets
+from lilbee.app.status import chat_engine, serving_roles
 from lilbee.core.config import Config, cfg
 from lilbee.providers.base import ChatResult, ProviderError
 from lilbee.providers.factory import create_sdk_provider
+from lilbee.providers.fleet.engines import select_engine
+from lilbee.providers.roles import WorkerRole
+from lilbee.providers.routing_provider import RoutingProvider
 from tests.conformance.harness import (
     BLUE,
     NEAR_COPY_COSINE,
@@ -31,6 +36,7 @@ from tests.conformance.harness import (
 
 PRESET = "check"
 FIXTURES = Path(__file__).with_name("fixtures") / "presets"
+ENGINE_FIXTURES = Path(__file__).with_name("fixtures") / "engines"
 _TIMEOUT_S = 600.0
 _OVERSIZE = "w " * 60000
 _CONVERSATION = [
@@ -221,6 +227,50 @@ def _reasoning_text(setup: Setup) -> Outcome:
     )
 
 
+class _LogTap(logging.Handler):
+    """Collects the messages of one logger while the tap is attached."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.INFO)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+def _named(setup: Setup) -> Outcome:
+    """One request through the routing provider: the log line and the status name the preset."""
+    role = next(r for r in _ROLE_STEPS if r in setup.roles)
+    model = _ref(setup, role)
+    routing = RoutingProvider(engine=select_engine(cfg))
+    logger = logging.getLogger("lilbee.providers.routing_provider")
+    tap, level = _LogTap(), logger.level
+    logger.addHandler(tap)
+    logger.setLevel(logging.INFO)
+    try:
+        if role == "chat":
+            cfg.chat_model = model
+            routing.chat(_CONVERSATION, options={"max_tokens": 1024})
+        elif role == "embed":
+            cfg.embedding_model = model
+            routing.embed(["alpha"])
+        elif role == "rerank":
+            cfg.reranker_model = model
+            routing.rerank(_RERANK_QUERY, _RERANK_DOCS)
+        else:
+            cfg.vision_model = model
+            routing.vision_ocr(png((255, 0, 0)), model, "What colour is this image?")
+    finally:
+        logger.removeHandler(tap)
+        logger.setLevel(level)
+    want = f"served by engine={PRESET} version=preset role={role} model={model}"
+    status = {row.role: row.engine for row in serving_roles()}
+    status_ok = status.get(WorkerRole(role)) == PRESET and (
+        role != "chat" or chat_engine() == PRESET
+    )
+    return Outcome(want in tap.messages and status_ok, f"log={tap.messages} status={status}")
+
+
 _STEP_FUNCTIONS: dict[str, Callable[[Setup], Outcome]] = {
     "template": _template,
     "tool": _tool,
@@ -231,12 +281,14 @@ _STEP_FUNCTIONS: dict[str, Callable[[Setup], Outcome]] = {
     "json_object": _json_object,
     "json_schema": _json_schema,
     "reasoning": _reasoning_text,
+    "named": _named,
 }
 
 
 def steps_for(setup: Setup) -> list[str]:
     extra = _STRICT_STEPS if setup.strict else {}
-    return [step for role in setup.roles for step in (*_ROLE_STEPS[role], *extra.get(role, ()))]
+    steps = [step for role in setup.roles for step in (*_ROLE_STEPS[role], *extra.get(role, ()))]
+    return [*steps, "named"] if setup.strict else steps
 
 
 def run_steps(setup: Setup) -> dict[str, Outcome]:

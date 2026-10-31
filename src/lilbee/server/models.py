@@ -250,6 +250,15 @@ class StatusIndexInfo(BaseModel):
     """Why search and ingest stop when the embedding engine gives other vectors."""
 
 
+class ServingInfo(BaseModel):
+    """The engine and version that serve one configured role."""
+
+    role: WorkerRole
+    model: str
+    engine: str
+    version: str
+
+
 class StatusResponse(BaseModel):
     """Response for GET /api/status."""
 
@@ -270,6 +279,8 @@ class StatusResponse(BaseModel):
     skipped_total: int = 0
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
+    serving: list[ServingInfo] = []
+    """The engine and version that serve each configured role."""
 
 
 class ShutdownResponse(BaseModel):
@@ -283,6 +294,8 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    chat_engine: str | None = None
+    """The engine that serves the chat model; absent when no chat model resolves."""
     chat_ready: bool = False
     """True once the chat engine is loaded and ready to serve a first token.
 
@@ -916,6 +929,7 @@ class RolePlacementResponse(BaseModel):
 
     role: WorkerRole
     model: str
+    engine: str
     devices: list[int]
     tensor_split: list[int] | None
     replicas: int
@@ -954,6 +968,7 @@ class PlacementResponse(BaseModel):
                 RolePlacementResponse(
                     role=r.role,
                     model=r.model,
+                    engine=r.engine,
                     devices=list(r.devices),
                     tensor_split=list(r.tensor_split) if r.tensor_split else None,
                     replicas=r.replicas,

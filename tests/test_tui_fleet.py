@@ -33,8 +33,8 @@ def _make_view(  # type: ignore[type-arg]
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
         ),
         roles=(
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1, "llama.cpp"),
         ),
         unplaceable=unplaceable,
         manual=manual,
@@ -118,7 +118,7 @@ def _make_view_with_skipped():
 
     return PlacementView(
         gpus=(GpuInfo(0, "MTL", "MTL0", "Apple M3", 24 * GIB, 20 * GIB),),
-        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=False,
         spec_json=None,
@@ -249,7 +249,9 @@ def _make_split_view():  # type: ignore[no-untyped-def]
         gpus=tuple(
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
         ),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), (3, 1), 1),),
+        roles=(
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), (3, 1), 1, "llama.cpp"),
+        ),
         unplaceable=(),
         manual=True,
         spec_json=None,
@@ -635,8 +637,8 @@ async def test_remove_device_when_multiple_devices(monkeypatch):
         return PlacementView(
             gpus=tuple(GpuInfo(i, "CUDA", f"CUDA{i}", "A40", 44 * GIB, 44 * GIB) for i in range(4)),
             roles=(
-                RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0, 3), None, 1),
-                RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1),
+                RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0, 3), None, 1, "llama.cpp"),
+                RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1, "llama.cpp"),
             ),
             unplaceable=(),
             manual=False,
@@ -1067,8 +1069,12 @@ def _make_big_view(n: int):  # type: ignore[no-untyped-def]
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A100", 80 * GIB, 80 * GIB) for i in range(n)
         ),
         roles=(
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", tuple(range(n)), None, 1),
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", tuple(range(n)), None, n),
+            RolePlacementView(
+                WorkerRole.CHAT, "org/chat.gguf", tuple(range(n)), None, 1, "llama.cpp"
+            ),
+            RolePlacementView(
+                WorkerRole.EMBED, "org/embed.gguf", tuple(range(n)), None, n, "llama.cpp"
+            ),
         ),
         unplaceable=(),
         manual=True,
@@ -1127,9 +1133,9 @@ def _make_view_rerank():  # type: ignore[no-untyped-def]
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
         ),
         roles=(
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0, 1), None, 1),
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
-            RolePlacementView(WorkerRole.RERANK, "org/rerank.gguf", (0,), None, 1),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0, 1), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.RERANK, "org/rerank.gguf", (0,), None, 1, "llama.cpp"),
         ),
         unplaceable=(),
         manual=True,
