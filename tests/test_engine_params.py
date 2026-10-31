@@ -15,6 +15,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers import engine_params as ep
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engines import LLAMA
 
 
 @pytest.fixture(autouse=True)
@@ -111,7 +112,10 @@ class TestResolveChatCtx:
         monkeypatch.setattr(ep, "compute_dynamic_ctx", lambda **_k: 131072)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 262144)
-        assert ep.resolve_chat_ctx(model, {"arch": "x"}, available_bytes=40 * 1024**3) == 249856
+        assert (
+            ep.resolve_chat_ctx(model, {"arch": "x"}, available_bytes=40 * 1024**3, engine=LLAMA)
+            == 249856
+        )
         assert seen == {"available_bytes": 40 * 1024**3, "ctx_ceiling": 262144}
 
     def test_the_fit_is_capped_by_num_ctx_max_and_the_target(self, tmp_path, monkeypatch) -> None:
@@ -129,7 +133,7 @@ class TestResolveChatCtx:
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 262144)
         monkeypatch.setattr(cfg, "num_ctx_max", 65536)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 131072)
-        assert ep.resolve_chat_ctx(model, None, available_bytes=40 * 1024**3) == 65536
+        assert ep.resolve_chat_ctx(model, None, available_bytes=40 * 1024**3, engine=LLAMA) == 65536
         assert seen["ctx_ceiling"] == 65536
 
     def test_uses_dynamic_sizing(self, tmp_path, monkeypatch) -> None:
@@ -141,7 +145,7 @@ class TestResolveChatCtx:
         monkeypatch.setattr(ep, "compute_dynamic_ctx", lambda **_k: 6000)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 8192)
-        assert ep.resolve_chat_ctx(model, {"arch": "x"}) == 6000
+        assert ep.resolve_chat_ctx(model, {"arch": "x"}, engine=LLAMA) == 6000
 
     def test_honors_num_ctx_max_ceiling(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "m.gguf"
@@ -158,7 +162,7 @@ class TestResolveChatCtx:
         monkeypatch.setattr(ep, "compute_dynamic_ctx", _capture)
         monkeypatch.setattr(cfg, "num_ctx_max", 4096)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 8192)
-        ep.resolve_chat_ctx(model, None)
+        ep.resolve_chat_ctx(model, None, engine=LLAMA)
         assert seen["ceiling"] == 4096  # explicit num_ctx_max caps below training_ctx
 
     def test_quantized_kv_widens_the_grant(self, monkeypatch, tmp_path) -> None:
@@ -185,14 +189,14 @@ class TestResolveChatCtx:
         monkeypatch.setattr(cfg, "flash_attention", True)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 200000)
-        assert ep.resolve_chat_ctx(model, meta, available_bytes=10**9) == 17920
+        assert ep.resolve_chat_ctx(model, meta, available_bytes=10**9, engine=LLAMA) == 17920
 
     def test_falls_back_to_static_cap_on_stat_error(self, monkeypatch) -> None:
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 8192)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 4096)
         # A nonexistent path makes .stat() raise OSError -> static min(training, target).
-        assert ep.resolve_chat_ctx(Path("/nonexistent/x.gguf"), None) == 4096
+        assert ep.resolve_chat_ctx(Path("/nonexistent/x.gguf"), None, engine=LLAMA) == 4096
 
 
 class TestChatKvElemBytes:
@@ -201,7 +205,7 @@ class TestChatKvElemBytes:
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
         monkeypatch.setattr(cfg, "flash_attention", True)
-        assert ep.chat_kv_elem_bytes() == 18 / 32
+        assert ep.chat_kv_elem_bytes(engine=LLAMA) == 18 / 32
 
     def test_q8_0_costs_more_than_a_byte(self, monkeypatch) -> None:
         # 34-byte block per 32 elements: rounding down to 1 over-grants.
@@ -209,7 +213,7 @@ class TestChatKvElemBytes:
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
         monkeypatch.setattr(cfg, "flash_attention", True)
-        assert ep.chat_kv_elem_bytes() == 34 / 32
+        assert ep.chat_kv_elem_bytes(engine=LLAMA) == 34 / 32
 
     def test_kv_cache_charged_f16_when_flash_attention_is_off(self, monkeypatch) -> None:
         """The launch sends f16 for K and V without flash attention; budgeting
@@ -218,7 +222,7 @@ class TestChatKvElemBytes:
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
         monkeypatch.setattr(cfg, "flash_attention", False)
-        assert ep.chat_kv_elem_bytes() == 2.0
+        assert ep.chat_kv_elem_bytes(engine=LLAMA) == 2.0
 
 
 class TestChatCtxCeiling:

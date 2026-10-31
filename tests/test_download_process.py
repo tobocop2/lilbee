@@ -19,6 +19,7 @@ import pytest
 from lilbee.catalog import download_process as dp
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelTask
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.runtime.cancellation import TaskCancelledError
 
 pytestmark = pytest.mark.download_child
@@ -83,7 +84,9 @@ def _pipe() -> tuple[Any, Any]:
 
 
 def _wire(monkeypatch: pytest.MonkeyPatch, worker: _FakeWorker, receiver: Any) -> None:
-    monkeypatch.setattr(dp, "_start_worker", lambda entry, models_dir, token: (worker, receiver))
+    monkeypatch.setattr(
+        dp, "_start_worker", lambda entry, models_dir, token, engine: (worker, receiver)
+    )
 
 
 def test_progress_is_forwarded_and_done_returns_the_path(
@@ -97,7 +100,12 @@ def test_progress_is_forwarded_and_done_returns_the_path(
     seen: list[tuple[int, int]] = []
 
     path = dp.download_in_subprocess(
-        _entry(), tmp_path, None, on_progress=lambda d, t: seen.append((d, t)), cancel=_Flag()
+        _entry(),
+        tmp_path,
+        None,
+        on_progress=lambda d, t: seen.append((d, t)),
+        cancel=_Flag(),
+        engine=LLAMA,
     )
 
     assert path == tmp_path / "x.gguf"
@@ -112,7 +120,9 @@ def test_progress_without_a_callback_is_dropped(
     sender.send(dp._Progress(kind="progress", downloaded=10, total=100))
     sender.send(dp._Done(kind="done", path=str(tmp_path / "x.gguf")))
 
-    path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    path = dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
 
     assert path == tmp_path / "x.gguf"
 
@@ -133,7 +143,9 @@ def test_a_child_failure_is_rebuilt_as_its_translated_type(
     sender.send(dp._Failed(kind="failed", error_type=error_type, message="boom"))
 
     with pytest.raises(expected, match="boom"):
-        dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
     assert not worker.alive
 
 
@@ -142,7 +154,7 @@ def test_a_cancel_that_lands_before_the_spawn_starts_no_child(
 ) -> None:
     spawned: list[str] = []
 
-    def _spawn(entry: CatalogModel, models_dir: Path, token: str | None) -> Any:
+    def _spawn(entry: CatalogModel, models_dir: Path, token: str | None, engine) -> Any:
         spawned.append(entry.hf_repo)
         raise AssertionError("must not spawn")
 
@@ -150,7 +162,7 @@ def test_a_cancel_that_lands_before_the_spawn_starts_no_child(
 
     with pytest.raises(TaskCancelledError):
         dp.download_in_subprocess(
-            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(value=True)
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(value=True), engine=LLAMA
         )
 
     assert spawned == []
@@ -170,7 +182,7 @@ def test_a_cancel_mid_transfer_terminates_the_child(
 
     with pytest.raises(TaskCancelledError):
         dp.download_in_subprocess(
-            _entry(), tmp_path, None, on_progress=_cancel_on_progress, cancel=flag
+            _entry(), tmp_path, None, on_progress=_cancel_on_progress, cancel=flag, engine=LLAMA
         )
 
     assert worker.terminated
@@ -188,7 +200,9 @@ def test_a_progress_callback_that_raises_cancel_terminates_the_child(
         raise TaskCancelledError
 
     with pytest.raises(TaskCancelledError):
-        dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=_raise, cancel=_Flag())
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=_raise, cancel=_Flag(), engine=LLAMA
+        )
 
     assert worker.terminated
 
@@ -201,7 +215,9 @@ def test_a_child_that_dies_silently_reads_as_a_failure_naming_its_exit_code(
     _wire(monkeypatch, worker, receiver)
 
     with pytest.raises(RuntimeError, match="exited with code -9"):
-        dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
 
 
 def test_a_message_racing_the_child_death_is_still_delivered(
@@ -212,7 +228,9 @@ def test_a_message_racing_the_child_death_is_still_delivered(
     _wire(monkeypatch, worker, receiver)
     sender.send(dp._Done(kind="done", path=str(tmp_path / "x.gguf")))
 
-    path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    path = dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
 
     assert path == tmp_path / "x.gguf"
 
@@ -267,10 +285,10 @@ def test_the_child_body_reports_the_fetched_path(
     monkeypatch.setattr(
         dl,
         "fetch_model_files",
-        lambda entry, models_dir, token, on_progress, on_probe: tmp_path / "x.gguf",
+        lambda entry, models_dir, token, engine, on_progress, on_probe: tmp_path / "x.gguf",
     )
 
-    dp._run_download_child(sender, _entry(), str(tmp_path), None)
+    dp._run_download_child(sender, _entry(), str(tmp_path), None, engine=LLAMA)
 
     message = receiver.recv()
     assert message.kind == "done"
@@ -285,12 +303,14 @@ def test_the_child_body_serializes_a_failure(
     receiver, sender = _pipe()
     monkeypatch.setattr(dp, "_silence_output", lambda: None)
 
-    def _boom(entry: Any, models_dir: Any, token: Any, on_progress: Any, on_probe: Any) -> Path:
+    def _boom(
+        entry: Any, models_dir: Any, token: Any, engine, on_progress: Any, on_probe: Any
+    ) -> Path:
         raise PermissionError("gated")
 
     monkeypatch.setattr(dl, "fetch_model_files", _boom)
 
-    dp._run_download_child(sender, _entry(), str(tmp_path), None)
+    dp._run_download_child(sender, _entry(), str(tmp_path), None, engine=LLAMA)
 
     message = receiver.recv()
     assert message.kind == "failed"
@@ -307,7 +327,12 @@ def test_a_real_spawned_child_downloads_a_cached_model(
     seen: list[tuple[int, int]] = []
 
     path = dp.download_in_subprocess(
-        _entry(), tmp_path, None, on_progress=lambda d, t: seen.append((d, t)), cancel=_Flag()
+        _entry(),
+        tmp_path,
+        None,
+        on_progress=lambda d, t: seen.append((d, t)),
+        cancel=_Flag(),
+        engine=LLAMA,
     )
 
     assert path == tmp_path / "x.gguf"
@@ -324,7 +349,7 @@ def test_a_real_spawned_child_dies_on_terminate(
     worker_seen: list[dp._Worker] = []
     real_start = dp._start_worker
 
-    def _spy(entry: CatalogModel, models_dir: Path, token: str | None) -> Any:
+    def _spy(entry: CatalogModel, models_dir: Path, token: str | None, engine) -> Any:
         started = real_start(entry, models_dir, token)
         worker_seen.append(started[0])
         return started
@@ -339,7 +364,9 @@ def test_a_real_spawned_child_dies_on_terminate(
     canceller.start()
     try:
         with pytest.raises((TaskCancelledError, RuntimeError)):
-            dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=flag)
+            dp.download_in_subprocess(
+                _entry(), tmp_path, None, on_progress=None, cancel=flag, engine=LLAMA
+            )
     finally:
         canceller.join()
 
@@ -366,7 +393,10 @@ def test_download_model_routes_to_a_child_when_cancellable(
     monkeypatch.setattr(dp, "download_in_subprocess", _fake_run)
 
     result = dl.download_model(
-        _entry(), on_complete=lambda entry, path: completed.append(path), cancel=_Flag()
+        _entry(),
+        on_complete=lambda entry, path: completed.append(path),
+        cancel=_Flag(),
+        engine=LLAMA,
     )
 
     assert result == tmp_path / "x.gguf"
@@ -424,7 +454,7 @@ def test_the_spawned_child_is_daemonic(monkeypatch: pytest.MonkeyPatch, tmp_path
     recorded: list[_Recorder] = []
     monkeypatch.setattr(dp.multiprocessing, "get_context", lambda method: _Context)
 
-    dp._start_worker(_entry(), tmp_path, None)
+    dp._start_worker(_entry(), tmp_path, None, engine=LLAMA)
 
     assert recorded[0].kwargs["daemon"] is True
 
@@ -450,10 +480,14 @@ def test_a_child_that_dies_mid_message_reads_as_a_failure(
             return None
 
     worker = _FakeWorker(alive=False, exitcode=-9)
-    monkeypatch.setattr(dp, "_start_worker", lambda entry, models_dir, token: (worker, _DeadPipe()))
+    monkeypatch.setattr(
+        dp, "_start_worker", lambda entry, models_dir, token, engine: (worker, _DeadPipe())
+    )
 
     with pytest.raises(RuntimeError, match="exited with code -9"):
-        dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
 
 
 def _wire_attempts(
@@ -469,7 +503,7 @@ def _wire_attempts(
     started: list[_FakeWorker] = []
     senders: list[Any] = []
 
-    def _start(entry: CatalogModel, models_dir: Path, token: str | None) -> tuple[Any, Any]:
+    def _start(entry: CatalogModel, models_dir: Path, token: str | None, engine) -> tuple[Any, Any]:
         receiver, sender = _pipe()
         senders.append(sender)
         for message in scripts[len(started)]:
@@ -507,7 +541,9 @@ def test_a_child_that_stops_reporting_bytes_is_terminated_and_retried(
         monkeypatch, [[], [dp._Done(kind="done", path=str(tmp_path / "x.gguf"))]], workers
     )
 
-    path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    path = dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
 
     assert path == tmp_path / "x.gguf"
     assert len(started) == 2
@@ -527,7 +563,9 @@ def test_a_child_that_ignores_terminate_is_killed(
         [stubborn, _FakeWorker()],
     )
 
-    dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
 
     assert len(started) == 2
     assert stubborn.killed and not stubborn.alive
@@ -541,7 +579,9 @@ def test_a_persistently_quiet_download_fails_with_the_stalled_message(
     started, _senders = _wire_attempts(monkeypatch, [[] for _ in workers], workers)
 
     with pytest.raises(RuntimeError, match=r"kept stalling with almost no data arriving"):
-        dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
 
     assert len(started) == dp.STALL_ATTEMPTS
     assert all(worker.terminated for worker in workers)
@@ -562,7 +602,12 @@ def test_a_slow_but_moving_transfer_is_left_alone(
     seen: list[tuple[int, int]] = []
 
     path = dp.download_in_subprocess(
-        _entry(), tmp_path, None, on_progress=lambda d, t: seen.append((d, t)), cancel=_Flag()
+        _entry(),
+        tmp_path,
+        None,
+        on_progress=lambda d, t: seen.append((d, t)),
+        cancel=_Flag(),
+        engine=LLAMA,
     )
 
     assert path == tmp_path / "x.gguf"
@@ -623,7 +668,9 @@ def test_a_transfer_that_goes_quiet_after_moving_is_terminated(
         workers,
     )
 
-    path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    path = dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
 
     assert path == tmp_path / "x.gguf"
     assert len(started) == 2
@@ -645,7 +692,9 @@ def test_a_child_still_resolving_file_sizes_is_left_alone(
     late = threading.Thread(target=_finish_late)
     late.start()
     try:
-        path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+        path = dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
     finally:
         late.join()
 
@@ -683,7 +732,9 @@ def test_a_child_resolving_file_after_file_is_left_alone(
     probing = threading.Thread(target=_probe_then_finish)
     probing.start()
     try:
-        path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+        path = dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
     finally:
         probing.join()
 
@@ -720,7 +771,9 @@ def test_a_terminated_child_leaves_no_partial_blob(
         [_FakeWorker(), _FakeWorker()],
     )
 
-    dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
 
     assert len(started) == 2
     assert not partial.exists()
@@ -752,7 +805,9 @@ def test_a_sibling_download_of_the_same_repo_keeps_its_partial(
         [_FakeWorker(), _FakeWorker()],
     )
 
-    dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
 
     assert not mine.exists()
     assert sibling.exists()
@@ -773,7 +828,9 @@ def test_a_child_that_never_named_a_blob_deletes_nothing(
         [_FakeWorker(), _FakeWorker()],
     )
 
-    dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
 
     assert stranger.exists()
 
@@ -791,7 +848,9 @@ def test_a_done_already_in_the_pipe_beats_the_expired_budget(
         monkeypatch, [[dp._Done(kind="done", path=str(tmp_path / "x.gguf"))]], [_FakeWorker()]
     )
 
-    path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    path = dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
 
     assert path == tmp_path / "x.gguf"
     assert len(started) == 1
@@ -809,7 +868,9 @@ def test_a_failure_already_in_the_pipe_beats_the_expired_budget(
     )
 
     with pytest.raises(PermissionError, match="gated"):
-        dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
 
     assert len(started) == 1
 
@@ -840,9 +901,13 @@ def test_a_message_that_lands_while_the_poll_expires_is_read_first(
 
     pipe = _LatePipe()
     worker = _FakeWorker(alive=False, exitcode=0)
-    monkeypatch.setattr(dp, "_start_worker", lambda entry, models_dir, token: (worker, pipe))
+    monkeypatch.setattr(
+        dp, "_start_worker", lambda entry, models_dir, token, engine: (worker, pipe)
+    )
 
-    path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    path = dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
 
     assert path == tmp_path / "x.gguf"
 
@@ -865,5 +930,5 @@ def test_download_model_routes_every_pull_through_a_child(
 
     monkeypatch.setattr(dp, "download_in_subprocess", _fake_run)
 
-    assert dl.download_model(_entry()) == tmp_path / "x.gguf"
+    assert dl.download_model(_entry(), engine=LLAMA) == tmp_path / "x.gguf"
     assert signals == [False]

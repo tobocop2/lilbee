@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines import LLAMA
 from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
 from tests._gguf_fixture import has_gguf_parser
@@ -127,7 +128,7 @@ class TestFactory:
         from lilbee.providers.routing_provider import RoutingProvider
 
         cfg.llm_provider = "auto"
-        provider = create_provider(cfg)
+        provider = create_provider(cfg, engine=LLAMA)
         assert isinstance(provider, RoutingProvider)
 
     def test_retired_provider_string_rejected_at_config_boundary(self) -> None:
@@ -242,7 +243,7 @@ class TestRoutingProvider:
     def _make_provider(self) -> RoutingProvider:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         # Track the real llama-cpp provider for shutdown (tests replace it with mocks)
         if rp._local is not None:
             self._to_shutdown.append(rp._local)
@@ -578,7 +579,7 @@ class TestRoutingProvider:
         """``_get_local`` memoizes the local engine (FleetProvider) on first call."""
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         self._to_shutdown.append(rp)
         first = rp._get_local()
         self._to_shutdown.append(first)
@@ -619,7 +620,7 @@ class TestRoutingProvider:
 
         monkeypatch.setattr("lilbee.providers.fleet.provider.FleetProvider", FakeFleet)
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         self._to_shutdown.append(rp)
         barrier = threading.Barrier(8)
         results: list = []
@@ -666,7 +667,7 @@ class TestRoutingProvider:
 
         monkeypatch.setattr("lilbee.providers.sdk_llm_provider.SdkLLMProvider", FakeSdk)
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         self._to_shutdown.append(rp)
         barrier = threading.Barrier(8)
         results: list = []
@@ -957,7 +958,7 @@ class TestRequireSdk:
 
         cfg.llm_provider = "remote"
         with mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=True):
-            provider = create_provider(cfg)
+            provider = create_provider(cfg, engine=LLAMA)
         assert isinstance(provider, SdkLLMProvider)
         assert isinstance(provider._backend, LiterLlmBackend)
 
@@ -971,7 +972,7 @@ class TestRequireSdk:
             mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=False),
             pytest.raises(ProviderError) as caught,
         ):
-            create_provider(cfg)
+            create_provider(cfg, engine=LLAMA)
         assert str(caught.value) == PROVIDER_SDK_MISSING_MESSAGE
 
 
@@ -3616,7 +3617,7 @@ class TestRoutingProviderRerank:
     def _make_provider(self):
         from lilbee.providers.routing_provider import RoutingProvider
 
-        return RoutingProvider()
+        return RoutingProvider(engine=LLAMA)
 
     def test_rerank_routes_hosted_ref_to_sdk(self) -> None:
         rp = self._make_provider()
@@ -3671,7 +3672,7 @@ class TestRoutingProviderRerank:
         """Nothing can vouch for an uninstalled bare repo, so it goes hosted."""
         from lilbee.providers.routing_provider import _is_native_rerank_ref
 
-        assert _is_native_rerank_ref("gpustack/bge-reranker-v2-m3-GGUF") is False
+        assert _is_native_rerank_ref("gpustack/bge-reranker-v2-m3-GGUF", engine=LLAMA) is False
 
     def test_native_ref_is_not_native_when_the_engine_serves_no_rerank_role(self) -> None:
         from lilbee.providers.fleet.engines import LLAMA
@@ -3738,7 +3739,7 @@ class TestRoutingProviderRerank:
         """An empty ``cfg.reranker_model`` is treated as non-native (hosted)."""
         from lilbee.providers.routing_provider import _is_native_rerank_ref
 
-        assert _is_native_rerank_ref("") is False
+        assert _is_native_rerank_ref("", engine=LLAMA) is False
 
     def test_native_gguf_ref_routes_native_even_when_not_featured(self) -> None:
         """Any 3+ slash, .gguf-ending ref is recognised as a native reranker.
@@ -3752,7 +3753,8 @@ class TestRoutingProviderRerank:
 
         assert (
             _is_native_rerank_ref(
-                "pyarn/bge-reranker-v2-gemma-Q4_K_M-GGUF/bge-reranker-v2-gemma-q4_k_m.gguf"
+                "pyarn/bge-reranker-v2-gemma-Q4_K_M-GGUF/bge-reranker-v2-gemma-q4_k_m.gguf",
+                engine=LLAMA,
             )
             is True
         )
@@ -3761,13 +3763,16 @@ class TestRoutingProviderRerank:
         """Two-part refs (e.g. ``cohere/rerank-v3``) still go to the SDK."""
         from lilbee.providers.routing_provider import _is_native_rerank_ref
 
-        assert _is_native_rerank_ref("cohere/rerank-english-v3.0") is False
+        assert _is_native_rerank_ref("cohere/rerank-english-v3.0", engine=LLAMA) is False
 
     def test_lm_studio_gguf_path_reranker_is_not_native(self) -> None:
         """A local-server-prefixed GGUF path keeps the prefix exemption, like chat refs."""
         from lilbee.providers.routing_provider import _is_native_rerank_ref
 
-        assert _is_native_rerank_ref("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf") is False
+        assert (
+            _is_native_rerank_ref("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf", engine=LLAMA)
+            is False
+        )
 
     def test_rerank_routes_lm_studio_gguf_path_to_sdk(self) -> None:
         """An ``lm_studio/`` reranker whose id looks like a GGUF path goes to LM Studio."""
@@ -3810,7 +3815,7 @@ class TestChatWithToolsRouting:
 
         backend = mock.MagicMock()
         backend.chat_with_tools.return_value = ChatToolResult(content="", tool_calls=[])
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         monkeypatch.setattr(rp, "_pick_backend", lambda _ref: backend)
         cfg.chat_model = "org/repo/model.gguf"
         rp.chat_with_tools(
@@ -3827,7 +3832,7 @@ class TestRoutingLifecycleForwarding:
         from lilbee.providers.roles import WorkerRole
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         local = mock.MagicMock()
         rp._local = local
         rp.cancel_inference()
@@ -3841,7 +3846,7 @@ class TestRoutingLifecycleForwarding:
         from lilbee.providers.roles import WorkerRole
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()  # _local is None
+        rp = RoutingProvider(engine=LLAMA)  # _local is None
         rp.cancel_inference()  # must not raise
         rp.reload_role(WorkerRole.CHAT)  # must not raise
         rp.reload_placement()  # must not raise
@@ -3849,7 +3854,7 @@ class TestRoutingLifecycleForwarding:
     def test_drop_loaded_models_async_forwards_to_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         local = mock.MagicMock()
         rp._local = local
         rp.drop_loaded_models_async()
@@ -3858,17 +3863,17 @@ class TestRoutingLifecycleForwarding:
     def test_drop_loaded_models_async_noop_without_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        RoutingProvider().drop_loaded_models_async()  # _local is None: must not raise
+        RoutingProvider(engine=LLAMA).drop_loaded_models_async()  # _local is None: must not raise
 
     def test_max_concurrent_chats_defaults_to_one_without_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        assert RoutingProvider().max_concurrent_chats() == 1  # _local is None
+        assert RoutingProvider(engine=LLAMA).max_concurrent_chats() == 1  # _local is None
 
     def test_max_concurrent_chats_forwards_to_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         rp._local = mock.MagicMock()
         rp._local.max_concurrent_chats.return_value = 3
         assert rp.max_concurrent_chats() == 3
@@ -3876,12 +3881,12 @@ class TestRoutingLifecycleForwarding:
     def test_served_chat_ctx_is_none_without_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        assert RoutingProvider().served_chat_ctx() is None  # _local is None
+        assert RoutingProvider(engine=LLAMA).served_chat_ctx() is None  # _local is None
 
     def test_served_chat_ctx_forwards_to_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         rp._local = mock.MagicMock()
         rp._local.served_chat_ctx.return_value = 16384
         assert rp.served_chat_ctx() == 16384
@@ -3889,12 +3894,12 @@ class TestRoutingLifecycleForwarding:
     def test_served_chat_slots_is_none_without_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        assert RoutingProvider().served_chat_slots() is None  # _local is None
+        assert RoutingProvider(engine=LLAMA).served_chat_slots() is None  # _local is None
 
     def test_served_chat_slots_forwards_to_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         rp._local = mock.MagicMock()
         rp._local.served_chat_slots.return_value = 2
         assert rp.served_chat_slots() == 2
@@ -3903,7 +3908,7 @@ class TestRoutingLifecycleForwarding:
         from lilbee.providers.roles import WorkerRole
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         local = mock.MagicMock()
         local.role_ready.return_value = False
         rp._local = local
@@ -3919,7 +3924,7 @@ class TestRoutingLifecycleForwarding:
         # ready here let health's chat_ready go true before the engine existed,
         # and the first /api/chat then 503'd from the backend.
         cfg.chat_model = "org/repo/chat-Q4_K_M.gguf"
-        assert RoutingProvider().role_ready(WorkerRole.CHAT) is False
+        assert RoutingProvider(engine=LLAMA).role_ready(WorkerRole.CHAT) is False
 
 
 def test_parser_kv_skips_array_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3980,7 +3985,7 @@ class TestRoutingRoleReadyRemote:
         from lilbee.providers.roles import WorkerRole
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         local = mock.MagicMock()
         local.role_ready.return_value = False
         rp._local = local
@@ -3993,7 +3998,7 @@ class TestRoutingRoleReadyRemote:
         from lilbee.providers.roles import WorkerRole
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         local = mock.MagicMock()
         local.role_ready.return_value = False
         rp._local = local
@@ -4006,12 +4011,12 @@ class TestRoutingChatPrefillProgress:
     def test_is_none_without_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        assert RoutingProvider().chat_prefill_progress() is None  # _local is None
+        assert RoutingProvider(engine=LLAMA).chat_prefill_progress() is None  # _local is None
 
     def test_forwards_to_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        rp = RoutingProvider()
+        rp = RoutingProvider(engine=LLAMA)
         rp._local = mock.MagicMock()
         rp._local.chat_prefill_progress.return_value = (128, 320)
         assert rp.chat_prefill_progress() == (128, 320)

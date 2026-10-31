@@ -455,7 +455,7 @@ class TestSync:
 
         monkeypatch.setenv("LILBEE_INGEST_CONCURRENCY", "adaptive-conservative")
         # A fake fleet + sampler so the adaptive path engages without real GPU probing.
-        monkeypatch.setattr(pipeline, "enumerate_fleet_devices", lambda: [object()])
+        monkeypatch.setattr(pipeline, "enumerate_fleet_devices", lambda engine: [object()])
         monkeypatch.setattr(
             pipeline,
             "make_signal_sampler",

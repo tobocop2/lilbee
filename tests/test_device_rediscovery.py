@@ -9,6 +9,7 @@ import pytest
 
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import _REPORTED_BACKEND, FleetDevice
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import EngineBackend
 
 _GB = 1024**3
@@ -30,9 +31,9 @@ def _snapshot(monkeypatch, devices: list[FleetDevice], free_ram: int = 64 * _GB)
     monkeypatch.setattr(
         "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
     )
-    monkeypatch.setattr(planning_mod, "_read_devices", lambda _b: _reading(devices))
+    monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(devices))
     monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: free_ram)
-    planning_mod.capture_plan_probe()
+    planning_mod.capture_plan_probe(engine=LLAMA)
 
 
 class TestAReloadRediscoversDevices:
@@ -46,11 +47,11 @@ class TestAReloadRediscoversDevices:
             FleetDevice("CUDA", 1, "B", 24 * _GB, 24 * _GB),
         ]
         _snapshot(monkeypatch, two)
-        assert len(planning_mod._plan_devices(Path("/bin/srv"))) == 2
+        assert len(planning_mod._plan_devices(Path("/bin/srv"), engine=LLAMA)) == 2
 
-        monkeypatch.setattr(planning_mod, "_read_devices", lambda _b: _reading(two[:1]))
-        planning_mod.refresh_plan_devices()
-        assert [d.index for d in planning_mod._plan_devices(Path("/bin/srv"))] == [0]
+        monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(two[:1]))
+        planning_mod.refresh_plan_devices(engine=LLAMA)
+        assert [d.index for d in planning_mod._plan_devices(Path("/bin/srv"), engine=LLAMA)] == [0]
 
     def test_the_clean_box_memory_figures_survive_the_refresh(self, monkeypatch) -> None:
         # Only the structural half is restated. The memory snapshot is what makes
@@ -58,11 +59,11 @@ class TestAReloadRediscoversDevices:
         # would charge the fleet against itself.
         card = FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)
         _snapshot(monkeypatch, [card], free_ram=64 * _GB)
-        before = planning_mod._plan_free_system_memory()
+        before = planning_mod._plan_free_system_memory(engine=LLAMA)
 
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1 * _GB)
-        planning_mod.refresh_plan_devices()
-        assert planning_mod._plan_free_system_memory() == before
+        planning_mod.refresh_plan_devices(engine=LLAMA)
+        assert planning_mod._plan_free_system_memory(engine=LLAMA) == before
 
     def test_a_refresh_without_a_snapshot_does_nothing(self, monkeypatch) -> None:
         # Nothing has been captured, so there is nothing to restate and the next
@@ -70,7 +71,7 @@ class TestAReloadRediscoversDevices:
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
-        planning_mod.refresh_plan_devices()
+        planning_mod.refresh_plan_devices(engine=LLAMA)
         assert planning_mod._plan_probe_store.get() is None
 
 
@@ -81,7 +82,9 @@ class TestTheReloadPassAsksForRediscovery:
         from lilbee.providers.fleet import provider as provider_mod
 
         called: list[int] = []
-        monkeypatch.setattr(provider_mod.planning, "refresh_plan_devices", lambda: called.append(1))
+        monkeypatch.setattr(
+            provider_mod.planning, "refresh_plan_devices", lambda engine: called.append(1)
+        )
         prov = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
         prov._build_lock = threading.RLock()
         prov._lock = threading.RLock()
@@ -99,12 +102,12 @@ class TestARefreshThatCannotProbe:
         card = FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)
         _snapshot(monkeypatch, [card])
 
-        def _wedged(_binary):
+        def _wedged(_binary, engine):
             raise ProviderError("probe wedged")
 
         monkeypatch.setattr(planning_mod, "_read_devices", _wedged)
-        planning_mod.refresh_plan_devices()
-        assert [d.index for d in planning_mod._plan_devices(Path("/bin/srv"))] == [0]
+        planning_mod.refresh_plan_devices(engine=LLAMA)
+        assert [d.index for d in planning_mod._plan_devices(Path("/bin/srv"), engine=LLAMA)] == [0]
 
     def test_an_unchanged_list_is_left_in_place(self, monkeypatch, caplog) -> None:
         import logging
@@ -112,7 +115,7 @@ class TestARefreshThatCannotProbe:
         card = FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)
         _snapshot(monkeypatch, [card])
         with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.planning"):
-            planning_mod.refresh_plan_devices()
+            planning_mod.refresh_plan_devices(engine=LLAMA)
         assert "changed since" not in caplog.text
 
 
@@ -128,9 +131,9 @@ class TestTheRefreshKeepsThePerDeviceFreeFigures:
         card = FleetDevice("CUDA", 0, "A", 24 * _GB, 23 * _GB)
         _snapshot(monkeypatch, [card])
         deflated = [FleetDevice("CUDA", 0, "A", 24 * _GB, 2 * _GB)]
-        monkeypatch.setattr(planning_mod, "_read_devices", lambda _b: _reading(deflated))
+        monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(deflated))
         with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.planning"):
-            planning_mod.refresh_plan_devices()
+            planning_mod.refresh_plan_devices(engine=LLAMA)
         probe = planning_mod._plan_probe_store.get()
         assert probe is not None
         assert [d.free_bytes for d in probe.devices] == [23 * _GB]
@@ -146,8 +149,8 @@ class TestTheRefreshKeepsThePerDeviceFreeFigures:
         ]
         _snapshot(monkeypatch, two)
         remaining = [FleetDevice("CUDA", 0, "A", 24 * _GB, 2 * _GB)]
-        monkeypatch.setattr(planning_mod, "_read_devices", lambda _b: _reading(remaining))
-        planning_mod.refresh_plan_devices()
+        monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(remaining))
+        planning_mod.refresh_plan_devices(engine=LLAMA)
         probe = planning_mod._plan_probe_store.get()
         assert probe is not None
         assert [d.free_bytes for d in probe.devices] == [23 * _GB]
@@ -169,7 +172,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         )
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 64 * _GB)
 
-        def _probe(_binary: Path) -> planning_mod.DeviceReading:
+        def _probe(_binary: Path, engine) -> planning_mod.DeviceReading:
             runs.append(1)
             if not binary.read_bytes():
                 # An empty stub never answers, so it names no backend either.
@@ -189,7 +192,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         """Make the probe raise, counting each attempt in *runs*."""
         from lilbee.providers.base import ProviderError
 
-        def _raise(_binary: Path) -> planning_mod.DeviceReading:
+        def _raise(_binary: Path, engine) -> planning_mod.DeviceReading:
             runs.append(1)
             raise ProviderError("probe wedged", provider="llama-server")
 
@@ -199,12 +202,12 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"")
         self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe()
-        assert planning_mod._plan_devices(binary) == []
+        planning_mod.capture_plan_probe(engine=LLAMA)
+        assert planning_mod._plan_devices(binary, engine=LLAMA) == []
 
         binary.write_bytes(b"the real engine")
 
-        assert [d.index for d in planning_mod._plan_devices(binary)] == [0, 1]
+        assert [d.index for d in planning_mod._plan_devices(binary, engine=LLAMA)] == [0, 1]
 
     def test_an_unchanged_engine_is_probed_once(self, monkeypatch, tmp_path) -> None:
         # The control the fix has to survive: re-probing every read would pass
@@ -213,13 +216,13 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"the real engine")
         runs = self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe()
+        planning_mod.capture_plan_probe(engine=LLAMA)
         assert len(runs) == 1
 
         for _ in range(5):
-            planning_mod._plan_devices(binary)
-            planning_mod.plan_sizing_budget()
-            planning_mod.probed_devices()
+            planning_mod._plan_devices(binary, engine=LLAMA)
+            planning_mod.plan_sizing_budget(engine=LLAMA)
+            planning_mod.probed_devices(engine=LLAMA)
 
         assert len(runs) == 1
 
@@ -229,12 +232,12 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"the real engine")
         self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe()
-        assert len(planning_mod._plan_devices(binary)) == 2
+        planning_mod.capture_plan_probe(engine=LLAMA)
+        assert len(planning_mod._plan_devices(binary, engine=LLAMA)) == 2
 
         binary.write_bytes(b"")
 
-        assert planning_mod._plan_devices(binary) == []
+        assert planning_mod._plan_devices(binary, engine=LLAMA) == []
 
     def test_the_cuda_and_rocm_paths_recover_alike(self, monkeypatch, tmp_path) -> None:
         # One cache serves both, so the recovery must not differ by backend.
@@ -243,10 +246,10 @@ class TestAnEngineThatChangesUnderARunningServe:
                 binary = tmp_path / name
                 binary.write_bytes(b"")
                 self._engine(patch, binary, backend)
-                planning_mod.capture_plan_probe()
-                assert planning_mod._plan_devices(binary) == []
+                planning_mod.capture_plan_probe(engine=LLAMA)
+                assert planning_mod._plan_devices(binary, engine=LLAMA) == []
                 binary.write_bytes(b"the real engine")
-                return planning_mod._plan_devices(binary)
+                return planning_mod._plan_devices(binary, engine=LLAMA)
 
         cuda = _recovered("cuda-server", "CUDA")
         planning_mod.clear_plan_probe()
@@ -266,17 +269,17 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary.write_bytes(b"")
         runs = self._engine(monkeypatch, binary)
         healthy = planning_mod._read_devices
-        planning_mod.capture_plan_probe()
-        assert planning_mod._plan_devices(binary) == []
+        planning_mod.capture_plan_probe(engine=LLAMA)
+        assert planning_mod._plan_devices(binary, engine=LLAMA) == []
 
         binary.write_bytes(b"the real engine")
         self._wedge(monkeypatch, runs)
-        assert planning_mod._plan_devices(binary) == []
+        assert planning_mod._plan_devices(binary, engine=LLAMA) == []
 
         monkeypatch.setattr(planning_mod, "_read_devices", healthy)
         monkeypatch.setattr(planning_mod, "_PLAN_RESTATE_FAILURE_WAIT_S", 0.0)
 
-        assert [d.index for d in planning_mod._plan_devices(binary)] == [0, 1]
+        assert [d.index for d in planning_mod._plan_devices(binary, engine=LLAMA)] == [0, 1]
 
     def test_a_repaired_binary_is_not_held_behind_the_failed_wait(
         self, monkeypatch, tmp_path
@@ -288,20 +291,20 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary.write_bytes(b"")
         runs = self._engine(monkeypatch, binary)
         healthy = planning_mod._read_devices
-        planning_mod.capture_plan_probe()
-        assert planning_mod._plan_devices(binary) == []
+        planning_mod.capture_plan_probe(engine=LLAMA)
+        assert planning_mod._plan_devices(binary, engine=LLAMA) == []
 
         binary.write_bytes(b"an engine that cannot probe")
         self._wedge(monkeypatch, runs)
-        assert planning_mod._plan_devices(binary) == []
-        broken = planning_mod._engine_identity()
+        assert planning_mod._plan_devices(binary, engine=LLAMA) == []
+        broken = planning_mod._engine_identity(engine=LLAMA)
         probed_while_broken = len(runs)
 
         binary.write_bytes(b"the real engine, repaired in place")
         monkeypatch.setattr(planning_mod, "_read_devices", healthy)
 
         assert planning_mod._plan_probe_store.probe_failed_recently(broken)
-        assert [d.index for d in planning_mod._plan_devices(binary)] == [0, 1]
+        assert [d.index for d in planning_mod._plan_devices(binary, engine=LLAMA)] == [0, 1]
         assert len(runs) == probed_while_broken + 1
 
     def test_a_probe_that_keeps_failing_is_not_retried_on_every_read(
@@ -312,13 +315,13 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"")
         runs = self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe()
+        planning_mod.capture_plan_probe(engine=LLAMA)
         binary.write_bytes(b"the real engine")
         self._wedge(monkeypatch, runs)
         before = len(runs)
 
         for _ in range(5):
-            planning_mod._plan_devices(binary)
+            planning_mod._plan_devices(binary, engine=LLAMA)
 
         assert len(runs) == before + 1
 
@@ -332,17 +335,17 @@ class TestAnEngineThatChangesUnderARunningServe:
         runs = self._engine(monkeypatch, binary)
         healthy = planning_mod._read_devices
 
-        def _probe_then_install(probed: Path) -> planning_mod.DeviceReading:
+        def _probe_then_install(probed: Path, engine) -> planning_mod.DeviceReading:
             answer = healthy(probed)
             binary.write_bytes(b"the real engine")
             return answer
 
         monkeypatch.setattr(planning_mod, "_read_devices", _probe_then_install)
-        planning_mod.capture_plan_probe()
+        planning_mod.capture_plan_probe(engine=LLAMA)
         monkeypatch.setattr(planning_mod, "_read_devices", healthy)
         probed_at_capture = len(runs)
 
-        assert [d.index for d in planning_mod._plan_devices(binary)] == [0, 1]
+        assert [d.index for d in planning_mod._plan_devices(binary, engine=LLAMA)] == [0, 1]
         assert len(runs) > probed_at_capture
 
     def test_a_host_that_lost_its_engine_keeps_trying_to_reach_one(
@@ -355,11 +358,11 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"the real engine")
         self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe()
+        planning_mod.capture_plan_probe(engine=LLAMA)
         attempts: list[int] = []
         probe_engine = planning_mod._probe_engine_devices
 
-        def _counted() -> planning_mod.DeviceReading:
+        def _counted(engine) -> planning_mod.DeviceReading:
             attempts.append(1)
             return probe_engine()
 
@@ -368,12 +371,12 @@ class TestAnEngineThatChangesUnderARunningServe:
 
         monkeypatch.setattr(planning_mod, "_probe_engine_devices", _counted)
         monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _gone)
-        assert len(planning_mod._plan_devices(binary)) == 2
+        assert len(planning_mod._plan_devices(binary, engine=LLAMA)) == 2
         assert len(attempts) == 1
 
         monkeypatch.setattr(planning_mod, "_PLAN_RESTATE_FAILURE_WAIT_S", 0.0)
 
-        assert len(planning_mod._plan_devices(binary)) == 2
+        assert len(planning_mod._plan_devices(binary, engine=LLAMA)) == 2
         assert len(attempts) == 2
 
     def test_the_cpu_pin_follows_the_engine_that_refused_the_cards(
@@ -386,8 +389,8 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"")
         self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe()
-        assert planning_mod._cpu_pin_when_every_device_was_refused() == ()
+        planning_mod.capture_plan_probe(engine=LLAMA)
+        assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
 
         binary.write_bytes(b"the real engine")
         # Every listed GPU was refused, so the selection is empty and the engine
@@ -395,10 +398,10 @@ class TestAnEngineThatChangesUnderARunningServe:
         monkeypatch.setattr(
             planning_mod,
             "_read_devices",
-            lambda _b: planning_mod.DeviceReading([], EngineBackend.CPU, True),
+            lambda _b, engine: planning_mod.DeviceReading([], EngineBackend.CPU, True),
         )
 
-        assert planning_mod._cpu_pin_when_every_device_was_refused() == ("none",)
+        assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ("none",)
 
     def test_a_planning_pass_answers_about_one_binary(self, monkeypatch, tmp_path) -> None:
         # A pass reads the snapshot several times. An engine that lands between
@@ -407,18 +410,18 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"the real engine")
         runs = self._engine(monkeypatch, binary)
-        planning_mod.capture_plan_probe()
+        planning_mod.capture_plan_probe(engine=LLAMA)
 
-        with planning_mod._one_engine_per_pass():
-            pinned = planning_mod._pass_engine_identity()
+        with planning_mod._one_engine_per_pass(engine=LLAMA):
+            pinned = planning_mod._pass_engine_identity(engine=LLAMA)
             binary.write_bytes(b"a newer engine")
-            with planning_mod._one_engine_per_pass():
-                assert planning_mod._pass_engine_identity() == pinned
-            planning_mod._plan_devices(binary)
-            planning_mod.plan_sizing_budget()
+            with planning_mod._one_engine_per_pass(engine=LLAMA):
+                assert planning_mod._pass_engine_identity(engine=LLAMA) == pinned
+            planning_mod._plan_devices(binary, engine=LLAMA)
+            planning_mod.plan_sizing_budget(engine=LLAMA)
 
         assert len(runs) == 1
-        assert len(planning_mod._plan_devices(binary)) == 2
+        assert len(planning_mod._plan_devices(binary, engine=LLAMA)) == 2
         assert len(runs) == 2
 
     def test_a_second_stale_read_takes_the_first_ones_answer(self, monkeypatch, tmp_path) -> None:
@@ -427,11 +430,11 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary.write_bytes(b"")
         runs = self._engine(monkeypatch, binary)
         healthy = planning_mod._read_devices
-        planning_mod.capture_plan_probe()
+        planning_mod.capture_plan_probe(engine=LLAMA)
         started = threading.Event()
         release = threading.Event()
 
-        def _blocking(probed: Path) -> planning_mod.DeviceReading:
+        def _blocking(probed: Path, engine) -> planning_mod.DeviceReading:
             started.set()
             release.wait(10)
             return healthy(probed)
@@ -441,7 +444,9 @@ class TestAnEngineThatChangesUnderARunningServe:
         before = len(runs)
         seen: list[list[FleetDevice]] = []
         readers = [
-            threading.Thread(target=lambda: seen.append(planning_mod._plan_devices(binary)))
+            threading.Thread(
+                target=lambda: seen.append(planning_mod._plan_devices(binary, engine=LLAMA))
+            )
             for _ in range(2)
         ]
         for reader in readers:

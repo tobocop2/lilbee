@@ -13,6 +13,7 @@ from huggingface_hub import constants as hf_constants
 from lilbee.catalog import CatalogModel
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
+from lilbee.providers.fleet.engines import LLAMA
 
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _DEFAULT_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
@@ -189,11 +190,11 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     reset_provider()
 
     embed_entry = EMBED_ENTRY
-    download_model(embed_entry)
+    download_model(embed_entry, engine=LLAMA)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
     chat_entry = CHAT_ENTRY
-    download_model(chat_entry)
+    download_model(chat_entry, engine=LLAMA)
     cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
 
     result = _integration_loop.run_until_complete(sync(quiet=True))
@@ -255,11 +256,11 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     reset_provider()
 
     embed_entry = EMBED_ENTRY
-    download_model(embed_entry)
+    download_model(embed_entry, engine=LLAMA)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
     chat_entry = CHAT_ENTRY
-    download_model(chat_entry)
+    download_model(chat_entry, engine=LLAMA)
     cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
 
     result = _integration_loop.run_until_complete(sync(quiet=True))

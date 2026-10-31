@@ -6979,7 +6979,7 @@ class TestSelfCheck:
             lambda: Path("/fake/llama-server"),
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
+        monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b, engine: [])
         # The Vulkan adapter probe runs in a child that gets 10 seconds, and on a
         # loaded Windows runner it does not always start inside them. The sizing
         # device read asks that probe, so stub the probe itself.
@@ -7050,7 +7050,7 @@ class TestSelfCheck:
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
-        monkeypatch.setattr(planning, "_fleet_backend", lambda: "Vulkan")
+        monkeypatch.setattr(planning, "_fleet_backend", lambda engine: "Vulkan")
         monkeypatch.setattr(cfg, "flash_attention", True)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
         chat_patch, embed_patch = self._patch_self_check()
@@ -7080,7 +7080,7 @@ class TestSelfCheck:
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
-        monkeypatch.setattr(planning, "_fleet_backend", lambda: "CUDA")
+        monkeypatch.setattr(planning, "_fleet_backend", lambda engine: "CUDA")
         monkeypatch.setattr(cfg, "flash_attention", None)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
         chat_patch, embed_patch = self._patch_self_check()
@@ -7442,7 +7442,7 @@ class TestSelfCheckHelpers:
         """
         from lilbee.providers.fleet.launch import InstanceLaunch
 
-        def _launch(role, model_path):
+        def _launch(role, model_path, *, engine):
             return InstanceLaunch(
                 role=role,
                 argv=["/bin/llama-server"],
@@ -7453,7 +7453,9 @@ class TestSelfCheckHelpers:
 
         monkeypatch.setattr("lilbee.providers.fleet.planning.build_single_role_launch", _launch)
         swap.endpoint.return_value = "http://127.0.0.1:5800"
-        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g, engine: swap
+        )
         monkeypatch.setattr(
             "lilbee.providers.fleet.client.LlamaServerClient",
             lambda _endpoint, _model, **_kw: client,
@@ -7547,7 +7549,9 @@ class TestSelfCheckHelpers:
         model.write_bytes(b"x" * 1024)
         swap = mock.MagicMock()
         swap.endpoint.return_value = "http://127.0.0.1:5800"
-        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g, engine: swap
+        )
         monkeypatch.setattr(
             "lilbee.providers.fleet.client.LlamaServerClient",
             lambda _e, _m, **_k: mock.MagicMock(),
@@ -7563,7 +7567,7 @@ class TestSelfCheckHelpers:
         monkeypatch.setattr(
             "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
         )
-        monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
+        monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b, engine: [])
         setup._self_check_server(WorkerRole.EMBED, model)
         argv = swap.start.call_args[0][0][0].argv
         assert argv[argv.index("--pooling") + 1] == "last"
@@ -7877,7 +7881,7 @@ def test_self_check_applies_expert_offload_to_embed_like_the_fleet(monkeypatch, 
     )
     # The launch now comes from the planner, which probes for devices first; the
     # suppress below would otherwise swallow that and the spy would never fire.
-    monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
+    monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b, engine: [])
     from lilbee.core.config import cfg as real_cfg
 
     monkeypatch.setattr(real_cfg, "cpu_moe", True, raising=False)

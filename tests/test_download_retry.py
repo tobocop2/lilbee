@@ -15,6 +15,7 @@ import pytest
 
 from lilbee.catalog import download as dl
 from lilbee.catalog.models import CatalogModel
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.runtime.cancellation import TaskCancelledError
 
 
@@ -115,7 +116,7 @@ class TestRetryIsOnEveryTransfer:
     @pytest.mark.parametrize(
         "call",
         [
-            pytest.param(lambda entry: dl.download_model(entry), id="model"),
+            pytest.param(lambda entry: dl.download_model(entry, engine=LLAMA), id="model"),
             pytest.param(lambda entry: dl.download_mmproj(entry), id="mmproj"),
         ],
     )
@@ -133,7 +134,7 @@ class TestRetryIsOnEveryTransfer:
 
         monkeypatch.setattr(dl, "_download_with_retry", _fake_retried)
         monkeypatch.setattr(dl, "_models_dir", lambda: tmp_path)
-        monkeypatch.setattr(dl, "resolve_filename", lambda entry: "f.gguf")
+        monkeypatch.setattr(dl, "resolve_filename", lambda entry, engine: "f.gguf")
         monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=1, blob="abc"))
         monkeypatch.setattr(dl, "_resolve_mmproj_filename", lambda *a: "mmproj.gguf")
         monkeypatch.setattr(dl, "repo_has_mmproj", lambda repo: False)

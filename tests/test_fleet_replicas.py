@@ -42,7 +42,8 @@ def test_gpu_device_count_returns_probe_length(monkeypatch) -> None:
         "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: object()
     )
     monkeypatch.setattr(
-        "lilbee.providers.fleet.planning.resolve_devices", lambda _b: [object(), object(), object()]
+        "lilbee.providers.fleet.planning.resolve_devices",
+        lambda _b, engine: [object(), object(), object()],
     )
     assert gpu_device_count() == 3
 
@@ -52,7 +53,7 @@ def test_gpu_device_count_floors_at_one_when_no_devices(monkeypatch) -> None:
     monkeypatch.setattr(
         "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: object()
     )
-    monkeypatch.setattr("lilbee.providers.fleet.planning.resolve_devices", lambda _b: [])
+    monkeypatch.setattr("lilbee.providers.fleet.planning.resolve_devices", lambda _b, engine: [])
     assert gpu_device_count() == 1
 
 
@@ -75,7 +76,7 @@ def test_gpu_device_count_is_cached(monkeypatch) -> None:
     gpu_device_count.cache_clear()
     calls = {"n": 0}
 
-    def _probe(_b: object) -> list[object]:
+    def _probe(_b: object, engine) -> list[object]:
         calls["n"] += 1
         return [object(), object()]
 
