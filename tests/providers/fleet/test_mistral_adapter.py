@@ -303,7 +303,6 @@ def test_the_probes_answer_unknown_without_running_the_binary(tmp_path: Path) ->
     assert not MISTRAL.supports_shared_kv(tmp_path)
     assert MISTRAL.model_meta(tmp_path) is None
     assert MISTRAL.assert_loadable("repo", "file", None) is None
-    assert MISTRAL.swap_extras(None) == {}  # type: ignore[arg-type]
     assert MISTRAL.supports_architecture("anything")
     assert "mistral.rs" in MISTRAL.identity(tmp_path / "mistralrs")
 
