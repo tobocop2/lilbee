@@ -1236,6 +1236,26 @@ binary. For older drivers swap `cu125` for `cu124` or `cu121` (run
 direct-download only; cu125 is the variant fanned out to the package
 managers.
 
+On a CPU without AVX2 (pre-2013 Intel, pre-Zen AMD) that has an NVIDIA GPU,
+install `lilbee-compat-cuda` instead. It is the compat build with CUDA 12.4
+bundled, so it needs NVIDIA driver 550+ on Linux and 551.61+ on Windows. It
+conflicts with `lilbee` and provides it, like the other variants:
+
+```bash
+brew install tobocop2/lilbee/lilbee-compat-cuda
+paru -S lilbee-compat-cuda
+nix run github:tobocop2/lilbee#lilbee-compat-cuda
+scoop install lilbee-compat-cuda
+flatpak install lilbee io.github.tobocop2.lilbee.compat-cuda
+docker run --rm --gpus all ghcr.io/tobocop2/lilbee:compat-cuda --help
+```
+
+The snap and the raw binaries are on the release page
+(`lilbee-compat-linux-x86_64-cu124.snap`, `lilbee-compat-linux-x86_64-cu124`
+and `lilbee-compat-windows-x86_64-cu124.exe`). The npm launcher picks the
+Windows build on its own when it finds no AVX2 and a driver with CUDA 12.4 or
+newer.
+
 While 0.6.66 is in beta, the `--pre` flag (or uv's `--prerelease=allow`) is
 required on every install.
 

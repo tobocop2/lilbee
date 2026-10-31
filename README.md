@@ -180,6 +180,19 @@ Pre-2013 Intel or pre-Zen AMD CPUs lack [AVX2](https://en.wikipedia.org/wiki/Adv
 
 Use a bundled build here if you can. The compat index carries the patched lancedb only, so the `pip` row installs lilbee without an engine and every model call will fail until you point `LILBEE_LLAMA_SERVER_PATH` at a `llama-server` that runs on your CPU.
 
+An older CPU with an NVIDIA GPU (CPU with AVX, 2011+): `lilbee-compat-cuda` is the compat build with CUDA 12.4, so it needs NVIDIA driver 550+ on Linux and 551.61+ on Windows. The CUDA runtime is bundled.
+
+|              | Command                                                                                                                                                                                       |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Homebrew** | `brew install tobocop2/lilbee/lilbee-compat-cuda`                                                                                                                                             |
+| **AUR**      | `paru -S lilbee-compat-cuda`                                                                                                                                                                  |
+| **Nix**      | `nix run github:tobocop2/lilbee#lilbee-compat-cuda`                                                                                                                                           |
+| **Scoop**    | `scoop install lilbee-compat-cuda`                                                                                                                                                            |
+| **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.compat-cuda`                                                                                                                                |
+| **Snap**     | `curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-compat-linux-x86_64-cu124.snap && sudo snap install ./lilbee-compat-linux-x86_64-cu124.snap --dangerous --classic` |
+| **Docker**   | `docker run --rm --gpus all ghcr.io/tobocop2/lilbee:compat-cuda --help`                                                                                                                       |
+| **Binary**   | [`lilbee-compat-linux-x86_64-cu124`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-compat-windows-x86_64-cu124.exe`](https://github.com/tobocop2/lilbee/releases/latest)    |
+
 Same `lilbee` command after install. The crash is from [lancedb](https://lancedb.github.io/lancedb/)'s AVX2-compiled wheels; this build swaps in a [lancedb fork](https://github.com/tobocop2/lance) that picks instructions at runtime. A 👍 or comment on the upstream [lance PR](https://github.com/lance-format/lance/pull/6630) helps it land.
 
 </details>
