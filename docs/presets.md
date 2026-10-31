@@ -18,7 +18,7 @@ A preset serves one or more of these roles: `embed`, `rerank`, `chat`, `vision`.
 
 A preset works with a server that offers the OpenAI-compatible routes for the roles you give it. These servers are the targets for presets: oMLX, vMLX, vllm-mlx, mlx-lm, TEI, Lemonade, GenieX, FastFlowLM, mistral.rs and Infinity.
 
-lilbee has not run its output check against these servers yet. Check which routes your server offers before you give it a role. Use `tei` as the rerank wire for TEI. For every other server, use the default `v1` only if the server documents `POST /v1/rerank`.
+lilbee ran its output check against TEI, Lemonade and mistral.rs. The other servers are not run or not verified yet. See [Preset results](preset-results.md) for each server, role and result. Check which routes your server offers before you give it a role. Use `tei` as the rerank wire for TEI. For every other server, use the default `v1` only if the server documents `POST /v1/rerank`.
 
 ## The rerank wire
 
