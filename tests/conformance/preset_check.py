@@ -71,6 +71,7 @@ class Setup:
     roles: tuple[str, ...]
     models: dict[str, str]
     rerank_wire: str = "v1"
+    embed_dim: int = 0
 
 
 @contextmanager
@@ -96,7 +97,7 @@ def _template(setup: Setup) -> Outcome:
         _CONVERSATION, model=_ref(setup, "chat"), options={"max_tokens": 1024}
     )
     assert isinstance(result, ChatResult)
-    return Outcome(bool(result.text.strip()), f"finish={result.finish_reason}")
+    return Outcome("rome" in result.text.lower(), f"finish={result.finish_reason}")
 
 
 def _tool(setup: Setup) -> Outcome:
@@ -116,7 +117,10 @@ def _embed(setup: Setup) -> Outcome:
     cfg.embedding_model = _ref(setup, "embed")
     vectors = create_sdk_provider().embed(["alpha", "beta gamma"])
     dims = {len(vector) for vector in vectors}
-    return Outcome(len(vectors) == 2 and len(dims) == 1 and 0 not in dims, f"dims={sorted(dims)}")
+    return Outcome(
+        len(vectors) == 2 and dims == {setup.embed_dim} and setup.embed_dim > 0,
+        f"dims={sorted(dims)}",
+    )
 
 
 def _rerank(setup: Setup) -> Outcome:
@@ -142,7 +146,8 @@ def _vision(setup: Setup) -> Outcome:
     text = create_sdk_provider().vision_ocr(
         png((255, 0, 0)), _ref(setup, "vision"), "What colour is this image? Answer in one word."
     )
-    return Outcome(bool(text.strip()), f"colour_named={'red' in text.lower()}")
+    named = "red" in text.lower()
+    return Outcome(named, f"colour_named={named}")
 
 
 _STEP_FUNCTIONS: dict[str, Callable[[Setup], Outcome]] = {
@@ -265,13 +270,18 @@ def recording(upstream: str) -> Iterator[tuple[str, _Tape]]:
         thread.join()
 
 
-def _replay_handler(queues: dict[tuple[str, str], deque[Exchange]]) -> type[BaseHTTPRequestHandler]:
+def _queue_key(method: str, path: str, request: Any) -> tuple[str, str, str]:
+    return method, path, json.dumps(request, sort_keys=True)
+
+
+def _replay_handler(
+    queues: dict[tuple[str, str, str], deque[Exchange]],
+) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def _serve(self) -> None:
             size = int(self.headers.get("Content-Length") or 0)
-            if size:
-                self.rfile.read(size)
-            queue = queues.get((self.command, self.path))
+            raw = self.rfile.read(size) if size else b""
+            queue = queues.get(_queue_key(self.command, self.path, _scrubbed(_decoded(raw))))
             if not queue:
                 self.send_response(599)
                 self.send_header("Content-Length", "0")
@@ -295,10 +305,10 @@ def _replay_handler(queues: dict[tuple[str, str], deque[Exchange]]) -> type[Base
 
 @contextmanager
 def replaying(exchanges: list[Exchange]) -> Iterator[str]:
-    """A server that answers each recorded request with its recorded answer, in order."""
-    queues: dict[tuple[str, str], deque[Exchange]] = defaultdict(deque)
+    """A server that answers each recorded request, matched on method, path and body, in order."""
+    queues: dict[tuple[str, str, str], deque[Exchange]] = defaultdict(deque)
     for exchange in exchanges:
-        queues[(exchange.method, exchange.path)].append(exchange)
+        queues[_queue_key(exchange.method, exchange.path, exchange.request)].append(exchange)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _replay_handler(queues))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -319,6 +329,7 @@ def fixture_json(
         "roles": list(setup.roles),
         "models": setup.models,
         "rerank_wire": setup.rerank_wire,
+        "embed_dim": setup.embed_dim,
         "results": {step: outcome.as_json() for step, outcome in results.items()},
         "exchanges": [exchange.as_json() for exchange in tape.exchanges],
     }
@@ -326,6 +337,6 @@ def fixture_json(
 
 def load_fixture(path: Path) -> tuple[Setup, dict[str, Outcome], list[Exchange], dict[str, Any]]:
     doc = json.loads(path.read_text(encoding="utf-8"))
-    setup = Setup(tuple(doc["roles"]), doc["models"], doc["rerank_wire"])
+    setup = Setup(tuple(doc["roles"]), doc["models"], doc["rerank_wire"], doc["embed_dim"])
     results = {step: Outcome(**value) for step, value in doc["results"].items()}
     return setup, results, [Exchange(**e) for e in doc["exchanges"]], doc

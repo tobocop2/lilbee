@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.providers.factory import sdk_library
 from tests.conformance.preset_check import (
     FIXTURES,
     configured,
@@ -14,6 +15,10 @@ from tests.conformance.preset_check import (
     run_steps,
     steps_for,
 )
+
+# The replay drives the real provider, so it runs where the extra is installed:
+# the integration job names this file in `make test-integration`.
+pytest.importorskip(sdk_library().module)
 
 _FILES = sorted(FIXTURES.glob("*.json"))
 

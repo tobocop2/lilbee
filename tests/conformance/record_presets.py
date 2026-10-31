@@ -18,10 +18,11 @@ def main() -> int:
     parser.add_argument("--roles", required=True, help="Comma-separated roles of the server.")
     parser.add_argument("--models", required=True, help="Model ids by role: chat=ID,embed=ID.")
     parser.add_argument("--wire", default="v1")
+    parser.add_argument("--embed-dim", type=int, default=0, help="Vector size of the embed model.")
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     models = dict(pair.split("=", 1) for pair in args.models.split(","))
-    setup = Setup(tuple(args.roles.split(",")), models, args.wire)
+    setup = Setup(tuple(args.roles.split(",")), models, args.wire, args.embed_dim)
     with (
         tempfile.TemporaryDirectory() as root,
         recording(args.url) as (proxy_url, tape),
