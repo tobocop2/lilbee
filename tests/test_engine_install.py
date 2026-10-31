@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import socket
 import stat
 import zipfile
 from collections.abc import Mapping
@@ -54,7 +55,9 @@ class StandIn(FakeAdapter):
     name = ENGINE.value
     formats = frozenset({"gguf"})
 
-    def __init__(self, sha: str, gate: HostGate = PASS, licences: tuple[str, ...] = ("MIT",)):
+    def __init__(
+        self, sha: str | None, gate: HostGate = PASS, licences: tuple[str, ...] = ("MIT",)
+    ):
         self.sha, self.gate, self.licences = sha, gate, licences
 
     def host_gate(self, host: Any) -> HostGate:
@@ -347,6 +350,43 @@ def test_the_slash_command_installs_from_the_packs_folder(good: Path, root: Path
 def test_the_slash_command_with_no_name_shows_usage() -> None:
     out = run_engine_command("install")
     assert (out.ok, "/engine install ENGINE" in out.text) == (False, True)
+
+
+NO_PACK = "No pack of ik_llama.cpp is published yet. llama.cpp stays in use."
+
+
+def test_an_engine_with_no_published_pack_is_refused_on_every_surface_and_touches_nothing(
+    tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(None))  # type: ignore[arg-type]
+    reads: list[str] = []
+
+    def spy(self: object, *args: object, **kwargs: object) -> None:
+        reads.append("store")
+
+    monkeypatch.setattr(EngineStore, "ensure", spy)
+    monkeypatch.setattr(EngineStore, "install_from_wheel", spy)
+    monkeypatch.setattr(socket.socket, "connect", spy)
+    pack = tmp_path / "pack.whl"
+    pack.write_bytes(b"not read")
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value, pack)
+    assert str(exc.value) == NO_PACK
+    assert _cli("install", ENGINE.value, "--wheel", str(pack))[1]["error"] == NO_PACK
+    assert _cli("install", ENGINE.value)[1]["error"] == NO_PACK
+    code, body = _rest({"engine": ENGINE.value})
+    assert (code, body["detail"]) == (422, NO_PACK)
+    assert mcp_server.engine_install_tool(ENGINE.value) == {"error": NO_PACK}
+    assert run_engine_command(f"install {ENGINE.value}").text == NO_PACK
+    assert (reads, root.exists()) == ([], False)
+
+
+def test_an_engine_with_no_published_pack_is_not_installed_and_logs_no_warning(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(None))  # type: ignore[arg-type]
+    assert ENGINE not in installed_engines()
+    assert caplog.records == []
 
 
 @pytest.mark.parametrize("name", ["nonesuch", ENGINE.value])

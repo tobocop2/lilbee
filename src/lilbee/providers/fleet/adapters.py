@@ -245,10 +245,12 @@ class _OptionalFlag:
     effect: str
 
 
-# Every optional flag the argv builder and the role specs write, by flag. The flags
-# placement asks for (--device, --tensor-split), the embeddings flag and the planner
-# gated flags (--memory, --fit-target, --kv-unified-per-slot) are written by other rules.
+# Every optional flag the argv builder and the role specs write, by flag. The embeddings
+# flag and the planner gated flags (--memory, --fit-target, --kv-unified-per-slot) are
+# written by other rules.
 _OPTIONAL_FLAGS: dict[str, _OptionalFlag] = {
+    "--device": _OptionalFlag(1, "the engine picks its own devices"),
+    "--tensor-split": _OptionalFlag(1, "the engine splits the layers by its own rule"),
     "--flash-attn": _OptionalFlag(1, "flash attention stays at the engine default"),
     "--cache-type-k": _OptionalFlag(1, "the K cache keeps the engine default type"),
     "--cache-type-v": _OptionalFlag(1, "the V cache keeps the engine default type"),
