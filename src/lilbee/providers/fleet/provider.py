@@ -2794,8 +2794,8 @@ class FleetProvider:
 
         Dispatched to a background thread because the slow restart (rewrite config +
         respawn + wait-ready) must not block the settings/model-picker callback.
-        If no group is up yet, the next use starts the fleet with current cfg.
-        Single-flight: a reload while one is in flight sets the pending flag (the
+        If no group is up and no reload runs, the next use starts the fleet with
+        current cfg. Single-flight: a reload while one is in flight sets the pending flag (the
         in-flight pass may have already snapshotted its plan), and the in-flight
         thread runs one more pass per pending flag so the change is applied, not
         dropped.
@@ -2809,8 +2809,7 @@ class FleetProvider:
         as well.
         """
         with self._lock:
-            if not self._swaps:
-                return
+            # In flight comes first: a pass that has stopped every group has none up.
             if self._reloading:
                 self._reload_pending = True
                 if wait:
@@ -2821,6 +2820,8 @@ class FleetProvider:
                             "The engine reload that was already running failed.",
                             provider=_PROVIDER_NAME,
                         )
+                return
+            if not self._swaps:
                 return
             self._reloading = True
             self._reload_owed = frozenset(WorkerRole)
