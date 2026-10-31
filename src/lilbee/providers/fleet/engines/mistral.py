@@ -34,6 +34,8 @@ _LICENCES = ["MIT"]
 # The digest of the pack; None until a pack is published, and an install is refused then.
 PACK_SHA256: str | None = None
 _CPU = "cpu"
+# The one id the engine serves a model under; it answers 400 to any other.
+_SERVED_NAME = "default"
 _GGUF_SUFFIX = ".gguf"
 _METAL = "metal"
 _CUDA_DRIVER_FLOOR = (12, 8)
@@ -236,7 +238,7 @@ class MistralAdapter:
         return {"HF_HUB_CACHE": str(cfg.models_dir / _TOOL)}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
-        return {}
+        return {"useModelName": _SERVED_NAME}
 
     def request_profile(self, role: WorkerRole) -> RequestProfile:
         return _PROFILE
