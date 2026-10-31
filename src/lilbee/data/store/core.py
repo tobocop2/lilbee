@@ -3958,14 +3958,16 @@ class Store:
         return f"id = '{escape_sql_string(memory_id)}' AND owner = '{escape_sql_string(owner)}'"
 
     def rebuild_memory_embeddings(self, embed: Callable[[list[str]], list[Vector]]) -> int:
-        """Re-embed every memory under the current model, recreating the table.
+        """Re-embed every memory under the current model and swap in the new table.
 
         The vector column dimension is immutable, so a different-dim model needs a
-        fresh table; recreating unconditionally also covers the same-dim case. Memory
-        text is human-authored and re-embeddable, so no data is lost. Returns the count.
+        fresh table; replacing unconditionally also covers the same-dim case. The
+        vectors are checked against the configured dimension first, and the table
+        is replaced in one commit, so a failure or a crash at any step leaves every
+        memory with its old vector. Returns the count.
 
-        The snapshot, embed, and table rebuild all run under the write lock so a
-        concurrent ``add_memory`` cannot commit into the read-then-drop window and
+        The snapshot, embed, and table swap all run under the write lock so a
+        concurrent ``add_memory`` cannot commit into the read-then-swap window and
         be erased; it either lands before the snapshot or blocks until the rebuild
         finishes.
         """
@@ -3978,13 +3980,25 @@ class Store:
                 return 0
             memories = [MemoryRow(**r) for r in rows]
             vectors = embed([m.text for m in memories])
+            dim = self._config.embedding_dim
+            if len(vectors) != len(memories):
+                raise ValueError(
+                    f"The embedder returned {len(vectors)} vectors for {len(memories)} memories"
+                )
             for memory, vector in zip(memories, vectors, strict=True):
+                if len(vector) != dim:
+                    raise ValueError(
+                        f"The embedder returned a vector of dimension {len(vector)}, "
+                        f"but the embedding_dim setting is {dim}"
+                    )
                 # MemoryRow serializes to JSON on write, which has no ndarray encoding.
                 memory.vector = vector.tolist()
-            db = self.get_db()
-            db.drop_table(MEMORIES_TABLE)
-            new_table = ensure_table(db, MEMORIES_TABLE, self._memories_schema())
-            new_table.add([m.model_dump(mode="json") for m in memories])
+            self.get_db().create_table(
+                MEMORIES_TABLE,
+                data=[m.model_dump(mode="json") for m in memories],
+                schema=self._memories_schema(),
+                mode="overwrite",
+            )
         return len(memories)
 
     def close(self) -> None:

@@ -5,7 +5,7 @@ import errno
 import json
 import logging
 from dataclasses import replace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -2091,6 +2091,23 @@ class TestSyncStreamDoneDelivery:
         assert "boom" in error_events[0]
         # No done frame should be emitted when sync failed.
         assert done_events == []
+
+    async def test_a_rebuild_the_embedder_cannot_serve_ends_in_the_plain_message(self):
+        """A ProviderError from the rebuild reaches the stream as an error frame with its text."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError(
+            "The embedding model is not available. Nothing was rebuilt.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        with patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            events = [e async for e in handlers.sync_stream(force_rebuild=True)]
+
+        error_events = [e for e in events if e.startswith("event: error")]
+        assert len(error_events) == 1
+        assert "The embedding model is not available" in error_events[0]
+        assert "Nothing was rebuilt" in error_events[0]
+        assert not [e for e in events if e.startswith("event: done")]
 
     async def test_force_rebuild_flag_reaches_sync(self):
         """sync_stream(force_rebuild=True) plumbs the flag through to ingest.sync."""
