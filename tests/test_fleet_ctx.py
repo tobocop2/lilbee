@@ -53,9 +53,7 @@ def _fit(model_path: Path, **overrides: object) -> int:
 class TestFitSplitCtx:
     def test_returns_floor_when_bottleneck_nonpositive(self, monkeypatch) -> None:
         # No usable headroom on the busiest card -> the floor, without estimating.
-        monkeypatch.setattr(
-            llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1, engine=LLAMA)
-        )
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1))
         assert _fit(Path("/m.gguf"), per_device_free_bytes=[0, 0]) == _DYNAMIC_CTX_FLOOR
 
     def test_returns_floor_when_even_floor_overflows(self, monkeypatch) -> None:
@@ -64,16 +62,14 @@ class TestFitSplitCtx:
         monkeypatch.setattr(
             llama_mod,
             "estimate_instance_footprint",
-            _peak_estimator(lambda _c: 999 * _GB, engine=LLAMA),
+            _peak_estimator(lambda _c: 999 * _GB),
         )
         assert _fit(Path("/m.gguf")) == _DYNAMIC_CTX_FLOOR
 
     def test_returns_quantized_ceiling_when_everything_fits(self, monkeypatch) -> None:
         # Every probe fits -> the largest grid point at or below the ceiling.
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 32768)
-        monkeypatch.setattr(
-            llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1, engine=LLAMA)
-        )
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1))
         result = _fit(Path("/m.gguf"))
         assert (result - _DYNAMIC_CTX_FLOOR) % _DYNAMIC_CTX_QUANTUM == 0
         assert 32768 - _DYNAMIC_CTX_QUANTUM < result <= 32768
@@ -82,9 +78,7 @@ class TestFitSplitCtx:
         # peak == total ctx, so the per-slot value is gated at bottleneck / slots.
         bottleneck_free = 36000  # *0.9 usable -> 32400 budget; slots=4 -> per_slot <= 8100
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
-        monkeypatch.setattr(
-            llama_mod, "estimate_instance_footprint", _peak_estimator(lambda c: c, engine=LLAMA)
-        )
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _peak_estimator(lambda c: c))
         result = _fit(
             Path("/m.gguf"), slots=4, per_device_free_bytes=[bottleneck_free, bottleneck_free]
         )
@@ -132,9 +126,7 @@ class TestFitSplitCtx:
         # trained ceiling is 262144, planned for a 24576 ctx_ceiling, is capped there
         # so it can't over-commit VRAM and OOM under load.
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 262144)
-        monkeypatch.setattr(
-            llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1, engine=LLAMA)
-        )
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1))
         result = _fit(Path("/m.gguf"), ctx_ceiling=24576)
         assert 24576 - _DYNAMIC_CTX_QUANTUM < result <= 24576
 
@@ -142,9 +134,7 @@ class TestFitSplitCtx:
         # An estimate with no usable per-device breakdown gates the peak against
         # the tightest card (the conservative direction).
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
-        monkeypatch.setattr(
-            llama_mod, "estimate_instance_footprint", _peak_estimator(lambda c: c, engine=LLAMA)
-        )
+        monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _peak_estimator(lambda c: c))
         result = _fit(Path("/m.gguf"), slots=1, per_device_free_bytes=[40000, 10000])
         assert result <= int(10000 * 0.9)
 

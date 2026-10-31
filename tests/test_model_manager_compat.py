@@ -146,13 +146,13 @@ class TestLoadabilityGate:
             if filename not in loadable:
                 raise UnsupportedQuantError(f"{repo}/{filename}", "GGMLType(42)")
 
-        monkeypatch.setattr("lilbee.providers.fleet.loadability.assert_engine_can_load", _check)
+        monkeypatch.setattr("lilbee.providers.fleet.engines.llama.assert_engine_can_load", _check)
 
     @staticmethod
     def _capture_download(monkeypatch: pytest.MonkeyPatch, models_dir: Path) -> list[str]:
         chosen: list[str] = []
 
-        def _fake(entry: CatalogModel, **_kw: object) -> Path:
+        def _fake(entry: CatalogModel, _engine: object, **_kw: object) -> Path:
             chosen.append(entry.gguf_filename)
             return models_dir / "x.gguf"
 
@@ -211,7 +211,7 @@ class TestLoadabilityGate:
             lambda _repo, _name: GgufHeader(architecture="inkling", file_type="model"),
         )
         monkeypatch.setattr(
-            "lilbee.providers.fleet.loadability.assert_engine_can_load",
+            "lilbee.providers.fleet.engines.llama.assert_engine_can_load",
             lambda *_a, **_kw: pytest.fail("asked the parser about an unsupported arch"),
         )
         chosen = self._capture_download(monkeypatch, models_dir)

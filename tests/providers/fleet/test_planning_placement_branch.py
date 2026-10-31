@@ -23,12 +23,12 @@ def test_read_device_cache_collapses_repeat_probes(monkeypatch):
         return planning.DeviceReading([FleetDevice("CUDA", 0, "A", GIB, GIB)], EngineBackend.CUDA)
 
     monkeypatch.setattr(planning, "_read_devices", fake)
-    first = cache.get(Path("/x"))
-    second = cache.get(Path("/x"))
+    first = cache.get(Path("/x"), engine=LLAMA)
+    second = cache.get(Path("/x"), engine=LLAMA)
     assert calls["n"] == 1
     assert first == second
     cache.clear()
-    cache.get(Path("/x"))
+    cache.get(Path("/x"), engine=LLAMA)
     assert calls["n"] == 2  # cleared -> re-probe
 
 
@@ -42,8 +42,8 @@ def test_read_device_cache_ttl_zero_always_probes(monkeypatch):
         return planning.DeviceReading([], EngineBackend.CPU)
 
     monkeypatch.setattr(planning, "_read_devices", fake)
-    cache.get(Path("/x"))
-    cache.get(Path("/x"))
+    cache.get(Path("/x"), engine=LLAMA)
+    cache.get(Path("/x"), engine=LLAMA)
     assert calls["n"] == 2
 
 

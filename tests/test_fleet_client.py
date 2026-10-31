@@ -1266,6 +1266,7 @@ def _dead_engine_client(tmp_path, handler, **kwargs) -> tuple[LlamaServerClient,
         async_transport=transport,
         model_ref=_DEAD_MODEL_REF,
         engine_log=log,
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
         **kwargs,
     )
     client._needs_alternation = False

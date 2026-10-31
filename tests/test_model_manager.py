@@ -58,7 +58,7 @@ class TestNativeIdentitiesCache:
     def test_returns_cached_within_ttl(self) -> None:
         from lilbee.modelhub.model_manager.core import ModelManager as MM
 
-        mgr = MM(Path("/nonexistent"))
+        mgr = MM(Path("/nonexistent"), engine=LLAMA)
         fake_registry = mock.MagicMock()
         m = mock.MagicMock()
         m.ref = "test/m"
@@ -80,7 +80,7 @@ class TestNativeIdentitiesCache:
         models_dir = tmp_path / "models"
         _register_native(models_dir)
         repo_dir = models_dir / "manifests" / repo_to_dir(_NATIVE_REF.rsplit("/", 1)[0])
-        mgr = MM(models_dir)
+        mgr = MM(models_dir, engine=LLAMA)
 
         with unreadable(repo_dir), pytest.raises(OSError):
             mgr.list_native_identities()
@@ -89,7 +89,7 @@ class TestNativeIdentitiesCache:
         from lilbee.modelhub.model_manager import core as mm_core
         from lilbee.modelhub.model_manager.core import ModelManager as MM
 
-        mgr = MM(Path("/nonexistent"))
+        mgr = MM(Path("/nonexistent"), engine=LLAMA)
         fake_registry = mock.MagicMock()
         m = mock.MagicMock()
         m.ref = "test/m"

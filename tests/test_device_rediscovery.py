@@ -86,6 +86,7 @@ class TestTheReloadPassAsksForRediscovery:
             provider_mod.planning, "refresh_plan_devices", lambda engine: called.append(1)
         )
         prov = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
+        prov.engine = LLAMA
         prov._build_lock = threading.RLock()
         prov._lock = threading.RLock()
         prov._shut_down = True  # returns immediately, after the refresh
@@ -336,7 +337,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         healthy = planning_mod._read_devices
 
         def _probe_then_install(probed: Path, engine) -> planning_mod.DeviceReading:
-            answer = healthy(probed)
+            answer = healthy(probed, engine)
             binary.write_bytes(b"the real engine")
             return answer
 
@@ -364,7 +365,7 @@ class TestAnEngineThatChangesUnderARunningServe:
 
         def _counted(engine) -> planning_mod.DeviceReading:
             attempts.append(1)
-            return probe_engine()
+            return probe_engine(engine)
 
         def _gone() -> Path:
             raise ProviderError("no engine binary", provider="llama-server")
@@ -437,7 +438,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         def _blocking(probed: Path, engine) -> planning_mod.DeviceReading:
             started.set()
             release.wait(10)
-            return healthy(probed)
+            return healthy(probed, engine)
 
         monkeypatch.setattr(planning_mod, "_read_devices", _blocking)
         binary.write_bytes(b"the real engine")
@@ -481,9 +482,9 @@ class TestTheReadCacheDescribesOneBinary:
         second.write_bytes(b"new engine")
         cache = planning_mod._ReadDeviceCache(60.0, 60.0)
 
-        cache.get(first)
-        cache.get(first)
-        cache.get(second)
+        cache.get(first, engine=LLAMA)
+        cache.get(first, engine=LLAMA)
+        cache.get(second, engine=LLAMA)
 
         assert seen == [first, second]
 
@@ -493,10 +494,10 @@ class TestTheReadCacheDescribesOneBinary:
         binary = tmp_path / "llama-server"
         binary.write_bytes(b"stub")
         cache = planning_mod._ReadDeviceCache(60.0, 60.0)
-        cache.get(binary)
+        cache.get(binary, engine=LLAMA)
 
         binary.write_bytes(b"the real engine, longer")
-        cache.get(binary)
+        cache.get(binary, engine=LLAMA)
 
         assert seen == [binary, binary]
 
@@ -518,6 +519,6 @@ class TestTheReadCacheDescribesOneBinary:
         monkeypatch.setattr(planning_mod, "_read_devices", _resolve)
         cache = planning_mod._ReadDeviceCache(60.0, 60.0)
         with pytest.raises(ProviderError):
-            cache.get(stub)
+            cache.get(stub, engine=LLAMA)
 
-        assert [d.index for d in cache.get(real).devices] == [0]
+        assert [d.index for d in cache.get(real, engine=LLAMA).devices] == [0]

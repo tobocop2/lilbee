@@ -1634,7 +1634,7 @@ def test_concurrent_vision_ocr_with_ocr_off_starts_vision_once(
             # Hold the first vision re-plan until every page is inside the start.
             with arrived:
                 assert arrived.wait_for(lambda: arrivals["n"] == pages, timeout=10)
-        return plan(roles, *args)
+        return plan(roles, *args, engine=engine)
 
     monkeypatch.setattr(p, "_serve_vision_on_request", _counted_serve)
     monkeypatch.setattr(planning_mod, "plan_launches", _held_plan)
@@ -2236,7 +2236,7 @@ class _OrderedReapSwap(_FakeSwap):
 def _ordered_planner(order: list[str], launches: list) -> object:
     """A plan_all_launches stand-in appending to the shared order log."""
 
-    def _plan() -> planning_mod.FleetPlan:
+    def _plan(*, engine) -> planning_mod.FleetPlan:
         order.append("plan")
         return planning_mod.FleetPlan(tuple(launches))
 
@@ -3284,6 +3284,7 @@ _HUNG_WARM_PROBE = """
 import threading
 import httpx
 from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
@@ -3297,7 +3298,7 @@ def never_answers(request):
 http = httpx.Client(base_url="http://engine", transport=httpx.MockTransport(never_answers))
 p = FleetProvider()
 p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-p._clients = {WorkerRole.CHAT: [LlamaServerClient("http://engine", "chat", http=http)]}
+p._clients = {WorkerRole.CHAT: [LlamaServerClient("http://engine", "chat", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT))]}
 p._prewarm_chat_weights = lambda: None
 threading.Thread(target=p._preload_roles, daemon=True).start()
 assert in_flight.wait(10.0)

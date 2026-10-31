@@ -619,7 +619,7 @@ def test_estimate_role_carries_replica_count(monkeypatch, tmp_path) -> None:
     model = tmp_path / "e.gguf"
     model.write_bytes(b"x" * 1000)
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
     monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
     inp = planning_mod._estimate_role(
@@ -633,7 +633,7 @@ def test_estimate_role_auto_replicas_follow_device_count(monkeypatch, tmp_path) 
     model = tmp_path / "e.gguf"
     model.write_bytes(b"x" * 1000)
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
     monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
     inp = planning_mod._estimate_role(
@@ -707,15 +707,15 @@ def test_estimate_role_chat_footprint_sized_at_target_ctx(monkeypatch) -> None:
     monkeypatch.setattr(
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
     )
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 262144)
 
     planning_mod._estimate_role(WorkerRole.CHAT, "org/chat.gguf", engine=LLAMA)
     assert captured["ctx"] == 24576
 
 
-def test_placement_estimate_ctx_non_chat_delegates_to_role_ctx(monkeypatch) -> None:
-    monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *, engine: 512)
+def test_placement_estimate_ctx_non_chat_delegates_to_aux_role_ctx(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "_aux_role_ctx", lambda _r, _p, _m: 512)
     assert planning_mod._placement_estimate_ctx(WorkerRole.EMBED, Path("/m.gguf"), {}) == 512
 
 
@@ -743,7 +743,7 @@ def test_peak_estimator_returns_per_device_vector(monkeypatch) -> None:
     monkeypatch.setattr(
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
     )
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_placement_estimate_slots", lambda _r, _m: 2)
     monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 1000)
     seen: dict = {}
@@ -766,7 +766,7 @@ def test_peak_estimator_vision_passes_mmproj(monkeypatch) -> None:
     monkeypatch.setattr(
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/v.gguf")
     )
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
     monkeypatch.setattr(planning_mod, "_placement_estimate_slots", lambda _r, _m: 1)
     monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 100)
@@ -789,7 +789,7 @@ def test_peak_estimator_reserves_single_sequence_total_for_split_chat(monkeypatc
     monkeypatch.setattr(
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
     )
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 196608)
     seen: dict = {}
 
@@ -938,7 +938,7 @@ class TestBuildFleetWiring:
     def test_plan_all_launches_places_only_the_roles_the_engine_serves(self, monkeypatch) -> None:
         from tests.conformance.fake_adapter import FAKE
 
-        monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary, engine, _engine: [])
+        monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary, _engine: [])
         planned_roles: list[tuple[WorkerRole, ...]] = []
 
         def _plan(roles, *_args, **_kw) -> planning_mod.FleetPlan:
@@ -972,7 +972,9 @@ class TestBuildFleetWiring:
         mmproj = tmp_path / "mmproj.gguf"
         mmproj.write_bytes(b"y" * 500)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
         seen: dict[str, object] = {}
@@ -992,7 +994,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "v.gguf"
         model.write_bytes(b"x" * 1000)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: None)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
         monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=4242))
@@ -1008,7 +1012,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "e.gguf"
         model.write_bytes(b"x" * 1000)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 512)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)  # would be wrong for embed
         seen: dict[str, object] = {}
@@ -1030,7 +1036,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "m.gguf"
         model.write_bytes(b"x" * 1000)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
         monkeypatch.setattr(
             llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=9000, unified=900)
@@ -1053,7 +1061,9 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
         )
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
         monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 1)
         monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=10000))
@@ -1072,7 +1082,9 @@ class TestBuildFleetWiring:
             lambda _r: model,
         )
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
         plan = InstancePlan(role=WorkerRole.VISION, devices=(0,))
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
@@ -1086,7 +1098,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "m.gguf"
         model.write_bytes(b"x" * 1000)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
         monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _fixed_estimator(vram=7777))
         inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=2, engine=LLAMA)
@@ -1100,12 +1114,14 @@ class TestBuildFleetWiring:
             "lilbee.providers.engine_params.resolve_model_path",
             lambda ref: model,
         )
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
         # Pin the runtime env to empty: the real one reflects whatever CUDA
         # wheels the host venv has installed, and the assertion below checks
         # exact env equality for the pinning keys.
-        monkeypatch.setattr(planning_mod, "llama_server_runtime_env", lambda: {})
+        monkeypatch.setattr(llama_mod, "llama_server_runtime_env", lambda: {})
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
         launch = planning_mod._launch_for(
@@ -1131,7 +1147,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.engine_advertises", lambda _b, _flag: advertised
         )
@@ -1282,7 +1300,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.engine_advertises", lambda _b, _flag: True
         )
@@ -1311,7 +1331,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(cfg, "num_ctx", None)
         seen: dict = {}
 
@@ -1342,7 +1364,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(cfg, "num_ctx", None)
 
         # Every slot count still reaches the full window: 4 agents fit.
@@ -1365,7 +1389,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
         monkeypatch.setattr(planning_mod, "is_network_path", lambda _p: True)
         monkeypatch.setattr(planning_mod, "_weights_bytes", lambda _p: 200 * 10**9)
@@ -1396,7 +1422,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
         monkeypatch.setattr(planning_mod, "is_network_path", lambda _p: True)
         monkeypatch.setattr(planning_mod, "_weights_bytes", lambda _p: 10 * 10**9)
@@ -1421,7 +1449,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(cfg, "num_ctx", None)
         seen: dict = {}
 
@@ -1449,7 +1479,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(cfg, "num_ctx", None)
         monkeypatch.setattr(planning_mod, "host_lacks_nvlink", lambda: True)
         monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", lambda *_a, **_k: 5000)
@@ -1523,7 +1555,9 @@ class TestBuildFleetWiring:
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(cfg, "num_ctx", 8192)
 
         def _fail(*_a, **_k) -> int:
@@ -1579,9 +1613,12 @@ class TestBuildFleetWiring:
             "lilbee.providers.engine_params.resolve_model_path",
             lambda _r: model,
         )
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: ctx)
+        monkeypatch.setattr(planning_mod, "_aux_role_ctx", lambda _r, _p, _m: ctx)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=role, devices=(0,))
         return planning_mod._launch_for(
@@ -1668,7 +1705,9 @@ class TestBuildFleetWiring:
         model.write_bytes(b"x" * 1000)
         meta = {"architecture": arch} if arch is not None else {}
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: meta)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: meta
+        )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.RERANK, devices=(0,))
@@ -1718,7 +1757,8 @@ class TestBuildFleetWiring:
         model.write_bytes(b"x" * 1000)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
+            lambda _p: {"architecture": "qwen3"},
         )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda *a, **k: 1024)
         monkeypatch.setattr(cfg, "reranker_type", RerankerType.AUTO)
@@ -2080,7 +2120,7 @@ class TestChatSplitCtxObjective:
             "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/m.gguf")
         )
         monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"arch": "x"}
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {"arch": "x"}
         )
         monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a: 8192)
         captured: dict[str, object] = {}
@@ -2113,7 +2153,7 @@ class TestChatSplitCtxObjective:
             "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/m.gguf")
         )
         monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"arch": "x"}
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {"arch": "x"}
         )
         monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a: 8192)
         monkeypatch.setattr(planning_mod, "_peak_estimator", lambda _refs, engine: lambda *_a: (1,))
@@ -2258,7 +2298,7 @@ class TestReadDeviceCacheFailure:
         cache = self._cache()
         for _ in range(3):
             with pytest.raises(ProviderError, match="probe wedged"):
-                cache.get(Path("/bin/llama-server"))
+                cache.get(Path("/bin/llama-server"), engine=LLAMA)
         assert calls["n"] == 1  # later reads served from the cached failure
 
     def test_clear_drops_the_cached_failure(self, monkeypatch) -> None:
@@ -2276,9 +2316,9 @@ class TestReadDeviceCacheFailure:
         monkeypatch.setattr(planning_mod, "_read_devices", _next)
         cache = self._cache()
         with pytest.raises(ProviderError):
-            cache.get(Path("/bin/llama-server"))
+            cache.get(Path("/bin/llama-server"), engine=LLAMA)
         cache.clear()
-        assert cache.get(Path("/bin/llama-server")).devices == [device]
+        assert cache.get(Path("/bin/llama-server"), engine=LLAMA).devices == [device]
 
     def test_success_after_expired_failure_clears_it(self, monkeypatch) -> None:
         from lilbee.providers.base import ProviderError
@@ -2295,8 +2335,8 @@ class TestReadDeviceCacheFailure:
         monkeypatch.setattr(planning_mod, "_read_devices", _next)
         cache = planning_mod._ReadDeviceCache(ttl_s=0.0, failure_ttl_s=0.0)
         with pytest.raises(ProviderError):
-            cache.get(Path("/bin/llama-server"))
-        assert cache.get(Path("/bin/llama-server")).devices == [device]
+            cache.get(Path("/bin/llama-server"), engine=LLAMA)
+        assert cache.get(Path("/bin/llama-server"), engine=LLAMA).devices == [device]
 
 
 def _reading(devices, backend: EngineBackend = EngineBackend.UNKNOWN):
@@ -2362,7 +2402,8 @@ class TestEstimateLaunchParity:
         model.write_bytes(b"x" * 64)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "bert"}
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
+            lambda _p: {"architecture": "bert"},
         )
         monkeypatch.setattr(cfg, "num_ctx", 4096)
         monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
@@ -2371,6 +2412,7 @@ class TestEstimateLaunchParity:
         # same type or it sizes a cache the launch will not allocate.
         monkeypatch.setattr(planning_mod, "_fleet_backend", lambda engine: backend)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
+        monkeypatch.setattr(planning_mod, "_aux_role_ctx", lambda _r, _p, _m: 4096)
         mmproj = Path("/m/mmproj.gguf") if role is WorkerRole.VISION else None
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
         monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
@@ -2449,7 +2491,8 @@ class TestEstimateLaunchParity:
         model.write_bytes(b"x" * 64)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
+            lambda _p: {"architecture": "qwen3"},
         )
         monkeypatch.setattr(cfg, "reranker_type", RerankerType.LLM)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
@@ -2511,7 +2554,9 @@ class TestWeightsBytes:
             "lilbee.providers.engine_params.resolve_model_path",
             lambda _ref: model,
         )
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
@@ -3118,7 +3163,9 @@ class TestSizingBudgetComesFromTheDevice:
         large = FleetDevice("CUDA", 1, "A6000", 48 * _GB, 48 * _GB)
         self._capture(monkeypatch, [small, large], host_ram=128 * _GB)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(cfg, "num_ctx", None)
         seen: list[int] = []
 
@@ -3462,7 +3509,7 @@ def test_ref_is_moe_reads_the_model_metadata(monkeypatch) -> None:
     monkeypatch.setattr(
         "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/m/moe.gguf")
     )
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     assert planning_mod._ref_is_moe("m/moe", engine=LLAMA) is True
 
 
@@ -3526,7 +3573,8 @@ def test_estimate_offload_matches_what_the_launch_offloads(monkeypatch, tmp_path
     model = tmp_path / "moe.gguf"
     model.write_bytes(b"x" * 64)
     monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"expert_count": "128"}
+        "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
+        lambda _p: {"expert_count": "128"},
     )
     monkeypatch.setattr(cfg, "cpu_moe", True)
     monkeypatch.setattr(cfg, "n_cpu_moe", None)
@@ -3540,7 +3588,8 @@ def test_estimate_offloads_nothing_for_a_dense_model(monkeypatch, tmp_path: Path
     model = tmp_path / "dense.gguf"
     model.write_bytes(b"x" * 64)
     monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
+        "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
+        lambda _p: {"architecture": "qwen3"},
     )
     monkeypatch.setattr(cfg, "cpu_moe", True)
     assert planning_mod._role_expert_offload(model, engine=LLAMA) == ()
@@ -3992,7 +4041,7 @@ class TestARefusedDeviceIsAlsoKeptFromTheEngine:
         assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
 
     def test_no_snapshot_means_no_claim(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
 
         assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
 
@@ -4052,7 +4101,7 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
     """
 
     def test_the_read_cache_answers_when_no_snapshot_exists(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
@@ -4070,7 +4119,7 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
         def _boom(_b, engine):
             raise ProviderError("probe wedged")
 
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
@@ -4079,7 +4128,7 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
         assert planning_mod._fleet_backend(engine=LLAMA) is None
 
     def test_a_host_with_no_devices_yields_no_backend(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
@@ -4276,7 +4325,9 @@ class TestATightSplitSizesPerDeviceButLaunchesWithoutARatio:
 
         monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _capture)
         monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _capture)
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
         monkeypatch.setattr(planning_mod, "_weights_bytes", lambda _p: 40 * _GB)
         monkeypatch.setattr(
             planning_mod.engine_params, "resolve_model_path", lambda _r: Path("/m/m.gguf")
@@ -4392,7 +4443,7 @@ class TestProbedDevices:
 
     def test_falls_back_to_the_read_cache(self, monkeypatch) -> None:
         card = _card(8 * _GB)
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server",
             lambda: Path("/bin/llama-server"),
@@ -4408,7 +4459,7 @@ class TestProbedDevices:
         def _boom() -> Path:
             raise ProviderError("no engine binary", provider="llama-server")
 
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
         monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _boom)
         assert planning_mod.probed_devices(engine=LLAMA) == ()
 
@@ -4478,7 +4529,7 @@ class TestTheOneEngineBackendAnswer:
         A surface that read the empty device list instead would call a CUDA box
         whose probe failed a CPU box, which is what a diagnostics export is for.
         """
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
@@ -4534,7 +4585,7 @@ class TestTheOneEngineBackendAnswer:
         def _boom(_b, engine):
             raise ProviderError("probe wedged")
 
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
