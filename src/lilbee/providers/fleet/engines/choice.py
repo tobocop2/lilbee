@@ -121,6 +121,15 @@ def engines_loading(fmt: str, installed: InstalledEngines) -> list[EngineName]:
     return [name for name, formats in installed.items() if fmt in formats]
 
 
+def _candidates(fmt: str, installed: InstalledEngines, role: WorkerRole | None) -> list[EngineName]:
+    """The installed engines that load *fmt* and serve *role*."""
+    return [name for name in engines_loading(fmt, installed) if _serves(name, role)]
+
+
+def _choose_hint(names: list[EngineName]) -> str:
+    return f"Choose {' or '.join(names)} with lilbee engine use or lilbee engine prefer."
+
+
 def _by_default(
     fmt: ModelFormat,
     host: HostFacts,
@@ -132,7 +141,12 @@ def _by_default(
     default = _default(fmt, host, installed, role)
     if default is not None:
         return EngineChoice(default, None, None)
-    text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
+    candidates = _candidates(fmt, installed, role)
+    if candidates:
+        text = f"No engine is chosen by default for the {fmt} format{of_model}. "
+        text += _choose_hint(candidates)
+    else:
+        text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
     return EngineChoice(None, NoticeKind.NONE, f"For {role.value}: {text}" if role else text)
 
 
@@ -174,8 +188,14 @@ def choose_engine(
         reason = f"{subject} does not serve this role."
     default = _default(fmt, host, installed, role)
     if default is None:
+        candidates = _candidates(fmt, installed, role)
         left = "serves this role" if loads else f"loads the {fmt} format"
-        return EngineChoice(None, kind, f"{reason} No installed engine {left}.")
+        tail = (
+            f"No engine is chosen by default. {_choose_hint(candidates)}"
+            if candidates
+            else f"No installed engine {left}."
+        )
+        return EngineChoice(None, kind, f"{reason} {tail}")
     if loads and kind is NoticeKind.PREFERRED_UNUSABLE:
         # A preference that skips a role leaves it on the next engine without a notice.
         return EngineChoice(default, None, None)
@@ -226,7 +246,7 @@ def _is_installed(name: EngineName, adapter: EngineAdapter, store: EngineStore) 
     if adapter.bundled:
         return True
     try:
-        if not any(build.engine == name.value for build in store.installed()):
+        if not (store.root / name.value).is_dir():
             return False
         lock = pin_lock(adapter.pin_record())
         return store.complete_build(lock) is not None
