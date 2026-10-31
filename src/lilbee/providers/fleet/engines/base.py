@@ -72,14 +72,21 @@ class RequestProfile:
     """The name of the engine's server in error messages."""
     context_overflow: re.Pattern[str]
     """Matches a 400 body that reports a prompt past the context window."""
-    batch_overflow: re.Pattern[str]
-    """Matches a 500 body that reports an input past the physical batch."""
+    batch_overflow: re.Pattern[str] | None
+    """Matches a 500 body that reports an input past the physical batch, or None."""
     unreadable_embedding_hint: str
     """What to tell the user when embedding vectors do not decode."""
     reasoning_field: str
     """The response field that carries reasoning text apart from the answer."""
     rerank_path: str | None = None
     """The route that scores a query against texts, or None to rank through embeddings."""
+    batch_limit: int | None = None
+    """The most inputs one embed or rerank request may hold, or None for the client default.
+
+    The launch argv of a managed server is built from this figure.
+    """
+    batch_count_refusal: re.Pattern[str] | None = None
+    """Matches an error body that refuses a request for holding too many inputs, or None."""
 
 
 class EngineAdapter(Protocol, Hashable):

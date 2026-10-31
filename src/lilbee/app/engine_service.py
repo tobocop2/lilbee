@@ -40,7 +40,7 @@ from lilbee.providers.fleet.engines.choice import (
     engines_loading,
     installed_engines,
 )
-from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
 from lilbee.retrieval.canary_probe import embedder_trigger
 
 log = logging.getLogger(__name__)
@@ -321,7 +321,15 @@ def use_for_role(
         raise EngineRefusedError(
             f"The {role} model is {current}, not {model}. Choose the engine for {current}."
         )
+    if name != AUTO:
+        _require_serves(_engine_name(name), role)
     return use(model, name, confirmed)
+
+
+def _require_serves(name: EngineName, role: WorkerRole) -> None:
+    adapter = choice.ADAPTERS.get(name)
+    if adapter is not None and role not in adapter.served_roles:
+        raise EngineRefusedError(unserved_role_message(name, role, adapter.served_roles))
 
 
 def use(model: str, name: str, confirmed: bool = False) -> str:

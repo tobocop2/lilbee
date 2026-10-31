@@ -18,6 +18,7 @@ import pytest
 
 from lilbee.providers.base import ProviderError, TokenUsage
 from lilbee.providers.fleet.client import (
+    _RERANK_PAIR_SEPARATOR,
     ChatDeadlineError,
     LlamaServerClient,
     _first_token_top_logprobs,
@@ -2962,7 +2963,37 @@ def test_rerank_with_route_posts_query_and_texts_and_orders_scores_by_index() ->
 
     scores = _no_route_client(handler, rerank_path="/rerank").rerank("q", ["alpha", "beta"])
     assert scores == [0.1, 0.9]
-    assert seen == [("/rerank", {"query": "q", "texts": ["alpha", "beta"]})]
+    assert seen == [("/upstream/m/rerank", {"query": "q", "texts": ["alpha", "beta"]})]
+
+
+def test_rerank_with_route_splits_candidates_at_the_batch_limit() -> None:
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        texts = json.loads(request.content)["texts"]
+        sizes.append(len(texts))
+        return httpx.Response(
+            200, json=[{"index": i, "score": float(text)} for i, text in enumerate(texts)]
+        )
+
+    candidates = [str(i) for i in range(5)]
+    scores = _no_route_client(handler, rerank_path="/rerank", batch_limit=2).rerank("q", candidates)
+    assert sizes == [2, 2, 1]
+    assert scores == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+def test_rerank_through_embeddings_splits_pairs_at_the_batch_limit() -> None:
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        inputs = json.loads(request.content)["input"]
+        sizes.append(len(inputs))
+        return httpx.Response(200, json=_embed_body([[float(len(text))] for text in inputs]))
+
+    candidates = ["a" * n for n in range(1, 6)]
+    scores = _no_route_client(handler, batch_limit=2).rerank("", candidates)
+    assert sizes == [2, 2, 1]
+    assert scores == [float(len(f"{_RERANK_PAIR_SEPARATOR}{c}")) for c in candidates]
 
 
 def test_rerank_with_route_refuses_an_answer_missing_a_candidate() -> None:

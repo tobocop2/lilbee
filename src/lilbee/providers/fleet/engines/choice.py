@@ -20,6 +20,7 @@ from lilbee.providers.fleet.engine_store import (
 from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -31,7 +32,9 @@ _ARM64 = "arm64"
 LIST_HINT = "Run lilbee engine list to see the installed engines."
 
 # The adapters this build ships, by engine name.
-ADAPTERS: Mapping[EngineName, EngineAdapter] = {EngineName(a.name): a for a in (LLAMA, IK_LLAMA)}
+ADAPTERS: Mapping[EngineName, EngineAdapter] = {
+    EngineName(a.name): a for a in (LLAMA, IK_LLAMA, TEI)
+}
 
 # What each installed engine loads: the ``formats`` of its adapter.
 InstalledEngines = Mapping[EngineName, Collection[str]]
