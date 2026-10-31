@@ -94,6 +94,19 @@ def log_engine_launch(
     )
 
 
+def log_role_launches(
+    launches: Iterable[InstanceLaunch],
+    *,
+    engines: Mapping[WorkerRole, EngineAdapter],
+    owner_pid: int | None = None,
+) -> None:
+    """Log each launch with the engine of its role; a role with no engine now logs nothing."""
+    for launch in launches:
+        engine = engines.get(launch.role)
+        if engine is not None:
+            log_engine_launch(launch, engine=engine, owner_pid=owner_pid)
+
+
 def _engine_id(launch: InstanceLaunch, engine: EngineAdapter) -> str:
     """*launch*'s binary with the engine build, backend, and probed devices."""
     devices = probed_devices(engine)
@@ -3030,6 +3043,14 @@ def _placement_or_auto(
 
 
 @dataclass(frozen=True)
+class NoEngineRole:
+    """A configured role whose model no installed engine loads, and why."""
+
+    model: str
+    notice: str
+
+
+@dataclass(frozen=True)
 class ResolvedPlacement:
     """Devices + resolved instance plans + model refs for the placement view."""
 
@@ -3052,10 +3073,16 @@ class ResolvedPlacement:
     # The backend the engine selected, which no surface may infer from ``devices``:
     # an empty list is a CPU host and a failed probe alike.
     engine_backend: EngineBackend = EngineBackend.UNKNOWN
+    # Configured roles with no engine, left out of the plan (role -> model and notice).
+    skipped_no_engine: dict[WorkerRole, NoEngineRole] = field(default_factory=dict)
 
 
 def resolve_placement_plan(
-    placement: PlacementSpec | None, *, engine: EngineAdapter, fall_back_to_auto: bool = False
+    placement: PlacementSpec | None,
+    *,
+    engines: Mapping[WorkerRole, EngineAdapter],
+    no_engine_notices: Mapping[WorkerRole, str] | None = None,
+    fall_back_to_auto: bool = False,
 ) -> ResolvedPlacement:
     """Probe devices and resolve the auto-or-manual placement, without launching.
 
@@ -3068,10 +3095,10 @@ def resolve_placement_plan(
     than the plan snapshot, so borrowing the snapshot's backend would pair a live
     device list with a backend read at fleet build.
     """
+    engine = _snapshot_engine(engines)
     binary = engine.binary()
     reading = _read_device_cache.get(binary, engine)
     devices = reading.devices
-    engines = engines_for_all_roles(engine)
     unified_budget = _unified_memory_budget(devices, engine)
     inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
         None,
@@ -3099,6 +3126,10 @@ def resolve_placement_plan(
         spec_applied=spec_applied,
         tight_roles=dict(resolved.tight_roles),
         engine_backend=reading.backend,
+        skipped_no_engine={
+            role: NoEngineRole(ref, (no_engine_notices or {}).get(role, ""))
+            for role, ref in _roles_without_engine(None, engines).items()
+        },
     )
 
 
@@ -3145,6 +3176,13 @@ def _log_refused_roles(
     unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
     charges = {model.role: model.est_vram_bytes for model in inputs}
     largest_usable = max(capacity.values(), default=0) * usable_vram_fraction()
+    on_cards = [role for role in placement.unplaceable_roles if role in charges]
+    fits_alone = (
+        _roles_that_fit_alone(on_cards, model_refs, engines, inputs, capacity)
+        if unified_budget is None
+        else set()
+    )
+    room = _room_beside_placed(placement, charges, capacity)
     for role in placement.unplaceable_roles:
         engine = engines[role].name
         model = f"{model_refs[role]} ({engine})" if mixed else model_refs[role]
@@ -3164,7 +3202,7 @@ def _log_refused_roles(
                 len(devices),
                 engine,
             )
-        elif charges[role] > largest_usable:
+        elif role not in fits_alone:
             log.warning(
                 "%s model %s needs %.1f GiB, more than any one GPU can hold (%.1f GiB "
                 "usable), and no split across the GPUs holds it, so it will not be "
@@ -3175,12 +3213,60 @@ def _log_refused_roles(
                 largest_usable / 1024**3,
             )
         else:
+            others = ", ".join(sorted({inst.role.value for inst in placement.instances}))
             log.warning(
-                "%s model %s does not fit beside the other models in GPU memory and will "
-                "not be served; free up GPU memory or use a smaller model.",
+                "%s model %s needs %.1f GiB, but the GPU with the most room has %.1f GiB "
+                "left beside the other models (%s), short by %.1f GiB, so it will not be served. "
+                "Use a smaller model for %s or for one of those.",
                 role.value,
                 model,
+                charges[role] / 1024**3,
+                room / 1024**3,
+                others,
+                max(charges[role] - room, 0) / 1024**3,
+                role.value,
             )
+
+
+def _roles_that_fit_alone(
+    roles: Sequence[WorkerRole],
+    model_refs: dict[WorkerRole, str],
+    engines: Mapping[WorkerRole, EngineAdapter],
+    inputs: list[ModelPlacementInput],
+    capacity: dict[int, int],
+) -> set[WorkerRole]:
+    """The roles of *roles* that empty cards would serve, alone or split."""
+    estimate_peak = _peak_estimator(model_refs, engines)
+    by_role = {model.role: model for model in inputs}
+    return {
+        role
+        for role in roles
+        if not plan_placement(
+            [by_role[role]],
+            list(capacity.items()),
+            estimate_peak=estimate_peak,
+            refuse_oversize=True,
+        ).unplaceable_roles
+    }
+
+
+def _room_beside_placed(
+    placement: Placement, charges: dict[WorkerRole, int], capacity: dict[int, int]
+) -> float:
+    """Usable bytes left on the GPU with the most room after the placed roles."""
+    held: dict[int, float] = dict.fromkeys(capacity, 0.0)
+    group_peak: dict[int, float] = dict.fromkeys(capacity, 0.0)
+    for inst in placement.instances:
+        for device in inst.devices:
+            share = charges[inst.role] / len(inst.devices)
+            if inst.role in placement.co_tenants:
+                group_peak[device] = max(group_peak[device], share)
+            else:
+                held[device] += share
+    for device, peak in group_peak.items():
+        held[device] += peak
+    usable = usable_vram_fraction()
+    return max((cap * usable - held[idx] for idx, cap in capacity.items()), default=0.0)
 
 
 def _log_placement_findings(
@@ -3400,11 +3486,6 @@ def _launched_roles(engines: Mapping[WorkerRole, EngineAdapter]) -> tuple[Worker
         if (role not in engines or role in engines[role].served_roles)
         and (role is not WorkerRole.VISION or vision_role_wanted(str(cfg.vision_model)))
     )
-
-
-def engines_for_all_roles(engine: EngineAdapter) -> dict[WorkerRole, EngineAdapter]:
-    """The engine mapping that gives *engine* every role."""
-    return dict.fromkeys(ROLE_REGISTRY, engine)
 
 
 def _snapshot_engine(engines: Mapping[WorkerRole, EngineAdapter]) -> EngineAdapter:

@@ -25,7 +25,14 @@ from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, Memo
 from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, WorkerRole
-from tests._fleet_engines import CardEngine, Role, cards_of, model_file, prepare_host
+from tests._fleet_engines import (
+    CardEngine,
+    Role,
+    cards_of,
+    engines_for_all_roles,
+    model_file,
+    prepare_host,
+)
 from tests.conformance.fake_adapter import FakeAdapter
 from tests.test_fleet_one_engine_cards import GOLDEN, SCENARIOS, run_scenario
 
@@ -133,10 +140,12 @@ def _m0(model: str) -> str:
     )
 
 
-def _m1(model: str) -> str:
+def _m1(model: str, need: float, room: float, others: str) -> str:
     return (
-        f"{model} does not fit beside the other models in GPU memory and will not be "
-        "served; free up GPU memory or use a smaller model."
+        f"{model} needs {need:.1f} GiB, but the GPU with the most room has {room:.1f} GiB "
+        f"left beside the other models ({others}), short by {max(need - room, 0):.1f} GiB, "
+        f"so it will not be served. Use a smaller model for {model.split()[0]} or for one of "
+        "those."
     )
 
 
@@ -189,7 +198,9 @@ class TestMixedPlanOnOneMemoryPool:
         if unified:
             assert _m0(model) in _warnings(caplog)
         else:
-            assert _m1(model) in _warnings(caplog)
+            need, other_need = (9, 3) if role is WorkerRole.CHAT else (3, 9)
+            others = "embed" if role is WorkerRole.CHAT else "chat"
+            assert _m1(model, need, 9 - other_need, others) in _warnings(caplog)
         assert "tight" not in _warnings(caplog)
 
     def test_a_role_that_fits_alone_stays_served_beside_one_that_never_fits(
@@ -245,7 +256,20 @@ class Row:
         model = f"{role.value} model org/repo/{model_file(role)} ({engine})"
         need = next(r.gib for r in self.roles if r.role is role)
         usable = max(self.cards) * 0.9
-        return _m2(model, need, usable) if need > usable else _m1(model)
+        spans = role is WorkerRole.CHAT and self.chat_spans and need <= sum(self.cards) * 0.9
+        if need > usable and not spans:
+            return _m2(model, need, usable)
+        held = [0.0] * len(self.cards)
+        for (other, _replica), on in self.served.items():
+            charge = next(r.gib for r in self.roles if r.role is other)
+            for card in on:
+                if other in self.group:
+                    held[card] = max(held[card], charge / len(on))
+                else:
+                    held[card] += charge / len(on)
+        room = max(cap * 0.9 - used for cap, used in zip(self.cards, held, strict=True))
+        others = ", ".join(sorted({other.value for other, _ in self.served}))
+        return _m1(model, need, room, others)
 
 
 C, E, R, V = WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION
@@ -305,6 +329,20 @@ _T_ROWS = {
         chat_spans=True,
     ),
     "T19": Row((24, 8), (Role(C, 12), Role(E, 2)), {(E, 0): (0,), (C, 0): (0,)}),
+    "T20": Row(
+        (8, 8),
+        (Role(C, 10), Role(E, 6), Role(R, 6)),
+        {(E, 0): (0,), (R, 0): (1,)},
+        frozenset({C}),
+        chat_spans=True,
+    ),
+    "T21": Row(
+        (8,),
+        (Role(E, 0.3), Role(C, 7), Role(V, 7)),
+        {(C, 0): (0,), (V, 0): (0,)},
+        frozenset({E}),
+        group=frozenset({C, V}),
+    ),
 }
 
 
@@ -388,7 +426,7 @@ class TestMixedPlanAcrossCards:
             "engine-a", tmp_path / "engine-a-server", row.roles, cards_of(row.cards)
         )
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
-            plan = planning.plan_all_launches(engines=planning.engines_for_all_roles(engine))
+            plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
         assert WorkerRole.CHAT in {launch.role for launch in plan.launches}
         assert "Memory is tight for the chat model" in _warnings(caplog)
         assert "will not be served" not in _warnings(caplog)
@@ -544,7 +582,7 @@ class TestMixedPlanPins:
         prepare_host(monkeypatch, tmp_path, _PAIR, 64 * _GIB)
         engine = CardEngine("engine-a", tmp_path / "a", _PAIR, cards_of((8, 8), "Vulkan"))
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
-            plan = planning.plan_all_launches(engines=planning.engines_for_all_roles(engine))
+            plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
         assert {launch.role for launch in plan.launches} == {C, E}
         assert "will not be served" not in _warnings(caplog)
 
@@ -751,7 +789,7 @@ class TestOneEngineKeepsTheBaseRule:
         device = _host(monkeypatch, tmp_path, unified=False, total=8 * _GIB)
         chat, _ = _pair(tmp_path, device, 12, 2)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
-            plan = planning.plan_all_launches(engines=planning.engines_for_all_roles(chat))
+            plan = planning.plan_all_launches(engines=engines_for_all_roles(chat))
         assert {launch.role for launch in plan.launches} == {WorkerRole.EMBED}
         assert "does not fit" not in _warnings(caplog)
         assert f"Memory is tight for the chat model {cfg.chat_model}:" in _warnings(caplog)
@@ -763,7 +801,7 @@ class TestOneEngineKeepsTheBaseRule:
         device = _host(monkeypatch, tmp_path, unified=True, total=8 * _GIB)
         chat, _ = _pair(tmp_path, device, 20, 1)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
-            planning.plan_all_launches(engines=planning.engines_for_all_roles(chat))
+            planning.plan_all_launches(engines=engines_for_all_roles(chat))
         assert (
             f"chat model {cfg.chat_model} does not fit available memory and will not be served"
         ) in _warnings(caplog)

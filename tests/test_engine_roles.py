@@ -105,7 +105,11 @@ def test_placement_and_the_book_give_one_answer_after_a_config_change(
     book = EngineBook(config)
     monkeypatch.setattr(placement, "cfg", config)
     config.chat_model = MLX_REF
-    assert placement._planning_engine() is book.for_role(WorkerRole.CHAT).adapter is MLX_ENGINE
+    assert (
+        placement._planning_engines().adapters[WorkerRole.CHAT]
+        is book.for_role(WorkerRole.CHAT).adapter
+        is MLX_ENGINE
+    )
 
 
 @pytest.mark.parametrize("mlx_role", ALL_ROLES)
@@ -113,7 +117,9 @@ def test_placement_sizes_with_the_chat_engine(
     monkeypatch: pytest.MonkeyPatch, mlx_role: WorkerRole
 ) -> None:
     monkeypatch.setattr(placement, "cfg", _config(mlx_role))
-    assert _tag(placement._planning_engine()) == _expected(WorkerRole.CHAT, mlx_role)
+    assert _tag(placement._planning_engines().adapters[WorkerRole.CHAT]) == _expected(
+        WorkerRole.CHAT, mlx_role
+    )
 
 
 @pytest.mark.parametrize("mlx_role", ALL_ROLES)
@@ -418,21 +424,27 @@ def test_a_missing_engine_is_a_provider_error() -> None:
     assert issubclass(NoEngineError, ProviderError)
 
 
-def test_the_gpu_stream_route_answers_a_missing_engine_with_the_text(
+def _assert_chat_is_reported_and_embed_is_planned(skipped: Any, not_installed: Any) -> None:
+    assert [(s["role"], s["model"]) for s in skipped] == [("chat", MLX_REF)]
+    assert _NO_MLX_TEXT in skipped[0]["notice"]
+    assert "Run lilbee engine list" in skipped[0]["notice"]
+    assert [(s["role"], s["model"]) for s in not_installed] == [("embed", GGUF_REF)]
+
+
+def test_the_placement_read_reports_the_role_with_no_engine_and_plans_the_others(
     chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from lilbee.server.routes.placement import gpu_stats_stream_route
-    from tests._litestar_test_client import create_test_client
+    from lilbee.app import placement
 
     monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
-    with create_test_client([gpu_stats_stream_route]) as client:
-        response = client.get("/api/gpus/stream")
-    assert response.status_code == 503
-    assert _NO_MLX_TEXT in response.text
-    assert "Traceback" not in response.text
+    view = placement.get_placement()
+    assert [(s.role, s.model) for s in view.skipped_no_engine] == [(WorkerRole.CHAT, MLX_REF)]
+    assert _NO_MLX_TEXT in view.skipped_no_engine[0].notice
+    assert [(s.role, s.model) for s in view.skipped_not_installed] == [(WorkerRole.EMBED, GGUF_REF)]
+    assert WorkerRole.CHAT not in {role.role for role in view.roles}
 
 
-def test_the_placement_command_prints_the_text_for_a_missing_engine(
+def test_the_placement_command_prints_the_notice_and_exits_clean(
     chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from typer.testing import CliRunner
@@ -441,19 +453,120 @@ def test_the_placement_command_prints_the_text_for_a_missing_engine(
 
     monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
     result = CliRunner().invoke(placement_app, ["show"])
-    assert result.exit_code == 1
-    assert _NO_MLX_TEXT in result.output
+    assert result.exit_code == 0
+    assert "chat: For chat: No installed engine loads the mlx format of org/repo#mlx" in " ".join(
+        result.output.split()
+    )
+    assert "Run lilbee engine list to see the installed engines." in " ".join(result.output.split())
+    assert f"{GGUF_REF} not downloaded" in " ".join(result.output.split())
     assert "Traceback" not in result.output
 
 
-def test_the_mcp_placement_tool_returns_the_text_for_a_missing_engine(
+def test_the_mcp_placement_tool_returns_the_notice_and_plans_the_others(
     chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from lilbee.mcp_server import get_placement_tool
 
     monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
     result = get_placement_tool()
-    assert _NO_MLX_TEXT in result["error"]
+    assert "error" not in result
+    _assert_chat_is_reported_and_embed_is_planned(
+        result["skipped_no_engine"], result["skipped_not_installed"]
+    )
+
+
+def test_the_placement_route_returns_the_notice_with_status_200(
+    chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.server.routes.placement import placement_route
+    from tests._litestar_test_client import create_test_client
+
+    monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
+    with create_test_client([placement_route]) as client:
+        response = client.get("/api/placement")
+    assert response.status_code == 200
+    body = response.json()
+    _assert_chat_is_reported_and_embed_is_planned(
+        body["skipped_no_engine"], body["skipped_not_installed"]
+    )
+
+
+def test_the_gpu_stream_route_starts_while_one_role_has_no_engine(
+    chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.server import handlers
+    from lilbee.server.routes.placement import gpu_stats_stream_route
+    from tests._litestar_test_client import create_test_client
+
+    async def _one_event(devices: Any) -> Any:
+        yield 'event: gpu_stats\ndata: {"gpus": []}\n\n'
+
+    monkeypatch.setattr(handlers, "gpu_stats_stream", _one_event)
+    monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
+    with create_test_client([gpu_stats_stream_route]) as client:
+        response = client.get("/api/gpus/stream")
+    assert response.status_code == 200
+
+
+_NO_ENGINE_ANYWHERE = "No engine is assigned to any role, so there is nothing to plan."
+
+
+@pytest.fixture
+def no_role_has_an_engine(chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The same container, with every configured role on a format no installed engine loads."""
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "embedding_model", MLX_REF)
+    monkeypatch.setattr(cfg, "vision_model", MLX_REF)
+    monkeypatch.setattr(cfg, "reranker_model", MLX_REF)
+    monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
+    return chat_without_engine
+
+
+def test_the_placement_command_refuses_when_no_role_has_an_engine(
+    no_role_has_an_engine: Any,
+) -> None:
+    from typer.testing import CliRunner
+
+    from lilbee.cli.placement import placement_app
+
+    result = CliRunner().invoke(placement_app, ["show"])
+    assert result.exit_code == 1
+    assert _NO_ENGINE_ANYWHERE in " ".join(result.output.split())
+    assert "Traceback" not in result.output
+
+
+def test_the_mcp_placement_tool_refuses_when_no_role_has_an_engine(
+    no_role_has_an_engine: Any,
+) -> None:
+    from lilbee.mcp_server import get_placement_tool
+
+    assert _NO_ENGINE_ANYWHERE in get_placement_tool()["error"]
+
+
+def test_the_placement_route_answers_503_when_no_role_has_an_engine(
+    no_role_has_an_engine: Any,
+) -> None:
+    from lilbee.server.routes.placement import placement_route
+    from tests._litestar_test_client import create_test_client
+
+    with create_test_client([placement_route]) as client:
+        response = client.get("/api/placement")
+    assert response.status_code == 503
+    assert _NO_ENGINE_ANYWHERE in response.text
+
+
+def test_the_gpu_stream_route_answers_503_when_no_role_has_an_engine(
+    no_role_has_an_engine: Any,
+) -> None:
+    from lilbee.server.routes.placement import gpu_stats_stream_route
+    from tests._litestar_test_client import create_test_client
+
+    with create_test_client([gpu_stats_stream_route]) as client:
+        response = client.get("/api/gpus/stream")
+    assert response.status_code == 503
+    assert _NO_ENGINE_ANYWHERE in response.text
+    assert "Traceback" not in response.text
 
 
 @pytest.fixture

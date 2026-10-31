@@ -16,9 +16,11 @@ from typing import Any
 import httpx
 import pytest
 
+from lilbee.app.engine_choice import BookReading, EngineBook
 from lilbee.catalog.compat import classify
 from lilbee.catalog.types import ModelCompat
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import WarningCode
 from lilbee.data.ingest import adaptive
 from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -26,10 +28,12 @@ from lilbee.providers.fleet import ctx as fleet_ctx
 from lilbee.providers.fleet import planning, replicas
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
+from tests._fleet_engines import engines_for_all_roles
 from tests.conformance.fake_adapter import FakeAdapter
 
 SPY_META = {"architecture": "spyarch", "context_length": "4096", "expert_count": "8"}
@@ -37,6 +41,11 @@ SPY_ENV = {"SPY_RUNTIME": "1"}
 SPY_EXTRAS = {"checkEndpoint": "/spy-live"}
 SPY_DEVICE = FleetDevice("CUDA", 3, "spy-gpu", 8 << 30, 8 << 30)
 BYTES_PER_CTX = 1024
+
+
+def _mixed_book(spy: Any) -> dict[WorkerRole, Any]:
+    """Chat on the spy engine and every other role on llama.cpp: two roles on two adapters."""
+    return {**engines_for_all_roles(LLAMA), WorkerRole.CHAT: spy}
 
 
 class SpyEngine(FakeAdapter):
@@ -223,20 +232,20 @@ class TestDeviceReads:
         assert planning.resolve_devices(spy.binary(), spy) == [SPY_DEVICE]
 
     def test_resolve_placement_plan_reports_the_engine_devices(self, spy: SpyEngine) -> None:
-        resolved = planning.resolve_placement_plan(None, engine=spy)
+        resolved = planning.resolve_placement_plan(None, engines=engines_for_all_roles(spy))
         assert resolved.engine_backend is EngineBackend.CUDA
         assert [d.name for d in resolved.devices] == ["spy-gpu"]
 
 
 class TestPlansAskTheEngine:
     def test_plan_all_launches_probes_the_engine(self, spy: SpyEngine) -> None:
-        planning.plan_all_launches(engines=planning.engines_for_all_roles(spy))
+        planning.plan_all_launches(engines=engines_for_all_roles(spy))
         assert spy.probed
         assert set(spy.probed) == {spy.binary()}
 
     def test_plan_all_launches_needs_the_engine_binary(self, spy: SpyEngine) -> None:
         with pytest.raises(ProviderError, match="spy binary missing"):
-            planning.plan_all_launches(engines=planning.engines_for_all_roles(_binaryless(spy)))
+            planning.plan_all_launches(engines=engines_for_all_roles(_binaryless(spy)))
 
     def test_plan_launches_builds_the_engine_argv(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
@@ -247,7 +256,7 @@ class TestPlansAskTheEngine:
             spy.binary(),
             {SPY_DEVICE.index: SPY_DEVICE},
             [SPY_DEVICE],
-            engines=planning.engines_for_all_roles(spy),
+            engines=engines_for_all_roles(spy),
         )
         assert plan.launches
         assert all(launch.argv[0] == str(spy.binary()) for launch in plan.launches)
@@ -359,7 +368,7 @@ class TestMemoryEstimates:
 
     def test_peak_estimator_returns_the_engine_per_device_shares(self, spy: SpyEngine) -> None:
         estimate = planning._peak_estimator(
-            {WorkerRole.EMBED: "embed-ref"}, planning.engines_for_all_roles(spy)
+            {WorkerRole.EMBED: "embed-ref"}, engines_for_all_roles(spy)
         )
         shares = estimate(WorkerRole.EMBED, (1, 1))
         assert spy.sized[-1].tensor_split == (1, 1)
@@ -367,9 +376,9 @@ class TestMemoryEstimates:
         assert spy.sized[-1].expert_offload  # the engine's metadata names experts
 
     def test_peak_estimator_sizes_the_window_from_the_engine_metadata(self, spy: SpyEngine) -> None:
-        planning._peak_estimator(
-            {WorkerRole.EMBED: "embed-ref"}, planning.engines_for_all_roles(spy)
-        )(WorkerRole.EMBED, (1, 1))
+        planning._peak_estimator({WorkerRole.EMBED: "embed-ref"}, engines_for_all_roles(spy))(
+            WorkerRole.EMBED, (1, 1)
+        )
         model_path = spy.sized[-1].model_path
         from_header = engine_params.resolve_embed_ctx(SPY_META, model_path)
         assert spy.sized[-1].ctx == planning.apply_ctx_downshift(WorkerRole.EMBED, from_header)
@@ -377,7 +386,7 @@ class TestMemoryEstimates:
 
     def test_split_ctx_objective_targets_the_engine_window(self, spy: SpyEngine) -> None:
         fitter, target = planning._chat_split_ctx_objective(
-            {WorkerRole.CHAT: "chat-ref"}, planning.engines_for_all_roles(spy)
+            {WorkerRole.CHAT: "chat-ref"}, engines_for_all_roles(spy)
         )
         assert fitter is not None
         assert spy.meta_paths
@@ -525,22 +534,26 @@ class TestProvider:
 
         seen: dict[str, list[Any]] = {"probe": [], "plan": [], "refresh": [], "swap": []}
         launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(_mixed_book(spy), {}))
 
         class _Swap:
             bound = False
             log_path = tmp_path / "log"
 
-            def __init__(self, work_dir: Path, group: object, engine: Any) -> None:
-                seen["swap"].append(engine)
+            def __init__(self, work_dir: Path, group: object) -> None:
+                pass
 
-            def start(self, launches: list[Any], **kwargs: object) -> None:
-                return None
+            def start(self, launches: list[Any], *, engines: Any, **kwargs: object) -> None:
+                seen["swap"].append(engines)
 
             def endpoint(self) -> str:
                 return "http://127.0.0.1:1"
 
             def shutdown(self) -> None:
                 return None
+
+            def health_warnings(self) -> list[Any]:
+                return []
 
         monkeypatch.setattr(prov_mod, "SwapManager", _Swap)
         monkeypatch.setattr(prov_mod, "reap_stale", lambda *args, **kwargs: None)
@@ -567,8 +580,8 @@ class TestProvider:
         provider = FleetProvider(engine=spy)
         assert provider._plan_and_spawn(tmp_path)
         assert seen["probe"] == [spy]
-        assert seen["plan"] == [planning.engines_for_all_roles(spy)]
-        assert seen["swap"] == [spy]
+        assert seen["plan"] == [_mixed_book(spy)]
+        assert seen["swap"] == [_mixed_book(spy)]
 
     def test_reload_replans_and_respawns_with_the_provider_engine(
         self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -580,8 +593,54 @@ class TestProvider:
         provider._reload_pass()
         assert seen["refresh"] == [spy]
         assert seen["probe"] == [spy]  # nothing was running, so the reload re-captures the box
-        assert seen["plan"] == [planning.engines_for_all_roles(spy)]
-        assert seen["swap"] == [spy]
+        assert seen["plan"] == [_mixed_book(spy)]
+        assert seen["swap"] == [_mixed_book(spy)]
+
+    def _no_engine_plan(
+        self, monkeypatch: pytest.MonkeyPatch, spy: SpyEngine, model_file: Path
+    ) -> None:
+        """A book whose chat role has no engine, and a plan that leaves chat out."""
+        launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
+        monkeypatch.setattr(
+            EngineBook,
+            "read",
+            lambda self: BookReading(
+                {WorkerRole.EMBED: spy},
+                {WorkerRole.CHAT: "For chat: no engine loads org/repo#mlx."},
+            ),
+        )
+        monkeypatch.setattr(
+            planning,
+            "plan_all_launches",
+            lambda *, engines: planning.FleetPlan(
+                (launch,), skipped_no_engine={WorkerRole.CHAT: "org/repo#mlx"}
+            ),
+        )
+
+    def test_build_reports_a_role_with_no_engine_as_a_health_warning(
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
+        self._no_engine_plan(monkeypatch, spy, model_file)
+        provider = FleetProvider(engine=spy)
+        assert provider._plan_and_spawn(tmp_path)
+        warnings = provider.health_warnings()
+        assert [
+            (w.code, w.message) for w in warnings if w.code is WarningCode.ROLE_WITHOUT_ENGINE
+        ] == [(WarningCode.ROLE_WITHOUT_ENGINE, "For chat: no engine loads org/repo#mlx.")]
+
+    def test_reload_reports_a_role_with_no_engine_as_a_health_warning(
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
+        self._no_engine_plan(monkeypatch, spy, model_file)
+        provider = FleetProvider(engine=spy)
+        monkeypatch.setattr(provider, "_reload_dir", lambda: tmp_path)
+        monkeypatch.setattr(provider, "_preload_restarted", lambda restarted: None)
+        provider._reload_pass()
+        assert [w.message for w in provider.health_warnings()] == [
+            "For chat: no engine loads org/repo#mlx."
+        ]
 
 
 class TestSelfCheck:
@@ -593,11 +652,11 @@ class TestSelfCheck:
         from lilbee.cli.commands import setup as setup_cmd
 
         class _Swap:
-            def __init__(self, work_dir: Path, group: object, engine: Any) -> None:
-                self.engine = engine
+            def __init__(self, work_dir: Path, group: object) -> None:
+                self.engines: Any = None
 
-            def start(self, launches: list[Any]) -> None:
-                return None
+            def start(self, launches: list[Any], *, engines: Any) -> None:
+                self.engines = engines
 
             def endpoint(self) -> str:
                 return "http://127.0.0.1:1"
@@ -607,7 +666,7 @@ class TestSelfCheck:
         monkeypatch.setattr(swap_manager, "SwapManager", _Swap)
         swap, client, work_dir = setup_cmd._self_check_server(WorkerRole.CHAT, model_file)
         try:
-            assert swap.engine is spy
+            assert swap.engines[WorkerRole.CHAT] is spy
             assert client._profile.label == "fake-engine"
             assert client._profile.reasoning_field == "thoughts"
         finally:
@@ -648,8 +707,6 @@ class TestClientWording:
 
 
 def test_the_spy_differs_from_llama_on_every_member(spy: SpyEngine) -> None:
-    from lilbee.providers.fleet.engines import LLAMA
-
     profile: RequestProfile = spy.request_profile(WorkerRole.CHAT)
     assert profile.label != LLAMA.request_profile(WorkerRole.CHAT).label
     assert spy.runtime_env() != LLAMA.runtime_env()

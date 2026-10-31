@@ -26,7 +26,7 @@ import httpx
 
 from lilbee.catalog import clean_display_name
 from lilbee.core.config import cfg
-from lilbee.core.health_warnings import HealthWarning
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.vectors import Vector
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers import engine_params
@@ -106,6 +106,7 @@ _SHUTDOWN_BUILD_LOCK_WAIT_S = 45.0
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
+    from lilbee.app.engine_choice import BookReading
     from lilbee.providers.base import (
         ChatMessage,
         ChatResult,
@@ -285,13 +286,18 @@ def _bindable_group(
     return (state, launches, pairs) if pairs else None
 
 
+def _no_engine_notices(plan: planning.FleetPlan, reading: BookReading) -> dict[WorkerRole, str]:
+    """The notice of each role *plan* left without an engine, from the reading that made it."""
+    return {role: reading.notices.get(role, "") for role in plan.skipped_no_engine}
+
+
 def _log_adopted_launches(
-    candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]], engine: EngineAdapter
+    candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]],
+    engines: Mapping[WorkerRole, EngineAdapter],
 ) -> None:
     """Name the engine every bound instance now runs on, and the pid that owns it."""
     for _group, state, launches in candidates:
-        for launch in launches:
-            planning.log_engine_launch(launch, engine=engine, owner_pid=state.pid)
+        planning.log_role_launches(launches, engines=engines, owner_pid=state.pid)
 
 
 class _PrimedStream:
@@ -754,7 +760,9 @@ class _EngineDemand(NamedTuple):
     vision_slots: int = 0
 
 
-def _placeable_demand(engine: EngineAdapter) -> _EngineDemand:
+def _placeable_demand(
+    engine: EngineAdapter, engines: Mapping[WorkerRole, EngineAdapter]
+) -> _EngineDemand:
     """Configured (role, model) pairs a fresh plan would serve, and the chat window.
 
     A configured role is wanted only when the planner would place it. The plan
@@ -766,14 +774,13 @@ def _placeable_demand(engine: EngineAdapter) -> _EngineDemand:
     binary resolves: nothing is placeable, so the ladder serves nothing.
     """
     from lilbee.providers.fleet.planning import (
-        engines_for_all_roles,
         placeable_total_vram,
         plan_all_launches,
         role_model_placeable,
     )
 
     try:
-        plan = plan_all_launches(engines=engines_for_all_roles(engine))
+        plan = plan_all_launches(engines=engines)
     except ProviderError as exc:
         if exc.kind is ProviderErrorKind.NOT_FOUND:
             return _EngineDemand(set(), 0, {}, {})
@@ -1002,6 +1009,7 @@ class FleetProvider:
         # Launches the last plan refused for an unusable window (role -> reason);
         # read by the warm finalizer and _require_clients.
         self._skipped_unusable_ctx: dict[WorkerRole, str] = {}
+        self._skipped_no_engine: dict[WorkerRole, str] = {}
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -1020,6 +1028,16 @@ class FleetProvider:
         # can block until the reload it requested (or the in-flight one that will
         # run its pending pass) has finished.
         self._reload_done = threading.Condition(self._lock)
+
+    def _engines(self) -> dict[WorkerRole, EngineAdapter]:
+        """The adapter of each role now, read from the engine book at this call."""
+        return self._book_reading().adapters
+
+    def _book_reading(self) -> BookReading:
+        """The engine of each role now, and the notice of each role with none."""
+        from lilbee.app.engine_choice import EngineBook
+
+        return EngineBook(cfg).read()
 
     def _unusable_engine_reason(self) -> str | None:
         """Why no server can start on this host, or None once the engine resolves.
@@ -1077,7 +1095,7 @@ class FleetProvider:
         races an arrival.
         """
         pin = engine_pin()
-        demand = _placeable_demand(self.engine)
+        demand = _placeable_demand(self.engine, self._engines())
         # Record the demand plan's skips before walking the ladder: a bind or an
         # early serve-nothing exit never reaches _plan_and_spawn, and the warm
         # tracker must still be able to say "chat model X is not installed"
@@ -1191,7 +1209,7 @@ class FleetProvider:
             return False
         bound: dict[SwapGroup, tuple[SwapManager, list[InstanceLaunch]]] = {}
         for group, state, launches in candidates:
-            swap = SwapManager(engine_dir, group, self.engine)
+            swap = SwapManager(engine_dir, group)
             if not swap.bind(state):
                 for prior, _launches in bound.values():
                     prior.shutdown()
@@ -1202,7 +1220,7 @@ class FleetProvider:
                 self._adopt_group(group, swap, launches)
                 self._group_dirs[group] = engine_dir
         log.info("Bound to the running engine at %s", engine_dir)
-        _log_adopted_launches(candidates, self.engine)
+        _log_adopted_launches(candidates, self._engines())
         return True
 
     def _reload_dir(self) -> Path:
@@ -1247,7 +1265,8 @@ class FleetProvider:
             # warm tracker and the caller report the real reason instead of a
             # silent never-ready fleet.
             planning.capture_plan_probe(self.engine)
-            plan = planning.plan_all_launches(engines=planning.engines_for_all_roles(self.engine))
+            reading = self._book_reading()
+            plan = planning.plan_all_launches(engines=reading.adapters)
         except ProviderError as exc:
             # Only a genuinely-missing engine binary keeps the quiet no-fleet path;
             # any other planning failure (a wedged GPU probe, an unusable CUDA
@@ -1262,6 +1281,7 @@ class FleetProvider:
         if plan is not None:
             self._skipped_not_installed = dict(plan.skipped_not_installed)
             self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
+            self._skipped_no_engine = _no_engine_notices(plan, reading)
         if plan is None or not plan.launches:
             # No engine binary, or no installed/configured model: serve nothing.
             return False
@@ -1273,8 +1293,13 @@ class FleetProvider:
                 lifetime, data_dir, hold_warm_for_session=self._hold_warm_for_session
             )
             for group, group_launches in by_group.items():
-                swap = SwapManager(data_dir, group, self.engine)
-                swap.start(list(group_launches), ttl_seconds=ttl_seconds, lifetime=lifetime)
+                swap = SwapManager(data_dir, group)
+                swap.start(
+                    list(group_launches),
+                    engines=reading.adapters,
+                    ttl_seconds=ttl_seconds,
+                    lifetime=lifetime,
+                )
                 started[group] = swap
         except BaseException:
             for swap in started.values():
@@ -1541,8 +1566,13 @@ class FleetProvider:
                 warnings.append(warning)
         with self._lock:
             swaps = list(self._swaps.values())
+            no_engine = dict(self._skipped_no_engine)
         for swap in swaps:
             warnings.extend(swap.health_warnings())
+        warnings.extend(
+            HealthWarning(code=WarningCode.ROLE_WITHOUT_ENGINE, message=notice)
+            for notice in no_engine.values()
+        )
         return warnings
 
     def chat_prefill_progress(self) -> tuple[int, int] | None:
@@ -2625,9 +2655,8 @@ class FleetProvider:
                         # Nothing loaded (a resurrect after a failed pass): the box is
                         # clean, so refresh the plan snapshot like a first build would.
                         planning.capture_plan_probe(self.engine)
-                    plan = planning.plan_all_launches(
-                        engines=planning.engines_for_all_roles(self.engine)
-                    )
+                    reading = self._book_reading()
+                    plan = planning.plan_all_launches(engines=reading.adapters)
                 except ProviderError as exc:
                     # Same policy as the initial build: a genuinely-missing engine
                     # binary aborts the reload quietly (nothing to serve), while any
@@ -2642,6 +2671,7 @@ class FleetProvider:
                 # Keep the skip reasons in step with the fresh plan.
                 self._skipped_not_installed = dict(plan.skipped_not_installed)
                 self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
+                self._skipped_no_engine = _no_engine_notices(plan, reading)
                 new = _launches_by_group(plan)
                 # A group restarts when its launches changed OR its running/planned
                 # presence disagrees (covers a group the new plan drops or adds).
@@ -2662,10 +2692,11 @@ class FleetProvider:
                 # Start phase: spawn the changed groups present in the new plan.
                 for group in sorted(changed & set(new), key=lambda g: g.value):
                     group_launches = list(new[group])
-                    swap = SwapManager(reload_dir, group, self.engine)
+                    swap = SwapManager(reload_dir, group)
                     lifetime = _engine_lifetime(reload_dir)
                     swap.start(
                         group_launches,
+                        engines=reading.adapters,
                         ttl_seconds=_warm_ttl_seconds(
                             lifetime,
                             reload_dir,

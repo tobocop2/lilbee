@@ -130,8 +130,8 @@ def test_placement_plans_with_the_adapter_the_chat_role_resolves(
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, marked)  # type: ignore[arg-type]
     seen: list[object] = []
 
-    def _resolve(spec: object, *, engine: object, **kwargs: object) -> None:
-        seen.append(engine)
+    def _resolve(spec: object, *, engines: dict[WorkerRole, object], **kwargs: object) -> None:
+        seen.append(engines[WorkerRole.CHAT])
         raise PlacementError("stop")
 
     monkeypatch.setattr(placement, "resolve_placement_plan", _resolve)

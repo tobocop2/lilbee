@@ -9,8 +9,8 @@ from lilbee.core.config import cfg
 from lilbee.providers import engine_params
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
-from lilbee.providers.fleet.engines.base import MemoryEstimate, MemoryKind
-from lilbee.providers.roles import EngineBackend, WorkerRole
+from lilbee.providers.fleet.engines.base import EngineAdapter, MemoryEstimate, MemoryKind
+from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, WorkerRole
 from tests.conformance.fake_adapter import FakeAdapter
 
 GIB = 1 << 30
@@ -20,6 +20,11 @@ ROLE_FIELDS = {
     WorkerRole.RERANK: "reranker_model",
     WorkerRole.VISION: "vision_model",
 }
+
+
+def engines_for_all_roles(engine: EngineAdapter) -> dict[WorkerRole, EngineAdapter]:
+    """The engine mapping that gives *engine* every role, for tests of one-engine plans."""
+    return dict.fromkeys(ROLE_REGISTRY, engine)
 
 
 def model_file(role: WorkerRole) -> str:

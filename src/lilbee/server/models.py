@@ -850,6 +850,14 @@ class SkippedRoleResponse(BaseModel):
     model: str
 
 
+class SkippedNoEngineResponse(BaseModel):
+    """A configured role left unplaced because no installed engine loads its model."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
 class PlacementResponse(BaseModel):
     """Response for placement read, preview, set, and clear routes."""
 
@@ -859,6 +867,7 @@ class PlacementResponse(BaseModel):
     manual: bool
     spec_json: str | None
     skipped_not_installed: list[SkippedRoleResponse] = []
+    skipped_no_engine: list[SkippedNoEngineResponse] = []
     co_tenants: list[str] = []
     notice: str | None = None
     rejected_spec_json: str | None = None
@@ -888,6 +897,10 @@ class PlacementResponse(BaseModel):
             spec_json=view.spec_json,
             skipped_not_installed=[
                 SkippedRoleResponse(role=s.role, model=s.model) for s in view.skipped_not_installed
+            ],
+            skipped_no_engine=[
+                SkippedNoEngineResponse(role=s.role, model=s.model, notice=s.notice)
+                for s in view.skipped_no_engine
             ],
             co_tenants=[r.value for r in view.co_tenants],
             rejected_spec_json=view.rejected_spec_json,

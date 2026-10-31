@@ -13,9 +13,11 @@ See docs/architecture.md.
 
 from __future__ import annotations
 
+import functools
+import itertools
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import reduce
 from math import gcd
 
@@ -153,6 +155,8 @@ def plan_placement(
         return place
 
     if refuse_oversize:
+        # The search repeats passes over the same roles and splits; one estimate each.
+        estimate_peak = functools.cache(estimate_peak)
         return _place_refusing(models, cards, placer)
 
     remaining = dict(cards)
@@ -206,17 +210,16 @@ def _place_refusing(
 ) -> Placement:
     """Give each role a card or a refusal; a role with no device charge takes no card.
 
-    A second pass, largest role first, replaces the first only when it refuses a
-    strict subset of the roles, so small roles spread over the cards do not block a
-    large one and no role loses its place to a lower rank.
+    The plan refuses the fewest roles. It tries to refuse no role, then each single
+    role, then each pair, and stops at the first set whose removal lets every other
+    role fit. Among sets of the same size it refuses the roles of lowest rank first.
+    With ``n`` roles it makes at most ``2 * 2**n`` packing passes, two orders per set.
     """
     on_cards = [m for m in models if m.est_vram_bytes > 0]
     singles = [_persistent_single(m) for m in on_cards]
-    packed = _pack_refusing(singles, cards, placer, _shared_pool_order)
-    if packed.refused:
-        retry = _pack_refusing(singles, cards, placer, lambda m: (-m.est_vram_bytes,))
-        if set(retry.refused) < set(packed.refused):
-            packed = retry
+    by_priority = sorted(singles, key=_shared_pool_order)
+    by_size = sorted(singles, key=lambda m: -m.est_vram_bytes)
+    packed = _fewest_refusals(by_priority, by_size, cards, placer)
     replicated = [m for m in on_cards if m.replicas > 1]
     elastic = _place_elastic(replicated, packed.instances, packed.remaining, packed.co_tenants)
     unpinned = _place_ungated([m for m in models if m.est_vram_bytes == 0])
@@ -227,20 +230,37 @@ def _place_refusing(
     )
 
 
+def _fewest_refusals(
+    by_priority: list[ModelPlacementInput],
+    by_size: list[ModelPlacementInput],
+    cards: dict[int, float],
+    placer: Callable[[dict[int, float]], Callable[[ModelPlacementInput], _Placed | None]],
+) -> _RefusingPack:
+    """The pack that refuses the fewest roles, the lowest rank first among equals."""
+    lowest_first = list(reversed(by_priority))
+    for count in range(len(by_priority) + 1):
+        for dropped in itertools.combinations(lowest_first, count):
+            for order in (by_priority, by_size):
+                kept = [m for m in order if m not in dropped]
+                packed = _pack_refusing(kept, cards, placer)
+                if not packed.refused:
+                    return replace(packed, refused=[m.role for m in dropped])
+    raise AssertionError("refusing every role always packs")  # pragma: no cover
+
+
 def _pack_refusing(
     singles: list[ModelPlacementInput],
     cards: dict[int, float],
     placer: Callable[[dict[int, float]], Callable[[ModelPlacementInput], _Placed | None]],
-    order: Callable[[ModelPlacementInput], tuple[int, ...]],
 ) -> _RefusingPack:
-    """Charge *singles* in *order* on fresh cards; a role with no room charges nothing."""
+    """Charge *singles* in the order given on fresh cards; a role with no room charges nothing."""
     remaining = dict(cards)
     place = placer(remaining)
     instances: list[InstancePlan] = []
     charges: dict[WorkerRole, dict[int, float]] = {}
     co_tenants: set[WorkerRole] = set()
     refused: list[WorkerRole] = []
-    for model in sorted(singles, key=order):
+    for model in singles:
         placed = place(model)
         if placed is None:
             placed, group = _place_beside_disjoint(model, place, remaining, charges)

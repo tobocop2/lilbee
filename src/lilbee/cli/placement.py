@@ -119,6 +119,15 @@ def _render_view(view: PlacementView) -> None:
             soft_wrap=True,
         )
 
+    for no_engine in view.skipped_no_engine:
+        console.print(
+            Text.assemble(
+                (f"  {no_engine.role.value}: ", theme.WARNING),
+                (no_engine.notice, theme.WARNING),
+            ),
+            soft_wrap=True,
+        )
+
     if view.rejected_spec_json:
         console.print(
             styled(

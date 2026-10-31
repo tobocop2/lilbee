@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import platform
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from lilbee.catalog.refs import model_format
@@ -15,6 +15,7 @@ from lilbee.providers.fleet.engines.choice import (
     EngineAssignment,
     EngineChoice,
     HostFacts,
+    NoEngineError,
     RoleEngine,
     choose_engine,
     installed_engines,
@@ -100,6 +101,14 @@ def engine_for_ref(ref: str, config: Config) -> EngineAdapter:
     return ADAPTERS[_choice_for(config, ref).require()]
 
 
+@dataclass(frozen=True)
+class BookReading:
+    """One read of the book: the adapter of each role with an engine, the notice of each without."""
+
+    adapters: dict[WorkerRole, EngineAdapter]
+    notices: dict[WorkerRole, str]
+
+
 class EngineBook:
     """The engine of each role, read from the config on every call so it is never stale."""
 
@@ -109,6 +118,22 @@ class EngineBook:
     def for_role(self, role: WorkerRole) -> RoleEngine:
         """The engine for *role* now; raises ``NoEngineError`` when none loads its model."""
         return resolve_engines(self._cfg).for_role(role)
+
+    def read(self) -> BookReading:
+        """Every role's adapter now, and the notice of each role that has no engine."""
+        assignment = resolve_engines(self._cfg)
+        adapters: dict[WorkerRole, EngineAdapter] = {}
+        notices: dict[WorkerRole, str] = {}
+        for role, choice in assignment.choices.items():
+            try:
+                adapters[role] = assignment.for_role(role).adapter
+            except NoEngineError:
+                notices[role] = choice.notice or ""
+        return BookReading(adapters, notices)
+
+    def adapters(self) -> dict[WorkerRole, EngineAdapter]:
+        """The adapter of every role that has an engine now; a role with none is left out."""
+        return self.read().adapters
 
     def for_ref(self, ref: str) -> EngineAdapter:
         """The adapter for a pull of *ref*, by the rule a run uses."""

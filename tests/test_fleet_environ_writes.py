@@ -22,6 +22,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import cuda_runtime, gpu_env, gpu_select, planning
 from lilbee.providers.fleet.engines import LLAMA
+from tests._fleet_engines import engines_for_all_roles
 
 SOURCE = Path(planning.__file__).parents[2]
 
@@ -248,7 +249,7 @@ def test_planning_on_a_worker_thread_writes_no_environment(
     result: list[object] = []
     thread = threading.Thread(
         target=lambda: result.append(
-            planning.plan_all_launches(engines=planning.engines_for_all_roles(LLAMA))
+            planning.plan_all_launches(engines=engines_for_all_roles(LLAMA))
         ),
         name="fleet-warm-up",
     )
