@@ -1912,6 +1912,13 @@ def _engine_result(action: Callable[[], BaseModel]) -> dict[str, Any]:
         return _error(str(exc))
     except engine_service.EngineNotAppliedError as exc:
         return {**_error(str(exc)), "code": engine_service.NOT_APPLIED_CODE, "saved": True}
+    except engine_service.EmbedConfirmRequiredError as exc:
+        return {
+            **_error(f"{exc} Pass confirm_embed_change=true to confirm."),
+            "code": engine_service.CONFIRM_CODE,
+            "library": exc.library,
+            "documents": exc.documents,
+        }
 
 
 def _engine_read_refused() -> dict[str, Any] | None:
@@ -1954,25 +1961,31 @@ def engine_roles_tool() -> dict[str, Any]:
 
 
 @_tool_named("engine_use")
-def engine_use_tool(role: WorkerRole, model: str, engine: str) -> dict[str, Any]:
+def engine_use_tool(
+    role: WorkerRole, model: str, engine: str, confirm_embed_change: bool = False
+) -> dict[str, Any]:
     """Choose the engine for the model of a role; engine ``auto`` removes the choice."""
     from lilbee.server.models import EngineChosenResponse
 
     if (refused := _engine_write_refused()) is not None:
         return refused
     return _engine_result(
-        lambda: EngineChosenResponse(engine=engine_service.use_for_role(role, model, engine))
+        lambda: EngineChosenResponse(
+            engine=engine_service.use_for_role(role, model, engine, confirmed=confirm_embed_change)
+        )
     )
 
 
 @_tool_named("engine_prefer")
-def engine_prefer_tool(engine: str) -> dict[str, Any]:
+def engine_prefer_tool(engine: str, confirm_embed_change: bool = False) -> dict[str, Any]:
     """Set the engine for every model with no choice of its own; ``auto`` picks by format."""
     from lilbee.server.models import EngineChosenResponse
 
     if (refused := _engine_write_refused()) is not None:
         return refused
-    return _engine_result(lambda: EngineChosenResponse(engine=engine_service.prefer(engine)))
+    return _engine_result(
+        lambda: EngineChosenResponse(engine=engine_service.prefer(engine, confirm_embed_change))
+    )
 
 
 def build_mcp_server() -> LilbeeMCP:

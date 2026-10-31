@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+from collections.abc import Callable
 from typing import Annotated
 
 import typer
@@ -116,6 +118,30 @@ def _refuse(command: str, exc: Exception) -> typer.Exit:
     return typer.Exit(1)
 
 
+_YES_OPTION = typer.Option(
+    False, "--yes", help="Confirm a change that can make the index vectors unusable."
+)
+
+
+def _interactive() -> bool:
+    """True when a person can answer a prompt on this terminal."""
+    return sys.stdin.isatty()
+
+
+def _confirming(action: Callable[[bool], str], yes: bool) -> str:
+    """Run *action*; ask once to confirm, or refuse and name ``--yes`` when none can answer."""
+    try:
+        return action(yes)
+    except engine_service.EmbedConfirmRequiredError as exc:
+        if cfg.json_mode or not _interactive():
+            raise engine_service.EngineRefusedError(
+                f"{exc} Run the command again with --yes."
+            ) from exc
+        if not typer.confirm(f"{exc} Continue?", default=False):
+            raise engine_service.EngineRefusedError("The engine is unchanged.") from exc
+        return action(True)
+
+
 @engine_app.command("roles")
 def roles() -> None:
     """Show the engine of each role, with the notice when it fell back."""
@@ -148,10 +174,14 @@ def use(
     role: Annotated[WorkerRole, typer.Argument(help="Role: chat, embed, rerank or vision.")],
     model: str = typer.Argument(help="The model of that role."),
     engine: str = typer.Argument(help="Engine name, or 'auto' to remove the choice."),
+    yes: bool = _YES_OPTION,
 ) -> None:
     """Choose the engine that runs the model of one role."""
     try:
-        chosen = engine_service.use_for_role(role, model, engine)
+        chosen = _confirming(
+            lambda confirmed: engine_service.use_for_role(role, model, engine, confirmed=confirmed),
+            yes,
+        )
     except engine_service.WRITE_FAILURES as exc:
         raise _refuse("engine use", exc) from exc
     if cfg.json_mode:
@@ -163,10 +193,11 @@ def use(
 @engine_app.command("prefer")
 def prefer(
     name: str = typer.Argument(help="Engine name, or 'auto' for the default for each model."),
+    yes: bool = _YES_OPTION,
 ) -> None:
     """Set the engine to use for every model that has no choice of its own."""
     try:
-        chosen = engine_service.prefer(name)
+        chosen = _confirming(lambda confirmed: engine_service.prefer(name, confirmed), yes)
     except engine_service.WRITE_FAILURES as exc:
         raise _refuse("engine prefer", exc) from exc
     if cfg.json_mode:

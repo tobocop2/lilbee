@@ -964,12 +964,14 @@ class EngineUseBody(BaseModel):
 
     model: str
     engine: str
+    confirm_embed_change: bool = False
 
 
 class EnginePreferBody(BaseModel):
     """Request body that sets the global engine preference."""
 
     engine: str
+    confirm_embed_change: bool = False
 
 
 class EngineChosenResponse(BaseModel):
