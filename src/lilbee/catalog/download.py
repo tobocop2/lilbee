@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Iterable
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
 import httpx
 from pydantic import BaseModel
@@ -32,6 +32,9 @@ from lilbee.catalog.refs import (
 )
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 _T = TypeVar("_T")
 
@@ -253,6 +256,7 @@ _NEVER_CANCELLED = _NeverCancelled()
 
 def download_model(
     entry: CatalogModel,
+    engine: "EngineAdapter",
     *,
     on_progress: ProgressCallback | None = None,
     on_complete: CompleteCallback | None = None,
@@ -291,6 +295,7 @@ def download_model(
         entry,
         models_dir,
         token,
+        engine,
         on_progress=on_progress,
         cancel=_NEVER_CANCELLED if cancel is None else cancel,
     )
@@ -303,6 +308,7 @@ def fetch_model_files(
     entry: CatalogModel,
     models_dir: Path,
     token: str | None,
+    engine: "EngineAdapter",
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
@@ -315,7 +321,7 @@ def fetch_model_files(
     caller gets before the first bytes, and it names the cache blob so the
     caller can clear that file's leftovers.
     """
-    filename = resolve_filename(entry)
+    filename = resolve_filename(entry, engine)
     shards = split_shard_filenames(filename)
     dest = models_dir / shards[0]
     if all(_shard_is_cached(entry, models_dir, shard, on_probe) for shard in shards):
@@ -504,7 +510,9 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
     return min(matches, key=_mmproj_rank) if matches else None
 
 
-def resolve_filename(entry: CatalogModel, *, can_load: LoadCheck | None = None) -> str:
+def resolve_filename(
+    entry: CatalogModel, engine: "EngineAdapter", *, can_load: LoadCheck | None = None
+) -> str:
     """The repo file a pull of *entry* fetches, gated on each candidate's GGUF header.
 
     Quant labels only order the candidates. A file whose header calls it a
@@ -536,7 +544,7 @@ def resolve_filename(entry: CatalogModel, *, can_load: LoadCheck | None = None) 
         header = file_header(entry.hf_repo, candidate)
         if not header.is_model:
             continue
-        if classify(header.architecture) is ModelCompat.UNSUPPORTED:
+        if classify(header.architecture, engine) is ModelCompat.UNSUPPORTED:
             unsupported = unsupported or candidate
             continue
         if can_load is not None:

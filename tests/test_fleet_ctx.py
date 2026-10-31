@@ -8,6 +8,7 @@ from pathlib import Path
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import ctx as ctx_mod
 from lilbee.providers.fleet.ctx import fit_split_ctx
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
@@ -43,6 +44,7 @@ def _fit(model_path: Path, **overrides: object) -> int:
         # chat_ctx_ceiling; the ceiling-cap test lowers it.
         "ctx_ceiling": 1_000_000,
         "expert_offload": (),
+        "engine": LLAMA,
     }
     kwargs.update(overrides)
     return fit_split_ctx(model_path, **kwargs)  # type: ignore[arg-type]
@@ -58,7 +60,9 @@ class TestFitSplitCtx:
         # The smallest context already exceeds the budget -> launch at the floor anyway.
         monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
         monkeypatch.setattr(
-            llama_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 999 * _GB)
+            llama_mod,
+            "estimate_instance_footprint",
+            _peak_estimator(lambda _c: 999 * _GB),
         )
         assert _fit(Path("/m.gguf")) == _DYNAMIC_CTX_FLOOR
 
@@ -212,6 +216,7 @@ def _fit_single(model_path: Path, **overrides: object) -> int:
         "unified": False,
         "ctx_ceiling": 1_000_000,
         "expert_offload": (),
+        "engine": LLAMA,
     }
     kwargs.update(overrides)
     return ctx_mod.fit_single_ctx(model_path, **kwargs)  # type: ignore[arg-type]

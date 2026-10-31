@@ -162,7 +162,7 @@ def _max_concurrent() -> int:
         fitted = get_services().provider.vision_slot_capacity()
         if fitted is not None:
             return fitted
-        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
+        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count(get_services().engine))
         return max(1, replicas * config.vision_ocr_concurrency)
     if config.ingest_max_inflight > 0:
         return config.ingest_max_inflight  # explicit override
@@ -1634,7 +1634,7 @@ def _build_admission(
     no fleet it falls back to the static path so a GPU-less host is never affected.
     """
     profile = profile_for(resolve_mode())
-    devices = enumerate_fleet_devices() if profile is not None else []
+    devices = enumerate_fleet_devices(get_services().engine) if profile is not None else []
     if profile is None or not devices:
         return asyncio.Semaphore(baseline), baseline * _TASK_WINDOW_MULTIPLIER, None
     permit_max = max_workers()

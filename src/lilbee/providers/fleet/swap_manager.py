@@ -45,6 +45,7 @@ from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
 from lilbee.runtime.engine_lock import clear_keep_warm, reaper_running
 
 if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
     from lilbee.providers.fleet.launch import InstanceLaunch
     from lilbee.providers.roles import WorkerRole
 
@@ -220,8 +221,9 @@ class SwapManager:
     or model change) never touches another group's loaded servers.
     """
 
-    def __init__(self, data_dir: Path, group: SwapGroup) -> None:
+    def __init__(self, data_dir: Path, group: SwapGroup, engine: EngineAdapter) -> None:
         self._data_dir = data_dir
+        self._engine = engine
         self._group = group
         self._config_path = data_dir / _config_filename(os.getpid(), group.value)
         self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group.value)
@@ -336,7 +338,7 @@ class SwapManager:
         self._write_state()
         self._await_health()
         for launch in launches:
-            log_engine_launch(launch)
+            log_engine_launch(launch, engine=self._engine)
 
     def reap_stale(self) -> None:
         """Kill every dead or unhealthy recorded engine; see :func:`reap_stale`."""

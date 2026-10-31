@@ -17,11 +17,11 @@ from lilbee.providers.fleet.engines.base import (
     MemoryKind,
     MemoryRequest,
     ModelFormat,
-    ReadbackKind,
 )
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import RerankMode, WorkerRole
+from tests._gguf_fixture import make_minimal_gguf
 
 _ROOT = Path(__file__).resolve().parents[1]
 _LLAMA_MODULE = "lilbee.providers.fleet.engines.llama"
@@ -31,7 +31,6 @@ _SWEEP_INPUTS = 400
 def test_llama_identity_fields() -> None:
     assert LLAMA.name is EngineName.LLAMA
     assert LLAMA.formats == {ModelFormat.GGUF}
-    assert LLAMA.readback is ReadbackKind.ENDPOINT
 
 
 def test_llama_supports_known_and_rejects_unknown_architecture() -> None:
@@ -216,9 +215,108 @@ def test_llama_memory_estimate_charges_what_the_parser_estimate_charged(
     assert compared == 2 * _SWEEP_INPUTS
 
 
-def test_llama_header_reader_is_the_bundled_gguf_parser(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(f"{_LLAMA_MODULE}.resolve_gguf_parser", lambda: Path("/bin/gguf-parser"))
-    assert LLAMA.header_reader() == Path("/bin/gguf-parser")
+def _gguf_file(directory: Path, name: str) -> Path:
+    path = directory / name
+    path.write_bytes(make_minimal_gguf("llama"))
+    return path
+
+
+@pytest.mark.parametrize("name", ["model.gguf", "model.GGUF", "sha256-0f3a9c1e7b2d4a68"])
+def test_llama_model_meta_reads_a_gguf_header_whatever_the_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
+) -> None:
+    seen: list[Path] = []
+
+    def _read(path: Path) -> dict[str, str]:
+        seen.append(path)
+        return {"architecture": "llama"}
+
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.read_gguf_metadata", _read)
+    model = _gguf_file(tmp_path, name)
+    assert LLAMA.model_meta(model) == {"architecture": "llama"}
+    assert seen == [model]
+
+
+@pytest.mark.parametrize("name", ["model.gguf", "model.safetensors", "sha256-0f3a9c1e7b2d4a68"])
+def test_llama_model_meta_skips_a_file_with_no_gguf_header(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
+) -> None:
+    def _read(path: Path) -> dict[str, str]:
+        raise AssertionError(f"the parser must not run on {path}")
+
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.read_gguf_metadata", _read)
+    model = tmp_path / name
+    model.write_bytes(b"{" + b"x" * 64)
+    assert LLAMA.model_meta(model) is None
+
+
+def test_llama_model_meta_skips_a_file_that_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _read(path: Path) -> dict[str, str]:
+        raise AssertionError(f"the parser must not run on {path}")
+
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.read_gguf_metadata", _read)
+    assert LLAMA.model_meta(tmp_path / "gone.gguf") is None
+
+
+_BLOB_META = {
+    "architecture": "llama",
+    "context_length": "2048",
+    "embedding_length": "512",
+    "block_count": "8",
+    "head_count": "8",
+    "head_count_kv": "2",
+    "pooling_type": "3",
+}
+
+
+def _launch_argv(role: WorkerRole, model: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Plan one launch with the llama adapter on a single 8 GiB CUDA card."""
+    from lilbee.providers.fleet import planning
+    from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
+
+    gib = 1 << 30
+    card = FleetDevice("CUDA", 0, "GPU0", 8 * gib, 7 * gib)
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.read_gguf_metadata", lambda path: dict(_BLOB_META))
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.resolve_llama_server", lambda: Path("/bin/llama-server"))
+    monkeypatch.setattr(
+        f"{_LLAMA_MODULE}.probe_devices",
+        lambda binary: DeviceProbe(devices=[card], output="", spoke_protocol=True),
+    )
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.engine_advertises", lambda binary, flag: True)
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.supports_memory_readback", lambda binary: True)
+    planning.clear_read_device_cache()
+    with planning._one_engine_per_pass(engine=LLAMA):
+        argv = planning.build_single_role_launch(role, model, engine=LLAMA).argv
+    planning.clear_read_device_cache()
+    return [a.replace(str(model), "<MODEL>") for a in argv]
+
+
+@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED])
+def test_a_hash_named_blob_plans_the_launch_of_the_suffixed_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, role: WorkerRole
+) -> None:
+    suffixed = _gguf_file(tmp_path, "model.gguf")
+    blob = _gguf_file(tmp_path, "sha256-0f3a9c1e7b2d4a6885c1d0e9f7a3b5c2")
+    expected = _launch_argv(role, suffixed, monkeypatch)
+    assert _launch_argv(role, blob, monkeypatch) == expected
+    if role is WorkerRole.EMBED:
+        assert "--pooling" in expected
+
+
+def test_llama_assert_loadable_asks_the_gguf_parser_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.assert_engine_can_load", lambda *args: calls.append(args))
+    LLAMA.assert_loadable("org/repo", "m.gguf", "tok")
+    assert calls == [("org/repo", "m.gguf", "tok")]
+
+
+def test_llama_runtime_env_is_the_server_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        f"{_LLAMA_MODULE}.llama_server_runtime_env", lambda: {"LD_LIBRARY_PATH": "/x"}
+    )
+    assert LLAMA.runtime_env() == {"LD_LIBRARY_PATH": "/x"}
 
 
 def test_llama_swap_extras_is_empty() -> None:
@@ -235,3 +333,11 @@ def test_llama_request_profile_holds_the_client_constants() -> None:
         "/detokenize",
         "/apply-template",
     )
+    assert profile.label == "llama-server"
+    assert profile.reasoning_field == "reasoning_content"
+    assert profile.context_overflow.search("The request exceeds the available context size")
+    assert profile.context_overflow.search('{"type": "exceed_context_size_error"}')
+    assert not profile.context_overflow.search("bad request")
+    assert profile.batch_overflow.search("input (4096 tokens) is too large to process")
+    assert not profile.batch_overflow.search("out of memory")
+    assert "llama-server b4391" in profile.unreadable_embedding_hint

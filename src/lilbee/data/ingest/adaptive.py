@@ -35,6 +35,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
     from lilbee.providers.fleet.gpu_stats import DeviceLike
 
 log = logging.getLogger(__name__)
@@ -386,17 +387,16 @@ class AdaptiveController:
                 log.debug("adaptive ingest: tuning tick failed; skipping", exc_info=True)
 
 
-def enumerate_fleet_devices() -> Sequence[DeviceLike]:
+def enumerate_fleet_devices(engine: EngineAdapter) -> Sequence[DeviceLike]:
     """The GPU devices to read telemetry from, or empty when none can be enumerated.
 
     Any failure (no engine binary, probe error) degrades to an empty list, which the
     caller treats as "no fleet to feed" and falls back to the static limit.
     """
     try:
-        from lilbee.providers.fleet.engines import LLAMA
         from lilbee.providers.fleet.planning import resolve_devices
 
-        return resolve_devices(LLAMA.binary())
+        return resolve_devices(engine.binary(), engine)
     except Exception:
         log.debug("adaptive ingest: device enumeration failed; using static limit", exc_info=True)
         return []

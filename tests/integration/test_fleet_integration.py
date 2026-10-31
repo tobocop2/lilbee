@@ -19,7 +19,9 @@ import numpy as np
 import pytest
 
 from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.swap_manager import _pick_free_ports
+from lilbee.providers.roles import WorkerRole
 
 _STUB = Path(__file__).parent / "_llama_server_stub.py"
 
@@ -40,7 +42,7 @@ def stub_client() -> Iterator[LlamaServerClient]:
                 time.sleep(0.05)
         else:
             raise RuntimeError("stub server did not become ready")
-        yield LlamaServerClient(base, "chat")
+        yield LlamaServerClient(base, "chat", profile=LLAMA.request_profile(WorkerRole.CHAT))
     finally:
         proc.terminate()
         proc.wait(timeout=10.0)

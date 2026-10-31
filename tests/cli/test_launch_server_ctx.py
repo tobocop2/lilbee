@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import EngineBackend, WorkerRole
 
 
@@ -183,7 +184,7 @@ def test_planned_chat_ctx_sizes_against_the_gpu_the_fleet_will_use(monkeypatch, 
     monkeypatch.setattr(
         planning_mod._read_device_cache,
         "get",
-        lambda _b: planning_mod.DeviceReading(
+        lambda _b, engine: planning_mod.DeviceReading(
             [FleetDevice("CUDA", 0, "gpu", 8 * 1024**3, 8 * 1024**3)], EngineBackend.CUDA
         ),
     )
@@ -230,4 +231,4 @@ def test_both_grant_surfaces_report_the_window_the_estimator_fits(monkeypatch, t
     monkeypatch.setattr(planning_mod, "fit_chat_ctx", lambda *_a, **_k: fitted)
 
     assert launch_mod.planned_chat_ctx() == fitted
-    assert planning_mod._role_ctx(WorkerRole.CHAT, gguf, meta) == fitted
+    assert planning_mod._role_ctx(WorkerRole.CHAT, gguf, meta, engine=LLAMA) == fitted

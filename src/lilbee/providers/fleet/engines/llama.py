@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF, SUPPORTED_ARCHS
+from lilbee.catalog.header_probe import GGUF_MAGIC
 from lilbee.providers.fleet.adapters import (
     FLAG_FIT_TARGET,
     FLAG_KV_UNIFIED_PER_SLOT,
@@ -18,7 +20,7 @@ from lilbee.providers.fleet.adapters import (
 )
 from lilbee.providers.fleet.binary import (
     engine_binary_identity,
-    resolve_gguf_parser,
+    llama_server_runtime_env,
     resolve_llama_server,
 )
 from lilbee.providers.fleet.devices import DeviceProbe, probe_devices
@@ -29,12 +31,13 @@ from lilbee.providers.fleet.engines.base import (
     MemoryKind,
     MemoryRequest,
     ModelFormat,
-    ReadbackKind,
     RequestProfile,
 )
 from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.loadability import assert_engine_can_load
 from lilbee.providers.fleet.readback import engine_advertises, supports_memory_readback
 from lilbee.providers.fleet.vram import estimate_instance_footprint
+from lilbee.providers.gguf_meta import read_gguf_metadata
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _PROFILE = RequestProfile(
@@ -43,9 +46,23 @@ _PROFILE = RequestProfile(
     tokenize_path="/tokenize",
     detokenize_path="/detokenize",
     apply_template_path="/apply-template",
+    label="llama-server",
+    context_overflow=re.compile("exceed_context_size|context size", re.IGNORECASE),
+    batch_overflow=re.compile("too large to process"),
+    unreadable_embedding_hint="base64 embedding responses need llama-server b4391 or newer.",
+    reasoning_field="reasoning_content",
 )
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
+
+
+def _starts_with_gguf_magic(path: Path) -> bool:
+    """Whether the file opens with the GGUF magic; the registry stores blobs with no suffix."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(len(GGUF_MAGIC)) == GGUF_MAGIC
+    except OSError:
+        return False
 
 
 class LlamaCppAdapter:
@@ -55,7 +72,7 @@ class LlamaCppAdapter:
     formats = frozenset({ModelFormat.GGUF})
     architectures = frozenset(SUPPORTED_ARCHS)
     served_roles = frozenset(role for role, spec in ROLE_SPECS.items() if spec.server_capable)
-    readback = ReadbackKind.ENDPOINT
+    memory_kind = MemoryKind.SIZED
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures
@@ -112,8 +129,16 @@ class LlamaCppAdapter:
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return probe_devices(binary)
 
-    def header_reader(self) -> Path:
-        return resolve_gguf_parser()
+    def model_meta(self, path: Path) -> dict[str, str] | None:
+        if not _starts_with_gguf_magic(path):
+            return None
+        return read_gguf_metadata(path)
+
+    def assert_loadable(self, repo: str, filename: str, token: str | None) -> None:
+        assert_engine_can_load(repo, filename, token)
+
+    def runtime_env(self) -> Mapping[str, str]:
+        return llama_server_runtime_env()
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         parsed = estimate_instance_footprint(
@@ -129,7 +154,7 @@ class LlamaCppAdapter:
             expert_offload=request.expert_offload,
         )
         return MemoryEstimate(
-            kind=MemoryKind.SIZED,
+            kind=self.memory_kind,
             device_bytes=parsed.vram_bytes,
             host_bytes=parsed.ram_bytes,
             shared_bytes=parsed.unified_bytes,

@@ -68,6 +68,7 @@ from lilbee.catalog.refs import (
 )
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.runtime.hardware import FitLevel, fit_for_size, make_fit_filter
 
 _EMPTY_HF_PAGE = HfPage(models=[])
@@ -1244,7 +1245,9 @@ class TestSplitShardDownload:
         """A split GGUF pulls every shard, and on_complete fires once after the set."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "m-00001-of-00002.gguf")
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine: "m-00001-of-00002.gguf"
+        )
         requested: list[str] = []
 
         def fake(**kwargs: Any) -> str:
@@ -1253,7 +1256,7 @@ class TestSplitShardDownload:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
         completed: list[Path] = []
-        download_model(entry, on_complete=lambda _e, p: completed.append(p))
+        download_model(entry, on_complete=lambda _e, p: completed.append(p), engine=LLAMA)
 
         assert requested == ["m-00001-of-00002.gguf", "m-00002-of-00002.gguf"]
         assert len(completed) == 1  # manifest write only after the full set is on disk
@@ -1267,7 +1270,9 @@ class TestSplitShardDownload:
         parent knows whose temporary file it may clear after a stall.
         """
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "m-00001-of-00003.gguf")
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine: "m-00001-of-00003.gguf"
+        )
         monkeypatch.setattr(
             catalog.download,
             "fetch_remote_file",
@@ -1277,7 +1282,9 @@ class TestSplitShardDownload:
         monkeypatch.setattr(catalog.download, "_ensure_projector", lambda *a, **kw: None)
         probes: list[str | None] = []
 
-        catalog.download.fetch_model_files(entry, tmp_path, None, on_probe=probes.append)
+        catalog.download.fetch_model_files(
+            entry, tmp_path, None, on_probe=probes.append, engine=LLAMA
+        )
 
         # The completeness check stops at the first absent shard; sizes cover them all.
         assert len(probes) == 4
@@ -1297,7 +1304,7 @@ class TestDownloadModel:
             "fetch_remote_file",
             lambda repo, name: catalog.download.RemoteFile(size=len(content), blob="abc123"),
         )
-        result = download_model(entry)
+        result = download_model(entry, engine=LLAMA)
         assert result == existing
 
     def test_stale_file_rejected_when_hub_reports_file_missing(
@@ -1320,7 +1327,7 @@ class TestDownloadModel:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _no_transfer)
         with pytest.raises(RuntimeError, match="does not exist in"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_missing_file_fails_before_transfer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1341,7 +1348,7 @@ class TestDownloadModel:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _no_transfer)
         with pytest.raises(RuntimeError, match="does not exist in"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_existing_file_calls_progress_callback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1363,7 +1370,7 @@ class TestDownloadModel:
         def on_progress(downloaded: int, total: int) -> None:
             progress_calls.append((downloaded, total))
 
-        download_model(entry, on_progress=on_progress)
+        download_model(entry, on_progress=on_progress, engine=LLAMA)
         assert len(progress_calls) == 1
         assert progress_calls[0][0] == progress_calls[0][1]
 
@@ -1373,7 +1380,7 @@ class TestDownloadModel:
         """tqdm_class-based callback is invoked during download."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
 
         def fake_download(**kwargs: Any) -> str:
             result = _fake_download(**kwargs)
@@ -1392,23 +1399,23 @@ class TestDownloadModel:
         def on_progress(downloaded: int, total: int | None) -> None:
             progress_calls.append((downloaded, total))
 
-        download_model(entry, on_progress=on_progress)
+        download_model(entry, on_progress=on_progress, engine=LLAMA)
         assert len(progress_calls) >= 1
 
     def test_creates_models_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         models_dir = tmp_path / "models"
         monkeypatch.setattr(cfg, "models_dir", models_dir)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
-        result = download_model(entry)
+        result = download_model(entry, engine=LLAMA)
         assert result.exists()
 
     def test_calls_progress_callback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
 
         progress_calls: list[tuple[int, int | None]] = []
 
@@ -1426,7 +1433,7 @@ class TestDownloadModel:
         def on_progress(downloaded: int, total: int | None) -> None:
             progress_calls.append((downloaded, total))
 
-        download_model(entry, on_progress=on_progress)
+        download_model(entry, on_progress=on_progress, engine=LLAMA)
         # 2 tqdm updates + 1 final 100% call from download_model
         assert len(progress_calls) == 3
         assert progress_calls[-1] == (100, 100)
@@ -1436,7 +1443,7 @@ class TestDownloadModel:
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
 
         from huggingface_hub.utils import GatedRepoError
 
@@ -1445,7 +1452,7 @@ class TestDownloadModel:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_task_cancelled_propagates_unwrapped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1461,21 +1468,21 @@ class TestDownloadModel:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
 
         def fake_download(**kwargs: Any) -> str:
             raise TaskCancelledError
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         with pytest.raises(TaskCancelledError):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_repo_not_found_raises_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
 
         from huggingface_hub.utils import RepositoryNotFoundError
 
@@ -1484,7 +1491,7 @@ class TestDownloadModel:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         with pytest.raises(RuntimeError, match="not found on HuggingFace"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_unexpected_exception_is_wrapped_with_type_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1493,14 +1500,14 @@ class TestDownloadModel:
         RuntimeError that names the original exception type, not leaked raw."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
 
         def fake_download(**kwargs: Any) -> str:
             raise KeyError("missing sibling")
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         with pytest.raises(RuntimeError, match=r"Failed to download.*KeyError"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
 
 def _bonsai_header(name: str) -> GgufHeader:
@@ -1540,12 +1547,12 @@ class TestResolveFilename:
     def test_exact_filename(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._headers(monkeypatch)
         entry = PICKS_EMBEDDING[0]
-        assert catalog.resolve_filename(entry) == entry.gguf_filename
+        assert catalog.resolve_filename(entry, engine=LLAMA) == entry.gguf_filename
 
     def test_wildcard_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._headers(monkeypatch)
         self._siblings(monkeypatch, "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q8_0.gguf")
-        assert catalog.resolve_filename(PICKS_CHAT[0]) == "Qwen3-0.6B-Q4_K_M.gguf"
+        assert catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA) == "Qwen3-0.6B-Q4_K_M.gguf"
 
     def test_projector_labelled_q8_does_not_win(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A repo whose only preferred-quant file is its projector resolves to the weights."""
@@ -1556,7 +1563,7 @@ class TestResolveFilename:
             "Bonsai-27B-Q2_0.gguf",
             "Bonsai-27B-F16.gguf",
         )
-        assert catalog.resolve_filename(PICKS_CHAT[0]) == "Bonsai-27B-Q2_0.gguf"
+        assert catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA) == "Bonsai-27B-Q2_0.gguf"
 
     def test_named_file_rejected_by_header_reresolves(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1565,20 +1572,20 @@ class TestResolveFilename:
         entry = replace(PICKS_CHAT[0], gguf_filename="Bonsai-27B-mmproj-Q8_0.gguf")
         self._headers(monkeypatch, _bonsai_header)
         self._siblings(monkeypatch, "Bonsai-27B-mmproj-Q8_0.gguf", "Bonsai-27B-Q2_0.gguf")
-        assert catalog.resolve_filename(entry) == "Bonsai-27B-Q2_0.gguf"
+        assert catalog.resolve_filename(entry, engine=LLAMA) == "Bonsai-27B-Q2_0.gguf"
 
     def test_unsupported_architecture_is_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A speculative-decoding drafter on an unsupported arch never wins."""
         self._headers(monkeypatch, _bonsai_header)
         self._siblings(monkeypatch, "Bonsai-27B-dspark-Q4_1.gguf", "Bonsai-27B-Q2_g64.gguf")
-        assert catalog.resolve_filename(PICKS_CHAT[0]) == "Bonsai-27B-Q2_g64.gguf"
+        assert catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA) == "Bonsai-27B-Q2_g64.gguf"
 
     def test_projector_only_repo_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A repo holding nothing but a projector has no weights to install."""
         self._headers(monkeypatch, _bonsai_header)
         self._siblings(monkeypatch, "Bonsai-27B-mmproj-Q8_0.gguf")
         with pytest.raises(RuntimeError, match="No GGUF model weights found"):
-            catalog.resolve_filename(PICKS_CHAT[0])
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
     def test_unsupported_arch_still_resolves_for_the_arch_guard(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1586,13 +1593,13 @@ class TestResolveFilename:
         """Refusing here would report a generic error and break --allow-unsupported."""
         self._headers(monkeypatch, _bonsai_header)
         self._siblings(monkeypatch, "inkling-Q4_K_M.gguf", "mmproj-BF16.gguf")
-        assert catalog.resolve_filename(PICKS_CHAT[0]) == "inkling-Q4_K_M.gguf"
+        assert catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA) == "inkling-Q4_K_M.gguf"
 
     def test_wildcard_no_match_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._headers(monkeypatch)
         self._siblings(monkeypatch, "something-else.bin")
         with pytest.raises(RuntimeError, match="No GGUF model weights found"):
-            catalog.resolve_filename(PICKS_CHAT[0])
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
     def test_wildcard_api_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def raise_connect(*a: object, **kw: object) -> httpx.Response:
@@ -1600,18 +1607,18 @@ class TestResolveFilename:
 
         monkeypatch.setattr(httpx, "get", raise_connect)
         with pytest.raises(RuntimeError, match="Cannot query files"):
-            catalog.resolve_filename(PICKS_CHAT[0])
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
     def test_wildcard_http_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(500))
         with pytest.raises(RuntimeError):
-            catalog.resolve_filename(PICKS_CHAT[0])
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
     def test_wildcard_401_raises_permission_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """HTTP 401 response raises PermissionError with auth message."""
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(401))
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
-            catalog.resolve_filename(PICKS_CHAT[0])
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
 
 class TestQuantLabel:
@@ -2207,7 +2214,9 @@ class TestVisionMmprojFiles:
         """download_model downloads mmproj file for vision entries."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+        )
 
         download_calls: list[dict] = []
 
@@ -2222,7 +2231,7 @@ class TestVisionMmprojFiles:
             lambda repo, pat: "model-mmproj-f16.gguf",
         )
 
-        download_model(entry)
+        download_model(entry, engine=LLAMA)
 
         assert len(download_calls) == 2
         filenames = [c["filename"] for c in download_calls]
@@ -2235,7 +2244,7 @@ class TestVisionMmprojFiles:
         """download_model does NOT download mmproj when the repo ships none."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
         monkeypatch.setattr(catalog.download, "repo_has_mmproj", lambda _repo: False)
 
         download_calls: list[dict] = []
@@ -2245,7 +2254,7 @@ class TestVisionMmprojFiles:
             return _fake_download(**kwargs)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
-        download_model(entry)
+        download_model(entry, engine=LLAMA)
 
         assert len(download_calls) == 1
 
@@ -2256,7 +2265,7 @@ class TestVisionMmprojFiles:
         gets its projector, so a later vision_model assignment can run OCR."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
         monkeypatch.setattr(catalog.download, "repo_has_mmproj", lambda _repo: True)
         monkeypatch.setattr(
             catalog.download,
@@ -2271,7 +2280,7 @@ class TestVisionMmprojFiles:
             return _fake_download(**kwargs)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
-        download_model(entry)
+        download_model(entry, engine=LLAMA)
 
         filenames = [c["filename"] for c in download_calls]
         assert "mmproj-model-f16.gguf" in filenames
@@ -2282,12 +2291,14 @@ class TestVisionMmprojFiles:
         """When mmproj resolution fails, model download still succeeds."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+        )
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
         monkeypatch.setattr(catalog.download, "_resolve_mmproj_filename", lambda repo, pat: None)
 
-        result = download_model(entry)
+        result = download_model(entry, engine=LLAMA)
         assert result.exists()
 
     def test_download_mmproj_uses_cache_dir(
@@ -2300,7 +2311,9 @@ class TestVisionMmprojFiles:
         """
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+        )
 
         download_calls: list[dict] = []
 
@@ -2315,7 +2328,7 @@ class TestVisionMmprojFiles:
             lambda repo, pat: "model-mmproj-f16.gguf",
         )
 
-        download_model(entry)
+        download_model(entry, engine=LLAMA)
 
         mmproj_calls = [c for c in download_calls if "mmproj" in c.get("filename", "")]
         assert len(mmproj_calls) == 1
@@ -2340,7 +2353,9 @@ class TestVisionMmprojFallback:
             downloads=0,
             task="vision",
         )
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "custom-Q4_K_M.gguf")
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine: "custom-Q4_K_M.gguf"
+        )
 
         download_calls: list[dict] = []
 
@@ -2355,7 +2370,7 @@ class TestVisionMmprojFallback:
             lambda repo, pat: "custom-mmproj-f16.gguf",
         )
 
-        download_model(custom_entry)
+        download_model(custom_entry, engine=LLAMA)
 
         assert len(download_calls) == 2
         filenames = [c["filename"] for c in download_calls]
@@ -2372,7 +2387,9 @@ class TestVisionMmprojFallback:
         """
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+        )
         monkeypatch.setattr(
             catalog.download,
             "_resolve_mmproj_filename",
@@ -2392,7 +2409,7 @@ class TestVisionMmprojFallback:
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
 
         calls: list[tuple[int, int]] = []
-        download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
+        download_model(entry, on_progress=lambda d, t: calls.append((d, t)), engine=LLAMA)
 
         # The mmproj leg should have fired at least one callback at 100%.
         cached_size = cached_blob.stat().st_size
@@ -2617,7 +2634,7 @@ class TestGatedRepoShowsLoginMessage:
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
 
         from huggingface_hub.utils import GatedRepoError
 
@@ -2626,7 +2643,7 @@ class TestGatedRepoShowsLoginMessage:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
 
 class TestCleanDisplayName:
@@ -3236,6 +3253,7 @@ class TestRegisterDownloadedModel:
             download_model(
                 entry,
                 on_complete=lambda e, p: captured.append((e, p)),
+                engine=LLAMA,
             )
         finally:
             cfg.models_dir = old

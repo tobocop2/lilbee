@@ -31,6 +31,7 @@ from lilbee.crawler import (
     crawler_browsers_path,
     url_filter,
 )
+from lilbee.providers.fleet.engines import LLAMA
 from tests.integration.conftest import EMBED_ENTRY, EMBEDDING_DIM, _resolve_installed_ref
 
 LOOPBACK = "127.0.0.1"
@@ -401,7 +402,7 @@ class RunningSite:
 
 def _configure_embedding() -> None:
     cfg.models_dir = canonical_models_dir()
-    download_model(EMBED_ENTRY)
+    download_model(EMBED_ENTRY, engine=LLAMA)
     cfg.embedding_model = _resolve_installed_ref(EMBED_ENTRY.hf_repo)
     cfg.embedding_dim = EMBEDDING_DIM
 

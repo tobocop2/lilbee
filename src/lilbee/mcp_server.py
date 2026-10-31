@@ -1308,7 +1308,6 @@ async def model_pull(
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
     from lilbee.catalog.compat import UnsupportedArchError
-    from lilbee.providers.fleet.engines import LLAMA
 
     try:
         src = ModelSource.parse(source) or ModelSource.NATIVE
@@ -1343,6 +1342,7 @@ async def model_pull(
                 cancel=cancel,
             )
         except UnsupportedArchError as exc:
+            engine = get_services().engine
             return {
                 "ok": False,
                 "command": "model_pull",
@@ -1350,8 +1350,8 @@ async def model_pull(
                     "code": "unsupported_arch",
                     "arch": exc.architecture,
                     "ref": exc.ref,
-                    "supported_examples": sorted(LLAMA.architectures)[:5],
-                    "total_supported": len(LLAMA.architectures),
+                    "supported_examples": sorted(engine.architectures)[:5],
+                    "total_supported": len(engine.architectures),
                 },
             }
         except (RuntimeError, PermissionError) as exc:

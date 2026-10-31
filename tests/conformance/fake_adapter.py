@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import re
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -16,7 +17,6 @@ from lilbee.providers.fleet.engines.base import (
     MemoryEstimate,
     MemoryKind,
     MemoryRequest,
-    ReadbackKind,
     RequestProfile,
 )
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -53,7 +53,7 @@ class FakeAdapter:
     formats = frozenset({"safetensors"})
     architectures = frozenset({"fakearch"})
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED})
-    readback = ReadbackKind.LOG
+    memory_kind = MemoryKind.FIXED_RESERVE
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures
@@ -111,14 +111,20 @@ class FakeAdapter:
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return MemoryEstimate(
-            kind=MemoryKind.FIXED_RESERVE,
+            kind=self.memory_kind,
             device_bytes=0,
             host_bytes=_RESERVE_BYTES,
             shared_bytes=_RESERVE_BYTES,
         )
 
-    def header_reader(self) -> Path:
-        return self.binary()
+    def model_meta(self, path: Path) -> dict[str, str] | None:
+        return None
+
+    def assert_loadable(self, repo: str, filename: str, token: str | None) -> None:
+        return None
+
+    def runtime_env(self) -> Mapping[str, str]:
+        return {}
 
     def check_readback(self, binary: Path) -> bool:
         return False
@@ -143,6 +149,11 @@ class FakeAdapter:
             tokenize_path="/v1/tokenize",
             detokenize_path="/v1/detokenize",
             apply_template_path="/v1/render",
+            label="fake-engine",
+            context_overflow=re.compile("FAKE_CTX_FULL"),
+            batch_overflow=re.compile("FAKE_BATCH_FULL"),
+            unreadable_embedding_hint="the fake engine returns vectors in its own format.",
+            reasoning_field="thoughts",
         )
 
 
