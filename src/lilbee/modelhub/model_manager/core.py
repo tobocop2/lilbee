@@ -207,6 +207,7 @@ class ModelManager:
                 f"lilbee runs {where} models but doesn't download them. "
                 f"Add the model in {where}, then pick it here."
             )
+        self.require_engine(model)
         if not allow_unsupported:
             self.enforce_arch_compat(model)
         try:
@@ -215,6 +216,12 @@ class ModelManager:
             )
         finally:
             self._invalidate_installed_cache()
+
+    def require_engine(self, ref: str) -> None:
+        """Raise ``NoEngineError`` when no installed engine loads the format of *ref*."""
+        from lilbee.app.engine_choice import engine_for_ref
+
+        engine_for_ref(ref)
 
     def enforce_arch_compat(self, ref: str) -> None:
         """Raise UnsupportedArchError if *ref*'s architecture isn't in the supported set.

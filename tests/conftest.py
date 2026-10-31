@@ -873,12 +873,14 @@ def make_mock_services(**overrides):
     chat/embed/rerank methods are all stubbed. Override ``provider`` with a real
     :class:`FleetProvider` for tests that need genuine fleet behaviour.
     """
+    from lilbee.app.engine_choice import EngineBook
     from lilbee.app.services import CrawlerSyncState, Services
     from lilbee.catalog.hf_client import HfClient
     from lilbee.retrieval.query import Searcher
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     engine = overrides.pop("engine", None) or LLAMA
+    engines = overrides.pop("engines", None) or EngineBook(cfg)
     provider = overrides.pop("provider", None) or _default_provider_mock()
     store = overrides.pop("store", None) or _default_store_mock()
     embedder = overrides.pop("embedder", None) or _default_embedder_mock()
@@ -905,7 +907,7 @@ def make_mock_services(**overrides):
         clusterer=clusterer,
         searcher=searcher,
         registry=registry,
-        engine=engine,
+        engines=engines,
         hf_client=hf_client,
         ingest_lock_registry=ingest_lock_registry,
         model_manager=model_manager,

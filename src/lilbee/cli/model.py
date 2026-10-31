@@ -207,6 +207,7 @@ def _run_pull(
 ) -> PullResult:
     """Invoke ``pull_model_data`` and translate known errors to typer.Exit."""
     from lilbee.catalog.compat import UnsupportedArchError
+    from lilbee.providers.fleet.engines.choice import NoEngineError
 
     try:
         return pull_model_data(ref, src, on_update=on_update, allow_unsupported=allow_unsupported)
@@ -226,7 +227,7 @@ def _run_pull(
         else:
             print_prefixed(console, "Error: ", msg, style=theme.ERROR)
         raise typer.Exit(1) from None
-    except (RuntimeError, PermissionError) as exc:
+    except (RuntimeError, PermissionError, NoEngineError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:

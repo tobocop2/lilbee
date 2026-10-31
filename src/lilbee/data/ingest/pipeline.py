@@ -117,6 +117,7 @@ from lilbee.data.types import (
     _IngestResult,
 )
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
@@ -155,14 +156,16 @@ def _max_concurrent() -> int:
     ticking, and still keeps every slot fed.
     """
     from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
-    from lilbee.providers.roles import WorkerRole
 
     config = active_config()
     if ocr_backend() is OcrBackendUsed.VISION:
         fitted = get_services().provider.vision_slot_capacity()
         if fitted is not None:
             return fitted
-        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count(get_services().engine))
+        replicas = resolve_replica_count(
+            WorkerRole.VISION,
+            gpu_device_count(get_services().engines.for_role(WorkerRole.VISION).adapter),
+        )
         return max(1, replicas * config.vision_ocr_concurrency)
     if config.ingest_max_inflight > 0:
         return config.ingest_max_inflight  # explicit override
@@ -1634,7 +1637,11 @@ def _build_admission(
     no fleet it falls back to the static path so a GPU-less host is never affected.
     """
     profile = profile_for(resolve_mode())
-    devices = enumerate_fleet_devices(get_services().engine) if profile is not None else []
+    devices = (
+        enumerate_fleet_devices(get_services().engines.for_role(WorkerRole.EMBED).adapter)
+        if profile is not None
+        else []
+    )
     if profile is None or not devices:
         return asyncio.Semaphore(baseline), baseline * _TASK_WINDOW_MULTIPLIER, None
     permit_max = max_workers()

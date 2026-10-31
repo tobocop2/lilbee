@@ -212,7 +212,7 @@ class TestRoutingProviderUnconfigured:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", "")
-        provider = RoutingProvider(engine=LLAMA)
+        provider = RoutingProvider(engine=lambda: LLAMA)
         with pytest.raises(ProviderError, match="No embedding model is configured"):
             provider.embed(["hi"])
         with pytest.raises(ProviderError, match="No embedding model is configured"):
@@ -223,7 +223,7 @@ class TestRoutingProviderUnconfigured:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "chat_model", "")
-        provider = RoutingProvider(engine=LLAMA)
+        provider = RoutingProvider(engine=lambda: LLAMA)
         with pytest.raises(ProviderError, match="No chat model is configured"):
             provider.chat([{"role": "user", "content": "hi"}])
         with pytest.raises(ProviderError, match="No chat model is configured"):

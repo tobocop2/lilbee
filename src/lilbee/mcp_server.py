@@ -25,6 +25,7 @@ import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import Tool as MCPTool
 
+from lilbee.app.engine_choice import engine_for_ref
 from lilbee.app.memory import (
     MEMORY_DISABLED_HINT,
     forget,
@@ -94,6 +95,7 @@ from lilbee.data.store import (
     agent_owner,
     scope_to_chunk_type,
 )
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.runtime.lock import ResetRefusedError
@@ -1378,7 +1380,7 @@ async def model_pull(
                 cancel=cancel,
             )
         except UnsupportedArchError as exc:
-            engine = get_services().engine
+            engine = engine_for_ref(model)
             return {
                 "ok": False,
                 "command": "model_pull",
@@ -1390,7 +1392,7 @@ async def model_pull(
                     "total_supported": len(engine.architectures),
                 },
             }
-        except (RuntimeError, PermissionError) as exc:
+        except (RuntimeError, PermissionError, NoEngineError) as exc:
             return _error(str(exc))
     return result.model_dump()
 

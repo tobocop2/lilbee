@@ -6,10 +6,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
+from lilbee.app.engine_choice import resolve_engines
 from lilbee.app.services import peek_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.providers.fleet.engines import EngineAdapter, select_engine
+from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.planning import (
     ResolvedPlacement,
@@ -158,6 +159,11 @@ def _view(
     )
 
 
+def _planning_engine() -> EngineAdapter:
+    """The adapter the planner sizes with: the one the chat model runs on."""
+    return resolve_engines(cfg).for_role(WorkerRole.CHAT).adapter
+
+
 def get_placement() -> PlacementView:
     """The current effective placement (manual if a spec is set, else auto).
 
@@ -166,7 +172,7 @@ def get_placement() -> PlacementView:
     nothing is using.
     """
     spec = _active_spec()
-    engine = select_engine(cfg)
+    engine = _planning_engine()
     resolved = resolve_placement_plan(spec, engine=engine, fall_back_to_auto=True)
     if spec is None:
         return _view(resolved, engine, manual=False, spec_json=None)
@@ -179,7 +185,7 @@ def get_placement() -> PlacementView:
 
 def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:
     """Dry-run: what spec (or auto, when None) would place. No persistence or reload."""
-    engine = select_engine(cfg)
+    engine = _planning_engine()
     resolved = resolve_placement_plan(spec, engine=engine)
     return _view(
         resolved, engine, manual=spec is not None, spec_json=spec.to_json() if spec else None
@@ -212,7 +218,7 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     fleet would report our own residency as unavailable and poison the chat
     context sizing, while charging stays against total capacity (bb-a8f).
     """
-    engine = select_engine(cfg)
+    engine = _planning_engine()
     resolved = resolve_placement_plan(spec, engine=engine)
     if spec is None:
         settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
