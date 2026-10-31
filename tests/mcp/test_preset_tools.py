@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import lilbee.mcp_server as mcp_server
 from lilbee.app.presets import engines_refused_message
@@ -159,3 +160,27 @@ def test_list_is_open_on_http_when_the_flag_is_off(http_mounted):
 
 def test_writes_are_open_off_http_when_the_flag_is_off():
     assert "error" not in mcp_server.preset_add_tool("omlx", LOCAL, ["chat"])
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("preset_add", {"name": "omlx", "url": LOCAL, "roles": ["chat"]}),
+        ("preset_edit", {"name": "omlx"}),
+    ],
+)
+@pytest.mark.parametrize("wrong", [[KEY], {"k": KEY}])
+async def test_a_wrong_typed_key_is_absent_from_the_validation_error(tool, arguments, wrong):
+    server = mcp_server.build_mcp_server()
+    with pytest.raises(ToolError, match="api_key") as caught:
+        await server.call_tool(tool, {**arguments, "api_key": wrong})
+    assert KEY not in str(caught.value)
+    assert KEY not in repr(caught.value.__cause__)
+    assert _stored() == []
+
+
+async def test_a_search_validation_error_still_shows_the_input():
+    server = mcp_server.build_mcp_server()
+    with pytest.raises(ToolError, match="input_value=") as caught:
+        await server.call_tool("search", {"query": ["PLANT"]})
+    assert "PLANT" in str(caught.value)

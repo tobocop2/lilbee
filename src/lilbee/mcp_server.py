@@ -1888,6 +1888,11 @@ def build_mcp_server() -> LilbeeMCP:
     for fn, name, gate in _REGISTRATIONS:
         if gate is None or gate():
             server.add_tool(fn, name=name)
+    for tool in server._tool_manager.list_tools():
+        if tool.name in _PRESET_TOOL_NAMES:
+            # A key sent as the wrong type must not come back in the validation error.
+            tool.fn_metadata.arg_model.model_config["hide_input_in_errors"] = True
+            tool.fn_metadata.arg_model.model_rebuild(force=True)
     return server
 
 
