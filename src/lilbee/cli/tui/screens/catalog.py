@@ -21,7 +21,6 @@ from textual.widget import AwaitMount
 from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
 from textual.worker import Worker, WorkerState
 
-from lilbee.app.engine_choice import engine_for_ref
 from lilbee.app.services import get_services
 from lilbee.catalog import (
     CatalogModel,
@@ -2172,7 +2171,7 @@ class CatalogScreen(Screen[None]):
         # file is named here, so the check asks HuggingFace what it really costs.
         needed = int(model.size_gb * _BYTES_PER_GB)
         try:
-            engine = engine_for_ref(model.pull_ref)
+            engine = get_services().engines.for_ref(model.pull_ref)
             if model.format is ModelFormat.GGUF:
                 filename = resolve_filename(model, engine)
                 dest = cfg.models_dir / filename

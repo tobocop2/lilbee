@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import platform
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from lilbee.catalog.refs import model_format
@@ -10,14 +12,20 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.engines.choice import (
     ADAPTERS,
-    AUTO,
     EngineAssignment,
+    EngineChoice,
     HostFacts,
     RoleEngine,
     choose_engine,
     installed_engines,
 )
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
+
+CHOICES_KEY = "engine_choices"
+_UNREADABLE_CHOICES = (
+    "The saved engine choices cannot be read. Using the default engine for each role. "
+    "Run lilbee engine use to choose again."
+)
 
 if TYPE_CHECKING:
     from lilbee.core.config import Config
@@ -28,30 +36,68 @@ def host_facts() -> HostFacts:
     return HostFacts(system=platform.system().lower(), machine=platform.machine().lower())
 
 
-def resolve_engines(cfg: Config) -> EngineAssignment:
+def _parse_choices(raw: str | None) -> dict[str, str] | None:
+    """The per-model engine names in the stored text, or ``None`` when the text is unreadable."""
+    if raw is None:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in data.items()
+    ):
+        return None
+    return data
+
+
+def stored_choices(raw: str | None) -> dict[str, str]:
+    """The per-model engine names in the stored text; unreadable text reads as none."""
+    return _parse_choices(raw) or {}
+
+
+def _choice_for(config: Config, ref: str, role: WorkerRole | None = None) -> EngineChoice:
+    """The one rule for the engine of the model *ref* under *config*, for a run or a pull."""
+    stored = _parse_choices(config.engine_choices)
+    chosen = choose_engine(
+        fmt=model_format(ref),
+        host=host_facts(),
+        installed=installed_engines(),
+        preferred=str(config.preferred_engine),
+        override=(stored or {}).get(ref),
+        role=role,
+        model=ref,
+    )
+    if stored is None:
+        return replace(chosen, notice=f"{_UNREADABLE_CHOICES} {chosen.notice or ''}".strip())
+    return chosen
+
+
+def resolve_engines(config: Config) -> EngineAssignment:
     """Ask the rule once for the model of each role and keep every answer."""
-    host = host_facts()
-    installed = installed_engines()
-    choices = {}
-    for role, info in ROLE_REGISTRY.items():
-        fmt = model_format(str(getattr(cfg, info.config_field)))
-        choices[role] = choose_engine(
-            fmt=fmt, host=host, installed=installed, preferred=AUTO, override=None, role=role
-        )
-    return EngineAssignment(choices)
+    return EngineAssignment(
+        {
+            role: _choice_for(config, str(getattr(config, info.config_field)), role)
+            for role, info in ROLE_REGISTRY.items()
+        }
+    )
 
 
-def engine_for_format(fmt: ModelFormat) -> EngineAdapter:
-    """The adapter that loads *fmt*; raises ``NoEngineError`` when none does."""
+def engine_for_format(fmt: ModelFormat, config: Config) -> EngineAdapter:
+    """The adapter that loads *fmt* under *config*; raises ``NoEngineError`` when none does."""
     choice = choose_engine(
-        fmt=fmt, host=host_facts(), installed=installed_engines(), preferred=AUTO, override=None
+        fmt=fmt,
+        host=host_facts(),
+        installed=installed_engines(),
+        preferred=str(config.preferred_engine),
+        override=None,
     )
     return ADAPTERS[choice.require()]
 
 
-def engine_for_ref(ref: str) -> EngineAdapter:
-    """The adapter that loads the format of the model *ref* names."""
-    return engine_for_format(model_format(ref))
+def engine_for_ref(ref: str, config: Config) -> EngineAdapter:
+    """The adapter for the model *ref* under *config*: the same choice a run makes."""
+    return ADAPTERS[_choice_for(config, ref).require()]
 
 
 class EngineBook:
@@ -63,3 +109,7 @@ class EngineBook:
     def for_role(self, role: WorkerRole) -> RoleEngine:
         """The engine for *role* now; raises ``NoEngineError`` when none loads its model."""
         return resolve_engines(self._cfg).for_role(role)
+
+    def for_ref(self, ref: str) -> EngineAdapter:
+        """The adapter for a pull of *ref*, by the rule a run uses."""
+        return engine_for_ref(ref, self._cfg)

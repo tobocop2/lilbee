@@ -31,6 +31,7 @@ from lilbee.catalog.types import ModelCompat, ModelFormat
 from lilbee.providers.base import is_header_safe
 
 if TYPE_CHECKING:
+    from lilbee.core.config import Config
     from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
@@ -175,6 +176,11 @@ def _next_cursor(resp: httpx.Response) -> str | None:
     return cursor or None
 
 
+def _compat(architecture: str, engine: EngineAdapter | None) -> ModelCompat:
+    """The engine verdict for a GGUF row; a row with no engine stays unknown."""
+    return classify(architecture, engine) if engine is not None else ModelCompat.UNKNOWN
+
+
 def _hf_search_value(search: str, fmt: ModelFormat = ModelFormat.GGUF) -> str:
     """Build the HF ``search=`` value: the format's search word plus the user's tokens."""
     return hf_listing_params(fmt, search)["search"]
@@ -266,8 +272,8 @@ class HfClient:
     # repeats within the window stay at DEBUG.
     FETCH_FAILURE_WARN_INTERVAL_S: float = 300.0
 
-    def __init__(self, engine: EngineAdapter) -> None:
-        self._engine = engine
+    def __init__(self, config: Config) -> None:
+        self._config = config
         self._cache: dict[str, tuple[float, HfPage]] = {}
         self._cache_lock = threading.Lock()
         self._arch_cache: dict[str, str] = {}
@@ -337,9 +343,14 @@ class HfClient:
 
         next_cursor = _next_cursor(resp)
 
+        # Local import to avoid a cycle with the engine choice module.
+        from lilbee.app.engine_choice import engine_for_format
+
+        # Only a GGUF row gets an engine verdict, so only GGUF asks for an engine.
+        engine = engine_for_format(fmt, self._config) if fmt == ModelFormat.GGUF else None
         models: list[CatalogModel] = []
         for raw in data:
-            model = self._catalog_row(raw, fmt)
+            model = self._catalog_row(raw, fmt, engine)
             if model is not None:
                 models.append(model)
         page = HfPage(models=models, next_cursor=next_cursor)
@@ -350,7 +361,9 @@ class HfClient:
                 del self._cache[oldest_key]
         return page
 
-    def _catalog_row(self, raw: dict[str, Any], fmt: ModelFormat) -> CatalogModel | None:
+    def _catalog_row(
+        self, raw: dict[str, Any], fmt: ModelFormat, engine: EngineAdapter | None
+    ) -> CatalogModel | None:
         """One catalog row for a Hub repo, or None when it has no id or no file of *fmt*."""
         # Local import to avoid a cycle: query imports hf_client (this
         # module), and hf_client uses pipeline_to_task from query.
@@ -377,18 +390,12 @@ class HfClient:
             trending_score=item.trending_score or 0,
             task=pipeline_to_task(item.pipeline_tag or ""),
             architecture=gguf_meta.architecture,
-            compat=self._compat(fmt, gguf_meta.architecture),
+            compat=_compat(gguf_meta.architecture, engine),
             params=gguf_meta.total,
             safety_stripped=is_safety_stripped(item.tags or []),
             format=fmt,
             formats=formats_from_tags(item.tags or []) | {fmt},
         )
-
-    def _compat(self, fmt: ModelFormat, architecture: str) -> ModelCompat:
-        """The engine verdict for a GGUF row; other formats stay unknown until an engine rules."""
-        if fmt == ModelFormat.GGUF:
-            return classify(architecture, self._engine)
-        return ModelCompat.UNKNOWN
 
     def _log_fetch_failure(self, exc: Exception) -> None:
         """Log an HF fetch failure, rate-limited so offline use doesn't spam.

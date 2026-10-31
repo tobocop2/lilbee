@@ -54,7 +54,6 @@ from lilbee.core.config.enums import CrawlRenderMode, OcrMode
 from lilbee.crawler import CRAWLER_MISSING_MESSAGE
 from lilbee.data.store import Store
 from lilbee.modelhub.model_manager import RemoteModel
-from lilbee.providers.fleet.engines import LLAMA
 from lilbee.runtime import splash as splash_mod
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
@@ -8434,7 +8433,7 @@ async def test_catalog_delete_accepts_bare_hf_repo_row():
                 downloaded_at=datetime.now(UTC).isoformat(),
             ),
         )
-        mgr = ModelManager(models_dir, engine=LLAMA)
+        mgr = ModelManager(models_dir, cfg)
         services = MagicMock()
         services.model_manager = mgr
 
@@ -8601,7 +8600,7 @@ async def test_chat_slash_remove_deletes_an_unregistered_gguf(tmp_path):
         with (
             patch(
                 "lilbee.cli.tui.screens.chat.get_services",
-                return_value=MagicMock(model_manager=ModelManager(models_dir, engine=LLAMA)),
+                return_value=MagicMock(model_manager=ModelManager(models_dir, cfg)),
             ),
             patch(
                 "lilbee.modelhub.model_manager.discovery.classify_all_remote_models",

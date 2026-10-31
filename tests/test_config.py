@@ -32,6 +32,7 @@ from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
 from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
 from lilbee.core.config.model import (
     _TAKES_DEFAULT_WHEN_REFUSED,
+    SERVICE_ONLY_FIELDS,
     _TomlSource,
     env_value,
     value_is_set,
@@ -2852,7 +2853,12 @@ class TestARefusedVariableStops:
         kinds = {name: _kind_of(field) for name, field in Config.model_fields.items()}
         for kind in ("flag", "choice", "number", "optional number"):
             assert sum(1 for found in kinds.values() if found == kind) > 10, kind
-        closed = {name for name, kind in kinds.items() if kind != _TEXT}
+        # A service-only setting reads no variable, so no variable of it is refused.
+        closed = {
+            name
+            for name, kind in kinds.items()
+            if kind != _TEXT and name not in SERVICE_ONLY_FIELDS
+        }
         expected = (closed - _TAKES_DEFAULT_WHEN_REFUSED) | _OPEN_SETTINGS_THAT_REFUSE
         assert sorted(refused ^ expected) == []
 
