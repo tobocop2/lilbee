@@ -702,7 +702,7 @@ def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) ->
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
 
-    def _wedged() -> None:
+    def _wedged(engine) -> None:
         raise ProviderError(
             "device probe wedged", provider="llama-server", kind=ProviderErrorKind.CONNECTION
         )
@@ -721,7 +721,7 @@ def test_reload_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> No
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
 
-    def _no_binary() -> None:
+    def _no_binary(engine) -> None:
         raise ProviderError(
             "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
         )
@@ -1516,7 +1516,7 @@ def ocr_gated_engine(monkeypatch, tmp_path: Path):
     by_role = {role: _fake_launch(role) for role in (WorkerRole.CHAT, WorkerRole.VISION)}
     plans: list[set[WorkerRole]] = []
 
-    def _plan(roles, *_args) -> planning_mod.FleetPlan:
+    def _plan(roles, *_args, engine) -> planning_mod.FleetPlan:
         plans.append(set(roles))
         return planning_mod.FleetPlan(tuple(by_role[role] for role in by_role if role in roles))
 
@@ -2321,7 +2321,7 @@ def test_ensure_fleet_returns_none_when_engine_binary_unavailable(monkeypatch) -
 
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group, engine: _FakeSwap())
 
-    def _no_binary() -> list:
+    def _no_binary(*, engine) -> list:
         raise ProviderError("llama-server binary not found.", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
@@ -2765,7 +2765,7 @@ def test_warm_up_pool_noop_when_swap_already_up_and_ready(monkeypatch, tmp_path:
 
 
 def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) -> None:
-    def _boom() -> list:
+    def _boom(*, engine) -> list:
         raise RuntimeError("plan failed")
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _boom)
@@ -2802,7 +2802,7 @@ def test_warm_up_blocking_stamps_error_with_the_real_reason(monkeypatch) -> None
     """
     from lilbee.providers.warm_progress import WarmPhase
 
-    def _boom() -> list:
+    def _boom(*, engine) -> list:
         raise RuntimeError("engine exited before it was ready")
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _boom)
@@ -2825,7 +2825,7 @@ def test_warm_up_blocking_surfaces_a_probe_failure(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
     from lilbee.providers.warm_progress import WarmPhase
 
-    def _wedged() -> list:
+    def _wedged(*, engine) -> list:
         raise ProviderError(
             "The GPU device probe (llama-server --list-devices) did not respond within 60s",
             kind=ProviderErrorKind.SERVER,
@@ -2855,7 +2855,7 @@ def test_ensure_fleet_propagates_a_probe_failure_to_on_demand_callers(monkeypatc
         lambda *, engine: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
 
-    def _wedged() -> None:
+    def _wedged(engine) -> None:
         raise ProviderError("The GPU device probe did not respond", kind=ProviderErrorKind.SERVER)
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _wedged)
@@ -2871,7 +2871,7 @@ def test_ensure_fleet_stays_quiet_when_the_binary_is_missing(monkeypatch) -> Non
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
 
-    def _no_binary() -> None:
+    def _no_binary(*, engine) -> None:
         raise ProviderError("llama-server binary not found.", kind=ProviderErrorKind.NOT_FOUND)
 
     # A missing binary surfaces first when the placeable set is planned; nothing
@@ -2891,7 +2891,7 @@ def test_plan_and_spawn_serves_nothing_if_the_binary_vanishes_before_the_snapsho
     # snapshot; it must serve nothing, not raise.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _no_binary() -> None:
+    def _no_binary(engine) -> None:
         raise ProviderError("binary vanished", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
@@ -4143,7 +4143,7 @@ class TestReloadSingleFlight:
     def test_reload_requested_mid_flight_runs_a_second_pass(self, monkeypatch) -> None:
         plans: list[int] = []
 
-        def _plan() -> planning_mod.FleetPlan:
+        def _plan(*, engine) -> planning_mod.FleetPlan:
             plans.append(len(plans))
             # fresh object -> differs -> restarts
             return planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),))
@@ -4188,7 +4188,7 @@ class TestReloadSingleFlight:
 
         plans: list[int] = []
 
-        def _plan() -> planning_mod.FleetPlan:
+        def _plan(*, engine) -> planning_mod.FleetPlan:
             plans.append(len(plans))
             return planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),))
 
@@ -4215,7 +4215,7 @@ class TestReloadSingleFlight:
                     raise RuntimeError("first pass failed")
                 super().start(launches)
 
-        def _factory(_d: object, _g: object) -> _FakeSwap:
+        def _factory(_d: object, _g: object, engine) -> _FakeSwap:
             built.append(_FlakyFirstSwap())
             return built[-1]
 
@@ -4587,7 +4587,7 @@ def test_co_tenant_roles_share_one_swap_process(monkeypatch, tmp_path: Path) -> 
     can evict one to load the other. Separate processes would hold both resident."""
     groups: list[SwapGroup] = []
 
-    def _factory(_d: object, group: SwapGroup) -> _FakeSwap:
+    def _factory(_d: object, group: SwapGroup, engine) -> _FakeSwap:
         groups.append(group)
         return _FakeSwap()
 
@@ -4641,7 +4641,7 @@ def test_ensure_fleet_partial_failure_tears_down_started_groups(monkeypatch) -> 
                 raise RuntimeError("second group failed")
             super().start(launches)
 
-    def _factory(_d: object, _g: object) -> _FakeSwap:
+    def _factory(_d: object, _g: object, engine) -> _FakeSwap:
         built.append(_SecondExplodes())
         return built[-1]
 
@@ -6001,7 +6001,7 @@ def test_demanded_chat_ctx_not_capped_by_a_split_plan(monkeypatch) -> None:
 def test_placeable_demand_is_empty_without_an_engine_binary(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _no_binary() -> planning_mod.FleetPlan:
+    def _no_binary(*, engine) -> planning_mod.FleetPlan:
         raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
@@ -6012,7 +6012,7 @@ def test_placeable_demand_is_empty_without_an_engine_binary(monkeypatch) -> None
 def test_placeable_demand_propagates_a_real_planning_failure(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _wedged() -> planning_mod.FleetPlan:
+    def _wedged(*, engine) -> planning_mod.FleetPlan:
         raise ProviderError("wedged probe", kind=ProviderErrorKind.SERVER)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _wedged)
@@ -6058,7 +6058,7 @@ def test_plan_and_spawn_missing_binary_keeps_demand_skips(monkeypatch, tmp_path:
     # demand-time not-installed record the ladder already stored.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _no_binary() -> None:
+    def _no_binary(engine) -> None:
         raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
@@ -6292,7 +6292,7 @@ def test_can_build_engine_false_when_binary_unresolvable(monkeypatch) -> None:
     # A NOT_FOUND probe failure (no engine binary) is the quiet serve-nothing case.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _boom():
+    def _boom(engine):
         raise ProviderError(
             "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
         )
@@ -6321,7 +6321,7 @@ def test_can_build_engine_propagates_a_wedged_probe(monkeypatch) -> None:
     # loud here, before any caller stops a replaceable incumbent.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _wedged():
+    def _wedged(engine):
         raise ProviderError(
             "cuda init failed", provider="llama-server", kind=ProviderErrorKind.CONNECTION
         )
@@ -6351,7 +6351,7 @@ def test_ladder_does_not_kill_a_replaceable_incumbent_when_the_probe_is_wedged(
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
 
-    def _wedged() -> None:
+    def _wedged(engine) -> None:
         raise ProviderError(
             "cuda init failed", provider="llama-server", kind=ProviderErrorKind.CONNECTION
         )

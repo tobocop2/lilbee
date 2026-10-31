@@ -103,7 +103,7 @@ class TestResolveChatCtx:
         model.write_bytes(b"x" * 100)
         seen: dict = {}
 
-        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> int:
+        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int, engine) -> int:
             seen.update(available_bytes=available_bytes, ctx_ceiling=ctx_ceiling)
             return 249856
 
@@ -125,7 +125,7 @@ class TestResolveChatCtx:
         model.write_bytes(b"x" * 100)
         seen: dict = {}
 
-        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> int:
+        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int, engine) -> int:
             seen["ctx_ceiling"] = ctx_ceiling
             return ctx_ceiling
 

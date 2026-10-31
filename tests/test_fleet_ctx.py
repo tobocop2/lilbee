@@ -44,6 +44,7 @@ def _fit(model_path: Path, **overrides: object) -> int:
         # chat_ctx_ceiling; the ceiling-cap test lowers it.
         "ctx_ceiling": 1_000_000,
         "expert_offload": (),
+        "engine": LLAMA,
     }
     kwargs.update(overrides)
     return fit_split_ctx(model_path, **kwargs)  # type: ignore[arg-type]
@@ -225,6 +226,7 @@ def _fit_single(model_path: Path, **overrides: object) -> int:
         "unified": False,
         "ctx_ceiling": 1_000_000,
         "expert_offload": (),
+        "engine": LLAMA,
     }
     kwargs.update(overrides)
     return ctx_mod.fit_single_ctx(model_path, **kwargs)  # type: ignore[arg-type]

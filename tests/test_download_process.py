@@ -385,7 +385,13 @@ def test_download_model_routes_to_a_child_when_cancellable(
     completed: list[Path] = []
 
     def _fake_run(
-        entry: CatalogModel, models_dir: Path, token: str | None, *, on_progress: Any, cancel: Any
+        entry: CatalogModel,
+        models_dir: Path,
+        token: str | None,
+        engine,
+        *,
+        on_progress: Any,
+        cancel: Any,
     ) -> Path:
         calls.append(models_dir)
         return tmp_path / "x.gguf"
@@ -923,7 +929,13 @@ def test_download_model_routes_every_pull_through_a_child(
     signals: list[bool] = []
 
     def _fake_run(
-        entry: CatalogModel, models_dir: Path, token: str | None, *, on_progress: Any, cancel: Any
+        entry: CatalogModel,
+        models_dir: Path,
+        token: str | None,
+        engine,
+        *,
+        on_progress: Any,
+        cancel: Any,
     ) -> Path:
         signals.append(cancel.is_set())
         return tmp_path / "x.gguf"

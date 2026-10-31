@@ -466,7 +466,7 @@ class TestTheReadCacheDescribesOneBinary:
     def _probed(self, monkeypatch) -> list[Path]:
         seen: list[Path] = []
 
-        def _resolve(binary: Path) -> planning_mod.DeviceReading:
+        def _resolve(binary: Path, engine) -> planning_mod.DeviceReading:
             seen.append(binary)
             return _reading([FleetDevice("CUDA", len(seen) - 1, "A", 24 * _GB, 24 * _GB)])
 
@@ -510,7 +510,7 @@ class TestTheReadCacheDescribesOneBinary:
         real = tmp_path / "real"
         real.write_bytes(b"the real engine")
 
-        def _resolve(binary: Path) -> planning_mod.DeviceReading:
+        def _resolve(binary: Path, engine) -> planning_mod.DeviceReading:
             if binary == stub:
                 raise ProviderError("probe wedged", provider="llama-server")
             return _reading([FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)])

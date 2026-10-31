@@ -18,7 +18,7 @@ def test_read_device_cache_collapses_repeat_probes(monkeypatch):
     cache = planning._ReadDeviceCache(ttl_s=1000, failure_ttl_s=1000)
     calls = {"n": 0}
 
-    def fake(_binary):
+    def fake(_binary, engine):
         calls["n"] += 1
         return planning.DeviceReading([FleetDevice("CUDA", 0, "A", GIB, GIB)], EngineBackend.CUDA)
 
@@ -37,7 +37,7 @@ def test_read_device_cache_ttl_zero_always_probes(monkeypatch):
     cache = planning._ReadDeviceCache(ttl_s=0, failure_ttl_s=0)
     calls = {"n": 0}
 
-    def fake(_binary):
+    def fake(_binary, engine):
         calls["n"] += 1
         return planning.DeviceReading([], EngineBackend.CPU)
 

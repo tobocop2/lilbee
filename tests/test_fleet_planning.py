@@ -554,7 +554,7 @@ def test_server_model_inputs_reserves_search_before_chat_on_shared_host(monkeypa
     seen: dict[str, int] = {}
     sizes = {WorkerRole.EMBED: 2 * _GB, WorkerRole.RERANK: 3 * _GB}
 
-    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0, device_count=0):
+    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0, device_count=0, engine):
         if role is WorkerRole.CHAT:
             seen["chat_reservation"] = chat_reservation
         return ModelPlacementInput(role, sizes.get(role, 10 * _GB))
@@ -576,7 +576,7 @@ def test_server_model_inputs_no_reservation_on_discrete_gpu(monkeypatch) -> None
     monkeypatch.setattr(cfg, "vision_model", "")
     seen: dict[str, int] = {}
 
-    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0, device_count=0):
+    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0, device_count=0, engine):
         if role is WorkerRole.CHAT:
             seen["chat_reservation"] = chat_reservation
         return ModelPlacementInput(role, 2 * _GB)
@@ -918,7 +918,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary, engine: [])
         planned_roles: list[tuple[WorkerRole, ...] | None] = []
 
-        def _plan(roles, *_args) -> planning_mod.FleetPlan:
+        def _plan(roles, *_args, engine) -> planning_mod.FleetPlan:
             planned_roles.append(roles)
             return planning_mod.FleetPlan(())
 
@@ -2250,7 +2250,7 @@ class TestReadDeviceCacheFailure:
 
         calls = {"n": 0}
 
-        def _wedged(_binary: Path) -> planning_mod.DeviceReading:
+        def _wedged(_binary: Path, engine) -> planning_mod.DeviceReading:
             calls["n"] += 1
             raise ProviderError("probe wedged")
 
@@ -2267,7 +2267,7 @@ class TestReadDeviceCacheFailure:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         outcomes: list[object] = [ProviderError("probe wedged"), _reading([device])]
 
-        def _next(_binary: Path) -> planning_mod.DeviceReading:
+        def _next(_binary: Path, engine) -> planning_mod.DeviceReading:
             outcome = outcomes.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
@@ -2286,7 +2286,7 @@ class TestReadDeviceCacheFailure:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         outcomes: list[object] = [ProviderError("probe wedged"), _reading([device])]
 
-        def _next(_binary: Path) -> planning_mod.DeviceReading:
+        def _next(_binary: Path, engine) -> planning_mod.DeviceReading:
             outcome = outcomes.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
@@ -2586,7 +2586,9 @@ class TestPlanProbe:
     def _live_card(monkeypatch, total: int, free: int) -> None:
         """What a probe run right now would report, snapshot or no snapshot."""
         card = FleetDevice("CUDA", 0, "A", total, free)
-        monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b: _reading([card]))
+        monkeypatch.setattr(
+            planning_mod._read_device_cache, "get", lambda _b, engine: _reading([card])
+        )
         monkeypatch.setattr(planning_mod, "resolve_devices", lambda _b, engine: [card])
 
     def _capture(self, monkeypatch, *, total_vram: int, free_vram: int, free_ram: int) -> None:
@@ -2643,7 +2645,7 @@ class TestPlanProbe:
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
 
-        def _no_engine(_binary):
+        def _no_engine(_binary, engine):
             raise OSError("no engine")
 
         monkeypatch.setattr(planning_mod._read_device_cache, "get", _no_engine)
@@ -2660,7 +2662,9 @@ class TestPlanSizingIsUnified:
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
-        monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b: _reading(devices))
+        monkeypatch.setattr(
+            planning_mod._read_device_cache, "get", lambda _b, engine: _reading(devices)
+        )
 
     def test_a_dedicated_card_is_charged_its_vram(self, monkeypatch) -> None:
         self._live(monkeypatch, [FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)])
@@ -3988,7 +3992,7 @@ class TestARefusedDeviceIsAlsoKeptFromTheEngine:
         assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
 
     def test_no_snapshot_means_no_claim(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
 
         assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
 
@@ -4048,14 +4052,14 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
     """
 
     def test_the_read_cache_answers_when_no_snapshot_exists(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
         monkeypatch.setattr(
             planning_mod._read_device_cache,
             "get",
-            lambda _b: _reading([FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)]),
+            lambda _b, engine: _reading([FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)]),
         )
 
         assert planning_mod._fleet_backend(engine=LLAMA) == "CUDA"
@@ -4063,10 +4067,10 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
     def test_a_probe_that_cannot_run_yields_no_backend(self, monkeypatch) -> None:
         from lilbee.providers.base import ProviderError
 
-        def _boom(_b):
+        def _boom(_b, engine):
             raise ProviderError("probe wedged")
 
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
@@ -4075,11 +4079,11 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
         assert planning_mod._fleet_backend(engine=LLAMA) is None
 
     def test_a_host_with_no_devices_yields_no_backend(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
-        monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b: _reading([]))
+        monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b, engine: _reading([]))
 
         assert planning_mod._fleet_backend(engine=LLAMA) is None
 
@@ -4102,7 +4106,7 @@ class TestTheFleetBackendFromThePlanSnapshot:
         """A live read under a loaded fleet can disagree; the pass must not."""
         _pin_snapshot(monkeypatch, (FleetDevice("CUDA", 0, "NVIDIA", 24 * _GB, 23 * _GB),))
 
-        def _must_not_run(_b):
+        def _must_not_run(_b, engine):
             raise AssertionError("the live probe was consulted despite a snapshot")
 
         monkeypatch.setattr(planning_mod._read_device_cache, "get", _must_not_run)
@@ -4388,13 +4392,13 @@ class TestProbedDevices:
 
     def test_falls_back_to_the_read_cache(self, monkeypatch) -> None:
         card = _card(8 * _GB)
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server",
             lambda: Path("/bin/llama-server"),
         )
         monkeypatch.setattr(
-            planning_mod._read_device_cache, "get", lambda _binary: _reading([card])
+            planning_mod._read_device_cache, "get", lambda _binary, engine: _reading([card])
         )
         assert planning_mod.probed_devices(engine=LLAMA) == (card,)
 
@@ -4404,7 +4408,7 @@ class TestProbedDevices:
         def _boom() -> Path:
             raise ProviderError("no engine binary", provider="llama-server")
 
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
         monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _boom)
         assert planning_mod.probed_devices(engine=LLAMA) == ()
 
@@ -4474,18 +4478,22 @@ class TestTheOneEngineBackendAnswer:
         A surface that read the empty device list instead would call a CUDA box
         whose probe failed a CPU box, which is what a diagnostics export is for.
         """
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )
 
         monkeypatch.setattr(
-            planning_mod._read_device_cache, "get", lambda _b: _reading([], EngineBackend.CPU)
+            planning_mod._read_device_cache,
+            "get",
+            lambda _b, engine: _reading([], EngineBackend.CPU),
         )
         assert planning_mod.engine_backend(engine=LLAMA) is EngineBackend.CPU
 
         monkeypatch.setattr(
-            planning_mod._read_device_cache, "get", lambda _b: _reading([], EngineBackend.UNKNOWN)
+            planning_mod._read_device_cache,
+            "get",
+            lambda _b, engine: _reading([], EngineBackend.UNKNOWN),
         )
         assert planning_mod.engine_backend(engine=LLAMA) is EngineBackend.UNKNOWN
 
@@ -4493,7 +4501,7 @@ class TestTheOneEngineBackendAnswer:
         """A live read under a loaded fleet can disagree; the pass must not."""
         _pin_snapshot(monkeypatch, backend=EngineBackend.METAL)
 
-        def _must_not_run(_b):
+        def _must_not_run(_b, engine):
             raise AssertionError("the live probe was consulted despite a snapshot")
 
         monkeypatch.setattr(planning_mod._read_device_cache, "get", _must_not_run)
@@ -4523,10 +4531,10 @@ class TestTheOneEngineBackendAnswer:
     def test_a_wedged_probe_claims_nothing(self, monkeypatch) -> None:
         from lilbee.providers.base import ProviderError
 
-        def _boom(_b):
+        def _boom(_b, engine):
             raise ProviderError("probe wedged")
 
-        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda engine: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
         )

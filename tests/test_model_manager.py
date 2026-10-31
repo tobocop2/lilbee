@@ -729,6 +729,7 @@ class TestModelManagerPull:
 
         def fake_download(
             entry: object,
+            engine,
             *,
             on_progress: object = None,
             on_complete: object = None,
@@ -770,6 +771,7 @@ class TestModelManagerPull:
 
         def fake_download(
             entry: object,
+            engine,
             *,
             on_progress: object = None,
             on_complete: object = None,

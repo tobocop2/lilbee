@@ -1659,24 +1659,38 @@ def test_close_leaves_injected_client_open() -> None:
 
 class TestParseSseDeltas:
     def test_non_data_line_is_empty(self) -> None:
-        assert _parse_sse_deltas("event: message") == ("", "")
+        assert _parse_sse_deltas(
+            "event: message", reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field
+        ) == ("", "")
 
     def test_done_sentinel_is_empty(self) -> None:
-        assert _parse_sse_deltas("data: [DONE]") == ("", "")
+        assert _parse_sse_deltas(
+            "data: [DONE]", reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field
+        ) == ("", "")
 
     def test_invalid_json_is_empty(self) -> None:
-        assert _parse_sse_deltas("data: {not json") == ("", "")
+        assert _parse_sse_deltas(
+            "data: {not json",
+            reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+        ) == ("", "")
 
     def test_no_choices_is_empty(self) -> None:
-        assert _parse_sse_deltas('data: {"choices": []}') == ("", "")
+        assert _parse_sse_deltas(
+            'data: {"choices": []}',
+            reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+        ) == ("", "")
 
     def test_extracts_content(self) -> None:
         line = 'data: {"choices":[{"delta":{"content":"hi"}}]}'
-        assert _parse_sse_deltas(line) == ("", "hi")
+        assert _parse_sse_deltas(
+            line, reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field
+        ) == ("", "hi")
 
     def test_extracts_reasoning(self) -> None:
         line = 'data: {"choices":[{"delta":{"reasoning_content":"hmm"}}]}'
-        assert _parse_sse_deltas(line) == ("hmm", "")
+        assert _parse_sse_deltas(
+            line, reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field
+        ) == ("hmm", "")
 
 
 def _tools() -> list[dict]:
@@ -2193,13 +2207,31 @@ def test_coerce_finish_reason_non_string_is_stop() -> None:
 def test_parse_sse_stream_items_skips_malformed_json() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
-    assert list(_parse_sse_stream_items("data: {not json", _ThinkInliner(enabled=True))) == []
+    assert (
+        list(
+            _parse_sse_stream_items(
+                "data: {not json",
+                _ThinkInliner(enabled=True),
+                reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+            )
+        )
+        == []
+    )
 
 
 def test_parse_sse_stream_items_skips_empty_choices() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
-    assert list(_parse_sse_stream_items('data: {"choices": []}', _ThinkInliner(enabled=True))) == []
+    assert (
+        list(
+            _parse_sse_stream_items(
+                'data: {"choices": []}',
+                _ThinkInliner(enabled=True),
+                reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+            )
+        )
+        == []
+    )
 
 
 def test_parse_sse_stream_items_emits_finish_frame_on_length() -> None:
@@ -2207,7 +2239,13 @@ def test_parse_sse_stream_items_emits_finish_frame_on_length() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
     line = 'data: {"choices": [{"delta": {"content": "x"}, "finish_reason": "length"}]}'
-    items = list(_parse_sse_stream_items(line, _ThinkInliner(enabled=True)))
+    items = list(
+        _parse_sse_stream_items(
+            line,
+            _ThinkInliner(enabled=True),
+            reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+        )
+    )
     assert items == ["x", StreamFinish(reason=FinishReason.LENGTH)]
 
 
@@ -2216,7 +2254,13 @@ def test_parse_sse_stream_items_no_finish_frame_without_reason() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
     line = 'data: {"choices": [{"delta": {"content": "x"}, "finish_reason": null}]}'
-    items = list(_parse_sse_stream_items(line, _ThinkInliner(enabled=True)))
+    items = list(
+        _parse_sse_stream_items(
+            line,
+            _ThinkInliner(enabled=True),
+            reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+        )
+    )
     assert not any(isinstance(i, StreamFinish) for i in items)
 
 
