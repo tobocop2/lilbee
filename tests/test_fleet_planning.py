@@ -513,7 +513,7 @@ def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
     # Only EMBED requested -> chat is filtered out even though it is configured.
     _inputs, refs, _res, _skipped = planning_mod._server_model_inputs(
-        (WorkerRole.EMBED,), engine=LLAMA
+        (WorkerRole.EMBED,), engines=planning_mod.engines_for_all_roles(LLAMA)
     )
     assert set(refs) == {WorkerRole.EMBED}
 
@@ -535,7 +535,8 @@ def test_server_model_inputs_skips_sdk_routed_roles(monkeypatch, caplog) -> None
     monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
     with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
         _inputs, refs, _res, skipped = planning_mod._server_model_inputs(
-            (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK), engine=LLAMA
+            (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK),
+            engines=planning_mod.engines_for_all_roles(LLAMA),
         )
     assert WorkerRole.CHAT not in refs
     assert WorkerRole.CHAT not in skipped
@@ -562,7 +563,7 @@ def test_server_model_inputs_reserves_search_before_chat_on_shared_host(monkeypa
 
     monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
     _inputs, _refs, reservation, _skipped = planning_mod._server_model_inputs(
-        unified_budget=20 * _GB, engine=LLAMA
+        unified_budget=20 * _GB, engines=planning_mod.engines_for_all_roles(LLAMA)
     )
     assert reservation == 5 * _GB  # embed (2) + rerank (3)
     assert seen["chat_reservation"] == 5 * _GB
@@ -584,7 +585,7 @@ def test_server_model_inputs_no_reservation_on_discrete_gpu(monkeypatch) -> None
 
     monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
     _inputs, _refs, reservation, _skipped = planning_mod._server_model_inputs(
-        unified_budget=None, engine=LLAMA
+        unified_budget=None, engines=planning_mod.engines_for_all_roles(LLAMA)
     )
     assert reservation == 0
     assert seen["chat_reservation"] == 0
@@ -756,7 +757,9 @@ def test_peak_estimator_returns_per_device_vector(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _est)
-    estimate = planning_mod._peak_estimator({WorkerRole.CHAT: "ref"}, engine=LLAMA)
+    estimate = planning_mod._peak_estimator(
+        {WorkerRole.CHAT: "ref"}, engines=planning_mod.engines_for_all_roles(LLAMA)
+    )
     assert estimate(WorkerRole.CHAT, (1, 1)) == (11, 22)
     # Per-slot context in; the estimator turns it into a total for the parser.
     assert seen["ctx"] == 1000 and seen["slots"] == 2 and seen["ratio"] == (1, 1)
@@ -778,7 +781,9 @@ def test_peak_estimator_vision_passes_mmproj(monkeypatch) -> None:
         return GgufVramEstimate(vram_bytes=0, ram_bytes=0, unified_bytes=0, per_device_vram=(5, 5))
 
     monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _est)
-    estimate = planning_mod._peak_estimator({WorkerRole.VISION: "ref"}, engine=LLAMA)
+    estimate = planning_mod._peak_estimator(
+        {WorkerRole.VISION: "ref"}, engines=planning_mod.engines_for_all_roles(LLAMA)
+    )
     assert estimate(WorkerRole.VISION, (1, 1)) == (5, 5)
     assert seen["mmproj"] == Path("/m/mmproj.gguf")
 
@@ -801,7 +806,9 @@ def test_peak_estimator_reserves_single_sequence_total_for_split_chat(monkeypatc
         )
 
     monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _est)
-    planning_mod._peak_estimator({WorkerRole.CHAT: "ref"}, engine=LLAMA)(WorkerRole.CHAT, (1, 1, 1))
+    planning_mod._peak_estimator(
+        {WorkerRole.CHAT: "ref"}, engines=planning_mod.engines_for_all_roles(LLAMA)
+    )(WorkerRole.CHAT, (1, 1, 1))
     assert seen["slots"] == planning_mod._SPLIT_CHAT_SLOTS
     assert seen["ctx"] == 196608  # ceiling x 1, not ceiling x _CHAT_SLOTS
 
@@ -817,7 +824,9 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "embedding_model", "owner/embed-GGUF/embed.Q8_0.gguf")
         monkeypatch.setattr(cfg, "reranker_model", "")  # unconfigured -> skipped
         monkeypatch.setattr(cfg, "vision_model", "")
-        inputs, refs, _res, _skipped = planning_mod._server_model_inputs(engine=LLAMA)
+        inputs, refs, _res, _skipped = planning_mod._server_model_inputs(
+            engines=planning_mod.engines_for_all_roles(LLAMA)
+        )
         assert {i.role for i in inputs} == {WorkerRole.CHAT, WorkerRole.EMBED}
         assert set(refs) == {WorkerRole.CHAT, WorkerRole.EMBED}
 
@@ -839,7 +848,9 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
         monkeypatch.setattr(cfg, "reranker_model", "")
         monkeypatch.setattr(cfg, "vision_model", "")
-        inputs, refs, _res, skipped = planning_mod._server_model_inputs(engine=LLAMA)
+        inputs, refs, _res, skipped = planning_mod._server_model_inputs(
+            engines=planning_mod.engines_for_all_roles(LLAMA)
+        )
         assert WorkerRole.CHAT not in refs
         assert {i.role for i in inputs} == {WorkerRole.EMBED}
         # The missing chat model is reported as not-installed so a surface can say so.
@@ -874,7 +885,9 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "reranker_model", "")
         monkeypatch.setattr(cfg, "vision_model", "")
         with caplog.at_level(logging.WARNING):
-            inputs, refs, _res, _skipped = planning_mod._server_model_inputs(engine=LLAMA)
+            inputs, refs, _res, _skipped = planning_mod._server_model_inputs(
+                engines=planning_mod.engines_for_all_roles(LLAMA)
+            )
         assert not refs and not inputs
         # The genuinely-missing embed model says so; the chat sizing failure
         # names the estimator instead of misdirecting toward the registry.
@@ -889,7 +902,9 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(cfg, "reranker_model", "some/reranker.gguf")
         monkeypatch.setattr(cfg, "vision_model", "")
-        _inputs, refs, _res, _skipped = planning_mod._server_model_inputs(engine=LLAMA)
+        _inputs, refs, _res, _skipped = planning_mod._server_model_inputs(
+            engines=planning_mod.engines_for_all_roles(LLAMA)
+        )
         assert WorkerRole.RERANK in refs
 
     def test_server_model_inputs_includes_vision_only_with_mmproj(self, monkeypatch) -> None:
@@ -900,10 +915,20 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "vision_model", "some/vision.gguf")
 
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: None)
-        assert WorkerRole.VISION not in planning_mod._server_model_inputs(engine=LLAMA)[1]
+        assert (
+            WorkerRole.VISION
+            not in planning_mod._server_model_inputs(
+                engines=planning_mod.engines_for_all_roles(LLAMA)
+            )[1]
+        )
 
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
-        assert WorkerRole.VISION in planning_mod._server_model_inputs(engine=LLAMA)[1]
+        assert (
+            WorkerRole.VISION
+            in planning_mod._server_model_inputs(engines=planning_mod.engines_for_all_roles(LLAMA))[
+                1
+            ]
+        )
 
     @pytest.mark.parametrize(
         ("ocr_on", "granted", "planned"),
@@ -919,7 +944,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary, engine: [])
         planned_roles: list[tuple[WorkerRole, ...] | None] = []
 
-        def _plan(roles, *_args, engine) -> planning_mod.FleetPlan:
+        def _plan(roles, *_args, engines) -> planning_mod.FleetPlan:
             planned_roles.append(roles)
             return planning_mod.FleetPlan(())
 
@@ -929,7 +954,7 @@ class TestBuildFleetWiring:
         if granted:
             planning_mod.grant_vision_on_request()
         try:
-            planning_mod.plan_all_launches(engine=LLAMA)
+            planning_mod.plan_all_launches(engines=planning_mod.engines_for_all_roles(LLAMA))
         finally:
             planning_mod.revoke_vision_on_request()
         (roles,) = planned_roles
@@ -949,11 +974,13 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "plan_launches", _plan)
         monkeypatch.setattr(cfg, "vision_model", "some/vision.gguf")
         monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO)
-        planning_mod.plan_all_launches(engine=FAKE)
+        planning_mod.plan_all_launches(engines=planning_mod.engines_for_all_roles(FAKE))
         (roles,) = planned_roles
         assert set(roles) == {WorkerRole.CHAT, WorkerRole.EMBED}
         assert WorkerRole.RERANK not in FAKE.served_roles
-        assert set(planning_mod._launched_roles(LLAMA)) == set(WorkerRole)
+        assert set(planning_mod._launched_roles(planning_mod.engines_for_all_roles(LLAMA))) == set(
+            WorkerRole
+        )
 
     def test_placement_inputs_keep_vision_with_ocr_off(self, monkeypatch) -> None:
         # A saved placement edited while OCR is off must still carry the vision pin.
@@ -964,7 +991,12 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "reranker_model", "")
         monkeypatch.setattr(cfg, "vision_model", "some/vision.gguf")
         monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
-        assert WorkerRole.VISION in planning_mod._server_model_inputs(engine=LLAMA)[1]
+        assert (
+            WorkerRole.VISION
+            in planning_mod._server_model_inputs(engines=planning_mod.engines_for_all_roles(LLAMA))[
+                1
+            ]
+        )
 
     def test_estimate_role_vision_forwards_mmproj(self, tmp_path, monkeypatch) -> None:
         # gguf-parser counts the projector, so the estimator must receive its path.
@@ -1828,7 +1860,9 @@ class TestBuildFleetWiring:
         )
         sentinel = MagicMock()
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: sentinel)
-        assert planning_mod.plan_all_launches(engine=LLAMA) == planning_mod.FleetPlan((sentinel,))
+        assert planning_mod.plan_all_launches(
+            engines=planning_mod.engines_for_all_roles(LLAMA)
+        ) == planning_mod.FleetPlan((sentinel,))
 
     def test_plan_all_launches_carries_skipped_not_installed(self, monkeypatch) -> None:
         # The plan surfaces a configured-but-missing chat model so the provider's
@@ -1861,7 +1895,7 @@ class TestBuildFleetWiring:
             ),
         )
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
-        plan = planning_mod.plan_all_launches(engine=LLAMA)
+        plan = planning_mod.plan_all_launches(engines=planning_mod.engines_for_all_roles(LLAMA))
         assert plan.skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
     def test_plan_all_launches_drops_a_chat_launch_with_an_unusable_window(
@@ -1909,7 +1943,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "num_ctx", None)
 
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
-            plan = planning_mod.plan_all_launches(engine=LLAMA)
+            plan = planning_mod.plan_all_launches(engines=planning_mod.engines_for_all_roles(LLAMA))
 
         assert plan.launches == ()
         reason = plan.skipped_unusable_ctx[WorkerRole.CHAT]
@@ -1956,7 +1990,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: pinned)
         monkeypatch.setattr(cfg, "num_ctx", 1024)
 
-        plan = planning_mod.plan_all_launches(engine=LLAMA)
+        plan = planning_mod.plan_all_launches(engines=planning_mod.engines_for_all_roles(LLAMA))
         assert plan.launches == (pinned,)
         assert plan.skipped_unusable_ctx == {}
 
@@ -1997,7 +2031,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
 
         with caplog.at_level(logging.INFO):
-            plan = planning_mod.plan_all_launches(engine=LLAMA)
+            plan = planning_mod.plan_all_launches(engines=planning_mod.engines_for_all_roles(LLAMA))
 
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
         assert "chat, vision" in caplog.text
@@ -2050,7 +2084,7 @@ class TestBuildFleetWiring:
             return MagicMock()
 
         monkeypatch.setattr(planning_mod, "_launch_for", _launch)
-        planning_mod.plan_all_launches(engine=LLAMA)
+        planning_mod.plan_all_launches(engines=planning_mod.engines_for_all_roles(LLAMA))
         assert seen[WorkerRole.CHAT]["reserved_by_device"] == {0: 12 * _GB}
         assert seen[WorkerRole.CHAT]["reserved_after_chat"] == {0: 3 * _GB}
 
@@ -2104,7 +2138,7 @@ class TestBuildFleetWiring:
             return Placement(instances=(), unplaceable_roles=(WorkerRole.CHAT,))
 
         monkeypatch.setattr(planning_mod, "plan_placement", _capture)
-        planning_mod.plan_all_launches(engine=LLAMA)
+        planning_mod.plan_all_launches(engines=planning_mod.engines_for_all_roles(LLAMA))
         assert seen["devices"] == [(0, 24 * _GB)]  # synthesized from the Vulkan fallback
 
 
@@ -2112,7 +2146,9 @@ class TestChatSplitCtxObjective:
     """The chat split's context fitter/target wiring and the bb-a8f charging basis."""
 
     def test_no_chat_model_yields_no_objective(self) -> None:
-        fit, target = planning_mod._chat_split_ctx_objective({WorkerRole.EMBED: "e"}, engine=LLAMA)
+        fit, target = planning_mod._chat_split_ctx_objective(
+            {WorkerRole.EMBED: "e"}, engines=planning_mod.engines_for_all_roles(LLAMA)
+        )
         assert fit is None
         assert target == 0
 
@@ -2132,7 +2168,9 @@ class TestChatSplitCtxObjective:
             return 4096
 
         monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", _fake_fit)
-        fit, target = planning_mod._chat_split_ctx_objective({WorkerRole.CHAT: "ref"}, engine=LLAMA)
+        fit, target = planning_mod._chat_split_ctx_objective(
+            {WorkerRole.CHAT: "ref"}, engines=planning_mod.engines_for_all_roles(LLAMA)
+        )
         assert target == 8192
         assert fit is not None
         assert fit((21, 21), [24 * _GB, 18 * _GB]) == 4096
@@ -2167,7 +2205,12 @@ class TestChatSplitCtxObjective:
 
         monkeypatch.setattr(planning_mod, "plan_placement", _capture)
         planning_mod._resolve_placement(
-            None, [], {WorkerRole.CHAT: "ref"}, devices, unified_budget=None, engine=LLAMA
+            None,
+            [],
+            {WorkerRole.CHAT: "ref"},
+            devices,
+            unified_budget=None,
+            engines=planning_mod.engines_for_all_roles(LLAMA),
         )
         assert captured["chat_ctx_target"] == 8192
         assert callable(captured["chat_ctx_fit"])
@@ -2428,7 +2471,9 @@ class TestEstimateLaunchParity:
         monkeypatch.setattr(llama_mod, "estimate_instance_footprint", _capture)
         is_chat = role is WorkerRole.CHAT
         ratio = (1, 1) if is_chat else ()
-        planning_mod._peak_estimator({role: "ref"}, engine=LLAMA)(role, ratio)
+        planning_mod._peak_estimator(
+            {role: "ref"}, engines=planning_mod.engines_for_all_roles(LLAMA)
+        )(role, ratio)
         devices = (0, 1) if is_chat else (0,)
         by_index = {
             0: FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB),
@@ -2955,7 +3000,7 @@ class TestPlacementChargesAgainstFreeMemory:
             [held],
             unified_budget=None,
             charge_against_free=True,
-            engine=LLAMA,
+            engines=planning_mod.engines_for_all_roles(LLAMA),
         )
         assert WorkerRole.CHAT in placement.tight_roles
 
@@ -2969,7 +3014,7 @@ class TestPlacementChargesAgainstFreeMemory:
             [idle],
             unified_budget=None,
             charge_against_free=True,
-            engine=LLAMA,
+            engines=planning_mod.engines_for_all_roles(LLAMA),
         )
         assert placement.tight_roles == {}
         assert placement.instances == (InstancePlan(WorkerRole.CHAT, (0,)),)
@@ -2989,7 +3034,7 @@ class TestPlacementChargesAgainstFreeMemory:
             [warm],
             unified_budget=None,
             charge_against_free=False,
-            engine=LLAMA,
+            engines=planning_mod.engines_for_all_roles(LLAMA),
         )
         assert placement.tight_roles == {}
 
@@ -3309,7 +3354,7 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
 
         with caplog.at_level(logging.WARNING):
             inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(
-                total_vram=24 * _GB, engine=LLAMA
+                total_vram=24 * _GB, engines=planning_mod.engines_for_all_roles(LLAMA)
             )
         by_role = {i.role: i for i in inputs}
         # The file is 4096 bytes; the KV cache it will allocate dwarfs that.
@@ -3326,7 +3371,7 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
         monkeypatch.setattr(planning_mod.model_cache, "total_system_memory", lambda: 1024)
         with caplog.at_level(logging.WARNING):
             inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(
-                total_vram=1024, engine=LLAMA
+                total_vram=1024, engines=planning_mod.engines_for_all_roles(LLAMA)
             )
         assert WorkerRole.CHAT not in {i.role for i in inputs}
         assert "nowhere for its layers to go" in caplog.text
@@ -3339,7 +3384,7 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
         monkeypatch.setattr(cfg, "n_gpu_layers", 10)
         with caplog.at_level(logging.WARNING):
             inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(
-                total_vram=1024, engine=LLAMA
+                total_vram=1024, engines=planning_mod.engines_for_all_roles(LLAMA)
             )
         assert WorkerRole.CHAT in {i.role for i in inputs}
         assert "weights alone" not in caplog.text
@@ -3368,7 +3413,9 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
         monkeypatch.setattr(cfg, "reranker_model", "")
         monkeypatch.setattr(cfg, "vision_model", "")
         with caplog.at_level(logging.WARNING):
-            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(engine=LLAMA)
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(
+                engines=planning_mod.engines_for_all_roles(LLAMA)
+            )
         assert inputs == []
         assert "could not size" in caplog.text
 
@@ -3400,7 +3447,7 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
         monkeypatch.setattr(cfg, "vision_model", "org/repo/vl.gguf")
         with caplog.at_level(logging.WARNING):
             inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(
-                total_vram=24 * _GB, engine=LLAMA
+                total_vram=24 * _GB, engines=planning_mod.engines_for_all_roles(LLAMA)
             )
         by_role = {i.role: i for i in inputs}
         # The projector still counts toward the weights the floor is built on.
@@ -4593,3 +4640,218 @@ class TestTheOneEngineBackendAnswer:
         monkeypatch.setattr(planning_mod._read_device_cache, "get", _boom)
 
         assert planning_mod.engine_backend(engine=LLAMA) is EngineBackend.UNKNOWN
+
+
+class TestEnginePerRole:
+    """Each role is sized, launched and gated by its own engine in the mapping."""
+
+    def test_each_role_is_sized_by_its_own_engine(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        sized: dict[WorkerRole, object] = {}
+
+        def _estimate(role, ref, *, engine, **_kw) -> ModelPlacementInput:
+            sized[role] = engine
+            return ModelPlacementInput(role, _GB)
+
+        monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        engines = {
+            **planning_mod.engines_for_all_roles(LLAMA),
+            WorkerRole.CHAT: FAKE,
+        }
+        _inputs, refs, _res, _skipped = planning_mod._server_model_inputs(engines=engines)
+        assert set(refs) == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert sized == {WorkerRole.CHAT: FAKE, WorkerRole.EMBED: LLAMA}
+
+    def test_a_role_without_an_engine_is_not_planned(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            planning_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
+        )
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        _inputs, refs, _res, skipped = planning_mod._server_model_inputs(
+            engines={WorkerRole.EMBED: LLAMA}
+        )
+        assert set(refs) == {WorkerRole.EMBED}
+        assert skipped == {}
+
+    def test_launches_come_from_the_engine_of_each_role(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        launched: dict[WorkerRole, object] = {}
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda roles, *, engines, **_k: (
+                [ModelPlacementInput(role, _GB) for role in (WorkerRole.CHAT, WorkerRole.EMBED)],
+                {WorkerRole.CHAT: "org/repo/c.gguf", WorkerRole.EMBED: "org/repo/e.gguf"},
+                0,
+                {},
+            ),
+        )
+
+        def _launch(plan, _ref, _binary, _by_index, *, engine, **_kw):
+            launched[plan.role] = engine
+            return SimpleNamespace(role=plan.role)
+
+        monkeypatch.setattr(planning_mod, "_launch_for", _launch)
+        monkeypatch.setattr(planning_mod, "_unusable_chat_ctx_reason", lambda _launch: None)
+        monkeypatch.setattr(
+            planning_mod, "_plan_devices", lambda _binary, _engine: [_card(24 * _GB)]
+        )
+        engines = {**planning_mod.engines_for_all_roles(LLAMA), WorkerRole.EMBED: FAKE}
+        card = _card(24 * _GB)
+        plan = planning_mod.plan_launches(
+            None, Path("/bin/srv"), {0: card}, [card], engines=engines
+        )
+        assert {launch.role for launch in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert launched == {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+
+    def test_a_role_is_launched_only_if_its_engine_serves_it(self) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        engines = {
+            WorkerRole.CHAT: LLAMA,
+            WorkerRole.EMBED: FAKE,
+            WorkerRole.RERANK: FAKE,
+        }
+        assert set(planning_mod._launched_roles(engines)) == {WorkerRole.CHAT, WorkerRole.EMBED}
+
+    def test_one_engine_is_the_snapshot_engine_without_a_probe(self, monkeypatch) -> None:
+        def _no_probe(_binary, _engine):
+            raise AssertionError("one engine needs no comparison")
+
+        monkeypatch.setattr(planning_mod, "_plan_devices", _no_probe)
+        engines = planning_mod.engines_for_all_roles(LLAMA)
+        assert planning_mod._snapshot_engine(engines) is LLAMA
+
+    def test_the_snapshot_engine_sees_the_least_free_memory(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        free = {id(LLAMA): _card(24 * _GB), id(FAKE): _card(8 * _GB)}
+        monkeypatch.setattr(
+            planning_mod, "_plan_devices", lambda _binary, engine: [free[id(engine)]]
+        )
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod._snapshot_engine(engines) is FAKE
+
+
+class TestSnapshotEngineWithMixedReadings:
+    """The device snapshot ignores engines without a GPU and names an engine that fails."""
+
+    @staticmethod
+    def _devices(monkeypatch, by_engine: dict) -> None:
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
+            planning_mod, "_plan_devices", lambda _binary, engine: by_engine[id(engine)]
+        )
+
+    @staticmethod
+    def _no_launches(monkeypatch) -> None:
+        monkeypatch.setattr(
+            planning_mod, "plan_launches", lambda *_a, **_k: planning_mod.FleetPlan(launches=())
+        )
+
+    @pytest.mark.parametrize("cpu_first", [True, False])
+    def test_a_cpu_only_engine_does_not_hide_the_gpu(self, monkeypatch, cpu_first) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._devices(monkeypatch, {id(LLAMA): [_card(40 * _GB)], id(FAKE): []})
+        roles = [WorkerRole.CHAT, WorkerRole.EMBED]
+        pair = [FAKE, LLAMA] if cpu_first else [LLAMA, FAKE]
+        assert planning_mod._snapshot_engine(dict(zip(roles, pair, strict=True))) is LLAMA
+
+    def test_two_gpu_engines_still_take_the_tighter_one(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._devices(monkeypatch, {id(LLAMA): [_card(40 * _GB)], id(FAKE): [_card(8 * _GB)]})
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod._snapshot_engine(engines) is FAKE
+
+    def test_no_engine_with_a_gpu_gives_a_cpu_plan(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._devices(monkeypatch, {id(LLAMA): [], id(FAKE): []})
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        chosen = planning_mod._snapshot_engine(engines)
+        assert chosen in (LLAMA, FAKE)
+        assert planning_mod._plan_devices(Path("/bin/x"), chosen) == []
+
+    def test_plan_all_launches_plans_against_the_gpu_beside_a_cpu_engine(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        card = _card(40 * _GB)
+        self._devices(monkeypatch, {id(LLAMA): [card], id(FAKE): []})
+        seen: dict[str, object] = {}
+
+        def _plan(roles, _binary, _by_index, devices, *, engines):
+            seen["devices"] = devices
+            return planning_mod.FleetPlan(launches=())
+
+        monkeypatch.setattr(planning_mod, "plan_launches", _plan)
+        monkeypatch.setattr(planning_mod, "_launched_roles", lambda _engines: ())
+        planning_mod.plan_all_launches(engines={WorkerRole.CHAT: FAKE, WorkerRole.EMBED: LLAMA})
+        assert seen["devices"] == [card]
+
+    def test_an_engine_that_fails_to_read_is_named(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+        from tests.conformance.fake_adapter import FAKE
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+
+        def _read(_binary, engine):
+            if engine is FAKE:
+                raise RuntimeError("driver wedged")
+            return [_card(8 * _GB)]
+
+        monkeypatch.setattr(planning_mod, "_plan_devices", _read)
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        with pytest.raises(ProviderError, match=f"Cannot read the GPUs of the {FAKE.name} engine"):
+            planning_mod._snapshot_engine(engines)
+
+    def test_an_empty_mapping_is_refused_in_plain_words(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        with pytest.raises(ProviderError, match="No engine is assigned to any role"):
+            planning_mod._snapshot_engine({})
+
+    def test_a_configured_role_without_an_engine_is_recorded(self, monkeypatch) -> None:
+        self._devices(monkeypatch, {id(LLAMA): [_card(8 * _GB)]})
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "openai/rerank-x")
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/vision.gguf")
+        monkeypatch.setattr(planning_mod, "vision_role_wanted", lambda _ref: False)
+        self._no_launches(monkeypatch)
+        plan = planning_mod.plan_all_launches(engines={WorkerRole.EMBED: LLAMA})
+        assert plan.skipped_no_engine == {WorkerRole.CHAT: "org/repo/chat.gguf"}
+        assert "skipped_no_engine" not in repr(plan)
+
+    def test_a_wanted_vision_role_without_an_engine_is_recorded(self, monkeypatch) -> None:
+        self._devices(monkeypatch, {id(LLAMA): [_card(8 * _GB)]})
+        monkeypatch.setattr(cfg, "chat_model", "")
+        monkeypatch.setattr(cfg, "embedding_model", "")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/vision.gguf")
+        monkeypatch.setattr(planning_mod, "vision_role_wanted", lambda _ref: True)
+        self._no_launches(monkeypatch)
+        plan = planning_mod.plan_all_launches(engines={WorkerRole.CHAT: LLAMA})
+        assert plan.skipped_no_engine == {WorkerRole.VISION: "org/repo/vision.gguf"}
