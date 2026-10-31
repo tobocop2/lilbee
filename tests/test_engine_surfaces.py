@@ -254,7 +254,7 @@ def test_the_tools_and_routes_are_registered() -> None:
     import asyncio
 
     tools = {t.name for t in asyncio.run(mcp_server.build_mcp_server().list_tools())}
-    assert {"engine_roles", "engine_use", "engine_prefer"} <= tools
+    assert {"engine_roles", "engine_use", "engine_prefer", "engine_install"} <= tools
 
 
 ENGINE_TOOLS = {
@@ -263,6 +263,7 @@ ENGINE_TOOLS = {
     "engine_roles",
     "engine_use",
     "engine_prefer",
+    "engine_install",
 }
 
 
