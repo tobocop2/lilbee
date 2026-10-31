@@ -29,6 +29,7 @@ from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
+from lilbee.providers.base import is_header_safe
 from lilbee.providers.factory import sdk_library
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import styled
@@ -455,7 +456,17 @@ def login() -> None:
         typer.echo("No token provided.", err=True)
         raise typer.Exit(1)
 
-    hf_login(token=token.strip(), add_to_git_credential=False)
+    token = token.strip()
+    if not is_header_safe(token):
+        typer.echo(msg.CHAT_LOGIN_UNSENDABLE, err=True)
+        raise typer.Exit(1)
+
+    try:
+        hf_login(token=token, add_to_git_credential=False)
+    except Exception:
+        # No chained exception and no str(exc): the library's text can echo the token.
+        typer.echo(msg.CHAT_LOGIN_FAILED, err=True)
+        raise typer.Exit(1) from None
     typer.echo("Logged in! Gated models (Mistral, Llama, etc.) are now accessible.")
 
 

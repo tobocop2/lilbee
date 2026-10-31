@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 from huggingface_hub import ModelInfo
@@ -26,11 +26,14 @@ from lilbee.catalog.models import (
     estimate_size_gb,
 )
 from lilbee.catalog.refs import GGUF_GLOB, rank_gguf_candidates
+from lilbee.providers.base import is_header_safe
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
+
+_HF_TOKEN_ENV = ("LILBEE_HF_TOKEN", "HF_TOKEN")
 
 # Substrings dropped from huggingface_hub's request / file-download loggers.
 # These advisories aren't actionable in a local TUI: HF prints an
@@ -104,23 +107,54 @@ _HF_CURSOR_PARAM = "cursor"
 _EMPTY_HF_PAGE = HfPage(models=[])
 
 
-def hf_token() -> str | None:
-    """Resolve the HuggingFace token in priority order: env > cfg > hub cache."""
+# A resolved token: the token text, None when the library may look for one, or False
+# when a refused token must make the library send none (it re-reads HF_TOKEN on None).
+HfToken = str | Literal[False] | None
+
+
+def hf_token() -> HfToken:
+    """Resolve the HuggingFace token in priority order: env > cfg > hub cache.
+
+    A token that cannot travel in a header resolves to False, which the library reads as
+    anonymous. None means no token was found.
+    """
     # circular: a module-level cfg import makes Config()'s model-ref validator
     # circular (config -> model_ref -> catalog -> here -> config).
     from lilbee.core.config import cfg
 
-    token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or None
-    if token:
-        return token
-    if cfg.hf_token:
-        return cfg.hf_token
-    try:
-        from huggingface_hub import get_token
+    token: str | None
+    env_name = next((n for n in _HF_TOKEN_ENV if os.environ.get(n)), None)
+    if env_name is not None:
+        token, source = os.environ[env_name], f"the {env_name} environment variable"
+    elif cfg.hf_token:
+        token, source = cfg.hf_token, "the hf_token setting"
+    else:
+        try:
+            from huggingface_hub import get_token
 
-        return get_token()
-    except Exception:
-        return None
+            token = get_token()
+        except Exception:
+            return None
+        source = "the Hugging Face token file"
+    if token is not None and not is_hf_token_sendable(token):
+        _warn_unsendable_token(source)
+        return False
+    return token
+
+
+def is_hf_token_sendable(token: str) -> bool:
+    """True when *token* can travel in a header and holds no space."""
+    return is_header_safe(token) and " " not in token
+
+
+@functools.cache
+def _warn_unsendable_token(source: str) -> None:
+    """Tell the user once per source that the token is not sent."""
+    log.warning(
+        "The token from %s holds a character that cannot be sent, "
+        "so requests run without a token. Set it again.",
+        source,
+    )
 
 
 def hf_headers() -> dict[str, str]:

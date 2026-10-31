@@ -297,6 +297,14 @@ class TestAdd:
         ]
         assert json.loads(cfg.server_presets) == _stored()
 
+    @pytest.mark.parametrize("bad", ["fake\nkey", "fake\x00key"])
+    def test_a_key_with_a_control_character_is_refused_with_no_echo(self, bad):
+        with pytest.raises(ValueError) as refused:
+            presets.add_preset("alpha", URL, roles=["chat"], api_key=bad)
+        assert str(refused.value) == "The API key holds a character that cannot be stored."
+        assert "fake" not in repr(refused.value)
+        assert _stored() == []
+
     def test_a_key_that_cannot_be_stored_is_refused_with_no_echo(self):
         with pytest.raises(ValueError) as refused:
             presets.add_preset(

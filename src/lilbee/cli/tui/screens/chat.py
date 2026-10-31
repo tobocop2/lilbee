@@ -109,6 +109,7 @@ from lilbee.data.store import (
     SearchScope,
     scope_to_chunk_type,
 )
+from lilbee.providers.base import is_header_safe
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
@@ -1374,16 +1375,18 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _run_hf_login(self, token: str) -> None:
+        if not is_header_safe(token):
+            call_from_thread(self, self.notify, msg.CHAT_LOGIN_UNSENDABLE, severity="error")
+            return
         try:
             from huggingface_hub import login
 
             login(token=token, add_to_git_credential=False)
             call_from_thread(self, self.notify, msg.CHAT_LOGGED_IN)
         except Exception as exc:
-            log.warning("HuggingFace login failed", exc_info=True)
-            call_from_thread(
-                self, self.notify, msg.CHAT_LOGIN_FAILED.format(error=exc), severity="error"
-            )
+            # No exc_info and no str(exc): the library's text can echo the token.
+            log.warning("HuggingFace login failed: %s", type(exc).__name__)
+            call_from_thread(self, self.notify, msg.CHAT_LOGIN_FAILED, severity="error")
 
     def _cmd_model(self, args: str) -> None:
         if args:

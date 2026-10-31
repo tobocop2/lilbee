@@ -1447,3 +1447,32 @@ class TestEmbedReindexRequired:
         assert appset._embed_reindex_required() is True
         monkeypatch.setattr(appset.cfg, "embedding_model", "acme/built-GGUF/built.gguf")
         assert appset._embed_reindex_required() is False
+
+
+class TestHfTokenWrite:
+    @pytest.mark.parametrize("bad", ["hf_fake\nsecret", "hf_fake\x00secret"])
+    def test_write_refuses_a_token_that_cannot_be_sent(self, bad: str, caplog) -> None:
+        from lilbee.app import settings as appset
+
+        before = appset.cfg.hf_token
+        with caplog.at_level("DEBUG"), pytest.raises(ValueError, match="cannot be sent") as exc:
+            appset.apply_settings_update({"hf_token": bad})
+        assert "secret" not in str(exc.value)
+        assert "secret" not in caplog.text
+        assert appset.cfg.hf_token == before
+
+    def test_write_refuses_a_token_with_a_space(self) -> None:
+        from lilbee.app import settings as appset
+
+        with pytest.raises(ValueError, match="cannot be sent"):
+            appset.apply_settings_update({"hf_token": "hf_fake secret"})
+
+    def test_write_keeps_a_valid_token_byte_identical(self, monkeypatch) -> None:
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "hf_token", "")
+        with mock.patch.object(appset.persistent_settings, "set_value"):
+            appset.apply_settings_update(
+                {"hf_token": "hf_FakeToken-0123_abc"}
+            )  # pragma: allowlist secret
+        assert appset.cfg.hf_token == "hf_FakeToken-0123_abc"  # pragma: allowlist secret

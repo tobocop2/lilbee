@@ -46,6 +46,11 @@ CHAT_MESSAGE_OVERHEAD_TOKENS = 8
 BUDGET_CHARS_PER_TOKEN = 3
 
 
+def is_header_safe(secret: str) -> bool:
+    """True when *secret* can travel in an HTTP header: printable ASCII only."""
+    return secret.isascii() and secret.isprintable()
+
+
 def prompt_token_budget(ctx: int, num_predict: int | None = None) -> int:
     """Tokens a prompt may occupy in a *ctx*-token window, reserve and margin removed."""
     return ctx - (num_predict or GENERATION_RESERVE_TOKENS) - CONTEXT_WINDOW_MARGIN_TOKENS

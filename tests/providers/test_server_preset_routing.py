@@ -18,6 +18,7 @@ from lilbee.modelhub.role_validator import _is_registry_ref
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.backends.liter_llm.config import _route_model, rerank_route
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import _is_native_rerank_ref
@@ -275,9 +276,9 @@ class TestRegistryRef:
         services = mock.MagicMock()
         services.registry.installed_ref_for_repo.return_value = "org/repo/q.gguf"
         with mock.patch("lilbee.providers.routing_provider.get_services", return_value=services):
-            assert _is_native_rerank_ref("wired/repo") is True
+            assert _is_native_rerank_ref("wired/repo", LLAMA) is True
             _store(_preset())
-            assert _is_native_rerank_ref("wired/repo") is False
+            assert _is_native_rerank_ref("wired/repo", LLAMA) is False
 
 
 class TestSdkProviderRouting:

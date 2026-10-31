@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from lilbee.catalog.download_progress import ProgressCallback
+from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.models import CatalogModel
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
@@ -185,7 +186,7 @@ class _PipeProbe:
 def download_in_subprocess(
     entry: CatalogModel,
     models_dir: Path,
-    token: str | None,
+    token: HfToken,
     engine: EngineAdapter,
     *,
     on_progress: ProgressCallback | None,
@@ -225,7 +226,7 @@ def _stalled_download_message(hf_repo: str) -> str:
 def _run_one_attempt(
     entry: CatalogModel,
     models_dir: Path,
-    token: str | None,
+    token: HfToken,
     engine: EngineAdapter,
     on_progress: ProgressCallback | None,
     cancel: CancelSignal,
@@ -260,7 +261,7 @@ def _discard_partial_blobs(models_dir: Path, hf_repo: str, owned: list[str]) -> 
 
 
 def _start_worker(
-    entry: CatalogModel, models_dir: Path, token: str | None, engine: EngineAdapter
+    entry: CatalogModel, models_dir: Path, token: HfToken, engine: EngineAdapter
 ) -> tuple[_Worker, Connection]:
     """Spawn the download child; fork is unsafe under the parent's threads.
 
@@ -360,7 +361,7 @@ def _run_download_child(
     conn: Connection,
     entry: CatalogModel,
     models_dir: str,
-    token: str | None,
+    token: HfToken,
     engine: EngineAdapter,
 ) -> None:
     """Child-process entry: fetch the files and report the verdict over *conn*."""

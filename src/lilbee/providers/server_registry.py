@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
 from lilbee.catalog.types import ModelSource
-from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.base import ProviderError, ProviderErrorKind, is_header_safe
 from lilbee.providers.local_servers import LOCAL_SERVER_KEYS
 from lilbee.providers.roles import WorkerRole
 
@@ -43,8 +43,8 @@ class RerankWire(StrEnum):
 
 def checked_key(api_key: str) -> SecretStr:
     """*api_key* as a secret; ValueError that does not repeat it when it cannot be stored."""
-    # A compare and no caught UnicodeEncodeError: its object would keep the key on the chain.
-    if api_key.encode("utf-8", "replace").decode("utf-8") != api_key:
+    # A check and no caught exception: its object would keep the key on the chain.
+    if not is_header_safe(api_key):
         raise ValueError("The API key holds a character that cannot be stored.")
     return SecretStr(api_key)
 

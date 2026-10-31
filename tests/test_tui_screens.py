@@ -12996,6 +12996,49 @@ async def test_chat_login_with_token_error():
             mock_login.assert_called_once()
 
 
+@pytest.mark.parametrize("bad", ["hf_fake\nsecret", "hf_fake\x00secret"])
+async def test_chat_login_refuses_a_token_that_cannot_be_a_header_value(bad, caplog):
+    """The token never reaches the login call, the log or the toast."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch("huggingface_hub.login") as mock_login,
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            app.screen._cmd_login(bad)
+            while app.screen.workers:
+                await pilot.pause()
+            await pilot.pause()
+        mock_login.assert_not_called()
+        mock_notify.assert_called_once_with(msg.CHAT_LOGIN_UNSENDABLE, severity="error")
+        assert "secret" not in caplog.text
+        assert "secret" not in repr(mock_notify.call_args)
+
+
+async def test_chat_login_failure_keeps_the_library_text_out_of_log_and_toast(caplog):
+    """A library error that echoes the token reaches neither the log nor the toast."""
+    from lilbee.cli.tui import messages as msg
+
+    echo = ValueError("Illegal header value b'Bearer hf_fakesecret'")
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch("huggingface_hub.login", side_effect=echo),
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            app.screen._cmd_login("hf_fakesecret")
+            while app.screen.workers:
+                await pilot.pause()
+            await pilot.pause()
+        mock_notify.assert_called_once_with(msg.CHAT_LOGIN_FAILED, severity="error")
+        assert "fakesecret" not in caplog.text
+        assert "HuggingFace login failed: ValueError" in caplog.text
+
+
 async def test_chat_enter_normal_mode_while_streaming_drops_to_normal():
     """action_enter_normal_mode now always goes to NORMAL, even mid-stream.
 

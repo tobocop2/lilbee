@@ -8,7 +8,7 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
@@ -120,7 +120,7 @@ class FakeAdapter:
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:
