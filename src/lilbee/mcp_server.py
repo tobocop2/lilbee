@@ -276,7 +276,14 @@ ENGINES_DISABLED_ERROR = (
     "config.toml."
 )
 _ENGINE_TOOL_NAMES: frozenset[str] = frozenset(
-    {"engine_list", "engine_remove", "engine_roles", "engine_use", "engine_prefer"}
+    {
+        "engine_list",
+        "engine_remove",
+        "engine_roles",
+        "engine_use",
+        "engine_prefer",
+        "engine_install",
+    }
 )
 
 PRESETS_DISABLED_ERROR = (
@@ -2029,6 +2036,28 @@ def engine_prefer_tool(engine: str, confirm_embed_change: bool = False) -> dict[
     return _engine_result(
         lambda: EngineChosenResponse(engine=engine_service.prefer(engine, confirm_embed_change))
     )
+
+
+@_tool_named("engine_install")
+def engine_install_tool(engine: str, wheel: str | None = None) -> dict[str, Any]:
+    """Install an engine build from its pack; the host must pass the engine's gate.
+
+    ``wheel`` is a command line option; a call that sets it is refused.
+    """
+    from lilbee.server.models import EngineInstalledResponse
+
+    if (refused := _engine_write_refused()) is not None:
+        return refused
+    if wheel is not None:
+        return _error(engine_service.WHEEL_CLI_ONLY)
+
+    def install() -> EngineInstalledResponse:
+        built = engine_service.install(engine)
+        return EngineInstalledResponse(
+            engine=built.engine, version=built.version, backend=built.backend
+        )
+
+    return _engine_result(install)
 
 
 def build_mcp_server() -> LilbeeMCP:
