@@ -24,12 +24,6 @@ class EngineName(StrEnum):
     LLAMA = "llama.cpp"
 
 
-class ModelFormat(StrEnum):
-    """A weight file format an engine loads."""
-
-    GGUF = "gguf"
-
-
 class MemoryKind(StrEnum):
     """How much an engine's memory figures can be trusted."""
 
