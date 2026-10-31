@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import stat
+import sys
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -257,6 +258,25 @@ def test_an_unreadable_engines_folder_leaves_llama_chosen(
     assert "engines folder is locked" in caplog.text
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="mode 0 does not deny reads on Windows")
+def test_an_unreadable_folder_of_another_engine_keeps_this_engine_installed(
+    store_engine: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _install_pinned(store_engine)
+    other = engines_root(store_engine) / EngineName.TEI.value
+    other.mkdir()
+    other.chmod(0)
+    try:
+        with caplog.at_level("WARNING"):
+            installed = installed_engines()
+    finally:
+        other.chmod(stat.S_IRWXU)
+    assert EngineName.MISTRAL in installed
+    assert EngineName.LLAMA in installed
+    assert EngineName.TEI not in installed
+    assert "mistral.rs" not in caplog.text
+
+
 def test_a_build_of_an_engine_with_no_published_pack_is_not_installed(
     store_engine: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -384,8 +404,9 @@ def test_the_default_skips_an_engine_that_does_not_serve_the_role(
     monkeypatch.setitem(ADAPTERS, EngineName.LLAMA, _NoChat())  # type: ignore[arg-type]
     chat = _rule(WorkerRole.CHAT)
     assert chat.name is None
-    assert chat.notice == "For chat: No installed engine loads the gguf format of org/m. " + (
-        "Run lilbee engine list to see the installed engines."
+    assert chat.notice == (
+        "For chat: No engine is chosen by default for the gguf format of org/m. "
+        "Choose mistral.rs with lilbee engine use or lilbee engine prefer."
     )
     assert _rule(WorkerRole.EMBED).name is EngineName.LLAMA
 

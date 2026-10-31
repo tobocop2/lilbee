@@ -167,6 +167,26 @@ def test_auto_with_no_engine_returns_text_and_require_raises() -> None:
         got.require()
 
 
+def test_auto_names_the_installed_engine_that_loads_a_format_the_default_skips() -> None:
+    got = _ask(fmt=ST, installed={L: LOADS[L], M: {ST}})
+    assert got.name is None
+    assert got.notice == (
+        "No engine is chosen by default for the safetensors format. "
+        "Choose mlx with lilbee engine use or lilbee engine prefer."
+    )
+
+
+def test_a_preference_that_skips_the_role_names_the_engine_that_serves_it() -> None:
+    adapter = {L: LOADS[L], M: {ST}}
+    got = _ask(fmt=ST, installed=adapter, preferred=L)
+    assert got.name is None
+    assert got.notice == (
+        "Engine llama.cpp cannot load the safetensors format. "
+        "No engine is chosen by default. "
+        "Choose mlx with lilbee engine use or lilbee engine prefer."
+    )
+
+
 def test_require_returns_the_name() -> None:
     assert _ask().require() is L
 

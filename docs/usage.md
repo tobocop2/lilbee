@@ -461,7 +461,9 @@ the request again with `confirm_embed_change` set to `true` to write the change.
 Run `lilbee engine list` to see the engine builds installed beside the models.
 If none is installed, it prints `No engine builds are installed.` Run
 `lilbee engine remove <engine> <version> <backend>` to delete one build. Use
-the three values that `engine list` shows.
+the three values that `engine list` shows. If the build of an engine differs
+from the pin, `engine list` prints one line: the engine is not installed, and
+the line names the build that differs.
 
 #### The saved choice
 
@@ -519,7 +521,8 @@ An engine that is not bundled needs a pack. No pack of ik_llama.cpp, mistral.rs
 or TEI is published yet, so today all three engines refuse to install and print
 the no-pack text. Nothing is installed, and llama.cpp stays in use.
 
-When a pack exists, copy it into the `packs` folder of the engines folder, then run:
+When a pack exists, copy it into the `packs` folder of the engines folder. Name the file
+`<engine>-<version>-<backend>.whl`. Then run:
 
 ```bash
 lilbee engine install <engine>
