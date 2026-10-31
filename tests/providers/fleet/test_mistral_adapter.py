@@ -156,7 +156,10 @@ def test_a_host_that_cannot_be_read_neither_passes_nor_refuses() -> None:
     assert MISTRAL.pick_build(host).backend is None
 
 
-def test_chat_and_vision_serve_on_the_cpu_without_devices(tmp_path: Path) -> None:
+def test_chat_and_vision_serve_on_the_cpu_with_the_cpu_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
     for role in (WorkerRole.CHAT, WorkerRole.VISION):
         spec = MISTRAL.role_spec(role, None, None)
         argv = MISTRAL.launch_argv(spec, request(tmp_path))
@@ -173,7 +176,10 @@ def test_chat_and_vision_serve_on_the_cpu_without_devices(tmp_path: Path) -> Non
         ]
 
 
-def test_embed_names_the_embedding_command_after_the_serve_flags(tmp_path: Path) -> None:
+def test_embed_names_the_embedding_command_after_the_serve_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
     spec = MISTRAL.role_spec(WorkerRole.EMBED, None, None)
     argv = MISTRAL.launch_argv(spec, request(tmp_path))
     assert argv[1:8] == ["serve", "--host", "127.0.0.1", "--port", PORT_SLOT, "embedding", "--cpu"]
@@ -198,11 +204,37 @@ def test_a_gguf_goes_by_its_file_name_with_the_folder_as_the_model(tmp_path: Pat
     assert argv[-4:] == ["-m", str(model.parent), "-f", "m-Q4_K_M.gguf"]
 
 
-def test_devices_cap_the_kv_cache_instead_of_the_cpu_flag(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "host",
+    [
+        pytest.param(("Linux", "x86_64", [L4]), id="cuda"),
+        pytest.param(("Darwin", "arm64", None), id="metal"),
+    ],
+)
+@pytest.mark.parametrize("devices", [(), (0,)])
+def test_a_gpu_build_turns_paged_attention_off_and_never_forces_the_cpu(
+    host: tuple[str, str, list[tuple[str, tuple[int, int]]] | None],
+    devices: tuple[int, ...],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system, machine, gpus = host
+    monkeypatch.setattr(runnable, "session_host", lambda: caps(system, machine, gpus=gpus))
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, devices=devices))
+    assert "--cpu" not in argv
+    assert "--gpu-memory-utilization" not in argv
+    assert argv[argv.index("--paged-attn") + 1 : argv.index("--paged-attn") + 2] == ["off"]
+
+
+def test_a_cpu_build_forces_the_cpu_even_when_a_device_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
     spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
     argv = MISTRAL.launch_argv(spec, request(tmp_path, devices=(0,)))
-    assert "--cpu" not in argv
-    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.5"
+    assert "--cpu" in argv
+    assert "--paged-attn" not in argv
 
 
 def test_rerank_has_no_spec_and_is_not_served() -> None:

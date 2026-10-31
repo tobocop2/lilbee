@@ -46,9 +46,6 @@ _SUPPORTED_HOSTS = frozenset(
         (HostOS.WINDOWS, HostArch.X86_64),
     }
 )
-# The share of card memory the paged KV cache may take. Its default took 37 of 48 GiB and
-# the first chat then failed for lack of workspace; 0.5 shrank the cache to 15 GiB.
-_KV_CARD_SHARE = "0.5"
 
 _PROFILE = RequestProfile(
     embed_fields={},
@@ -184,7 +181,9 @@ class MistralAdapter:
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
         """The serve command; the engine places the model itself, so layers and context stay unset.
 
-        A role with devices caps the KV cache at a share of the card. The port flag
+        The backend of the build decides the device flags: a CPU build gets ``--cpu``, and
+        any GPU build turns paged attention off, because its cache takes the whole card
+        and the first chat then answers 503. The port flag
         belongs to ``serve``, so it sits before the model subcommand. A GGUF file
         goes by ``-f`` with its folder as ``-m``; how the engine takes a folder with
         several quantizations is open for slice 8.
@@ -192,11 +191,18 @@ class MistralAdapter:
         argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
         if spec.role is WorkerRole.EMBED:
             argv.append("embedding")
-        argv += ["--gpu-memory-utilization", _KV_CARD_SHARE] if request.devices else ["--cpu"]
+        argv += self._device_flags()
         path = request.model_path
         if path.suffix.lower() == _GGUF_SUFFIX:
             return [*argv, "-m", str(path.parent), "-f", path.name]
         return [*argv, "-m", str(path)]
+
+    def _device_flags(self) -> list[str]:
+        from lilbee.catalog.runnable import session_host
+
+        if self.pick_build(session_host()).backend in (None, _CPU):
+            return ["--cpu"]
+        return ["--paged-attn", "off"]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return DeviceProbe(devices=[], output="")
