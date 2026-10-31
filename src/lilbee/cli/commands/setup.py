@@ -193,7 +193,10 @@ def _self_check_server(
         shutil.rmtree(work_dir, ignore_errors=True)
         raise
     client = LlamaServerClient(
-        swap.endpoint(), launch.model_id, inline_reasoning=role is WorkerRole.CHAT
+        swap.endpoint(),
+        launch.model_id,
+        inline_reasoning=role is WorkerRole.CHAT,
+        profile=LLAMA.request_profile(role),
     )
     return swap, client, work_dir
 

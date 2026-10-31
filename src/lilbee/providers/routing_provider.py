@@ -29,6 +29,7 @@ from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
     from lilbee.providers.warm_progress import WarmProgress
 
@@ -43,7 +44,8 @@ class RoutingProvider(LLMProvider):
     unchanged, rather than silently falling through to a remote backend.
     """
 
-    def __init__(self, *, hold_warm: bool = False) -> None:
+    def __init__(self, *, engine: EngineAdapter, hold_warm: bool = False) -> None:
+        self._engine = engine
         self._local: LLMProvider | None = None
         self._sdk_provider: SdkLLMProvider | None = None
         # Carried until the local fleet is lazily built, so a provider created for
@@ -65,7 +67,7 @@ class RoutingProvider(LLMProvider):
                 if self._local is None:
                     from lilbee.providers.fleet.provider import FleetProvider
 
-                    self._local = FleetProvider(hold_warm=self._hold_warm)
+                    self._local = FleetProvider(engine=self._engine, hold_warm=self._hold_warm)
         return self._local
 
     def _get_sdk_provider(self) -> SdkLLMProvider:
