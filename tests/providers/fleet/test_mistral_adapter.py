@@ -18,8 +18,9 @@ from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet import host_caps, swap_config
+from lilbee.providers.fleet import devices, host_caps, swap_config
 from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
 from lilbee.providers.fleet.engines import mistral
 from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineName, LaunchRequest
@@ -29,6 +30,7 @@ from lilbee.providers.fleet.engines.choice import (
     pin_lock,
 )
 from lilbee.providers.fleet.engines.mistral import MISTRAL
+from lilbee.providers.fleet.host_caps import CardMemory
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.roles import WorkerRole
@@ -295,9 +297,32 @@ def test_the_memory_estimate_is_a_fixed_reserve_of_the_file_size(tmp_path: Path)
     assert missing.device_bytes == UNKNOWN_SIZE_RESERVE_BYTES
 
 
-def test_the_probes_answer_unknown_without_running_the_binary(tmp_path: Path) -> None:
+def _no_read() -> list[CardMemory]:
+    raise AssertionError("a CPU build read the driver")
+
+
+def test_a_cpu_build_reads_no_card_and_runs_no_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
+    monkeypatch.setattr(devices, "read_card_memory", _no_read)
     probe = MISTRAL.discover_devices(tmp_path / "never-run")
     assert (probe.devices, probe.spoke_protocol) == ([], False)
+
+
+def test_a_cuda_build_reads_the_cards_from_the_driver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    card = CardMemory("GPU-a", "NVIDIA L4", 24 << 30, 20 << 30)
+    monkeypatch.setattr(
+        runnable, "session_host", lambda: caps("Linux", "x86_64", gpus=[("NVIDIA L4", (8, 9))])
+    )
+    monkeypatch.setattr(devices, "read_card_memory", lambda: [card])
+    probe = MISTRAL.discover_devices(tmp_path / "never-run")
+    assert probe.devices == [FleetDevice("CUDA", 0, "NVIDIA L4", 24 << 30, 20 << 30)]
+
+
+def test_the_probes_answer_unknown_without_running_the_binary(tmp_path: Path) -> None:
     assert not MISTRAL.check_readback(tmp_path)
     assert not MISTRAL.supports_fit_target(tmp_path)
     assert not MISTRAL.supports_shared_kv(tmp_path)

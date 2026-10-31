@@ -623,7 +623,7 @@ class TestProvider:
         seen = self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
         provider = FleetProvider()
         assert provider._plan_and_spawn(tmp_path)
-        assert seen["probe"] == [spy]
+        assert seen["probe"] == [_mixed_book(spy)]
         assert seen["plan"] == [_mixed_book(spy)]
         assert seen["swap"] == [_mixed_book(spy)]
 
@@ -635,8 +635,10 @@ class TestProvider:
         monkeypatch.setattr(provider, "_reload_dir", lambda: tmp_path)
         monkeypatch.setattr(provider, "_preload_restarted", lambda restarted: None)
         provider._reload_pass()
-        assert seen["refresh"] == [spy]
-        assert seen["probe"] == [spy]  # nothing was running, so the reload re-captures the box
+        assert seen["refresh"] == [_mixed_book(spy)]
+        assert seen["probe"] == [
+            _mixed_book(spy)
+        ]  # nothing was running, so the reload re-captures the box
         assert seen["plan"] == [_mixed_book(spy)]
         assert seen["swap"] == [_mixed_book(spy)]
 

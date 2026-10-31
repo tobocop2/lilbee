@@ -410,7 +410,7 @@ class TestMixedPlanAcrossCards:
         busy = [replace(card, free_bytes=4 * _GIB) for card in cards_of((8,))]
         chat = CardEngine("engine-a", tmp_path / "a", roles, busy)
         embed = CardEngine("engine-b", tmp_path / "b", roles, busy)
-        planning.capture_plan_probe(engine=chat)
+        planning.capture_plan_probe({WorkerRole.CHAT: chat})
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             planning.plan_all_launches(engines={C: chat, E: embed})
         model = f"chat model org/repo/{model_file(C)} (engine-a)"
