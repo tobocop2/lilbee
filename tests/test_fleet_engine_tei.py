@@ -191,14 +191,15 @@ def test_launch_raises_the_server_batch_limit_to_the_client_batch(tmp_path: Path
     ]
 
 
-def test_pin_names_the_picked_build_and_a_digest_no_wheel_matches(
+def test_pin_names_the_picked_build_and_refuses_a_lock_with_no_pack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.engines.tei.detect", lambda: _caps(gpu=L4))
     pin = TEI.pin_record()
     assert (pin["engine"], pin["version"], pin["backend"]) == ("tei", "1.9.4", "cuda-sm89")
     assert pin["licenses"] == ["Apache-2.0"]
-    assert choice.pin_lock(pin).sha256 == "0" * 64
+    with pytest.raises(choice.NoPublishedPackError, match=r"No pack of tei is published yet\."):
+        choice.pin_lock(pin)
 
 
 def test_binary_comes_from_the_store_record_of_the_pin(
