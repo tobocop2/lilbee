@@ -861,7 +861,7 @@ class TestEngineHandler:
         app = _ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             chat = await await_chat(app, pilot)
-            with mock.patch.object(chat, "notify") as notify:
+            with mock.patch.object(app, "notify") as notify:
                 chat._cmd_engine("roles")
                 assert await wait_until(pilot, lambda: notify.called)
         assert "chat: " in notify.call_args.args[0]
@@ -871,7 +871,7 @@ class TestEngineHandler:
         app = _ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             chat = await await_chat(app, pilot)
-            with mock.patch.object(chat, "notify") as notify:
+            with mock.patch.object(app, "notify") as notify:
                 chat._cmd_engine("prefer nonesuch")
                 assert await wait_until(pilot, lambda: notify.called)
         assert "No engine is named 'nonesuch'" in notify.call_args.args[0]
