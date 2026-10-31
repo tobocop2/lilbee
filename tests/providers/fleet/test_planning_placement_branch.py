@@ -260,13 +260,12 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
 def test_no_spec_uses_auto_planner(monkeypatch):
     devices = [FleetDevice("CUDA", 0, "A", 80 * GIB, 80 * GIB)]
     called = {}
-    monkeypatch.setattr(
-        planning,
-        "plan_placement",
-        lambda inputs, devs, *, estimate_peak, unified_budget, **_kw: (
-            called.setdefault("auto", True) or Placement(instances=(), unplaceable_roles=())
-        ),
-    )
+
+    def fake_plan(inputs, devs, *, estimate_peak, unified_budget, **_kw):
+        called["auto"] = True
+        return Placement(instances=(), unplaceable_roles=())
+
+    monkeypatch.setattr(planning, "plan_placement", fake_plan)
     planning._resolve_placement(
         None, [], {}, devices, unified_budget=None, engines=planning.engines_for_all_roles(LLAMA)
     )
