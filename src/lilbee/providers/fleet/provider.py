@@ -2558,10 +2558,17 @@ class FleetProvider:
             self._reload_blocking()
             return
         threading.Thread(
-            target=self._reload_blocking,
+            target=self._reload_off_thread,
             name=thread_name,
             daemon=True,
         ).start()
+
+    def _reload_off_thread(self) -> None:
+        """Run the reload for a thread with no caller to hear it: log the failure."""
+        try:
+            self._reload_blocking()
+        except (ProviderError, OSError) as exc:
+            log.error("The engine reload failed: %s", exc)
 
     def _reload_blocking(self) -> None:
         """Run reload passes until no further reload arrived mid-pass.

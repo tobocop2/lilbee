@@ -6,6 +6,7 @@ engine book, the plan, the reload and the engine service are the product's own.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import threading
@@ -15,11 +16,13 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
+from typer.testing import CliRunner
 
 from lilbee.app import engine_service
 from lilbee.app import services as services_mod
 from lilbee.app.engine_choice import resolve_engines
 from lilbee.app.services import Services, build_services
+from lilbee.cli import app as cli_app
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers import engine_params
@@ -81,6 +84,7 @@ class _ProcessSwap:
             [sys.executable, "-B", str(self.script), str(_REPO)],
             stdout=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
         )
         assert self.process.stdout is not None
         self.port = int(self.process.stdout.readline())
@@ -252,3 +256,50 @@ def test_the_failed_reload_notice_and_a_role_fallback_show_together(
     messages = [w.message for w in fleet.provider.health_warnings()]
     assert RELOAD_FAILED_NOTICE in messages
     assert all(fallback in messages for fallback in fallbacks)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ProviderError("engine did not start", provider="llama-server"),
+        OSError("no space left on the device"),
+    ],
+    ids=["provider-error", "disk-error"],
+)
+def test_a_background_reload_failure_is_logged_with_its_text_and_raises_no_trace(
+    fleet: Services,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: BaseException,
+) -> None:
+    def _fail(*, engines: Any) -> None:
+        raise failure
+
+    unhandled: list[threading.ExceptHookArgs] = []
+    monkeypatch.setattr(planning, "plan_all_launches", _fail)
+    monkeypatch.setattr(threading, "excepthook", unhandled.append)
+    local = _local(fleet)
+    with caplog.at_level("ERROR", logger=fleet_provider.log.name):
+        local.reload_placement(wait=False)
+        _wait_for(lambda: any(r.levelname == "ERROR" for r in caplog.records))
+        for thread in threading.enumerate():
+            if thread.name == "fleet-reload-placement":
+                thread.join(_WAIT_S)
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert errors == [f"The engine reload failed: {failure}"]
+    assert unhandled == []
+    assert local._reload_failed
+    assert RELOAD_FAILED_NOTICE in [w.message for w in fleet.provider.health_warnings()]
+
+
+def test_engine_use_on_the_command_line_shows_a_not_applied_choice_and_exits_one(
+    fleet: Services,
+) -> None:
+    _ProcessSwap.start_failure = OSError("no space left on the device")
+    result = CliRunner().invoke(cli_app, ["--json", "engine", "use", "chat", GGUF_CHAT, "mlx"])
+    assert result.exit_code == 1
+    body = json.loads(result.stdout.strip().splitlines()[-1])
+    assert body["command"] == "engine use"
+    assert "no space left" in body["error"]
+    assert "Restart lilbee" in body["error"]
+    assert cfg.engine_choices is not None
