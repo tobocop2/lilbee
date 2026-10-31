@@ -35,7 +35,7 @@ from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from tests._fleet_engines import engines_for_all_roles
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 SPY_META = {"architecture": "spyarch", "context_length": "4096", "expert_count": "8"}
 SPY_ENV = {"SPY_RUNTIME": "1"}
@@ -49,7 +49,7 @@ def _mixed_book(spy: Any) -> dict[WorkerRole, Any]:
     return {**engines_for_all_roles(LLAMA), WorkerRole.CHAT: spy}
 
 
-class SpyEngine(FakeAdapter):
+class SpyEngine(BundledFakeAdapter):
     """An engine that answers every member with a value llama.cpp never returns."""
 
     name = "spy-engine"

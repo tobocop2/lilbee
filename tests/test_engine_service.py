@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -27,26 +28,26 @@ from lilbee.providers.fleet.engines.choice import (
 )
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.chat_dispatch import capability
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
 
 MLX_REF = "org/repo#mlx"
 GGUF_REF = "org/repo/file.gguf"
 NOT_INSTALLED = "Engine {} is not installed. Run lilbee engine list to see the installed engines."
 
 
-class _GgufEngine(FakeAdapter):
+class _GgufEngine(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf"})
     architectures = frozenset({"gguf_arch"})
 
 
-class _MlxEngine(FakeAdapter):
+class _MlxEngine(BundledFakeAdapter):
     name = "mlx"
     formats = frozenset({"mlx"})
     architectures = frozenset({"mlx_arch"})
 
 
-class _OpenvinoEngine(FakeAdapter):
+class _OpenvinoEngine(BundledFakeAdapter):
     name = "openvino"
     formats = frozenset({"gguf"})
     architectures = frozenset({"gguf_arch"})
@@ -288,7 +289,7 @@ def test_unreadable_stored_choices_leave_every_role_its_default_engine(
     assert engine_for_ref(GGUF_REF, config) is GGUF_ENGINE
 
 
-class _LibraryEngine(FakeAdapter):
+class _LibraryEngine(BundledFakeAdapter):
     name = "openvino"
     formats = frozenset({"gguf"})
     architectures = frozenset({"library_arch"})
@@ -368,3 +369,30 @@ def test_a_tool_chat_with_no_engine_gets_the_engine_text(monkeypatch: pytest.Mon
     monkeypatch.setattr(capability, "get_services", lambda: SimpleNamespace(provider=provider))
     with pytest.raises(NoEngineError, match="For chat: No installed engine loads x"):
         capability.model_supports_tools("org/repo#mlx")
+
+
+class _StoreEngine(FakeAdapter):
+    """An engine whose build lives in the engines folder; the folder holds none."""
+
+    name = "mistral.rs"
+    formats = frozenset({"gguf"})
+
+
+@pytest.fixture
+def store_engine_without_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.MISTRAL, _StoreEngine())  # type: ignore[arg-type]
+
+
+def test_prefer_refuses_an_engine_with_no_store_record(store_engine_without_build: None) -> None:
+    with pytest.raises(engine_service.EngineRefusedError) as raised:
+        engine_service.prefer("mistral.rs")
+    assert str(raised.value) == NOT_INSTALLED.format("mistral.rs")
+    assert _stored("preferred_engine") is None
+
+
+def test_use_refuses_an_engine_with_no_store_record(store_engine_without_build: None) -> None:
+    with pytest.raises(engine_service.EngineRefusedError) as raised:
+        engine_service.use(MLX_REF, "mistral.rs")
+    assert str(raised.value) == NOT_INSTALLED.format("mistral.rs")
+    assert _stored("engine_choices") is None
