@@ -215,11 +215,11 @@ def _kv_via_parser(model_path: Path) -> dict[str, _Scalar] | None:
     loads makes ``GGUFReader`` raise while it builds tensor descriptors nothing
     here reads, and every field in the file becomes unreadable with it.
     """
-    from lilbee.providers.fleet.binary import resolve_gguf_parser
+    from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.proc import run_bounded
 
     try:
-        parser = resolve_gguf_parser()
+        parser = LLAMA.header_reader()
     except Exception as exc:
         log.debug("No gguf-parser to read %s with: %s", model_path, exc)
         return None

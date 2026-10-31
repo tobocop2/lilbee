@@ -14,8 +14,9 @@ from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.engine_params import chat_ctx_ceiling
+from lilbee.providers.fleet.engines import LLAMA, MemoryRequest
 from lilbee.providers.fleet.placement import _vram_proportional_split
-from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
+from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
 
 
@@ -71,14 +72,16 @@ def fit_single_ctx(
     upper = min(chat_ctx_ceiling(meta, model_path), ctx_ceiling)
 
     def _fits(per_slot: int) -> bool:
-        est = estimate_instance_footprint(
-            model_path,
-            ctx=per_slot,
-            slots=slots,
-            gpu_layers=gpu_layers,
-            flash_attn=flash_attn,
-            kv_cache_type=kv_cache_type,
-            expert_offload=expert_offload,
+        est = LLAMA.estimate_memory(
+            MemoryRequest(
+                model_path=model_path,
+                ctx=per_slot,
+                slots=slots,
+                gpu_layers=gpu_layers,
+                flash_attn=flash_attn,
+                kv_cache_type=kv_cache_type,
+                expert_offload=expert_offload,
+            )
         )
         return est.footprint(unified=unified) <= available_bytes
 
@@ -133,17 +136,19 @@ def fit_split_ctx(
     upper = min(chat_ctx_ceiling(meta, model_path), ctx_ceiling)
 
     def _peak_fits(per_slot: int) -> bool:
-        est = estimate_instance_footprint(
-            model_path,
-            ctx=per_slot,
-            slots=slots,
-            gpu_layers=gpu_layers,
-            flash_attn=flash_attn,
-            kv_cache_type=kv_cache_type,
-            tensor_split=ratio,
-            expert_offload=expert_offload,
+        est = LLAMA.estimate_memory(
+            MemoryRequest(
+                model_path=model_path,
+                ctx=per_slot,
+                slots=slots,
+                gpu_layers=gpu_layers,
+                flash_attn=flash_attn,
+                kv_cache_type=kv_cache_type,
+                tensor_split=ratio,
+                expert_offload=expert_offload,
+            )
         )
-        shares = est.per_device_vram
+        shares = est.per_device
         if len(shares) != len(headrooms):
             # No usable per-device breakdown: fall back to peak vs the tightest card.
             return est.peak_footprint(unified=False) <= min(headrooms)

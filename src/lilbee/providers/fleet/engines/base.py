@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.adapters import RoleServerSpec
     from lilbee.providers.fleet.devices import DeviceProbe
     from lilbee.providers.fleet.launch import InstanceLaunch
-    from lilbee.providers.fleet.vram import GgufVramEstimate
 
 
 class EngineName(StrEnum):
@@ -28,6 +27,13 @@ class ModelFormat(StrEnum):
     """A weight file format an engine loads."""
 
     GGUF = "gguf"
+
+
+class MemoryKind(StrEnum):
+    """How much an engine's memory figures can be trusted."""
+
+    SIZED = "sized"
+    FIXED_RESERVE = "fixed_reserve"
 
 
 class ReadbackKind(StrEnum):
@@ -79,6 +85,36 @@ class MemoryRequest:
 
 
 @dataclass(frozen=True)
+class MemoryEstimate:
+    """One instance's memory footprint under both memory models.
+
+    A tensor-split instance fails on its busiest device, so the planner fits
+    ``peak_footprint`` (the largest device), never the sum.
+    """
+
+    kind: MemoryKind
+    device_bytes: int
+    """Discrete-GPU model: bytes resident in device memory, summed over devices."""
+    host_bytes: int
+    """Discrete-GPU model: bytes held in host memory."""
+    shared_bytes: int
+    """Unified-memory model: the whole resident footprint."""
+    per_device: tuple[int, ...] = ()
+    """Discrete-GPU model: bytes on each device."""
+    per_device_shared: tuple[int, ...] = ()
+    """Unified-memory model: bytes on each device."""
+
+    def footprint(self, *, unified: bool) -> int:
+        """Total bytes to charge against a shared budget for this memory model."""
+        return self.shared_bytes if unified else self.device_bytes
+
+    def peak_footprint(self, *, unified: bool) -> int:
+        """The busiest single device's bytes, or the total without a per-device breakdown."""
+        per_device = self.per_device_shared if unified else self.per_device
+        return max(per_device) if per_device else self.footprint(unified=unified)
+
+
+@dataclass(frozen=True)
 class RequestProfile:
     """The request fields and paths the client uses against an engine's server."""
 
@@ -120,7 +156,9 @@ class EngineAdapter(Protocol):
 
     def discover_devices(self, binary: Path) -> DeviceProbe: ...
 
-    def estimate_memory(self, request: MemoryRequest) -> GgufVramEstimate: ...
+    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate: ...
+
+    def header_reader(self) -> Path: ...
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]: ...
 

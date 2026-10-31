@@ -14,18 +14,24 @@ from lilbee.providers.fleet.adapters import (
     embed_spec,
     rerank_spec,
 )
-from lilbee.providers.fleet.binary import engine_binary_identity, resolve_llama_server
+from lilbee.providers.fleet.binary import (
+    engine_binary_identity,
+    resolve_gguf_parser,
+    resolve_llama_server,
+)
 from lilbee.providers.fleet.devices import DeviceProbe, probe_devices
 from lilbee.providers.fleet.engines.base import (
     EngineName,
     LaunchRequest,
+    MemoryEstimate,
+    MemoryKind,
     MemoryRequest,
     ModelFormat,
     ReadbackKind,
     RequestProfile,
 )
 from lilbee.providers.fleet.launch import InstanceLaunch
-from lilbee.providers.fleet.vram import GgufVramEstimate, estimate_instance_footprint
+from lilbee.providers.fleet.vram import estimate_instance_footprint
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _EMBD_NORMALIZE_NONE = -1
@@ -104,8 +110,11 @@ class LlamaCppAdapter:
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return probe_devices(binary)
 
-    def estimate_memory(self, request: MemoryRequest) -> GgufVramEstimate:
-        return estimate_instance_footprint(
+    def header_reader(self) -> Path:
+        return resolve_gguf_parser()
+
+    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        parsed = estimate_instance_footprint(
             request.model_path,
             ctx=request.ctx,
             slots=request.slots,
@@ -116,6 +125,14 @@ class LlamaCppAdapter:
             tensor_split=request.tensor_split,
             batch_size=request.batch_size,
             expert_offload=request.expert_offload,
+        )
+        return MemoryEstimate(
+            kind=MemoryKind.SIZED,
+            device_bytes=parsed.vram_bytes,
+            host_bytes=parsed.ram_bytes,
+            shared_bytes=parsed.unified_bytes,
+            per_device=parsed.per_device_vram,
+            per_device_shared=parsed.per_device_unified,
         )
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:

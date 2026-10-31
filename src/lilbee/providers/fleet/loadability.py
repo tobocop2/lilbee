@@ -8,7 +8,7 @@ import subprocess
 
 from lilbee.catalog.compat import UnsupportedQuantError
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet.binary import resolve_gguf_parser
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.proc import run_bounded
 
 log = logging.getLogger(__name__)
@@ -82,7 +82,7 @@ def assert_engine_can_load(hf_repo: str, filename: str, token: str | None = None
     engine extra has no parser to ask, and must still be able to pull.
     """
     try:
-        parser = resolve_gguf_parser()
+        parser = LLAMA.header_reader()
     except ProviderError as exc:
         log.debug("No gguf-parser to check %s/%s against: %s", hf_repo, filename, exc)
         return

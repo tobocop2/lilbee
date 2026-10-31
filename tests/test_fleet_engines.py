@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import re
 from pathlib import Path
 from typing import Any
@@ -12,15 +13,19 @@ from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet.engines import LLAMA, EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.base import (
+    MemoryEstimate,
+    MemoryKind,
     MemoryRequest,
     ModelFormat,
     ReadbackKind,
 )
 from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _ROOT = Path(__file__).resolve().parents[1]
 _LLAMA_MODULE = "lilbee.providers.fleet.engines.llama"
+_SWEEP_INPUTS = 400
 
 
 def test_llama_identity_fields() -> None:
@@ -128,10 +133,16 @@ def test_llama_estimate_memory_passes_every_request_field(
 ) -> None:
     seen: dict[str, Any] = {}
 
-    def estimate(model_path: Path, **kwargs: Any) -> str:
+    def estimate(model_path: Path, **kwargs: Any) -> GgufVramEstimate:
         seen["model_path"] = model_path
         seen.update(kwargs)
-        return "estimated"
+        return GgufVramEstimate(
+            vram_bytes=40,
+            ram_bytes=5,
+            unified_bytes=60,
+            per_device_vram=(30, 10),
+            per_device_unified=(35, 25),
+        )
 
     monkeypatch.setattr(f"{_LLAMA_MODULE}.estimate_instance_footprint", estimate)
     request = MemoryRequest(
@@ -146,7 +157,14 @@ def test_llama_estimate_memory_passes_every_request_field(
         batch_size=512,
         expert_offload=("blk.*",),
     )
-    assert LLAMA.estimate_memory(request) == "estimated"
+    assert LLAMA.estimate_memory(request) == MemoryEstimate(
+        kind=MemoryKind.SIZED,
+        device_bytes=40,
+        host_bytes=5,
+        shared_bytes=60,
+        per_device=(30, 10),
+        per_device_shared=(35, 25),
+    )
     assert seen == {
         "model_path": Path("/m/a.gguf"),
         "ctx": 8192,
@@ -159,6 +177,48 @@ def test_llama_estimate_memory_passes_every_request_field(
         "batch_size": 512,
         "expert_offload": ("blk.*",),
     }
+
+
+def test_llama_memory_estimate_charges_what_the_parser_estimate_charged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rng = random.Random(1180)
+    request = MemoryRequest(
+        model_path=Path("/m/a.gguf"),
+        ctx=4096,
+        slots=1,
+        gpu_layers=-1,
+        flash_attn=False,
+        kv_cache_type=KvCacheType.F16,
+    )
+    compared = 0
+    for _ in range(_SWEEP_INPUTS):
+        width = rng.randint(0, 4)
+        parsed = GgufVramEstimate(
+            vram_bytes=rng.randint(0, 10**11),
+            ram_bytes=rng.randint(0, 10**10),
+            unified_bytes=rng.randint(0, 10**11),
+            per_device_vram=tuple(rng.randint(0, 10**10) for _ in range(width)),
+            per_device_unified=tuple(rng.randint(0, 10**10) for _ in range(width)),
+        )
+        monkeypatch.setattr(
+            f"{_LLAMA_MODULE}.estimate_instance_footprint",
+            lambda *_a, _parsed=parsed, **_k: _parsed,
+        )
+        estimate = LLAMA.estimate_memory(request)
+        assert estimate.host_bytes == parsed.ram_bytes
+        for unified in (False, True):
+            assert estimate.footprint(unified=unified) == parsed.footprint(unified=unified)
+            assert estimate.peak_footprint(unified=unified) == parsed.peak_footprint(
+                unified=unified
+            )
+            compared += 1
+    assert compared == 2 * _SWEEP_INPUTS
+
+
+def test_llama_header_reader_is_the_bundled_gguf_parser(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.resolve_gguf_parser", lambda: Path("/bin/gguf-parser"))
+    assert LLAMA.header_reader() == Path("/bin/gguf-parser")
 
 
 def test_llama_swap_extras_is_empty() -> None:

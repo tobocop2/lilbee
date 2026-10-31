@@ -33,10 +33,9 @@ from lilbee.providers.fleet.devices import (
     VULKAN_BACKEND,
     FleetDevice,
     host_lacks_nvlink,
-    probe_devices,
     visible_env,
 )
-from lilbee.providers.fleet.engines import LLAMA, LaunchRequest
+from lilbee.providers.fleet.engines import LLAMA, LaunchRequest, MemoryRequest
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import (
     InstancePlan,
@@ -50,7 +49,7 @@ from lilbee.providers.fleet.placement import (
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.fleet.readback import engine_advertises, supports_memory_readback
 from lilbee.providers.fleet.replicas import resolve_replica_count
-from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
+from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.model_cache import free_system_memory, total_system_memory
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, RerankMode, WorkerRole
@@ -441,15 +440,17 @@ def _fit_slots(
 
     for slots in range(ceiling, 1, -1):
         try:
-            est = estimate_instance_footprint(
-                model_path,
-                ctx=ctx,
-                slots=slots,
-                gpu_layers=_role_gpu_layers(role),
-                flash_attn=_role_flash(role, rerank_mode),
-                kv_cache_type=_role_kv_cache_type(role),
-                mmproj_path=mmproj_path,
-                expert_offload=_role_expert_offload(model_path),
+            est = LLAMA.estimate_memory(
+                MemoryRequest(
+                    model_path=model_path,
+                    ctx=ctx,
+                    slots=slots,
+                    gpu_layers=_role_gpu_layers(role),
+                    flash_attn=_role_flash(role, rerank_mode),
+                    kv_cache_type=_role_kv_cache_type(role),
+                    mmproj_path=mmproj_path,
+                    expert_offload=_role_expert_offload(model_path),
+                )
             )
         except (ProviderError, OSError):
             # An unsizable model runs a single slot; the load decides the rest.
@@ -525,18 +526,20 @@ def _engine_binary() -> Path | None:
 def _chat_host_estimate(model_path: Path, ctx: int, slots: int) -> int:
     """Host bytes gguf-parser expects chat to hold at its configured offload; 0 when unsized."""
     try:
-        estimate = estimate_instance_footprint(
-            model_path,
-            ctx=ctx,
-            slots=slots,
-            gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
-            flash_attn=_role_flash(WorkerRole.CHAT),
-            kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-            expert_offload=_role_expert_offload(model_path),
+        estimate = LLAMA.estimate_memory(
+            MemoryRequest(
+                model_path=model_path,
+                ctx=ctx,
+                slots=slots,
+                gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
+                flash_attn=_role_flash(WorkerRole.CHAT),
+                kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+                expert_offload=_role_expert_offload(model_path),
+            )
         )
     except (ProviderError, OSError):
         return 0
-    return estimate.ram_bytes
+    return estimate.host_bytes
 
 
 def _role_ctx(
@@ -804,16 +807,18 @@ def _estimate_role(
             chat_reservation=chat_reservation,
             rerank_mode=rerank_mode,
         )
-    est = estimate_instance_footprint(
-        path,
-        ctx=ctx,
-        slots=slots,
-        gpu_layers=_role_gpu_layers(role),
-        flash_attn=_role_flash(role, rerank_mode),
-        kv_cache_type=_role_kv_cache_type(role),
-        mmproj_path=mmproj,
-        batch_size=_pooled_batch_size(role, rerank_mode, ctx),
-        expert_offload=_role_expert_offload(path),
+    est = LLAMA.estimate_memory(
+        MemoryRequest(
+            model_path=path,
+            ctx=ctx,
+            slots=slots,
+            gpu_layers=_role_gpu_layers(role),
+            flash_attn=_role_flash(role, rerank_mode),
+            kv_cache_type=_role_kv_cache_type(role),
+            mmproj_path=mmproj,
+            batch_size=_pooled_batch_size(role, rerank_mode, ctx),
+            expert_offload=_role_expert_offload(path),
+        )
     )
     fp = est.footprint(unified=unified_budget is not None)
     if role is WorkerRole.CHAT and unified_budget is None:
@@ -822,7 +827,7 @@ def _estimate_role(
         role=role,
         est_vram_bytes=fp,
         replicas=_replica_count(role, device_count),
-        est_ram_bytes=est.ram_bytes,
+        est_ram_bytes=est.host_bytes,
     )
 
 
@@ -905,19 +910,21 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
         slots = _placement_estimate_slots(role, meta)
         ctx = _placement_estimate_ctx(role, path, meta)
         rerank_mode = _role_rerank_mode(role, meta)
-        est = estimate_instance_footprint(
-            path,
-            ctx=ctx,
-            slots=slots,
-            gpu_layers=_role_gpu_layers(role),
-            flash_attn=_role_flash(role, rerank_mode),
-            kv_cache_type=_role_kv_cache_type(role),
-            mmproj_path=mmproj,
-            tensor_split=ratio,
-            batch_size=_pooled_batch_size(role, rerank_mode, ctx),
-            expert_offload=_role_expert_offload(path),
+        est = LLAMA.estimate_memory(
+            MemoryRequest(
+                model_path=path,
+                ctx=ctx,
+                slots=slots,
+                gpu_layers=_role_gpu_layers(role),
+                flash_attn=_role_flash(role, rerank_mode),
+                kv_cache_type=_role_kv_cache_type(role),
+                mmproj_path=mmproj,
+                tensor_split=ratio,
+                batch_size=_pooled_batch_size(role, rerank_mode, ctx),
+                expert_offload=_role_expert_offload(path),
+            )
         )
-        return est.per_device_vram
+        return est.per_device
 
     return estimate_peak
 
@@ -1881,7 +1888,7 @@ def _read_devices(binary: Path) -> DeviceReading:
     from lilbee.providers.fleet.gpu_select import enumerate_gpu_vram
     from lilbee.providers.fleet.rocm_runtime import assert_rocm_devices_usable
 
-    probe = probe_devices(binary)
+    probe = LLAMA.discover_devices(binary)
     # An engine that answered but listed no device while a GPU is physically
     # present may be hitting a transient init error (the card momentarily held by
     # another process, e.g. an embedder served alongside -- the "ggml_cuda_init:
@@ -1894,7 +1901,7 @@ def _read_devices(binary: Path) -> DeviceReading:
         if probe.devices or not probe.spoke_protocol or not installed_gpu_vendor_ids():
             break
         time.sleep(_DEVICE_PROBE_EMPTY_RETRY_DELAY_S)
-        probe = probe_devices(binary)
+        probe = LLAMA.discover_devices(binary)
     devices = probe.devices
     # A GPU build that links a runtime it cannot serve the host's GPU with must
     # fail loud, not silently fall back to CPU (the Vulkan VRAM probe below
