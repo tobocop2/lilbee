@@ -4194,6 +4194,8 @@ class TestReloadSingleFlight:
         assert p._reload_pending is True
         p._reload_blocking()  # the in-flight thread runs to completion
         assert len(plans) == 2  # one pass per request: the change was applied
+        assert p._reloading is False
+        assert p._reload_pending is False
 
     def test_a_reload_with_no_group_up_and_one_in_flight_is_queued(self) -> None:
         p = FleetProvider()
@@ -4206,8 +4208,6 @@ class TestReloadSingleFlight:
         p.reload_placement()
         assert p._reload_pending is False
         assert p._reloading is False
-        assert p._reloading is False
-        assert p._reload_pending is False
 
     def test_fresh_reload_clears_a_stale_pending_flag(self, monkeypatch) -> None:
         threads: list[object] = []
