@@ -22,7 +22,11 @@ from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
 from lilbee.providers.fleet.engines import mistral
 from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineName, LaunchRequest
-from lilbee.providers.fleet.engines.choice import installed_engines
+from lilbee.providers.fleet.engines.choice import (
+    NoPublishedPackError,
+    installed_engines,
+    pin_lock,
+)
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
@@ -299,7 +303,7 @@ def test_the_engine_counts_as_installed_only_with_a_record_and_finds_its_tool(
     with pytest.raises(ProviderError, match=r"engine install mistral\.rs"):
         MISTRAL.binary()
     sha = make_pack(tmp_path / "pack.whl")
-    monkeypatch.setattr(mistral, "_UNBUILT_SHA256", sha)
+    monkeypatch.setattr(mistral, "PACK_SHA256", sha)
     pin = MISTRAL.pin_record()
     assert (pin["engine"], pin["backend"]) == ("mistral.rs", "cpu")
     lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha)
@@ -308,10 +312,10 @@ def test_the_engine_counts_as_installed_only_with_a_record_and_finds_its_tool(
     assert MISTRAL.binary().parts[-3:] == ("pkg", "bin", "mistralrs")
 
 
-def test_the_unbuilt_pin_matches_no_wheel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_pin_with_no_published_pack_refuses_a_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
-    sha = make_pack(tmp_path / "pack.whl")
-    assert MISTRAL.pin_record()["sha256"] != sha
+    with pytest.raises(NoPublishedPackError, match=r"No pack of mistral\.rs is published yet\."):
+        pin_lock(MISTRAL.pin_record())
 
 
 @pytest.mark.parametrize(
@@ -332,7 +336,7 @@ def test_the_reason_for_a_cpu_archive_reaches_the_user_through_install(
     monkeypatch.setattr(engine_service, "session_host", host)
     monkeypatch.setattr(runnable, "session_host", host)
     sha = make_pack(tmp_path / "pack.whl")
-    monkeypatch.setattr(mistral, "_UNBUILT_SHA256", sha)
+    monkeypatch.setattr(mistral, "PACK_SHA256", sha)
     built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
     assert (built.backend, reason in built.note) == ("cpu", True)
 
@@ -345,7 +349,7 @@ def test_a_host_with_a_matching_card_adds_no_note_to_the_install(
     monkeypatch.setattr(engine_service, "session_host", host)
     monkeypatch.setattr(runnable, "session_host", host)
     sha = make_pack(tmp_path / "pack.whl")
-    monkeypatch.setattr(mistral, "_UNBUILT_SHA256", sha)
+    monkeypatch.setattr(mistral, "PACK_SHA256", sha)
     built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
     assert (built.backend, built.note) == ("cuda128-sm89", "")
 
@@ -356,4 +360,4 @@ def test_rerank_is_refused_for_the_engine_before_its_install_is_read(
     monkeypatch.setattr(cfg, "reranker_model", "org/repo/file.gguf")
     with pytest.raises(engine_service.EngineRefusedError, match="does not serve rerank") as raised:
         engine_service.use_for_role(WorkerRole.RERANK, "org/repo/file.gguf", "mistral.rs")
-    assert "chat, embed, vision" in str(raised.value)
+    assert "chat, embed and vision" in str(raised.value)

@@ -30,8 +30,8 @@ from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, Memo
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _VERSION = "1.9.4"
-_UNBUILT_SHA256 = "0" * 64
-"""The digest of a wheel that is not built yet, so no wheel matches the pin."""
+# The digest of the pack; None until a pack is published, and an install is refused then.
+PACK_SHA256: str | None = None
 _CPU = "cpu"
 _METAL = "metal"
 _CUDA_PREFIX = "cuda-sm"
@@ -154,7 +154,7 @@ class TeiAdapter:
             "engine": self.name.value,
             "version": _VERSION,
             "backend": self.pick_build(detect()).backend,
-            "sha256": _UNBUILT_SHA256,
+            "sha256": PACK_SHA256,
             "launch": _PIN_LAUNCH,
             "platforms": {},
             "memory": {"sizing": None, "rule": f"fixed {_RESERVE_BYTES} bytes"},

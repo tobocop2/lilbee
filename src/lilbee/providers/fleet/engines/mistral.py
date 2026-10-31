@@ -31,8 +31,8 @@ _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
 _LICENCES = ["MIT"]
-# No pack of this engine is built yet, so no wheel can match this digest.
-_UNBUILT_SHA256 = "0" * 64
+# The digest of the pack; None until a pack is published, and an install is refused then.
+PACK_SHA256: str | None = None
 _CPU = "cpu"
 _GGUF_SUFFIX = ".gguf"
 _METAL = "metal"
@@ -149,7 +149,7 @@ class MistralAdapter:
             "engine": self.name.value,
             "version": _VERSION,
             "backend": backend,
-            "sha256": _UNBUILT_SHA256,
+            "sha256": PACK_SHA256,
             "launch": [_TOOL, "serve"],
             "platforms": {},
             "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},
@@ -157,10 +157,13 @@ class MistralAdapter:
         }
 
     def binary(self) -> Path:
-        from lilbee.providers.fleet.engines.choice import pin_lock
+        from lilbee.providers.fleet.engines.choice import NoPublishedPackError, pin_lock
 
         store = EngineStore(engines_root(cfg.models_dir))
-        build = store.complete_build(pin_lock(self.pin_record()))
+        try:
+            build = store.complete_build(pin_lock(self.pin_record()))
+        except NoPublishedPackError:
+            build = None
         tool = next(iter(build.glob(f"*/bin/{_TOOL}*")), None) if build else None
         if tool is None:
             raise ProviderError(

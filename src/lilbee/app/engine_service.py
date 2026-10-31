@@ -322,10 +322,6 @@ def use_for_role(
         raise EngineRefusedError(
             f"The {role} model is {current}, not {model}. Choose the engine for {current}."
         )
-    adapter = None if name == AUTO else choice.ADAPTERS.get(_engine_name(name))
-    if adapter is not None and role not in adapter.served_roles:
-        served = ", ".join(sorted(served_role.value for served_role in adapter.served_roles))
-        raise EngineRefusedError(f"Engine {name} does not serve {role}. It serves {served}.")
     if name != AUTO:
         _require_serves(_engine_name(name), role)
     return use(model, name, confirmed)
