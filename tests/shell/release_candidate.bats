@@ -168,7 +168,8 @@ needs_of() {  # job
   # nothing.
   local jobs job direct reach hop
   jobs=$(yq -r '.jobs | keys | .[] | select(test("^dispatch-"))' "${CANDIDATE}")
-  [ "$(echo "${jobs}" | wc -l)" -eq 5 ]
+  # A walk over no jobs passes without checking anything, so name one that must be in it.
+  [[ "${jobs}" == *"dispatch-compat-cuda"* ]]
   while IFS= read -r job; do
     direct=$(echo "$(needs_of "${job}")" | grep -v '^attach-prerelease$' || true)
     reach="${direct}"

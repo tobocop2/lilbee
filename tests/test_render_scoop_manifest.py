@@ -92,4 +92,6 @@ def test_the_default_mode_requires_every_digest(tmp_path):
     manifest.write_text("{}", encoding="utf-8")
     result = _render(manifest)
     assert result.returncode != 0
-    assert "--sha-windows-cu124" in result.stderr
+    missing = [line for line in result.stderr.splitlines() if "missing required arguments" in line]
+    assert len(missing) == 1
+    assert "--sha-windows-cu124" in missing[0]
