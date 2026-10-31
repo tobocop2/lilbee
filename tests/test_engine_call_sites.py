@@ -26,7 +26,7 @@ from lilbee.providers.fleet import ctx as fleet_ctx
 from lilbee.providers.fleet import planning, replicas
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
-from lilbee.providers.fleet.engines.base import RequestProfile
+from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
@@ -588,7 +588,7 @@ class TestSelfCheck:
     def test_the_self_check_client_carries_the_engine_request_profile(
         self, spy: SpyEngine, model_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import lilbee.providers.fleet.engines as engines
+        import lilbee.providers.fleet.engines.choice as choice
         import lilbee.providers.fleet.swap_manager as swap_manager
         from lilbee.cli.commands import setup as setup_cmd
 
@@ -602,7 +602,8 @@ class TestSelfCheck:
             def endpoint(self) -> str:
                 return "http://127.0.0.1:1"
 
-        monkeypatch.setattr(engines, "select_engine", lambda config: spy)
+        monkeypatch.setattr(spy, "formats", frozenset({"gguf"}))
+        monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, spy)  # type: ignore[arg-type]
         monkeypatch.setattr(swap_manager, "SwapManager", _Swap)
         swap, client, work_dir = setup_cmd._self_check_server(WorkerRole.CHAT, model_file)
         try:

@@ -44,10 +44,16 @@ def embed_inflight_target() -> int:
     """
     try:
         from lilbee.app.services import get_services
+        from lilbee.providers.fleet.engines.choice import NoEngineError
         from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
         from lilbee.providers.roles import WorkerRole
 
-        slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count(get_services().engine))
+        slots = resolve_replica_count(
+            WorkerRole.EMBED,
+            gpu_device_count(get_services().engines.for_role(WorkerRole.EMBED).adapter),
+        )
+    except NoEngineError:
+        raise
     except Exception:
         return 0
     return slots * _EMBED_INFLIGHT_PER_REPLICA if slots > 1 else 0

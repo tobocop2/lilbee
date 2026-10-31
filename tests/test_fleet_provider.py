@@ -3604,7 +3604,7 @@ def test_routing_provider_local_engine_is_fleet() -> None:
     # is a fleet-of-one). Construction is side-effect-free; no swap is started.
     from lilbee.providers.routing_provider import RoutingProvider
 
-    assert isinstance(RoutingProvider(engine=LLAMA)._get_local(), FleetProvider)
+    assert isinstance(RoutingProvider(engine=lambda: LLAMA)._get_local(), FleetProvider)
 
 
 def test_get_capabilities_unresolved_model_returns_completion(monkeypatch) -> None:
@@ -3859,7 +3859,7 @@ class TestRoutingProviderEmbedCap:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", embedding_model)
-        routing = RoutingProvider(engine=LLAMA)
+        routing = RoutingProvider(engine=lambda: LLAMA)
         local = MagicMock()
         local.embed_token_cap.return_value = 504
         local.health_warnings.return_value = [
@@ -3892,7 +3892,7 @@ class TestRoutingProviderEmbedCap:
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
-        routing = RoutingProvider(engine=LLAMA)
+        routing = RoutingProvider(engine=lambda: LLAMA)
         local = MagicMock()
         local.health_warnings.return_value = [
             HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut"),
@@ -6311,7 +6311,7 @@ def test_the_routing_provider_hands_the_config_refresh_to_its_fleet() -> None:
     def refresh() -> None:
         return None
 
-    local = RoutingProvider(engine=LLAMA, config_refresh=refresh)._get_local()
+    local = RoutingProvider(engine=lambda: LLAMA, config_refresh=refresh)._get_local()
     assert isinstance(local, FleetProvider)
     assert local._config_refresh is refresh
 

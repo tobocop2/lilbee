@@ -214,7 +214,7 @@ class TestSdkFactory:
         from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "remote"
-        provider = create_provider(cfg, engine=LLAMA)
+        provider = create_provider(cfg, engine=lambda: LLAMA)
 
         assert isinstance(provider, SdkLLMProvider)
 

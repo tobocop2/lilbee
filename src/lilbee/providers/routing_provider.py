@@ -24,7 +24,14 @@ from lilbee.providers.base import (
 from lilbee.providers.factory import create_sdk_provider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
-from lilbee.providers.serving import ServingEngine, is_native_rerank_ref, log_name, served_by
+from lilbee.providers.serving import (
+    ServingEngine,
+    is_native_rerank_ref,
+    log_name,
+    role_engine,
+    role_serving,
+    served_by,
+)
 from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
@@ -48,7 +55,7 @@ class RoutingProvider(LLMProvider):
     def __init__(
         self,
         *,
-        engine: EngineAdapter,
+        engine: Callable[[], EngineAdapter],
         hold_warm: bool = False,
         config_refresh: Callable[[], None] | None = None,
     ) -> None:
@@ -76,7 +83,7 @@ class RoutingProvider(LLMProvider):
                     from lilbee.providers.fleet.provider import FleetProvider
 
                     self._local = FleetProvider(
-                        engine=self._engine,
+                        engine=self._engine(),
                         hold_warm=self._hold_warm,
                         config_refresh=self._config_refresh,
                     )
@@ -106,7 +113,7 @@ class RoutingProvider(LLMProvider):
         )
 
     def _announce(self, role: WorkerRole, ref: ProviderModelRef) -> None:
-        self._log_served(role, ref.raw, served_by(ref.raw, self._engine, native=not ref.is_remote))
+        self._log_served(role, ref.raw, role_serving(role, ref.raw))
 
     def embed(self, texts: list[str]) -> list[Vector]:
         ref = parse_model_ref(require_role_ref(cfg.embedding_model, WorkerRole.EMBED))
@@ -284,12 +291,10 @@ class RoutingProvider(LLMProvider):
         """
         if not cfg.reranker_model:
             raise ProviderError("No reranker configured. Set cfg.reranker_model first.")
-        native = is_native_rerank_ref(cfg.reranker_model, self._engine)
-        self._log_served(
-            WorkerRole.RERANK,
-            cfg.reranker_model,
-            served_by(cfg.reranker_model, self._engine, native=native),
-        )
+        model = cfg.reranker_model
+        engine = role_engine(WorkerRole.RERANK)
+        native = is_native_rerank_ref(model, engine)
+        self._log_served(WorkerRole.RERANK, model, served_by(model, engine, native=native))
         if native:
             return self._get_local().rerank(query, candidates)
         sdk = self._get_sdk_provider()
@@ -314,7 +319,7 @@ class RoutingProvider(LLMProvider):
         model = cfg.reranker_model
         if not model:
             return True
-        if is_native_rerank_ref(model, self._engine):
+        if is_native_rerank_ref(model, role_engine(WorkerRole.RERANK)):
             return self._get_local().supports_rerank()
         return self._get_sdk_provider().supports_rerank()
 

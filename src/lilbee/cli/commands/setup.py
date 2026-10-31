@@ -148,8 +148,8 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
     which dynamic ctx / FA / KV cache / GPU layers values their install
     chose without grepping debug logs.
     """
+    from lilbee.app.engine_choice import resolve_engines
     from lilbee.core.config.enums import KvCacheType
-    from lilbee.providers.fleet.engines import select_engine
     from lilbee.providers.fleet.planning import chat_cache_type_flag
 
     return {
@@ -157,7 +157,10 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
         "num_ctx_max": cfg.num_ctx_max,
         "chat_n_ctx_target": cfg.chat_n_ctx_target,
         "flash_attention": cfg.flash_attention,
-        "kv_cache_type": chat_cache_type_flag(select_engine(cfg)) or KvCacheType.F16.value,
+        "kv_cache_type": chat_cache_type_flag(
+            resolve_engines(cfg).for_role(WorkerRole.CHAT).adapter
+        )
+        or KvCacheType.F16.value,
         "n_gpu_layers": cfg.n_gpu_layers,
         "cpu_moe": cfg.cpu_moe,
         "n_cpu_moe": cfg.n_cpu_moe,
@@ -176,13 +179,13 @@ def _self_check_server(
     real request drives. The upstream loads on the first request; the caller
     shuts the manager down.
     """
+    from lilbee.app.engine_choice import resolve_engines
     from lilbee.providers.fleet.client import LlamaServerClient
-    from lilbee.providers.fleet.engines import select_engine
     from lilbee.providers.fleet.groups import SwapGroup
     from lilbee.providers.fleet.planning import build_single_role_launch
     from lilbee.providers.fleet.swap_manager import SwapManager
 
-    engine = select_engine(cfg)
+    engine = resolve_engines(cfg).for_role(role).adapter
     launch = build_single_role_launch(role, model_path, engine=engine)
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     swap = SwapManager(work_dir, SwapGroup(role.value), engine)

@@ -21,7 +21,7 @@ from lilbee.app.status import chat_engine, serving_roles
 from lilbee.core.config import Config, cfg
 from lilbee.providers.base import ChatResult, ProviderError
 from lilbee.providers.factory import create_sdk_provider
-from lilbee.providers.fleet.engines import select_engine
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from tests.conformance.harness import (
@@ -242,7 +242,7 @@ def _named(setup: Setup) -> Outcome:
     """One request through the routing provider: the log line and the status name the preset."""
     role = next(r for r in _ROLE_STEPS if r in setup.roles)
     model = _ref(setup, role)
-    routing = RoutingProvider(engine=select_engine(cfg))
+    routing = RoutingProvider(engine=lambda: LLAMA)
     logger = logging.getLogger("lilbee.providers.routing_provider")
     tap, level = _LogTap(), logger.level
     logger.addHandler(tap)
