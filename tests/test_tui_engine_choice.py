@@ -424,3 +424,29 @@ async def test_cancelling_the_confirm_leaves_the_file_unchanged_and_returns_focu
         assert _stored_choices() is None
         assert cfg.engine_choices is None
         assert app.focused is chat._chat_input
+
+
+async def test_the_confirm_opens_on_cancel_so_one_enter_writes_nothing_and_yes_then_enter_writes(
+    embed_library: None,
+) -> None:
+    app = _ChatApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        await _pick_openvino_for_embed(app, pilot, chat)
+        assert app.focused is not None
+        assert app.focused.id == "confirm-no"
+        await pilot.press("enter")
+        assert await wait_until(pilot, lambda: not isinstance(app.screen, ConfirmDialog))
+        assert await wait_until(pilot, lambda: "The engine is unchanged." in _toasts(app))
+        assert _stored_choices() is None
+        assert cfg.engine_choices is None
+
+        await _pick_openvino_for_embed(app, pilot, chat)
+        await pilot.press("left")
+        assert await wait_until(
+            pilot, lambda: app.focused is not None and app.focused.id == "confirm-yes"
+        )
+        await pilot.press("enter")
+        assert await wait_until(pilot, lambda: _stored_choices() is not None)
+        assert json.loads(str(_stored_choices())) == {EMBED_REF: "openvino"}

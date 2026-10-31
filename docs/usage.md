@@ -447,6 +447,15 @@ server the two writes need `allow_http_engines`. The three MCP tools need the
 setting `mcp_engines_enabled`. It is off by default. Turn it on, then restart the
 MCP server.
 
+A change to the engine of the embed role can make the vectors in the index
+unusable. If the library holds documents, `engine use embed` and `engine prefer`
+ask first. On a terminal, answer `y` to confirm. Without a terminal, or with
+`--json`, add `--yes` to confirm. In the TUI, the dialog opens on Cancel, so
+one Enter keeps the engine. The REST routes and the MCP tools take
+`confirm_embed_change`. Without it, the REST write answers 409 with the code
+`embed_engine_confirm_required`, the library name and the document count. Send
+the request again with `confirm_embed_change` set to `true` to write the change.
+
 ## Memory
 
 lilbee can remember durable facts about you and standing preferences for how

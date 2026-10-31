@@ -229,18 +229,66 @@ def test_the_cli_refuses_without_a_terminal_and_names_the_flag(
     assert json.loads(str(_stored("engine_choices"))) == _CHOSEN
 
 
-def test_the_cli_asks_on_a_terminal_and_a_refusal_leaves_the_file_unchanged(
-    library: SimpleNamespace, with_openvino: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
+class _TerminalStdin:
+    """The runner's live stdin, reported as a terminal."""
+
+    def __init__(self, stream: object) -> None:
+        self._stream = stream
+
+    def isatty(self) -> bool:
+        return True
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._stream, name)
+
+
+class _SysOnATerminal:
+    """The engine module's ``sys``, whose stdin is a terminal at the time of the read."""
+
+    @property
+    def stdin(self) -> _TerminalStdin:
+        import sys
+
+        return _TerminalStdin(sys.stdin)
+
+
+def _ask(monkeypatch: pytest.MonkeyPatch, answer: str):
     from typer.testing import CliRunner
 
     from lilbee.cli import app as cli_app
+    from lilbee.cli import engine as cli_engine
 
-    monkeypatch.setattr("lilbee.cli.engine._interactive", lambda: True)
-    result = CliRunner().invoke(cli_app, ["engine", "use", "embed", MODEL, "openvino"], input="n\n")
+    monkeypatch.setattr(cli_engine, "sys", _SysOnATerminal())
+    with mock.patch.object(
+        engine_service, "use_for_role", wraps=engine_service.use_for_role
+    ) as action:
+        result = CliRunner().invoke(
+            cli_app, ["engine", "use", "embed", MODEL, "openvino"], input=answer
+        )
+    return result, action
+
+
+def test_the_cli_asks_on_a_terminal_and_a_yes_writes_the_engine(
+    library: SimpleNamespace, with_openvino: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, action = _ask(monkeypatch, "y\n")
+    assert result.exit_code == 0
+    assert [call.kwargs["confirmed"] for call in action.call_args_list] == [False, True]
+    assert json.loads(str(_stored("engine_choices"))) == _CHOSEN
+
+
+def test_the_cli_asks_on_a_terminal_and_a_refusal_leaves_the_file_unchanged(
+    library: SimpleNamespace, with_openvino: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = cfg.data_root / "config.toml"
+    settings.set_value(cfg.data_root, "chat_model", GGUF_REF)
+    before = path.read_bytes()
+    result, action = _ask(monkeypatch, "n\n")
     assert result.exit_code == 1
     assert "The engine is unchanged." in result.output.replace("\n", " ")
+    assert [call.kwargs["confirmed"] for call in action.call_args_list] == [False]
     assert _stored("engine_choices") is None
+    assert path.read_bytes() == before
 
 
 def test_the_slash_command_refuses_and_leaves_the_file_unchanged(
