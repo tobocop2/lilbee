@@ -1878,12 +1878,12 @@ def refusal_sentence(key: str, value: Any) -> str:
 
 
 def canonical_model_ref(ref: str) -> str:
-    """The form a model ref takes in cfg; a blank ref stays blank."""
+    """The form a model ref takes in cfg, decided from the text alone; a blank ref stays blank."""
     if not ref or not ref.strip():
         return ""
-    from lilbee.providers.model_ref import parse_model_ref
+    from lilbee.providers import model_ref
 
-    return parse_model_ref(ref).for_openai_prefix()
+    return model_ref.canonical_model_ref(ref)
 
 
 def checked_write(key: str, value: Any) -> Any:

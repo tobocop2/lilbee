@@ -13,8 +13,9 @@ from pydantic import ValidationError
 from lilbee.app import presets
 from lilbee.app import settings as app_settings
 from lilbee.config_meta import SERVICE_ONLY_FIELDS, WRITABLE_CONFIG_FIELDS
-from lilbee.core import settings
+from lilbee.core import blocked_networks, settings
 from lilbee.core.config import Config, cfg
+from lilbee.providers import server_registry
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.handlers.config import get_config, get_config_defaults
 
@@ -46,7 +47,7 @@ def dns(monkeypatch):
             raise socket.gaierror("no answer")
         return [(2, 1, 6, "", (address, 0)) for address in table[host]]
 
-    monkeypatch.setattr(presets.socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(blocked_networks.socket, "getaddrinfo", getaddrinfo)
     return table
 
 
@@ -87,7 +88,7 @@ class TestValidatePresetUrl:
         ],
     )
     def test_a_url_a_local_or_public_server_uses_is_allowed(self, url):
-        assert presets.validate_preset_url(url) is None
+        assert blocked_networks.validate_preset_url(url) is None
 
     @pytest.mark.parametrize(
         ("url", "blocked"),
@@ -114,7 +115,7 @@ class TestValidatePresetUrl:
     )
     def test_a_blocked_address_is_refused_in_every_form(self, url, blocked):
         with pytest.raises(ValueError, match=re.escape(f"blocked address {blocked}")):
-            presets.validate_preset_url(url)
+            blocked_networks.validate_preset_url(url)
 
     @pytest.mark.parametrize(
         "host",
@@ -133,12 +134,12 @@ class TestValidatePresetUrl:
     )
     def test_a_host_that_ends_in_a_number_and_names_no_address_is_refused(self, host):
         with pytest.raises(ValueError, match="not a valid IPv4 address"):
-            presets.validate_preset_url(f"http://{host}/")
+            blocked_networks.validate_preset_url(f"http://{host}/")
 
     @pytest.mark.parametrize("url", ["http://[v1.abc]/", "http://[v1.a:b]/"])
     def test_a_bracketed_host_that_is_no_ipv6_is_refused(self, url):
         with pytest.raises(ValueError, match="not a valid IPv6 address"):
-            presets.validate_preset_url(url)
+            blocked_networks.validate_preset_url(url)
 
     @pytest.mark.parametrize(
         ("url", "message"),
@@ -165,17 +166,17 @@ class TestValidatePresetUrl:
     )
     def test_a_malformed_url_is_refused(self, url, message):
         with pytest.raises(ValueError, match=message):
-            presets.validate_preset_url(url)
+            blocked_networks.validate_preset_url(url)
 
     def test_a_refusal_repeats_no_part_of_the_url(self):
         with pytest.raises(ValueError) as refused:
-            presets.validate_preset_url(f"http://user:{KEY}@8.8.8.8/")
+            blocked_networks.validate_preset_url(f"http://user:{KEY}@8.8.8.8/")
         assert KEY not in str(refused.value)
 
     def test_one_blocked_answer_among_good_ones_refuses(self, dns):
         dns["mixed.test"] = ["8.8.8.8", "169.254.169.254"]
         with pytest.raises(ValueError, match=METADATA_REFUSAL):
-            presets.validate_preset_url("http://mixed.test/")
+            blocked_networks.validate_preset_url("http://mixed.test/")
 
     @pytest.mark.parametrize(
         ("url", "blocked"),
@@ -194,7 +195,7 @@ class TestValidatePresetUrl:
     )
     def test_an_address_that_tunnels_to_an_ipv4_host_is_refused(self, url, blocked):
         with pytest.raises(ValueError, match=re.escape(f"blocked address {blocked}")):
-            presets.validate_preset_url(url)
+            blocked_networks.validate_preset_url(url)
 
     @pytest.mark.parametrize(
         "url",
@@ -208,17 +209,17 @@ class TestValidatePresetUrl:
         ],
     )
     def test_a_neighbour_of_a_tunnel_range_is_allowed(self, url):
-        assert presets.validate_preset_url(url) is None
+        assert blocked_networks.validate_preset_url(url) is None
 
     def test_a_6to4_address_with_a_public_ipv4_is_allowed(self):
-        assert presets.validate_preset_url("http://[2002:808:808::]/") is None
+        assert blocked_networks.validate_preset_url("http://[2002:808:808::]/") is None
 
     def test_a_6to4_host_name_with_a_blocked_ipv4_is_refused_at_save_and_at_request(self, dns):
         dns["sixtofour.test"] = ["2002:a9fe:a9fe::"]
         with pytest.raises(ValueError, match=METADATA_REFUSAL):
-            presets.validate_preset_url("http://sixtofour.test/")
+            blocked_networks.validate_preset_url("http://sixtofour.test/")
         with pytest.raises(ValueError, match=METADATA_REFUSAL):
-            presets.check_request_address("http://sixtofour.test/")
+            blocked_networks.check_request_address("http://sixtofour.test/")
 
     @pytest.mark.parametrize(
         "address",
@@ -226,61 +227,61 @@ class TestValidatePresetUrl:
     )
     def test_a_teredo_address_is_refused_whatever_its_client(self, address):
         with pytest.raises(ValueError, match="blocked address"):
-            presets.validate_preset_url(f"http://[{address}]/")
+            blocked_networks.validate_preset_url(f"http://[{address}]/")
 
     def test_a_host_name_with_a_tunnel_answer_is_refused_at_save_and_at_request(self, dns):
         dns["tunnel.test"] = ["8.8.8.8", "2001:0:4136:e378:8000:63bf:3fff:fdd2"]
         with pytest.raises(ValueError, match="blocked address 2001:0:4136"):
-            presets.validate_preset_url("http://tunnel.test/")
+            blocked_networks.validate_preset_url("http://tunnel.test/")
         with pytest.raises(ValueError, match="blocked address 2001:0:4136"):
-            presets.check_request_address("http://tunnel.test/")
+            blocked_networks.check_request_address("http://tunnel.test/")
 
     def test_a_host_name_with_a_mapped_answer_is_read_as_the_address_it_embeds(self, dns):
         dns["mapped.test"] = ["::ffff:169.254.169.254"]
         with pytest.raises(ValueError, match=METADATA_REFUSAL):
-            presets.validate_preset_url("http://mapped.test/")
+            blocked_networks.validate_preset_url("http://mapped.test/")
 
     def test_a_host_with_no_dns_answer_is_allowed_at_save(self):
-        assert presets.validate_preset_url("http://offline.test/") is None
+        assert blocked_networks.validate_preset_url("http://offline.test/") is None
 
     def test_a_host_name_dns_cannot_encode_is_refused(self, monkeypatch):
         def refuses(_host, _port):
             raise UnicodeError("label too long")
 
-        monkeypatch.setattr(presets.socket, "getaddrinfo", refuses)
+        monkeypatch.setattr(blocked_networks.socket, "getaddrinfo", refuses)
         with pytest.raises(ValueError, match="not a valid host name"):
-            presets.validate_preset_url("http://long.test/")
+            blocked_networks.validate_preset_url("http://long.test/")
 
 
 class TestCheckRequestAddress:
     def test_a_public_answer_is_allowed(self):
-        assert presets.check_request_address(URL) is None
+        assert blocked_networks.check_request_address(URL) is None
 
     def test_an_os_error_from_the_lookup_is_no_answer(self, monkeypatch):
         def getaddrinfo(_host, _port):
             raise OSError("no route")
 
-        monkeypatch.setattr(presets.socket, "getaddrinfo", getaddrinfo)
-        presets.validate_preset_url("http://offline.test/")
+        monkeypatch.setattr(blocked_networks.socket, "getaddrinfo", getaddrinfo)
+        blocked_networks.validate_preset_url("http://offline.test/")
         with pytest.raises(ValueError, match="no DNS answer"):
-            presets.check_request_address("http://offline.test/")
+            blocked_networks.check_request_address("http://offline.test/")
 
     def test_a_literal_address_needs_no_dns(self):
-        assert presets.check_request_address(OTHER_URL) is None
+        assert blocked_networks.check_request_address(OTHER_URL) is None
 
     def test_a_blocked_literal_is_refused(self):
         with pytest.raises(ValueError, match=METADATA_REFUSAL):
-            presets.check_request_address(BLOCKED_URL)
+            blocked_networks.check_request_address(BLOCKED_URL)
 
     def test_no_dns_answer_is_refused(self):
         with pytest.raises(ValueError, match="no DNS answer"):
-            presets.check_request_address("http://offline.test/")
+            blocked_networks.check_request_address("http://offline.test/")
 
     def test_an_answer_that_turned_blocked_after_save_is_refused(self, dns):
         presets.add_preset("alpha", URL, roles=["chat"])
         dns[PUBLIC_HOST] = ["169.254.169.254"]
         with pytest.raises(ValueError, match=METADATA_REFUSAL):
-            presets.check_request_address(URL)
+            blocked_networks.check_request_address(URL)
 
 
 class TestAdd:
@@ -626,12 +627,12 @@ class TestOneBadEntry:
 
     def test_an_unreadable_entry_shows_no_text_of_its_row_in_its_repr(self):
         row = {"name": "bad", "url": URL, "roles": ["speak"], "api_key": KEY}
-        entry = presets._decoded_row(row)
-        assert isinstance(entry, presets._UnreadableEntry)
+        entry = server_registry._decoded_row(row)
+        assert isinstance(entry, server_registry.UnreadableEntry)
         assert KEY not in repr(entry)
 
     def test_a_stored_preset_shows_no_url_credentials_in_its_repr(self):
-        stored = presets._StoredPreset(
+        stored = server_registry.StoredPreset(
             name="a",
             url="http://alice:hunter2@pub.example.test/v1",  # pragma: allowlist secret
             roles=("chat",),
@@ -643,7 +644,7 @@ class TestOneBadEntry:
     def test_the_error_for_a_bad_row_repeats_none_of_the_input(self):
         row = {"name": "bad", "url": URL, "roles": [KEY], "api_key": KEY}
         with pytest.raises(ValidationError) as refused:
-            presets._StoredPreset.model_validate(row)
+            server_registry.StoredPreset.model_validate(row)
         assert KEY not in str(refused.value)
 
     def test_a_stored_list_nested_past_the_parser_limit_is_refused_as_unparsed(self):
@@ -682,7 +683,7 @@ class TestDnsAndTheLock:
             held.append(settings._settings_lock.locked())
             return [(2, 1, 6, "", ("8.8.8.8", 0))]
 
-        monkeypatch.setattr(presets.socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(blocked_networks.socket, "getaddrinfo", getaddrinfo)
         presets.add_preset("alpha", URL, roles=["chat"])
         presets.edit_preset("alpha", url="http://other.test/")
         assert held == [False, False]
@@ -695,7 +696,7 @@ class TestDnsAndTheLock:
             asked.append(host)
             raise socket.gaierror("no answer")
 
-        monkeypatch.setattr(presets.socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(blocked_networks.socket, "getaddrinfo", getaddrinfo)
         presets.add_preset("beta", OTHER_URL, roles=["chat"])
         presets.edit_preset("alpha", roles=["embed"])
         presets.clear_key("alpha")
@@ -708,7 +709,7 @@ class TestDnsAndTheLock:
         presets.add_preset("beta", OTHER_URL, roles=["chat"])
         assert [entry["name"] for entry in _stored()] == ["alpha", "beta"]
         with pytest.raises(ValueError, match="blocked address"):
-            presets.check_request_address(URL)
+            blocked_networks.check_request_address(URL)
 
 
 class TestList:

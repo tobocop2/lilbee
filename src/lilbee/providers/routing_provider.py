@@ -427,7 +427,8 @@ def _is_native_rerank_ref(model: str, engine: EngineAdapter) -> bool:
     1. :func:`routes_to_native_gguf` accepts the ref: a native GGUF shape that
        no local-server prefix (``ollama/``, ``lm_studio/``) claims, matching
        :func:`parse_model_ref`'s exemption.
-    2. The bare ``<org>/<repo>`` names a repo with an installed quant.
+    2. The bare ``<org>/<repo>`` names a repo with an installed quant and no
+       server preset has the name ``<org>``.
 
     The model's name is deliberately not consulted. Hosted rerankers are
     usually called rerankers too (``cohere/rerank-english-v3.0``), so matching
@@ -442,6 +443,6 @@ def _is_native_rerank_ref(model: str, engine: EngineAdapter) -> bool:
         return False
     if routes_to_native_gguf(model):
         return True
-    if not is_bare_hf_repo(model):
+    if not is_bare_hf_repo(model) or parse_model_ref(model).is_preset:
         return False
     return get_services().registry.installed_ref_for_repo(model) is not None
