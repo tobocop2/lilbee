@@ -882,6 +882,25 @@ class TestBuildFleetWiring:
         assert roles is not None and WorkerRole.CHAT in roles  # the other roles plan either way
         assert (WorkerRole.VISION in roles) is planned
 
+    def test_plan_all_launches_places_only_the_roles_the_engine_serves(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary, _engine: [])
+        planned_roles: list[tuple[WorkerRole, ...]] = []
+
+        def _plan(roles, *_args, **_kw) -> planning_mod.FleetPlan:
+            planned_roles.append(roles)
+            return planning_mod.FleetPlan(())
+
+        monkeypatch.setattr(planning_mod, "plan_launches", _plan)
+        monkeypatch.setattr(cfg, "vision_model", "some/vision.gguf")
+        monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO)
+        planning_mod.plan_all_launches(engine=FAKE)
+        (roles,) = planned_roles
+        assert set(roles) == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert WorkerRole.RERANK not in FAKE.served_roles
+        assert set(planning_mod._launched_roles(LLAMA)) == set(WorkerRole)
+
     def test_placement_inputs_keep_vision_with_ocr_off(self, monkeypatch) -> None:
         # A saved placement edited while OCR is off must still carry the vision pin.
         monkeypatch.setattr(

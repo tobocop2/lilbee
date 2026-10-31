@@ -3247,14 +3247,15 @@ def vision_role_wanted(ref: str) -> bool:
     return chosen is OcrBackendUsed.VISION or _vision_request_grant.granted
 
 
-def _launched_roles() -> tuple[WorkerRole, ...]:
-    """The roles a launch plan may serve: vision only while OCR can reach it."""
+def _launched_roles(engine: EngineAdapter) -> tuple[WorkerRole, ...]:
+    """The roles a launch plan may serve: the engine's roles, vision only while OCR can reach it."""
     from lilbee.core.config import cfg
 
     return tuple(
         role
         for role in ROLE_REGISTRY
-        if role is not WorkerRole.VISION or vision_role_wanted(str(cfg.vision_model))
+        if role in engine.served_roles
+        and (role is not WorkerRole.VISION or vision_role_wanted(str(cfg.vision_model)))
     )
 
 
@@ -3268,4 +3269,4 @@ def plan_all_launches(*, engine: EngineAdapter) -> FleetPlan:
     with _one_engine_per_pass(engine=engine):
         devices = _plan_devices(binary, engine)
         by_index = {d.index: d for d in devices}
-        return plan_launches(_launched_roles(), binary, by_index, devices, engine=engine)
+        return plan_launches(_launched_roles(engine), binary, by_index, devices, engine=engine)
