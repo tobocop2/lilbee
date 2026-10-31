@@ -289,6 +289,23 @@ class HfClient:
         """Record *architecture* for *ref* in the per-instance cache."""
         self._arch_cache[ref] = architecture
 
+    def _page_engine(self, fmt: ModelFormat) -> EngineAdapter | None:
+        """The engine for the verdict on a page: only GGUF rows get one.
+
+        With no engine the rows stay unknown, because browsing needs none and a
+        pull refuses on its own.
+        """
+        # Local import to avoid a cycle with the engine choice module.
+        from lilbee.app.engine_choice import engine_for_format
+        from lilbee.providers.fleet.engines.choice import NoEngineError
+
+        if fmt != ModelFormat.GGUF:
+            return None
+        try:
+            return engine_for_format(fmt, self._config)
+        except NoEngineError:
+            return None
+
     def fetch_models(
         self,
         pipeline_tag: str = "text-generation",
@@ -343,11 +360,7 @@ class HfClient:
 
         next_cursor = _next_cursor(resp)
 
-        # Local import to avoid a cycle with the engine choice module.
-        from lilbee.app.engine_choice import engine_for_format
-
-        # Only a GGUF row gets an engine verdict, so only GGUF asks for an engine.
-        engine = engine_for_format(fmt, self._config) if fmt == ModelFormat.GGUF else None
+        engine = self._page_engine(fmt)
         models: list[CatalogModel] = []
         for raw in data:
             model = self._catalog_row(raw, fmt, engine)

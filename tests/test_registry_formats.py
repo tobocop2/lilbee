@@ -13,7 +13,6 @@ from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.model_manager import ModelManager
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry, register_downloaded_model
-from lilbee.providers.fleet.engines import LLAMA
 
 _REV = "0" * 40
 _GGUF = "m-Q4_K_M.gguf"
@@ -291,7 +290,7 @@ class TestThroughTheModelManager:
     def test_install_list_find_and_remove_by_ref(self, repo: Path) -> None:
         _install(repo, ModelFormat.GGUF)
         _install(repo, ModelFormat.MLX)
-        manager = ModelManager(repo, engine=LLAMA)
+        manager = ModelManager(repo, cfg)
         assert manager.list_installed(ModelSource.NATIVE) == [
             "org/repo#mlx",
             f"org/repo/{_GGUF}",
