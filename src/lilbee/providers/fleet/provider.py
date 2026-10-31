@@ -1268,8 +1268,8 @@ class FleetProvider:
             # (a wedged GPU probe, an unusable CUDA runtime) propagates so the
             # warm tracker and the caller report the real reason instead of a
             # silent never-ready fleet.
-            planning.capture_plan_probe(self._host_engine())
             engines = self._engines()
+            planning.capture_plan_probe(engines)
             plan = planning.plan_all_launches(engines=engines)
         except ProviderError as exc:
             # Only a genuinely-missing engine binary keeps the quiet no-fleet path;
@@ -2654,7 +2654,7 @@ class FleetProvider:
             # figures beside it are deliberately not re-taken: this fleet is
             # resident, and charging it against itself is what the snapshot exists
             # to prevent.
-            planning.refresh_plan_devices(self._host_engine())
+            planning.refresh_plan_devices(self._engines())
             with self._lock:
                 if self._shut_down:
                     # Terminal shutdown landed while this reload was queued; a
@@ -2688,7 +2688,7 @@ class FleetProvider:
                 if not running:
                     # Nothing loaded (a resurrect after a failed pass): the box is
                     # clean, so refresh the plan snapshot like a first build would.
-                    planning.capture_plan_probe(self._host_engine())
+                    planning.capture_plan_probe(self._engines())
                 engines = self._engines()
                 plan = planning.plan_all_launches(engines=engines)
                 # Keep the skip reasons in step with the fresh plan.

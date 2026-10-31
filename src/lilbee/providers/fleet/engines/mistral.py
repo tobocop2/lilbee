@@ -12,7 +12,7 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
-from lilbee.providers.fleet.devices import DeviceProbe
+from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
@@ -207,7 +207,11 @@ class MistralAdapter:
         return ["--paged-attn", "off"]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        return DeviceProbe(devices=[], output="")
+        from lilbee.catalog.runnable import session_host
+
+        if self.pick_build(session_host()).backend in (None, _CPU):
+            return DeviceProbe(devices=[], output="")
+        return DeviceProbe(devices=visible_nvidia_cards(), output="")
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         try:

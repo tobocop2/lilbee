@@ -11,7 +11,7 @@ from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.engines import LLAMA
-from lilbee.providers.roles import EngineBackend
+from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.providers.server_registry import PRESETS_KEY, is_loopback_url, loopback_reserve_bytes
 
 GB = 1024**3
@@ -80,7 +80,7 @@ class TestAdmissionBudget:
         assert _budgets() == (SIZING, ADMISSION)
 
     def test_a_reserve_started_after_the_snapshot_still_applies(self):
-        planning_mod.capture_plan_probe(engine=LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
         _add("omlx", LOOPBACK, 8)
         assert _budgets() == (SIZING, ADMISSION_WITH_RESERVE)
 
