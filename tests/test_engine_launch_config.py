@@ -276,3 +276,20 @@ def test_a_cpu_launch_of_mistral_forces_the_cpu(
     )
     assert "--cpu" in words
     assert "--paged-attn" not in words
+
+
+@pytest.mark.parametrize(("fleet", "role"), _ROWS)
+def test_only_mistral_roles_are_written_with_the_served_model_name(
+    fleet: _Fleet,
+    role: WorkerRole,
+    host: dict[EngineName, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure(fleet, tmp_path, monkeypatch)
+    entry = _entries_by_role(_config_from_the_provider(tmp_path, monkeypatch))[role]
+    if fleet.engines[role] is EngineName.MISTRAL:
+        assert entry["useModelName"] == "default"
+    else:
+        assert "useModelName" not in entry
+    assert "cmd" in entry
