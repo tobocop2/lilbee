@@ -481,6 +481,18 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "stays off unless you want an agent owning conversations."
         ),
     ),
+    "mcp_presets_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Off (default): the server preset tools are not offered over MCP, and a "
+            "connected agent cannot list or change presets. On: an agent can list, add, "
+            "edit and remove server presets. A preset decides where requests and API "
+            "keys go, and the tools cost context on every request, so this stays off "
+            "unless you want an agent managing presets."
+        ),
+    ),
     "chat_mode": SettingDef(
         str,
         nullable=False,
