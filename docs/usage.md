@@ -460,7 +460,8 @@ the request again with `confirm_embed_change` set to `true` to write the change.
 
 Run `lilbee engine list` to see the engine builds installed beside the models.
 If none is installed, it prints `No engine builds are installed.` Run
-`lilbee engine remove` to delete one build.
+`lilbee engine remove <engine> <version> <backend>` to delete one build. Use
+the three values that `engine list` shows.
 
 #### The saved choice
 
@@ -468,6 +469,12 @@ The engine commands write two keys to `config.toml`: `preferred_engine` and
 `engine_choices`. `preferred_engine` is `auto` by default. `engine_choices`
 maps a model reference to an engine name and is empty by default. Only the
 engine commands write these keys. Do not edit them in the settings list.
+
+An `engine_choices` entry for a model wins. `preferred_engine` covers the
+models with no entry. If the winning engine cannot load the format of the
+model, the role has no engine and a notice shows, for example `Engine llama.cpp
+cannot load the mlx format of org/repo#mlx.` lilbee does not fall back to the
+other key.
 
 #### Pick the engine in the TUI
 
@@ -489,13 +496,16 @@ choice was not saved.
 #### Pull a model with no engine
 
 If no installed engine loads the format of a model, `lilbee model pull` stops
-before it downloads a file. It prints
-`No installed engine loads the openvino format of org/repo#openvino` and the
-command to list the installed engines.
+before it downloads a file. For the reference `org/repo#openvino`, it prints:
 
-To pull a model in a format other than GGUF, add the format to the reference as
-`org/repo#format`. The format is `gguf`, `mlx`, `openvino` or `safetensors`. A
-reference with no `#format` is GGUF.
+```
+Error: No installed engine loads the openvino format of org/repo#openvino. Run lilbee engine list to see the installed engines.
+```
+
+To pull a model in a format other than GGUF, add the format name to the
+reference as `org/repo#format`. Here `openvino` and `mlx` are names of weight
+formats, not engines. The format name is `gguf`, `mlx`, `openvino` or
+`safetensors`. A reference with no `#format` is GGUF.
 
 ## Memory
 
