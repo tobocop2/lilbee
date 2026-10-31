@@ -11,12 +11,14 @@ import stat
 import sys
 import uuid
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email import message_from_string
+from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from lilbee.catalog.download import disk_shortfall, retry_transfer
 from lilbee.core.security import file_lock
 
 log = logging.getLogger(__name__)
@@ -26,9 +28,13 @@ PERMISSIVE_LICENCES = frozenset({"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Cla
 _LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
 _STAGE_PREFIX = ".stage-"
+_DOWNLOAD_PREFIX = ".download-"
 _NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 _TOOL_PATH = re.compile(r"[^/]+/bin/[^/]+")
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
+_PACK_DIR = "packs"
+_PACKAGE_INDEX = "https://lilbee.sh"
+_PACKAGE_PREFIX = "lilbee-engine-"
 
 
 class ChecksumError(Exception):
@@ -45,6 +51,25 @@ class UnsafeWheelError(Exception):
 
 class EngineConflictError(Exception):
     """A build of the same engine, version and backend exists with a different wheel."""
+
+
+class MissingPackError(Exception):
+    """The build is not installed, has no pack on disk, and cannot be downloaded."""
+
+
+class UnsupportedPlatformError(Exception):
+    """The pin lists no wheel for this platform."""
+
+
+class EngineDiskError(Exception):
+    """The volume of the engines root has too little free space for the wheel."""
+
+
+class InstallTool(StrEnum):
+    """The installer that runs the package route."""
+
+    UV = "uv"
+    PIP = "pip"
 
 
 @dataclass(frozen=True)
@@ -225,19 +250,52 @@ class EngineStore:
         )
         return [found for found in builds if found is not None]
 
+    def pack_path(self, lock: PinLock) -> Path:
+        """Where a hand-copied wheel of *lock* is looked up."""
+        return self.root / _PACK_DIR / f"{lock.engine}-{lock.version}-{lock.backend}.whl"
+
+    def _complete_build(self, lock: PinLock) -> Path | None:
+        """The directory of the complete build of *lock*, None when absent or damaged."""
+        existing = _read_record(self.build_dir(lock))
+        if existing is None:
+            return None
+        if existing.sha256.lower() != lock.sha256.lower():
+            raise EngineConflictError(
+                f"Engine {lock.engine} {lock.version} ({lock.backend}) is installed "
+                f"from a different wheel than its pin. Remove that build first."
+            )
+        return existing.path
+
+    def ensure(self, lock: PinLock, fetch: Callable[[PinLock, Path], Path]) -> Path:
+        """Return the build of *lock*: installed, else from a pack, else from *fetch*."""
+        _check_licences(lock)
+        found = self._complete_build(lock)
+        if found is not None:
+            return found
+        pack = self.pack_path(lock)
+        if pack.is_file():
+            return self.install_from_wheel(lock, pack)
+        scratch = self.root / f"{_DOWNLOAD_PREFIX}{uuid.uuid4().hex}"
+        try:
+            try:
+                wheel = fetch(lock, scratch)
+            except (OSError, RuntimeError) as exc:
+                raise MissingPackError(
+                    f"Engine {lock.engine} {lock.version} ({lock.backend}) is not installed and "
+                    f"cannot be downloaded. Copy {pack.name} into {pack.parent} "
+                    f"and run the install again."
+                ) from exc
+            return self.install_from_wheel(lock, wheel)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+
     def install_from_wheel(self, lock: PinLock, wheel: Path) -> Path:
         """Install *wheel* as the build of *lock*; return the build directory."""
         _check_licences(lock)
         _check_wheel(lock, wheel)
         final = self.build_dir(lock)
         with file_lock(self.root / _LOCK_DIR / lock.engine, _LOCK_TIMEOUT_S):
-            existing = _read_record(final)
-            if existing is not None:
-                if existing.sha256.lower() != lock.sha256.lower():
-                    raise EngineConflictError(
-                        f"Engine {lock.engine} {lock.version} ({lock.backend}) is installed "
-                        f"from a different wheel than its pin. Remove that build first."
-                    )
+            if self._complete_build(lock) is not None:
                 return final
             stage = final.parent / f"{_STAGE_PREFIX}{uuid.uuid4().hex}"
             final.parent.mkdir(parents=True, exist_ok=True)
@@ -267,15 +325,100 @@ class EngineStore:
         (stage / RECORD_NAME).write_text(json.dumps(record), encoding="utf-8")
 
 
+def package_name(lock: PinLock) -> str:
+    """The name of the engine's wheel on the package index."""
+    return _PACKAGE_PREFIX + re.sub(r"[^a-z0-9]+", "-", lock.engine.lower()).strip("-")
+
+
+def pip_requirement(lock: PinLock) -> str:
+    """The pinned, hashed requirement line the package route reads from standard input."""
+    return f"{package_name(lock)}=={lock.version} --hash=sha256:{lock.sha256.lower()}\n"
+
+
+def pip_install_argv(lock: PinLock, stage: Path, tool: InstallTool = InstallTool.UV) -> list[str]:
+    """The command that installs the pinned wheel of *lock* into *stage* from the package index."""
+    runner = ["uv", "pip"] if tool == InstallTool.UV else [sys.executable, "-m", "pip"]
+    return [
+        *runner,
+        "install",
+        "--target",
+        str(stage),
+        "--no-deps",
+        "--only-binary=:all:",
+        "--require-hashes",
+        "--index-url",
+        f"{_PACKAGE_INDEX}/{lock.backend}/",
+        "-r",
+        "-",
+    ]
+
+
+def _hub_download(
+    *, repo_id: str, revision: str, filename: str, local_dir: str | None = None
+) -> str:
+    from huggingface_hub import hf_hub_download
+
+    return str(
+        hf_hub_download(repo_id=repo_id, revision=revision, filename=filename, local_dir=local_dir)
+    )
+
+
+def fetch_frozen(
+    lock: PinLock,
+    platform: str,
+    *,
+    dest: Path,
+    downloader: Callable[..., str] = _hub_download,
+) -> Path:
+    """Download the wheel of *lock* for *platform* at its pinned commit into *dest*, unchecked."""
+    from huggingface_hub.errors import (
+        EntryNotFoundError,
+        RepositoryNotFoundError,
+        RevisionNotFoundError,
+    )
+
+    asset = lock.platforms.get(platform)
+    if asset is None:
+        raise UnsupportedPlatformError(
+            f"Engine {lock.engine} {lock.version} has no build for {platform}."
+        )
+    shortfall = disk_shortfall(dest, asset.repo, asset.size)
+    if shortfall is not None:
+        raise EngineDiskError(shortfall)
+    try:
+        return Path(
+            retry_transfer(
+                lambda: downloader(
+                    repo_id=asset.repo,
+                    revision=asset.revision,
+                    filename=asset.filename,
+                    local_dir=str(dest),
+                )
+            )
+        )
+    except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError) as exc:
+        raise FileNotFoundError(
+            f"The hub has no {asset.filename} at {asset.revision} in {asset.repo}."
+        ) from exc
+
+
 __all__ = [
     "RECORD_NAME",
     "ChecksumError",
     "EngineConflictError",
+    "EngineDiskError",
     "EngineStore",
+    "InstallTool",
     "InstalledEngine",
     "LicenceRefusedError",
+    "MissingPackError",
     "PinLock",
     "PlatformAsset",
     "UnsafeWheelError",
+    "UnsupportedPlatformError",
+    "fetch_frozen",
     "licence_permitted",
+    "package_name",
+    "pip_install_argv",
+    "pip_requirement",
 ]
