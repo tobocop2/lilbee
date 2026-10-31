@@ -63,8 +63,10 @@ class RequestProfile:
     """Extra fields on every embeddings request body."""
     stream_fields: Mapping[str, Any]
     """Extra fields on a streamed chat request body."""
-    tokenize_path: str
-    detokenize_path: str
+    tokenize_path: str | None
+    """The tokenize route, or None when the engine has none (the client then estimates)."""
+    detokenize_path: str | None
+    """The detokenize route, or None when the engine has none."""
     apply_template_path: str
     label: str
     """The name of the engine's server in error messages."""
@@ -76,6 +78,8 @@ class RequestProfile:
     """What to tell the user when embedding vectors do not decode."""
     reasoning_field: str
     """The response field that carries reasoning text apart from the answer."""
+    rerank_path: str | None = None
+    """The route that scores a query against texts, or None to rank through embeddings."""
 
 
 class EngineAdapter(Protocol, Hashable):
