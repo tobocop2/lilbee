@@ -334,7 +334,7 @@ class TestTargetRefusedPlainMessage:
     def _resolve(self, raw: str, engine, devices: list[FleetDevice] | None = None):
         return planning._resolve_placement(
             PlacementSpec.from_json(raw),
-            [],
+            [planning.ModelPlacementInput(WorkerRole.EMBED, 0)],
             {WorkerRole.EMBED: "ref"},
             devices or [],
             engines={WorkerRole.EMBED: engine},
