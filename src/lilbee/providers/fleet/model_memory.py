@@ -152,9 +152,13 @@ def _weights_estimate(weights: int) -> MemoryEstimate:
     )
 
 
+def installed_safetensors_bytes(model_path: Path) -> int:
+    """Bytes of the ``.safetensors`` files of an installed model; 0 when it holds none."""
+    return _sum_suffix(_installed_sizes(model_path), _SAFETENSORS_SUFFIX)
+
+
 def _estimate_safetensors(request: MemoryRequest) -> MemoryEstimate:
-    sizes = _installed_sizes(request.model_path)
-    return _weights_estimate(_known_or_reserve(_sum_suffix(sizes, _SAFETENSORS_SUFFIX)))
+    return _weights_estimate(_known_or_reserve(installed_safetensors_bytes(request.model_path)))
 
 
 def _estimate_openvino(request: MemoryRequest) -> MemoryEstimate:
