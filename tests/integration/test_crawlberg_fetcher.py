@@ -39,6 +39,7 @@ from lilbee.app.settings import apply_settings_update  # noqa: E402
 from lilbee.cli.app import app  # noqa: E402
 from lilbee.cli.commands.serve_logging import setup_server_log_file  # noqa: E402
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, Config, cfg  # noqa: E402
+from lilbee.core.config.defaults import SKIP_TOML_ENV  # noqa: E402
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
 from lilbee.core.crawl_patterns import refused_exclude_patterns  # noqa: E402
 from lilbee.core.web_names import page_stem  # noqa: E402
@@ -1443,6 +1444,16 @@ class TestRefusedEngineOnTheCli:
         shell.write_text("", encoding="utf-8")
         monkeypatch.setattr(bootstrap, "chromium_installed", lambda: True)
         monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: shell)
+
+    @pytest.fixture(autouse=True)
+    def _cfg_kept_through_the_command(self, monkeypatch):
+        """Keep the values these tests set on cfg, which config.toml cannot hold.
+
+        No settings entry point accepts the refused pattern or number. A command start sets
+        every setting from config.toml, env and profile. The skip switch turns that off, so
+        the refused values reach the engine.
+        """
+        monkeypatch.setenv(SKIP_TOML_ENV, "1")
 
     def _add(self, *args: str) -> Result:
         return CliRunner().invoke(app, [*args, "--crawl", "--depth", "1"])

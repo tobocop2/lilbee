@@ -176,6 +176,7 @@ def isolated_env(tmp_path, real_models):
         "hyde": False,
         "wiki": False,
         "max_tokens": 512,
+        "worker_pool_eager_start": False,
         "chunk_size": 128,
         "chunk_overlap": 20,
     }

@@ -113,6 +113,7 @@ layout_detection = true
 max_chunks_per_file = 3000
 """
 _PAUSES = 300
+_SECONDS = 30.0
 _YOURS = "chunk_size = 384\nlayout_detection = false\nmax_chunks_per_file = 2000\n"
 
 
@@ -182,7 +183,7 @@ def _table_rows(screen: SettingsScreen, table_id: str) -> list[list[str]]:
 
 async def _until(pilot: Pilot, predicate: Callable[[], bool]) -> bool:
     """Wait on *predicate* with room for a loaded runner."""
-    return await wait_until(pilot, predicate, max_pauses=_PAUSES)
+    return await wait_until(pilot, predicate, max_pauses=_PAUSES, timeout=_SECONDS)
 
 
 async def _press(pilot: Pilot, widget: Widget) -> None:
