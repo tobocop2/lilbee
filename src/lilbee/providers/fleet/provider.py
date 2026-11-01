@@ -1470,11 +1470,20 @@ class FleetProvider:
             # recorded engine so planning sees true free VRAM and the build never
             # lands beside an unprobeable incumbent.
             _clear_engine_dir(engine_dir)
-            built = self._plan_and_spawn(engine_dir)
-            if built:
-                self._hold_membership(engine_dir)
-                _watch_bound_engine(engine_dir)
-            return built
+            # Membership comes first: an exit while the start waits on the engine
+            # must still find this engine's hold and stop it as the last user out.
+            fresh = self._take_user_lock(engine_dir)
+            try:
+                built = self._plan_and_spawn(engine_dir)
+            except BaseException:
+                self._drop_user_lock(engine_dir, fresh)
+                raise
+            if not built:
+                self._drop_user_lock(engine_dir, fresh)
+                return False
+            self._hold_membership(engine_dir)
+            _watch_bound_engine(engine_dir)
+            return True
 
     def _refuse_live_engine(self, engine_dir: Path, overflow_dir: Path | None) -> bool | None:
         """Leave a live engine this process cannot bind: overflow (None) or serve nothing.
@@ -1582,10 +1591,22 @@ class FleetProvider:
         """
         from lilbee.core.config import cfg
 
-        if engine_dir not in self._engine_holds:
-            self._engine_holds[engine_dir] = hold_user_lock(engine_dir)
+        self._take_user_lock(engine_dir)
         if cfg.keep_engine_warm:
             request_keep_warm(engine_dir, cfg.data_root, cfg.engine_idle_ttl_minutes)
+
+    def _take_user_lock(self, engine_dir: Path) -> bool:
+        """Hold *engine_dir*'s user lock; True when this call took it."""
+        if engine_dir in self._engine_holds:
+            return False
+        self._engine_holds[engine_dir] = hold_user_lock(engine_dir)
+        return True
+
+    def _drop_user_lock(self, engine_dir: Path, taken: bool) -> None:
+        """Release the user lock that a start took and did not keep."""
+        hold = self._engine_holds.pop(engine_dir, None) if taken else None
+        if hold is not None:
+            hold.release_and_check_last()
 
     def _plan_and_spawn(self, data_dir: Path) -> bool:
         """Plan placement against the clean box and start one swap per group.
