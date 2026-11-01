@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -13,7 +14,10 @@ from lilbee.catalog.refs import model_format
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.model_ref import parse_model_ref
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -391,10 +395,13 @@ def pull_model_data(
     if manager.is_installed(ref, source) and (
         source is not ModelSource.NATIVE or manager.is_registered(ref)
     ):
-        if source is ModelSource.NATIVE and model_format(ref) is not ModelFormat.GGUF:
+        if source is ModelSource.NATIVE and model_format(ref) is ModelFormat.SAFETENSORS:
             # A pull made before the module files were selected lacks them; the
             # pull fetches only the files the cache does not hold.
-            manager.pull(ref, source, cancel=cancel)
+            try:
+                manager.pull(ref, source, cancel=cancel)
+            except (RuntimeError, NoEngineError) as exc:
+                log.info("Could not check %s for missing module files: %s", ref, exc)
         # A cached vision install may carry the main GGUF but not its mmproj
         # projector; without it llama-server can't serve OCR, so ensure it before
         # reporting already-installed.
