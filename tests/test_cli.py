@@ -7628,6 +7628,7 @@ class TestSelfCheckExtras:
             "ada_url": True,
             "spacy": True,
             "graspologic_native": True,
+            "xberg": True,
         }
 
     def test_one_extra_missing_exits_nonzero_json(self) -> None:
