@@ -540,7 +540,10 @@ async def test_save_as_refuses_a_builtin_name_then_saves_to_this_project() -> No
         await _dialog(app, pilot, SaveProfileDialog)
         dialog = app.screen
         error = dialog.query_one("#save-error", Static)
-        assert _text(error) == "Type a name for the profile."
+        assert _text(error) == "" and not error.display
+        assert dialog.query_one("#save-save", ConfirmPill).has_class("-disabled")
+        await pilot.press("a", "backspace")
+        assert await _until(pilot, lambda: _text(error) == "Type a name for the profile.")
         await pilot.press(*"Research papers")
         assert await _until(
             pilot, lambda: _text(error) == "A built-in profile already has this name."
@@ -870,17 +873,12 @@ def test_value_text_reads_like_a_setting(value, text) -> None:
     assert value_text(value) == text
 
 
-async def test_picking_the_blank_entry_shows_the_active_profile_again() -> None:
-    _on_legal_with_three_changes()
+async def test_the_dropdown_has_no_blank_entry() -> None:
     app = _SettingsApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        screen = await _loaded(app, pilot, "legal-discovery")
-        await app.workers.wait_for_complete()
-        await pilot.pause()
+        screen = await _loaded(app, pilot, "Default")
         select = screen.query_one("#profile-select", Select)
-        select.value = Select.NULL
-        assert await _until(pilot, lambda: select.value == "legal-discovery")
-        assert app.screen is screen
+        assert Select.NULL not in [value for _label, value in select._options]
 
 
 @pytest.fixture

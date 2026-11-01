@@ -17,12 +17,14 @@ from textual.widgets import DataTable, Select, Static
 from lilbee.app import profiles
 from lilbee.app.profiles import ActiveProfile, ChangeRow, DiscardResult, ProfileStatus
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.profile_dialogs import (
     SaveProfileDialog,
     SaveRequest,
     add_cost_column,
     credit_text,
     effect_cell,
+    free_copy_name,
     has_project_folder,
     run_profile_op,
     save_folders,
@@ -32,18 +34,25 @@ from lilbee.cli.tui.screens.profile_dialogs import (
 from lilbee.cli.tui.screens.profile_library import ProfileLibrary
 from lilbee.cli.tui.screens.settings_widgets import user_pill
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
-from lilbee.core.profile_files import ProfileCatalog, ProfileFolder, ProfileStore
+from lilbee.core.profile_files import (
+    ProfileCatalog,
+    ProfileFolder,
+    ProfileStore,
+)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
 
 PROFILE_SELECT_ID = "profile-select"
+# the dropdown's only option until the first scan; a dropdown without a blank entry needs one
+_NOT_LOADED = ""
 _OWNED_FOLDERS = frozenset({ProfileFolder.PROJECT, ProfileFolder.GLOBAL})
 
 
 class ProfileAction(StrEnum):
     """An action pill on the Profile tab."""
 
+    NEW = "new"
     UPDATE = "update"
     SAVE_AS = "save_as"
     DISCARD = "discard"
@@ -90,6 +99,7 @@ class ProfileTab(Vertical):
         super().__init__(id="profile-tab")
         self._snapshot: ProfileSnapshot | None = None
         self._actions: dict[ProfileAction, Callable[[ProfileSnapshot], None]] = {
+            ProfileAction.NEW: self._new,
             ProfileAction.UPDATE: self._update,
             ProfileAction.SAVE_AS: self._save_as,
             ProfileAction.DISCARD: self._discard,
@@ -98,15 +108,27 @@ class ProfileTab(Vertical):
         }
 
     def compose(self) -> ComposeResult:
-        yield Static(msg.PROFILE_TAB_TITLE, classes="setting-title")
+        yield Static(
+            Content.assemble(msg.PROFILE_TAB_TITLE, " ", pill("select", "$warning", "$text")),
+            id="profile-title",
+            classes="setting-title",
+        )
         yield Static(msg.PROFILE_TAB_HELP, classes="setting-help")
-        yield Select[str]([], id=PROFILE_SELECT_ID)
+        with Horizontal(classes="setting-editor-row"):
+            yield Select[str](
+                [(_NOT_LOADED, _NOT_LOADED)],
+                id=PROFILE_SELECT_ID,
+                classes="setting-editor",
+                allow_blank=False,
+            )
+            yield ConfirmPill("+", pill_id="profile-new", answer=ProfileAction.NEW)
         yield Static("", id="profile-description", markup=False)
         yield Static("", id="profile-credit", markup=False)
         yield Static("", id="profile-folder", markup=False)
         yield Static("", id="profile-status-note", markup=False)
         yield Static(
-            Content.assemble(msg.PROFILE_CHANGES_TITLE, "  ", user_pill()),
+            msg.PROFILE_CHANGES_TITLE,
+            id="profile-changes-title",
             classes="setting-title profile-section",
         )
         yield Static("", id="profile-changes-help", classes="setting-help", markup=False)
@@ -166,6 +188,10 @@ class ProfileTab(Vertical):
     def _show_changes(self, snapshot: ProfileSnapshot) -> None:
         name = snapshot.active.name
         changes = snapshot.active.changes
+        title = msg.PROFILE_CHANGES_TITLE
+        self.query_one("#profile-changes-title", Static).update(
+            Content.assemble(title, "  ", user_pill()) if changes else title
+        )
         text = msg.PROFILE_CHANGES_HELP if changes else msg.PROFILE_CHANGES_NONE
         self.query_one("#profile-changes-help", Static).update(text.format(name=name))
         table = self.query_one("#profile-changes", DataTable)
@@ -204,11 +230,8 @@ class ProfileTab(Vertical):
     @on(Select.Changed, f"#{PROFILE_SELECT_ID}")
     def _on_pick(self, event: Select.Changed) -> None:
         event.stop()
-        if event.value == Select.NULL:
-            # the blank entry picks no profile; show the active one again
-            self._stale()
-            return
-        start_profile_switch(self.app, self, str(event.value), self._stale)
+        if event.value != _NOT_LOADED:
+            start_profile_switch(self.app, self, str(event.value), self._stale)
 
     @on(ConfirmPill.Picked)
     def _on_action(self, event: ConfirmPill.Picked) -> None:
@@ -225,7 +248,12 @@ class ProfileTab(Vertical):
 
         run_profile_op(self, lambda: profiles.update(ProfileStore()), _done)
 
-    def _save_as(self, snapshot: ProfileSnapshot) -> None:
+    def _new(self, snapshot: ProfileSnapshot) -> None:
+        folder = save_folders(snapshot.has_project)[0]
+        taken = snapshot.catalog
+        self._save_as(snapshot, initial=free_copy_name(snapshot.active.name, folder, taken))
+
+    def _save_as(self, snapshot: ProfileSnapshot, initial: str = "") -> None:
         dialog = SaveProfileDialog(
             title=msg.PROFILE_SAVE_TITLE,
             explain=msg.PROFILE_SAVE_EXPLAIN.format(
@@ -233,6 +261,7 @@ class ProfileTab(Vertical):
             ),
             catalog=snapshot.catalog,
             folders=save_folders(snapshot.has_project),
+            initial=initial,
         )
         self.app.push_screen(dialog, self._on_save_request)
 

@@ -819,3 +819,15 @@ async def test_the_tip_goes_once_an_add_is_queued_for_indexing(chat_app, tmp_pat
                 assert msg.ANALYZE_TIP_LABEL not in _hint_text(chat)
             finally:
                 release.set()
+
+
+@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
+async def test_the_report_pills_share_the_dialog_pill_look(size) -> None:
+    app = _ReportApp(_fits_default())
+    async with app.run_test(size=size) as pilot:
+        screen = await _report_open(app, pilot)
+        apply_pill = screen.query_one("#analyze-apply", ConfirmPill)
+        close = screen.query_one("#analyze-close", ConfirmPill)
+        assert apply_pill.has_class("-primary") and not close.has_class("-primary")
+        assert close.styles.background.a >= 0.15
+        assert apply_pill.styles.background != close.styles.background
