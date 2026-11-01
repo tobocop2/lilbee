@@ -410,17 +410,15 @@ def make_signal_sampler(devices: Sequence[DeviceLike]) -> Callable[[float], Sign
     """
     import psutil
 
-    from lilbee.providers.fleet.gpu_stats import probe_gpu_stats
+    from lilbee.providers.fleet.gpu_stats import probe_throttle_signal
 
     def sample(throughput: float) -> Signals:
-        stats = probe_gpu_stats(devices)
-        utils = [g.utilization_pct for g in stats.values() if g.utilization_pct is not None]
-        temps = [g.temperature_c for g in stats.values() if g.temperature_c is not None]
+        gpu = probe_throttle_signal(devices)
         vm = psutil.virtual_memory()
         return Signals(
             throughput=throughput,
-            gpu_util_pct=(sum(utils) / len(utils)) if utils else None,
-            gpu_temp_c=float(max(temps)) if temps else None,
+            gpu_util_pct=gpu.load_pct,
+            gpu_temp_c=gpu.temperature_c,
             cpu_pct=psutil.cpu_percent(interval=None),
             ram_free_frac=vm.available / vm.total,  # psutil total is always positive
         )

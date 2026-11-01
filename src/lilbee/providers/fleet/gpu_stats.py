@@ -58,6 +58,14 @@ class GpuStat:
     temperature_c: int | None = None
 
 
+@dataclass(frozen=True)
+class ThrottleSignal:
+    """Host-wide GPU pressure; each figure is None when no device reports it."""
+
+    load_pct: float | None
+    temperature_c: float | None
+
+
 def _safe_sample(
     backend_name: str,
     indices: frozenset[int],
@@ -149,23 +157,55 @@ def _physical_index(backend_name: str, fleet_index: int) -> int | None:
     return index
 
 
+_NVIDIA_UTIL_BACKEND = "CUDA"
+
+
 def _takes_a_sample(device: DeviceLike, devices: Sequence[DeviceLike]) -> bool:
     """Whether a vendor sample can name *device*.
 
     No id joins a Vulkan number to a driver's number, so a Vulkan device takes one
-    only when it is the only device and the driver shows at most one NVIDIA card.
+    only when it is the only device. An NVIDIA device also needs a driver that shows
+    at most one card, and only that case opens the driver.
     """
     if device.backend != VULKAN_BACKEND:
         return True
-    return len(devices) == 1 and len(host_caps.read_card_memory()) <= 1
+    if len(devices) != 1:
+        return False
+    if util_backend_name(device.backend, device.name) != _NVIDIA_UTIL_BACKEND:
+        return True
+    return len(host_caps.read_card_memory()) <= 1
 
 
 def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
     """Live stats keyed by device index. Empty when no devices are given.
 
-    Groups devices by vendor backend, dispatches once per group, and merges
-    live util/temp samples into GpuStat entries. Any index the backend can't
-    cover falls back to structural VRAM with util=None and temperature_c=None.
+    Any device that takes no sample keeps structural VRAM with util=None and
+    temperature_c=None.
+    """
+    return _merged_stats(devices, [d for d in devices if _takes_a_sample(d, devices)])
+
+
+def probe_throttle_signal(devices: Sequence[DeviceLike]) -> ThrottleSignal:
+    """The mean load and the maximum temperature of *devices*.
+
+    Every device takes a sample, because neither figure depends on which card a number names.
+    """
+    stats = _merged_stats(devices, devices).values()
+    loads = [s.utilization_pct for s in stats if s.utilization_pct is not None]
+    temps = [s.temperature_c for s in stats if s.temperature_c is not None]
+    return ThrottleSignal(
+        load_pct=sum(loads) / len(loads) if loads else None,
+        temperature_c=float(max(temps)) if temps else None,
+    )
+
+
+def _merged_stats(
+    devices: Sequence[DeviceLike], sampled: Sequence[DeviceLike]
+) -> dict[int, GpuStat]:
+    """Structural stats of *devices*, with live samples merged in for *sampled*.
+
+    Groups *sampled* by vendor backend and dispatches once per group. Any index the
+    backend can't cover falls back to structural VRAM.
     """
     # Structural fallbacks: util=None, temp=None, VRAM from the probe.
     stats: dict[int, GpuStat] = {
@@ -175,9 +215,8 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
     # Group by the util backend, not the raw inference backend: a Vulkan-exposed
     # consumer GPU routes to its vendor's util source by name.
     by_backend: dict[str, list[DeviceLike]] = {}
-    for d in devices:
-        if _takes_a_sample(d, devices):
-            by_backend.setdefault(util_backend_name(d.backend, d.name), []).append(d)
+    for d in sampled:
+        by_backend.setdefault(util_backend_name(d.backend, d.name), []).append(d)
 
     for backend_name, group in by_backend.items():
         # Ask the SMI tool about its own indices, and merge its answers back into

@@ -3381,6 +3381,11 @@ def _without_roles(
     )
 
 
+def _host_gpu_count(devices: list[FleetDevice]) -> int:
+    """The cards on this host: the visible ones, or the driver's count if that is larger."""
+    return max(len(devices), len(host_caps.read_card_memory()))
+
+
 def _roles_without_a_pin(
     inputs: list[ModelPlacementInput],
     devices: list[FleetDevice],
@@ -3394,7 +3399,7 @@ def _roles_without_a_pin(
     """
     if unified_budget is not None or not devices or not _is_mixed(engines):
         return ()
-    if max(len(devices), len(host_caps.read_card_memory())) < _MIN_SPLIT_GPUS:
+    if _host_gpu_count(devices) < _MIN_SPLIT_GPUS:
         return ()
     return tuple(
         model.role
@@ -3688,7 +3693,7 @@ def _log_refused_roles(
                 "told which one to use. Use another engine for this role.",
                 role.value,
                 model,
-                len(devices),
+                _host_gpu_count(devices),
                 engine,
             )
         elif role not in fits_alone:

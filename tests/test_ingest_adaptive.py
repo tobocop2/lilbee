@@ -27,6 +27,7 @@ from lilbee.data.ingest.adaptive import (
     profile_for,
     resolve_mode,
 )
+from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 
 MIN, MAX = 1, 100
@@ -375,8 +376,10 @@ def test_sampler_reports_mean_util_and_max_temp(monkeypatch: pytest.MonkeyPatch)
         0: gpu_stats.GpuStat(0, utilization_pct=40, free_bytes=1, total_bytes=2, temperature_c=70),
         1: gpu_stats.GpuStat(1, utilization_pct=80, free_bytes=1, total_bytes=2, temperature_c=85),
     }
-    monkeypatch.setattr(gpu_stats, "probe_gpu_stats", lambda _devices: stats)
-    signals = make_signal_sampler([object()])(throughput=12.0)
+    monkeypatch.setattr(gpu_stats, "_safe_sample", lambda _backend, _wanted: stats)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    devices = [FleetDevice("CUDA", i, "card", 2, 1) for i in stats]
+    signals = make_signal_sampler(devices)(throughput=12.0)
     assert signals.throughput == 12.0
     assert signals.gpu_util_pct == 60.0  # mean(40, 80)
     assert signals.gpu_temp_c == 85.0  # max(70, 85)
@@ -386,7 +389,7 @@ def test_sampler_reports_mean_util_and_max_temp(monkeypatch: pytest.MonkeyPatch)
 def test_sampler_without_gpu_telemetry_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     from lilbee.providers.fleet import gpu_stats
 
-    monkeypatch.setattr(gpu_stats, "probe_gpu_stats", lambda _devices: {})
+    monkeypatch.setattr(gpu_stats, "_safe_sample", lambda _backend, _wanted: {})
     signals = make_signal_sampler([])(throughput=0.0)
     assert signals.gpu_util_pct is None
     assert signals.gpu_temp_c is None

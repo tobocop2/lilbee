@@ -7,16 +7,27 @@ that no Vulkan number is known to name.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import psutil
 import pytest
 
+from lilbee.data.ingest.adaptive import (
+    CONSERVATIVE,
+    ControllerState,
+    Signals,
+    decide,
+    make_signal_sampler,
+)
 from lilbee.providers.fleet import devices, gpu_stats, host_caps, planning
 from lilbee.providers.fleet.devices import FleetDevice, visible_env
 from lilbee.providers.fleet.gpu_stats import GpuStat, _physical_index, probe_gpu_stats
 from lilbee.providers.roles import WorkerRole
+from lilbee.server.handlers import gpu_stats_stream
 
 GIB = 1024**3
 _VULKAN_FREE = 50 * GIB
@@ -238,3 +249,116 @@ def test_a_plan_with_one_engine_reads_no_driver_count(host) -> None:
     engine = _engine("only", "Vulkan", 1, True)
     engines = {_CHAT: engine, _EMBED: engine}
     assert planning._roles_without_a_pin(_INPUTS, engine.reading, engines, None) == ()
+
+
+def _refusal_text(host, caplog, seen: int, cards: int) -> str:
+    """The warning for a role refused on *seen* visible devices of a host of *cards*."""
+    first = _engine("first", "Vulkan", seen, True)
+    other = _engine("other", "CUDA", seen, False)
+    cache = SimpleNamespace(get=lambda _b, engine: SimpleNamespace(devices=engine.reading))
+    host.setattr(planning, "_read_device_cache", cache)
+    host.setattr(planning, "_roles_that_fit_alone", lambda *_args: set())
+    host.setattr(host_caps, "read_card_memory", lambda: _driver_cards(cards))
+    placement = SimpleNamespace(unplaceable_roles=(_EMBED,), instances=(), co_tenants=frozenset())
+    with caplog.at_level(logging.WARNING, logger=planning.log.name):
+        planning._log_refused_roles(
+            placement,
+            {_CHAT: "chat-model", _EMBED: "embed-model"},
+            {_CHAT: first, _EMBED: other},
+            _INPUTS,
+            first.reading,
+            unified_budget=None,
+            capacity={d.index: 8 * GIB for d in first.reading},
+        )
+    return caplog.text
+
+
+@pytest.mark.parametrize(
+    ("seen", "cards", "count"),
+    [(1, 2, 2), (2, 0, 2), (3, 2, 3)],
+    ids=["mask-hides-a-card", "driver-read-fails", "more-visible-than-driver-cards"],
+)
+def test_the_refusal_states_the_count_of_cards_that_caused_it(
+    host, caplog, seen: int, cards: int, count: int
+) -> None:
+    assert f"this host has {count} GPUs" in _refusal_text(host, caplog, seen, cards)
+
+
+def _hot_cards(host, fleet: list[FleetDevice]) -> Signals:
+    """One tick of the throttle's sampler while every card runs at 99 percent and 90 C."""
+
+    def sample(_backend: str, wanted: frozenset[int]) -> dict[int, GpuStat]:
+        return {p: GpuStat(p, 99, _card_free(p), 100 * GIB, temperature_c=90) for p in wanted}
+
+    host.setattr(gpu_stats, "_safe_sample", sample)
+    host.setattr(host_caps, "read_card_memory", lambda: _driver_cards(len(fleet)))
+    host.setattr(psutil, "cpu_percent", lambda interval: 10.0)
+    host.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(available=8, total=10))
+    return make_signal_sampler(fleet)(throughput=10.0)
+
+
+@pytest.mark.parametrize(
+    "fleet",
+    [_fleet(_NVIDIA, _NVIDIA), _fleet(_NVIDIA, _NVIDIA, _NVIDIA), _fleet(_AMD, _NVIDIA)],
+    ids=["two-cards", "three-cards", "second-vendor"],
+)
+def test_hot_cards_on_a_multi_card_vulkan_host_halve_the_permits(host, fleet) -> None:
+    signals = _hot_cards(host, fleet)
+    assert (signals.gpu_util_pct, signals.gpu_temp_c) == (99.0, 90.0)
+    state = ControllerState(permits=8, ewma_tput=10.0, direction=1, cool_down=0)
+    assert decide(CONSERVATIVE, state, signals, 1, 16).permits == 4
+
+
+def test_the_throttle_signal_leaves_the_figures_of_each_card_alone(host) -> None:
+    fleet = _fleet(_NVIDIA, _NVIDIA)
+    _hot_cards(host, fleet)
+    stats = probe_gpu_stats(fleet)
+    assert [s.free_bytes for s in stats.values()] == [_VULKAN_FREE, _VULKAN_FREE]
+    assert [s.utilization_pct for s in stats.values()] == [None, None]
+    assert [s.temperature_c for s in stats.values()] == [None, None]
+
+
+def _no_driver_read() -> list[host_caps.CardMemory]:
+    raise AssertionError("this device does not need the driver count")
+
+
+@pytest.mark.parametrize("name", [_INTEL, _AMD], ids=["intel", "amd"])
+def test_a_lone_vulkan_device_of_another_vendor_opens_no_driver(host, name: str) -> None:
+    """The driver count numbers NVIDIA cards, so it says nothing about this device."""
+    host.setattr(host_caps, "read_card_memory", _no_driver_read)
+    assert probe_gpu_stats(_fleet(name))[0].utilization_pct == 10
+
+
+def test_the_intel_hint_opens_no_driver(host) -> None:
+    host.setattr(host_caps, "read_card_memory", _no_driver_read)
+    host.setattr(gpu_stats, "_detect_intel_util_hint", lambda: _INSTALL_HINT)
+    fleet = _fleet(_INTEL)
+    missing = {0: GpuStat(0, None, _VULKAN_FREE, 100 * GIB)}
+    assert gpu_stats.intel_util_hint(fleet, missing) is _INSTALL_HINT
+
+
+@pytest.mark.parametrize(
+    ("name", "reads"), [(_INTEL, False), (_NVIDIA, True)], ids=["intel", "nvidia"]
+)
+def test_the_stats_stream_never_reads_the_driver_on_its_event_loop(
+    host, name: str, reads: bool
+) -> None:
+    readers: list[int] = []
+
+    def read_cards() -> list[host_caps.CardMemory]:
+        readers.append(threading.get_ident())
+        return []
+
+    host.setattr(host_caps, "read_card_memory", read_cards)
+    host.setattr(gpu_stats, "_shared_sample", {})
+    host.setattr(gpu_stats, "_detect_intel_util_hint", lambda: None)
+    host.setattr(gpu_stats, "_safe_sample", lambda _backend, _wanted: {})
+
+    async def drive() -> int:
+        fleet = _fleet(name)
+        _ = [chunk async for chunk in gpu_stats_stream(fleet, interval_s=0, max_ticks=1)]
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(drive())
+    assert bool(readers) is reads
+    assert loop_thread not in readers
