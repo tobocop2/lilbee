@@ -131,6 +131,7 @@ async def test_the_import_dialog_opens_without_an_error(size) -> None:
                 title="Import a profile",
                 explain="x",
                 action_label="Import",
+                write=lambda request: pytest.fail("not asked"),
                 folders=(ProfileFolder.GLOBAL, ProfileFolder.PROJECT),
             )
         )
@@ -373,6 +374,7 @@ async def test_a_path_dialog_shows_its_error_when_the_user_clears_the_path(actio
                 title=f"{action} a profile",
                 explain="x",
                 action_label=action,
+                write=lambda request: pytest.fail("not asked"),
                 folders=(ProfileFolder.GLOBAL,),
             )
         )

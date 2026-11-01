@@ -35,7 +35,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
     start_switch,
     switch_plan,
 )
-from lilbee.cli.tui.task_queue import TaskType
+from lilbee.cli.tui.task_queue import PERCENT, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
@@ -51,8 +51,6 @@ if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.runtime.progress import ProgressEvent
-
-_PERCENT = 100
 
 
 class ReportAction(StrEnum):
@@ -106,7 +104,7 @@ def _analyze(app: LilbeeApp, directory: Path | None, reporter: ProgressReporter)
     def on_progress(event_type: EventType, data: ProgressEvent) -> None:
         # the callback carries every event type; only analyze events move the bar
         if event_type is EventType.ANALYZE and isinstance(data, AnalyzeEvent):
-            percent = data.done * _PERCENT // data.total if data.total else 0
+            percent = data.done * PERCENT // data.total if data.total else 0
             detail = msg.ANALYZE_STATUS_READING.format(
                 done=data.done, total=data.total, file=data.file
             )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
 from typing import ClassVar
 
 from textual import events, on
@@ -15,33 +16,13 @@ from textual.widgets import Label, Static
 
 from lilbee.cli.tui import messages as msg
 
+_CSS_FILE = Path(__file__).parent / "confirm_pill.tcss"
+
 
 class ConfirmPill(Static, can_focus=True):
     """Focusable dialog pill; Enter, Space or a click picks the answer it stands for."""
 
-    DEFAULT_CSS = """
-    ConfirmPill {
-        width: auto;
-        height: 1;
-        padding: 0 2;
-        margin: 0 1;
-        color: $text;
-        text-style: bold;
-        background: $surface-lighten-2;
-
-        &.-primary {
-            background: $primary 20%;
-        }
-
-        &:focus, &:hover {
-            background: $accent;
-        }
-
-        &.-disabled {
-            color: $text-disabled;
-        }
-    }
-    """
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "select", "Pick", show=False),
@@ -86,10 +67,15 @@ class ConfirmDialog(ModalScreen[bool]):
         Binding("right", "app.focus_next", "Next", show=False),
     ]
 
-    def __init__(self, title: str, message: str) -> None:
+    def __init__(self, title: str, message: str, *, focus_no: bool = False) -> None:
         super().__init__()
         self._title = title
         self._message = message
+        self._focus_no = focus_no
+
+    def on_mount(self) -> None:
+        if self._focus_no:
+            self.query_one("#confirm-no", ConfirmPill).focus()
 
     def compose(self) -> ComposeResult:
         with Vertical():

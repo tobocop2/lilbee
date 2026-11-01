@@ -46,11 +46,6 @@ ProfileLibrary.-narrow #library-detail {
     color: $warning;
 }
 
-.profile-section-title {
-    text-style: bold;
-    margin-top: 1;
-}
-
 #library-changes {
     height: auto;
     max-height: 10;

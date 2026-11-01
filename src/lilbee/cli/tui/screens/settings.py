@@ -168,21 +168,11 @@ class SettingsScreen(Screen[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        # Group definitions for lazy-mount on tab activation. Indexed
-        # by pane id so the activated-pane handler can look up its
-        # bundle in O(1). ``_eagerly_populate`` is the pane id whose
-        # body gets populated in on_mount (the active-by-default first
-        # pane); the rest fill in on first activation.
+        # Group definitions by pane id; a pane fills on first activation.
         self._pane_groups: dict[str, _PaneGroup] = {}
         self._pane_ids: list[str] = [PROFILE_PANE_ID]
         self._eagerly_populate = PROFILE_PANE_ID
-        # Text each editor showed the moment it was last built or refreshed
-        # (a field showing a model default renders that default's text, not
-        # a user value). A save handler acts only when the new value differs
-        # from this, not from cfg's stored value, so an untouched field
-        # showing a model default is never mistaken for an edit, and only a
-        # successful save updates it. Keyed by setting key; kept in sync by
-        # ``_build_setting_row`` and ``_refresh_editor``.
+        # What each editor showed when last built or refreshed; a save acts on a change from it.
         self._mount_display: dict[str, str] = {}
         self._stale_source_keys: set[str] = set()
 
@@ -284,11 +274,7 @@ class SettingsScreen(Screen[None]):
         call_from_thread(self, self._show_profile, snapshot)
 
     def _mounted_profile_tabs(self) -> list[ProfileTab]:
-        """The tabs that can take a snapshot; a tab's mount asks for a load of its own.
-
-        Filling a tab while its dropdown still composes raises, and it leaves the
-        new names behind, so the dropdown mounts on the first name, not the active one.
-        """
+        """The tabs that can take a snapshot: filling one before it mounts raises."""
         return [tab for tab in self.query(ProfileTab) if tab.is_mounted]
 
     def _show_profile_failure(self, reason: str) -> None:
@@ -753,7 +739,7 @@ class SettingsScreen(Screen[None]):
     def _reset_keys(self, keys: list[str], *, skip_unresettable: bool = False) -> bool:
         """Reset *keys*, then show each one's resolved value. Returns whether it succeeded."""
         try:
-            reset = self.app.reset_settings(keys, skip_unresettable=skip_unresettable)
+            reset = self.app.reset_and_publish(keys, skip_unresettable=skip_unresettable)
         except (ValueError, OSError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
             return False
@@ -777,10 +763,7 @@ class SettingsScreen(Screen[None]):
         # prevent() only covers a Changed message this call posts, not one already queued.
         with widget.prevent(Checkbox.Changed):
             set_widget_value(widget, value)
-        # Every writable key with an editor is seeded into _mount_display at row
-        # construction, so a key that is absent has no baseline to refresh.
-        # The isinstance is never false: a widget with an editor id is one of these
-        # kinds. It narrows the Widget that query_one returns for displayed_text.
+        # A key absent from _mount_display has no baseline; the isinstance narrows for mypy.
         if key in self._mount_display and isinstance(widget, EDITOR_KINDS):
             self._mount_display[key] = displayed_text(widget)
 

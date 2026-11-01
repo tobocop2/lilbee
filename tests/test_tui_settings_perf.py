@@ -128,6 +128,20 @@ async def test_first_direct_child_finds_only_immediate_children():
         assert first_direct_child(outer, Static) is None
 
 
+def test_the_footer_signature_changes_when_a_label_changes():
+    from types import SimpleNamespace
+
+    from lilbee.cli.tui.widgets.stable_footer import _bindings_signature
+
+    def _signature(description: str):
+        binding = SimpleNamespace(action="go", description=description, show=True)
+        return _bindings_signature(
+            SimpleNamespace(active_bindings={"x": (None, binding, True, "")})
+        )
+
+    assert _signature("Open") != _signature("Close")
+
+
 def test_stable_footer_skips_when_app_not_focused():
     """bindings_changed marks bindings ready but takes no other action while
     the terminal app itself lacks OS focus, matching stock Footer's guard."""

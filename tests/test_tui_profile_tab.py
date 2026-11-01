@@ -1011,3 +1011,68 @@ def test_profile_is_listed_in_the_help_catalog() -> None:
     names = [name for group in CATALOG_GROUPS for name in group.members]
     assert "/profile" in names
     assert get_command("/profile").args_hint == "[name]"
+
+
+async def test_apply_on_an_empty_index_offers_no_rebuild() -> None:
+    _on_legal_with_three_changes()
+    app = _SettingsApp()
+    with sources_totaling(0):
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = await _loaded(app, pilot, "legal-discovery")
+            _pick(screen, "Notes and markdown")
+            dialog = await _dialog(app, pilot, ApplyProfileDialog)
+            pills = [p.id for p in dialog.query("#apply-actions ConfirmPill")]
+            assert pills == ["apply-apply", "apply-cancel"]
+            assert not dialog.query("#apply-summary")
+
+
+async def test_focus_in_the_apply_dialog_stays_on_the_pills(sources) -> None:
+    _on_legal_with_three_changes()
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "legal-discovery")
+        _pick(screen, "Notes and markdown")
+        dialog = await _dialog(app, pilot, ApplyProfileDialog)
+        assert not dialog.query_one("#apply-changes", DataTable).can_focus
+        for key in ("left",) * 5 + ("right",) * 5:
+            await pilot.press(key)
+            assert isinstance(app.focused, ConfirmPill)
+
+
+async def test_left_and_right_move_between_the_save_as_pills() -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        await _press(pilot, screen.query_one("#profile-save_as", ConfirmPill))
+        dialog = await _dialog(app, pilot, SaveProfileDialog)
+        dialog.query_one("#save-cancel", ConfirmPill).focus()
+        await pilot.press("left")
+        assert app.focused is dialog.query_one("#save-save")
+        await pilot.press("right")
+        assert app.focused is dialog.query_one("#save-cancel")
+
+
+async def test_the_dropdown_names_the_folder_of_each_profile() -> None:
+    _write_global("legal-discovery", _LEGAL)
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        select = screen.query_one("#profile-select", Select)
+        labels = {str(value): str(label) for label, value in select._options}
+        assert labels["Default"] == "Default  (built-in)"
+        assert labels["legal-discovery"] == "legal-discovery  (global)"
+
+
+async def test_a_scan_failure_after_a_good_load_disables_the_tab() -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        tab = screen.query_one(ProfileTab)
+        await app.workers.wait_for_complete()
+        tab.show_failure("disk gone")
+        select = tab.query_one("#profile-select", Select)
+        assert select.disabled
+        assert not any(p.display for p in tab.query("#profile-actions ConfirmPill"))
+        await _press(pilot, tab.query_one("#profile-new", ConfirmPill))
+        await pilot.pause()
+        assert app.screen is screen

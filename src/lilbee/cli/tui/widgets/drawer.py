@@ -72,14 +72,5 @@ _ChildT = TypeVar("_ChildT", bound=Widget)
 
 
 def first_direct_child(node: Widget, widget_type: type[_ChildT]) -> _ChildT | None:
-    """The first immediate child of *node* that is a *widget_type*, or None.
-
-    A drawer mounts directly on the screen, so this answers "is a drawer
-    open" without ``screen.query()``'s whole-subtree walk. check_action
-    calls this on every focus change across the whole app, so the walk's
-    cost multiplies with the size of whichever screen is on top.
-    """
-    for child in node.children:
-        if isinstance(child, widget_type):
-            return child
-    return None
+    """The first immediate child of *node* that is a *widget_type*, or None."""
+    return next(iter(node.query_children(widget_type)), None)

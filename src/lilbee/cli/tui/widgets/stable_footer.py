@@ -6,14 +6,14 @@ from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import Footer
 
-_BindingSignature = tuple[tuple[str, str, bool], ...]
+_BindingSignature = tuple[tuple[str, str, str, bool, bool], ...]
 
 
 def _bindings_signature(screen: Screen) -> _BindingSignature:
-    """The (key, action, enabled) triples a Footer render of *screen* would show."""
+    """The (key, action, description, shown, enabled) tuples a Footer would render."""
     return tuple(
         sorted(
-            (key, binding.action, enabled)
+            (key, binding.action, binding.description, binding.show, enabled)
             for key, (_namespace, binding, enabled, _tooltip) in screen.active_bindings.items()
         )
     )

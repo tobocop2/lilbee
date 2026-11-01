@@ -162,6 +162,10 @@ class ProfileTab(Vertical):
 
     def show_failure(self, reason: str) -> None:
         """Tell the user why the profiles did not load."""
+        self._snapshot = None
+        self.query_one(f"#{PROFILE_SELECT_ID}", Select).disabled = True
+        for action in _ROW_ACTIONS:
+            self.query_one(f"#profile-{action.value}", ConfirmPill).display = False
         line = self.query_one("#profile-description", Static)
         line.update(msg.PROFILE_SCAN_FAILED.format(reason=reason))
         line.display = True
@@ -172,8 +176,9 @@ class ProfileTab(Vertical):
         if active.name not in names:
             names = [active.name, *names]
         select = self.query_one(f"#{PROFILE_SELECT_ID}", Select)
+        select.disabled = False
         with select.prevent(Select.Changed):
-            select.set_options((name, name) for name in names)
+            select.set_options((_option_label(snapshot.catalog, name), name) for name in names)
             select.value = active.name
         profile = active.entry.file if active.entry is not None else None
         description = profile.description if profile is not None else None
@@ -299,6 +304,12 @@ class ProfileTab(Vertical):
 
     def _manage(self, snapshot: ProfileSnapshot) -> None:
         self.app.push_screen(ProfileLibrary(on_change=self._stale))
+
+
+def _option_label(catalog: ProfileCatalog, name: str) -> str:
+    """The dropdown text for *name*: the name, then the folder it is saved in."""
+    entry = catalog.find(name)
+    return name if entry is None else f"{name}  ({msg.PROFILE_FOLDER_TAG[entry.folder]})"
 
 
 def _change_cells(row: ChangeRow) -> tuple[str | Content, ...]:

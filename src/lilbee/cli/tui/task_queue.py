@@ -49,6 +49,7 @@ class CancelOrigin(StrEnum):
     EXIT = "exit"
 
 
+PERCENT = 100
 TERMINAL_STATUSES = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
 
 
@@ -274,7 +275,7 @@ class TaskQueue:
             task = self._tasks.get(task_id)
             if task and task.status not in TERMINAL_STATUSES:
                 task.status = TaskStatus.DONE
-                task.progress = 100
+                task.progress = PERCENT
                 task.indeterminate = False
                 task.completed_at = time.monotonic()
                 self._history.append(task)

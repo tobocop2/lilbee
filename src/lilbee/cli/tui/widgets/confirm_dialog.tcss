@@ -36,11 +36,3 @@ ConfirmDialog #confirm-buttons {
     width: auto;
     height: 1;
 }
-
-ConfirmDialog #confirm-yes:focus,
-ConfirmDialog #confirm-yes:hover,
-ConfirmDialog #confirm-no:focus,
-ConfirmDialog #confirm-no:hover {
-    background: $accent;
-    color: $text;
-}

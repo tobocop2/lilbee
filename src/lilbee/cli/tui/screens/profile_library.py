@@ -8,6 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, TypeVar
 
+from rich.cells import cell_len
 from textual import events, on, work
 from textual.app import ComposeResult, CSSPathType
 from textual.binding import Binding, BindingType
@@ -36,7 +37,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-from lilbee.core.profile_files import ProfileCatalog, ProfileEntry, ProfileStore
+from lilbee.core.profile_files import ProfileCatalog, ProfileEntry, ProfileFolder, ProfileStore
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -111,14 +112,13 @@ def entry_label(entry: ProfileEntry, name_width: int = 0, row_width: int = 0) ->
     A name that is too long loses its middle, so its tail still shows.
     """
     name = entry.name
-    if row_width > 0 and len(name) > name_width:
+    if row_width > 0 and cell_len(name) > name_width:
         # Keep both ends: names often differ only in their tail.
         kept = name_width - 1
         tail = kept // 2
         name = name[: kept - tail] + _ELLIPSIS + (name[len(name) - tail :] if tail else "")
-    row = Content.assemble(
-        name.ljust(name_width), _ROW_GAP, Content.styled(_tag_text(entry), "$text-muted")
-    )
+    padding = " " * (name_width - cell_len(name))
+    row = Content.assemble(name, padding, _ROW_GAP, Content.styled(_tag_text(entry), "$text-muted"))
     return row.truncate(row_width, ellipsis=True) if row_width > 0 else row
 
 
@@ -143,6 +143,7 @@ class ProfileLibrary(ModalScreen[None]):
     CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_library.tcss"]
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", msg.PROFILE_KEY_CLOSE, show=False),
+        Binding("enter", "apply", msg.PROFILE_KEY_APPLY, show=False, priority=True),
         *(Binding(k.key, f"run('{k.action.value}')", k.label, show=False) for k in _KEYS),
     ]
 
@@ -223,7 +224,7 @@ class ProfileLibrary(ModalScreen[None]):
         """Label each row to fit the list: the name is cut, and the folder tags stay aligned."""
         listing = self.query_one("#library-list", OptionList)
         row_width = max(listing.scrollable_content_region.width - _ROW_PADDING, 0)
-        name_width = max((len(entry.name) for entry in self._entries), default=0)
+        name_width = max((cell_len(entry.name) for entry in self._entries), default=0)
         if row_width:
             # A long problem text is cut at the row end; it must not squeeze every name.
             tag_width = max(
@@ -323,8 +324,12 @@ class ProfileLibrary(ModalScreen[None]):
         self.dismiss(None)
 
     @on(OptionList.OptionSelected, "#library-list")
-    def _on_apply(self, event: OptionList.OptionSelected) -> None:
+    def _on_row_selected(self, event: OptionList.OptionSelected) -> None:
+        """A click only highlights a row; Enter applies it."""
         event.stop()
+
+    def action_apply(self) -> None:
+        """Ask to apply the highlighted profile."""
         entry = self._target()
         if entry is not None:
             start_profile_switch(self.app, self, entry.name, self._changed)
@@ -384,6 +389,7 @@ class ProfileLibrary(ModalScreen[None]):
             dialog = ConfirmDialog(
                 msg.PROFILE_DELETE_TITLE.format(name=owned.name),
                 msg.PROFILE_DELETE_MESSAGE.format(path=owned.path),
+                focus_no=True,
             )
             self.app.push_screen(dialog, _on_answer)
 
@@ -405,35 +411,35 @@ class ProfileLibrary(ModalScreen[None]):
             title=msg.PROFILE_EXPORT_TITLE.format(name=entry.name),
             explain=msg.PROFILE_EXPORT_EXPLAIN,
             action_label=msg.PROFILE_EXPORT_LABEL,
-            initial=str(Path.cwd()),
+            write=lambda request: profiles.export(ProfileStore(), entry.name, request.path),
         )
 
-        def _write(request: PathRequest) -> profiles.ProfileLocation:
-            return profiles.export(ProfileStore(), entry.name, request.path)
+        def _done(location: profiles.ProfileLocation | None) -> None:
+            if location is not None:
+                self.notify(msg.PROFILE_EXPORTED.format(name=location.name, path=location.path))
+                self._changed()
 
-        def _done(location: profiles.ProfileLocation) -> None:
-            self.notify(msg.PROFILE_EXPORTED.format(name=location.name, path=location.path))
-            self._changed()
-
-        self._ask(dialog, _write, _done)
+        self.app.push_screen(dialog, _done)
 
     def _import(self, state: LibraryState) -> None:
+        def _write(request: PathRequest) -> profiles.ProfileLocation:
+            folder = request.folder or ProfileFolder.GLOBAL
+            return profiles.import_profile(ProfileStore(), request.path, folder)
+
         dialog = ProfilePathDialog(
             title=msg.PROFILE_IMPORT_TITLE,
             explain=msg.PROFILE_IMPORT_EXPLAIN,
             action_label=msg.PROFILE_IMPORT_LABEL,
+            write=_write,
             folders=save_folders(state.has_project),
         )
 
-        def _write(request: PathRequest) -> profiles.ProfileLocation:
-            assert request.folder is not None  # noqa: S101 -- import always offers a folder
-            return profiles.import_profile(ProfileStore(), request.path, request.folder)
+        def _done(location: profiles.ProfileLocation | None) -> None:
+            if location is not None:
+                self.notify(msg.PROFILE_IMPORTED.format(name=location.name, path=location.path))
+                self._changed()
 
-        def _done(location: profiles.ProfileLocation) -> None:
-            self.notify(msg.PROFILE_IMPORTED.format(name=location.name, path=location.path))
-            self._changed()
-
-        self._ask(dialog, _write, _done)
+        self.app.push_screen(dialog, _done)
 
     def _ask(
         self,

@@ -18,3 +18,8 @@
 .dialog-error {
     color: $error;
 }
+
+.profile-section-title {
+    text-style: bold;
+    margin-top: 1;
+}

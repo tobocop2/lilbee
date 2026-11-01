@@ -38,6 +38,7 @@ from lilbee.cli.tui.color_compat import (
     resolve_term_program,
 )
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.screens.analyze_report import start_analysis
 from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
@@ -638,7 +639,7 @@ class LilbeeApp(App[None]):
         self.publish_settings([key])
         self._ask_after_change(result.reindex_required, key == "wiki" and cfg.wiki is False)
 
-    def reset_settings(self, keys: list[str], *, skip_unresettable: bool = False) -> list[str]:
+    def reset_and_publish(self, keys: list[str], *, skip_unresettable: bool = False) -> list[str]:
         """Reset *keys* through the boundary, fan each out to the UI, and return the reset keys.
 
         Raises ``ValueError`` or ``OSError`` from the boundary; nothing changes on either.
@@ -1042,9 +1043,6 @@ class LilbeeApp(App[None]):
 
     def start_analyze(self) -> None:
         """Queue analyze of the indexed documents; its report opens when it finishes."""
-        # circular: screens import the app module
-        from lilbee.cli.tui.screens.analyze_report import start_analysis
-
         start_analysis(self, None)
 
     def start_rebuild(self) -> None:

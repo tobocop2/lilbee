@@ -2221,7 +2221,7 @@ async def test_reset_to_default_ignores_readonly_keys():
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        with patch.object(app, "reset_settings") as mock_reset:
+        with patch.object(app, "reset_and_publish") as mock_reset:
             screen._reset_to_default("chat_model")
             mock_reset.assert_not_called()
 
@@ -2234,7 +2234,7 @@ async def test_reset_to_default_ignores_unknown_keys():
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        with patch.object(app, "reset_settings") as mock_reset:
+        with patch.object(app, "reset_and_publish") as mock_reset:
             screen._reset_to_default("nonexistent_key_xyz")
             mock_reset.assert_not_called()
 
@@ -2504,7 +2504,7 @@ async def test_reset_that_turns_the_wiki_off_offers_the_wipe(tmp_path):
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app, "_offer_wiki_wipe") as offer:
-            assert app.reset_settings(["wiki"]) == ["wiki"]
+            assert app.reset_and_publish(["wiki"]) == ["wiki"]
         offer.assert_called_once()
         assert cfg.wiki is False
         assert "wiki" not in persistent_settings.load(tmp_path)
@@ -2516,7 +2516,7 @@ async def test_reset_with_the_wiki_already_off_offers_nothing(tmp_path):
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app, "_offer_wiki_wipe") as offer:
-            assert app.reset_settings(["wiki", "top_k"]) == ["top_k", "wiki"]
+            assert app.reset_and_publish(["wiki", "top_k"]) == ["top_k", "wiki"]
         offer.assert_not_called()
 
 
@@ -2533,7 +2533,7 @@ async def test_a_reset_toasts_the_warning_of_its_update(tmp_path, monkeypatch):
             patch("lilbee.app.settings._invalidate_caches"),
             patch.object(app, "notify") as notify,
         ):
-            assert app.reset_settings(["vision_model"]) == ["vision_model"]
+            assert app.reset_and_publish(["vision_model"]) == ["vision_model"]
         notify.assert_called_once()
         assert ref in notify.call_args.args[0]
         assert notify.call_args.kwargs.get("severity") == "warning"
@@ -2549,7 +2549,7 @@ async def test_reset_theme_applies_the_resolved_theme(tmp_path):
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.theme = other
-        app.reset_settings(["theme"])
+        app.reset_and_publish(["theme"])
         assert cfg.theme == default
         assert app.theme == default
 
@@ -15793,7 +15793,7 @@ async def test_pill_refresh_reads_sources_once_per_batch(tmp_path):
             "lilbee.cli.tui.screens.settings.setting_sources",
             side_effect=app_settings.setting_sources,
         ) as reads:
-            app.reset_settings(["top_k", "chunk_overlap"])
+            app.reset_and_publish(["top_k", "chunk_overlap"])
             await wait_until(pilot, lambda: reads.call_count > 0)
             for _ in range(3):
                 await pilot.pause()

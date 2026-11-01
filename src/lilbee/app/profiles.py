@@ -200,7 +200,7 @@ def _valid_file(entry: ProfileEntry) -> ProfileFile:
     return entry.file
 
 
-def _usable(store: ProfileStore, name: str) -> ProfileFile:
+def usable(store: ProfileStore, name: str) -> ProfileFile:
     """The valid profile file *name* picks; raises ``ValueError`` when missing or broken."""
     return _valid_file(show(store, name))
 
@@ -255,17 +255,17 @@ def preview(name: str, values: Mapping[str, Any]) -> ProfileDiff:
 
 def diff(store: ProfileStore, name: str) -> ProfileDiff:
     """What applying *name* changes; raises ``ValueError`` when it is missing or broken."""
-    return _diff(_usable(store, name))
+    return _diff(usable(store, name))
 
 
 def sets_reindex_field(store: ProfileStore, name: str) -> bool:
     """Whether profile *name* sets a setting that only a rebuild applies."""
-    return any(key in REINDEX_FIELDS for key in _usable(store, name).values)
+    return any(key in REINDEX_FIELDS for key in usable(store, name).values)
 
 
 def apply(store: ProfileStore, name: str) -> ApplyResult:
     """Record *name* as the project's profile and set cfg from it; user and env values stay."""
-    profile = _usable(store, name)
+    profile = usable(store, name)
     planned = _diff(profile)
     result = apply_profile_layer(profile.name, profile.values)
     return _apply_result(planned, result.warnings)
@@ -353,7 +353,7 @@ def new(
     from_name: str | None = None,
 ) -> ProfileLocation:
     """Write a template for *name* listing every profile setting; *from_name* sets its values."""
-    values = _usable(store, from_name).values if from_name is not None else {}
+    values = usable(store, from_name).values if from_name is not None else {}
     text = _template_text(name, values)
     return _written(plan_write(_target_dir(target), target, text, stem=name))
 
@@ -522,7 +522,7 @@ def duplicate(
     store: ProfileStore, name: str, new_name: str, target: ProfileFolder = ProfileFolder.GLOBAL
 ) -> ProfileLocation:
     """Copy the profile *name* picks, with its metadata, as *new_name*."""
-    text = profile_text(replace(_usable(store, name), name=new_name))
+    text = profile_text(replace(usable(store, name), name=new_name))
     return _written(plan_write(_target_dir(target), target, text, stem=new_name))
 
 

@@ -34,11 +34,6 @@ ApplyProfileDialog, SaveProfileDialog, ProfilePathDialog {
     max-height: 90%;
 }
 
-.profile-section-title {
-    text-style: bold;
-    margin-top: 1;
-}
-
 #apply-changes {
     height: auto;
     max-height: 8;

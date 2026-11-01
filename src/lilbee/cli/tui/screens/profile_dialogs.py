@@ -206,10 +206,7 @@ def switch_plan(profile: ProfileFile, diff: ProfileDiff) -> SwitchPlan:
 def _switch_plan(name: str) -> SwitchPlan:
     """Diff *name* against the project and count the files a reindex would rebuild."""
     store = ProfileStore()
-    profile = profiles.show(store, name).file
-    diff = profiles.diff(store, name)
-    assert profile is not None  # noqa: S101 -- diff() refuses a broken profile first
-    return switch_plan(profile, diff)
+    return switch_plan(profiles.usable(store, name), profiles.diff(store, name))
 
 
 def start_switch(
@@ -273,16 +270,15 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
-        Binding("left", "app.focus_previous", "Previous", show=False),
-        Binding("right", "app.focus_next", "Next", show=False),
+        Binding("left", "step_pill(-1)", "Previous", show=False),
+        Binding("right", "step_pill(1)", "Next", show=False),
     ]
 
     def __init__(self, plan: SwitchPlan) -> None:
         super().__init__()
         self._plan = plan
-        self._reindex_rows = [
-            row for row in plan.diff.changes if row.effect is ProfileEffect.REINDEX
-        ]
+        reindex_rows = [row for row in plan.diff.changes if row.effect is ProfileEffect.REINDEX]
+        self._rebuilds = len(reindex_rows) if plan.file_count else 0
 
     def compose(self) -> ComposeResult:
         profile = self._plan.profile
@@ -318,6 +314,7 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
         table: DataTable[str | Content] = DataTable(
             id="apply-changes", cursor_type="none", zebra_stripes=False
         )
+        table.can_focus = False
         table.add_columns(msg.PROFILE_COL_SETTING, msg.PROFILE_COL_NOW, msg.PROFILE_COL_AFTER)
         add_cost_column(table)
         table.add_rows(diff_cells(row) for row in self._plan.diff.changes)
@@ -333,12 +330,12 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
     def _summary(self) -> str:
         if not self._plan.diff.changes:
             return msg.PROFILE_APPLY_NOTHING
-        if not self._reindex_rows:
+        if not self._rebuilds:
             return ""
-        return msg.profile_reindex_text(len(self._reindex_rows), self._plan.file_count)
+        return msg.profile_reindex_text(self._rebuilds, self._plan.file_count)
 
     def _action_pills(self) -> ComposeResult:
-        if self._reindex_rows:
+        if self._rebuilds:
             yield ConfirmPill(
                 msg.PROFILE_APPLY_REINDEX_LABEL,
                 pill_id="apply-reindex",
@@ -362,6 +359,12 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
         event.stop()
         self.dismiss(ApplyChoice(str(event.answer)))
 
+    def action_step_pill(self, step: int) -> None:
+        """Move focus *step* pills along the action row, wrapping; the scroll area is no stop."""
+        pills = list(self.query("#apply-actions ConfirmPill"))
+        current = pills.index(self.focused) if self.focused in pills else 0
+        pills[(current + step) % len(pills)].focus()
+
     def action_cancel(self) -> None:
         self.dismiss(ApplyChoice.CANCEL)
 
@@ -378,6 +381,8 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("left", "app.focus_previous", "Previous", show=False),
+        Binding("right", "app.focus_next", "Next", show=False),
     ]
 
     def __init__(
@@ -465,13 +470,19 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
         self.dismiss(None)
 
 
-class ProfilePathDialog(ModalScreen[PathRequest | None]):
-    """Asks for a path, and for a folder when it offers a choice."""
+class ProfilePathDialog(ModalScreen[profiles.ProfileLocation | None]):
+    """Asks for a path, and for a folder when it offers a choice.
+
+    The dialog runs *write* with the answer and closes with its result; when *write* fails,
+    the error shows as a toast and the dialog stays open for another path.
+    """
 
     CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_dialogs.tcss"]
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("left", "app.focus_previous", "Previous", show=False),
+        Binding("right", "app.focus_next", "Next", show=False),
     ]
 
     def __init__(
@@ -480,10 +491,12 @@ class ProfilePathDialog(ModalScreen[PathRequest | None]):
         title: str,
         explain: str,
         action_label: str,
+        write: Callable[[PathRequest], profiles.ProfileLocation],
         initial: str = "",
         folders: Sequence[ProfileFolder] = (),
     ) -> None:
         super().__init__()
+        self._write = write
         self._title = title
         self._explain = explain
         self._action_label = action_label
@@ -551,7 +564,11 @@ class ProfilePathDialog(ModalScreen[PathRequest | None]):
 
     def _confirm(self) -> None:
         if self._path():
-            self.dismiss(self._request())
+            request = self._request()
+            run_profile_op(self, lambda: self._write(request), self._finish)
+
+    def _finish(self, location: profiles.ProfileLocation) -> None:
+        self.dismiss(location)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

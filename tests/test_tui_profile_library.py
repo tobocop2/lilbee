@@ -21,7 +21,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
 from lilbee.cli.tui.screens.profile_library import ProfileLibrary, entry_label
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
 from lilbee.core.config import cfg
-from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
+from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileEntry, ProfileFolder, ProfileStore
 from tests._lilbee_app_test_host import LilbeeAppHost
 from tests._profile_fixtures import (
     gate_releases_at_once,  # noqa: F401 -- autouse fixture, applied by import
@@ -242,6 +242,24 @@ async def test_enter_opens_the_apply_dialog_and_the_tab_follows(sources) -> None
     assert profiles.active(ProfileStore()).name == "Research papers"
 
 
+async def test_a_click_highlights_a_row_and_does_not_open_apply(sources) -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        library = await _open(app, pilot)
+        listing = library.query_one("#library-list", OptionList)
+        await pilot.click("#library-list", offset=(3, 2))
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        assert listing.highlighted == 1
+        assert app.screen is library
+
+
+def test_a_wide_name_pads_by_cell_width() -> None:
+    wide = ProfileEntry("日本語", ProfileFolder.GLOBAL, Path("x.toml"), None, None, None)
+    plain = ProfileEntry("abcdef", ProfileFolder.GLOBAL, Path("y.toml"), None, None, None)
+    assert entry_label(wide, 8).cell_length == entry_label(plain, 8).cell_length
+
+
 async def test_duplicate_by_keyboard_at_80x24_refuses_a_builtin_name_then_writes() -> None:
     _write_global("legal-discovery", _LEGAL)
     app = _SettingsApp()
@@ -328,7 +346,8 @@ async def test_delete_asks_first_then_removes_the_file() -> None:
         library = await _open(app, pilot)
         await _highlight(pilot, library, "old-one  global")
         await pilot.press("x")
-        await _dialog(app, pilot, ConfirmDialog)
+        confirm = await _dialog(app, pilot, ConfirmDialog)
+        assert await _until(pilot, lambda: app.focused is confirm.query_one("#confirm-no"))
         await pilot.press("n")
         assert await _until(pilot, lambda: app.screen is library)
         assert path.is_file()
@@ -367,7 +386,7 @@ async def test_export_writes_a_file_at_the_path_given(tmp_path) -> None:
         await pilot.press("e")
         dialog = await _dialog(app, pilot, ProfilePathDialog)
         path = dialog.query_one("#path-input", Input)
-        assert path.value == str(Path.cwd())
+        assert path.value == ""
         assert not dialog.query("#path-folder")
         path.value = str(out)
         await pilot.press("enter")
@@ -388,7 +407,13 @@ async def test_export_to_an_existing_file_toasts_and_keeps_it(tmp_path) -> None:
         dialog.query_one("#path-input", Input).value = str(taken)
         await _press(pilot, dialog.query_one("#path-ok", ConfirmPill))
         await _toasted(app, pilot, "already exists")
+        await app.workers.wait_for_complete()
+        assert app.screen is dialog
+        dialog.query_one("#path-input", Input).value = str(tmp_path / "fresh.toml")
+        await _press(pilot, dialog.query_one("#path-ok", ConfirmPill))
+        assert await _until(pilot, lambda: app.screen is library)
     assert taken.read_text(encoding="utf-8") == "keep"
+    assert (tmp_path / "fresh.toml").is_file()
 
 
 async def test_import_copies_a_file_into_the_folder_chosen(tmp_path) -> None:
@@ -427,6 +452,8 @@ async def test_import_of_a_missing_file_toasts_and_writes_nothing(tmp_path) -> N
         dialog.query_one("#path-input", Input).value = str(tmp_path / "nope.toml")
         await pilot.press("enter")
         await _toasted(app, pilot, "Cannot read the file")
+        await app.workers.wait_for_complete()
+        assert app.screen is dialog
     assert not _global_dir().exists() or not list(_global_dir().iterdir())
 
 
