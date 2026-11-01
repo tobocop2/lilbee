@@ -5,7 +5,7 @@
 name: lilbee-compat-cuda
 base: core24
 version: "0.0.0"
-summary: The whole local AI stack in one executable (pre-Haswell CPU, CUDA / NVIDIA GPU build)
+summary: The whole local AI stack in one executable (compat CUDA / NVIDIA GPU build)
 description: |
   lilbee is the whole local AI stack in one executable: it runs and manages
   local AI models across every GPU you have, indexes your files and code,
