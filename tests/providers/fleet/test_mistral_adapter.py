@@ -7,6 +7,7 @@ import json
 import shlex
 import stat
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -187,12 +188,33 @@ def test_embed_names_the_embedding_command_after_the_serve_flags(
     assert argv[1:8] == ["serve", "--host", "127.0.0.1", "--port", PORT_SLOT, "embedding", "--cpu"]
 
 
+def _split_like_the_swap(command: str) -> list[str]:
+    """Split *command* back into argv by the rules the swap proxy uses on this platform."""
+    if sys.platform != "win32":
+        return shlex.split(command)
+    import ctypes
+    from ctypes import wintypes
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+    count = ctypes.c_int()
+    found = shell32.CommandLineToArgvW(command, ctypes.byref(count))
+    assert found, "CommandLineToArgvW refused the command"
+    try:
+        return [found[i] for i in range(count.value)]
+    finally:
+        kernel32.LocalFree(found)
+
+
 @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION])
 def test_the_swap_command_puts_the_port_before_the_subcommand(
     role: WorkerRole, tmp_path: Path
 ) -> None:
     argv = MISTRAL.launch_argv(MISTRAL.role_spec(role, None, None), request(tmp_path))
-    words = shlex.split(swap_config._command_line(argv, 4321))
+    words = _split_like_the_swap(swap_config._command_line(argv, 4321))
     assert words.index("--port") < (words.index("embedding") if "embedding" in words else 99)
     assert words[words.index("--port") + 1] == "4321"
     assert words.count("--port") == 1

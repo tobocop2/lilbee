@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -65,6 +66,8 @@ def run_scenario(
     """The plan of *scenario*, as a repr with the temp path taken out."""
     prepare_host(monkeypatch, tmp_path, scenario.roles, 64 * GIB)
     monkeypatch.setattr(cfg, "num_ctx", scenario.num_ctx)
+    # The default target follows the RAM of the host, and the goldens record the 32 GiB tier.
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 16384)
     engine = CardEngine(
         "engine-a",
         tmp_path / "engine-server",
@@ -76,7 +79,16 @@ def run_scenario(
     group = sorted(role.value for role in result.co_tenants)
     # A frozenset's repr order changes per process, so the group is written sorted.
     text = repr(replace(result, co_tenants=frozenset()))
-    return f"{text} group={group}".replace(str(tmp_path), "<TMP>")
+    return _without_the_temp_path(f"{text} group={group}", tmp_path)
+
+
+def _without_the_temp_path(text: str, tmp_path: Path) -> str:
+    """Replace the temp path by <TMP> and write what follows it with forward slashes."""
+    # A repr doubles each backslash of a Windows path, so the path is looked up as repr writes it.
+    text = text.replace(str(tmp_path), "<TMP>").replace(repr(str(tmp_path))[1:-1], "<TMP>")
+    return re.sub(
+        r"<TMP>((?:\\\\[^'\\\\]+)+)", lambda m: "<TMP>" + m.group(1).replace("\\\\", "/"), text
+    )
 
 
 @pytest.mark.parametrize("name", sorted(SCENARIOS))
