@@ -2455,6 +2455,22 @@ async def test_reset_all_removes_every_user_key(tmp_path):
         assert cfg.top_k == builtin_value("top_k")
 
 
+async def test_a_refresh_of_every_key_walks_the_screen_once():
+    """The refresh after a reset of N keys costs one walk of the screen, not N walks."""
+    from textual.css import query as query_module
+
+    from lilbee.app.settings_map import SETTINGS_MAP
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)):
+        screen = app.screen
+        widgets = len(list(screen.walk_children()))
+        screen._stale_source_keys = {key for key, defn in SETTINGS_MAP.items() if defn.writable}
+        with patch.object(query_module, "match", wraps=query_module.match) as matched:
+            screen._refresh_changed_rows()
+        assert matched.call_count <= 3 * widgets
+
+
 async def test_reset_failure_toasts_and_changes_nothing(tmp_path):
     """A boundary refusal on reset toasts an error and leaves the field and file alone."""
     from textual.widgets import Input

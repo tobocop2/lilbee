@@ -725,8 +725,11 @@ async def test_the_tip_shows_under_the_add_hint_before_anything_is_added(
         async with chat_app.run_test(size=size) as pilot:
             chat = await _type_add(chat_app, pilot, folder)
             assert await _until(pilot, lambda: msg.ANALYZE_TIP_LABEL in _hint_text(chat))
+            # The hint holds the tip one frame before the screen paints it.
+            assert await _until(
+                pilot, lambda: "This project uses the Default profile" in _screen_text(chat_app)
+            )
             text = _screen_text(chat_app)
-            assert "This project uses the Default profile" in text
             assert "/analyze off to hide this tip" in text.replace("\n", " ").replace("  ", " ")
             submit.assert_not_called()
             assert chat_app.task_bar.queue.is_empty

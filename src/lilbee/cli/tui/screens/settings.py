@@ -256,19 +256,22 @@ class SettingsScreen(Screen[None]):
         keys, self._stale_source_keys = self._stale_source_keys, set()
         sources = setting_sources()
         profile_name = active_profile_name()
+        # A reset queues every key: one walk of the screen, then each row's own subtree.
+        rows = {row.id: row for row in self.query(".setting-row")}
         for key in keys:
-            for title in self.query(f"#{ROW_ID_PREFIX}{key} > .setting-title").results(Static):
+            row = rows.get(f"{ROW_ID_PREFIX}{key}")
+            if row is None:
+                continue
+            for title in row.query_children(".setting-title").results(Static):
                 title.update(title_content(key, SETTINGS_MAP[key], sources[key], profile_name))
-            self._sync_editor(key)
+            self._sync_editor(row, key)
         self.reload_profile()
 
-    def _sync_editor(self, key: str) -> None:
-        """Show cfg's value in *key*'s editor, unless the user is typing in it."""
-        defn = SETTINGS_MAP.get(key)
-        editor = self.query(f"#{EDITOR_ID_PREFIX}{key}")
-        if defn is None or not editor or editor.first().has_focus_within:
-            return
-        self._refresh_editor(key, defn, getattr(cfg, key))
+    def _sync_editor(self, row: Widget, key: str) -> None:
+        """Show cfg's value in the editor in *row*, unless the user is typing in it."""
+        editor = row.query(f"#{EDITOR_ID_PREFIX}{key}")
+        if editor and not editor.first().has_focus_within:
+            self._show_editor_value(key, editor.first(), getattr(cfg, key))
 
     @work(thread=True, exclusive=True, group="profile-load", exit_on_error=False)
     def reload_profile(self) -> None:
@@ -280,13 +283,21 @@ class SettingsScreen(Screen[None]):
             return
         call_from_thread(self, self._show_profile, snapshot)
 
+    def _mounted_profile_tabs(self) -> list[ProfileTab]:
+        """The tabs that can take a snapshot; a tab's mount asks for a load of its own.
+
+        Filling a tab while its dropdown still composes raises, and it leaves the
+        new names behind, so the dropdown mounts on the first name, not the active one.
+        """
+        return [tab for tab in self.query(ProfileTab) if tab.is_mounted]
+
     def _show_profile_failure(self, reason: str) -> None:
-        for tab in self.query(ProfileTab):
+        for tab in self._mounted_profile_tabs():
             tab.show_failure(reason)
 
     def _show_profile(self, snapshot: ProfileSnapshot) -> None:
         self.query_one(ProfileLine).show(snapshot)
-        for tab in self.query(ProfileTab):
+        for tab in self._mounted_profile_tabs():
             tab.show(snapshot)
 
     @on(ProfileTab.Stale)
@@ -759,6 +770,10 @@ class SettingsScreen(Screen[None]):
         except Exception:
             log.debug("Failed to refresh editor for %s", key, exc_info=True)
             return
+        self._show_editor_value(key, widget, value)
+
+    def _show_editor_value(self, key: str, widget: Widget, value: object) -> None:
+        """Put *value* in *key*'s editor *widget* and make it the save baseline."""
         # prevent() only covers a Changed message this call posts, not one already queued.
         with widget.prevent(Checkbox.Changed):
             set_widget_value(widget, value)

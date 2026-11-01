@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 import tomllib
 from collections.abc import Callable
+from contextlib import suppress
 from enum import StrEnum
 from pathlib import Path
 from unittest import mock
@@ -11,6 +13,7 @@ from unittest import mock
 import pytest
 from textual import events
 from textual.app import ComposeResult
+from textual.css.query import NoMatches
 from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.screen import Screen
@@ -28,7 +31,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
     SaveProfileDialog,
     value_text,
 )
-from lilbee.cli.tui.screens.profile_tab import ProfileTab
+from lilbee.cli.tui.screens.profile_tab import ProfileSnapshot, ProfileTab, load_snapshot
 from lilbee.cli.tui.screens.settings import PROFILE_PANE_ID, SettingsScreen
 from lilbee.cli.tui.widgets.autocomplete import get_completions
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
@@ -320,6 +323,41 @@ async def test_no_changes_hides_the_table_and_says_so() -> None:
         assert _text(screen.query_one("#profile-changes-help", Static)) == (
             "No values of yours override Default."
         )
+
+
+async def test_a_load_that_lands_while_the_dropdown_composes_leaves_the_tab_unfilled() -> None:
+    """A snapshot before the tab's mount changes nothing; the load its mount asks for fills it."""
+    app = _SettingsApp()
+    release = threading.Event()
+    real_compose = Select.compose
+
+    def _held_load() -> ProfileSnapshot:
+        release.wait(timeout=30)
+        return load_snapshot()
+
+    def _compose(select: Select) -> ComposeResult:
+        if select.id == "profile-select":
+            with suppress(NoMatches):
+                _settings(app)._show_profile(load_snapshot())
+        return real_compose(select)
+
+    def _mounted_tabs() -> list[ProfileTab]:
+        tabs = [tab for screen in app.screen_stack for tab in screen.query(ProfileTab)]
+        return [tab for tab in tabs if tab.is_mounted]
+
+    with (
+        mock.patch.object(Select, "compose", _compose),
+        mock.patch("lilbee.cli.tui.screens.settings.load_snapshot", _held_load),
+    ):
+        try:
+            async with app.run_test(size=(120, 40)) as pilot:
+                assert await _until(pilot, lambda: bool(_mounted_tabs()))
+                assert _settings(app).query_one("#profile-select", Select).value == ""
+                release.set()
+                screen = await _loaded(app, pilot, "Default")
+                assert not screen.query_one("#profile-changes", DataTable).display
+        finally:
+            release.set()
 
 
 async def test_picking_a_profile_asks_first_and_keeps_your_values(sources) -> None:
