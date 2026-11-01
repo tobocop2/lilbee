@@ -868,6 +868,7 @@ def _estimate_role(
     unified_budget: int | None = None,
     chat_reservation: int = 0,
     device_count: int = 0,
+    gpu_layers: int | None = None,
 ) -> ModelPlacementInput:
     """Estimate one role-model's footprint via gguf-parser (+ mmproj for vision).
 
@@ -901,7 +902,7 @@ def _estimate_role(
             model_path=path,
             ctx=ctx,
             slots=slots,
-            gpu_layers=_role_gpu_layers(role),
+            gpu_layers=_role_gpu_layers(role) if gpu_layers is None else gpu_layers,
             flash_attn=_role_flash(role, rerank_mode, engine=engine),
             kv_cache_type=_role_kv_cache_type(role, engine=engine),
             mmproj_path=mmproj,
@@ -1238,6 +1239,35 @@ def _estimate_or_fallback(
         ram_bytes=estimate.est_ram_bytes,
         host_committed=host_committed,
         engine=engine,
+    )
+
+
+def _estimate_cpu_role(
+    role: WorkerRole,
+    ref: str,
+    *,
+    engine: EngineAdapter,
+    skipped_not_installed: dict[WorkerRole, str],
+) -> ModelPlacementInput | None:
+    """Size a role that runs on the CPU: nothing on a card, every byte in system memory.
+
+    A model that is not installed is skipped and recorded. A sizing failure on an
+    installed model charges the weight bytes, the least the host must hold.
+    """
+    from lilbee.providers.base import ProviderErrorKind
+
+    try:
+        sized = _estimate_role(role, ref, engine=engine, gpu_layers=0)
+    except (ProviderError, OSError) as exc:
+        if isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND:
+            log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
+            skipped_not_installed[role] = ref
+            return None
+        return ModelPlacementInput(
+            role=role, est_vram_bytes=0, est_ram_bytes=_role_weights_bytes(role, ref)
+        )
+    return replace(
+        sized, est_vram_bytes=0, est_ram_bytes=sized.est_vram_bytes + sized.est_ram_bytes
     )
 
 
@@ -1589,11 +1619,13 @@ def _server_model_inputs(
     unified_budget: int | None = None,
     device_count: int = 0,
     total_vram: int = 0,
+    cpu_roles: frozenset[WorkerRole] = frozenset(),
 ) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int, dict[WorkerRole, str]]:
     """Build placement inputs for the configured server roles.
 
     Each role is sized by its own engine in *engines*; a role with no engine there
-    is not planned.
+    is not planned. A role in *cpu_roles* is sized with no layers on a card and
+    charged wholly to system memory.
 
     The search and vision roles are estimated first; chat is then sized against the
     budget minus the search footprint (the ``reservation``) so a large chat cannot
@@ -1624,16 +1656,22 @@ def _server_model_inputs(
             return  # SDK-routed role: no local server to plan, not a missing install
         if _vision_without_mmproj(role, ref):
             return  # no projector -> vision can't run on a server
-        estimate = _estimate_or_fallback(
-            role,
-            ref,
-            engine=engines[role],
-            unified_budget=unified_budget,
-            chat_reservation=chat_reservation,
-            device_count=device_count,
-            total_vram=total_vram,
-            skipped_not_installed=skipped_not_installed,
-            host_committed=_host_committed(inputs),
+        estimate = (
+            _estimate_cpu_role(
+                role, ref, engine=engines[role], skipped_not_installed=skipped_not_installed
+            )
+            if role in cpu_roles
+            else _estimate_or_fallback(
+                role,
+                ref,
+                engine=engines[role],
+                unified_budget=unified_budget,
+                chat_reservation=chat_reservation,
+                device_count=device_count,
+                total_vram=total_vram,
+                skipped_not_installed=skipped_not_installed,
+                host_committed=_host_committed(inputs),
+            )
         )
         if estimate is None:
             return
@@ -3008,6 +3046,7 @@ def _resolve_placement(
     unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
     if placement is not None:
         refused = _unusable_targets(placement, model_refs, engines)
+        refused.update(_cpu_roles_past_memory(placement, inputs, skip=refused))
         if refused:
             raise TargetRefusedError(refused)
         pinned = [role for role in unpinnable if _targets_gpu(placement, role)]
@@ -3039,6 +3078,46 @@ def _resolve_placement(
         refuse_oversize=_is_mixed(engines),
     )
     return replace(placed, unplaceable_roles=(*placed.unplaceable_roles, *unpinnable))
+
+
+def _cpu_roles(spec: PlacementSpec | None) -> frozenset[WorkerRole]:
+    """The roles *spec* puts on the CPU."""
+    if spec is None:
+        return frozenset()
+    return frozenset(
+        role for role, entry in spec.roles.items() if entry.device_target is RoleTarget.CPU
+    )
+
+
+def _cpu_roles_past_memory(
+    placement: PlacementSpec,
+    inputs: Sequence[ModelPlacementInput],
+    *,
+    skip: Mapping[WorkerRole, str],
+) -> dict[WorkerRole, str]:
+    """The reason for each CPU role that the machine's system memory cannot hold.
+
+    A CPU role is charged to system memory, beside every other role's host bytes.
+    The roles are taken in order and the first past the total is refused, with no
+    fallback to a card. A role in *skip* is already refused and charges nothing.
+    """
+    total = total_system_memory()
+    cpu = _cpu_roles(placement)
+    held = sum(i.est_ram_bytes for i in inputs if i.role not in cpu and i.role not in skip)
+    refused: dict[WorkerRole, str] = {}
+    for inp in inputs:
+        if inp.role not in cpu or inp.role in skip:
+            continue
+        need = inp.est_ram_bytes * placement.roles[inp.role].replicas
+        if held + need > total:
+            refused[inp.role] = (
+                f"{inp.role.value}: the CPU needs {need / 1024**3:.1f} GiB of system memory, "
+                f"{max(total - held, 0) / 1024**3:.1f} GiB of {total / 1024**3:.1f} GiB is left. "
+                "Choose a smaller model or a GPU."
+            )
+        else:
+            held += need
+    return refused
 
 
 def _targets_gpu(placement: PlacementSpec, role: WorkerRole) -> bool:
@@ -3276,6 +3355,7 @@ def resolve_placement_plan(
         engines=engines,
         unified_budget=unified_budget,
         total_vram=sum(d.total_bytes for d in devices),
+        cpu_roles=_cpu_roles(placement),
     )
     admission_budget = _unified_admission_budget(devices, engine)
     if fall_back_to_auto:
@@ -3534,14 +3614,15 @@ def _planned_launches(
     from lilbee.core.config import cfg
 
     unified_budget = _unified_memory_budget(devices, snapshot_engine)
+    spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
         roles,
         engines=engines,
         unified_budget=unified_budget,
         device_count=len(devices),
         total_vram=sum(d.total_bytes for d in devices),
+        cpu_roles=_cpu_roles(spec),
     )
-    spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     admission_budget = _unified_admission_budget(devices, snapshot_engine)
     # Only the clean-box snapshot's free bytes mean "what other tenants hold";
     # a live probe here would also be missing the fleet's own residency.
