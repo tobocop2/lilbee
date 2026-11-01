@@ -729,7 +729,11 @@ def _settings(app: LilbeeApp) -> SettingsScreen:
 
 
 async def _tab(app: LilbeeApp, pilot: Pilot) -> SettingsScreen:
-    """Wait until the Profile tab shows this project's profile."""
+    """Wait until the Profile tab shows this project's profile, options included.
+
+    The profile line comes from the app's own snapshot. The tab's dropdown is
+    filled by the Settings screen's load, which can finish later.
+    """
     active = profiles.active(_store()).name
 
     def _ready() -> bool:
@@ -737,7 +741,8 @@ async def _tab(app: LilbeeApp, pilot: Pilot) -> SettingsScreen:
         if not screens or not screens[0].query(ProfileTab):
             return False
         line = screens[0].query_one("#profile-line-name", Static)
-        return str(line.render()) == active
+        select = screens[0].query_one("#profile-select", Select)
+        return str(line.render()) == active and select.value == active
 
     assert await until(pilot, _ready), active
     return _settings(app)

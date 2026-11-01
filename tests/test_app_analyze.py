@@ -1,6 +1,7 @@
 """Analyze rules, the recommended profile, saving it, and the analyze tip."""
 
 import asyncio
+import os
 import threading
 import tomllib
 from dataclasses import replace
@@ -463,12 +464,20 @@ def test_every_builtin_analyze_can_pick_is_a_shipped_builtin(store):
         assert entry.file is not None, name
 
 
-def test_a_folder_the_user_cannot_open_is_refused_not_read_as_empty(
-    store, monkeypatch, unreadable_folder
-):
+def test_a_folder_the_user_cannot_open_is_refused_not_read_as_empty(store, monkeypatch, tmp_path):
+    folder = tmp_path / "locked"
+    folder.mkdir()
+    checked: list[tuple[object, int]] = []
+
+    def deny(path, mode):
+        checked.append((path, mode))
+        return False
+
+    monkeypatch.setattr("lilbee.app.analyze.os.access", deny)
     seen: list = []
     with pytest.raises(ValueError, match="is not readable"):
-        _run(store, AnalyzeRequest(directory=unreadable_folder), monkeypatch=monkeypatch, seen=seen)
+        _run(store, AnalyzeRequest(directory=folder), monkeypatch=monkeypatch, seen=seen)
+    assert checked == [(folder, os.R_OK | os.X_OK)]
     assert seen == []
     assert not (cfg.data_root / STATE_FILE_NAME).exists()
 
