@@ -26,8 +26,10 @@ _EXIT_BUDGET_S = 20.0
 _WAIT_FOR_SERVER_S = 30.0
 _INTERRUPTED_STATUS = 130
 _STILL_STARTING = f"The engines are still starting after {_WRITE_BOUND_S} s."
+_LIBRARY_WAIT = "lilbee is upgrading the library. Try again in a few seconds."
+_SAVED_PLACEMENT = 'placement = "{}"\n'
 
-_PROBE = f"""
+_PROBE_SETUP = f"""
 import signal, sys, threading
 import typer
 from lilbee.cli.commands import servers
@@ -36,6 +38,8 @@ from lilbee.providers.fleet import provider as fleet
 
 fleet._FLEET_WAIT_S = {_WRITE_BOUND_S}
 fleet._SHUTDOWN_WORK_WAIT_S = {_SHUTDOWN_BOUND_S}
+# Unbuffered, print writes the text and the newline apart, so two threads merge lines.
+sys.stdout.reconfigure(line_buffering=True)
 cfg.allow_http_engines = True
 cfg.allow_http_placement = True
 # The memory route reads the fleet only with memory on and an embedding model set.
@@ -65,19 +69,40 @@ def _announced(self, **kwargs):
         print("teardown", flush=True)
 
 fleet.FleetProvider._release_engines = _announced
+"""
 
-def _local():
-    from lilbee.app.services import get_services
-    return get_services().provider._local
-
+# A request waits for the library before it reaches a route, and the server's own open
+# runs in the background, so the "library" line tells the test that a request can pass.
+_BUILD_WITH_THE_LIBRARY_OPEN = """
 def _start_the_stuck_build():
-    _local()._ensure_fleet(bounded=False)
+    from lilbee.app.services import get_services
+    services = get_services()
+    services.store.get_db()
+    print(f"library open={services.store.is_open}", flush=True)
+    services.provider._local._ensure_fleet(bounded=False)
 
 threading.Thread(target=_start_the_stuck_build, daemon=True).start()
+"""
+
+_BUILD_WITH_THE_LIBRARY_HELD = """
+from lilbee.data.store.core import Store
+from lilbee.server import app
+
+app._UPGRADE_WAIT_SECONDS = 0.1
+Store._open_held = lambda self: threading.Event().wait()
+
+def _start_the_stuck_build():
+    from lilbee.app.services import get_services
+    get_services().provider._local._ensure_fleet(bounded=False)
+
+threading.Thread(target=_start_the_stuck_build, daemon=True).start()
+"""
+
+_PROBE_SERVE = """
 try:
     servers.serve(host="127.0.0.1", port=0, data_dir=None, use_global=False)
 except typer.Exit as exit_:
-    print(f"exit {{exit_.exit_code}}", flush=True)
+    print(f"exit {exit_.exit_code}", flush=True)
 except KeyboardInterrupt:
     # The interpreter's own status for an unhandled interrupt varies. A normal exit
     # still joins threads and runs atexit, which is what this test proves.
@@ -85,19 +110,21 @@ except KeyboardInterrupt:
     sys.exit(130)
 """
 
+_PROBE = _PROBE_SETUP + _BUILD_WITH_THE_LIBRARY_OPEN + _PROBE_SERVE
+_PROBE_LIBRARY_HELD = _PROBE_SETUP + _BUILD_WITH_THE_LIBRARY_HELD + _PROBE_SERVE
+
 
 class _Server:
     """The probe process and the lines it printed, read on a thread."""
 
-    def __init__(self, home: Path) -> None:
+    def __init__(self, home: Path, probe: str = _PROBE) -> None:
         env = {
             **os.environ,
             "LILBEE_DATA": str(home),
             "HOME": str(home),
-            "PYTHONUNBUFFERED": "1",
         }
         self.process = subprocess.Popen(
-            [sys.executable, "-c", _PROBE],
+            [sys.executable, "-c", probe],
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -139,14 +166,24 @@ class _Server:
         return time.monotonic() - sent
 
 
-@pytest.fixture
-def server(tmp_path: Path) -> Iterator[_Server]:
-    """The probe server; a failure at any point leaves no process behind."""
-    started = _Server(tmp_path)
+def _running(started: _Server) -> Iterator[_Server]:
+    """Yield *started*; a failure at any point leaves no process behind."""
     yield started
     if started.process.poll() is None:
         started.process.kill()
     started.process.wait()
+
+
+@pytest.fixture
+def server(tmp_path: Path) -> Iterator[_Server]:
+    """The probe server, with the library open before the build sticks."""
+    yield from _running(_Server(tmp_path))
+
+
+@pytest.fixture
+def server_with_the_library_held(tmp_path: Path) -> Iterator[_Server]:
+    """The probe server, with a library open that never ends."""
+    yield from _running(_Server(tmp_path, _PROBE_LIBRARY_HELD))
 
 
 def _request(
@@ -175,6 +212,7 @@ def _sigint_with_a_request_open(
 ) -> tuple[float, httpx.Response]:
     """Open a request that joins the stuck build, then send SIGINT."""
     port = server.port()
+    assert server.wait_for_line("library") == "library open=True"
     server.wait_for_line("stuck")
     answer: list[httpx.Response] = []
     client = threading.Thread(
@@ -212,6 +250,8 @@ def test_a_server_with_an_open_read_ends_after_sigint(server: _Server, tmp_path:
 def test_a_server_with_a_queued_placement_write_says_it_is_saved(
     server: _Server, tmp_path: Path
 ) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(_SAVED_PLACEMENT, encoding="utf-8")
     elapsed, answer = _sigint_with_a_request_open(
         server, tmp_path, "DELETE", "/api/placement", None
     )
@@ -221,6 +261,35 @@ def test_a_server_with_a_queued_placement_write_says_it_is_saved(
         "The placement is saved, but the running server could not apply it: "
         f"{_STILL_STARTING} Restart lilbee to use the placement."
     )
+    assert "placement" not in config.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("DELETE", "/api/placement", None),
+        ("PUT", "/api/engines/preferred", {"engine": "llama.cpp"}),
+        ("POST", "/api/memories", {"text": "a note"}),
+    ],
+)
+def test_a_request_before_the_library_opens_changes_nothing_and_joins_nothing(
+    server_with_the_library_held: _Server,
+    tmp_path: Path,
+    method: str,
+    path: str,
+    body: dict[str, str] | None,
+) -> None:
+    server = server_with_the_library_held
+    port = server.port()
+    server.wait_for_line("stuck")
+    config = tmp_path / "config.toml"
+    config.write_text(_SAVED_PLACEMENT, encoding="utf-8")
+    answer = _request(tmp_path, port, method, path, body)
+    assert answer.status_code == 503
+    assert answer.json()["detail"] == _LIBRARY_WAIT
+    assert config.read_text(encoding="utf-8") == _SAVED_PLACEMENT
+    assert not any(line.startswith("joined") for line in server.lines), server.lines
+    _assert_ended_by_the_signal(server, server.stop_and_time_the_exit())
 
 
 def test_a_server_with_no_write_ends_after_sigint(server: _Server) -> None:
