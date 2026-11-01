@@ -53,7 +53,7 @@ def _run(tree: pathlib.Path, imports: str) -> subprocess.CompletedProcess[str]:
         ["bash", str(_SCRIPT), str(tree / "bin")],
         env=env,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
         stdin=subprocess.DEVNULL,
     )
