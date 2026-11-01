@@ -3053,31 +3053,78 @@ def _resolve_placement(
         if pinned:
             names = ", ".join(role.value for role in pinned)
             raise PlacementError(f"the engine of {names} cannot be told which GPU to use")
+        auto_roles = frozenset(
+            role
+            for role, entry in placement.roles.items()
+            if entry.device_target is RoleTarget.AUTO
+        )
+
+        def plan_auto(cards: dict[int, int], on_cards: frozenset[WorkerRole]) -> Placement:
+            """The auto roles on *cards*, with the unified budget less the card roles."""
+            charged = sum(m.est_vram_bytes * m.replicas for m in inputs if m.role in on_cards)
+            budget = None if unified_budget is None else max(0, unified_budget - charged)
+            return _auto_placement(
+                [model for model in inputs if model.role in auto_roles],
+                cards,
+                devices,
+                model_refs,
+                engines=engines,
+                estimate_peak=estimate_peak,
+                unified_budget=budget,
+                unpinnable=unpinnable,
+            )
+
         return placement_from_spec(
             placement,
             tuple(model_refs),
             capacity,
             estimate_peak=estimate_peak,
+            plan_auto=plan_auto,
         )
+    return _auto_placement(
+        inputs,
+        capacity,
+        devices,
+        model_refs,
+        engines=engines,
+        estimate_peak=estimate_peak,
+        unified_budget=unified_budget,
+        unpinnable=unpinnable,
+    )
+
+
+def _auto_placement(
+    inputs: list[ModelPlacementInput],
+    cards: dict[int, int],
+    devices: list[FleetDevice],
+    model_refs: dict[WorkerRole, str],
+    *,
+    engines: Mapping[WorkerRole, EngineAdapter],
+    estimate_peak: PeakEstimator,
+    unified_budget: int | None,
+    unpinnable: tuple[WorkerRole, ...],
+) -> Placement:
+    """Plan *inputs* on *cards* (index to total bytes) with the auto planner."""
     # The chat split's card count is decided against the snapshot's free VRAM (what the
     # launch sizes its context against) so placement and launch agree. A split needs
     # >=2 GPUs, so skip the chat model's gguf read entirely below that.
     chat_ctx_fit, chat_ctx_target = (
         _chat_split_ctx_objective(model_refs, engines)
-        if len(capacity) >= _MIN_SPLIT_GPUS
+        if len(cards) >= _MIN_SPLIT_GPUS
         else (None, 0)
     )
     placed = plan_placement(
         [model for model in inputs if model.role not in unpinnable],
-        [(idx, budget) for idx, budget in capacity.items()],
+        list(cards.items()),
         estimate_peak=estimate_peak,
         unified_budget=unified_budget,
         chat_ctx_fit=chat_ctx_fit,
         chat_ctx_target=chat_ctx_target,
-        free_headroom={d.index: d.free_bytes for d in devices},
+        free_headroom={d.index: d.free_bytes for d in devices if d.index in cards},
         refuse_oversize=_is_mixed(engines),
     )
-    return replace(placed, unplaceable_roles=(*placed.unplaceable_roles, *unpinnable))
+    held_back = tuple(model.role for model in inputs if model.role in unpinnable)
+    return replace(placed, unplaceable_roles=(*placed.unplaceable_roles, *held_back))
 
 
 def _cpu_roles(spec: PlacementSpec | None) -> frozenset[WorkerRole]:
@@ -3101,8 +3148,18 @@ def _cpu_roles_past_memory(
     The roles are taken in order and the first past the total is refused, with no
     fallback to a card. A role in *skip* is already refused and charges nothing.
     """
-    total = total_system_memory()
     cpu = _cpu_roles(placement)
+    sized = cpu.intersection(i.role for i in inputs) - skip.keys()
+    if not sized:
+        return {}
+    try:
+        total = total_system_memory()
+    except RuntimeError:
+        return {
+            role: f"{role.value}: the system memory of this machine cannot be read, so the CPU "
+            "cannot be sized. Choose a GPU."
+            for role in sorted(sized, key=lambda r: r.value)
+        }
     held = sum(i.est_ram_bytes for i in inputs if i.role not in cpu and i.role not in skip)
     refused: dict[WorkerRole, str] = {}
     for inp in inputs:
@@ -3138,13 +3195,7 @@ def _unusable_targets(
     refused: dict[WorkerRole, str] = {}
     for role in roles:
         entry = placement.roles.get(role)
-        if entry is None or entry.target is None:
-            continue
-        if entry.target is RoleTarget.AUTO:
-            refused[role] = (
-                f"{role.value}: the auto target is not available yet. "
-                "Name the devices or set the target to cpu."
-            )
+        if entry is None or entry.target is None or entry.target is RoleTarget.AUTO:
             continue
         engine = engines[role]
         if entry.target not in engine.device_targets(engine.binary()):
@@ -3292,6 +3343,49 @@ def _placement_or_auto(
     ), False
 
 
+def _placement_that_runs(
+    spec: PlacementSpec | None,
+    inputs: list[ModelPlacementInput],
+    model_refs: dict[WorkerRole, str],
+    devices: list[FleetDevice],
+    *,
+    engines: Mapping[WorkerRole, EngineAdapter],
+    unified_budget: int | None,
+    charge_against_free: bool = False,
+) -> tuple[Placement, bool, dict[WorkerRole, str]]:
+    """The placement the fleet runs for *spec*, whether the spec applied, and the roles it drops.
+
+    A role on a card this machine lacks, or on a target its engine cannot run, gets
+    no server and a reason; the others launch. The launch and the placement view
+    both read this, so the view reports what runs.
+    """
+    refused = _roles_on_missing_cards(spec, model_refs, devices)
+    for refusal in refused.values():
+        log.warning(refusal)
+    try:
+        placed, applied = _placement_or_auto(
+            spec,
+            *_without_roles(inputs, model_refs, refused),
+            devices,
+            engines=engines,
+            unified_budget=unified_budget,
+            charge_against_free=charge_against_free,
+        )
+    except TargetRefusedError as exc:
+        refused = {**refused, **exc.reasons}
+        for refusal in exc.reasons.values():
+            log.warning(refusal)
+        placed, applied = _placement_or_auto(
+            spec,
+            *_without_roles(inputs, model_refs, refused),
+            devices,
+            engines=engines,
+            unified_budget=unified_budget,
+            charge_against_free=charge_against_free,
+        )
+    return placed, applied, refused
+
+
 @dataclass(frozen=True)
 class NoEngineRole:
     """A configured role whose model no installed engine loads, and why."""
@@ -3316,6 +3410,8 @@ class ResolvedPlacement:
     # False when a spec was given but did not fit the hardware, so these instances
     # are the auto planner's and a surface must not present them as the manual plan.
     spec_applied: bool = True
+    # Roles the spec drops from the plan, each with its reason: the rest still run.
+    refused_roles: dict[WorkerRole, str] = field(default_factory=dict)
     # Roles configured but skipped because their model isn't installed (role -> ref).
     # Distinct from unplaceable_roles (installed but won't fit); lets a surface show
     # "not downloaded" instead of an empty table on a fresh install.
@@ -3358,8 +3454,9 @@ def resolve_placement_plan(
         cpu_roles=_cpu_roles(placement),
     )
     admission_budget = _unified_admission_budget(devices, engine)
+    refused_roles: dict[WorkerRole, str] = {}
     if fall_back_to_auto:
-        resolved, spec_applied = _placement_or_auto(
+        resolved, spec_applied, refused_roles = _placement_that_runs(
             placement, inputs, model_refs, devices, engines=engines, unified_budget=admission_budget
         )
     else:
@@ -3375,6 +3472,7 @@ def resolve_placement_plan(
         co_tenants=resolved.co_tenants,
         skipped_not_installed=skipped_not_installed,
         spec_applied=spec_applied,
+        refused_roles=refused_roles,
         tight_roles=dict(resolved.tight_roles),
         engine_backend=reading.backend,
         skipped_no_engine={
@@ -3627,31 +3725,15 @@ def _planned_launches(
     # Only the clean-box snapshot's free bytes mean "what other tenants hold";
     # a live probe here would also be missing the fleet's own residency.
     charge_against_free = _current_plan_probe(snapshot_engine) is not None
-    refused_roles = _roles_on_missing_cards(spec, model_refs, devices)
-    for refusal in refused_roles.values():
-        log.warning(refusal)
-    try:
-        placement, _spec_applied = _placement_or_auto(
-            spec,
-            *_without_roles(inputs, model_refs, refused_roles),
-            devices,
-            engines=engines,
-            unified_budget=admission_budget,
-            charge_against_free=charge_against_free,
-        )
-    except TargetRefusedError as exc:
-        # The refused roles get no server and report their reason; the others launch.
-        refused_roles = {**refused_roles, **exc.reasons}
-        for refusal in exc.reasons.values():
-            log.warning(refusal)
-        placement, _spec_applied = _placement_or_auto(
-            spec,
-            *_without_roles(inputs, model_refs, refused_roles),
-            devices,
-            engines=engines,
-            unified_budget=admission_budget,
-            charge_against_free=charge_against_free,
-        )
+    placement, _spec_applied, refused_roles = _placement_that_runs(
+        spec,
+        inputs,
+        model_refs,
+        devices,
+        engines=engines,
+        unified_budget=admission_budget,
+        charge_against_free=charge_against_free,
+    )
     _log_refused_roles(
         placement,
         model_refs,

@@ -683,7 +683,7 @@ FLEET_STATE_AUTO = "auto"
 FLEET_STATE_MANUAL = "manual"
 FLEET_STATE_EDITED = "edited · ctrl+s to apply"
 FLEET_STATE_REBUILDING = "rebuilding fleet…"
-FLEET_SINGLE_GPU_NOTE = "One graphics card: everything runs here."
+FLEET_SINGLE_GPU_NOTE = "One graphics card. Choose cpu to run a role on the processor."
 FLEET_GPU_PROBING = "probing GPUs…"
 FLEET_NO_GPUS = "(no GPUs detected)"
 # Shown when the device probe failed outright (e.g. a wedged GPU driver), so the
@@ -732,6 +732,7 @@ FLEET_HELP_TOOLTIP = (
     "  • chat is one model split across the highlighted cards (they work as one).\n"
     "  • embed/vision run as a full copy on each highlighted card.\n"
     "  • rerank runs on one card; pick a single GPU.\n"
+    "  • cpu runs a role on the processor; auto plans a role on the cards left.\n"
     "Click a cell to change it, then Apply. Auto lets lilbee choose."
 )
 # The full nav-view universe in order. Single source for the view set: the

@@ -1195,3 +1195,146 @@ async def test_rerank_is_single_select(monkeypatch):
         assert body._edits[WorkerRole.RERANK].devices == {2}
         assert app.screen.query_one("#dev-rerank-2", FleetPill).has_class("on")
         assert not app.screen.query_one("#dev-rerank-0", FleetPill).has_class("on")
+
+
+def _view_naming(spec_json: str, roles):  # type: ignore[no-untyped-def]
+    """A four-card manual view whose saved spec is *spec_json*, with *roles* as the plan."""
+    from lilbee.app.placement import GpuInfo, PlacementView
+
+    return PlacementView(
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
+        ),
+        roles=roles,
+        unplaceable=(),
+        manual=True,
+        spec_json=spec_json,
+    )
+
+
+async def _press_until(pilot, selector: str, predicate) -> None:  # type: ignore[no-untyped-def]
+    """Press a pill and wait on the state the press must produce."""
+    from tests._async_wait import wait_until
+
+    pilot.app.screen.query_one(selector, FleetPill).press()
+    assert await wait_until(pilot, predicate)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(80, 30), (140, 44)])
+async def test_the_cpu_and_auto_choices_render_on_every_role_row(monkeypatch, size):
+    """Row tui_cpu_choice_rendered: each role row offers cpu and auto, with no raw value."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        rows = [str(row.render()) for row in body.query(".dev-toggle")]
+        assert rows.count(" cpu ") == 2
+        assert rows.count(" auto ") == 2
+        assert not [text for text in rows if "None" in text or "RoleTarget" in text]
+        assert _generated(app) == '{"chat": {"devices": [1]}, "embed": {"devices": [0]}}'
+
+
+@pytest.mark.asyncio
+async def test_the_cpu_choice_takes_a_role_off_its_cards_and_keeps_the_others(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        await _press_until(
+            pilot, "#tgt-embed-cpu", lambda: body.query_one("#tgt-embed-cpu").has_class("on")
+        )
+        assert _generated(app) == '{"chat": {"devices": [1]}, "embed": {"target": "cpu"}}'
+        await _press_until(
+            pilot, "#tgt-embed-auto", lambda: body.query_one("#tgt-embed-auto").has_class("on")
+        )
+        assert not body.query_one("#tgt-embed-cpu").has_class("on")
+        assert _generated(app) == '{"chat": {"devices": [1]}, "embed": {"target": "auto"}}'
+        await _press_until(
+            pilot, "#dev-embed-2", lambda: body.query_one("#dev-embed-2").has_class("on")
+        )
+        assert not body.query_one("#tgt-embed-auto").has_class("on")
+        assert _generated(app) == '{"chat": {"devices": [1]}, "embed": {"devices": [2]}}'
+
+
+@pytest.mark.asyncio
+async def test_pressing_a_chosen_target_again_leaves_the_role_with_no_card(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        await _press_until(
+            pilot, "#tgt-chat-cpu", lambda: body.query_one("#tgt-chat-cpu").has_class("on")
+        )
+        await _press_until(
+            pilot, "#tgt-chat-cpu", lambda: not body.query_one("#tgt-chat-cpu").has_class("on")
+        )
+        assert _generated(app) == "chat needs at least one GPU"
+
+
+@pytest.mark.asyncio
+async def test_an_unedited_apply_keeps_the_target_the_spec_names(monkeypatch):
+    """The editor rebuilds the spec it loaded: a cpu role, an auto role and a named gpu stay."""
+    from lilbee.app.placement import RolePlacementView
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+
+    spec = (
+        '{"chat": {"devices": [1], "target": "gpu"}, "embed": {"target": "cpu"}, '
+        '"vision": {"target": "auto"}}'
+    )
+    view = _view_naming(
+        spec,
+        (
+            RolePlacementView(WorkerRole.CHAT, "c.gguf", (1,), None, 1, "llama.cpp"),
+            RolePlacementView(
+                WorkerRole.EMBED, "e.gguf", (), None, 1, "llama.cpp", target=RoleTarget.CPU
+            ),
+            RolePlacementView(WorkerRole.VISION, "v.gguf", (2,), None, 1, "llama.cpp"),
+        ),
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        assert _generated(app) == (
+            '{"chat": {"devices": [1], "target": "gpu"}, "embed": {"target": "cpu"}, '
+            '"vision": {"target": "auto"}}'
+        )
+
+
+@pytest.mark.asyncio
+async def test_one_card_still_offers_the_cpu_choice(monkeypatch):
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A40", 44 * GIB, 44 * GIB),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "e.gguf", (0,), None, 1, "llama.cpp"),),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        await _press_until(
+            pilot, "#tgt-embed-cpu", lambda: body.query_one("#tgt-embed-cpu").has_class("on")
+        )
+        assert _generated(app) == '{"embed": {"target": "cpu"}}'
