@@ -372,7 +372,7 @@ def self_check_cmd(
         console.print(styled(("SELF-CHECK PASSED", theme.ACCENT)))
 
 
-_SELF_CHECK_EXTRAS = ("providers", "crawlberg", "ada_url", "spacy", "graspologic_native")
+_SELF_CHECK_EXTRAS = ("providers", "crawlberg", "ada_url", "spacy", "graspologic_native", "xberg")
 
 
 def self_check_extras_cmd() -> None:

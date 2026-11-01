@@ -200,3 +200,44 @@ def test_another_os_error_still_surfaces_from_the_launcher(
 
     with pytest.raises(PermissionError, match="denied"):
         launcher.main()
+
+
+class TestMissingVcRuntimeWarning:
+    """A pip install on Windows without msvcp140 fails later with 'DLL load failed'."""
+
+    @staticmethod
+    def _run(monkeypatch, capsys, *, platform: str, library: str | None, frozen: bool) -> str:
+        import ctypes.util
+
+        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.setattr(ctypes.util, "find_library", lambda _name: library)
+        if frozen:
+            monkeypatch.setitem(launcher.__dict__, "__compiled__", object())
+        launcher._warn_missing_vc_runtime()
+        return capsys.readouterr().err
+
+    def test_warns_when_windows_has_no_runtime(self, monkeypatch, capsys) -> None:
+        err = self._run(monkeypatch, capsys, platform="win32", library=None, frozen=False)
+        assert "Visual C++ runtime" in err
+        assert "learn.microsoft.com/cpp/windows/latest-supported-vc-redist" in err
+
+    @pytest.mark.parametrize(
+        ("platform", "library", "frozen"),
+        [
+            ("win32", "C:/x/msvcp140.dll", False),
+            ("darwin", None, False),
+            ("win32", None, True),
+        ],
+    )
+    def test_silent_otherwise(self, monkeypatch, capsys, platform, library, frozen) -> None:
+        assert (
+            self._run(monkeypatch, capsys, platform=platform, library=library, frozen=frozen) == ""
+        )
+
+    def test_main_runs_the_check(self, monkeypatch) -> None:
+        calls = Mock()
+        monkeypatch.setattr(launcher, "_warn_missing_vc_runtime", calls)
+        monkeypatch.setattr(launcher, "_run_cli", Mock())
+        monkeypatch.setattr(sys, "argv", ["lilbee", "status"])
+        launcher.main()
+        calls.assert_called_once_with()

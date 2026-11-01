@@ -230,3 +230,34 @@ class TestPartialOutputArrivesInEitherShape:
         from lilbee.providers.fleet.devices import _decoded_output, _probe_tail
 
         assert _probe_tail(_decoded_output(raw)) == expected
+
+
+class TestAMissingRuntimeDllIsNamed:
+    """Status 0xC0000135 means a DLL was not found, not that the flag is unknown."""
+
+    def test_the_silent_probe_names_the_runtime(self, monkeypatch) -> None:
+        monkeypatch.setattr(devices_mod, "_run_list_devices", lambda _b, _t: ("", 0xC0000135))
+        with pytest.raises(ProviderError, match="Visual C"):
+            devices_mod.probe_devices(Path("/bin/llama-server"))
+
+    def test_a_probe_that_printed_its_header_keeps_the_crash_warning(
+        self, monkeypatch, caplog
+    ) -> None:
+        output = "Available devices:\n"
+        monkeypatch.setattr(devices_mod, "_run_list_devices", lambda _b, _t: (output, 0xC0000135))
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.devices"):
+            devices_mod.probe_devices(Path("/bin/llama-server"))
+        assert "then crashed" in caplog.text
+
+    def test_another_status_keeps_the_flag_warning(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(devices_mod, "_run_list_devices", lambda _b, _t: ("", 3))
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.devices"):
+            devices_mod.probe_devices(Path("/bin/llama-server"))
+        assert "does not appear to support the flag" in caplog.text
+
+    def test_the_planner_read_of_devices_lets_it_through(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import planning
+
+        monkeypatch.setattr(devices_mod, "_run_list_devices", lambda _b, _t: ("", 0xC0000135))
+        with pytest.raises(ProviderError, match="Visual C"):
+            planning.resolve_devices(Path("/bin/llama-server"), LLAMA)
