@@ -318,6 +318,17 @@ def test_a_read_after_a_drop_waits_for_the_drop_and_builds_again(
     assert all(local._swaps[group] is not old[group] for group in old)
 
 
+def test_a_read_while_a_drop_is_wanted_never_answers_from_the_old_groups(fleet: Any) -> None:
+    local = _local(fleet)
+    old = dict(local._swaps)
+    with local._lock:
+        local._drop_wanted = True
+    assert local._ensure_fleet() is True
+    assert local._drop_wanted is False
+    assert set(local._swaps) == set(old)
+    assert all(local._swaps[group] is not old[group] for group in old)
+
+
 def test_a_failed_forced_pass_keeps_the_role_for_the_rerun(
     fleet: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -639,15 +650,21 @@ def test_a_build_keeps_the_context_of_the_caller_that_started_it(
     assert set(ttls) == {0}
 
 
-def test_a_build_queued_behind_a_shutdown_starts_nothing(fleet: Any) -> None:
+def test_a_build_step_picked_before_a_shutdown_starts_nothing(
+    fleet: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     local = _local(fleet)
     _cold(local)
     _ProcessSwap.starting.clear()
-    with local._build_lock:
-        reader = _Caller(local._ensure_fleet)
-        _wait_for(lambda: local._fleet_work is not None)
-        with local._lock:
-            local._shut_down = True
+    pick = local._next_fleet_step
+
+    def _pick_then_latch() -> Callable[[], None] | None:
+        step = pick()
+        local._shut_down = True
+        return step
+
+    monkeypatch.setattr(local, "_next_fleet_step", _pick_then_latch)
+    reader = _Caller(local._ensure_fleet)
     reader.join()
     assert reader.heard is None
     assert _ProcessSwap.starting.is_set() is False
