@@ -98,10 +98,8 @@ from lilbee.runtime.engine_lock import (
 
 log = logging.getLogger(__name__)
 
-# How long a shutdown waits for an in-flight build to finish before tearing down
-# regardless. Generous against a legitimate llama-swap spawn (a 30 s boot budget)
-# and far short of any supervisor's patience for a process that will not exit.
-_SHUTDOWN_BUILD_LOCK_WAIT_S = 45.0
+# How long a shutdown waits for fleet work to finish before tearing down regardless.
+_SHUTDOWN_WORK_WAIT_S = 45.0
 # Longest a read or a write waits on fleet work, so no thread that exit joins waits longer.
 _FLEET_WAIT_S = 60.0
 
@@ -959,7 +957,7 @@ class FleetProvider:
         # in a new one) can still have an in-flight warm-up or reload daemon
         # thread; without this latch that thread could start a llama-swap after
         # shutdown already ran, leaving a process no live provider owns.
-        # The build step checks it under the build lock so a post-shutdown build is
+        # The build step checks it under ``_lock`` so a post-shutdown build is
         # refused (the swap_manager reaper is the backstop if one slips through).
         self._shut_down = False
         # A pool of OpenAI clients per placed role (one per data-parallel replica),
@@ -982,10 +980,6 @@ class FleetProvider:
         # first-requests must not each start a swap (double GPU allocation) or
         # tear one down mid-route. Reentrant: invalidate_load_cache nests calls.
         self._lock = threading.RLock()
-        # Serializes each step of the fleet work against a shutdown, a teardown and a
-        # rebuild of a dead group, so no two start swaps. Held only during those,
-        # NOT while routing.
-        self._build_lock = threading.Lock()
         # Single-flight for starting vision on request: concurrent OCR pages wait
         # for the first page's re-plan instead of each re-planning.
         self._vision_request_lock = threading.Lock()
@@ -1139,11 +1133,10 @@ class FleetProvider:
     def _build_fleet(self) -> None:
         """Run the acquisition ladder unless a group came up or a shutdown latched."""
         try:
-            with self._build_lock:
-                with self._lock:
-                    if self._swaps or self._shut_down:
-                        return
-                self._acquire_engine(cfg.data_root)
+            with self._lock:
+                if self._swaps or self._shut_down:
+                    return
+            self._acquire_engine(cfg.data_root)
         finally:
             with self._lock:
                 self._build_wanted = False
@@ -1736,32 +1729,21 @@ class FleetProvider:
         swap. The engine stops only when this was the last user and persistence was
         not opted into.
         """
-        # Latched before the lock, not inside it: every _shut_down check runs after
-        # acquiring the build lock, so a warm or reload thread queued behind us can
-        # only bail early if the flag is already set when its turn comes.
+        # The latch and the read are one lock hold, so the loop ends at its next step.
         with self._lock:
             self._shut_down = True
-        # The build lock serializes shutdown against a concurrent reload/build:
-        # both mutate self._swaps and the llama-swap processes, so an unserialized
-        # loser would overwrite the winner's state and leak a live llama-swap.
-        # Bounded, because a wedged engine start holds this lock and an unbounded
-        # wait would hang process exit outright. On timeout the teardown proceeds
-        # anyway: whatever the builder leaves behind is recorded in the engine
-        # dir's state files, so the next start's reap finds it by record, while a
-        # shutdown that never returns cannot be recovered from at all.
-        acquired = self._build_lock.acquire(timeout=_SHUTDOWN_BUILD_LOCK_WAIT_S)
-        if not acquired:
+            work = self._fleet_work
+        # Bounded, because a wedged engine start would hang process exit. At the bound
+        # the teardown proceeds: the loop is a daemon thread that exit never joins, and
+        # the next start reaps from the engine dir's state files what it leaves behind.
+        if work is not None and not work.wait(_SHUTDOWN_WORK_WAIT_S):
             log.warning(
-                "Engine build still in progress after %.0fs; shutting down without "
+                "Engine work still in progress after %.0fs; shutting down without "
                 "waiting for it. Leftovers are reaped from their records on the next start.",
-                _SHUTDOWN_BUILD_LOCK_WAIT_S,
+                _SHUTDOWN_WORK_WAIT_S,
             )
-        try:
-            self._drop_swap_refs(close_all=True)
-            self._release_engines()
-        finally:
-            if acquired:
-                self._build_lock.release()
+        self._drop_swap_refs(close_all=True)
+        self._release_engines()
 
     def _release_engines(self, *, config_changed: bool = False) -> None:
         """Drop membership in every used engine dir; stop each engine we leave last.
@@ -1791,7 +1773,10 @@ class FleetProvider:
         """
         from lilbee.core.config import cfg
 
-        for engine_dir, hold in list(self._engine_holds.items()):
+        # Taken in one lock hold, so a signal's shutdown and the lifespan's release once.
+        with self._lock:
+            holds, self._engine_holds = self._engine_holds, {}
+        for engine_dir, hold in holds.items():
             with build_lock(engine_dir, best_effort=True):
                 last = hold.release_and_check_last()
                 # A flip after binding never re-acquires, so reconcile our own mark
@@ -1815,7 +1800,6 @@ class FleetProvider:
                     log.info("Engine left warm at %s (last user out)", engine_dir)
                 elif config_changed:
                     log.info("Engine left running at %s (still in use by peers)", engine_dir)
-        self._engine_holds = {}
 
     def _release_holds(self) -> None:
         """Drop this process's engine memberships without stopping any engine.
@@ -2639,7 +2623,7 @@ class FleetProvider:
             self._join_fleet_work(work)
 
     def _rebind_or_overflow(self) -> list[WorkerRole]:
-        """Re-acquire a bound engine after a config change; caller holds the build lock.
+        """Re-acquire a bound engine after a config change; runs as a step of the fleet work.
 
         A provider that rode another process's engine owns none of its groups and
         cannot restart them. Restarting "in place" would spawn a duplicate fleet
@@ -2674,94 +2658,92 @@ class FleetProvider:
         stays resident through a placement or per-role model change. *force* adds a
         role's group to the restart set even when its plan is unchanged (dead-swap
         recovery). Changed groups stop before the new ones start, so the planned
-        VRAM is actually free when the new servers spawn. Runs under the build lock
-        so a racing shutdown/build can't interleave with the restart and leak a live
-        llama-swap holding GPU memory.
+        VRAM is actually free when the new servers spawn. Runs as a step of the fleet
+        work, so a racing shutdown or build can't interleave with the restart and leak
+        a live llama-swap holding GPU memory.
         """
 
         restarted: list[WorkerRole] = []
-        with self._build_lock:
-            # The device list is structural and was captured once at boot, so a
-            # card that has since left keeps being planned onto. The memory
-            # figures beside it are deliberately not re-taken: this fleet is
-            # resident, and charging it against itself is what the snapshot exists
-            # to prevent.
-            planning.refresh_plan_devices(self._engines())
-            with self._lock:
-                if self._shut_down:
-                    # Terminal shutdown landed while this reload was queued; a
-                    # rebuild here would spawn a fleet no live provider owns.
-                    return
-                running = set(self._swaps)
-                old = dict(self._launches)
-                # All groups share one dir and one ownership by construction, so any
-                # bound manager means this provider rides another process's engine.
-                bound = any(swap.bound for swap in self._swaps.values())
-            if bound:
-                # Cannot restart a shared engine's groups in place (that duplicates
-                # the fleet into the slot); drop the bindings and re-acquire.
-                restarted = self._rebind_or_overflow()
-                self._preload_restarted(restarted)
+        # The device list is structural and was captured once at boot, so a
+        # card that has since left keeps being planned onto. The memory
+        # figures beside it are deliberately not re-taken: this fleet is
+        # resident, and charging it against itself is what the snapshot exists
+        # to prevent.
+        planning.refresh_plan_devices(self._engines())
+        with self._lock:
+            if self._shut_down:
+                # Terminal shutdown landed before this step; a rebuild here would
+                # spawn a fleet no live provider owns.
                 return
-            # Reap dead engines in our dirs before re-planning, as a build would.
-            reload_dir = self._reload_dir()
-            # Serialize the reload against peer acquisitions with the same
-            # cross-process lock a build takes. Without it, this reap_stale can kill
-            # a peer's swap that is spawned but not yet answering its proxy, and the
-            # stop-then-spawn gap lets a peer's ladder see a half-stopped slot and
-            # build a second fleet into the same dir, double-allocating VRAM.
-            with build_lock(reload_dir):
-                reap_stale(reload_dir)
-                # A planning failure (a missing engine binary, a wedged GPU probe, an
-                # unusable CUDA runtime) propagates: the change was not applied, and a
-                # caller that wrote the choice must hear that. The raise lands before
-                # the stop phase, so a running fleet is left intact rather than half
-                # torn down.
-                if not running:
-                    # Nothing loaded (a resurrect after a failed pass): the box is
-                    # clean, so refresh the plan snapshot like a first build would.
-                    planning.capture_plan_probe(self._engines())
-                engines = self._engines()
-                plan = planning.plan_all_launches(engines=engines)
-                # Keep the skip reasons in step with the fresh plan.
-                self._skipped_not_installed = dict(plan.skipped_not_installed)
-                self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
-                new = _launches_by_group(plan)
-                # A group restarts when its launches changed OR its running/planned
-                # presence disagrees (covers a group the new plan drops or adds).
-                changed = {
-                    group
-                    for group in running | set(new)
-                    if (group in running) != (group in new)
-                    or old.get(group, ()) != new.get(group, ())
-                }
-                changed |= {group_for(role, plan.co_tenants) for role in force}
-                # Stop phase: free the changed groups' VRAM before their replacements
-                # (or another group's grown plan) spawn against it.
-                for group in sorted(changed, key=lambda g: g.value):
-                    with self._lock:
-                        swap = self._drop_group(group)
-                    if swap is not None:
-                        swap.shutdown()
-                # Start phase: spawn the changed groups present in the new plan.
-                for group in sorted(changed & set(new), key=lambda g: g.value):
-                    group_launches = list(new[group])
-                    swap = SwapManager(reload_dir, group)
-                    lifetime = _engine_lifetime(reload_dir)
-                    swap.start(
-                        group_launches,
-                        engines=engines,
-                        ttl_seconds=_warm_ttl_seconds(
-                            lifetime,
-                            reload_dir,
-                            hold_warm_for_session=self._hold_warm_for_session,
-                        ),
-                        lifetime=lifetime,
-                    )
-                    with self._lock:
-                        self._adopt_group(group, swap, group_launches)
-                        self._group_dirs[group] = reload_dir
-                    restarted.extend(_by_role(group_launches))
+            running = set(self._swaps)
+            old = dict(self._launches)
+            # All groups share one dir and one ownership by construction, so any
+            # bound manager means this provider rides another process's engine.
+            bound = any(swap.bound for swap in self._swaps.values())
+        if bound:
+            # Cannot restart a shared engine's groups in place (that duplicates
+            # the fleet into the slot); drop the bindings and re-acquire.
+            restarted = self._rebind_or_overflow()
+            self._preload_restarted(restarted)
+            return
+        # Reap dead engines in our dirs before re-planning, as a build would.
+        reload_dir = self._reload_dir()
+        # Serialize the reload against peer acquisitions with the same
+        # cross-process lock a build takes. Without it, this reap_stale can kill
+        # a peer's swap that is spawned but not yet answering its proxy, and the
+        # stop-then-spawn gap lets a peer's ladder see a half-stopped slot and
+        # build a second fleet into the same dir, double-allocating VRAM.
+        with build_lock(reload_dir):
+            reap_stale(reload_dir)
+            # A planning failure (a missing engine binary, a wedged GPU probe, an
+            # unusable CUDA runtime) propagates: the change was not applied, and a
+            # caller that wrote the choice must hear that. The raise lands before
+            # the stop phase, so a running fleet is left intact rather than half
+            # torn down.
+            if not running:
+                # Nothing loaded (a resurrect after a failed pass): the box is
+                # clean, so refresh the plan snapshot like a first build would.
+                planning.capture_plan_probe(self._engines())
+            engines = self._engines()
+            plan = planning.plan_all_launches(engines=engines)
+            # Keep the skip reasons in step with the fresh plan.
+            self._skipped_not_installed = dict(plan.skipped_not_installed)
+            self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
+            new = _launches_by_group(plan)
+            # A group restarts when its launches changed OR its running/planned
+            # presence disagrees (covers a group the new plan drops or adds).
+            changed = {
+                group
+                for group in running | set(new)
+                if (group in running) != (group in new) or old.get(group, ()) != new.get(group, ())
+            }
+            changed |= {group_for(role, plan.co_tenants) for role in force}
+            # Stop phase: free the changed groups' VRAM before their replacements
+            # (or another group's grown plan) spawn against it.
+            for group in sorted(changed, key=lambda g: g.value):
+                with self._lock:
+                    swap = self._drop_group(group)
+                if swap is not None:
+                    swap.shutdown()
+            # Start phase: spawn the changed groups present in the new plan.
+            for group in sorted(changed & set(new), key=lambda g: g.value):
+                group_launches = list(new[group])
+                swap = SwapManager(reload_dir, group)
+                lifetime = _engine_lifetime(reload_dir)
+                swap.start(
+                    group_launches,
+                    engines=engines,
+                    ttl_seconds=_warm_ttl_seconds(
+                        lifetime,
+                        reload_dir,
+                        hold_warm_for_session=self._hold_warm_for_session,
+                    ),
+                    lifetime=lifetime,
+                )
+                with self._lock:
+                    self._adopt_group(group, swap, group_launches)
+                    self._group_dirs[group] = reload_dir
+                restarted.extend(_by_role(group_launches))
         self._preload_restarted(restarted)
 
     def _preload_restarted(self, restarted: list[WorkerRole]) -> None:
