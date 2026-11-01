@@ -19,7 +19,7 @@ class PlacementError(ValueError):
 
 
 class TargetRefusedError(PlacementError):
-    """Roles that name a device target their engine's installed build cannot run on."""
+    """Roles a spec's device target refuses alone, each with its reason."""
 
     def __init__(self, reasons: Mapping[WorkerRole, str]) -> None:
         super().__init__(" ".join(reasons.values()))
