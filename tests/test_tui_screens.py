@@ -3564,6 +3564,17 @@ async def test_chat_slash_set_nullable_none():
         assert cfg.temperature is None
 
 
+async def test_chat_slash_set_refused_list_value_reads_for_users():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("force_ocr_pages 0")
+        text = str(mock_notify.call_args_list[0].args[0])
+        assert "page numbers start at 1" in text
+        assert "validation error" not in text
+        assert mock_notify.call_args_list[0].kwargs["severity"] == "error"
+
+
 async def test_chat_slash_set_unknown_key():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:

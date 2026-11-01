@@ -303,6 +303,9 @@ class LilbeeApp(App[None]):
     # Production never sets it. See tests/_lilbee_app_test_host.py.
     _test_skip_auto_init: ClassVar[bool] = False
 
+    # Keys pressed while the startup gate showed; the chat prompt takes them on show.
+    type_ahead: str = ""
+
     async def on_mount(self) -> None:
         # The app's own signal graph is part of being a working app, not
         # "heavyweight auto-init": wiring it before the test-skip guard lets a
@@ -384,6 +387,7 @@ class LilbeeApp(App[None]):
             if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
                 self.switch_view(self._initial_view)
         else:
+            self.type_ahead = ""
             self.switch_view(msg.CATALOG_VIEW)
         # Cheap detection only: filesystem walk + hash compare. The user
         # initiates sync explicitly via S or the command palette.
