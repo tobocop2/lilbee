@@ -110,6 +110,7 @@ from lilbee.data.store import (
     scope_to_chunk_type,
 )
 from lilbee.providers.base import is_header_safe
+from lilbee.providers.fleet.devices import DLL_MISSING_LEAD
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
@@ -1983,11 +1984,12 @@ class ChatScreen(Screen[None]):
         if self._turn_stopped(turn):
             return False
         error = chat_warm_error()
-        text = (
-            f"{msg.ENGINE_LOAD_FAILED.format(error=error)}\n{msg.ENGINE_FAILED_HINT}"
-            if error is not None
-            else msg.ENGINE_NOT_READY
-        )
+        if error is None:
+            text = msg.ENGINE_NOT_READY
+        elif DLL_MISSING_LEAD in error:
+            text = msg.ENGINE_LOAD_FAILED.format(error=error)
+        else:
+            text = f"{msg.ENGINE_LOAD_FAILED.format(error=error)}\n{msg.ENGINE_FAILED_HINT}"
         with contextlib.suppress(Exception):
             call_from_thread(self, widget.append_content, text)
         return False

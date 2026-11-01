@@ -41,6 +41,7 @@ _GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
 _DEVICE_LIST_HEADER = "Available devices:"
 # Windows status STATUS_DLL_NOT_FOUND: the loader stopped the process before main.
 _STATUS_DLL_NOT_FOUND = 0xC0000135
+DLL_MISSING_LEAD = "The engine could not start because a DLL it needs is missing"
 # nvidia-smi emits SGR escapes (e.g. an underlined header) even when stdout is
 # not a tty; strip them or the header's GPU labels never match.
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -236,6 +237,10 @@ def _probe_env(binary: Path) -> dict[str, str]:
     return env
 
 
+class EngineDllMissingError(ProviderError):
+    """The engine binary stopped at load time because a DLL it imports is absent."""
+
+
 def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -> DeviceProbe:
     """Parse ``<binary> --list-devices``; empty devices when unavailable/unparseable.
 
@@ -265,8 +270,8 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
     offered = [d for d in parsed if d.backend in _BACKEND_RANK]
     answered = _DEVICE_LIST_HEADER in output
     if returncode == _STATUS_DLL_NOT_FOUND and not answered:
-        raise ProviderError(
-            f"The engine could not start because a DLL it needs is missing (status "
+        raise EngineDllMissingError(
+            f"{DLL_MISSING_LEAD} (status "
             f"0x{_STATUS_DLL_NOT_FOUND:X}). The usual cause is a missing Microsoft "
             "Visual C++ runtime. Install it from "
             "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist.",

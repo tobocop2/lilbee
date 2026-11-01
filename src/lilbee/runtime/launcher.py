@@ -39,12 +39,16 @@ def _warn_missing_vc_runtime() -> None:
     """Warn when a pip install on Windows has no Visual C++ runtime for its wheels."""
     if sys.platform != "win32" or "__compiled__" in globals():
         return
-    import ctypes.util
+    if sys.stderr is None:
+        return
+    import ctypes
 
-    if ctypes.util.find_library("msvcp140") is None:
+    try:
+        ctypes.WinDLL("msvcp140.dll")
+    except OSError:
         sys.stderr.write(
-            "Warning: the Microsoft Visual C++ runtime is not installed, so some "
-            "libraries fail to load with 'DLL load failed'. Install it from "
+            "Warning: the Microsoft Visual C++ runtime may be missing, so some "
+            "libraries can fail to load with 'DLL load failed'. Install it from "
             "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist.\n"
         )
 

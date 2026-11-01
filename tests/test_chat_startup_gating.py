@@ -179,6 +179,28 @@ async def test_await_engine_failure_lands_in_the_bubble(_warming_services):
         assert msg.ENGINE_FAILED_HINT in rendered
 
 
+async def test_a_missing_dll_error_carries_no_model_hint(_warming_services):
+    """A new model does not fix a missing DLL, so the catalog hint stays off."""
+    from lilbee.providers.fleet.devices import DLL_MISSING_LEAD
+
+    error = f"{DLL_MISSING_LEAD} (status 0xC0000135)."
+    _warming_services.provider.warm_progress.return_value = WarmProgress(
+        phase=WarmPhase.ERROR, error=error
+    )
+    app = _ChatHost()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        widget = mock.MagicMock()
+        with (
+            mock.patch("lilbee.app.placement.chat_engine_ready", return_value=False),
+            mock.patch("lilbee.app.placement.wait_chat_ready", return_value=False),
+        ):
+            assert await asyncio.to_thread(app.screen._await_chat_engine, _turn(widget)) is False
+        rendered = widget.append_content.call_args[0][0]
+        assert msg.ENGINE_LOAD_FAILED.format(error=error) in rendered
+        assert msg.ENGINE_FAILED_HINT not in rendered
+
+
 async def test_await_engine_stall_reports_not_ready(_warming_services):
     """A wait that ends with no failure on record still explains itself."""
     _warming_services.provider.warm_progress.return_value = None

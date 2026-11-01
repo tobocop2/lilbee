@@ -206,33 +206,51 @@ class TestMissingVcRuntimeWarning:
     """A pip install on Windows without msvcp140 fails later with 'DLL load failed'."""
 
     @staticmethod
-    def _run(monkeypatch, capsys, *, platform: str, library: str | None, frozen: bool) -> str:
-        import ctypes.util
+    def _run(monkeypatch, capsys, *, platform: str, loads: bool, frozen: bool) -> str:
+        import ctypes
+
+        def win_dll(_name: str) -> None:
+            if not loads:
+                raise OSError("not found")
 
         monkeypatch.setattr(sys, "platform", platform)
-        monkeypatch.setattr(ctypes.util, "find_library", lambda _name: library)
+        monkeypatch.setattr(ctypes, "WinDLL", win_dll, raising=False)
         if frozen:
             monkeypatch.setitem(launcher.__dict__, "__compiled__", object())
         launcher._warn_missing_vc_runtime()
         return capsys.readouterr().err
 
-    def test_warns_when_windows_has_no_runtime(self, monkeypatch, capsys) -> None:
-        err = self._run(monkeypatch, capsys, platform="win32", library=None, frozen=False)
+    def test_warns_when_windows_cannot_load_the_runtime(self, monkeypatch, capsys) -> None:
+        err = self._run(monkeypatch, capsys, platform="win32", loads=False, frozen=False)
         assert "Visual C++ runtime" in err
         assert "learn.microsoft.com/cpp/windows/latest-supported-vc-redist" in err
 
     @pytest.mark.parametrize(
-        ("platform", "library", "frozen"),
+        ("platform", "loads", "frozen"),
         [
-            ("win32", "C:/x/msvcp140.dll", False),
-            ("darwin", None, False),
-            ("win32", None, True),
+            ("win32", True, False),
+            ("darwin", False, False),
+            ("win32", False, True),
         ],
     )
-    def test_silent_otherwise(self, monkeypatch, capsys, platform, library, frozen) -> None:
-        assert (
-            self._run(monkeypatch, capsys, platform=platform, library=library, frozen=frozen) == ""
-        )
+    def test_silent_otherwise(self, monkeypatch, capsys, platform, loads, frozen) -> None:
+        assert self._run(monkeypatch, capsys, platform=platform, loads=loads, frozen=frozen) == ""
+
+    def test_no_path_variable_does_not_stop_the_start(self, monkeypatch, capsys) -> None:
+        monkeypatch.delenv("PATH", raising=False)
+        err = self._run(monkeypatch, capsys, platform="win32", loads=True, frozen=False)
+        assert err == ""
+
+    def test_no_stderr_does_not_stop_the_start(self, monkeypatch) -> None:
+        import ctypes
+
+        def fail(_name: str) -> None:
+            raise AssertionError("the runtime must not be probed without a stream")
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(ctypes, "WinDLL", fail, raising=False)
+        monkeypatch.setattr(sys, "stderr", None)
+        launcher._warn_missing_vc_runtime()
 
     def test_main_runs_the_check(self, monkeypatch) -> None:
         calls = Mock()
