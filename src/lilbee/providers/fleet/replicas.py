@@ -45,9 +45,11 @@ def gpu_device_count(engine: EngineAdapter) -> int:
     Resolved the same way planning does (binary ``--list-devices`` view), and
     floored at one so auto means "one replica" on a GPU-less host. Returns one
     when the engine binary is absent so callers that size concurrency (e.g.
-    ingest) degrade gracefully instead of raising.
+    ingest) degrade gracefully instead of raising. A binary that cannot load
+    sizes as GPU-less too: the paths that start the engine raise on their own.
     """
     from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet.devices import EngineDllMissingError
     from lilbee.providers.fleet.planning import resolve_devices
 
     try:
@@ -55,5 +57,9 @@ def gpu_device_count(engine: EngineAdapter) -> int:
     except ProviderError:
         log.debug("engine binary not found; treating host as GPU-less for replica sizing")
         return _MIN_REPLICAS
-    devices = resolve_devices(binary, engine)
+    try:
+        devices = resolve_devices(binary, engine)
+    except EngineDllMissingError:
+        log.debug("engine cannot load; sizing for a GPU-less host")
+        return _MIN_REPLICAS
     return max(_MIN_REPLICAS, len(devices))
