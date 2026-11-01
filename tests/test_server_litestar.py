@@ -1543,7 +1543,7 @@ class TestConfigResetRoute:
         cfg.top_k = 7
         resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
         assert resp.status_code == 200
-        assert resp.json() == {"updated": ["top_k"], "reindex_required": False}
+        assert resp.json() == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
         assert settings.load(isolated_env) == {"chunk_size": 900}
         assert cfg.top_k == 12
 
@@ -1564,7 +1564,7 @@ class TestConfigResetRoute:
         cfg.top_k = 7
         resp = client.post("/api/config/reset", json={"keys": ["top_k", "top_k"]})
         assert resp.status_code == 200
-        assert resp.json() == {"updated": ["top_k"], "reindex_required": False}
+        assert resp.json() == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
         assert settings.load(isolated_env) == {"seed": 3}
         assert cfg.top_k == 12
 
@@ -1576,7 +1576,7 @@ class TestConfigResetRoute:
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         resp = client.post("/api/config/reset", json={"keys": ["ocr"]})
         assert resp.status_code == 200
-        assert "warnings" not in resp.json()
+        assert resp.json()["warnings"] == []
         assert cfg.ocr is OcrMode.OFF
 
     def test_resolves_to_the_profile_value(self, client, isolated_env):
@@ -1742,6 +1742,16 @@ class TestOpenAPISchema:
         ]
         assert set(responses["200"]["content"]) == {"application/octet-stream"}
         assert set(responses["400"]["content"]) == {"application/json"}
+
+    def test_analyze_stream_publishes_its_report_schema(self, client):
+        """The done event carries the report, so the stream arm names it and the report's
+        parts are registered components."""
+        schema = client.get("/schema/openapi.json").json()
+        ok = schema["paths"]["/api/analyze"]["post"]["responses"]["200"]
+        assert ok["content"]["text/event-stream"]["schema"]["$ref"].endswith("/AnalyzeResponse")
+        assert {"AnalyzeResponse", "AnalyzeRecommendationResponse"} <= set(
+            schema["components"]["schemas"]
+        )
 
     def test_session_markdown_publishes_the_markdown_media_type(self, client):
         """The export route answers with a markdown document, and the schema
@@ -2921,3 +2931,28 @@ class TestUnhandledErrorsReachTheLog:
         assert "GET" in caplog.text
         assert "/api/health" in caplog.text
         assert "engine exploded" in caplog.text
+
+
+class TestBodyOfTheWrongKind:
+    """A body that is not an object is refused without the name of an internal class."""
+
+    @pytest.mark.parametrize("path", ["/api/profiles/new", "/api/config/reset"])
+    def test_a_string_body_gets_a_plain_message(self, client, path):
+        resp = client.post(path, content='"Hq"', headers={"content-type": "application/json"})
+        assert resp.status_code == 400
+        assert resp.json()["extra"] == [{"message": "The request body must be a JSON object."}]
+        assert "instance of" not in resp.text
+
+
+class TestPlainValidation:
+    def test_other_messages_and_other_shapes_stay_as_they_are(self):
+        from litestar.exceptions import ValidationException
+
+        from lilbee.server.validation_format import plain_validation
+
+        other = ValidationException(extra=[{"key": "top_k", "message": "Input should be a number"}])
+        assert plain_validation(other).extra == [
+            {"key": "top_k", "message": "Input should be a number"}
+        ]
+        bare = ValidationException(extra={"detail": "x"})
+        assert plain_validation(bare).extra == {"detail": "x"}

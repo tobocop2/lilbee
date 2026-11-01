@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import anyio.to_thread
 from litestar import Litestar, MediaType, Request, Response
 from litestar.config.cors import CORSConfig
-from litestar.exceptions import HTTPException
+from litestar.exceptions import HTTPException, ValidationException
 from litestar.exceptions.responses import create_exception_response
 from litestar.middleware import ASGIMiddleware
 from litestar.middleware.base import DefineMiddleware
@@ -108,6 +108,7 @@ from lilbee.server.routes.setup import (
     setup_crawler_route,
     setup_crawler_status_route,
 )
+from lilbee.server.validation_format import plain_validation
 from lilbee.server.wiki import (
     wiki_build_route,
     wiki_citations_reverse_route,
@@ -325,6 +326,11 @@ def _json_error_response(request: Request, exc: Exception) -> Response:
     return response
 
 
+def _validation_error_response(request: Request, exc: ValidationException) -> Response:
+    """Answer a body that fails validation as the JSON 400, with no internal class name."""
+    return _json_error_response(request, plain_validation(exc))
+
+
 def _unhandled_error_response(request: Request, exc: Exception) -> Response:
     """Log an unmapped failure, then answer it as the same JSON 500.
 
@@ -350,6 +356,7 @@ def create_app() -> Litestar:
         middleware=[DefineMiddleware(AuthMiddleware), _LibraryOpenWait()],
         exception_handlers={
             HTTPException: _json_error_response,
+            ValidationException: _validation_error_response,
             Exception: _unhandled_error_response,
         },
         route_handlers=[

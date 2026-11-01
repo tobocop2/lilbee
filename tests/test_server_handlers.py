@@ -4228,8 +4228,17 @@ class TestUpdateConfig:
     async def test_update_config_sets_the_ocr_mode(self, tmp_path):
         cfg.vision_model = _VISION_REF
         result = await handlers.update_config({"ocr": "off"})
-        assert result.model_dump() == {"updated": ["ocr"], "reindex_required": False}
+        assert result.model_dump() == {
+            "updated": ["ocr"],
+            "reindex_required": False,
+            "warnings": [],
+        }
         assert cfg.ocr is OcrMode.OFF
+
+    async def test_update_config_returns_the_warnings_of_the_update(self, tmp_path):
+        with patch("lilbee.app.settings._update_warnings", return_value=("Mind the gap.",)):
+            result = await handlers.update_config({"temperature": 0.7})
+        assert result.warnings == ["Mind the gap."]
 
     async def test_update_config_reindex(self, tmp_path):
         result = await handlers.update_config({"chunk_size": 1024})
@@ -4711,6 +4720,19 @@ class TestGetConfigDefaults:
         dumped = result.model_dump()
         assert "chunk_size" in dumped
         assert "temperature" in dumped
+
+    async def test_a_profile_value_replaces_the_built_in_default(self, tmp_path):
+        """The default matches ``settings list``: what a reset falls back to."""
+        from lilbee.core import settings as s
+
+        cfg.data_root = tmp_path
+        s.write_profile_table(tmp_path, "notes", {"chunk_size": 384, "ocr": "off"})
+        dumped = (await handlers.get_config_defaults()).model_dump()
+        assert dumped["chunk_size"] == 384
+        assert dumped["ocr"] == "off"
+        assert dumped["top_k"] == 12
+        s.write_profile_table(tmp_path, "notes", {})
+        assert (await handlers.get_config_defaults()).model_dump()["chunk_size"] == 512
 
 
 _VISION_REF = "vision/Test-VL-GGUF/test-vl-Q4_K_M.gguf"

@@ -252,6 +252,15 @@ def test_validate_without_content_reports_the_problem_rather_than_erroring():
     assert result == {"name": "fine", "valid": False, "problems": ["Missing [values] table"]}
 
 
+@pytest.mark.parametrize("action", ["", "frobnicate"])
+def test_manage_refuses_a_missing_or_unknown_action_with_the_allowed_list(action):
+    result = profile_manage(action)
+    assert result["error"].startswith(f"Unknown profile action {action!r}. Use one of: new, save,")
+    assert result["error"].endswith("import, validate.")
+    assert "validation error" not in result["error"]
+    assert "pydantic" not in result["error"]
+
+
 def test_every_action_has_a_handler():
     from lilbee.mcp_server import _MANAGE_ACTIONS
 

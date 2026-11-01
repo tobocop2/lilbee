@@ -247,7 +247,13 @@ def test_set_a_refused_value_in_json_mode_is_an_error_document(project):
 
 def test_set_json_reuses_the_config_update_shape(project):
     payload = _json(project, "set", "top_k", "9")
-    assert payload == {"updated": ["top_k"], "reindex_required": False}
+    assert payload == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
+
+
+def test_set_json_carries_the_warnings_of_the_update(project, monkeypatch):
+    monkeypatch.setattr("lilbee.app.settings._update_warnings", lambda _keys: ("Mind the gap.",))
+    payload = _json(project, "set", "ocr", "off")
+    assert payload["warnings"] == ["Mind the gap."]
 
 
 def test_set_a_reindex_field_prints_the_rebuild_hint(project):
@@ -340,7 +346,7 @@ def test_unset_reports_the_value_and_source_it_falls_back_to(project):
 def test_unset_json_reuses_the_config_update_shape(project):
     (project / "config.toml").write_text("top_k = 3\n", encoding="utf-8")
     payload = _json(project, "unset", "top_k")
-    assert payload == {"updated": ["top_k"], "reindex_required": False}
+    assert payload == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
 
 
 def test_unset_several_keys_at_once(project):

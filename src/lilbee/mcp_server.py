@@ -19,12 +19,13 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar, cast
 from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import Tool as MCPTool
+from pydantic import Field
 
 from lilbee.app import profiles
 from lilbee.app.analyze import (
@@ -1135,7 +1136,7 @@ def _setting_info_to_dict(info: SettingInfo) -> dict[str, Any]:
 
 def _json_safe(value: Any) -> Any:
     """Coerce Path / frozenset / tuple to JSON-friendly primitives."""
-    if isinstance(value, str | int | float | bool | list | type(None)):
+    if isinstance(value, str | int | float | bool | list | dict | type(None)):
         return value
     return str(value)
 
@@ -1221,6 +1222,13 @@ class ProfileAction(StrEnum):
     EXPORT = "export"
     IMPORT = "import"
     VALIDATE = "validate"
+
+
+# A plain string that lists the actions in the tool schema. A typed enum would make FastMCP
+# refuse an unknown action with a validation dump before the tool runs.
+_ProfileActionChoice = Annotated[
+    str, Field(json_schema_extra={"enum": [a.value for a in ProfileAction]})
+]
 
 
 @dataclass(frozen=True)
@@ -1361,7 +1369,7 @@ def profile_apply(name: str) -> dict[str, Any]:
 
 @_tool_if(_profiles_enabled)
 def profile_manage(
-    action: ProfileAction,
+    action: _ProfileActionChoice = "",
     name: str = "",
     new_name: str = "",
     folder: ProfileFolder = ProfileFolder.GLOBAL,
@@ -1373,8 +1381,13 @@ def profile_manage(
     """Profile files: new, save (as name), update, discard, duplicate/rename (to new_name),
     delete, export (returns its content), import/validate (a file's content and its name).
     ``folder``: global or project."""
+    try:
+        chosen = ProfileAction(action)
+    except ValueError:
+        allowed = ", ".join(a.value for a in ProfileAction)
+        return _error(f"Unknown profile action {action!r}. Use one of: {allowed}.")
     args = _ManageArgs(name, new_name, folder, content, filename, from_profile, overwrite)
-    return _profile_call(lambda: _MANAGE_ACTIONS[action](_profile_store(), args))
+    return _profile_call(lambda: _MANAGE_ACTIONS[chosen](_profile_store(), args))
 
 
 @_tool_if(_profiles_enabled)

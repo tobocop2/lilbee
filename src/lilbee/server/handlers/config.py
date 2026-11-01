@@ -13,6 +13,7 @@ from lilbee.app.settings import (
     SettingInfo,
     apply_settings_update,
     list_settings,
+    profile_defaults,
     provider_reset_refused_message,
     requires_services_reset,
     reset_settings,
@@ -53,7 +54,7 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
     if requires_services_reset(updates):
         raise ValueError(provider_reset_refused_message("Switching"))
     result = await asyncio.to_thread(apply_settings_update, updates, allow_model_roles=False)
-    return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
+    return ConfigUpdateResponse.from_result(result)
 
 
 async def reset_config(keys: list[str]) -> ConfigUpdateResponse:
@@ -65,7 +66,7 @@ async def reset_config(keys: list[str]) -> ConfigUpdateResponse:
     if requires_services_reset(dict.fromkeys(keys)):
         raise ValueError(provider_reset_refused_message("Resetting"))
     result = await asyncio.to_thread(reset_settings, keys, allow_model_roles=False)
-    return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
+    return ConfigUpdateResponse.from_result(result)
 
 
 async def get_config() -> ConfigResponse:
@@ -102,16 +103,21 @@ def _compute_config_defaults() -> dict[str, Any]:
 
 
 async def get_config_defaults() -> ConfigResponse:
-    """Return canonical defaults for every public config field.
+    """Return the default of every public config field.
 
     Covers writable fields (resettable via PATCH /api/config) and the
-    model-role fields (resettable via PUT /api/models/<role>).
+    model-role fields (resettable via PUT /api/models/<role>). A value the
+    active profile sets replaces the built-in, as in ``lilbee settings list``,
+    because a reset falls back to it.
 
     Deepcopies the cached dict so callers that mutate the response
     (list-valued fields like ``crawl_exclude_patterns``) cannot poison
     subsequent calls.
     """
-    return ConfigResponse(**copy.deepcopy(_compute_config_defaults()))
+    defaults = copy.deepcopy(_compute_config_defaults())
+    profile = await asyncio.to_thread(profile_defaults)
+    defaults.update({key: value for key, value in profile.items() if key in defaults})
+    return ConfigResponse(**defaults)
 
 
 def _field_schema(info: SettingInfo) -> ConfigFieldSchema:

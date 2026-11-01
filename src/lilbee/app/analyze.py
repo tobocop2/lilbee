@@ -143,7 +143,7 @@ class Recommendation:
 @dataclass(frozen=True)
 class SavedProfile:
     """The profile analyze saved or switched to, its file, whether the project now uses it,
-    and any setting switching to it leaves in conflict."""
+    and any notice switching to it raises."""
 
     name: str
     folder: ProfileFolder

@@ -6,13 +6,14 @@ import asyncio
 
 from litestar import Router, get, post
 from litestar.exceptions import ValidationException
+from litestar.openapi.datastructures import ResponseSpec
 from litestar.response import Stream
 from litestar.status_codes import HTTP_200_OK
 
 from lilbee.app.analyze import AnalyzeRequest, server_directory, validate_request
 from lilbee.server.handlers import analyze as handlers
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
-from lilbee.server.models import AnalyzeRequestBody, AnalyzeStateResponse
+from lilbee.server.models import AnalyzeRequestBody, AnalyzeResponse, AnalyzeStateResponse
 
 
 def _request(data: AnalyzeRequestBody) -> AnalyzeRequest:
@@ -24,7 +25,19 @@ def _request(data: AnalyzeRequestBody) -> AnalyzeRequest:
     )
 
 
-@post("/api/analyze", media_type=SSE_MEDIA_TYPE, status_code=HTTP_200_OK)
+@post(
+    "/api/analyze",
+    media_type=SSE_MEDIA_TYPE,
+    status_code=HTTP_200_OK,
+    responses={
+        HTTP_200_OK: ResponseSpec(
+            data_container=AnalyzeResponse,
+            media_type=SSE_MEDIA_TYPE,
+            generate_examples=False,
+            description="Progress events, then a done event whose data is this report.",
+        )
+    },
+)
 async def analyze_route(data: AnalyzeRequestBody | None = None) -> Stream:
     """Read the corpus or a folder and recommend a profile, streaming ``analyze`` progress.
 

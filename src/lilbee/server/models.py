@@ -24,7 +24,7 @@ from lilbee.app.profiles import (
     SaveResult,
     credit_line,
 )
-from lilbee.app.settings import SettingInfo
+from lilbee.app.settings import SettingInfo, SettingsUpdateResult
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.defaults import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
@@ -374,6 +374,16 @@ class ConfigUpdateResponse(BaseModel):
 
     updated: list[str]
     reindex_required: bool
+    warnings: list[str] = []
+
+    @classmethod
+    def from_result(cls, result: SettingsUpdateResult) -> ConfigUpdateResponse:
+        """The canonical serialized settings update, shared by REST and the CLI."""
+        return cls(
+            updated=result.updated,
+            reindex_required=result.reindex_required,
+            warnings=list(result.warnings),
+        )
 
 
 class CrawlLoginBody(BaseModel):
@@ -1293,8 +1303,8 @@ class ProfileLocationResponse(BaseModel):
 
 
 class ProfileSaveResponse(ProfileLocationResponse):
-    """A saved profile file, the settings of yours it took over, and any setting it leaves
-    in conflict."""
+    """A saved profile file, the settings of yours it took over, and any notice the write
+    raises."""
 
     absorbed: list[str]
     warnings: list[str] = []
@@ -1314,7 +1324,7 @@ class ProfileSaveResponse(ProfileLocationResponse):
 
 class ProfileDiscardResponse(BaseModel):
     """Response for POST /api/profiles/discard: your settings removed, whether to rebuild,
-    and any setting the discard leaves in conflict."""
+    and any notice the discard raises."""
 
     dropped: list[str]
     reindex_required: bool
@@ -1473,7 +1483,7 @@ class AnalyzeRecommendationResponse(BaseModel):
 
 class AnalyzeSavedResponse(ProfileLocationResponse):
     """The profile analyze saved or switched to, its file, whether the project now uses it,
-    and any setting it leaves in conflict."""
+    and any notice it raises."""
 
     applied: bool
     warnings: list[str] = []

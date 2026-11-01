@@ -61,7 +61,7 @@ def _render_update(result: SettingsUpdateResult) -> None:
 def _update_response(result: SettingsUpdateResult) -> ConfigUpdateResponse:
     from lilbee.server.models import ConfigUpdateResponse
 
-    return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
+    return ConfigUpdateResponse.from_result(result)
 
 
 @settings_app.command(name="list")

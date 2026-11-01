@@ -193,6 +193,14 @@ def _reset_target(key: str, layers: SettingLayers) -> Any:
     return layers.profile[key] if key in layers.profile else builtin_value(key)
 
 
+def profile_defaults() -> dict[str, Any]:
+    """The value the active profile sets for each setting it names.
+
+    A reset falls back to it instead of the built-in, so it is the default every surface shows.
+    """
+    return dict(read_layers(cfg.data_root).profile)
+
+
 def _setting_info(key: str, layers: SettingLayers, source: SettingSource) -> SettingInfo:
     definition = SETTINGS_MAP.get(key)
     nullable = _is_nullable(key)

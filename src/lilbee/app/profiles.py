@@ -143,8 +143,8 @@ class ProfileLocation:
 
 @dataclass(frozen=True)
 class SaveResult:
-    """A saved profile file, the settings of yours it took over, and any setting it leaves
-    in conflict."""
+    """A saved profile file, the settings of yours it took over, and any notice the write
+    raises."""
 
     location: ProfileLocation
     absorbed: tuple[str, ...]
@@ -154,7 +154,7 @@ class SaveResult:
 @dataclass(frozen=True)
 class DiscardResult:
     """Your settings removed so the profile's values show through, whether to rebuild, and
-    any setting the discard leaves in conflict."""
+    any notice the discard raises."""
 
     dropped: tuple[str, ...]
     reindex_required: bool
@@ -163,7 +163,7 @@ class DiscardResult:
 
 @dataclass(frozen=True)
 class ApplyResult:
-    """The outcome of a profile apply, and any setting it leaves in conflict."""
+    """The outcome of a profile apply, and any notice it raises."""
 
     name: str
     changes: tuple[DiffRow, ...]
