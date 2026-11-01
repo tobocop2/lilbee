@@ -337,6 +337,11 @@ class RoutingProvider(LLMProvider):
         if self._sdk_provider is not None:
             self._sdk_provider.shutdown()
 
+    def stop_waiting(self) -> None:
+        """Forward to the native side only; the SDK side has no work to wait on."""
+        if self._local is not None:
+            self._local.stop_waiting()
+
     def warm_up_pool(self) -> None:
         """Forward to the native side; the SDK side has no servers to warm.
 

@@ -533,6 +533,10 @@ class LLMProvider(Protocol):
         """Release resources (e.g. background threads). No-op if nothing to clean up."""
         ...
 
+    def stop_waiting(self) -> None:
+        """Answer the callers that wait on this provider's work now. No-op default."""
+        return
+
     def warm_up_pool(self) -> None:
         """Eagerly start the configured role servers so the first call lands warm.
 
