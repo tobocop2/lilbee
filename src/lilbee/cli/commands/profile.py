@@ -229,7 +229,9 @@ def _apply_json(
 def profile_apply(
     name: str,
     reindex: bool = typer.Option(
-        False, "--reindex", help="Rebuild the index afterwards when a change needs it."
+        False,
+        "--reindex",
+        help="Rebuild the index afterwards when the profile sets a setting that needs it.",
     ),
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -248,7 +250,7 @@ def profile_apply(
         render_changes(result.changes)
     reindexed: int | None = None
     reindex_error: str | None = None
-    if reindex and result.reindex_required:
+    if reindex and (result.reindex_required or profiles.sets_reindex_field(_store(), result.name)):
         try:
             reindexed = len(rebuild_or_raise().added)
         except RuntimeError as exc:

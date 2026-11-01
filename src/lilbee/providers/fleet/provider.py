@@ -101,6 +101,9 @@ log = logging.getLogger(__name__)
 # and far short of any supervisor's patience for a process that will not exit.
 _SHUTDOWN_BUILD_LOCK_WAIT_S = 45.0
 
+# How long a request waits for a reload that is restarting its role's server.
+_RELOAD_GAP_WAIT_S = 60.0
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
@@ -1397,9 +1400,14 @@ class FleetProvider:
         When the pool is empty but a swap was previously built and its process has
         since exited (detected via ``is_live()``), a one-shot rebuild is attempted
         before raising so a transient llama-swap restart recovers transparently.
+        A request that lands while a reload restarts the role's group waits for the
+        reload to end, up to ``_RELOAD_GAP_WAIT_S``.
         """
         self._ensure_fleet()
         with self._lock:
+            if self._reloading and not self._clients.get(role):
+                # The reload dropped this role's group and has not adopted the new one.
+                self._reload_done.wait_for(lambda: not self._reloading, _RELOAD_GAP_WAIT_S)
             clients = self._clients.get(role)
             swap = self._swap_for(role)
         if not clients and swap is not None and not swap.is_live():

@@ -426,9 +426,26 @@ class TestRunShard:
         assert (verdict.index, verdict.error) == (1, None)
         assert verdict.result.added == ["a.txt"]
         assert seen["shard"] == spec.shard
-        # A rebuild drops the index, which every worker shares: only the parent may.
-        assert "force_rebuild" not in seen
+        # The parent decides whether a rebuild drops the shared index; a worker never does.
+        assert seen["force_rebuild"] is False
         assert seen["quiet"] is True
+
+    def test_a_worker_of_a_rebuild_syncs_its_slice_in_place(self, monkeypatch):
+        seen = {}
+
+        async def fake_sync(**kwargs):
+            seen.update(kwargs)
+            return SyncResult()
+
+        monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
+        monkeypatch.setattr(fanout, "_pin_shard", lambda spec: None)
+        fanout.run_shard(
+            _spec(0),
+            fanout.ShardOptions(parent_pid=os.getppid(), rebuild=True),
+            queue_mod.Queue(),
+            threading.Event(),
+        )
+        assert seen["force_rebuild"] is True
 
     def test_a_worker_that_raises_reports_the_failure_instead_of_dying_silently(self, monkeypatch):
         async def fake_sync(**_kwargs):

@@ -151,6 +151,17 @@ def test_apply_with_reindex_rebuilds_when_a_change_needs_it(project, monkeypatch
     rebuilds.assert_called_once_with()
 
 
+def test_apply_with_reindex_rebuilds_a_profile_that_is_already_applied(project, monkeypatch):
+    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf"]))
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    _write(_global_dir(), "court-filings", CREDITED)
+    _invoke(project, "apply", "Court filings")
+    result = _invoke(project, "apply", "Court filings", "--reindex")
+    assert result.exit_code == 0, result.output
+    assert "Rebuilt: 1 documents ingested" in result.output
+    rebuilds.assert_called_once_with()
+
+
 def test_apply_with_reindex_skips_the_rebuild_when_nothing_needs_it(project, monkeypatch):
     rebuilds = MagicMock()
     monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)

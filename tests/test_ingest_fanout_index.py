@@ -231,6 +231,18 @@ class TestEqualToOneProcess:
         assert fanned.sources() == ["new.txt"]
         _assert_equal_to_one_process(fanned, single)
 
+    async def test_a_rebuild_replaces_the_files_in_place_and_drops_the_deleted_one(self, tmp_path):
+        async def history(library):
+            library.write_notes("note", 12)
+            await library.sync()
+            (library.documents / "note7.txt").unlink()
+            await library.sync(force_rebuild=True)
+
+        fanned, single = await _play(tmp_path, history)
+        assert "note7.txt" not in fanned.sources()
+        assert len(fanned.sources()) == 11
+        _assert_equal_to_one_process(fanned, single)
+
     async def test_a_removed_file_stays_out_and_nothing_warns_about_force(self, tmp_path, caplog):
         async def history(library):
             library.write_notes("note", 12)
@@ -558,9 +570,7 @@ class TestEqualToOneProcess:
 
 
 class TestASourceRowWithNoChunks:
-    async def test_a_rebuild_that_stops_after_its_first_drop_indexes_every_file_again(
-        self, tmp_path
-    ):
+    async def test_a_drop_that_stops_after_its_first_table_indexes_every_file_again(self, tmp_path):
         library = Library(tmp_path / "lib", 1)
         names = library.write_notes("note", 6)
         await library.sync()
@@ -577,7 +587,7 @@ class TestASourceRowWithNoChunks:
             mock.patch.object(type(database), "drop_table", _stops_after_one),
             pytest.raises(KeyboardInterrupt),
         ):
-            await library.sync(force_rebuild=True)
+            Store(cfg).drop_all()
         result = await library.sync()
 
         assert len(dropped) == 1

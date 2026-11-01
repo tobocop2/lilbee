@@ -1454,6 +1454,25 @@ class TestSyncDropsNewlyIgnored:
         assert result.added == [] and result.updated == []
         concepts.rebuild_clusters.assert_called_once_with()
 
+    async def test_a_rebuild_reclusters_the_whole_graph(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """A rebuild re-ingests every source, so an incremental pass would leave stale edges."""
+        from lilbee.data.ingest import sync
+
+        monkeypatch.setattr(cfg, "concept_graph", True)
+        concepts = svc_mod.get_services().concepts
+        concepts.get_graph.return_value = True
+        await self._ingest_two(isolated_env)
+        concepts.rebuild_clusters.reset_mock()
+        svc_mod.get_services().store.get_meta.return_value = {"embedding_model": "m"}
+
+        with mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True):
+            result = await sync(force_rebuild=True)
+
+        assert sorted(result.added) == ["drop.txt", "keep.txt"]
+        concepts.rebuild_clusters.assert_called_once_with()
+
     async def test_a_shard_worker_leaves_removal_to_the_parent(
         self, mock_extract_file, isolated_env
     ):

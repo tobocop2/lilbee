@@ -95,6 +95,7 @@ class ShardOptions:
     """What every worker of one fan-out is told about the run it belongs to."""
 
     parent_pid: int
+    rebuild: bool = False
 
 
 @dataclass(frozen=True)
@@ -453,6 +454,7 @@ def run_shard(
                     on_progress=reporter,
                     cancel=stop,
                     shard=spec.shard,
+                    force_rebuild=options.rebuild,
                 )
             )
         reporter.flush()

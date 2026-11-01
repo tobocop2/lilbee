@@ -258,6 +258,11 @@ def diff(store: ProfileStore, name: str) -> ProfileDiff:
     return _diff(_usable(store, name))
 
 
+def sets_reindex_field(store: ProfileStore, name: str) -> bool:
+    """Whether profile *name* sets a setting that only a rebuild applies."""
+    return any(key in REINDEX_FIELDS for key in _usable(store, name).values)
+
+
 def apply(store: ProfileStore, name: str) -> ApplyResult:
     """Record *name* as the project's profile and set cfg from it; user and env values stay."""
     profile = _usable(store, name)
