@@ -42,9 +42,10 @@ REQUIRED = {
         ("libcublasLt.so.<major>", r"libcublasLt\.so\.\d+"),
     ),
 }
-# The MSVC runtime every Windows build links. A fresh Windows image ships an older
-# msvcp140 in System32, and the engine faults inside it before listing a device.
-WINDOWS_CRT = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+# The MSVC runtime every Windows build links, with the OpenMP runtime ggml imports.
+# A fresh Windows image ships an older msvcp140 and no vcomp140, so the engine
+# faults or fails to load before listing a device.
+WINDOWS_CRT = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "vcomp140.dll")
 # What a ROCm wheel carries beside its backend. Matched on the library, not its
 # SONAME version, which moves every release. The kernels are the easy one to miss:
 # rocBLAS loads them as data, so without them the engine dies on the first matmul.
