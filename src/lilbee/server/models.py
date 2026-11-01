@@ -121,7 +121,7 @@ class _OcrRequest(BaseModel):
 class SyncRequest(_OcrRequest):
     """Request body for /api/sync.
 
-    ``force_rebuild`` triggers a full drop-and-reingest equivalent to ``lilbee rebuild``.
+    ``force_rebuild`` triggers a full re-ingest equivalent to ``lilbee rebuild``.
     Use it to recover from an embedding-model switch (when the store refuses search
     or ingest because ``cfg.embedding_model`` no longer matches the persisted vectors).
     ``retry_skipped`` is the lighter recovery: it clears the markers for files that

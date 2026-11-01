@@ -1074,12 +1074,14 @@ def _report_index_mismatch(store: Store) -> IndexMismatch | None:
 def _prepare_forced_rebuild(store: Any) -> bool:
     """Ready the index for a forced rebuild; True when the rebuild runs in place (blocking).
 
-    An index built with the embedder in use stays: the rebuild re-ingests every file over
-    its own chunks, and a file that fails keeps the chunks it has. Any other index is
-    refused by search already, so it is dropped, but only after the embedder answers a
-    request. The preserved memories are re-embedded either way. Run off the event loop.
+    A store with chunks and no embedder mismatch, with or without a stamp, is rebuilt in
+    place and a file that fails keeps its chunks. An empty store, or one built by another
+    embedder, is dropped after one probe request. Memories are re-embedded either way.
+    Run off the event loop.
     """
-    in_place = store.get_meta() is not None and store.index_mismatch() is None
+    in_place = store.index_mismatch() is None and (
+        store.get_meta() is not None or store.count_chunks() > 0
+    )
     if not in_place:
         _require_embedding_model()
     embedder = get_services().embedder

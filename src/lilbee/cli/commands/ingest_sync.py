@@ -539,8 +539,23 @@ def sync_cmd(
     console.print(result)
 
 
+_FAILED_NAMES_SHOWN = 5
+
+
+def rebuild_failure_message(failed: list[str]) -> str:
+    """The failed-file report of a rebuild: how many, which, and what to do next."""
+    shown = ", ".join(failed[:_FAILED_NAMES_SHOWN])
+    if len(failed) > _FAILED_NAMES_SHOWN:
+        shown += f" and {len(failed) - _FAILED_NAMES_SHOWN} more"
+    noun = "document" if len(failed) == 1 else "documents"
+    return (
+        f"{len(failed)} {noun} failed to ingest: {shown}. "
+        "They keep their earlier chunks. Fix the cause, then run `lilbee rebuild` again."
+    )
+
+
 def rebuild_or_raise() -> SyncResult:
-    """Drop the index and re-ingest every document; raises RuntimeError on a refused rebuild."""
+    """Re-ingest every document in place; raises RuntimeError on a refused rebuild."""
     from lilbee.data.ingest import SyncResult
 
     result = run_sync_with_signal_cancel(force_rebuild=True)
@@ -551,7 +566,7 @@ def rebuild_or_raise() -> SyncResult:
 
 
 def run_rebuild() -> SyncResult:
-    """Drop the index and re-ingest every document; a refused rebuild exits 1 with its reason."""
+    """Re-ingest every document in place; a refused rebuild exits 1 with its reason."""
     try:
         return rebuild_or_raise()
     except RuntimeError as exc:
@@ -570,7 +585,7 @@ def rebuild(
     max_cpus: int | None = _max_cpus_option,
     processes: int | None = _processes_option,
 ) -> None:
-    """Nuke the DB and re-ingest everything from documents/."""
+    """Re-ingest everything from documents/ over the index; a failed file exits 1."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
     if max_cpus is not None:
@@ -583,10 +598,17 @@ def rebuild(
             {
                 "command": "rebuild",
                 "ingested": len(result.added),
+                "failed": len(result.failed),
             }
         )
-        return
-    console.print(f"Rebuilt: {len(result.added)} documents ingested")
+    else:
+        console.print(f"Rebuilt: {len(result.added)} documents ingested")
+        if result.failed:
+            print_prefixed(
+                console, "Error: ", rebuild_failure_message(result.failed), style=theme.ERROR
+            )
+    if result.failed:
+        raise SystemExit(1)
 
 
 def index(

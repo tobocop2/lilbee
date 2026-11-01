@@ -129,6 +129,7 @@ def mock_svc():
     store.entity_schema_state.return_value = None
     # No index identity persisted unless a test writes one.
     store.get_meta.return_value = None
+    store.count_chunks.return_value = 0
     store.index_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
@@ -403,6 +404,24 @@ class TestRebuild:
             result = runner.invoke(app, ["rebuild"])
         assert result.exit_code != 0
         assert "Error: locked: notes[draft].txt" in result.output
+
+    def test_rebuild_with_failed_files_says_so_and_exits_nonzero(self, isolated_env):
+        failing = SyncResult(added=["a.txt"], failed=["b.txt", "c.txt"])
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=failing):
+            result = runner.invoke(app, ["rebuild"])
+        assert result.exit_code == 1
+        assert "Rebuilt: 1 documents ingested" in result.output
+        assert "2 documents failed to ingest: b.txt, c.txt" in result.output
+        assert "lilbee rebuild" in result.output
+
+    def test_rebuild_names_five_failed_files_and_counts_the_rest(self, isolated_env):
+        failing = SyncResult(failed=[f"f{n}.txt" for n in range(7)])
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=failing):
+            result = runner.invoke(app, ["rebuild"])
+        assert "7 documents failed to ingest: f0.txt, f1.txt, f2.txt, f3.txt, f4.txt" in (
+            result.output.replace("\n", " ")
+        )
+        assert "and 2 more" in result.output.replace("\n", " ")
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_rebuild_processes_sets_ingest_processes(self, mock_sync, isolated_env):
@@ -3020,6 +3039,22 @@ class TestRebuildJson:
         data = json.loads(result.output.strip())
         assert data["command"] == "rebuild"
         assert "ingested" in data
+
+
+class TestRebuildFailedJson:
+    def test_rebuild_json_counts_the_failed_files_and_exits_nonzero(self, isolated_env):
+        failing = SyncResult(added=["a.txt"], failed=["b.txt"])
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=failing):
+            result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert (data["ingested"], data["failed"]) == (1, 1)
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_rebuild_json_counts_zero_failed_on_success(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 0
+        assert json.loads(result.output.strip())["failed"] == 0
 
 
 class TestAddJson:

@@ -2247,6 +2247,33 @@ def test_reload_pass_refreshes_the_skip_reasons_from_the_new_plan(monkeypatch) -
     assert p._skipped_unusable_ctx == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
 
 
+def test_reload_pass_names_the_roles_it_restarts_and_logs_replica_counts(
+    monkeypatch, caplog
+) -> None:
+    swap = _FakeSwap()
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan(
+            (_fake_launch(WorkerRole.EMBED), _fake_launch(WorkerRole.EMBED))
+        ),
+    )
+    p = FleetProvider()
+    p._swaps = {SwapGroup.EMBED: _FakeSwap()}
+    p._launches = {SwapGroup.EMBED: (_fake_launch(WorkerRole.EMBED),)}
+    p._role_group = {WorkerRole.EMBED: SwapGroup.EMBED}
+    with caplog.at_level("DEBUG", logger=prov_mod.log.name):
+        p._reload_pass()
+    assert p._reload_awaited == frozenset({WorkerRole.EMBED})
+    assert any(
+        "Reload restarts group" in r.getMessage() and r.args == (SwapGroup.EMBED.value, 1, 2)
+        for r in caplog.records
+    )
+
+
 def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch, tmp_path: Path) -> None:
     # No configured/installed model -> no launches -> no swap process at all
     # (matches the old supervisor, which spawned nothing for an empty launch set).

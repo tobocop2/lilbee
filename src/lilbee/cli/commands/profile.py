@@ -217,12 +217,31 @@ def profile_diff(
 
 
 def _apply_json(
-    result: ProfileApplyResponse, reindexed: int | None, reindex_error: str | None
+    result: ProfileApplyResponse,
+    reindexed: int | None,
+    reindex_error: str | None,
+    reindex_failed: int,
 ) -> dict[str, Any]:
-    payload = {**result.model_dump(mode="json"), "reindexed": reindexed}
+    payload = {
+        **result.model_dump(mode="json"),
+        "reindexed": reindexed,
+        "reindex_failed": reindex_failed,
+    }
     if reindex_error is not None:
         payload["reindex_error"] = reindex_error
     return payload
+
+
+def _reindex() -> tuple[int | None, int, str | None]:
+    """Rebuild the index; the count ingested, the count failed, and the error to report."""
+    from lilbee.cli.commands.ingest_sync import rebuild_failure_message, rebuild_or_raise
+
+    try:
+        rebuilt = rebuild_or_raise()
+    except RuntimeError as exc:
+        return None, 0, str(exc)
+    failure = rebuild_failure_message(rebuilt.failed) if rebuilt.failed else None
+    return len(rebuilt.added), len(rebuilt.failed), failure
 
 
 @profile_app.command(name="apply")
@@ -238,7 +257,6 @@ def profile_apply(
 ) -> None:
     """Make a profile this project's; your own values and LILBEE_* variables stay."""
     from lilbee.app import profiles
-    from lilbee.cli.commands.ingest_sync import rebuild_or_raise
     from lilbee.server.models import ProfileApplyResponse
 
     setup(data_dir, use_global)
@@ -249,20 +267,18 @@ def profile_apply(
         line(f"Applied {result.name}.", theme.ACCENT)
         render_changes(result.changes)
     reindexed: int | None = None
+    reindex_failed = 0
     reindex_error: str | None = None
     if reindex and (result.reindex_required or profiles.sets_reindex_field(_store(), result.name)):
-        try:
-            reindexed = len(rebuild_or_raise().added)
-        except RuntimeError as exc:
-            reindex_error = str(exc)
+        reindexed, reindex_failed, reindex_error = _reindex()
     if cfg.json_mode:
-        json_output(_apply_json(result, reindexed, reindex_error))
+        json_output(_apply_json(result, reindexed, reindex_error, reindex_failed))
     else:
+        if reindexed is not None:
+            line(f"Rebuilt: {reindexed} documents ingested")
         if reindex_error is not None:
             print_prefixed(console, "Error: ", reindex_error, style=theme.ERROR)
-        elif reindexed is not None:
-            line(f"Rebuilt: {reindexed} documents ingested")
-        elif result.reindex_required:
+        elif reindexed is None and result.reindex_required:
             line(REBUILD_HINT, theme.WARNING)
         for warning in result.warnings:
             line(warning, theme.WARNING)

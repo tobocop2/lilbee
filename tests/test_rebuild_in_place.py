@@ -58,7 +58,7 @@ def _use(store: Store, embedder: MagicMock) -> None:
 
 async def _indexed(embedder: MagicMock, names=("a.txt", "b.txt", "c.txt")) -> Store:
     for name in names:
-        (cfg.documents_dir / name).write_text(f"{name} {TEXT}")
+        (cfg.documents_dir / name).write_text(f"{name} {TEXT}", encoding="utf-8")
     store = Store(cfg)
     _use(store, embedder)
     await sync(quiet=True)

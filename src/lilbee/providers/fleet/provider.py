@@ -753,6 +753,14 @@ def _no_server_message(role: WorkerRole) -> str:
     )
 
 
+def _reload_timeout_message(role: WorkerRole) -> str:
+    """User-facing reason a request gave up waiting for *role*'s restarting server."""
+    return (
+        f"The {role.value} model server is still restarting after a settings change. "
+        "Wait for the restart to finish, then try again."
+    )
+
+
 class _EngineDemand(NamedTuple):
     """What this process needs an engine to serve: pairs plus its chat window."""
 
@@ -941,6 +949,10 @@ def _reaper_unloads_weights(engine_dir: Path) -> bool:
 
 class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
+
+    # The roles the running reload will start a server for; None until its plan is known.
+    # A request for any other role does not wait for the reload.
+    _reload_awaited: frozenset[WorkerRole] | None = None
 
     def __init__(self, *, hold_warm: bool = False) -> None:
         # An interactive session (the TUI) owns this process for its whole
@@ -1405,9 +1417,15 @@ class FleetProvider:
         """
         self._ensure_fleet()
         with self._lock:
-            if self._reloading and not self._clients.get(role):
-                # The reload dropped this role's group and has not adopted the new one.
-                self._reload_done.wait_for(lambda: not self._reloading, _RELOAD_GAP_WAIT_S)
+            # The reload dropped this role's group and has not adopted the new one.
+            if (
+                self._reloading
+                and not self._clients.get(role)
+                and not self._reload_done.wait_for(
+                    lambda: self._reload_settled_for(role), _RELOAD_GAP_WAIT_S
+                )
+            ):
+                raise ProviderError(_reload_timeout_message(role), provider=_PROVIDER_NAME)
             clients = self._clients.get(role)
             swap = self._swap_for(role)
         if not clients and swap is not None and not swap.is_live():
@@ -1425,6 +1443,15 @@ class FleetProvider:
                 )
             raise ProviderError(_no_server_message(role), provider=_PROVIDER_NAME)
         return list(clients)
+
+    def _reload_settled_for(self, role: WorkerRole) -> bool:
+        """True when *role* need not wait: no reload runs, or the plan leaves it no server.
+
+        Caller holds ``self._lock``.
+        """
+        if not self._reloading:
+            return True
+        return self._reload_awaited is not None and role not in self._reload_awaited
 
     def _with_rediscover(self, call: Callable[[], _T], *, role: WorkerRole | None = None) -> _T:
         """Run *call*; on a connection-kind or load-capacity failure, retry once.
@@ -2605,6 +2632,7 @@ class FleetProvider:
                     return
                 running = set(self._swaps)
                 old = dict(self._launches)
+                self._reload_awaited = None
                 # All groups share one dir and one ownership by construction, so any
                 # bound manager means this provider rides another process's engine.
                 bound = any(swap.bound for swap in self._swaps.values())
@@ -2653,6 +2681,12 @@ class FleetProvider:
                     or old.get(group, ()) != new.get(group, ())
                 }
                 changed |= {group_for(role, plan.co_tenants) for role in force}
+                with self._lock:
+                    self._reload_awaited = frozenset(
+                        role for group in changed & set(new) for role in _by_role(list(new[group]))
+                    )
+                    self._reload_done.notify_all()
+                self._log_dropped_groups(changed, old, new)
                 # Stop phase: free the changed groups' VRAM before their replacements
                 # (or another group's grown plan) spawn against it.
                 for group in sorted(changed, key=lambda g: g.value):
@@ -2679,6 +2713,21 @@ class FleetProvider:
                         self._group_dirs[group] = reload_dir
                     restarted.extend(_by_role(group_launches))
         self._preload_restarted(restarted)
+
+    @staticmethod
+    def _log_dropped_groups(
+        changed: set[SwapGroup],
+        old: dict[SwapGroup, tuple[InstanceLaunch, ...]],
+        new: dict[SwapGroup, tuple[InstanceLaunch, ...]],
+    ) -> None:
+        """Log each restarted group's replica count before and after the reload."""
+        for group in sorted(changed, key=lambda g: g.value):
+            log.debug(
+                "Reload restarts group %s: replicas %d -> %d",
+                group.value,
+                len(old.get(group, ())),
+                len(new.get(group, ())),
+            )
 
     def _preload_restarted(self, restarted: list[WorkerRole]) -> None:
         """Load the restarted roles' models off-thread (a no-op for none).

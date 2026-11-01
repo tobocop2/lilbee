@@ -149,6 +149,7 @@ def mock_svc():
     store.drop_all.side_effect = index.drop_all
     store.ensure_fts_index.return_value = None
     store.get_meta.return_value = None
+    store.count_chunks.return_value = 0
     store.index_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.side_effect = lambda text, **kw: np.full(768, 0.1, dtype=np.float32)
@@ -364,6 +365,22 @@ class TestSync:
         assert result.index_mismatch.adoptable is False
         assert "old/embed-GGUF/old.gguf" in str(result)
         mock_svc.store.drop_all.assert_not_called()
+
+    async def test_a_rebuild_of_a_store_with_chunks_and_no_stamp_keeps_it_when_the_embedder_fails(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """A store with chunks and no stamp is refused by nobody, so a rebuild keeps it."""
+        from lilbee.data.ingest import pipeline
+
+        mock_svc.store.get_meta.return_value = None
+        mock_svc.store.count_chunks.return_value = 3
+        mock_svc.embedder.embedding_available.return_value = False
+        mock_svc.embedder.embed_batch.side_effect = ConnectionError("embedder down")
+
+        assert pipeline._prepare_forced_rebuild(mock_svc.store) is True
+
+        mock_svc.store.drop_all.assert_not_called()
+        mock_svc.embedder.embed_batch.assert_not_called()
 
     async def test_ingest_text_file(self, mock_extract_file, isolated_env):
         (isolated_env / "test.txt").write_text("Hello world. This is a test document.")

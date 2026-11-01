@@ -142,7 +142,7 @@ def test_apply_records_the_profile_and_says_to_rebuild(project, monkeypatch):
 
 
 def test_apply_with_reindex_rebuilds_when_a_change_needs_it(project, monkeypatch):
-    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf", "b.pdf"]))
+    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf", "b.pdf"], failed=[]))
     monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
     _write(_global_dir(), "court-filings", CREDITED)
     payload = _json(project, "apply", "Court filings", "--reindex")
@@ -152,7 +152,7 @@ def test_apply_with_reindex_rebuilds_when_a_change_needs_it(project, monkeypatch
 
 
 def test_apply_with_reindex_rebuilds_a_profile_that_is_already_applied(project, monkeypatch):
-    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf"]))
+    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf"], failed=[]))
     monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
     _write(_global_dir(), "court-filings", CREDITED)
     _invoke(project, "apply", "Court filings")
@@ -173,11 +173,34 @@ def test_apply_with_reindex_skips_the_rebuild_when_nothing_needs_it(project, mon
 
 
 def test_apply_with_reindex_prints_the_rebuild_count(project, monkeypatch):
-    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf"]))
+    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf"], failed=[]))
     monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
     _write(_global_dir(), "court-filings", CREDITED)
     result = _invoke(project, "apply", "Court filings", "--reindex")
     assert "Rebuilt: 1 documents ingested" in result.output
+
+
+def test_apply_with_reindex_exits_nonzero_when_files_fail_to_ingest(project, monkeypatch):
+    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf"], failed=["b.pdf", "c.pdf"]))
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    _write(_global_dir(), "court-filings", CREDITED)
+    result = _invoke(project, "apply", "Court filings", "--reindex")
+    assert result.exit_code == 1
+    assert "Rebuilt: 1 documents ingested" in result.output
+    assert "2 documents failed to ingest: b.pdf, c.pdf" in result.output
+    assert "lilbee rebuild" in result.output
+
+
+def test_apply_with_reindex_puts_the_failed_count_in_the_json(project, monkeypatch):
+    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf"], failed=["b.pdf"]))
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    _write(_global_dir(), "court-filings", CREDITED)
+    result = _invoke(project, "apply", "Court filings", "--reindex", json_mode=True)
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["reindexed"] == 1
+    assert payload["reindex_failed"] == 1
+    assert "1 document failed to ingest: b.pdf" in payload["reindex_error"]
 
 
 def test_apply_with_reindex_reports_both_when_the_rebuild_fails(project, monkeypatch):
