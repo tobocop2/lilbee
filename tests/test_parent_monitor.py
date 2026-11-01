@@ -22,6 +22,12 @@ from lilbee.parent_monitor import (
 
 
 @pytest.fixture(autouse=True)
+def _no_exit_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop an in-process server run from ending this process 60 s later."""
+    monkeypatch.setattr("lilbee.cli.commands.servers.arm_exit_deadline", lambda _seconds: None)
+
+
+@pytest.fixture(autouse=True)
 def clean_env() -> Iterator[None]:
     """Ensure LILBEE_PARENT_PID does not leak between tests."""
     snapshot = os.environ.get(PARENT_PID_ENV)

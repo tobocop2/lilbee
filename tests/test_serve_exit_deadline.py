@@ -12,8 +12,14 @@ import threading
 import tomllib
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+
+from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.fleet.provider import FleetProvider
+from lilbee.providers.routing_provider import RoutingProvider
+from lilbee.runtime.daemon_call import DaemonCall
 
 _FAILURE_CEILING_S = 30.0
 _FIXED_PATH = "/usr/bin:/bin"
@@ -275,6 +281,76 @@ def test_a_process_that_dies_in_the_save_leaves_the_old_whole_file(
     assert tomllib.loads(config.read_text(encoding="utf-8")) == {_WRITTEN_KEY: _OLD_VALUE}
 
 
+def _run_probe(tmp_path: Path, probe: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-c", probe],
+        env=_child_env(tmp_path),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=_FAILURE_CEILING_S,
+    )
+
+
+_BUSY_THREADS_PROBE = """\
+import threading, time
+from lilbee.cli.commands.serve_logging import arm_exit_deadline
+
+def churn(depth=0):
+    while True:
+        if depth < 12:
+            churn(depth + 1)
+        isinstance(depth, threading.Thread)
+        threading.Thread(target=len, args=((),)).start()
+
+for _ in range(8):
+    threading.Thread(target=churn, daemon=True).start()
+arm_exit_deadline(0.2)
+threading.Event().wait()
+"""
+
+
+@pytest.mark.parametrize("attempt", range(12))
+def test_the_deadline_ends_a_process_whose_threads_are_running(
+    tmp_path: Path, attempt: int
+) -> None:
+    assert _run_probe(tmp_path, _BUSY_THREADS_PROBE).returncode == _DEADLINE_EXIT_STATUS
+
+
+def test_the_deadline_leaves_the_interpreter_timer_and_the_fault_target_alone(
+    tmp_path: Path,
+) -> None:
+    result = _run_probe(
+        tmp_path,
+        "import faulthandler, os, threading\n"
+        "from lilbee.cli.commands.serve_logging import arm_exit_deadline\n"
+        "faulthandler.dump_traceback_later(1, exit=True)\n"
+        f"arm_exit_deadline({_FAILURE_CEILING_S * 2})\n"
+        "print(faulthandler.is_enabled(), flush=True)\n"
+        "threading.Event().wait()\n",
+    )
+    assert result.stdout.strip() == "False"
+    assert "Timeout (" in result.stderr
+    assert result.returncode == _DEADLINE_EXIT_STATUS
+
+
+@pytest.mark.parametrize(
+    "broken", ["serve_logging.faulthandler.dump_traceback", "serve_logging._fault_log_path"]
+)
+def test_a_failed_dump_still_exits_at_the_deadline(tmp_path: Path, broken: str) -> None:
+    result = _run_probe(
+        tmp_path,
+        "import threading\n"
+        "from lilbee.cli.commands import serve_logging\n"
+        "def no_dump(**_kwargs):\n"
+        "    raise OSError('the disk is full')\n"
+        f"{broken} = no_dump\n"
+        "serve_logging.arm_exit_deadline(0.1)\n"
+        "threading.Event().wait()\n",
+    )
+    assert result.returncode == _DEADLINE_EXIT_STATUS
+
+
 @posix_only
 def test_a_closed_stderr_and_a_closed_fault_descriptor_still_exit_at_the_deadline(
     tmp_path: Path,
@@ -297,3 +373,45 @@ def test_a_closed_stderr_and_a_closed_fault_descriptor_still_exit_at_the_deadlin
         timeout=_FAILURE_CEILING_S,
     )
     assert result.returncode == _DEADLINE_EXIT_STATUS
+
+
+def _provider_with(work: DaemonCall[object] | None) -> FleetProvider:
+    provider = FleetProvider.__new__(FleetProvider)
+    provider._lock = threading.Lock()
+    provider._stop_waiting = False
+    provider._fleet_work = work
+    return provider
+
+
+def test_stop_waiting_answers_a_joined_caller_and_a_later_one_without_the_bound() -> None:
+    release = threading.Event()
+    work: DaemonCall[object] = DaemonCall(release.wait, name="held")
+    provider = _provider_with(work)
+    provider.stop_waiting()
+    with pytest.raises(ProviderError, match="The server is stopping"):
+        provider._join_fleet_work(work)
+    provider._fleet_work = None
+    provider._run_fleet_work = release.wait  # type: ignore[method-assign]
+    with pytest.raises(ProviderError, match="The server is stopping"):
+        provider._join_fleet_work(provider._start_fleet_work())
+    release.set()
+    work.result()
+
+
+def test_stop_waiting_with_no_work_has_nothing_to_wake() -> None:
+    provider = _provider_with(None)
+    provider.stop_waiting()
+    assert provider._stop_waiting is True
+
+
+def test_the_routing_provider_forwards_stop_waiting_to_the_native_side_only() -> None:
+    routing = RoutingProvider.__new__(RoutingProvider)
+    routing._local = None
+    routing.stop_waiting()
+    routing._local = MagicMock()
+    routing.stop_waiting()
+    routing._local.stop_waiting.assert_called_once_with()
+
+
+def test_a_provider_with_no_work_ignores_stop_waiting() -> None:
+    assert LLMProvider.stop_waiting(MagicMock()) is None

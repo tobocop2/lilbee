@@ -34,6 +34,12 @@ def _no_locks_available() -> OSError:
 
 
 @pytest.fixture(autouse=True)
+def _no_exit_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop an in-process server run from ending this process 60 s later."""
+    monkeypatch.setattr("lilbee.cli.commands.servers.arm_exit_deadline", lambda _seconds: None)
+
+
+@pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
     # CI sets LILBEE_DATA at workflow level; clear it so the token command's
     # apply_overrides() does not clobber cfg.data_dir during invocation.
@@ -694,3 +700,17 @@ class TestServeHoldsLocksThroughTeardown:
         reacquired = acquire_server_lock(cfg.data_dir, timeout=0.05)
         assert reacquired is not None
         reacquired.release()
+
+
+def test_the_shutdown_answers_the_callers_that_wait_on_the_provider() -> None:
+    from lilbee.cli.commands.servers import _run_server
+
+    fake_server = mock.MagicMock()
+    fake_server.servers = []
+    fake_server.startup = mock.AsyncMock()
+    fake_server.main_loop = mock.AsyncMock()
+    fake_server.shutdown = mock.AsyncMock()
+    services = mock.MagicMock()
+    with mock.patch("lilbee.cli.commands.servers.peek_services", return_value=services):
+        asyncio.run(_run_server(fake_server, mock.MagicMock(), "127.0.0.1"))
+    services.provider.stop_waiting.assert_called_once_with()

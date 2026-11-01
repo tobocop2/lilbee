@@ -1,6 +1,5 @@
 """Shared test helpers."""
 
-import faulthandler
 import io
 import os
 import shutil
@@ -135,13 +134,6 @@ def pytest_configure(config: pytest.Config) -> None:
         "filterwarnings",
         "ignore::pytest.PytestUnraisableExceptionWarning",
     )
-
-
-@pytest.fixture(autouse=True)
-def _cancel_the_serve_exit_deadline():
-    """Stop a deadline armed by an in-process server run from ending the test process."""
-    yield
-    faulthandler.cancel_dump_traceback_later()
 
 
 @pytest.fixture(autouse=True)
