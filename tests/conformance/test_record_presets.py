@@ -16,7 +16,7 @@ import pytest
 from tests.conformance.preset_check import recording
 from tests.conformance.record_presets import build_parser, token_from
 
-_TOKEN = "s3cret-token-value"
+_TOKEN = "s3cret-token-value"  # pragma: allowlist secret
 
 
 @contextmanager
