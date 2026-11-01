@@ -283,7 +283,8 @@ def test_a_fixed_reserve_past_its_card_is_refused_with_both_figures(
     assert plan.refused_roles == {
         WorkerRole.CHAT: "The chat model org/repo/chat.gguf needs 40.0 GiB but device 0 has "
         "15.6 GiB usable (24.0 GiB total, 90% headroom). "
-        "Use a smaller model, or set its target to cpu."
+        "Use a smaller model, or set its target to cpu. "
+        "The embed model org/repo/embed.gguf (6.0 GiB) holds the rest."
     }
 
 

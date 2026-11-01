@@ -43,6 +43,7 @@ from lilbee.providers.fleet.placement import (
     ModelPlacementInput,
     PeakEstimator,
     Placement,
+    RoomHolder,
     SplitCtxFitter,
     card_refusal,
     placement_from_spec,
@@ -3123,6 +3124,7 @@ def _resolve_placement(
             capacity,
             estimate_peak=estimate_peak,
             plan_auto=plan_auto,
+            model_refs=model_refs,
         )
         if _cpu_roles(placement).isdisjoint(model_refs):
             return placed
@@ -3816,6 +3818,25 @@ def _log_roles_without_engine(plan: FleetPlan) -> None:
         )
 
 
+def _room_holders(
+    plan: InstancePlan,
+    device: int,
+    placement: Placement,
+    charged: Mapping[WorkerRole, int],
+    model_refs: Mapping[WorkerRole, str],
+) -> tuple[RoomHolder, ...]:
+    """The other roles charged to *device*; a swap group's members are never resident together."""
+    grouped = placement.co_tenants if plan.role in placement.co_tenants else frozenset()
+    return tuple(
+        RoomHolder(inst.role, model_refs[inst.role], charged[inst.role])
+        for inst in placement.instances
+        if device in inst.devices
+        and inst.replica == 0
+        and inst.role is not plan.role
+        and inst.role not in grouped
+    )
+
+
 def _planned_launches(
     roles: tuple[WorkerRole, ...] | None,
     by_index: dict[int, FleetDevice],
@@ -3892,8 +3913,12 @@ def _planned_launches(
             needed, device = charged[plan.role], plan.devices[0]
             room = needed - placement.tight_roles[plan.role]
             subject = f"The chat model {launch.model}"
+            holders = _room_holders(plan, device, placement, charged, model_refs)
             reason = (
-                card_refusal(subject, device, needed, room, capacity[device], fix=True) or reason
+                card_refusal(
+                    subject, device, needed, room, capacity[device], fix=True, holders=holders
+                )
+                or reason
             )
         if reason is not None:
             refused_roles[launch.role] = reason
