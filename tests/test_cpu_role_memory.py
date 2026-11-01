@@ -99,7 +99,7 @@ class TestTheChargeGoesToSystemMemory:
             engines={WorkerRole.EMBED: MagicMock()}, cpu_roles=frozenset({WorkerRole.EMBED})
         )
         assert seen == [0]
-        assert inputs == [ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=4 * GIB)]
+        assert inputs == [ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=3 * GIB)]
         assert refs == {WorkerRole.EMBED: "org/repo/embed.gguf"}
 
     def test_a_cpu_role_past_system_memory_is_refused_and_chat_still_launches(
