@@ -262,7 +262,7 @@ class TestPlacementFromSpecWithAuto:
             placement_from_spec(spec, (WorkerRole.EMBED,), {0: GIB}, estimate_peak=_peak)
 
     def test_a_unified_budget_loses_the_bytes_of_the_roles_on_cards(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         captured: dict[str, object] = {}
 
@@ -277,7 +277,7 @@ class TestPlacementFromSpecWithAuto:
             ModelPlacementInput(WorkerRole.CHAT, 30 * GIB),
             ModelPlacementInput(WorkerRole.EMBED, 6 * GIB),
         ]
-        engine = CardEngine("e", Path("e"), ROLES, cards_of((24,)), spans=True)
+        engine = CardEngine("e", tmp_path / "e", ROLES, cards_of((24,)), spans=True)
         planning._resolve_placement(
             spec,
             inputs,
