@@ -111,6 +111,25 @@ class TestStreamResponseDispatch:
         assert "forcibly closed" not in rendered
         assert msg.STREAM_DISCONNECTED.strip("\n") in rendered
 
+    def test_cut_stream_shows_the_plain_message(self):
+        from lilbee.providers.fleet.client import StreamInterruptedError
+
+        screen = self._screen()
+        widget = MagicMock()
+        services = MagicMock()
+        services.searcher.ask_stream.side_effect = StreamInterruptedError()
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            screen._do_stream_response(_Turn("q", widget, 0, None), None)
+        rendered = " ".join(str(c.args) for c in widget.append_content.call_args_list)
+        assert "model server restarted" in rendered
+        assert "Send your message again" in rendered
+
     def test_other_error_shows_stream_error(self):
         screen = self._screen()
         widget = MagicMock()

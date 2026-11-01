@@ -42,6 +42,10 @@ from lilbee.providers.roles import RerankMode
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 _PROVIDER_NAME = "llama-server"
+# Shown on every surface when a stream breaks after its first frame.
+_STREAM_INTERRUPTED_MESSAGE = (
+    "The model server restarted and the answer is cut. Send your message again."
+)
 
 # Fleet clients only ever talk to a loopback llama-server over plain HTTP, so TLS is
 # never negotiated. httpx still builds a default SSL context per client (loads the
@@ -454,6 +458,17 @@ class ChatDeadlineError(ProviderError):
     OCR) can word its own timeout message and skip failover without matching
     error strings. Its ``UNKNOWN`` kind keeps it out of ``is_connection_failure``.
     """
+
+
+class StreamInterruptedError(ProviderError):
+    """A chat stream broke after it had sent frames, so its answer is cut.
+
+    The partial answer cannot be retried. Its ``UNKNOWN`` kind keeps it out of
+    ``is_connection_failure`` (no failover) and lets every surface show its text.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(_STREAM_INTERRUPTED_MESSAGE, provider=_PROVIDER_NAME)
 
 
 def retry_on_gateway_error(
@@ -911,6 +926,7 @@ class LlamaServerClient:
         inliner = _ThinkInliner(enabled=self._inline_reasoning)
         on_prefill = self._on_prefill
         prefilling = False
+        started = False
         try:
             with (
                 self._track(),
@@ -929,10 +945,17 @@ class LlamaServerClient:
                                 # The first real frame proves prefill is over.
                                 prefilling = False
                                 on_prefill(None)
+                            started = True
                             yield item
                 tail = inliner.finish()
                 if tail:
                     yield tail
+        except httpx.TransportError as exc:
+            # Before the first frame the raw error stays: the caller rediscovers the
+            # engine and retries. After it, the partial answer cannot be retried.
+            if not started:
+                raise
+            raise StreamInterruptedError from exc
         finally:
             # A stream that dies or is closed mid-prefill must not leave a
             # stale in-progress reading on the status surface.

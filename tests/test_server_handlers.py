@@ -5078,6 +5078,15 @@ class TestClassifyStreamError:
         assert code == "context_length_exceeded"
         assert "9000" in msg
 
+    def test_cut_stream_sends_its_plain_message(self):
+        """A stream that broke after its first frame tells the client to send again."""
+        from lilbee.providers.fleet.client import StreamInterruptedError
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        _, msg = _classify_stream_error(StreamInterruptedError())
+        assert "restarted" in msg
+        assert "Send your message again" in msg
+
     def test_other_exception_falls_back_to_load_error_classifier(self):
         """Non-typed errors delegate to ``classify_load_error`` for OOM detection."""
         from lilbee.server.handlers.rag import _classify_stream_error
