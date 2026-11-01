@@ -13398,6 +13398,35 @@ async def test_app_action_quit_when_streaming():
         assert any("Ctrl+C" in str(c.args[0]) for c in mock_notify.call_args_list)
 
 
+async def test_app_action_quit_sets_the_stop_before_it_severs_the_stream():
+    """A live turn sees its stop flag before the engine call is cut."""
+    from lilbee.app.services import get_services
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ChatScreen)
+        screen.streaming = True
+        turn = MagicMock()
+        stop_seen_at_sever: list[bool] = []
+        services = get_services()
+        screen._turn = turn
+        with (
+            patch.object(
+                type(services),
+                "cancel_inference",
+                lambda _self: stop_seen_at_sever.append(turn.stop.set.called),
+            ),
+            patch.object(app, "notify"),
+        ):
+            await app.action_quit()
+        assert stop_seen_at_sever == [True]
+
+
 async def test_app_action_quit_ignores_background_tasks():
     """A background task in the task bar must not swallow the first Ctrl+C."""
     from lilbee.cli.tui.app import LilbeeApp

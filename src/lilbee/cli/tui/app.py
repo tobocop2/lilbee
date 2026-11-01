@@ -640,15 +640,15 @@ class LilbeeApp(App[None]):
         stream) get the cancel-first treatment; a background task like an
         engine warm or a sync never swallows a quit.
         """
-        get_services().cancel_inference()
-
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.screen
         if isinstance(screen, ChatScreen) and screen.streaming and not screen.stopping:
+            # The turn sets its stop flag first, then severs the stream.
             screen.action_cancel_stream()
             self.notify(msg.APP_QUIT_AGAIN_HINT)
             return
+        get_services().cancel_inference()
         self.exit()
 
     def _view_is_refused(self, view_name: str) -> bool:
