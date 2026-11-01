@@ -25,7 +25,7 @@ acb = _load()
 
 _LINUX_RUNTIME = ("libcudart.so.12", "libcublas.so.12", "libcublasLt.so.12")
 _WINDOWS_RUNTIME = ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
-_WINDOWS_CRT = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+_WINDOWS_CRT = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "vcomp140.dll")
 # What a rocm wheel must carry beside libggml-hip.so.
 _ROCM_RUNTIME = (
     "libamdhip64.so.7",
