@@ -383,9 +383,9 @@ def reset_services() -> None:
     Swap the module reference to ``None`` *before* tearing the old instances
     down, so a new caller never observes a half-closed container. The swap is
     locked so concurrent callers (a signal's teardown thread plus an exiting
-    one) tear the container down exactly once. On the shared HTTP daemon every
-    entry point that would call this mid-flight is refused, so it only ever
-    runs single-client (CLI, TUI, stdio MCP).
+    one) tear the container down exactly once. On ``lilbee serve``, SIGTERM and
+    SIGHUP run it on the signal's teardown thread while requests are still
+    open; SIGINT and the shutdown route run it after those requests end.
     """
     with _reset_swap_lock:
         old = _state.singleton
