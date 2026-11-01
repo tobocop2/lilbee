@@ -46,7 +46,11 @@ from lilbee.providers.fleet.placement import (
     placement_from_spec,
     plan_placement,
 )
-from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+from lilbee.providers.fleet.placement_spec import (
+    PlacementError,
+    PlacementSpec,
+    TargetRefusedError,
+)
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.model_cache import free_system_memory, total_system_memory
@@ -209,6 +213,9 @@ _TARGET_REFUSED = {
     RoleTarget.CPU: (
         "this engine's installed build cannot run on the CPU. "
         "Choose a GPU or install the CPU build."
+    ),
+    RoleTarget.GPU: (
+        "this engine's installed build cannot run on a GPU. Choose the CPU or install a GPU build."
     ),
     RoleTarget.NPU: "this engine's installed build cannot run on an NPU. Choose a GPU or the CPU.",
 }
@@ -1921,15 +1928,21 @@ def build_single_role_launch(
     configuration serving would never have chosen.
 
     Placement is the planner's, on the devices the plan snapshot holds, so the
-    check runs on the card the role would really land on.
+    check runs on the card the role would really land on. A role that the saved
+    placement puts on the CPU is checked on the CPU.
     """
+    from lilbee.core.config import cfg
+
+    spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
+    entry = spec.roles.get(role) if spec is not None else None
+    target = entry.target if entry is not None else RoleTarget.GPU
     binary = engine.binary()
     with _one_engine_per_pass(engine=engine):
         devices = _plan_devices(binary, engine)
         by_index = {d.index: d for d in devices}
         # The whole machine, since nothing else is resident during a self-check.
-        placed = (min(by_index),) if by_index else ()
-        plan = InstancePlan(role=role, devices=placed)
+        placed = (min(by_index),) if by_index and target is RoleTarget.GPU else ()
+        plan = InstancePlan(role=role, devices=placed, target=target)
         return _launch_for(
             plan,
             str(model_path),
@@ -2990,7 +3003,9 @@ def _resolve_placement(
     capacity = _device_capacity(devices, charge_against_free)
     unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
     if placement is not None:
-        _refuse_unusable_targets(placement, model_refs, engines)
+        refused = _unusable_targets(placement, model_refs, engines)
+        if refused:
+            raise TargetRefusedError(refused)
         pinned = [role for role in unpinnable if _targets_gpu(placement, role)]
         if pinned:
             names = ", ".join(role.value for role in pinned)
@@ -3028,24 +3043,30 @@ def _targets_gpu(placement: PlacementSpec, role: WorkerRole) -> bool:
     return entry is None or entry.target is RoleTarget.GPU
 
 
-def _refuse_unusable_targets(
+def _unusable_targets(
     placement: PlacementSpec,
     roles: Mapping[WorkerRole, str],
     engines: Mapping[WorkerRole, EngineAdapter],
-) -> None:
-    """Raise when a role names a target its engine's installed build cannot run on."""
+) -> dict[WorkerRole, str]:
+    """The reason for each role that names a target its engine's installed build cannot run on.
+
+    A spec with no target key names none, so an old spec is never asked.
+    """
+    refused: dict[WorkerRole, str] = {}
     for role in roles:
-        if _targets_gpu(placement, role):
+        entry = placement.roles.get(role)
+        if entry is None or not entry.target_named:
             continue
-        target = placement.roles[role].target
-        if target is RoleTarget.AUTO:
-            raise PlacementError(
+        if entry.target is RoleTarget.AUTO:
+            refused[role] = (
                 f"{role.value}: the auto target is not available yet. "
                 "Name the devices or set the target to cpu."
             )
+            continue
         engine = engines[role]
-        if target not in engine.device_targets(engine.binary()):
-            raise PlacementError(f"{role.value}: {_TARGET_REFUSED[target]}")
+        if entry.target not in engine.device_targets(engine.binary()):
+            refused[role] = f"{role.value}: {_TARGET_REFUSED[entry.target]}"
+    return refused
 
 
 def _roles_without_a_pin(
@@ -3101,8 +3122,10 @@ def _placement_or_auto(
     degrades to automatic placement and logs why. An interactive apply still fails
     loud (:func:`lilbee.app.placement.set_placement`), where the pin is what the
     caller just asked for and a silent substitution would be the surprise. A spec
-    that names a device target also fails loud: the target is a refusal to run
-    anywhere else, and automatic placement would put that role on a card.
+    that names a device target also fails loud on a pin error: the target is a
+    refusal to run anywhere else, and automatic placement would put that role on a
+    card. A role whose target the engine cannot run is not an error here: that role
+    gets no server and the others launch.
     """
     if placement is None:
         return _resolve_placement(
@@ -3124,6 +3147,8 @@ def _placement_or_auto(
             unified_budget=unified_budget,
             charge_against_free=charge_against_free,
         ), True
+    except TargetRefusedError:
+        raise
     except PlacementError as exc:
         if not all(_targets_gpu(placement, role) for role in placement.roles):
             raise
@@ -3244,8 +3269,8 @@ class FleetPlan:
     # ref), so the warm path can fail a not-installed chat with a named reason
     # instead of spinning the warm line forever.
     skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
-    # Launches refused for a window below the minimum grounded prompt
-    # (role -> user-facing reason with the numbers).
+    # Roles left unlaunched, each with its user-facing reason: a window below the
+    # minimum grounded prompt, or a device target the engine's build cannot run.
     skipped_unusable_ctx: dict[WorkerRole, str] = field(default_factory=dict)
     # Configured roles whose engine mapping has no engine (role -> ref); the plan
     # warns for each. Left out of the repr so a one-engine plan reads as it always did.
@@ -3476,15 +3501,31 @@ def _planned_launches(
     # Only the clean-box snapshot's free bytes mean "what other tenants hold";
     # a live probe here would also be missing the fleet's own residency.
     charge_against_free = _current_plan_probe(snapshot_engine) is not None
-    placement, _spec_applied = _placement_or_auto(
-        spec,
-        inputs,
-        model_refs,
-        devices,
-        engines=engines,
-        unified_budget=admission_budget,
-        charge_against_free=charge_against_free,
-    )
+    refused_targets: dict[WorkerRole, str] = {}
+    try:
+        placement, _spec_applied = _placement_or_auto(
+            spec,
+            inputs,
+            model_refs,
+            devices,
+            engines=engines,
+            unified_budget=admission_budget,
+            charge_against_free=charge_against_free,
+        )
+    except TargetRefusedError as exc:
+        # The refused roles get no server and report their reason; the others launch.
+        refused_targets = exc.reasons
+        for refusal in refused_targets.values():
+            log.warning(refusal)
+        placement, _spec_applied = _placement_or_auto(
+            spec,
+            [model for model in inputs if model.role not in refused_targets],
+            {role: ref for role, ref in model_refs.items() if role not in refused_targets},
+            devices,
+            engines=engines,
+            unified_budget=admission_budget,
+            charge_against_free=charge_against_free,
+        )
     _log_refused_roles(
         placement,
         model_refs,
@@ -3503,7 +3544,7 @@ def _planned_launches(
     )
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
     launches: list[InstanceLaunch] = []
-    skipped_unusable_ctx: dict[WorkerRole, str] = {}
+    skipped_unusable_ctx: dict[WorkerRole, str] = refused_targets.copy()
     for plan in placement.instances:
         launch = _launch_for(
             plan,

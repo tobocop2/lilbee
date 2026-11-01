@@ -18,14 +18,26 @@ class PlacementError(ValueError):
     """A placement spec is malformed or does not fit the hardware."""
 
 
+class TargetRefusedError(PlacementError):
+    """Roles that name a device target their engine's installed build cannot run on."""
+
+    def __init__(self, reasons: Mapping[WorkerRole, str]) -> None:
+        super().__init__(" ".join(reasons.values()))
+        self.reasons = dict(reasons)
+
+
 @dataclass(frozen=True)
 class RolePlacement:
-    """One role's manual placement: device pins, optional split, replica count, target."""
+    """One role's manual placement: device pins, optional split, replica count, target.
+
+    ``target_named`` is False for a spec that has no target key, so it keeps its plan.
+    """
 
     devices: tuple[int, ...]
     tensor_split: tuple[int, ...] | None = None
     replicas: int = 1
     target: RoleTarget = RoleTarget.GPU
+    target_named: bool = False
 
 
 @dataclass(frozen=True)
@@ -38,11 +50,11 @@ class PlacementSpec:
         """Serialize to a compact JSON string keyed by role value."""
         out: dict[str, dict[str, object]] = {}
         for role, rp in self.roles.items():
-            entry: dict[str, object] = (
-                {_KEY_DEVICES: list(rp.devices)}
-                if rp.target is RoleTarget.GPU
-                else {_KEY_TARGET: rp.target.value}
-            )
+            entry: dict[str, object] = {}
+            if rp.target_named:
+                entry[_KEY_TARGET] = rp.target.value
+            if rp.target is RoleTarget.GPU:
+                entry[_KEY_DEVICES] = list(rp.devices)
             if rp.tensor_split is not None:
                 entry[_KEY_TENSOR_SPLIT] = list(rp.tensor_split)
             if rp.replicas != 1:
@@ -83,7 +95,10 @@ def _role_for(key: str) -> WorkerRole:
     try:
         return WorkerRole(key)
     except ValueError as exc:
-        raise PlacementError(f"unknown role {key!r} in placement") from exc
+        roles = ", ".join(sorted(WorkerRole))
+        raise PlacementError(
+            f"unknown role {key!r} in placement. Use one of these roles: {roles}."
+        ) from exc
 
 
 def _coerce_int(role: WorkerRole, field: str, value: object) -> int:
@@ -112,7 +127,8 @@ def _role_placement(role: WorkerRole, entry: object) -> RolePlacement:
         raise PlacementError(
             f"{role.value}: unknown placement key(s) {sorted(unknown)}; allowed: {allowed}"
         )
-    target = _role_target(role, entry.get(_KEY_TARGET, RoleTarget.GPU))
+    named = _KEY_TARGET in entry
+    target = _role_target(role, entry[_KEY_TARGET]) if named else RoleTarget.GPU
     if target is not RoleTarget.GPU:
         return _deviceless_placement(role, target, entry)
     devices = _int_list(role, _KEY_DEVICES, entry.get(_KEY_DEVICES, []))
@@ -136,7 +152,10 @@ def _role_placement(role: WorkerRole, entry: object) -> RolePlacement:
                 f"{role.value}: tensor_split weights must be > 0, got {list(tensor_split)}"
             )
     return RolePlacement(
-        devices=devices, tensor_split=tensor_split, replicas=_replica_count(role, entry)
+        devices=devices,
+        tensor_split=tensor_split,
+        replicas=_replica_count(role, entry),
+        target_named=named,
     )
 
 
@@ -157,7 +176,9 @@ def _deviceless_placement(
             f"{role.value}: the {target.value} target takes no {' or '.join(refused)}. "
             f"Remove {', '.join(refused)}, or set the devices with no target."
         )
-    return RolePlacement(devices=(), replicas=_replica_count(role, entry), target=target)
+    return RolePlacement(
+        devices=(), replicas=_replica_count(role, entry), target=target, target_named=True
+    )
 
 
 def _replica_count(role: WorkerRole, entry: Mapping[str, object]) -> int:
