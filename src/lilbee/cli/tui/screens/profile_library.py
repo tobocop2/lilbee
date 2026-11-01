@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, TypeVar
 
 from textual import events, on, work
-from textual.app import ComposeResult
+from textual.app import ComposeResult, CSSPathType
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
@@ -63,14 +63,17 @@ class _LibraryKey:
     key: str
     action: LibraryAction
     label: str
+    short_label: str
 
 
 _KEYS = (
-    _LibraryKey("d", LibraryAction.DUPLICATE, msg.PROFILE_KEY_DUPLICATE),
-    _LibraryKey("r", LibraryAction.RENAME, msg.PROFILE_KEY_RENAME),
-    _LibraryKey("x", LibraryAction.DELETE, msg.PROFILE_KEY_DELETE),
-    _LibraryKey("e", LibraryAction.EXPORT, msg.PROFILE_KEY_EXPORT),
-    _LibraryKey("i", LibraryAction.IMPORT, msg.PROFILE_KEY_IMPORT),
+    _LibraryKey(
+        "d", LibraryAction.DUPLICATE, msg.PROFILE_KEY_DUPLICATE, msg.PROFILE_KEY_DUPLICATE_SHORT
+    ),
+    _LibraryKey("r", LibraryAction.RENAME, msg.PROFILE_KEY_RENAME, msg.PROFILE_KEY_RENAME_SHORT),
+    _LibraryKey("x", LibraryAction.DELETE, msg.PROFILE_KEY_DELETE, msg.PROFILE_KEY_DELETE_SHORT),
+    _LibraryKey("e", LibraryAction.EXPORT, msg.PROFILE_KEY_EXPORT, msg.PROFILE_KEY_EXPORT_SHORT),
+    _LibraryKey("i", LibraryAction.IMPORT, msg.PROFILE_KEY_IMPORT, msg.PROFILE_KEY_IMPORT_SHORT),
 )
 
 
@@ -87,20 +90,22 @@ def load_library() -> LibraryState:
     return LibraryState(profiles.list_profiles(ProfileStore()), has_project_folder())
 
 
-def entry_label(entry: ProfileEntry) -> Content:
-    """A list row: the name, then its folder and whether it is shadowed or broken."""
+def entry_label(entry: ProfileEntry, name_width: int = 0) -> Content:
+    """A list row: the name padded to *name_width*, then its folder and any problem."""
     tags = [msg.PROFILE_FOLDER_TAG[entry.folder]]
     if entry.shadowed_by is not None:
         tags.append(msg.PROFILE_LIBRARY_SHADOWED)
     if entry.error is not None:
         tags.append(msg.PROFILE_LIBRARY_BROKEN.format(reason=entry.error))
-    return Content.assemble(entry.name, "  ", Content.styled(", ".join(tags), "$text-muted"))
+    return Content.assemble(
+        entry.name.ljust(name_width), "  ", Content.styled(", ".join(tags), "$text-muted")
+    )
 
 
-def _hints() -> Content:
+def _hints(*, narrow: bool = False) -> Content:
     pairs = [
         (_APPLY_KEY, msg.PROFILE_KEY_APPLY),
-        *((k.key, k.label) for k in _KEYS),
+        *((k.key, k.short_label if narrow else k.label) for k in _KEYS),
         (_CLOSE_KEY, msg.PROFILE_KEY_CLOSE),
     ]
     return Content("   ").join(
@@ -115,7 +120,7 @@ def _without(catalog: ProfileCatalog, path: Path) -> ProfileCatalog:
 class ProfileLibrary(ModalScreen[None]):
     """Lists every profile and applies, duplicates, renames, deletes, exports or imports one."""
 
-    CSS_PATH = "profile_library.tcss"
+    CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_library.tcss"]
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", msg.PROFILE_KEY_CLOSE, show=False),
         *(Binding(k.key, f"run('{k.action.value}')", k.label, show=False) for k in _KEYS),
@@ -138,8 +143,8 @@ class ProfileLibrary(ModalScreen[None]):
         }
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="library-body"):
-            yield Static(msg.PROFILE_LIBRARY_TITLE, id="library-title")
+        with Vertical(id="library-body", classes="dialog-body"):
+            yield Static(msg.PROFILE_LIBRARY_TITLE, id="library-title", classes="dialog-title")
             with Horizontal(id="library-main"):
                 yield OptionList(id="library-list")
                 with VerticalScroll(id="library-detail"):
@@ -169,7 +174,9 @@ class ProfileLibrary(ModalScreen[None]):
 
     def _fit(self, width: int) -> None:
         """Below WIDE_COLUMNS the library shows the list only, plus the selection's credit."""
-        self.set_class(width < WIDE_COLUMNS, NARROW_CLASS)
+        narrow = width < WIDE_COLUMNS
+        self.set_class(narrow, NARROW_CLASS)
+        self.query_one("#library-hints", Static).update(_hints(narrow=narrow))
         self._update_narrow_credit()
 
     @work(thread=True, exclusive=True, group="profile-library-load", exit_on_error=False)
@@ -183,7 +190,8 @@ class ProfileLibrary(ModalScreen[None]):
         self._state = state
         self._entries = list(state.catalog.entries)
         listing = self.query_one("#library-list", OptionList)
-        listing.set_options(Option(entry_label(entry)) for entry in self._entries)
+        name_width = max((len(entry.name) for entry in self._entries), default=0)
+        listing.set_options(Option(entry_label(entry, name_width)) for entry in self._entries)
         paths = [entry.path for entry in self._entries]
         if selected is not None and selected.path in paths:
             listing.highlighted = paths.index(selected.path)

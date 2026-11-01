@@ -96,7 +96,9 @@ class ConfirmDialog(ModalScreen[bool]):
             yield Static(self._title, id="confirm-title", markup=False)
             yield Label(self._message, id="confirm-message", markup=False)
             with Center(), Horizontal(id="confirm-buttons"):
-                yield ConfirmPill(msg.CONFIRM_YES_LABEL, pill_id="confirm-yes", answer=True, primary=True)
+                yield ConfirmPill(
+                    msg.CONFIRM_YES_LABEL, pill_id="confirm-yes", answer=True, primary=True
+                )
                 yield ConfirmPill(msg.CONFIRM_NO_LABEL, pill_id="confirm-no", answer=False)
 
     @on(ConfirmPill.Picked)

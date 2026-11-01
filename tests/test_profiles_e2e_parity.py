@@ -7,6 +7,7 @@ through a surface. The end states must match, and so must what the surface repor
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -843,7 +844,10 @@ async def _library(app: LilbeeApp, pilot: Pilot) -> ProfileLibrary:
 
 
 def _rows(library: ProfileLibrary) -> list[str]:
-    return [str(option.prompt) for option in library.query_one(OptionList).options]
+    return [
+        re.sub(r" {3,}", "  ", str(option.prompt))
+        for option in library.query_one(OptionList).options
+    ]
 
 
 async def _library_on(app: LilbeeApp, pilot: Pilot, name: str) -> ProfileLibrary:
@@ -1244,7 +1248,9 @@ def test_the_cells_cover_every_offered_pair() -> None:
 
 
 def test_the_not_offered_cells_are_absent_from_their_surface() -> None:
-    tab_and_library = {a.value for a in TabAction} | {a.value for a in LibraryAction}
+    # the tab's "new" pill is the + button, which saves as; it writes no template
+    tab_and_library = {a.value for a in TabAction if a is not TabAction.NEW}
+    tab_and_library |= {a.value for a in LibraryAction}
     assert Scenario.NEW.value not in tab_and_library
     assert Scenario.VALIDATE.value not in tab_and_library
     assert "default_save_folder()" in inspect.getsource(AnalyzeReportScreen.action_save)

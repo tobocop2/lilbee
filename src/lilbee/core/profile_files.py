@@ -450,7 +450,14 @@ def _settle_names(entries: list[ProfileEntry]) -> list[ProfileEntry]:
 def scan(folders: Sequence[tuple[ProfileFolder, Path]]) -> ProfileCatalog:
     """Read every profile file in *folders*, given highest precedence first."""
     entries = [entry for folder, path in folders for entry in _read_folder(folder, path)]
-    return ProfileCatalog(entries=tuple(_settle_names(entries)))
+    return ProfileCatalog(entries=tuple(sorted(_settle_names(entries), key=_listing_rank)))
+
+
+def _listing_rank(entry: ProfileEntry) -> int:
+    """Sort key that lists Default first, then the other built-ins, then every other profile."""
+    if entry.folder is not ProfileFolder.BUILTIN:
+        return 2
+    return 0 if profile_key(entry.name) == profile_key(DEFAULT_PROFILE_NAME) else 1
 
 
 @dataclass(frozen=True)

@@ -5,11 +5,7 @@ ApplyProfileDialog, SaveProfileDialog, ProfilePathDialog {
 #apply-body {
     width: 90%;
     max-width: 100;
-    height: 90%;
-    max-height: 34;
-    border: $rail-heavy $primary;
-    background: $surface;
-    padding: 1 2;
+    max-height: 90%;
 }
 
 #path-fields {
@@ -18,37 +14,24 @@ ApplyProfileDialog, SaveProfileDialog, ProfilePathDialog {
 }
 
 #apply-scroll {
-    height: 1fr;
-    min-height: 0;
+    height: auto;
+    max-height: 100%;
+}
+
+#apply-untouched {
+    margin-top: 1;
 }
 
 #save-body {
     width: 90%;
     max-width: 72;
-    height: auto;
     max-height: 20;
-    border: $rail-heavy $primary;
-    background: $surface;
-    padding: 1 2;
 }
 
 #path-body {
     width: 90%;
     max-width: 72;
-    height: auto;
     max-height: 90%;
-    border: $rail-heavy $primary;
-    background: $surface;
-    padding: 1 2;
-}
-
-#apply-title, #save-title, #path-title {
-    text-style: bold;
-    color: $text;
-}
-
-#apply-description, #apply-credit, #apply-untouched, #save-explain, #path-explain {
-    color: $text-muted;
 }
 
 .profile-section-title {
@@ -64,10 +47,6 @@ ApplyProfileDialog, SaveProfileDialog, ProfilePathDialog {
 #apply-summary {
     text-style: bold;
     margin-top: 1;
-}
-
-#save-error, #path-error {
-    color: $error;
 }
 
 #apply-actions {

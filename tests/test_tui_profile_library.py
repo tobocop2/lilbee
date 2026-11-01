@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from unittest import mock
@@ -77,6 +78,11 @@ async def _open(app: LilbeeAppHost, pilot: Pilot, active: str = "Default") -> Pr
 
 def _rows(library: ProfileLibrary) -> list[str]:
     listing = library.query_one("#library-list", OptionList)
+    return [re.sub(r" {3,}", "  ", str(option.prompt)) for option in listing.options]
+
+
+def _raw_rows(library: ProfileLibrary) -> list[str]:
+    listing = library.query_one("#library-list", OptionList)
     return [str(option.prompt) for option in listing.options]
 
 
@@ -112,11 +118,11 @@ async def test_the_list_tags_each_folder_and_shows_shadowed_and_broken_entries()
     async with app.run_test(size=(120, 40)) as pilot:
         library = await _open(app, pilot)
         rows = _rows(library)
-        assert rows[0] == "court-filings  project"
-        assert rows[1].startswith("broken-profile  global, cannot load: ")
-        assert "top_kk" in rows[1]
-        assert rows[2] == "court-filings  global, shadowed"
-        assert "Default  built-in" in rows
+        assert rows[0] == "Default  built-in"
+        assert rows[5] == "court-filings  project"
+        assert rows[6].startswith("broken-profile  global, cannot load: ")
+        assert "top_kk" in rows[6]
+        assert rows[7] == "court-filings  global, shadowed"
         await _highlight(pilot, library, "court-filings  global, shadowed")
         problem = library.query_one("#library-problem", Static)
         assert _text(problem) == "Hidden by the project profile with the same name."
@@ -192,8 +198,10 @@ async def test_at_80x24_the_library_shows_the_list_only_and_fits() -> None:
         for widget_id in ("#library-body", "#library-list", "#library-hints"):
             assert _inside(library.query_one(widget_id).region, screen_region), widget_id
         hints = _text(library.query_one("#library-hints", Static))
-        for label in ("Apply", "Duplicate", "Rename", "Delete", "Export", "Import", "Close"):
+        for label in ("Apply", "Dup", "Ren", "Del", "Exp", "Imp", "Close"):
             assert label in hints
+        assert "Duplicate" not in hints
+        assert library.query_one("#library-hints").region.height == 1
         assert "Share" not in hints
         assert "s" not in {binding.key for binding in ProfileLibrary.BINDINGS}
 
@@ -394,7 +402,10 @@ async def test_import_copies_a_file_into_the_folder_chosen(tmp_path) -> None:
         assert path.value == ""
         ok = dialog.query_one("#path-ok", ConfirmPill)
         assert ok.has_class("-disabled")
-        assert _text(dialog.query_one("#path-error", Static)) == "Type a path."
+        error = dialog.query_one("#path-error", Static)
+        assert _text(error) == "" and not error.display
+        await pilot.press("a", "backspace")
+        assert await _until(pilot, lambda: _text(error) == "Type a path.")
         await pilot.press("enter")
         assert await _until(pilot, lambda: app.screen is dialog)
         dialog.query_one("#path-folder", Select).value = ProfileFolder.PROJECT

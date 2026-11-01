@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from textual import on
-from textual.app import ComposeResult
+from textual.app import ComposeResult, CSSPathType
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
@@ -127,6 +127,16 @@ def save_folders(has_project: bool) -> tuple[ProfileFolder, ...]:
     if has_project:
         return (ProfileFolder.GLOBAL, ProfileFolder.PROJECT)
     return (ProfileFolder.GLOBAL,)
+
+
+def free_copy_name(name: str, folder: ProfileFolder, catalog: ProfileCatalog) -> str:
+    """The first of "<name> copy", "<name> copy 2", ... that *folder* accepts."""
+    candidate = msg.PROFILE_DUPLICATE_INITIAL.format(name=name)
+    number = 1
+    while name_problem(candidate, folder, catalog) is not None:
+        number += 1
+        candidate = f"{msg.PROFILE_DUPLICATE_INITIAL.format(name=name)} {number}"
+    return candidate
 
 
 def _folder_choice(select_id: str, folders: Sequence[ProfileFolder]) -> ComposeResult:
@@ -249,7 +259,7 @@ def start_profile_switch(
 class ApplyProfileDialog(ModalScreen[ApplyChoice]):
     """Shows what applying a profile changes and keeps; nothing changes until a pill is picked."""
 
-    CSS_PATH = "profile_dialogs.tcss"
+    CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_dialogs.tcss"]
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
@@ -266,11 +276,12 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
 
     def compose(self) -> ComposeResult:
         profile = self._plan.profile
-        with Vertical(id="apply-body"):
+        with Vertical(id="apply-body", classes="dialog-body"):
             with VerticalScroll(id="apply-scroll"):
                 yield Static(
                     msg.PROFILE_APPLY_TITLE.format(name=profile.name),
                     id="apply-title",
+                    classes="dialog-title",
                     markup=False,
                 )
                 for text, widget_id in (
@@ -278,10 +289,12 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
                     (credit_text(profile), "apply-credit"),
                 ):
                     if text:
-                        yield Static(text, id=widget_id, markup=False)
+                        yield Static(text, id=widget_id, classes="dialog-note", markup=False)
                 yield from self._compose_changes()
                 yield from self._compose_kept()
-                yield Static(msg.PROFILE_APPLY_UNTOUCHED, id="apply-untouched")
+                yield Static(
+                    msg.PROFILE_APPLY_UNTOUCHED, id="apply-untouched", classes="dialog-note"
+                )
                 summary = self._summary()
                 if summary:
                     yield Static(summary, id="apply-summary", markup=False)
@@ -352,7 +365,7 @@ def diff_cells(row: DiffRow) -> Sequence[str | Content]:
 class SaveProfileDialog(ModalScreen[SaveRequest | None]):
     """Asks for a new profile's name and folder; Save stays off while the name is refused."""
 
-    CSS_PATH = "profile_dialogs.tcss"
+    CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_dialogs.tcss"]
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
@@ -373,14 +386,16 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
         self._catalog = catalog
         self._folders = folders
         self._initial = initial
+        self._opened_with: SaveRequest | None = None
+        self._edited = False
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="save-body"):
-            yield Static(self._title, id="save-title", markup=False)
+        with Vertical(id="save-body", classes="dialog-body"):
+            yield Static(self._title, id="save-title", classes="dialog-title", markup=False)
+            yield Static(self._explain, id="save-explain", classes="dialog-note", markup=False)
             yield Input(self._initial, placeholder=msg.PROFILE_SAVE_PLACEHOLDER, id="save-name")
-            yield Static("", id="save-error", markup=False)
+            yield Static("", id="save-error", classes="dialog-error", markup=False)
             yield from _folder_choice("save-folder", self._folders)
-            yield Static(self._explain, id="save-explain", markup=False)
             with Horizontal(id="save-actions"):
                 yield ConfirmPill(
                     msg.PROFILE_SAVE_LABEL,
@@ -393,6 +408,7 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
                 )
 
     def on_mount(self) -> None:
+        self._opened_with = self._request()
         self._check()
         self.query_one("#save-name", Input).focus()
 
@@ -405,15 +421,20 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
         return name_problem(request.name, request.folder, self._catalog)
 
     def _check(self) -> None:
-        """Show the name's problem, and turn Save off while there is one."""
+        """Turn Save off while the name has a problem, and say what it is once the user edits."""
         problem = self._problem()
         error = self.query_one("#save-error", Static)
-        error.update("" if problem is None else msg.PROFILE_NAME_PROBLEM_TEXT[problem])
+        text = msg.PROFILE_NAME_PROBLEM_TEXT[problem] if problem and self._edited else ""
+        error.update(text)
+        error.display = bool(text)
         self.query_one("#save-save", ConfirmPill).set_class(problem is not None, DISABLED_CLASS)
 
     @on(Input.Changed, "#save-name")
     @on(Select.Changed, "#save-folder")
     def _on_edit(self) -> None:
+        # Input and Select also post Changed while they mount; only a new value is an edit
+        if self._opened_with is not None and self._request() != self._opened_with:
+            self._edited = True
         self._check()
 
     @on(Input.Submitted, "#save-name")
@@ -439,7 +460,7 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
 class ProfilePathDialog(ModalScreen[PathRequest | None]):
     """Asks for a path, and for a folder when it offers a choice."""
 
-    CSS_PATH = "profile_dialogs.tcss"
+    CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_dialogs.tcss"]
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
@@ -460,17 +481,19 @@ class ProfilePathDialog(ModalScreen[PathRequest | None]):
         self._action_label = action_label
         self._initial = initial
         self._folders = folders
+        self._opened_with: str | None = None
+        self._edited = False
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="path-body"):
-            yield Static(self._title, id="path-title", markup=False)
+        with Vertical(id="path-body", classes="dialog-body"):
+            yield Static(self._title, id="path-title", classes="dialog-title", markup=False)
             with VerticalScroll(id="path-fields"):
-                yield Static(self._explain, id="path-explain", markup=False)
+                yield Static(self._explain, id="path-explain", classes="dialog-note", markup=False)
                 yield Input(
                     self._initial, placeholder=msg.PROFILE_PATH_PLACEHOLDER, id="path-input"
                 )
                 yield from _folder_choice("path-folder", self._folders)
-                yield Static("", id="path-error", markup=False)
+                yield Static("", id="path-error", classes="dialog-error", markup=False)
             with Horizontal(id="path-actions"):
                 yield ConfirmPill(
                     self._action_label, pill_id="path-ok", answer=_SaveAnswer.SAVE, primary=True
@@ -480,6 +503,7 @@ class ProfilePathDialog(ModalScreen[PathRequest | None]):
                 )
 
     def on_mount(self) -> None:
+        self._opened_with = self._path()
         self._check()
         self.query_one("#path-input", Input).focus()
 
@@ -487,9 +511,12 @@ class ProfilePathDialog(ModalScreen[PathRequest | None]):
         return self.query_one("#path-input", Input).value.strip()
 
     def _check(self) -> None:
-        """Say when the path is empty, and turn the action off while it is."""
+        """Turn the action off while the path is empty, and say so once the user edits."""
         empty = not self._path()
-        self.query_one("#path-error", Static).update(msg.PROFILE_PATH_EMPTY if empty else "")
+        error = self.query_one("#path-error", Static)
+        text = msg.PROFILE_PATH_EMPTY if empty and self._edited else ""
+        error.update(text)
+        error.display = bool(text)
         self.query_one("#path-ok", ConfirmPill).set_class(empty, DISABLED_CLASS)
 
     def _request(self) -> PathRequest:
@@ -498,6 +525,9 @@ class ProfilePathDialog(ModalScreen[PathRequest | None]):
 
     @on(Input.Changed, "#path-input")
     def _on_edit(self) -> None:
+        # Input also posts Changed while it mounts; only a new value is an edit
+        if self._opened_with is not None and self._path() != self._opened_with:
+            self._edited = True
         self._check()
 
     @on(Input.Submitted, "#path-input")
