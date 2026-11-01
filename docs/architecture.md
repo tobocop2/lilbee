@@ -807,8 +807,8 @@ flowchart LR
     fallback are never pinned: they carry raw loader ordinals, so the engine is
     left to select for itself.
   - By environment (`devices.visible_env`): **CUDA** via `CUDA_VISIBLE_DEVICES`
-    with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the environment presets another
-    order), **ROCm/HIP** via one of `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`
+    with `CUDA_DEVICE_ORDER=PCI_BUS_ID` (a preset order is replaced with a
+    warning), **ROCm/HIP** via one of `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`
     (never both: ROCr filters first and HIP re-indexes within the survivors, so
     writing both double-filters). When the parent environment already restricts a
     visible-devices var (a pod preset like `CUDA_VISIBLE_DEVICES=2,3`), the probe's

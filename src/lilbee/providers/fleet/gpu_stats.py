@@ -18,7 +18,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from lilbee.providers.fleet.devices import _CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER
+from lilbee.providers.fleet import host_caps
+from lilbee.providers.fleet.devices import VULKAN_BACKEND
 from lilbee.providers.fleet.gpu_backends import (
     IntelUtilHint,
     UtilSample,
@@ -115,20 +116,6 @@ _BACKEND_VISIBLE_VARS: dict[str, tuple[str, ...]] = {
 }
 
 
-_CUDA_BACKEND = "CUDA"
-
-
-def _cuda_order_is_reordered() -> bool:
-    """Whether CUDA_DEVICE_ORDER puts the runtime out of step with nvidia-smi.
-
-    Reads the same variable and default the probe writes, so the two cannot
-    drift apart: unset means the probe supplies bus order and the two index
-    spaces agree, and a preset value is respected there and honoured here.
-    """
-    order = gpu_environ().get(_CUDA_ORDER_VAR, "").strip().upper()
-    return bool(order) and order != _PCI_BUS_ID_ORDER
-
-
 def _physical_index(backend_name: str, fleet_index: int) -> int | None:
     """The index the vendor's SMI tool uses for the fleet's device *fleet_index*.
 
@@ -148,16 +135,7 @@ def _physical_index(backend_name: str, fleet_index: int) -> int | None:
     every unmasked host. Intel is absent because ONEAPI_DEVICE_SELECTOR is a
     selector grammar rather than an index list, and xpu-smi is called with the
     fleet index directly.
-
-    A reordered index space is the same problem without a mask. CUDA_DEVICE_ORDER
-    set to FASTEST_FIRST makes the runtime enumerate by speed while nvidia-smi
-    keeps enumerating by bus, so the two index spaces name different cards and no
-    arithmetic relates them. Correlating on a stable identity (UUID or PCI bus
-    id) is what would make this structural; until the probe carries one, an
-    honest refusal beats a confident mismatch.
     """
-    if backend_name == _CUDA_BACKEND and _cuda_order_is_reordered():
-        return None
     index = fleet_index
     env = gpu_environ()
     for var in _BACKEND_VISIBLE_VARS.get(backend_name, ()):
@@ -169,6 +147,17 @@ def _physical_index(backend_name: str, fleet_index: int) -> int | None:
             return None
         index = int(entries[index])
     return index
+
+
+def _takes_a_sample(device: DeviceLike, devices: Sequence[DeviceLike]) -> bool:
+    """Whether a vendor sample can name *device*.
+
+    No id joins a Vulkan number to a driver's number, so a Vulkan device takes one
+    only when it is the only device and the driver shows at most one NVIDIA card.
+    """
+    if device.backend != VULKAN_BACKEND:
+        return True
+    return len(devices) == 1 and len(host_caps.read_card_memory()) <= 1
 
 
 def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
@@ -187,7 +176,8 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
     # consumer GPU routes to its vendor's util source by name.
     by_backend: dict[str, list[DeviceLike]] = {}
     for d in devices:
-        by_backend.setdefault(util_backend_name(d.backend, d.name), []).append(d)
+        if _takes_a_sample(d, devices):
+            by_backend.setdefault(util_backend_name(d.backend, d.name), []).append(d)
 
     for backend_name, group in by_backend.items():
         # Ask the SMI tool about its own indices, and merge its answers back into
@@ -231,7 +221,7 @@ def intel_util_hint(
     blocked, install when it is absent, e.g. kernels too old for fdinfo).
     """
     for d in devices:
-        if util_backend_name(d.backend, d.name) != "SYCL":
+        if util_backend_name(d.backend, d.name) != "SYCL" or not _takes_a_sample(d, devices):
             continue
         stat = stats.get(d.index)
         if stat is not None and stat.utilization_pct is None:
