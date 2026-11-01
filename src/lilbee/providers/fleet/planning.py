@@ -1253,7 +1253,9 @@ def _estimate_cpu_role(
 ) -> ModelPlacementInput | None:
     """Size a role that runs on the CPU: nothing on a card, its one pool in system memory.
 
-    The estimate's unified footprint is that pool. It holds no mapped weights, which
+    The charge is the estimate's unified footprint: a figure read from the model
+    header, not a measure of the process. It runs over the real memory for chat and
+    under it for embedding. It holds no mapped weights, which
     page in and out, so two roles on one file do not charge the file. A load with no
     map must hold the weights, so they are added. A model that is not installed is
     skipped and recorded. A sizing failure on an installed model charges the weight

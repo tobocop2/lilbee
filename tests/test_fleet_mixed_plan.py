@@ -23,6 +23,7 @@ from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
+from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, WorkerRole
 from tests._fleet_engines import (
@@ -631,6 +632,18 @@ class TestMixedPlanPins:
         assert {launch.role for launch in plan.launches} == {C}
         assert "cannot be told which GPU to use" in _warnings(caplog)
         assert "using automatic placement" in _warnings(caplog)
+
+    def test_a_saved_placement_with_a_role_off_the_cards_refuses_the_pin_error(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        roles = (Role(C, 7), Role(E, 2), Role(V, 2))
+        prepare_host(monkeypatch, tmp_path, roles, 64 * _GIB)
+        spec = {"chat": {"devices": [0]}, "embed": {"devices": [1]}, "vision": {"target": "cpu"}}
+        monkeypatch.setattr(cfg, "placement", json.dumps(spec))
+        row = PinRow((8, 8), "Vulkan", roles, frozenset({E}), {})
+        with pytest.raises(PlacementError) as caught:
+            planning.plan_all_launches(engines=_pin_engines(tmp_path, row))
+        assert str(caught.value) == "the engine of embed cannot be told which GPU to use"
 
 
 class TestDeviceNameContract:
