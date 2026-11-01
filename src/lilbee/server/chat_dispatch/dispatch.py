@@ -572,7 +572,7 @@ def _provider_tool_choice(
     return _TOOL_CHOICE_MODES[choice.mode]
 
 
-def _provider_options(req: CanonicalChatRequest) -> dict[str, Any] | None:
+def _sampler_options(req: CanonicalChatRequest) -> dict[str, Any]:
     out: dict[str, Any] = {}
     if req.temperature is not None:
         out["temperature"] = req.temperature
@@ -588,10 +588,17 @@ def _provider_options(req: CanonicalChatRequest) -> dict[str, Any] | None:
         out["frequency_penalty"] = req.frequency_penalty
     if req.presence_penalty is not None:
         out["presence_penalty"] = req.presence_penalty
+    return out
+
+
+def _provider_options(req: CanonicalChatRequest) -> dict[str, Any] | None:
+    out = _sampler_options(req)
     if req.stop is not None:
         out["stop"] = req.stop
     if req.think is not None:
         out["think"] = req.think
+    if req.response_format is not None:
+        out["response_format"] = req.response_format
     return out or None
 
 

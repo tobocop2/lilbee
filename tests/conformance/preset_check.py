@@ -40,6 +40,7 @@ FIXTURES = Path(__file__).with_name("fixtures") / "presets"
 ENGINE_FIXTURES = Path(__file__).with_name("fixtures") / "engines"
 _TIMEOUT_S = 600.0
 _EMBED_PATH = "/v1/embeddings"
+_IMAGE_PART = b'"image_url"'
 _NOT_NAME = re.compile(r"[^a-z0-9_-]")
 _OVERSIZE = "w " * 60000
 _CONVERSATION = [
@@ -378,7 +379,7 @@ class _SameOriginRedirects(urllib.request.HTTPRedirectHandler):
 
 
 def _proxy_handler(
-    upstream: str, tape: _Tape, token: str | None, embed_url: str | None
+    upstream: str, tape: _Tape, token: str | None, embed_url: str | None, vision_url: str | None
 ) -> type[BaseHTTPRequestHandler]:
     opener = urllib.request.build_opener(_SameOriginRedirects)
 
@@ -390,6 +391,8 @@ def _proxy_handler(
             target = upstream
             if embed_url is not None and self.path.startswith(_EMBED_PATH):
                 target = embed_url
+            elif vision_url is not None and _IMAGE_PART in raw:
+                target = vision_url
             if token is not None and _origin(target) == _origin(upstream):
                 headers["Authorization"] = f"Bearer {token}"
             request = urllib.request.Request(  # noqa: S310  a local server under test
@@ -427,15 +430,22 @@ def _proxy_handler(
 
 @contextmanager
 def recording(
-    upstream: str, *, token: str | None = None, embed_url: str | None = None
+    upstream: str,
+    *,
+    token: str | None = None,
+    embed_url: str | None = None,
+    vision_url: str | None = None,
 ) -> Iterator[tuple[str, _Tape]]:
     """A proxy in front of *upstream* that records every exchange; yields its URL and tape.
 
     *token* is sent to *upstream* as a bearer token and never reaches the tape.
     *embed_url* takes the embeddings route, for an upstream that does not serve it.
+    *vision_url* takes a chat request that carries an image part.
     """
     tape = _Tape()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _proxy_handler(upstream, tape, token, embed_url))
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), _proxy_handler(upstream, tape, token, embed_url, vision_url)
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

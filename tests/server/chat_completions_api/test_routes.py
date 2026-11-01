@@ -1795,14 +1795,14 @@ class TestIgnoredParamsLogged:
                 json={
                     "model": INSTALLED_REF,
                     "messages": [{"role": "user", "content": "hi"}],
-                    "response_format": {"type": "json_object"},
+                    "top_logprobs": 2,
                     "logprobs": True,
                 },
             )
         assert resp.status_code == 200
         spy.assert_called_once_with(
             "chat/completions ignoring unsupported params: %s",
-            ["logprobs", "response_format"],
+            ["logprobs", "top_logprobs"],
         )
 
     async def test_no_log_when_only_supported_params(
