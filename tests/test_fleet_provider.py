@@ -2154,6 +2154,18 @@ _TOOL_AWARE_TEMPLATE = "{% if tools %}{{ tool_calls }}{% endif %}"
 _PLAIN_TEMPLATE = "{% for m in messages %}{{ m.content }}{% endfor %}"
 
 
+class _HeaderEngine:
+    """An engine stand-in whose header read returns a fixed answer."""
+
+    def __init__(self, meta: dict[str, str] | None) -> None:
+        self.meta = meta
+        self.reads: list[Path] = []
+
+    def model_meta(self, path: Path) -> dict[str, str] | None:
+        self.reads.append(path)
+        return self.meta
+
+
 @pytest.fixture()
 def _clear_tools_cache():
     """``_supports_tools_cached`` is module-level lru_cache; clear it per test so
@@ -2163,45 +2175,53 @@ def _clear_tools_cache():
     prov_mod._supports_tools_cached.cache_clear()
 
 
+def _probe(monkeypatch, path: Path, meta: dict[str, str] | None) -> tuple[bool, _HeaderEngine]:
+    """Ask the fleet's tool probe for *path* when the chat engine reads *meta* from it."""
+    engine = _HeaderEngine(meta)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: path)
+    monkeypatch.setattr(FleetProvider, "_adopt_engine", lambda _self, _role: engine)
+    return FleetProvider().supports_tools("org/repo/chat.gguf"), engine
+
+
 def test_supports_tools_true_for_tool_aware_template(monkeypatch, tmp_path, _clear_tools_cache):
     gguf = tmp_path / "chat.gguf"
     gguf.write_bytes(b"gguf")
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: gguf)
-    monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.read_gguf_metadata",
-        lambda _p: {"chat_template": _TOOL_AWARE_TEMPLATE},
-    )
-    assert FleetProvider().supports_tools("org/repo/chat.gguf") is True
+    answer, engine = _probe(monkeypatch, gguf, {"chat_template": _TOOL_AWARE_TEMPLATE})
+    assert answer is True
+    assert engine.reads == [gguf]
 
 
 def test_supports_tools_false_for_plain_template(monkeypatch, tmp_path, _clear_tools_cache):
     gguf = tmp_path / "chat.gguf"
     gguf.write_bytes(b"gguf")
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: gguf)
-    monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.read_gguf_metadata",
-        lambda _p: {"chat_template": _PLAIN_TEMPLATE},
-    )
-    assert FleetProvider().supports_tools("org/repo/chat.gguf") is False
+    answer, _ = _probe(monkeypatch, gguf, {"chat_template": _PLAIN_TEMPLATE})
+    assert answer is False
 
 
-def test_supports_tools_false_when_metadata_unreadable(monkeypatch, tmp_path, _clear_tools_cache):
-    gguf = tmp_path / "chat.gguf"
-    gguf.write_bytes(b"gguf")
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: gguf)
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: None)
-    assert FleetProvider().supports_tools("org/repo/chat.gguf") is False
+def test_supports_tools_true_when_the_engine_reads_no_header(
+    monkeypatch, tmp_path, _clear_tools_cache
+):
+    """A safetensors snapshot has no GGUF header: the engine answers the tool request."""
+    snapshot = tmp_path / "Qwen3-0.6B"
+    snapshot.mkdir()
+    answer, engine = _probe(monkeypatch, snapshot, None)
+    assert answer is True
+    assert engine.reads == [snapshot]
 
 
 def test_supports_tools_false_when_template_missing(monkeypatch, tmp_path, _clear_tools_cache):
     gguf = tmp_path / "chat.gguf"
     gguf.write_bytes(b"gguf")
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: gguf)
-    # Metadata present but no chat_template key -> template is not a str.
-    monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "llama"}
-    )
-    assert FleetProvider().supports_tools("org/repo/chat.gguf") is False
+    # A header was read but it holds no chat_template key: the GGUF has no tool template.
+    answer, _ = _probe(monkeypatch, gguf, {"architecture": "llama"})
+    assert answer is False
+
+
+def test_supports_tools_false_when_header_is_empty(monkeypatch, tmp_path, _clear_tools_cache):
+    gguf = tmp_path / "chat.gguf"
+    gguf.write_bytes(b"gguf")
+    answer, _ = _probe(monkeypatch, gguf, {})
+    assert answer is False
 
 
 def test_supports_tools_false_when_model_unresolved(monkeypatch, _clear_tools_cache):
@@ -2217,12 +2237,37 @@ def test_supports_tools_false_when_model_unresolved(monkeypatch, _clear_tools_ca
 def test_supports_tools_tolerates_unstattable_path(monkeypatch, _clear_tools_cache):
     """A resolved path whose ``stat()`` fails still probes (mtime falls back to 0)."""
     bogus = Path("/does/not/exist/chat.gguf")
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: bogus)
-    monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.read_gguf_metadata",
-        lambda _p: {"chat_template": _TOOL_AWARE_TEMPLATE},
-    )
-    assert FleetProvider().supports_tools("org/repo/chat.gguf") is True
+    answer, engine = _probe(monkeypatch, bogus, {"chat_template": _TOOL_AWARE_TEMPLATE})
+    assert answer is True
+    assert engine.reads == [bogus]
+
+
+def test_supports_tools_false_for_a_real_gguf_without_a_tool_template(
+    monkeypatch, tmp_path, _clear_tools_cache
+):
+    """The llama engine reads the header of a file that opens with the GGUF magic."""
+    from lilbee.providers.fleet.engines import llama as llama_mod
+
+    gguf = tmp_path / "chat.gguf"
+    gguf.write_bytes(llama_mod.GGUF_MAGIC + b"\x00" * 8)
+    monkeypatch.setattr(llama_mod, "read_gguf_metadata", lambda _p: {"chat_template": "{{ x }}"})
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: gguf)
+    monkeypatch.setattr(FleetProvider, "_adopt_engine", lambda _s, _r: llama_mod.LLAMA)
+    assert FleetProvider().supports_tools("org/repo/chat.gguf") is False
+
+
+def test_supports_tools_asks_the_chat_engine(monkeypatch, tmp_path, _clear_tools_cache):
+    asked: list[WorkerRole] = []
+    engine = _HeaderEngine(None)
+
+    def _adopt(_self, role):
+        asked.append(role)
+        return engine
+
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: tmp_path)
+    monkeypatch.setattr(FleetProvider, "_adopt_engine", _adopt)
+    assert FleetProvider().supports_tools("org/repo#safetensors") is True
+    assert asked == [WorkerRole.CHAT]
 
 
 # --- llama-swap lifecycle ----------------------------------------------------
