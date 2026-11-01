@@ -1,6 +1,6 @@
 ArgHintLine {
     width: 100%;
-    height: 1;
+    height: auto;
     padding: 0 1;
     background: transparent;
     color: $text-muted;

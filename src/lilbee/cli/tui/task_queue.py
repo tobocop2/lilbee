@@ -39,6 +39,7 @@ class TaskType(StrEnum):
     SETUP = "setup"
     IMPORT = "import"
     EXPORT = "export"
+    ANALYZE = "analyze"
 
 
 class CancelOrigin(StrEnum):

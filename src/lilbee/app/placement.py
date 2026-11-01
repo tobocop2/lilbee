@@ -203,19 +203,20 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     context sizing, while charging stays against total capacity (bb-a8f).
     """
     resolved = resolve_placement_plan(spec)
-    if spec is None:
+    spec_json = None if spec is None else spec.to_json()
+    if spec_json is None:
         settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
-        cfg.placement = None
     else:
-        spec_json = spec.to_json()
         settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
-        cfg.placement = spec_json
+    settings.sync_from_resolver(cfg, [_PLACEMENT_KEY])
     services = peek_services()
     if services is None:
         clear_read_device_cache()  # nothing running; let the next boot probe fresh
     else:
         services.provider.reload_placement(wait=True)
-    return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+    if cfg.placement != spec_json:
+        return get_placement()  # LILBEE_PLACEMENT outranks the saved spec; report what runs
+    return _view(resolved, manual=spec is not None, spec_json=spec_json)
 
 
 def wait_chat_ready(

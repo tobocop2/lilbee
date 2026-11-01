@@ -1910,8 +1910,13 @@ async def test_footer_key_characters_type_into_a_settings_editor():
         await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         app.switch_view("Settings")
         assert await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        app.screen.query_one("#settings-tabs", TabbedContent).active = "settings-tab-models"
 
-        editors = [w for w in app.screen.query(Input).results() if w.display]
+        def _editors() -> list[Input]:
+            return [w for w in app.screen.query(Input).results() if w.display]
+
+        await pump_until(pilot, lambda: bool(_editors()))
+        editors = _editors()
         assert editors, "Settings rendered no text field to type into"
         editor = editors[0]
         editor.focus()
@@ -2000,8 +2005,13 @@ async def test_every_bound_character_types_into_a_settings_editor():
         await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         app.switch_view("Settings")
         assert await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        app.screen.query_one("#settings-tabs", TabbedContent).active = "settings-tab-models"
 
-        editors = [w for w in app.screen.query(Input).results() if w.display]
+        def _editors() -> list[Input]:
+            return [w for w in app.screen.query(Input).results() if w.display]
+
+        await pump_until(pilot, lambda: bool(_editors()))
+        editors = _editors()
         assert editors, "Settings rendered no text field to type into"
         editor = editors[0]
         app.screen.set_focus(editor)

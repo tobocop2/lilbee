@@ -20,7 +20,8 @@ from mcp.shared.exceptions import MCPError
 import lilbee.app.services as svc_mod
 from conftest import clean_env
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import OcrMode
+from lilbee.core.config.enums import OcrMode, SettingSource
+from lilbee.core.config.resolve import builtin_value, read_layers, resolve
 from lilbee.crawler.models import CrawlLogin
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.crawler.url_filter import UNPARSED_ADDRESS
@@ -730,9 +731,7 @@ class TestInit:
         assert cfg.documents_dir == root / "documents"
         assert cfg.data_root == tmp_path
 
-    async def test_init_switches_search_scope_hint_to_the_new_vault(
-        self, tmp_path, monkeypatch, overlay_reads_config_toml
-    ):
+    async def test_init_switches_search_scope_hint_to_the_new_vault(self, tmp_path, monkeypatch):
         """After a vault switch, a live server advertises the new corpus's scopes.
 
         The hint is computed per list_tools call from current config, so the
@@ -773,7 +772,32 @@ class TestInit:
 
         assert os.environ["LILBEE_DATA"] == "/unchanged"
 
-    def test_init_overlays_per_root_config_toml(self, tmp_path, overlay_reads_config_toml):
+    @pytest.mark.parametrize(
+        "text", [None, "", "chunk_overlap = 11\n"], ids=["no-file", "empty-file", "partial-file"]
+    )
+    def test_init_keeps_the_models_a_root_does_not_name(self, tmp_path, text):
+        """A session that enters a fresh project can still embed and chat; the rest is built-in."""
+        cfg.chat_model = "ollama/held-chat:latest"
+        cfg.embedding_model = "ollama/held-embed:latest"
+        cfg.vision_model = "ollama/held-vision:latest"
+        cfg.reranker_model = "org/Held-Rerank-GGUF/held-Q4.gguf"
+        cfg.chunk_size = 900
+        cfg.top_k = 7
+        cfg.ocr = OcrMode.ALL
+        target = tmp_path / "myproject"
+        target.mkdir()
+        if text is not None:
+            (target / "config.toml").write_text(text, encoding="utf-8")
+
+        init(str(target))
+
+        assert cfg.chat_model == "ollama/held-chat:latest"
+        assert cfg.embedding_model == "ollama/held-embed:latest"
+        assert cfg.vision_model == "ollama/held-vision:latest"
+        assert cfg.reranker_model == "org/Held-Rerank-GGUF/held-Q4.gguf"
+        assert (cfg.chunk_size, cfg.top_k, cfg.ocr) == (512, 12, OcrMode.AUTO)
+
+    def test_init_overlays_per_root_config_toml(self, tmp_path):
         """init() must re-read the project base's config.toml, the same fix as
         the CLI's --data-dir entry point. Without this, switching the MCP
         session to a project that has its own model preferences silently
@@ -791,9 +815,7 @@ class TestInit:
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
 
-    def test_init_keeps_a_reranker_model_the_project_cleared(
-        self, tmp_path, overlay_reads_config_toml
-    ):
+    def test_init_keeps_a_reranker_model_the_project_cleared(self, tmp_path):
         """An empty reranker_model in the project's config.toml clears the ambient one."""
         cfg.reranker_model = "org/Ambient-Rerank-GGUF/ambient-Q4_K_M.gguf"
         cfg.top_k = 5
@@ -2340,6 +2362,21 @@ class TestSettingsMcp:
         assert top_k["help"]
         assert top_k["reindex_required"] is False
 
+    def test_settings_list_and_get_carry_source(self, isolated_env, monkeypatch):
+        cfg.data_root = isolated_env
+        (isolated_env / "config.toml").write_text(
+            "top_k = 7\n[profile.values]\nchunk_overlap = 50\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("LILBEE_MAX_TOKENS", "2048")
+        listed = {entry["key"]: entry["source"] for entry in settings_list()["settings"]}
+        assert listed["top_k"] == "user"
+        assert listed["chunk_overlap"] == "profile"
+        assert listed["max_tokens"] == "env"
+        assert listed["temperature"] == "built_in"
+        assert listed["num_ctx"] == "auto"
+        assert settings_get("top_k")["setting"]["source"] == "user"
+        assert settings_get("temperature")["setting"]["source"] == "built_in"
+
     def test_settings_list_filters_by_group(self, isolated_env):
         cfg.data_root = isolated_env
         result = settings_list(group="Retrieval")
@@ -2354,6 +2391,15 @@ class TestSettingsMcp:
         assert result["command"] == "settings_get"
         assert result["setting"]["key"] == "top_k"
         assert result["setting"]["value"] == 7
+
+    def test_settings_carry_the_advanced_flag(self, isolated_env):
+        cfg.data_root = isolated_env
+        assert settings_get("top_k")["setting"]["advanced"] is False
+        assert settings_get("reranker_type")["setting"]["advanced"] is True
+        result = settings_list()
+        by_key = {entry["key"]: entry["advanced"] for entry in result["settings"]}
+        assert by_key["max_reasoning_chars"] is True
+        assert by_key["chunk_size"] is False
 
     def test_settings_get_unknown_key_returns_error(self, isolated_env):
         cfg.data_root = isolated_env
@@ -2438,7 +2484,7 @@ class TestSettingsMcp:
         settings_set({"temperature": 0.7, "seed": 5})
         result = settings_set({"temperature": "", "seed": "   "})
         assert set(result["updated"]) == {"temperature", "seed"}
-        assert cfg.temperature is None
+        assert cfg.temperature == builtin_value("temperature")
         assert cfg.seed is None
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
         assert "temperature" not in persisted
@@ -2522,6 +2568,7 @@ class TestSettingsMcp:
         assert cfg.vision_model == ""
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
         assert 'vision_model = ""' in persisted
+        assert resolve("vision_model", read_layers(isolated_env)).source is SettingSource.USER
 
     def test_settings_set_pre_validates_chunk_size(self, isolated_env):
         cfg.data_root = isolated_env
@@ -2592,7 +2639,7 @@ class TestSettingsMcp:
 
     def test_settings_reset_answers_a_failed_write_with_the_cause(self, isolated_env, monkeypatch):
         cfg.data_root = isolated_env
-        cfg.top_k = 99
+        settings_set({"top_k": 99})
 
         def refuse(_src, _dst):
             raise PermissionError(13, "The process cannot access the file")
@@ -2615,7 +2662,7 @@ class TestSettingsMcp:
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
         assert "max_tokens" in persisted
         settings_set({"max_tokens": None})
-        assert cfg.max_tokens is None
+        assert cfg.max_tokens is None  # the built-in, as a fresh Config() gives
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
         assert "max_tokens" not in persisted
 
@@ -2635,6 +2682,69 @@ class TestSettingsMcp:
 
         assert cfg.top_k == get_setting("top_k").default
 
+    def test_settings_reset_removes_the_user_key_and_resolves_the_profile_value(self, isolated_env):
+        from lilbee.core import settings as persistent
+
+        cfg.data_root = isolated_env
+        (isolated_env / "config.toml").write_text(
+            "max_distance = 0.3\ntop_k = 7\n[profile.values]\nmax_distance = 0.7\n",
+            encoding="utf-8",
+        )
+        cfg.max_distance = 0.3
+        result = settings_reset(["max_distance"])
+        assert result["updated"] == ["max_distance"]
+        assert cfg.max_distance == 0.7
+        stored = persistent.load(isolated_env)
+        assert "max_distance" not in stored
+        assert stored["top_k"] == 7
+
+    def test_settings_reset_shows_the_warnings_of_its_update(self, isolated_env, monkeypatch):
+        cfg.data_root = isolated_env
+        ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        monkeypatch.setenv("LILBEE_VISION_MODEL", ref)
+        (isolated_env / "config.toml").write_text("ocr = 'off'\n", encoding="utf-8")
+        cfg.ocr = OcrMode.OFF
+        cfg.vision_model = ""
+        with mock.patch("lilbee.app.settings._invalidate_caches"):
+            result = settings_reset(["vision_model"])
+        assert len(result["warnings"]) == 1
+        assert ref in result["warnings"][0]
+
+    def test_settings_reset_with_duplicate_keys_removes_the_key_once(self, isolated_env):
+        from lilbee.core import settings as persistent
+
+        cfg.data_root = isolated_env
+        settings_set({"top_k": 7, "seed": 3})
+        result = settings_reset(["top_k", "top_k"])
+        assert result["updated"] == ["top_k"]
+        assert cfg.top_k == 12
+        assert persistent.load(isolated_env) == {"seed": 3}
+
+    def test_settings_default_is_the_profile_value_a_reset_resolves_to(self, isolated_env):
+        cfg.data_root = isolated_env
+        (isolated_env / "config.toml").write_text(
+            "top_k = 99\n[profile.values]\ntop_k = 7\n", encoding="utf-8"
+        )
+        cfg.top_k = 99
+        assert settings_get("top_k")["setting"]["default"] == 7
+        listed = {row["key"]: row for row in settings_list()["settings"]}
+        assert listed["top_k"]["default"] == 7
+        assert listed["seed"]["default"] is None
+        assert listed["temperature"]["default"] == 0.1
+        settings_reset(["top_k"])
+        assert cfg.top_k == 7
+
+    def test_settings_reset_under_env_pin_keeps_env(self, isolated_env, monkeypatch):
+        from lilbee.core import settings as persistent
+
+        cfg.data_root = isolated_env
+        settings_set({"top_k": 7})
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        result = settings_reset(["top_k"])
+        assert result["updated"] == ["top_k"]
+        assert cfg.top_k == 9
+        assert "top_k" not in persistent.load(isolated_env)
+
     def test_settings_reset_unknown_key_returns_error(self, isolated_env):
         cfg.data_root = isolated_env
         result = settings_reset(["nope"])
@@ -2651,7 +2761,7 @@ class TestSettingsMcp:
         assert cfg.temperature == get_setting("temperature").default
 
     def test_settings_reset_refuses_path_sentinel_field(self, isolated_env):
-        """documents_dir has no resettable default; resetting must error instead of corrupting."""
+        """documents_dir has no default to reset to; resetting must error instead of corrupting."""
         cfg.data_root = isolated_env
         result = settings_reset(["documents_dir"])
         assert "error" in result
@@ -2721,19 +2831,19 @@ class TestSettingsMcp:
         assert all(info.group == SettingGroup.RETRIEVAL for info in infos)
 
     def test_setting_default_handles_pydantic_undefined(self, isolated_env):
-        """_setting_default returns None when the pydantic field has no default."""
+        """builtin_value returns None when the pydantic field has no default."""
         cfg.data_root = isolated_env
         from unittest.mock import MagicMock, patch
 
         from pydantic_core import PydanticUndefined
 
-        from lilbee.app.settings import _setting_default
+        from lilbee.core.config.resolve import builtin_value
 
         field_info = MagicMock()
         field_info.default_factory = None
         field_info.default = PydanticUndefined
-        with patch("lilbee.app.settings.Config.model_fields", {"top_k": field_info}):
-            assert _setting_default("top_k") is None
+        with patch("lilbee.core.config.resolve.Config.model_fields", {"top_k": field_info}):
+            assert builtin_value("top_k") is None
 
     def test_is_nullable_returns_false_for_model_role_field(self, isolated_env):
         """Model role fields are not in WRITABLE_CONFIG_FIELDS; _is_nullable returns False."""

@@ -11,12 +11,15 @@ from __future__ import annotations
 from lilbee.cli.app import app
 from lilbee.cli.commands import (
     agent_config,
+    analyze,
     dataset,
     ingest_sync,
     memory,
     meta,
+    profile,
     search_chat,
     servers,
+    settings,
     wiki,
 )
 from lilbee.cli.commands import setup as setup_module
@@ -42,6 +45,7 @@ app.command(name="self-check-extras")(setup_module.self_check_extras_cmd)
 app.command()(meta.status)
 app.command()(meta.reset)
 app.command()(meta.init)
+app.command(name="analyze")(analyze.analyze_cmd)
 app.command()(servers.serve)
 app.command()(setup_module.token)
 app.command()(search_chat.topics)
@@ -55,5 +59,7 @@ app.add_typer(wiki.wiki_app, name="wiki")
 app.add_typer(agent_config.agent_config_app, name="agent-config")
 app.add_typer(launch_app, name="launch")
 app.add_typer(memory.memory_app, name="memory")
+app.add_typer(profile.profile_app, name="profile")
+app.add_typer(settings.settings_app, name="settings")
 
 __all__ = ["app"]

@@ -2775,6 +2775,11 @@ class TestRefusedEngineOnEachEntryPoint:
         monkeypatch.setattr("lilbee.crawler.url_filter.validate_crawl_url", lambda url: None)
         monkeypatch.setattr("lilbee.crawler.url_filter.require_valid_crawl_url", lambda url: None)
 
+    @pytest.fixture(autouse=True)
+    def _keep_the_settings_of_the_test(self, monkeypatch):
+        """A CLI call overlays its data root, which resets every value this class sets on cfg."""
+        monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
+
     @REFUSED
     def test_cli_add_exits_nonzero_with_the_reason_and_no_traceback(
         self, isolated_env, configure, render_mode: CrawlRenderMode, depth: int, message: str

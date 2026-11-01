@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeVar, runtime_checkable
 
 from textual.await_remove import AwaitRemove
 from textual.containers import Vertical
@@ -66,3 +66,20 @@ def drawer_holding(widget: Widget | None) -> Drawer | None:
     if widget is None:
         return None
     return next((node for node in widget.ancestors_with_self if isinstance(node, Drawer)), None)
+
+
+_ChildT = TypeVar("_ChildT", bound=Widget)
+
+
+def first_direct_child(node: Widget, widget_type: type[_ChildT]) -> _ChildT | None:
+    """The first immediate child of *node* that is a *widget_type*, or None.
+
+    A drawer mounts directly on the screen, so this answers "is a drawer
+    open" without ``screen.query()``'s whole-subtree walk. check_action
+    calls this on every focus change across the whole app, so the walk's
+    cost multiplies with the size of whichever screen is on top.
+    """
+    for child in node.children:
+        if isinstance(child, widget_type):
+            return child
+    return None

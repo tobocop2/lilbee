@@ -164,6 +164,7 @@ uv run --no-sync python -m nuitka \
     --include-distribution-metadata=catalogue \
     --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \
     --include-data-dir=src/lilbee/skills=lilbee/skills \
+    --include-data-dir=src/lilbee/profiles=lilbee/profiles \
     "${CHILD_MODULE_FLAGS[@]}" \
     "${MYPYC_FLAGS[@]}" \
     "${LLAMA_SERVER_FLAGS[@]}" \

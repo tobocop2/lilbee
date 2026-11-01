@@ -1,0 +1,67 @@
+ProfileLibrary {
+    align: center middle;
+}
+
+#library-body {
+    width: 94%;
+    max-width: 130;
+    height: 90%;
+    max-height: 36;
+    border: $rail-heavy $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#library-title {
+    text-style: bold;
+    color: $text;
+    margin-bottom: 1;
+}
+
+#library-main {
+    height: 1fr;
+    min-height: 0;
+}
+
+#library-list {
+    width: 1fr;
+    height: 100%;
+}
+
+#library-detail {
+    width: 1fr;
+    height: 100%;
+    padding: 0 0 0 2;
+}
+
+ProfileLibrary.-narrow #library-detail {
+    display: none;
+}
+
+#library-name {
+    text-style: bold;
+}
+
+.library-muted {
+    color: $text-muted;
+}
+
+#library-problem {
+    color: $warning;
+}
+
+.profile-section-title {
+    text-style: bold;
+    margin-top: 1;
+}
+
+#library-changes {
+    height: auto;
+    max-height: 10;
+}
+
+#library-hints {
+    dock: bottom;
+    height: auto;
+    margin-top: 1;
+}

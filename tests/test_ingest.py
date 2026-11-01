@@ -8848,9 +8848,7 @@ class TestSyncLoadsThePersistedRegistry:
     """A sync indexes the roots ``config.toml`` holds, whatever this process loaded earlier."""
 
     @pytest.fixture(autouse=True)
-    def _the_data_root_file_is_the_loaded_one(
-        self, isolated_env, monkeypatch, overlay_reads_config_toml
-    ):
+    def _the_data_root_file_is_the_loaded_one(self, isolated_env, monkeypatch):
         """The layout of the CLI, serve and the TUI: cfg was built from the data root's file."""
         from lilbee.core.config import CONFIG_FILE_NAME, model
 

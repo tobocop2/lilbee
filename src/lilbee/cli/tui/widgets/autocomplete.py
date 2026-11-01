@@ -19,8 +19,14 @@ from lilbee.app.services import get_services
 from lilbee.app.settings import _is_settable
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
-from lilbee.cli.tui.command_registry import COMMANDS, completion_names
+from lilbee.cli.tui.command_registry import (
+    ANALYZE_OFF_ARG,
+    ANALYZE_REPORT_ARG,
+    COMMANDS,
+    completion_names,
+)
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
+from lilbee.core.profile_files import ProfileStore
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +52,9 @@ _MAX_PATH_COMPLETIONS = 20
 # Commands whose argument is a filesystem path. They share _path_options and
 # the path-specific accept rules (typed-directory prefix kept, existing-path
 # collapse).
-PATH_ARG_COMMANDS = frozenset({"/add", "/import", "/export", "/export-chat"})
+PATH_ARG_COMMANDS = frozenset({"/add", "/import", "/export", "/export-chat", "/analyze"})
+# Words a path-argument command also takes, offered ahead of the paths.
+PATH_ARG_WORDS: dict[str, tuple[str, ...]] = {"/analyze": (ANALYZE_OFF_ARG, ANALYZE_REPORT_ARG)}
 
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
 
@@ -71,7 +79,7 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     fully-typed argument collapses the dropdown and lets Enter submit,
     mirroring the command-discovery rule for slash commands.
     """
-    sources = _ARG_SOURCES.get(cmd)
+    sources = ARG_SOURCES.get(cmd)
     if sources is None:
         return []
     if cmd in PATH_ARG_COMMANDS:
@@ -82,10 +90,11 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
         # descends to list the directory's contents.
         if partial and not partial.endswith(_PATH_SEPARATORS) and _path_exists(partial):
             return []
+        words = [w for w in PATH_ARG_WORDS.get(cmd, ()) if w.startswith(partial.lower())]
         # _path_options already prefix-filters against the basename and returns
         # bare segment names (not the typed prefix), so the generic startswith
         # filter below would wrongly wipe them.
-        options = _path_options(partial)
+        options = words + _path_options(partial)
     else:
         options = sources()
         if partial:
@@ -126,6 +135,10 @@ def _indexed_names() -> list[str]:
 def _document_options() -> list[str]:
     """``/delete`` targets: indexed sources, then held-out sources not indexed."""
     return removable_names(_indexed_names())
+
+
+def _profile_options() -> list[str]:
+    return ProfileStore().scan().usable_names()
 
 
 def _theme_options() -> list[str]:
@@ -201,13 +214,15 @@ def longest_common_prefix(values: list[str]) -> str:
     return shortest
 
 
-_ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
+ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
     "/model": _model_options,
     "/set": _setting_options,
     "/delete": _document_options,
     "/remove": _model_options,
     "/theme": _theme_options,
+    "/profile": _profile_options,
     "/add": _path_options,
+    "/analyze": _path_options,
     "/import": _path_options,
     "/export": _path_options,
     "/export-chat": _path_options,

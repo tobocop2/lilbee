@@ -29,6 +29,7 @@ from lilbee.runtime.progress import OcrBackendUsed
 # discovery.classify_file (PDFs and images grouped; others keyed by extension).
 PDF_CONTENT_TYPE = "pdf"
 IMAGE_CONTENT_TYPE = "image"
+CODE_CONTENT_TYPE = "code"
 MARKDOWN_OUTPUT = "markdown"
 MARKDOWN_MIME = "text/markdown"
 # Sync summary note for a skipped document whose extraction ran with OCR off.

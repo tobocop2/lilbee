@@ -163,7 +163,7 @@ async def _set_model(
     model: str,
 ) -> SetModelResponse:
     """Persist a model field through the shared write boundary."""
-    result = apply_settings_update({field: model})
+    result = await asyncio.to_thread(apply_settings_update, {field: model})
     return SetModelResponse(model=model, warnings=list(result.warnings))
 
 
@@ -265,7 +265,7 @@ async def set_embedding_model(model: str) -> SetModelResponse:
     the OLD ref before the write and computes ``reindex_required`` after.
     """
     normalized = await asyncio.to_thread(_require_model_for_task, model, ModelTask.EMBEDDING)
-    result = apply_settings_update({"embedding_model": normalized})
+    result = await asyncio.to_thread(apply_settings_update, {"embedding_model": normalized})
     return SetModelResponse(model=normalized, reindex_required=result.reindex_required)
 
 
