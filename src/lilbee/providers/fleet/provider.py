@@ -960,6 +960,7 @@ class FleetProvider:
         # The build step checks it under ``_lock`` so a post-shutdown build is
         # refused (the swap_manager reaper is the backstop if one slips through).
         self._shut_down = False
+        self._stop_waiting = False
         # A pool of OpenAI clients per placed role (one per data-parallel replica),
         # all pointed at the llama-swap endpoint and routed by replica model id;
         # rebuilt whenever the swap process (re)starts. Requests round-robin the pool.
@@ -1088,17 +1089,37 @@ class FleetProvider:
             self._fleet_work = DaemonCall(
                 lambda: context.run(self._run_fleet_work), name="fleet-work"
             )
+            if self._stop_waiting:
+                self._fleet_work.wake()
         return self._fleet_work
 
     def _join_fleet_work(self, work: DaemonCall[None], *, bounded: bool = True) -> None:
-        """Wait for *work* and hear its outcome; a bounded wait raises at the bound."""
-        if not work.wait(_FLEET_WAIT_S if bounded else None):
+        """Wait for *work* and hear its outcome; a bounded wait raises at the bound or at a stop."""
+        if not bounded:
+            work.result()
+            return
+        finished = work.wait_unless_woken(_FLEET_WAIT_S)
+        if self._stop_waiting and not finished:
+            raise ProviderError(
+                "The server is stopping.",
+                provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.STARTING,
+            )
+        if not finished:
             raise ProviderError(
                 f"The engines are still starting after {_FLEET_WAIT_S:.0f} s.",
                 provider=_PROVIDER_NAME,
                 kind=ProviderErrorKind.STARTING,
             )
         work.result()
+
+    def stop_waiting(self) -> None:
+        """Answer every caller that joined the fleet work now, and each that joins later."""
+        with self._lock:
+            self._stop_waiting = True
+            work = self._fleet_work
+        if work is not None:
+            work.wake()
 
     def _next_fleet_step(self) -> Callable[[], None] | None:
         """The step that the wanted state asks for, or None; caller holds ``_lock``.

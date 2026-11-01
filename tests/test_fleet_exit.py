@@ -26,6 +26,7 @@ _EXIT_BUDGET_S = 20.0
 _WAIT_FOR_SERVER_S = 30.0
 _INTERRUPTED_STATUS = 130
 _STILL_STARTING = f"The engines are still starting after {_WRITE_BOUND_S} s."
+_STOPPING = "The server is stopping."
 _LIBRARY_WAIT = "lilbee is upgrading the library. Try again in a few seconds."
 _SAVED_PLACEMENT = 'placement = "{}"\n'
 
@@ -204,6 +205,13 @@ def server(tmp_path: Path) -> Iterator[_Server]:
 
 
 @pytest.fixture
+def server_with_the_real_write_wait(tmp_path: Path) -> Iterator[_Server]:
+    probe = _PROBE.replace(f"fleet._FLEET_WAIT_S = {_WRITE_BOUND_S}\n", "")
+    assert probe != _PROBE
+    yield from _running(_Server(tmp_path, probe, engine=_plant_engine(tmp_path)))
+
+
+@pytest.fixture
 def server_with_the_library_held(tmp_path: Path) -> Iterator[_Server]:
     """The probe server, with a library open that never ends."""
     yield from _running(_Server(tmp_path, _PROBE_LIBRARY_HELD, engine=_plant_engine(tmp_path)))
@@ -263,8 +271,34 @@ def test_a_server_with_a_queued_write_ends_after_sigint(server: _Server, tmp_pat
     assert answer.status_code == 503
     assert answer.json()["detail"] == (
         "The engine choice is saved, but the running server could not apply it: "
-        f"{_STILL_STARTING} Restart lilbee to use the choice."
+        f"{_STOPPING} Restart lilbee to use the choice."
     )
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "what"),
+    [
+        ("PUT", "/api/engines/preferred", {"engine": "llama.cpp"}, "engine choice"),
+        ("DELETE", "/api/placement", None, "placement"),
+    ],
+    ids=["engine", "placement"],
+)
+def test_a_write_wait_past_the_grace_still_says_it_is_saved(
+    server_with_the_real_write_wait: _Server,
+    tmp_path: Path,
+    method: str,
+    path: str,
+    body: dict[str, str] | None,
+    what: str,
+) -> None:
+    (tmp_path / "config.toml").write_text(_SAVED_PLACEMENT, encoding="utf-8")
+    elapsed, answer = _sigint_with_a_request_open(
+        server_with_the_real_write_wait, tmp_path, method, path, body
+    )
+    _assert_ended_by_the_signal(server_with_the_real_write_wait, elapsed)
+    assert answer.status_code == 503
+    assert f"The {what} is saved" in answer.json()["detail"]
+    assert _STOPPING in answer.json()["detail"]
 
 
 def test_a_server_with_an_open_read_ends_after_sigint(server: _Server, tmp_path: Path) -> None:
@@ -288,7 +322,7 @@ def test_a_server_with_a_queued_placement_write_says_it_is_saved(
     assert answer.status_code == 503
     assert answer.json()["detail"] == (
         "The placement is saved, but the running server could not apply it: "
-        f"{_STILL_STARTING} Restart lilbee to use the placement."
+        f"{_STOPPING} Restart lilbee to use the placement."
     )
     assert "placement" not in config.read_text(encoding="utf-8")
 

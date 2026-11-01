@@ -14,6 +14,7 @@ import typer
 
 from lilbee.app.services import (
     exit_after_signal,
+    peek_services,
     report_library_upgrade,
     set_server_exit_hook,
     wait_for_hard_exit_teardown,
@@ -143,6 +144,9 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
         await server.main_loop()
     finally:
         arm_exit_deadline(_EXIT_DEADLINE_S)
+        services = peek_services()
+        if services is not None:
+            services.provider.stop_waiting()
         set_server_exit_hook(None)
         if parent_watcher is not None and not parent_watcher.done():
             parent_watcher.cancel()

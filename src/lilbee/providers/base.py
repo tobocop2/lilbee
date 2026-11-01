@@ -522,6 +522,10 @@ class LLMProvider(Protocol):
         """Release resources (e.g. background threads). No-op if nothing to clean up."""
         ...
 
+    def stop_waiting(self) -> None:
+        """Answer the callers that wait on this provider's work now. No-op default."""
+        return
+
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """Drop loaded-model state; ``None`` evicts all, else only that path. No-op default."""
         return

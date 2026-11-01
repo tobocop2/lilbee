@@ -50,3 +50,19 @@ def test_call_runs_on_a_named_daemon_thread() -> None:
     thread = call.result()
     assert thread.name == "probe-thread"
     assert thread.daemon is True
+
+
+def test_wake_returns_a_waiter_at_once_and_leaves_the_call_running() -> None:
+    release = threading.Event()
+    call = DaemonCall(release.wait, name="held")
+    call.wake()
+    assert call.wait_unless_woken() is False
+    assert call.wait(0) is False
+    release.set()
+    call.result()
+    assert call.wait_unless_woken() is True
+
+
+def test_wait_unless_woken_reports_a_finished_call() -> None:
+    call = DaemonCall(lambda: 1, name="done")
+    assert call.wait_unless_woken() is True
