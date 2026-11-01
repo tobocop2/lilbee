@@ -354,11 +354,6 @@ class TestTargetRefusedPlainMessage:
                 "embed: this engine's installed build cannot run on an NPU. "
                 "Choose a GPU or the CPU.",
             ),
-            (
-                "auto",
-                "embed: the auto target is not available yet. "
-                "Name the devices or set the target to cpu.",
-            ),
         ],
     )
     def test_refusal_message(
@@ -647,16 +642,27 @@ class TestAGoneCardRefusesOnlyItsRole:
     def test_a_refused_target_and_a_gone_card_each_refuse_only_their_role(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        spec = '{"chat": {"devices": [0]}, "vision": {"devices": [1]}, "embed": {"target": "auto"}}'
+        spec = '{"chat": {"devices": [0]}, "vision": {"devices": [1]}, "embed": {"target": "npu"}}'
         plan = self._fleet(monkeypatch, tmp_path, spec)
         assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT]
         assert plan.refused_roles == {
             WorkerRole.VISION: self._gone("vision"),
             WorkerRole.EMBED: (
-                "embed: the auto target is not available yet. "
-                "Name the devices or set the target to cpu."
+                "embed: this engine's installed build cannot run on an NPU. "
+                "Choose a GPU or the CPU."
             ),
         }
+
+    def test_an_auto_role_is_planned_on_the_cards_that_exist_when_a_pinned_card_is_gone(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        spec = '{"chat": {"devices": [0]}, "vision": {"devices": [1]}, "embed": {"target": "auto"}}'
+        plan = self._fleet(monkeypatch, tmp_path, spec)
+        assert sorted(launch.role for launch in plan.launches) == [
+            WorkerRole.CHAT,
+            WorkerRole.EMBED,
+        ]
+        assert plan.refused_roles == {WorkerRole.VISION: self._gone("vision")}
 
     def test_a_spec_with_no_target_still_falls_back_to_automatic_placement(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture

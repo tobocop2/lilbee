@@ -36,7 +36,7 @@ from lilbee.cli.tui.engine_commands import ENGINE_SETTING_KEYS, chips_text
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
-from lilbee.providers.roles import REPLICATED_ROLES, WorkerRole
+from lilbee.providers.roles import REPLICATED_ROLES, RoleTarget, WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
@@ -86,6 +86,8 @@ _PLACEMENT_PAGE_SIZE = 8
 # rerank is a single pinned instance on one card (a small cross-encoder that never
 # tensor-splits), so its GPU choice is single-select, unlike the multi-GPU roles.
 _SINGLE_ROLES = (WorkerRole.RERANK,)
+# The targets a role row offers beside its cards: a role off the cards, or planned for it.
+_TARGET_CHOICES = (RoleTarget.CPU, RoleTarget.AUTO)
 # Editor row order: the multi-GPU roles first, rerank last -- the single-card odd
 # one out sits at the bottom instead of between the replicated roles.
 _EDITOR_ROLE_ORDER = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION, WorkerRole.RERANK)
@@ -150,6 +152,7 @@ class _RoleEdit:
     devices: set[int]
     replicas: int
     tensor_split: tuple[int, ...] | None = None
+    target: RoleTarget | None = None
 
 
 class FleetBody(Widget):
@@ -267,8 +270,16 @@ class FleetBody(Widget):
         """Reset the widget (title, live table, editor) from a resolved placement view."""
         self._view_manual = view.manual
         self._device_indices = tuple(g.index for g in view.gpus)
+        named = PlacementSpec.from_json(view.spec_json).roles if view.spec_json else {}
         edits = {
-            r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas, r.tensor_split)
+            r.role: _RoleEdit(
+                r.role,
+                r.model,
+                set(r.devices),
+                r.replicas,
+                r.tensor_split,
+                named[r.role].target if r.role in named else None,
+            )
             for r in view.roles
         }
         # Rows render in _EDITOR_ROLE_ORDER; any role beyond it keeps plan order.
@@ -317,18 +328,13 @@ class FleetBody(Widget):
     def _build_editor(self) -> None:
         """Rebuild the placement grid: GPU header, one row per role, optional pager.
 
-        A single-GPU fleet has nothing to arrange -- every role can only live on
-        that card -- so the grid, command pills, and hint collapse to a one-line
-        note and the drawer stays a pure live monitor.
+        A single-GPU fleet keeps the grid: every role can only live on that card,
+        or on the CPU, so the cpu choice is what the drawer offers there.
         """
         container = self.query_one(_EDITOR_ID, Vertical)
         container.remove_children()
-        single = len(self._device_indices) <= 1
-        for selector in (_COMMANDS_ID, _HINT_WIDGET_ID):
-            self.query_one(selector).display = not single
-        if single:
+        if len(self._device_indices) <= 1:
             container.mount(Label(msg.FLEET_SINGLE_GPU_NOTE, classes="single-gpu-note"))
-            return
         devices = self._page_devices()
         widgets: list[Horizontal] = [self._gpu_header_row(devices)]
         for role, edit in self._edits.items():
@@ -339,6 +345,15 @@ class FleetBody(Widget):
                 children.append(
                     FleetPill(
                         f" {idx} ", id=f"dev-{role.value}-{idx}", classes=f"dev-toggle {kind}{on}"
+                    )
+                )
+            for target in _TARGET_CHOICES:
+                on = " on" if edit.target is target else ""
+                children.append(
+                    FleetPill(
+                        f" {target.value} ",
+                        id=f"tgt-{role.value}-{target.value}",
+                        classes=f"dev-toggle {kind}{on}",
                     )
                 )
             if role in _REPLICA_ROLES:
@@ -408,6 +423,10 @@ class FleetBody(Widget):
             return None
         roles: dict[WorkerRole, RolePlacement] = {}
         for edit in self._edits.values():
+            if edit.target in _TARGET_CHOICES:
+                replicas = edit.replicas if edit.target is RoleTarget.CPU else 1
+                roles[edit.role] = RolePlacement(devices=(), replicas=replicas, target=edit.target)
+                continue
             if not edit.devices:
                 raise PlacementError(f"{edit.role.value} needs at least one GPU")
             devices = tuple(sorted(edit.devices))
@@ -419,9 +438,49 @@ class FleetBody(Widget):
                 else None
             )
             roles[edit.role] = RolePlacement(
-                devices=devices, replicas=edit.replicas, tensor_split=split
+                devices=devices, replicas=edit.replicas, tensor_split=split, target=edit.target
             )
         return PlacementSpec(roles=roles)
+
+    def _choose_target(self, key: str) -> None:
+        """Toggle the cpu or auto choice named by *key* (``role-target``) on its role."""
+        role_value, target_value = key.rsplit("-", 1)
+        edit = self._edits[WorkerRole(role_value)]
+        chosen = RoleTarget(target_value)
+        edit.target = None if edit.target is chosen else chosen
+        if edit.target is not None:
+            edit.devices = set()
+            edit.tensor_split = None
+        self._build_editor()
+
+    def _toggle_card(self, pill: FleetPill, key: str) -> None:
+        """Toggle the card named by *key* (``role-index``) on its role."""
+        role_value, idx_str = key.rsplit("-", 1)
+        role = WorkerRole(role_value)
+        edit = self._edits[role]
+        idx = int(idx_str)
+        # Editing the device set invalidates any loaded manual split (its
+        # length was sized for the old cards); fall back to a capacity split.
+        edit.tensor_split = None
+        if edit.target in _TARGET_CHOICES:
+            # A card pressed on a cpu or auto role puts the role on that card alone.
+            edit.target = None
+            edit.devices = {idx}
+            self._build_editor()
+        elif role in _SINGLE_ROLES:
+            # Single pinned instance: the picked card becomes the only one.
+            edit.devices = {idx}
+            for other in self._page_devices():
+                self.query_one(f"#dev-{role.value}-{other}", FleetPill).set_class(
+                    other == idx, "on"
+                )
+        elif idx in edit.devices:
+            if len(edit.devices) > 1:  # keep at least one GPU per role
+                edit.devices.discard(idx)
+                pill.remove_class("on")
+        else:
+            edit.devices.add(idx)
+            pill.add_class("on")
 
     def on_fleet_pill_pressed(self, event: FleetPill.Pressed) -> None:
         """Handle a GPU toggle, a replica -/+ press, or a command pill."""
@@ -435,28 +494,10 @@ class FleetBody(Widget):
             self._page = min(max(0, self._page + step), self._page_count() - 1)
             self._build_editor()
             return
-        if bid.startswith("dev-"):
-            role_value, idx_str = bid.removeprefix("dev-").rsplit("-", 1)
-            role = WorkerRole(role_value)
-            edit = self._edits[role]
-            idx = int(idx_str)
-            # Editing the device set invalidates any loaded manual split (its
-            # length was sized for the old cards); fall back to a capacity split.
-            edit.tensor_split = None
-            if role in _SINGLE_ROLES:
-                # Single pinned instance: the picked card becomes the only one.
-                edit.devices = {idx}
-                for other in self._page_devices():
-                    self.query_one(f"#dev-{role.value}-{other}", FleetPill).set_class(
-                        other == idx, "on"
-                    )
-            elif idx in edit.devices:
-                if len(edit.devices) > 1:  # keep at least one GPU per role
-                    edit.devices.discard(idx)
-                    event.pill.remove_class("on")
-            else:
-                edit.devices.add(idx)
-                event.pill.add_class("on")
+        if bid.startswith("tgt-"):
+            self._choose_target(bid.removeprefix("tgt-"))
+        elif bid.startswith("dev-"):
+            self._toggle_card(event.pill, bid.removeprefix("dev-"))
         elif bid.startswith("rep-"):
             role_value, op = bid.removeprefix("rep-").rsplit("-", 1)
             role = WorkerRole(role_value)

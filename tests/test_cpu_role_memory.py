@@ -234,7 +234,7 @@ class TestASavedRefusedSpecIsReadable:
 
     SAVED: ClassVar[str] = '{"chat": {"devices": [0]}, "embed": {"target": "cpu"}}'
 
-    def test_view_carries_the_spec_the_refusal_and_the_auto_plan(
+    def test_view_carries_the_spec_the_refusal_and_the_roles_that_run(
         self, cpu_host: CardEngine, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(cfg, "placement", self.SAVED)
@@ -243,6 +243,35 @@ class TestASavedRefusedSpecIsReadable:
         assert view.rejected_spec_json == self.SAVED
         assert view.manual is False
         assert [g.index for g in view.gpus] == [0]
+        # The fleet launches chat alone, so the view shows chat alone and no embed.
+        assert [(r.role, r.devices, r.target) for r in view.roles] == [
+            (WorkerRole.CHAT, (0,), RoleTarget.GPU)
+        ]
+
+    def test_an_unreadable_host_refuses_a_cpu_role_in_plain_words_and_chat_still_runs(
+        self, cpu_host: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unreadable() -> int:
+            raise RuntimeError("no memory reading")
+
+        monkeypatch.setattr(planning, "total_system_memory", unreadable)
+        monkeypatch.setattr(cfg, "placement", self.SAVED)
+        view = app_placement.get_placement()
+        assert view.refusal == (
+            "embed: the system memory of this machine cannot be read, so the CPU "
+            "cannot be sized. Choose a GPU."
+        )
+        assert [r.role for r in view.roles] == [WorkerRole.CHAT]
+
+    def test_an_unreadable_host_does_not_matter_to_a_spec_with_no_cpu_role(
+        self, cpu_host: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unreadable() -> int:
+            raise RuntimeError("no memory reading")
+
+        monkeypatch.setattr(planning, "total_system_memory", unreadable)
+        spec = PlacementSpec.from_json('{"chat": {"devices": [0]}, "embed": {"devices": [0]}}')
+        assert planning._cpu_roles_past_memory(spec, [], skip={}) == {}
 
     def test_get_placement_and_gpus_are_200_with_the_refusal(
         self, cpu_host: CardEngine, monkeypatch: pytest.MonkeyPatch
