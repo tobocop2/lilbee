@@ -1387,22 +1387,18 @@ class TestConfigUpdateRoute:
         assert cfg.seed is None
 
     @pytest.mark.parametrize(("key", "good", "bad", "default"), _DEFAULT_WHEN_REFUSED_WRITES)
-    def test_a_refused_value_of_a_named_exception_stores_the_default(
-        self, client, caplog, key, good, bad, default
+    def test_a_refused_value_of_a_named_exception_is_a_400_and_keeps_the_stored_one(
+        self, client, key, good, bad, default
     ):
-        """The losing field: the valid value written first is gone after the refused one."""
+        """The losing field: the valid value written first is still there after the refusal."""
         assert client.patch("/api/config", json={key: good}).status_code == 200
         assert getattr(cfg, key) != default
-        with caplog.at_level("WARNING"):
-            resp = client.patch("/api/config", json={key: bad})
-        assert (resp.status_code, resp.json()["updated"]) == (200, [key])
-        assert getattr(cfg, key) == default
-        warned = [record for record in caplog.records if record.levelname == "WARNING"]
-        assert [record.getMessage() for record in warned] == [
-            f"{key} = {bad!r} {_refusals(Config, {key: bad})[key]}; {key} uses its default"
-        ]
+        resp = client.patch("/api/config", json={key: bad})
+        assert resp.status_code == 400
+        assert f"{key} = {bad!r} {_refusals(Config, {key: bad})[key]}" in resp.json()["detail"]
+        assert getattr(cfg, key) == good
 
-    def test_the_named_exceptions_are_every_setting_a_write_gives_its_default(self, client):
+    def test_the_named_exceptions_are_every_setting_a_load_gives_its_default(self, client):
         """The twin: a refused value of any other setting is a 400 and changes nothing."""
         assert {key for key, *_ in _DEFAULT_WHEN_REFUSED_WRITES} == _TAKES_DEFAULT_WHEN_REFUSED
         before = cfg.top_k

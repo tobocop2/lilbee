@@ -1854,13 +1854,16 @@ def default_refusal(key: str, value: Any) -> str | None:
     return None if reason is None else f"{value!r} {reason}; {key} {_USES_ITS_DEFAULT}"
 
 
-def written_value(key: str, value: Any) -> Any:
-    """What a write of *value* stores in *key*: its default, with a warning, where one applies."""
-    refusal = default_refusal(key, value)
-    if refusal is None:
-        return value
-    log.warning("%s = %s", key, refusal)
-    return Config.model_fields[key].default
+def checked_write(key: str, value: Any) -> Any:
+    """*value* for a write to *key*; raises ValueError when the setting refuses its text.
+
+    A load takes the default for these settings. A write names the refusal instead.
+    """
+    if key in _TAKES_DEFAULT_WHEN_REFUSED and isinstance(value, str):
+        reason = _refusals(Config, {key: value}).get(key)
+        if reason is not None:
+            raise ValueError(f"{key} = {value!r} {reason}")
+    return value
 
 
 def toml_values(path: Path, only: str | None = None) -> dict[str, Any]:

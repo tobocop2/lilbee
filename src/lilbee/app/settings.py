@@ -27,7 +27,7 @@ from lilbee.core.config.keys import (
     PROVIDER_SWITCHING_KEYS,
 )
 from lilbee.core.config.login_host import refuse_unless_host
-from lilbee.core.config.model import default_refusal, written_value
+from lilbee.core.config.model import checked_write, default_refusal
 from lilbee.core.config.resolve import (
     PROFILE_FIELDS,
     Resolved,
@@ -342,7 +342,7 @@ def _coerce_value(key: str, value: Any) -> Any:
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         return validate_model_task_assignment(key, value)
-    return written_value(key, value)
+    return checked_write(key, value)
 
 
 def _apply_with_rollback(

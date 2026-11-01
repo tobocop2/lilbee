@@ -174,6 +174,29 @@ def test_set_persists_the_value_and_confirms_it(project):
     assert cfg.top_k == 9
 
 
+@pytest.mark.parametrize(("key", "bad"), [("flash_attention", "maybe"), ("n_gpu_layers", "many")])
+def test_set_a_refused_value_exits_1_with_the_refusal_and_writes_nothing(project, key, bad):
+    result = _invoke(project, "set", key, bad)
+    assert result.exit_code == 1
+    assert f"{key} = '{bad}'" in result.output
+    assert "Set " not in result.output
+    assert key not in _stored(project)
+    assert getattr(cfg, key) is None
+
+
+def test_set_a_refused_value_keeps_the_stored_one(project):
+    assert _invoke(project, "set", "flash_attention", "false").exit_code == 0
+    result = _invoke(project, "set", "flash_attention", "maybe")
+    assert result.exit_code == 1
+    assert _stored(project) == {"flash_attention": False}
+
+
+def test_set_a_refused_value_in_json_mode_is_an_error_document(project):
+    result = _invoke(project, "set", "flash_attention", "maybe", json_mode=True)
+    assert result.exit_code == 1
+    assert "flash_attention = 'maybe'" in json.loads(result.output)["error"]
+
+
 def test_set_json_reuses_the_config_update_shape(project):
     payload = _json(project, "set", "top_k", "9")
     assert payload == {"updated": ["top_k"], "reindex_required": False}

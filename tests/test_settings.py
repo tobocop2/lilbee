@@ -1,6 +1,7 @@
 """Tests for persistent settings (config.toml)."""
 
 import os
+import re
 import threading
 from dataclasses import fields as dataclass_fields
 from unittest import mock
@@ -268,7 +269,7 @@ class TestApplyProfileLayerSoftFieldWarning:
         assert "LILBEE_SEMANTIC_CHUNKING" not in caplog.text
 
 
-class TestApplySettingsUpdateSoftFieldWarning:
+class TestApplySettingsUpdateRefusesUnreadableText:
     @pytest.mark.parametrize(
         ("field", "bad_value"),
         [
@@ -277,19 +278,13 @@ class TestApplySettingsUpdateSoftFieldWarning:
             ("gpu_devices", "rtx-4060"),
         ],
     )
-    def test_warns_without_naming_a_source(self, caplog, field, bad_value) -> None:
-        """apply_settings_update is the TUI/HTTP/MCP entry point for a live setting edit.
-
-        Its raw value has no resolver-layer source, so the warning it triggers
-        must name only the field, never an env var it was never set through.
-        """
+    def test_refuses_with_the_field_and_the_value(self, field, bad_value) -> None:
+        """apply_settings_update is the CLI/TUI/HTTP/MCP entry point for a live setting edit."""
         from lilbee.app import settings as appset
 
-        with caplog.at_level("WARNING"):
+        with pytest.raises(ValueError, match=re.escape(f"{field} = {bad_value!r} ")):
             appset.apply_settings_update({field: bad_value})
         assert getattr(appset.cfg, field) is None
-        assert field in caplog.text
-        assert "LILBEE_" not in caplog.text
 
 
 class TestProviderResetRunsOutsideTheLock:
