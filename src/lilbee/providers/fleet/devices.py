@@ -39,6 +39,8 @@ _GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
 # llama-server prints this before the device loop, so a run that lists no GPUs
 # still prints it. Its absence means the binary never got as far as enumerating.
 _DEVICE_LIST_HEADER = "Available devices:"
+# Windows status STATUS_DLL_NOT_FOUND: the loader stopped the process before main.
+_STATUS_DLL_NOT_FOUND = 0xC0000135
 # nvidia-smi emits SGR escapes (e.g. an underlined header) even when stdout is
 # not a tty; strip them or the header's GPU labels never match.
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -262,6 +264,15 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
     selected = _select_backend(parsed)
     offered = [d for d in parsed if d.backend in _BACKEND_RANK]
     answered = _DEVICE_LIST_HEADER in output
+    if returncode == _STATUS_DLL_NOT_FOUND and not answered:
+        raise ProviderError(
+            f"The engine could not start because a DLL it needs is missing (status "
+            f"0x{_STATUS_DLL_NOT_FOUND:X}). The usual cause is a missing Microsoft "
+            "Visual C++ runtime. Install it from "
+            "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist.",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.SERVER,
+        )
     spoke = returncode == 0 and answered
     if not spoke and answered:
         # It knew the flag and started answering, then died. Blaming the flag
