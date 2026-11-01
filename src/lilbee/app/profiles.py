@@ -181,7 +181,7 @@ def effect_of(key: str) -> ProfileEffect:
 
 
 def list_profiles(store: ProfileStore) -> ProfileCatalog:
-    """Every profile file in the profile folders, in precedence order."""
+    """Every profile file: the Default profile, the other built-ins, then the rest."""
     return store.scan()
 
 

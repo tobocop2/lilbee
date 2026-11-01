@@ -732,14 +732,21 @@ def test_do_sync_raises_on_sync_failed() -> None:
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
-        return SyncResult(failed=["broken.pdf"])
+        return SyncResult(failed=["broken.pdf", "bad.md"])
 
     captured: list[Exception] = []
+    toasts: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def _worker() -> None:
         try:
-            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
-                screen._do_sync(reporter)
+            with (
+                patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+                patch(
+                    "lilbee.cli.tui.screens.chat.call_from_thread",
+                    side_effect=lambda *a, **kw: toasts.append((a, kw)),
+                ),
+            ):
+                screen._do_sync(reporter, force_rebuild=True)
         except Exception as e:
             captured.append(e)
 
@@ -749,6 +756,11 @@ def test_do_sync_raises_on_sync_failed() -> None:
     assert captured, "worker should have raised"
     assert isinstance(captured[0], RuntimeError)
     assert "broken.pdf" in str(captured[0])
+    # The footer notice is short-lived: a toast tells the user how many files failed.
+    ((args, kwargs),) = toasts
+    assert "2 file(s)" in str(args[2])
+    assert kwargs["severity"] == "error"
+    assert float(kwargs["timeout"]) >= 5
 
 
 def test_do_sync_reports_a_cancel_with_the_resume_hint() -> None:

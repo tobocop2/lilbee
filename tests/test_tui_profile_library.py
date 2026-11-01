@@ -120,8 +120,9 @@ async def test_the_list_tags_each_folder_and_shows_shadowed_and_broken_entries()
         rows = _rows(library)
         assert rows[0] == "Default  built-in"
         assert rows[5] == "court-filings  project"
-        assert rows[6].startswith("broken-profile  global, cannot load: ")
-        assert "top_kk" in rows[6]
+        # The reason is cut at the pane edge; the detail pane shows all of it.
+        assert rows[6].startswith("broken-profile  global, cannot lo")
+        assert rows[6].endswith("…")
         assert rows[7] == "court-filings  global, shadowed"
         await _highlight(pilot, library, "court-filings  global, shadowed")
         problem = library.query_one("#library-problem", Static)

@@ -45,6 +45,10 @@ R = TypeVar("R")
 
 WIDE_COLUMNS = 100
 NARROW_CLASS = "-narrow"
+_ELLIPSIS = "…"
+_ROW_GAP = "  "
+_ROW_PADDING = 2  # an option's left and right padding inside the list
+_MIN_NAME = 8
 _APPLY_KEY = "enter"
 _CLOSE_KEY = "esc"
 
@@ -91,16 +95,27 @@ def load_library() -> LibraryState:
     return LibraryState(profiles.list_profiles(ProfileStore()), has_project_folder())
 
 
-def entry_label(entry: ProfileEntry, name_width: int = 0) -> Content:
-    """A list row: the name padded to *name_width*, then its folder and any problem."""
+def _tag_text(entry: ProfileEntry, *, with_problem: bool = True) -> str:
     tags = [msg.PROFILE_FOLDER_TAG[entry.folder]]
     if entry.shadowed_by is not None:
         tags.append(msg.PROFILE_LIBRARY_SHADOWED)
-    if entry.error is not None:
+    if with_problem and entry.error is not None:
         tags.append(msg.PROFILE_LIBRARY_BROKEN.format(reason=entry.error))
-    return Content.assemble(
-        entry.name.ljust(name_width), "  ", Content.styled(", ".join(tags), "$text-muted")
+    return ", ".join(tags)
+
+
+def entry_label(entry: ProfileEntry, name_width: int = 0, row_width: int = 0) -> Content:
+    """A list row: the name padded to *name_width*, then its folder and any problem.
+
+    With a *row_width*, the row is cut with an ellipsis to fit, so it never wraps.
+    """
+    name = entry.name
+    if row_width > 0 and len(name) > name_width:
+        name = name[: name_width - 1] + _ELLIPSIS
+    row = Content.assemble(
+        name.ljust(name_width), _ROW_GAP, Content.styled(_tag_text(entry), "$text-muted")
     )
+    return row.truncate(row_width, ellipsis=True) if row_width > 0 else row
 
 
 def _hints(*, narrow: bool = False) -> Content:
@@ -172,6 +187,7 @@ class ProfileLibrary(ModalScreen[None]):
 
     def on_resize(self, event: events.Resize) -> None:
         self._fit(event.size.width)
+        self.call_after_refresh(self._paint_rows)
 
     def _fit(self, width: int) -> None:
         """Below WIDE_COLUMNS the library shows the list only, plus the selection's credit."""
@@ -191,13 +207,27 @@ class ProfileLibrary(ModalScreen[None]):
         self._state = state
         self._entries = list(state.catalog.entries)
         listing = self.query_one("#library-list", OptionList)
-        name_width = max((len(entry.name) for entry in self._entries), default=0)
-        listing.set_options(Option(entry_label(entry, name_width)) for entry in self._entries)
+        listing.set_options(Option("") for _ in self._entries)
+        self._paint_rows()
         paths = [entry.path for entry in self._entries]
         if selected is not None and selected.path in paths:
             listing.highlighted = paths.index(selected.path)
         elif self._entries:
             listing.highlighted = 0
+
+    def _paint_rows(self) -> None:
+        """Label each row to fit the list: the name is cut, and the folder tags stay aligned."""
+        listing = self.query_one("#library-list", OptionList)
+        row_width = max(listing.scrollable_content_region.width - _ROW_PADDING, 0)
+        name_width = max((len(entry.name) for entry in self._entries), default=0)
+        if row_width:
+            # A long problem text is cut at the row end; it must not squeeze every name.
+            tag_width = max(
+                (len(_tag_text(entry, with_problem=False)) for entry in self._entries), default=0
+            )
+            name_width = max(min(name_width, row_width - len(_ROW_GAP) - tag_width), _MIN_NAME)
+        for index, entry in enumerate(self._entries):
+            listing.replace_option_prompt_at_index(index, entry_label(entry, name_width, row_width))
 
     def _selected(self) -> ProfileEntry | None:
         index = self.query_one("#library-list", OptionList).highlighted

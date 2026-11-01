@@ -224,6 +224,28 @@ async def test_library_rows_pad_the_name_so_the_folder_tags_align() -> None:
 
 
 @pytest.mark.parametrize("size", SIZES)
+async def test_a_long_profile_name_is_cut_and_every_library_row_stays_on_one_line(size) -> None:
+    long_name = "L" * 40
+    _write_global("long", _PLAIN.format(name=long_name))
+    app = _SettingsApp()
+    async with app.run_test(size=size) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        await _press(pilot, screen.query_one("#profile-manage", ConfirmPill))
+        library = await _dialog(app, pilot, ProfileLibrary)
+        listing = library.query_one("#library-list", OptionList)
+        assert await _until(pilot, lambda: listing.option_count > 1)
+        await pilot.pause()
+        rows = [option.prompt for option in listing.options]
+        row_width = listing.scrollable_content_region.width - 2
+        # Only the 120-column list is narrower than the longest row; at 80 columns it fits.
+        assert any("…" in str(row) for row in rows) == (len(long_name) + 2 + 8 > row_width)
+        assert all(row.cell_length <= row_width for row in rows), (row_width, rows)
+        assert listing.virtual_size.height == listing.option_count, "a row wraps"
+        columns = {re.search(r"(built-in|global)", str(row)).start() for row in rows}
+        assert len(columns) == 1, rows
+
+
+@pytest.mark.parametrize("size", SIZES)
 async def test_the_confirm_dialog_pills_keep_the_shared_look(size) -> None:
     app = _SettingsApp()
     async with app.run_test(size=size) as pilot:

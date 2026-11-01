@@ -189,6 +189,7 @@ class _TurnEnded(Message):
 # The stream worker's group. Only Textual's teardown cancels it: a turn stops
 # through its stop signal, so its body always runs and always ends the turn.
 _TURN_WORKER_GROUP = "chat_turn"
+_SYNC_FAILED_TOAST_SECONDS = 8.0
 
 
 # ``/crawl`` command flags.
@@ -2566,6 +2567,14 @@ class ChatScreen(Screen[None]):
         if prune_ignored:
             call_from_thread(self, self.notify, msg.prune_ignored_message(len(result.removed)))
         if result.failed:
+            # The footer notice lasts under two seconds; the toast stays long enough to read.
+            call_from_thread(
+                self,
+                self.notify,
+                msg.SYNC_FAILED_TOAST.format(count=len(result.failed)),
+                severity="error",
+                timeout=_SYNC_FAILED_TOAST_SECONDS,
+            )
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
         if result.skipped:
             call_from_thread(

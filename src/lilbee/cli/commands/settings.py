@@ -13,6 +13,7 @@ from lilbee.cli import theme
 from lilbee.cli.app import console, data_dir_option, global_option
 from lilbee.cli.commands._shared import REBUILD_HINT, emit, line, run_or_fail, setup, shown_value
 from lilbee.cli.tui import messages as msg
+from lilbee.core.config import cfg
 
 if TYPE_CHECKING:
     from lilbee.app.settings import SettingInfo, SettingsUpdateResult
@@ -108,6 +109,17 @@ def _parse_cli_value(key: str, raw: str) -> Any:
     return raw.split("\n") if is_list else raw
 
 
+def _stored_text(key: str, typed: str) -> str:
+    """What the write stored for a bool setting (true, false, auto); other settings echo *typed*."""
+    from lilbee.app.settings_map import SETTINGS_MAP
+
+    definition = SETTINGS_MAP.get(key)
+    if definition is None or definition.type is not bool:
+        return typed
+    stored = getattr(cfg, key)
+    return "auto" if stored is None else shown_value(stored)
+
+
 @settings_app.command(name="set")
 def settings_set(
     key: str = _key_argument,
@@ -124,7 +136,7 @@ def settings_set(
         lambda: apply_settings_update({key: parsed}, allow_model_roles=False),
         config_write_failure_message,
     )
-    shown = msg.MASKED_VALUE if _is_secret(key) and value else value
+    shown = msg.MASKED_VALUE if _is_secret(key) and value else _stored_text(key, value)
 
     def _render() -> None:
         line(f"Set {key} to {shown}.", theme.ACCENT)

@@ -174,6 +174,21 @@ def test_set_persists_the_value_and_confirms_it(project):
     assert cfg.top_k == 9
 
 
+@pytest.mark.parametrize(
+    ("typed", "shown", "stored"),
+    [
+        ("1", "true", {"flash_attention": True}),
+        ("off", "false", {"flash_attention": False}),
+        ("", "auto", {}),
+    ],
+)
+def test_set_a_bool_setting_echoes_the_value_it_stored(project, typed, shown, stored):
+    result = _invoke(project, "set", "flash_attention", typed)
+    assert result.exit_code == 0, result.output
+    assert f"Set flash_attention to {shown}." in result.output
+    assert _stored(project) == stored
+
+
 @pytest.mark.parametrize(("key", "bad"), [("flash_attention", "maybe"), ("n_gpu_layers", "many")])
 def test_set_a_refused_value_exits_1_with_the_refusal_and_writes_nothing(project, key, bad):
     result = _invoke(project, "set", key, bad)

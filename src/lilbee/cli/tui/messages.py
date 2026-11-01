@@ -81,6 +81,9 @@ SETUP_CHROMIUM_DETAIL = "chromium: {done}/{total} MB"
 SETUP_CHROMIUM_DETAIL_UNKNOWN = "chromium: {done} MB"
 SETUP_CHROMIUM_CLI_PROGRESS = "  chromium: {pct}%"
 SYNC_FAILED_FILES = "Sync failed for {files}"
+SYNC_FAILED_TOAST = (
+    "Sync failed for {count} file(s). Press t to see the reason, then fix it and sync again."
+)
 SYNC_SKIPPED_NO_VISION = (
     "Skipped (no text extracted): {files}. "
     "Configure a vision_model in Settings to OCR scanned PDFs."
