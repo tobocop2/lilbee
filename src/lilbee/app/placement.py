@@ -209,7 +209,8 @@ def get_placement() -> PlacementView:
 
     A saved spec that no longer fits the hardware is not the effective placement:
     the fleet runs the auto plan, and this reports that rather than a manual layout
-    nothing is using.
+    nothing is using. A spec that drops a role (a target its engine cannot run, a
+    card the machine lacks) reports the roles that run and the reason for the rest.
     """
     reading = _planning_engines()
     try:
@@ -230,6 +231,15 @@ def get_placement() -> PlacementView:
     if not resolved.spec_applied:
         return _view(
             resolved, engines, manual=False, spec_json=None, rejected_spec_json=spec.to_json()
+        )
+    if resolved.refused_roles:
+        return _view(
+            resolved,
+            engines,
+            manual=False,
+            spec_json=None,
+            rejected_spec_json=spec.to_json(),
+            refusal=" ".join(resolved.refused_roles.values()),
         )
     return _view(resolved, engines, manual=True, spec_json=spec.to_json())
 
