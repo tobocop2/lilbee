@@ -16,7 +16,11 @@ from lilbee.providers.fleet.placement import (
     Placement,
     placement_from_spec,
 )
-from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+from lilbee.providers.fleet.placement_spec import (
+    PlacementError,
+    PlacementSpec,
+    TargetRefusedError,
+)
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._fleet_engines import (
     CardEngine,
@@ -29,8 +33,10 @@ from tests._fleet_engines import (
 GIB = 1 << 30
 ROLES = (Role(WorkerRole.CHAT, 20), Role(WorkerRole.EMBED, 6), Role(WorkerRole.VISION, 8))
 SPEC = '{"chat": {"devices": [0]}, "vision": {"target": "auto"}, "embed": {"target": "cpu"}}'
-# Vision needs 8 GiB; card 0 keeps 24 * 0.9 - 20 = 1.6 GiB, so the shortfall is 6.4 GiB.
-TIGHT_SHORTFALL = 6871947673
+VISION_REFUSED = (
+    "vision: needs 8.0 GiB, which does not fit in the memory left beside chat. "
+    "Use a smaller model, or set its target to cpu."
+)
 LOST_CHAT = (
     "chat: GPU 1 is not on this machine (1 found). "
     "Set the chat devices to a GPU that exists, or set its target to cpu."
@@ -106,20 +112,118 @@ class TestAutoPlansOnTheRemainingCards:
         saved = PlacementSpec.from_json(spec).to_json()
         assert (view.manual, view.refusal, view.rejected_spec_json) == (False, LOST_CHAT, saved)
 
-    def test_an_auto_role_that_fits_no_card_left_is_reported_tight_and_not_refused(
+    def test_an_auto_role_with_no_room_beside_a_named_role_is_refused_alone(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(monkeypatch, tmp_path, (24,), SPEC)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert sorted(launch.role.value for launch in plan.launches) == ["chat", "embed"]
+        assert plan.refused_roles == {WorkerRole.VISION: VISION_REFUSED}
+        assert plan.co_tenants == frozenset()
+
+    def test_the_view_names_the_auto_role_it_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _host(monkeypatch, tmp_path, (24,), SPEC)
+        view = app_placement.get_placement()
+        assert {r.role.value: (r.devices, r.target.value) for r in view.roles} == {
+            "chat": ((0,), "gpu"),
+            "embed": ((), "cpu"),
+        }
+        assert view.tight == ()
+        assert (view.manual, view.refusal) == (False, VISION_REFUSED)
+
+    def test_setting_the_placement_refuses_with_the_same_reason(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(monkeypatch, tmp_path, (24,), SPEC)
+        with pytest.raises(TargetRefusedError, match=r"vision: needs 8\.0 GiB") as refused:
+            planning.resolve_placement_plan(
+                PlacementSpec.from_json(SPEC), engines=engines_for_all_roles(engine)
+            )
+        assert refused.value.reasons == {WorkerRole.VISION: VISION_REFUSED}
+
+    def test_a_role_on_an_unusable_target_and_an_auto_role_with_no_room_are_both_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The target refusal comes first and the auto refusal only on the plan after it.
+        spec = (
+            '{"chat": {"devices": [0]}, "vision": {"target": "auto"}, "embed": {"target": "npu"}}'
+        )
+        engine = _host(monkeypatch, tmp_path, (24,), spec)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert [launch.role.value for launch in plan.launches] == ["chat"]
+        assert set(plan.refused_roles) == {WorkerRole.EMBED, WorkerRole.VISION}
+        assert plan.refused_roles[WorkerRole.VISION] == VISION_REFUSED
+
+    def test_an_auto_role_that_fits_beside_a_named_role_is_not_refused(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         spec = (
-            '{"chat": {"devices": [0]}, "vision": {"target": "auto"}, "embed": {"target": "cpu"}}'
+            '{"chat": {"devices": [0]}, "vision": {"target": "auto"}, "embed": {"target": "auto"}}'
+        )
+        engine = _host(monkeypatch, tmp_path, (48,), spec)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert sorted(launch.role.value for launch in plan.launches) == ["chat", "embed", "vision"]
+        assert plan.refused_roles == {}
+
+    def test_auto_roles_beside_only_a_cpu_role_keep_their_swap_group(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # No role is named on a card, so the planner's own answer stands.
+        spec = (
+            '{"chat": {"target": "auto"}, "vision": {"target": "auto"}, "embed": {"target": "cpu"}}'
         )
         engine = _host(monkeypatch, tmp_path, (24,), spec)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        assert plan.refused_roles == {}
+
+    def test_an_oversize_auto_role_beside_only_a_cpu_role_stays_tight(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        spec = (
+            '{"chat": {"target": "auto"}, "vision": {"target": "cpu"}, "embed": {"target": "cpu"}}'
+        )
+        engine = _host(monkeypatch, tmp_path, (16,), spec)
         resolved = planning.resolve_placement_plan(
             PlacementSpec.from_json(spec),
             engines=engines_for_all_roles(engine),
             fall_back_to_auto=True,
         )
-        assert dict(resolved.tight_roles) == {WorkerRole.VISION: TIGHT_SHORTFALL}
+        assert set(resolved.tight_roles) == {WorkerRole.CHAT}
         assert resolved.refused_roles == {}
+
+    def test_a_mixed_plan_beside_no_named_role_keeps_the_planners_refusal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        spec = (
+            '{"chat": {"target": "auto"}, "vision": {"target": "cpu"}, "embed": {"target": "cpu"}}'
+        )
+        engine = _host(monkeypatch, tmp_path, (16,), spec)
+        other = CardEngine("engine-b", tmp_path / "other", ROLES, cards_of((16,)), spans=True)
+        engines = {**engines_for_all_roles(engine), WorkerRole.EMBED: other}
+        resolved = planning.resolve_placement_plan(
+            PlacementSpec.from_json(spec), engines=engines, fall_back_to_auto=True
+        )
+        assert resolved.unplaceable_roles == (WorkerRole.CHAT,)
+        assert resolved.tight_roles == {}
+        assert resolved.refused_roles == {}
+
+    def test_a_role_no_pin_reaches_keeps_the_planners_answer_beside_a_named_role(self) -> None:
+        placed = Placement(instances=(), unplaceable_roles=(WorkerRole.VISION, WorkerRole.EMBED))
+        inputs = [
+            ModelPlacementInput(WorkerRole.VISION, 8 * GIB),
+            ModelPlacementInput(WorkerRole.EMBED, 6 * GIB),
+        ]
+        assert planning._auto_roles_past_named(
+            placed, inputs, (WorkerRole.VISION,), frozenset({WorkerRole.CHAT})
+        ) == {
+            WorkerRole.EMBED: (
+                "embed: needs 6.0 GiB, which does not fit in the memory left beside chat. "
+                "Use a smaller model, or set its target to cpu."
+            )
+        }
 
 
 def _peak(_role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
