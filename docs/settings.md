@@ -333,7 +333,7 @@ These are not configuration fields, so they have no row above and `config.toml` 
 | `LILBEE_AGENT_ID` | Owner namespace for an MCP agent's memories and sessions. An explicit `agent_id` tool argument wins over it |
 | `LILBEE_CPU_QUOTA` | CPU concurrency cap. Defaults to half the available cores; a non-positive or unparseable value falls back to that default |
 | `LILBEE_DATA` | Data directory for this library, the same value as `data_root`. The older and more common spelling; `--data-dir` overrides it |
-| `LILBEE_ENGINE_DIR` | Directory holding the llama-server engine binaries. Set it to run against an engine build other than the bundled one |
+| `LILBEE_ENGINE_DIR` | Engine directory for this process. Set it to a separate directory to run an engine of its own while other lilbee processes hold the shared one |
 | `LILBEE_EXCLUSIVE_SCOPE` | A directory that at most one server may serve at a time, for a plugin's shared root |
 | `LILBEE_INGEST_CONCURRENCY` | Extraction-admission mode: `static` (the default), `adaptive-conservative`, or `adaptive-aggressive` |
 | `LILBEE_INGEST_MAX_WORKERS` | Files per embed replica kept in flight during ingest |

@@ -2221,11 +2221,14 @@ class FleetProvider:
         if missing is not None:
             self._warm_tracker.fail(f"chat model {clean_display_name(missing)} is not installed")
             return
-        unusable = self._engine_refusal or self._skipped_unusable_ctx.get(WorkerRole.CHAT)
+        needs_engine = _chat_needs_local_engine()
+        unusable = (self._engine_refusal if needs_engine else None) or (
+            self._skipped_unusable_ctx.get(WorkerRole.CHAT)
+        )
         if unusable is not None:
             self._warm_tracker.fail(unusable)
             return
-        if _chat_needs_local_engine() and (reason := _unusable_engine_reason()) is not None:
+        if needs_engine and (reason := _unusable_engine_reason()) is not None:
             self._warm_tracker.fail(reason)
             return
         self._warm_tracker.clear()

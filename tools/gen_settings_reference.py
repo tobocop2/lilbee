@@ -92,8 +92,8 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
         False,
     ),
     "LILBEE_ENGINE_DIR": (
-        "Directory holding the llama-server engine binaries. Set it to run against "
-        "an engine build other than the bundled one",
+        "Engine directory for this process. Set it to a separate directory to run "
+        "an engine of its own while other lilbee processes hold the shared one",
         False,
     ),
     "LILBEE_TOKEN": (

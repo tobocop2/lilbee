@@ -368,3 +368,51 @@ def test_a_subset_process_that_leaves_last_stops_the_engine(
     assert subset._acquire_engine(box.root) is True
     subset.shutdown()
     assert box.stopped == [_SLOT]
+
+
+def _warming_process(monkeypatch: pytest.MonkeyPatch, chat_ref: str) -> FleetProvider:
+    """A process whose chat warm has started, with every local role refused."""
+    provider = FleetProvider()
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: chat_ref if role is WorkerRole.CHAT else "",
+    )
+    monkeypatch.setattr(prov_mod, "_unusable_engine_reason", lambda: None)
+    provider._engine_refusal = prov_mod._ENGINES_IN_USE_MESSAGE
+    provider._warm_tracker.begin(chat_ref)
+    return provider
+
+
+def test_a_remote_chat_warm_ignores_the_engines_in_use_refusal(monkeypatch) -> None:
+    provider = _warming_process(monkeypatch, "openai/gpt-x")
+    provider._finalize_warm_if_chat_never_ran()
+    assert provider._warm_tracker.snapshot() is None
+
+
+def test_a_local_chat_warm_names_the_engines_in_use_refusal(monkeypatch) -> None:
+    from lilbee.providers.warm_progress import WarmPhase
+
+    provider = _warming_process(monkeypatch, "Org/chat-GGUF/chat-Q4_K_M.gguf")
+    provider._finalize_warm_if_chat_never_ran()
+    snapshot = provider._warm_tracker.snapshot()
+    assert snapshot is not None
+    assert snapshot.phase is WarmPhase.ERROR
+    assert snapshot.error == prov_mod._ENGINES_IN_USE_MESSAGE
+
+
+def test_a_remote_chat_model_still_refuses_an_embed_request_with_the_cause(
+    real_planner, box: _Box, monkeypatch, tmp_path: Path
+) -> None:
+    box.seed_fleet(box.slot)
+    box.seed_fleet(box.private)
+    holds = [hold_user_lock(d, pid=_PEER_PID) for d in (box.slot, box.private)]
+    _pick_reranker(monkeypatch, tmp_path)
+    monkeypatch.setattr(cfg, "chat_model", "openai/gpt-x")
+    joiner = _process(monkeypatch)
+    assert joiner._acquire_engine(box.root) is False
+    with pytest.raises(ProviderError) as raised:
+        joiner._require_clients(WorkerRole.EMBED)
+    assert str(raised.value) == prov_mod._ENGINES_IN_USE_MESSAGE
+    for hold in holds:
+        hold.release_and_check_last()
