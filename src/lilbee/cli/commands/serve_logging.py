@@ -65,15 +65,28 @@ class _FaultLog:
     def __init__(self) -> None:
         self._handle: IO[str] | None = None
 
-    def enable(self) -> Path:
-        """Open the fault log if needed and point faulthandler at it."""
-        log_dir = cfg.data_root / _LOG_DIR_NAME
-        log_dir.mkdir(parents=True, exist_ok=True)
-        fault_path = log_dir / _FAULT_LOG_FILE_NAME
+    def _open(self, fault_path: Path) -> IO[str]:
+        """Return the open handle, opening it and pointing faulthandler at it if needed."""
         if self._handle is None or self._handle.closed:
             self._handle = fault_path.open("a", encoding="utf-8")
             faulthandler.enable(file=self._handle)
+        return self._handle
+
+    @staticmethod
+    def _path() -> Path:
+        log_dir = cfg.data_root / _LOG_DIR_NAME
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir / _FAULT_LOG_FILE_NAME
+
+    def enable(self) -> Path:
+        """Open the fault log if needed and point faulthandler at it."""
+        fault_path = self._path()
+        self._open(fault_path)
         return fault_path
+
+    def arm_exit_deadline(self, seconds: float) -> None:
+        """Dump every thread here and exit with status 1 after *seconds*, whatever holds them."""
+        faulthandler.dump_traceback_later(seconds, exit=True, file=self._open(self._path()))
 
 
 _fault_log = _FaultLog()
@@ -82,6 +95,11 @@ _fault_log = _FaultLog()
 def enable_fault_log() -> Path:
     """Point ``faulthandler`` at ``cfg.data_root/logs/server-fault.log``. Idempotent."""
     return _fault_log.enable()
+
+
+def arm_exit_deadline(seconds: float) -> None:
+    """End the process with status 1 after *seconds*; the fault log names what held it."""
+    _fault_log.arm_exit_deadline(seconds)
 
 
 class _ExceptHook:

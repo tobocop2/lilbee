@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
@@ -24,6 +25,7 @@ from lilbee.cli.app import (
     global_option,
 )
 from lilbee.cli.commands.serve_logging import (
+    arm_exit_deadline,
     install_health_access_filter,
     setup_server_logging,
 )
@@ -51,6 +53,12 @@ LOCK_REFUSAL_EXIT_CODE = 3
 Distinct from a generic failure so a supervisor can tell "another server owns
 this" apart from a crash without parsing output.
 """
+
+_EXIT_DEADLINE_S = 60.0
+"""Seconds from the start of shutdown until the process ends, whatever holds it."""
+
+_GRACEFUL_SHUTDOWN_S = 10
+"""Seconds open requests get before uvicorn cancels them and runs the lifespan teardown."""
 
 
 def port_file() -> Path:
@@ -134,6 +142,7 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
             console.print(f"Listening on http://{host}:{actual_port}")
         await server.main_loop()
     finally:
+        arm_exit_deadline(_EXIT_DEADLINE_S)
         set_server_exit_hook(None)
         if parent_watcher is not None and not parent_watcher.done():
             parent_watcher.cancel()
@@ -217,8 +226,15 @@ def serve(
     try:
         app = create_app()
         install_health_access_filter()
-        config = uvicorn.Config(app, host=cfg.server_host, port=cfg.server_port)
+        config = uvicorn.Config(
+            app,
+            host=cfg.server_host,
+            port=cfg.server_port,
+            timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_S,
+        )
         server = uvicorn.Server(config)
+        # asyncio takes over Ctrl-C only from this handler; a launch may have set an ignore.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
         raise typer.Exit(asyncio.run(_run_server(server, config, cfg.server_host)))
     finally:
         # A signal-driven shutdown stops the fleet on its own thread; hold the
