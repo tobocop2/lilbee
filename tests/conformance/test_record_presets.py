@@ -57,7 +57,7 @@ def _post(base: str, path: str) -> tuple[int, dict]:
         with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        return exc.code, json.loads(exc.read())
+        return exc.code, json.loads(exc.read() or b"null")
 
 
 class TestRecordingProxy:
@@ -116,3 +116,53 @@ class TestTokenOption:
         monkeypatch.delenv("REC_TOKEN", raising=False)
         with pytest.raises(SystemExit, match="--token-env REC_TOKEN"):
             token_from(self._args("--token-env", "REC_TOKEN"))
+
+
+@contextmanager
+def _redirector(target: str) -> Iterator[str]:
+    """A local server that answers every request with a 302 to *target*."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def _redirect(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", target + self.path)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_GET = do_POST = _redirect  # noqa: N815
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+class TestRedirects:
+    def test_a_redirect_to_another_origin_never_carries_the_token(self) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with (
+            _server("elsewhere", seen) as elsewhere,
+            _redirector(elsewhere) as upstream,
+            recording(upstream, token=_TOKEN) as (proxy, tape),
+        ):
+            status, _ = _post(proxy, "/v1/chat/completions")
+        assert status == 302
+        assert seen == []
+        assert [e.status for e in tape.exchanges] == [302]
+
+    def test_a_same_origin_embed_url_gets_the_token(self) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with (
+            _server("lilbee", seen) as upstream,
+            recording(upstream, token=_TOKEN, embed_url=upstream) as (proxy, _),
+        ):
+            assert _post(proxy, "/v1/embeddings")[0] == 200
+        assert seen == [("lilbee", "/v1/embeddings", f"Bearer {_TOKEN}")]
