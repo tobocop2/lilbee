@@ -1,5 +1,6 @@
 """Shared test helpers."""
 
+import faulthandler
 import io
 import os
 import shutil
@@ -162,6 +163,13 @@ def _serve_never_ends_the_test_process(monkeypatch):
     from lilbee.cli.commands import servers
 
     monkeypatch.setattr(servers, "exit_if_opens_remain", lambda status: None)
+
+
+@pytest.fixture(autouse=True)
+def _cancel_the_serve_exit_deadline():
+    """Stop a deadline armed by an in-process server run from ending the test process."""
+    yield
+    faulthandler.cancel_dump_traceback_later()
 
 
 @pytest.fixture(autouse=True)
