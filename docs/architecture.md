@@ -1146,8 +1146,11 @@ through the same ladder, under a cross-process build lock:
    process stops an engine that another process is using.
 3. **Overflow** to the config root's private dir (`<root>/data/engine/`) when
    the slot holds an engine with a live user that this process cannot bind: a
-   different model setup, an added role or a dead group. The joining process
-   gets a full private fleet, chat included, and the live engine stays as it is.
+   different model setup, an added role or a dead group. The live engine stays
+   as it is, and the joining process builds a private fleet beside it. If the
+   private dir also has a live user that the process cannot bind, the process
+   gets no fleet and no engine stops. Each request then names the cause and
+   tells the user to close the other processes or set `LILBEE_ENGINE_DIR`.
 
 Lifetime is kernel-refcounted membership: each process holds a user lock the
 OS releases on any death. The engine belongs to that set of users, not to the

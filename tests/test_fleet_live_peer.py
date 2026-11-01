@@ -14,6 +14,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.providers import engine_params, gguf_meta
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet import swap_manager as swap_mod
@@ -218,8 +219,53 @@ def test_a_full_private_dir_with_a_live_user_serves_nothing_and_stops_nothing(
     assert joiner._acquire_engine(box.root) is False
     assert box.stopped == []
     assert (box.pids(box.slot), box.pids(box.private)) == (slot_pids, private_pids)
+    _assert_every_request_names_the_engines_in_use(joiner)
     for hold in holds:
         hold.release_and_check_last()
+
+
+def test_a_dead_group_in_a_private_dir_with_a_live_user_names_the_cause(
+    real_planner, box: _Box, monkeypatch, tmp_path: Path
+) -> None:
+    box.seed_fleet(box.slot)
+    box.seed_fleet(box.private)
+    del box.records[_PRIVATE][SwapGroup.CHAT]
+    holds = [hold_user_lock(d, pid=_PEER_PID) for d in (box.slot, box.private)]
+    _pick_reranker(monkeypatch, tmp_path)
+    joiner = _process(monkeypatch)
+    assert joiner._acquire_engine(box.root) is False
+    assert box.stopped == []
+    _assert_every_request_names_the_engines_in_use(joiner)
+    for hold in holds:
+        hold.release_and_check_last()
+
+
+def test_a_later_acquisition_that_succeeds_drops_the_engines_in_use_message(
+    real_planner, box: _Box, monkeypatch, tmp_path: Path
+) -> None:
+    box.seed_fleet(box.slot)
+    box.seed_fleet(box.private)
+    holds = [hold_user_lock(d, pid=_PEER_PID) for d in (box.slot, box.private)]
+    _pick_reranker(monkeypatch, tmp_path)
+    joiner = _process(monkeypatch)
+    assert joiner._acquire_engine(box.root) is False
+    assert joiner._engine_refusal == prov_mod._ENGINES_IN_USE_MESSAGE
+    for hold in holds:
+        hold.release_and_check_last()
+    assert joiner._acquire_engine(box.root) is True
+    assert joiner._engine_refusal is None
+    joiner.shutdown()
+
+
+def _assert_every_request_names_the_engines_in_use(joiner: FleetProvider) -> None:
+    """Each role's request fails with the engine-in-use cause, never the install line."""
+    message = prov_mod._ENGINES_IN_USE_MESSAGE
+    assert "LILBEE_ENGINE_DIR" in message
+    for role in (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK):
+        with pytest.raises(ProviderError) as raised:
+            joiner._require_clients(role)
+        assert str(raised.value) == message
+        assert "installed and configured" not in str(raised.value)
 
 
 def test_with_no_live_user_a_new_process_replaces_the_stale_fleet(

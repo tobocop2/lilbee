@@ -122,6 +122,12 @@ _NOT_RESPONDING_MESSAGE = (
     "The model server is not responding and no healthy replica is available. "
     "It may be restarting; try again in a moment."
 )
+# Why a process has no fleet when the shared and the private engine both have a live user.
+_ENGINES_IN_USE_MESSAGE = (
+    "The shared and private engines are in use by other lilbee processes, so this "
+    "process has no model server. Close the other lilbee processes, or set "
+    f"{ENGINE_DIR_ENV} to a separate engine directory, then try again."
+)
 # Tokens held back from the served context for the model's own generation when the
 # request does not cap it, plus a margin for chat-template overhead and estimate drift.
 # Minimal input used to pre-load a role's upstream during warm-up (llama-swap
@@ -1019,6 +1025,9 @@ class FleetProvider:
         # Launches the last plan refused for an unusable window (role -> reason);
         # read by the warm finalizer and _require_clients.
         self._skipped_unusable_ctx: dict[WorkerRole, str] = {}
+        # Why the last acquisition left this process without a fleet because the
+        # private dir has a live user; shown before any generic no-server line.
+        self._engine_refusal: str | None = None
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -1087,6 +1096,7 @@ class FleetProvider:
         # rather than a retryable not-ready.
         self._skipped_not_installed = dict(demand.skipped_not_installed)
         self._skipped_unusable_ctx = dict(demand.skipped_unusable_ctx)
+        self._engine_refusal = None
         machine_dir = machine_engine_dir()
         if kernel_arbitrates_locks(machine_dir):
             machine = self._acquire_in_dir(machine_dir, pin, demand, is_overflow=False)
@@ -1140,7 +1150,10 @@ class FleetProvider:
                 # further to go, so serve nothing rather than kill the incumbent or
                 # load a second fleet's weights beside it (an OOM on a small-VRAM box).
                 log.info("The engine at %s has a live user and cannot serve this setup", engine_dir)
-                return None if not is_overflow else False
+                if is_overflow:
+                    self._engine_refusal = _ENGINES_IN_USE_MESSAGE
+                    return False
+                return None
             if not _can_build_engine(wanted):
                 return False
             # No live user holds this dir now: reap dead leftovers and stop any
@@ -1431,7 +1444,7 @@ class FleetProvider:
             # A refused launch's recorded reason wins over the generic line.
             # BAD_REQUEST so the HTTP surfaces return this deterministic,
             # actionable refusal in a 4xx body instead of a generic 500.
-            reason = self._skipped_unusable_ctx.get(role)
+            reason = self._engine_refusal or self._skipped_unusable_ctx.get(role)
             if reason is not None:
                 raise ProviderError(
                     reason, provider=_PROVIDER_NAME, kind=ProviderErrorKind.BAD_REQUEST
@@ -2208,7 +2221,7 @@ class FleetProvider:
         if missing is not None:
             self._warm_tracker.fail(f"chat model {clean_display_name(missing)} is not installed")
             return
-        unusable = self._skipped_unusable_ctx.get(WorkerRole.CHAT)
+        unusable = self._engine_refusal or self._skipped_unusable_ctx.get(WorkerRole.CHAT)
         if unusable is not None:
             self._warm_tracker.fail(unusable)
             return

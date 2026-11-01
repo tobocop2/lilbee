@@ -17242,5 +17242,6 @@ def test_failed_sync_toast_names_the_key_that_starts_a_sync():
         screen._do_sync(reporter)
 
     assert shown == [
-        "Sync failed for 1 file(s). Press t to see the reason. Fix it, then press S to sync again."
+        "Sync failed for 1 file(s). Press Esc to leave the prompt. "
+        "Then press t to see the reason. Fix it, then press S to sync again."
     ]
