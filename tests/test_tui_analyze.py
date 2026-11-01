@@ -378,6 +378,16 @@ async def test_stray_keys_on_the_open_report_act_on_nothing(sources) -> None:
     assert app.task_bar.queue.is_empty
 
 
+async def test_save_with_no_derived_profile_writes_nothing() -> None:
+    app = _ReportApp(_fits_default())
+    with mock.patch.object(profiles, "save_recommended") as save:
+        async with app.run_test(size=_NARROW) as pilot:
+            screen = await _report_open(app, pilot)
+            screen.action_save()
+            await pilot.pause()
+    save.assert_not_called()
+
+
 async def test_a_refused_save_toasts_its_reason() -> None:
     report = _report()
     app = _ReportApp(report)

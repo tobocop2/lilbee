@@ -33,6 +33,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
     has_project_folder,
     run_profile_op,
     save_folders,
+    shorten_middle,
     start_profile_switch,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -46,10 +47,11 @@ R = TypeVar("R")
 
 WIDE_COLUMNS = 100
 NARROW_CLASS = "-narrow"
-_ELLIPSIS = "…"
 _ROW_GAP = "  "
 _ROW_PADDING = 2  # an option's left and right padding inside the list
 _MIN_NAME = 8
+# The 60-cell confirm dialog, less its border, its padding and the full stop after the path.
+_DELETE_PATH_WIDTH = 53
 _APPLY_KEY = "enter"
 _CLOSE_KEY = "esc"
 
@@ -111,11 +113,7 @@ def entry_label(entry: ProfileEntry, name_width: int = 0, row_width: int = 0) ->
     With a *row_width*, the row is cut with an ellipsis to fit, so it never wraps.
     A name that is too long loses its middle, so its tail still shows.
     """
-    name = entry.name
-    if row_width > 0 and cell_len(name) > name_width:
-        kept = name_width - 1
-        tail = kept // 2
-        name = name[: kept - tail] + _ELLIPSIS + (name[len(name) - tail :] if tail else "")
+    name = shorten_middle(entry.name, name_width) if row_width > 0 else entry.name
     padding = " " * (name_width - cell_len(name))
     row = Content.assemble(name, padding, _ROW_GAP, Content.styled(_tag_text(entry), "$text-muted"))
     return row.truncate(row_width, ellipsis=True) if row_width > 0 else row
@@ -387,7 +385,9 @@ class ProfileLibrary(ModalScreen[None]):
         def _confirm(owned: ProfileEntry) -> None:
             dialog = ConfirmDialog(
                 msg.PROFILE_DELETE_TITLE.format(name=owned.name),
-                msg.PROFILE_DELETE_MESSAGE.format(path=owned.path),
+                msg.PROFILE_DELETE_MESSAGE.format(
+                    path=shorten_middle(str(owned.path), _DELETE_PATH_WIDTH)
+                ),
                 focus_no=True,
             )
             self.app.push_screen(dialog, _on_answer)

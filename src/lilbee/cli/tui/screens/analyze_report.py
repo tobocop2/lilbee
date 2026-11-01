@@ -346,7 +346,8 @@ class AnalyzeReportScreen(Screen[None]):
         """Save the recommended profile without switching to it."""
         rec = self._report.recommendation
         name = rec.name
-        assert name is not None  # noqa: S101 -- the Save pill shows only for a derived profile
+        if name is None:
+            return
         values = rec.values
         run_profile_op(
             self,

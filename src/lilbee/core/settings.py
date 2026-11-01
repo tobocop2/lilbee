@@ -197,8 +197,7 @@ def _assign_resolved(
             # A bad variable is the entry point's to refuse, in its one line.
             if entry.source is not SettingSource.ENV:
                 warn_on_load(
-                    f"Ignoring {entry.source} value in {root}: "
-                    f"{refusal_sentence(key, entry.value)}"
+                    f"Ignoring {entry.source} value in {root}: {refusal_sentence(key, entry.value)}"
                 )
 
 

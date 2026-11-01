@@ -17,6 +17,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
     ApplyProfileDialog,
     ProfilePathDialog,
     SaveProfileDialog,
+    shorten_middle,
 )
 from lilbee.cli.tui.screens.profile_library import ProfileLibrary, entry_label
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
@@ -501,6 +502,41 @@ async def test_typing_action_letters_into_the_import_path_input_does_not_leak() 
         assert path.value == "drex"
         assert app.screen is dialog
     assert not _global_dir().exists() or not list(_global_dir().iterdir())
+
+
+async def test_delete_shows_a_long_path_whole_on_one_line() -> None:
+    stem = "long-profile-name-" * 4
+    path = _write_global(stem, _PLAIN)
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        library = await _open(app, pilot)
+        listing = library.query_one("#library-list", OptionList)
+        listing.highlighted = next(i for i, row in enumerate(_rows(library)) if "long-" in row)
+        await pilot.pause()
+        await pilot.press("x")
+        confirm = await _dialog(app, pilot, ConfirmDialog)
+        await pilot.pause()
+        message = confirm.query_one("#confirm-message", Static)
+        lines = [message.render_line(y).text for y in range(message.size.height)]
+    path_lines = [line.strip() for line in lines if "…" in line]
+    assert len(path_lines) == 1
+    assert path_lines[0].startswith(str(path)[:20])
+    assert path_lines[0].endswith(f"{stem[-10:]}.toml.")
+
+
+@pytest.mark.parametrize(
+    ("text", "width", "expected"),
+    [
+        ("short", 5, "short"),
+        ("abcdefghij", 5, "ab…ij"),
+        ("abcdefghij", 2, "a…"),
+        ("日本語日本語", 7, "日…語"),
+    ],
+)
+def test_shorten_middle_fits_the_width_and_keeps_both_ends(
+    text: str, width: int, expected: str
+) -> None:
+    assert shorten_middle(text, width) == expected
 
 
 def test_entry_label_names_the_folder_and_each_problem() -> None:

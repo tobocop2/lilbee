@@ -8,6 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
+from rich.cells import cell_len, chop_cells
 from textual import on
 from textual.app import ComposeResult, CSSPathType
 from textual.binding import Binding, BindingType
@@ -45,6 +46,7 @@ T = TypeVar("T")
 PROFILE_OP_GROUP = "profile-op"
 DISABLED_CLASS = "-disabled"
 COPY_NAME_TRIES = 100
+_ELLIPSIS = "…"
 
 
 class ApplyChoice(StrEnum):
@@ -84,6 +86,17 @@ class PathRequest:
 
     path: Path
     folder: ProfileFolder | None
+
+
+def shorten_middle(text: str, width: int) -> str:
+    """*text* in at most *width* cells (two or more); a longer text loses its middle."""
+    if cell_len(text) <= width:
+        return text
+    kept = width - 1
+    tail = kept // 2
+    head_text = chop_cells(text, kept - tail)[0]
+    tail_text = chop_cells(text[::-1], tail)[0][::-1] if tail else ""
+    return f"{head_text}{_ELLIPSIS}{tail_text}"
 
 
 def value_text(value: object) -> str:
@@ -277,8 +290,9 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
     def __init__(self, plan: SwitchPlan) -> None:
         super().__init__()
         self._plan = plan
-        reindex_rows = [row for row in plan.diff.changes if row.effect is ProfileEffect.REINDEX]
-        self._rebuilds = len(reindex_rows) if plan.file_count else 0
+        self._reindex_rows = [
+            row for row in plan.diff.changes if row.effect is ProfileEffect.REINDEX
+        ]
 
     def compose(self) -> ComposeResult:
         profile = self._plan.profile
@@ -330,12 +344,12 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
     def _summary(self) -> str:
         if not self._plan.diff.changes:
             return msg.PROFILE_APPLY_NOTHING
-        if not self._rebuilds:
+        if not self._reindex_rows or not self._plan.file_count:
             return ""
-        return msg.profile_reindex_text(self._rebuilds, self._plan.file_count)
+        return msg.profile_reindex_text(len(self._reindex_rows), self._plan.file_count)
 
     def _action_pills(self) -> ComposeResult:
-        if self._rebuilds:
+        if self._reindex_rows:
             yield ConfirmPill(
                 msg.PROFILE_APPLY_REINDEX_LABEL,
                 pill_id="apply-reindex",

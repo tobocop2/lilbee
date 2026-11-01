@@ -1089,7 +1089,7 @@ def test_profile_is_listed_in_the_help_catalog() -> None:
     assert get_command("/profile").args_hint == "[name]"
 
 
-async def test_apply_on_an_empty_index_offers_no_rebuild() -> None:
+async def test_apply_on_an_empty_index_counts_no_files_and_still_offers_the_reindex() -> None:
     _on_legal_with_three_changes()
     app = _SettingsApp()
     with sources_totaling(0):
@@ -1098,7 +1098,7 @@ async def test_apply_on_an_empty_index_offers_no_rebuild() -> None:
             _pick(screen, "Notes and markdown")
             dialog = await _dialog(app, pilot, ApplyProfileDialog)
             pills = [p.id for p in dialog.query("#apply-actions ConfirmPill")]
-            assert pills == ["apply-apply", "apply-cancel"]
+            assert pills == ["apply-reindex", "apply-apply", "apply-cancel"]
             assert not dialog.query("#apply-summary")
 
 
