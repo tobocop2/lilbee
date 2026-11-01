@@ -67,3 +67,78 @@ class TestNoNetworkOnTheWritePath:
         monkeypatch.setattr(picks_mod, "_resolve_picks", boom)
         picks_mod.reset_picks()
         assert validate_model_task_assignment("chat_model", ref, allow_bypass=False) == ref
+
+
+_VLM_REPO = "other/Chat-Vlm-GGUF"
+_VLM_FILE = "chat-vlm-Q4_K_M.gguf"
+_REV = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _seed_cache_file(repo: str, filename: str, content: bytes) -> None:
+    """Lay down a HuggingFace cache entry (blob, snapshot symlink, refs) under cfg.models_dir."""
+    import hashlib
+
+    from lilbee.core.config import cfg
+    from lilbee.modelhub.registry import repo_to_dir
+
+    cache = cfg.models_dir / f"models--{repo_to_dir(repo)}"
+    blob = cache / "blobs" / hashlib.sha256(content).hexdigest()
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(content)
+    link = cache / "snapshots" / _REV / filename
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(blob)
+    (cache / "refs").mkdir(parents=True, exist_ok=True)
+    (cache / "refs" / "main").write_text(_REV, encoding="utf-8")
+
+
+@pytest.fixture
+def recovered_vlm() -> str:
+    """A chat model recovered from the cache, with a projector beside it and no manifest."""
+    from lilbee.catalog.refs import format_native_gguf_ref
+    from lilbee.core.config import cfg
+    from lilbee.modelhub.registry import ModelRegistry
+
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    _seed_cache_file(_VLM_REPO, _VLM_FILE, b"GGUF\x00\x00")
+    _seed_cache_file(_VLM_REPO, "mmproj-f16.gguf", b"GGUF\x01")
+    ref = format_native_gguf_ref(_VLM_REPO, _VLM_FILE)
+    ModelRegistry(cfg.models_dir).resolve(ref)  # recovery writes the manifest
+    return ref
+
+
+class TestRecoveredModelWithProjector:
+    def test_recovery_keeps_the_chat_label(self, recovered_vlm: str) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.modelhub.registry import ModelRegistry
+
+        manifest = ModelRegistry(cfg.models_dir).get_manifest(recovered_vlm)
+        assert manifest is not None
+        assert manifest.task == "chat"
+
+    def test_stays_in_the_chat_picker_and_is_offered_for_vision(self, recovered_vlm: str) -> None:
+        from lilbee.catalog.types import ModelTask
+        from lilbee.cli.tui.widgets.model_bar import _collect_native_models
+
+        buckets: dict = {task: [] for task in ModelTask}
+        _collect_native_models(buckets, set())
+
+        assert [o.ref for o in buckets[ModelTask.CHAT]] == [recovered_vlm]
+        assert [o.ref for o in buckets[ModelTask.VISION]] == [recovered_vlm]
+
+    def test_vision_role_accepts_it(self, recovered_vlm: str) -> None:
+        result = validate_model_task_assignment("vision_model", recovered_vlm, allow_bypass=False)
+        assert result == recovered_vlm
+
+    def test_vision_route_check_accepts_it(self, recovered_vlm: str, monkeypatch) -> None:
+        """PUT /api/models/vision validates through this check; it answered 422 before."""
+        from lilbee.catalog.types import ModelTask
+        from lilbee.server.handlers import models as handlers
+
+        monkeypatch.setattr(handlers, "_require_model_available", lambda model: model)
+        assert handlers._require_model_for_task(recovered_vlm, ModelTask.VISION) == recovered_vlm
+
+    def test_a_chat_model_without_a_projector_is_still_rejected_for_vision(self) -> None:
+        ref = install_fake_model("other/Plain-Chat-GGUF", "plain-Q4_K_M.gguf", "chat")
+        with pytest.raises(TaskMismatchError):
+            validate_model_task_assignment("vision_model", ref, allow_bypass=False)

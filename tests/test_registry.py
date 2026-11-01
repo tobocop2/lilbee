@@ -784,26 +784,25 @@ class TestModelRegistryResolve:
         assert manifest.blob == f"{digest[:2]}/{digest}"
         assert registry.resolve(_REF) == blob.resolve()  # now served through the manifest
 
-    def test_recovery_labels_a_model_with_a_projector_as_vision(self, tmp_path: Path) -> None:
-        """A cached model with an mmproj beside it is a VLM even when its name says nothing."""
+    def test_has_vision_projector_finds_a_projector_beside_a_cached_model(
+        self, tmp_path: Path
+    ) -> None:
         _seed_hf_cache(tmp_path)
-        mmproj_blob = _seed_hf_cache(tmp_path, filename="mmproj-f16.gguf", content=b"GGUF\x01")
-        assert mmproj_blob.exists()
+        _seed_hf_cache(tmp_path, filename="mmproj-f16.gguf", content=b"GGUF\x01")
         registry = ModelRegistry(tmp_path)
 
-        registry.resolve(_REF)
+        assert registry.has_vision_projector(_REF) is True
 
-        tasks = {m.gguf_filename: m.task for m in registry.list_installed()}
-        assert tasks[_FILENAME] == "vision"
-
-    def test_recovery_keeps_chat_for_a_model_without_a_projector(self, tmp_path: Path) -> None:
+    def test_has_vision_projector_is_false_without_a_projector(self, tmp_path: Path) -> None:
         _seed_hf_cache(tmp_path)
-        registry = ModelRegistry(tmp_path)
 
-        registry.resolve(_REF)
+        assert ModelRegistry(tmp_path).has_vision_projector(_REF) is False
 
-        [manifest] = registry.list_installed()
-        assert manifest.task == "chat"
+    def test_has_vision_projector_is_false_for_an_uninstalled_ref(self, tmp_path: Path) -> None:
+        assert ModelRegistry(tmp_path).has_vision_projector(_REF) is False
+
+    def test_has_vision_projector_is_false_for_a_malformed_ref(self, tmp_path: Path) -> None:
+        assert ModelRegistry(tmp_path).has_vision_projector("not a ref") is False
 
     def test_resolve_bare_repo_ref_recovers_from_cache(self, tmp_path: Path) -> None:
         """A bare ``<org>/<repo>`` ref (older builds persisted these) resolves via the HF cache."""

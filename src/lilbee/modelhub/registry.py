@@ -431,10 +431,6 @@ class ModelRegistry:
         ref = format_native_gguf_ref(hf_repo, gguf_filename)
         try:
             task = ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
-            if task is ModelTask.CHAT and self._has_cached_mmproj(
-                snapshot_path or self._snapshot_gguf_path(hf_repo, gguf_filename)
-            ):
-                task = ModelTask.VISION  # a projector beside the weights makes it a VLM
             total_size, shard_blobs = (
                 _shard_accounting(snapshot_path) if snapshot_path is not None else (None, [])
             )
@@ -456,10 +452,22 @@ class ModelRegistry:
         except Exception:  # cache-warming write; the resolve already returned a path
             log.debug("Could not re-register %s from the model cache", ref, exc_info=True)
 
-    @staticmethod
-    def _has_cached_mmproj(snapshot_path: Path | None) -> bool:
-        """True when an mmproj file sits next to the cached model file."""
-        return snapshot_path is not None and any(snapshot_path.parent.glob("*mmproj*.gguf"))
+    def has_vision_projector(self, ref: str) -> bool:
+        """True when *ref* is installed with an mmproj projector beside its weights.
+
+        A vision model is a chat model with a projector, so the manifest task
+        cannot tell the two apart. The vision picker and the vision-role check
+        both ask this question. The lookup walks the HF cache layout, so it
+        finds the projector from a content-hashed blob path too.
+        """
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
+
+        try:
+            find_mmproj_for_model(self.resolve(ref))
+        except (KeyError, ValueError, ProviderError):
+            return False
+        return True
 
     def is_installed(self, ref: str) -> bool:
         """Return True if a model is installed and its blob is present."""
