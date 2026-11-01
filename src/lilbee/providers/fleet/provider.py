@@ -103,7 +103,7 @@ log = logging.getLogger(__name__)
 # and far short of any supervisor's patience for a process that will not exit.
 _SHUTDOWN_BUILD_LOCK_WAIT_S = 45.0
 # Longest a read or a write waits on fleet work, so no thread that exit joins waits longer.
-_FLEET_WAIT_S = 30.0
+_FLEET_WAIT_S = 60.0
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -1023,6 +1023,10 @@ class FleetProvider:
         self._writes_done = 0
         # A read needs a fleet; clears when the build step ends.
         self._build_wanted = False
+        # Roles whose dead group the next pass restarts with an unchanged plan.
+        self._forced_roles: set[WorkerRole] = set()
+        # A load key changed: the next step stops the groups, and the next use reads it.
+        self._drop_wanted = False
         # How the last fleet work ended; read only with a group up.
         self._reload_failed = False
 
@@ -1071,7 +1075,7 @@ class FleetProvider:
         *bounded* caps the wait at ``_FLEET_WAIT_S``; only a daemon thread waits longer.
         """
         with self._lock:
-            if self._swaps:
+            if self._swaps and not self._drop_wanted:
                 return True
             if self._shut_down:
                 # A discarded provider must not spawn a llama-swap nothing would reap.
@@ -1109,9 +1113,28 @@ class FleetProvider:
         """
         if self._shut_down:
             return None
+        if self._drop_wanted:
+            return self._teardown_fleet
+        if self._forced_roles:
+            return self._forced_pass
         if self._swaps:
-            return self._reload_pass if self._writes_wanted != self._writes_done else None
+            return self._forced_pass if self._writes_wanted != self._writes_done else None
         return self._build_fleet if self._build_wanted else None
+
+    def _forced_pass(self) -> None:
+        """One reload pass that restarts the forced roles, which stay forced if it fails."""
+        with self._lock:
+            force = frozenset(self._forced_roles)
+        self._reload_pass(force=force)
+        with self._lock:
+            self._forced_roles -= force
+
+    def _teardown_fleet(self) -> None:
+        """Stop this provider's use of every group, so the next use plans from current cfg."""
+        with self._lock:
+            self._drop_wanted = False
+            self._drop_swap_refs()
+        self._release_engines(config_changed=True)
 
     def _build_fleet(self) -> None:
         """Run the acquisition ladder unless a group came up or a shutdown latched."""
@@ -1131,7 +1154,8 @@ class FleetProvider:
         The exit test and the clear of ``_fleet_work`` are one lock hold, and a caller
         changes what it wants and reads the field in one lock hold, so a request either
         reaches this loop or starts the next one. A failed pass with a later write runs
-        again, since the fresh plan can succeed; any other failure ends the work.
+        again, since the fresh plan can succeed, and a drop still runs; any other failure
+        ends the work.
         """
         step: Callable[[], None] | None = None
         failure: BaseException | None = None
@@ -1140,14 +1164,14 @@ class FleetProvider:
             with self._lock:
                 if failure is None:
                     step = self._next_fleet_step()
-                elif step != self._reload_pass or self._writes_wanted == seen or self._shut_down:
-                    if step == self._reload_pass:
+                elif self._drop_wanted and not self._shut_down:
+                    step = self._teardown_fleet
+                elif step != self._forced_pass or self._writes_wanted == seen or self._shut_down:
+                    if step != self._build_fleet:
                         log.error("The engine reload failed: %s", failure)
                     step = None
                 if step is None:
-                    self._fleet_work = None
-                    self._build_wanted = False
-                    self._reload_failed = failure is not None
+                    self._end_fleet_work(failure)
                     break
                 seen = self._writes_wanted
             try:
@@ -1159,8 +1183,18 @@ class FleetProvider:
                 with self._lock:
                     self._writes_done = seen
         if failure is not None:
-            self._drop_dead_swaps()
             raise failure
+
+    def _end_fleet_work(self, failure: BaseException | None) -> None:
+        """Clear the field, and after a failure the dead groups; caller holds ``_lock``."""
+        self._fleet_work = None
+        self._build_wanted = False
+        self._forced_roles.clear()
+        self._reload_failed = failure is not None
+        if failure is not None:
+            # A no-op for a running group, so a live engine is never abandoned unstopped.
+            for group in [g for g, swap in self._swaps.items() if not swap.running]:
+                self._drop_group(group)
 
     def _acquire_engine(self, config_root: Path) -> bool:
         """The acquisition ladder: bind to a compatible engine, else build one.
@@ -1592,10 +1626,15 @@ class FleetProvider:
         """Restart just *role*'s dead group (new port) from a fresh plan.
 
         Other roles' groups keep serving; only the dead group is torn down and
-        respawned. Runs the same diff-driven pass as a reload, forcing *role*
-        into the restart set so an unchanged plan still replaces its dead swap.
+        respawned. The fleet work runs the same diff-driven pass as a reload, forcing
+        *role* into the restart set so an unchanged plan still replaces its dead swap.
         """
-        self._reload_pass(force=frozenset((role,)))
+        with self._lock:
+            if self._shut_down:
+                return
+            self._forced_roles.add(role)
+            work = self._start_fleet_work()
+        self._join_fleet_work(work)
 
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether *role*'s upstream is loaded and ready, without starting the swap.
@@ -1690,23 +1729,18 @@ class FleetProvider:
         """Live cold-load progress for the chat role, or None before warm begins."""
         return self._warm_tracker.snapshot()
 
-    def _shutdown_swap(self, *, latch: bool = True) -> None:
-        """Release this process's engine use; ``latch=False`` keeps the provider reusable.
+    def _shutdown_swap(self) -> None:
+        """Latch the shutdown and release this process's engine use.
 
-        Terminal ``shutdown()`` latches ``_shut_down`` so a discarded provider's
-        in-flight warm/reload thread can't spawn an orphan swap, then releases
-        membership: the engine stops only when this was the last user and
-        persistence was not opted into. The cache-drop paths
-        (``invalidate_load_cache``, ``drop_loaded_models_async``) pass
-        ``latch=False``: a config change restarts the shared engine for every
-        user (they rediscover), and this provider rebuilds on next use.
+        The latch stops a discarded provider's fleet work from spawning an orphan
+        swap. The engine stops only when this was the last user and persistence was
+        not opted into.
         """
         # Latched before the lock, not inside it: every _shut_down check runs after
         # acquiring the build lock, so a warm or reload thread queued behind us can
         # only bail early if the flag is already set when its turn comes.
-        if latch:
-            with self._lock:
-                self._shut_down = True
+        with self._lock:
+            self._shut_down = True
         # The build lock serializes shutdown against a concurrent reload/build:
         # both mutate self._swaps and the llama-swap processes, so an unserialized
         # loser would overwrite the winner's state and leak a live llama-swap.
@@ -1723,10 +1757,8 @@ class FleetProvider:
                 _SHUTDOWN_BUILD_LOCK_WAIT_S,
             )
         try:
-            # Terminal shutdown closes every client; a config-change teardown
-            # retires them so an in-flight reader is never severed.
-            self._drop_swap_refs(close_all=latch)
-            self._release_engines(config_changed=not latch)
+            self._drop_swap_refs(close_all=True)
+            self._release_engines()
         finally:
             if acquired:
                 self._build_lock.release()
@@ -1836,16 +1868,6 @@ class FleetProvider:
         planning.clear_plan_probe()
         for client in doomed:
             client.close()
-
-    def _drop_dead_swaps(self) -> None:
-        """Drop the refs of groups whose process is gone so the next call rebuilds them.
-
-        A no-op for groups still running (e.g. the failure was in planning), so
-        a live engine is never abandoned unstopped.
-        """
-        with self._build_lock, self._lock:
-            for group in [g for g, swap in self._swaps.items() if not swap.running]:
-                self._drop_group(group)
 
     def _require_configured_model(
         self, model: str | None, configured: str, role: WorkerRole
@@ -2771,23 +2793,17 @@ class FleetProvider:
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """A model or settings change restarts the engine: drop the swap."""
         del model_path  # the whole engine restarts on next use; no per-model scope.
-        self._shutdown_swap(latch=False)
+        with self._lock:
+            if self._shut_down:
+                return
+            if self._fleet_work is None and not self._swaps and not self._engine_holds:
+                return
+            self._drop_wanted = True
+            self._start_fleet_work()
 
     def drop_loaded_models_async(self) -> None:
-        """Drop the swap off the caller's thread; next use restarts with current cfg.
-
-        ``_shutdown_swap`` stops llama-swap and waits on its process group, so a
-        role-agnostic load-key change (num_ctx, kv_cache_type) routes here rather
-        than blocking the settings callback. A no-op when no swap is up.
-        """
-        with self._lock:
-            if not self._swaps:
-                return
-        threading.Thread(
-            target=lambda: self._shutdown_swap(latch=False),
-            name="fleet-drop",
-            daemon=True,
-        ).start()
+        """Ask the fleet work to drop every group; next use restarts with current cfg."""
+        self.invalidate_load_cache()
 
     def shutdown(self) -> None:
         # The on-request vision grant is process-wide; the next provider starts from the setting.

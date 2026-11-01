@@ -249,6 +249,137 @@ def test_o7_a_write_after_dead_groups_drop_applies(
     assert len(local._swaps) == groups_left
 
 
+def test_o7_a_write_during_a_real_drop_joins_the_loop(
+    fleet: Any, passes: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local = _local(fleet)
+    entered, leave = threading.Event(), threading.Event()
+    release = local._release_engines
+
+    def _held_release(**kwargs: Any) -> None:
+        entered.set()
+        assert leave.wait(_WAIT_S)
+        release(**kwargs)
+
+    monkeypatch.setattr(local, "_release_engines", _held_release)
+    local.drop_loaded_models_async()
+    assert entered.wait(_WAIT_S)
+    work = local._fleet_work
+    assert work is not None
+    assert local._swaps == {}
+    writer = _write(_MLX)
+    _wait_for(lambda: local._writes_wanted != local._writes_done)
+    leave.set()
+    writer.join()
+    assert writer.heard is None
+    assert passes == []
+    assert local._fleet_work is None
+    assert local._swaps == {}
+    assert local._ensure_fleet() is True
+    assert "--mlx" in _chat_argv(local)
+
+
+def test_a_drop_while_every_group_stops_reaches_the_new_fleet(
+    fleet: Any, passes: list[int]
+) -> None:
+    local = _local(fleet)
+    gate, writer = _pass_at_the_gate(local)
+    assert local._swaps == {}
+    local.drop_loaded_models_async()
+    assert local._drop_wanted is True
+    gate.set()
+    writer.join()
+    assert writer.heard is None
+    assert len(passes) == 1
+    _settle(local)
+    assert local._drop_wanted is False
+    assert local._swaps == {}
+
+
+def test_a_read_after_a_drop_waits_for_the_drop_and_builds_again(
+    fleet: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local = _local(fleet)
+    old = dict(local._swaps)
+    leave = threading.Event()
+    release = local._release_engines
+
+    def _held_release(**kwargs: Any) -> None:
+        assert leave.wait(_WAIT_S)
+        release(**kwargs)
+
+    monkeypatch.setattr(local, "_release_engines", _held_release)
+    local.invalidate_load_cache()
+    reader = _Caller(local._ensure_fleet)
+    leave.set()
+    reader.join()
+    assert reader.heard is None
+    assert set(local._swaps) == set(old)
+    assert all(local._swaps[group] is not old[group] for group in old)
+
+
+def test_a_failed_forced_pass_keeps_the_role_for_the_rerun(
+    fleet: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local = _local(fleet)
+    role = next(iter(local._role_group))
+    local._forced_roles.add(role)
+
+    def _fail(force: frozenset[WorkerRole]) -> None:
+        raise _FAILED
+
+    monkeypatch.setattr(local, "_reload_pass", _fail)
+    with pytest.raises(ProviderError, match="engine did not start"):
+        local._forced_pass()
+    assert local._forced_roles == {role}
+
+
+def test_a_dead_group_rebuild_runs_as_a_step(fleet: Any, passes: list[int]) -> None:
+    local = _local(fleet)
+    role = next(iter(local._role_group))
+    old = local._swaps[local._role_group[role]]
+    local._rebuild_role(role)
+    assert len(passes) == 1
+    assert local._swaps[local._role_group[role]] is not old
+    assert local._forced_roles == set()
+    assert local._fleet_work is None
+    assert _work_threads() == 0
+
+
+def test_a_drop_after_a_failed_pass_still_runs(fleet: Any, passes: list[int]) -> None:
+    local = _local(fleet)
+    gate, writer = _pass_at_the_gate(local)
+    _ProcessSwap.start_failure = _FAILED
+    local.drop_loaded_models_async()
+    gate.set()
+    writer.join()
+    assert writer.heard is None
+    _settle(local)
+    assert local._drop_wanted is False
+    assert local._swaps == {}
+
+
+def test_a_rebuild_and_a_drop_after_the_latch_start_nothing(fleet: Any) -> None:
+    local = _local(fleet)
+    role = next(iter(local._role_group))
+    with local._lock:
+        local._shut_down = True
+    local._rebuild_role(role)
+    local.invalidate_load_cache()
+    assert local._forced_roles == set()
+    assert local._drop_wanted is False
+    assert local._fleet_work is None
+
+
+def test_a_drop_with_nothing_held_starts_no_thread(fleet: Any) -> None:
+    local = _local(fleet)
+    _cold(local)
+    local._engine_holds = {}
+    local.invalidate_load_cache()
+    assert local._drop_wanted is False
+    assert local._fleet_work is None
+
+
 @pytest.mark.parametrize(
     ("groups_left", "expected_passes"),
     [(True, 1), (False, 0)],

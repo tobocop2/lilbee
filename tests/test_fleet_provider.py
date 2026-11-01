@@ -2690,7 +2690,7 @@ def test_shutdown_drops_refs_and_closes_clients() -> None:
 def test_invalidate_load_cache_drops_swap_refs() -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
     p.invalidate_load_cache()
-    assert p._swaps == {}
+    assert _wait_until(lambda: p._swaps == {})
 
 
 def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch, tmp_path: Path) -> None:
@@ -2699,7 +2699,7 @@ def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch, tmp_path: P
     p = FleetProvider()
     assert p._ensure_fleet() is True
     p.invalidate_load_cache()
-    assert p._swaps == {}
+    assert _wait_until(lambda: p._swaps == {})
     assert p._ensure_fleet() is True  # rebuilt with current cfg, not refused
     assert p._swaps.get(WorkerRole.CHAT) is swap
 
@@ -3619,7 +3619,7 @@ class TestLifecycleMethods:
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}  # non-None so reload dispatches
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reload_pass = lambda: done.set()  # type: ignore[method-assign]
+        p._reload_pass = lambda force: done.set()  # type: ignore[method-assign]
         p.reload_role(WorkerRole.EMBED)
         assert done.wait(timeout=2.0)  # the spawned thread ran the restart
 
@@ -3652,7 +3652,7 @@ class TestLifecycleMethods:
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
         ran = {"pass": False}
-        p._reload_pass = lambda: ran.__setitem__("pass", True)  # type: ignore[method-assign]
+        p._reload_pass = lambda force: ran.__setitem__("pass", True)  # type: ignore[method-assign]
         p.reload_role(WorkerRole.CHAT, wait=True)
         assert ran["pass"] is True  # the pass ran before the caller returned
         assert p._fleet_work is None
@@ -3662,7 +3662,7 @@ class TestLifecycleMethods:
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
 
-        def boom() -> None:
+        def boom(force: frozenset[WorkerRole]) -> None:
             raise RuntimeError("reload failed")
 
         p._reload_pass = boom  # type: ignore[method-assign]
@@ -4677,12 +4677,12 @@ def test_ensure_fleet_partial_failure_tears_down_started_groups(monkeypatch) -> 
     assert p._swaps == {}
 
 
-def test_drop_dead_swaps_drops_only_dead_groups() -> None:
+def test_a_failed_end_of_work_drops_only_dead_groups() -> None:
     p = FleetProvider()
     dead, live = _FakeSwap(), _FakeSwap()
     dead.running = False
     p._swaps = {WorkerRole.EMBED: dead, WorkerRole.CHAT: live}
-    p._drop_dead_swaps()
+    p._end_fleet_work(RuntimeError("step failed"))
     assert set(p._swaps) == {WorkerRole.CHAT}  # the live group is untouched
 
 
@@ -5276,6 +5276,7 @@ def test_a_config_change_leaves_an_engine_other_users_are_serving(
     peer = hold_user_lock(machine, pid=555_555)
 
     p.invalidate_load_cache()
+    assert _wait_until(lambda: p._fleet_work is None)
 
     assert stopped == []  # the peer is mid-request; we rebind or overflow on next use
     assert p._engine_holds == {}  # our membership is gone either way
@@ -5294,6 +5295,7 @@ def test_a_config_change_stops_an_engine_no_one_else_is_using(monkeypatch, tmp_p
     assert p._ensure_fleet() is True
 
     p.invalidate_load_cache()
+    assert _wait_until(lambda: p._fleet_work is None)
 
     assert stopped == [machine]
 
@@ -5451,6 +5453,7 @@ def test_config_change_restarts_the_engine_and_releases_membership(
     p = FleetProvider()
     assert p._ensure_fleet() is True
     p.invalidate_load_cache()
+    assert _wait_until(lambda: p._fleet_work is None)
     assert stopped == [machine]  # the shared engine restarts for everyone
     # Membership is released, not kept: a retained hold would let a later config
     # change stop a foreign engine that claimed the slot, and keep it falsely live.
