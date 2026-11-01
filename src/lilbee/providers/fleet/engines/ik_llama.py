@@ -28,7 +28,7 @@ VERSION = f"git-{IK_LLAMA_COMMIT[:_VERSION_HEX_DIGITS]}"
 BACKEND = "cpu"
 # The digest of the CPU pack; None until a pack is published, and an install is refused then.
 PACK_SHA256: str | None = None
-_REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON. llama.cpp stays in use."
+_REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON."
 _PROFILE = dataclasses.replace(
     LLAMA.request_profile(WorkerRole.CHAT),
     label="ik_llama.cpp server",

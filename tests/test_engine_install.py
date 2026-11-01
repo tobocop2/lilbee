@@ -36,7 +36,8 @@ from tests.test_engine_service import GGUF_ENGINE
 
 ENGINE = EngineName.IK_LLAMA
 VERSION = "git-0123456789ab"
-NO_AVX2 = "This host has no AVX2. ik_llama.cpp needs it and llama.cpp stays in use."
+NO_AVX2 = "This host has no AVX2. ik_llama.cpp needs it."
+STAYS = "llama.cpp stays in use."
 BAD_PACK = "The wheel for engine ik_llama.cpp git-0123456789ab does not match its pin."
 ROUTES = [routes.engine_install_route]
 
@@ -172,7 +173,7 @@ def test_a_host_that_fails_the_gate_is_refused_before_the_store_is_touched(
     monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn("a" * 64, HostGate(False, NO_AVX2)))  # type: ignore[arg-type]
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, good)
-    assert str(exc.value) == f"Engine {ENGINE} cannot run on this host. {NO_AVX2}"
+    assert str(exc.value) == f"Engine {ENGINE} cannot run on this host. {NO_AVX2} {STAYS}"
     assert not root.exists()
 
 
@@ -425,6 +426,7 @@ def test_every_surface_shows_the_service_refusal(
         engine_service.install(name)
     expected = str(exc.value)
     assert expected
+    assert expected.endswith(STAYS) is (name == ENGINE.value)
     assert _cli("install", name)[1]["error"] == expected
     code, body = _rest({"engine": name})
     assert (code, body["detail"]) == (422, expected)

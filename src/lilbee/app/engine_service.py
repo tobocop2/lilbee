@@ -40,6 +40,7 @@ from lilbee.providers.fleet.engines.choice import (
     engines_loading,
     installed_engines,
 )
+from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
 from lilbee.retrieval.canary_probe import embedder_trigger
 
@@ -271,7 +272,10 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         raise EngineRefusedError(f"Engine {name} ships with lilbee. There is nothing to install.")
     gate = adapter.host_gate(refresh_session_host())
     if not gate.ok:
-        raise EngineRefusedError(f"Engine {name} cannot run on this host. {gate.reason}")
+        reason = gate.reason.rstrip(".")
+        raise EngineRefusedError(
+            f"Engine {name} cannot run on this host. {reason}. {LLAMA.name} stays in use."
+        )
     try:
         lock = choice.pin_lock(adapter.pin_record())
     except choice.NoPublishedPackError as exc:

@@ -233,7 +233,8 @@ _OOM_MARKERS: tuple[str, ...] = (
 # would be read as a memory shortfall and answered with a context reduction.
 _SURVIVABLE_LINE_MARKERS: tuple[str, ...] = ("warning:", "warn:")
 
-# The text for a process stopped by SIGILL, from the C library and from Go.
+# What an engine prints about an illegal instruction in its own output. A process
+# that SIGILL kills without printing leaves no text here and keeps the generic error.
 _ILLEGAL_INSTRUCTION_MARKER = "illegal instruction"
 
 
