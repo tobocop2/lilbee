@@ -18,6 +18,7 @@ from lilbee.core.system import is_network_path
 from lilbee.providers import engine_params, model_cache
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import ctx as fleet_ctx
+from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_CONCURRENCY,
     resolve_rerank_mode,
@@ -3386,8 +3387,14 @@ def _roles_without_a_pin(
     engines: Mapping[WorkerRole, EngineAdapter],
     unified_budget: int | None,
 ) -> tuple[WorkerRole, ...]:
-    """Roles of a mixed plan on several discrete cards whose engine a pin cannot reach."""
-    if unified_budget is not None or len(devices) < _MIN_SPLIT_GPUS or not _is_mixed(engines):
+    """Roles of a mixed plan on several discrete cards whose engine a pin cannot reach.
+
+    The driver's count joins the visible count, so a mask that hides a card does not
+    hide that the engines of the plan can land on different cards.
+    """
+    if unified_budget is not None or not devices or not _is_mixed(engines):
+        return ()
+    if max(len(devices), len(host_caps.read_card_memory())) < _MIN_SPLIT_GPUS:
         return ()
     return tuple(
         model.role
