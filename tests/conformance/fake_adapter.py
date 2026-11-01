@@ -17,7 +17,7 @@ from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
 from lilbee.providers.fleet.host_caps import HostCaps, nvidia_feature
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _FAKE_BINARY = Path(__file__).with_name("fake_binary.py")
 _SHA = "b" * 64
@@ -138,6 +138,9 @@ class FakeAdapter:
 
     def supports_shared_kv(self, binary: Path) -> bool:
         return False
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        return frozenset({RoleTarget.GPU, RoleTarget.CPU})
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
         return {
