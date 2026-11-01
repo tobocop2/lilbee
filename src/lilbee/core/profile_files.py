@@ -40,7 +40,8 @@ _STRING_META_KEYS = ("name", "description", "tested_on", "min_lilbee", "evidence
 _META_KEYS = frozenset({*_STRING_META_KEYS, "authors", "format"})
 _AUTHOR_KEYS = frozenset({"name", "github"})
 
-_NAME_PATTERN = re.compile(r"[A-Za-z0-9 _()-]{1,40}")
+MAX_NAME_LENGTH = 40
+_NAME_PATTERN = re.compile(rf"[A-Za-z0-9 _()-]{{1,{MAX_NAME_LENGTH}}}")
 # the fixed segments under /api/profiles/, and the file names Windows keeps for devices
 RESERVED_NAME_KEYS = frozenset(
     {
@@ -122,7 +123,7 @@ class ProfileEntry:
 
 @dataclass(frozen=True)
 class ProfileCatalog:
-    """Every profile file found, in precedence order."""
+    """Every profile file found: Default, then the other built-ins, then the rest."""
 
     entries: tuple[ProfileEntry, ...]
 
@@ -219,7 +220,7 @@ def _check_name(meta: Mapping[str, Any], stem: str) -> str:
     name = stem if raw is None else raw
     if _bad_name(name):
         raise ProfileFileError(
-            f"Bad name {name!r}: use 1 to 40 letters, digits, spaces, hyphens, "
+            f"Bad name {name!r}: use 1 to {MAX_NAME_LENGTH} letters, digits, spaces, hyphens, "
             "underscores or parentheses"
         )
     if profile_key(name) in RESERVED_NAME_KEYS:
@@ -448,7 +449,10 @@ def _settle_names(entries: list[ProfileEntry]) -> list[ProfileEntry]:
 
 
 def scan(folders: Sequence[tuple[ProfileFolder, Path]]) -> ProfileCatalog:
-    """Read every profile file in *folders*, given highest precedence first."""
+    """Read every profile file in *folders*, given highest precedence first.
+
+    The catalog lists Default, then the other built-ins, then the rest.
+    """
     entries = [entry for folder, path in folders for entry in _read_folder(folder, path)]
     return ProfileCatalog(entries=tuple(sorted(_settle_names(entries), key=_listing_rank)))
 

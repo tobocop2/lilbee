@@ -186,7 +186,7 @@ def profile_list(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
-    """List every profile, highest precedence first; * marks this project's."""
+    """List every profile, Default first, then other built-ins, then the rest; * marks this one."""
     from lilbee.app import profiles
     from lilbee.server.models import ProfileEntryResponse, ProfileListResponse
 

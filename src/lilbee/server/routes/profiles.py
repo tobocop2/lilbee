@@ -34,7 +34,7 @@ PROFILE_BODY_MAX_BYTES = 6 * MAX_PROFILE_BYTES + 64 * 1024
 
 @get("/api/profiles")
 async def profiles_list_route() -> ProfileListResponse:
-    """Every profile file, highest precedence first; broken files carry their reason."""
+    """Every profile file, Default first, built-ins next; broken files carry their reason."""
     return await handlers.list_profiles()
 
 

@@ -44,7 +44,6 @@ if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
 
 PROFILE_SELECT_ID = "profile-select"
-# the dropdown's only option until the first scan; a dropdown without a blank entry needs one
 _NOT_LOADED = ""
 _OWNED_FOLDERS = frozenset({ProfileFolder.PROJECT, ProfileFolder.GLOBAL})
 
@@ -160,6 +159,12 @@ class ProfileTab(Vertical):
         self._show_header(snapshot)
         self._show_changes(snapshot)
         self._show_actions(snapshot)
+
+    def show_failure(self, reason: str) -> None:
+        """Tell the user why the profiles did not load."""
+        line = self.query_one("#profile-description", Static)
+        line.update(msg.PROFILE_SCAN_FAILED.format(reason=reason))
+        line.display = True
 
     def _show_header(self, snapshot: ProfileSnapshot) -> None:
         active = snapshot.active

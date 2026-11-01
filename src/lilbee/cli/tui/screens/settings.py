@@ -273,7 +273,16 @@ class SettingsScreen(Screen[None]):
     @work(thread=True, exclusive=True, group="profile-load", exit_on_error=False)
     def reload_profile(self) -> None:
         """Load the profile state off the loop, then show it on the line and the Profile tab."""
-        call_from_thread(self, self._show_profile, load_snapshot())
+        try:
+            snapshot = load_snapshot()
+        except OSError as exc:
+            call_from_thread(self, self._show_profile_failure, str(exc))
+            return
+        call_from_thread(self, self._show_profile, snapshot)
+
+    def _show_profile_failure(self, reason: str) -> None:
+        for tab in self.query(ProfileTab):
+            tab.show_failure(reason)
 
     def _show_profile(self, snapshot: ProfileSnapshot) -> None:
         self.query_one(ProfileLine).show(snapshot)

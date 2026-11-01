@@ -230,3 +230,169 @@ async def test_the_confirm_dialog_pills_keep_the_shared_look(size) -> None:
         assert yes.has_class("-primary") and not no.has_class("-primary")
         assert no.styles.background.a >= 0.15 and yes.styles.background.a >= 0.15
         assert yes.styles.background != no.styles.background
+
+
+def _catalog_named(*names: str):
+    from pathlib import Path
+
+    from lilbee.core.profile_files import ProfileCatalog, ProfileEntry
+
+    return ProfileCatalog(
+        entries=tuple(
+            ProfileEntry(
+                name=name,
+                folder=ProfileFolder.GLOBAL,
+                path=Path(f"/nowhere/{index}.toml"),
+                file=None,
+                error=None,
+                shadowed_by=None,
+            )
+            for index, name in enumerate(names)
+        )
+    )
+
+
+@pytest.mark.parametrize("length", [10, 34, 35, 36, 40])
+def test_the_offered_copy_name_fits_the_name_limit(length: int) -> None:
+    from lilbee.cli.tui.screens.profile_dialogs import free_copy_name
+    from lilbee.core.profile_files import MAX_NAME_LENGTH, name_problem
+
+    name = "a" * length
+    offered = free_copy_name(name, ProfileFolder.GLOBAL, _catalog_named(name))
+    assert offered.endswith(" copy")
+    assert len(offered) <= MAX_NAME_LENGTH
+    assert name_problem(offered, ProfileFolder.GLOBAL, _catalog_named(name)) is None
+
+
+def test_the_offered_copy_name_drops_a_trailing_space_from_the_cut_base() -> None:
+    from lilbee.cli.tui.screens.profile_dialogs import free_copy_name
+
+    name = "a" * 34 + " b" * 3
+    offered = free_copy_name(name, ProfileFolder.GLOBAL, _catalog_named(name))
+    assert "  " not in offered
+    assert offered == "a" * 34 + " copy"
+
+
+def test_the_offered_copy_name_numbers_a_long_name_that_is_taken() -> None:
+    from lilbee.cli.tui.screens.profile_dialogs import free_copy_name
+
+    name = "a" * 40
+    taken = _catalog_named(name, "a" * 35 + " copy")
+    assert free_copy_name(name, ProfileFolder.GLOBAL, taken) == "a" * 33 + " copy 2"
+
+
+def test_the_offered_copy_name_ends_when_every_short_name_is_taken() -> None:
+    from lilbee.cli.tui.screens.profile_dialogs import COPY_NAME_TRIES, free_copy_name
+    from lilbee.core.profile_files import NameProblem, name_problem
+
+    name = "a" * 40
+    names = ["a" * 35 + " copy"] + [
+        f"{'a' * (35 - len(f' {n}'))} copy {n}" for n in range(2, COPY_NAME_TRIES + 1)
+    ]
+    taken = _catalog_named(name, *names)
+    offered = free_copy_name(name, ProfileFolder.GLOBAL, taken)
+    assert name_problem(offered, ProfileFolder.GLOBAL, taken) is NameProblem.TAKEN
+
+
+async def test_the_plus_button_with_a_long_active_name_offers_a_name_the_dialog_accepts() -> None:
+    from lilbee.app import profiles as app_profiles
+
+    long_name = "b" * 38
+    _write_global("long", _PLAIN.format(name=long_name))
+    app_profiles.apply(ProfileStore(), long_name)
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = await _loaded(app, pilot, long_name)
+        await _press(pilot, screen.query_one("#profile-new", ConfirmPill))
+        dialog = await _dialog(app, pilot, SaveProfileDialog)
+        assert dialog.query_one("#save-name", Input).value == "b" * 35 + " copy"
+        assert not dialog.query_one("#save-save", ConfirmPill).has_class("-disabled")
+
+
+@pytest.mark.parametrize("action", ["Import", "Export"])
+@pytest.mark.parametrize("size", SIZES)
+async def test_a_path_dialog_shows_its_error_when_the_user_clears_the_path(action, size) -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=size) as pilot:
+        await _loaded(app, pilot, "Default")
+        app.push_screen(
+            ProfilePathDialog(
+                title=f"{action} a profile",
+                explain="x",
+                action_label=action,
+                folders=(ProfileFolder.GLOBAL,),
+            )
+        )
+        dialog = await _dialog(app, pilot, ProfilePathDialog)
+        error = dialog.query_one("#path-error", Static)
+        ok = dialog.query_one("#path-ok", ConfirmPill)
+        assert _text(error) == "" and ok.has_class("-disabled")
+        await pilot.press("a")
+        assert await _until(pilot, lambda: not ok.has_class("-disabled"))
+        assert _text(error) == ""
+        await pilot.press("backspace")
+        assert await _until(pilot, lambda: error.display and _text(error) != "")
+        assert ok.has_class("-disabled")
+
+
+@pytest.mark.parametrize("size", SIZES)
+async def test_the_dialog_pills_keep_one_row_and_show_focus_and_disabled(size) -> None:
+    from lilbee.core.profile_files import ProfileCatalog
+
+    app = _SettingsApp()
+    async with app.run_test(size=size) as pilot:
+        await _loaded(app, pilot, "Default")
+        app.push_screen(ConfirmDialog("Title", "Message"))
+        confirm = await _dialog(app, pilot, ConfirmDialog)
+        pills = list(confirm.query(ConfirmPill))
+        assert pills
+        for pill in pills:
+            assert pill.size.height == 1
+            assert pill.styles.background.a >= 0.15, f"{pill.id} resting pill is invisible"
+        focused = app.focused
+        assert isinstance(focused, ConfirmPill)
+        assert (
+            focused.styles.background.hex
+            != next(p for p in pills if p is not focused).styles.background.hex
+        )
+        confirm.dismiss(False)
+        await pilot.pause()
+        app.push_screen(
+            SaveProfileDialog(
+                title="t",
+                explain="e",
+                catalog=ProfileCatalog(entries=()),
+                folders=(ProfileFolder.GLOBAL,),
+                initial="",
+            )
+        )
+        save = await _dialog(app, pilot, SaveProfileDialog)
+        disabled = save.query_one("#save-save", ConfirmPill)
+        assert disabled.has_class("-disabled")
+        assert disabled.styles.color.a < save.query_one("#save-cancel", ConfirmPill).styles.color.a
+
+
+@pytest.mark.parametrize("size", SIZES)
+async def test_the_description_has_a_gap_below_the_dropdown_row(size) -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=size) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        row = screen.query_one("#profile-select").parent
+        description = screen.query_one("#profile-description", Static)
+        assert description.display
+        assert description.region.y >= row.region.y + row.region.height + 1
+
+
+async def test_a_failed_profile_scan_tells_the_user_why(monkeypatch) -> None:
+    def _fail() -> None:
+        raise PermissionError("denied: /locked/profiles")
+
+    monkeypatch.setattr("lilbee.cli.tui.screens.settings.load_snapshot", _fail)
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        assert await _until(pilot, lambda: bool(app.screen.query("#profile-description")))
+        line = app.screen.query_one("#profile-description", Static)
+        assert await _until(
+            pilot, lambda: line.display and "denied: /locked/profiles" in _text(line)
+        )
+        assert _text(line).startswith("Could not read the profiles")

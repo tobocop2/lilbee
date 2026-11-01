@@ -1166,7 +1166,7 @@ class ProfileEntryResponse(BaseModel):
 
 
 class ProfileListResponse(BaseModel):
-    """Response for GET /api/profiles: every profile file, highest precedence first."""
+    """Response for GET /api/profiles: every profile file, Default first, built-ins next."""
 
     profiles: list[ProfileEntryResponse]
 

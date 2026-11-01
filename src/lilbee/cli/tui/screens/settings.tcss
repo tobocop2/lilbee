@@ -51,6 +51,10 @@ SettingsScreen {
         height: auto;
     }
 
+    #profile-tab .setting-editor-row {
+        margin-bottom: 1;
+    }
+
     #profile-description, #profile-credit, #profile-folder, #profile-changes-help {
         padding: 0 0 0 1;
         color: $text-muted;

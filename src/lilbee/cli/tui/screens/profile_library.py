@@ -28,6 +28,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
     add_cost_column,
     credit_text,
     diff_cells,
+    free_copy_name,
     has_project_folder,
     run_profile_op,
     save_folders,
@@ -298,12 +299,13 @@ class ProfileLibrary(ModalScreen[None]):
         entry = self._target()
         if entry is None:
             return
+        folders = save_folders(state.has_project)
         dialog = SaveProfileDialog(
             title=msg.PROFILE_DUPLICATE_TITLE.format(name=entry.name),
             explain=msg.PROFILE_DUPLICATE_EXPLAIN.format(name=entry.name),
             catalog=state.catalog,
-            folders=save_folders(state.has_project),
-            initial=msg.PROFILE_DUPLICATE_INITIAL.format(name=entry.name),
+            folders=folders,
+            initial=free_copy_name(entry.name, folders[0], state.catalog),
         )
 
         def _write(request: SaveRequest) -> profiles.ProfileLocation:

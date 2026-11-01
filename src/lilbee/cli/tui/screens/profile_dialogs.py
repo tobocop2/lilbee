@@ -27,6 +27,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import (
+    MAX_NAME_LENGTH,
     NameProblem,
     ProfileCatalog,
     ProfileFile,
@@ -43,6 +44,7 @@ T = TypeVar("T")
 
 PROFILE_OP_GROUP = "profile-op"
 DISABLED_CLASS = "-disabled"
+COPY_NAME_TRIES = 100
 
 
 class ApplyChoice(StrEnum):
@@ -129,13 +131,21 @@ def save_folders(has_project: bool) -> tuple[ProfileFolder, ...]:
     return (ProfileFolder.GLOBAL,)
 
 
+def _copy_candidate(name: str, number: int) -> str:
+    """The copy name for *name* that fits the name limit; its base is cut to make room."""
+    suffix = msg.PROFILE_DUPLICATE_INITIAL.format(name="")
+    if number > 1:
+        suffix = f"{suffix} {number}"
+    return name[: MAX_NAME_LENGTH - len(suffix)].rstrip() + suffix
+
+
 def free_copy_name(name: str, folder: ProfileFolder, catalog: ProfileCatalog) -> str:
-    """The first of "<name> copy", "<name> copy 2", ... that *folder* accepts."""
-    candidate = msg.PROFILE_DUPLICATE_INITIAL.format(name=name)
-    number = 1
-    while name_problem(candidate, folder, catalog) is not None:
-        number += 1
-        candidate = f"{msg.PROFILE_DUPLICATE_INITIAL.format(name=name)} {number}"
+    """The first copy name *folder* accepts, or the last one tried after COPY_NAME_TRIES."""
+    candidate = _copy_candidate(name, 1)
+    for number in range(2, COPY_NAME_TRIES + 1):
+        if name_problem(candidate, folder, catalog) is None:
+            break
+        candidate = _copy_candidate(name, number)
     return candidate
 
 
@@ -345,7 +355,6 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
         )
 
     def on_mount(self) -> None:
-        # Cancel first: a stray Enter never applies or queues a rebuild
         self.query_one("#apply-cancel", ConfirmPill).focus()
 
     @on(ConfirmPill.Picked)
@@ -432,7 +441,6 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
     @on(Input.Changed, "#save-name")
     @on(Select.Changed, "#save-folder")
     def _on_edit(self) -> None:
-        # Input and Select also post Changed while they mount; only a new value is an edit
         if self._opened_with is not None and self._request() != self._opened_with:
             self._edited = True
         self._check()
@@ -525,7 +533,6 @@ class ProfilePathDialog(ModalScreen[PathRequest | None]):
 
     @on(Input.Changed, "#path-input")
     def _on_edit(self) -> None:
-        # Input also posts Changed while it mounts; only a new value is an edit
         if self._opened_with is not None and self._path() != self._opened_with:
             self._edited = True
         self._check()

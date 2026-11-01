@@ -57,7 +57,7 @@ async def _run(operation: Callable[[], T]) -> T:
 
 
 async def list_profiles() -> ProfileListResponse:
-    """Every profile file, highest precedence first."""
+    """Every profile file, Default first, then the other built-ins, then the rest."""
     catalog = await _run(lambda: profiles.list_profiles(_store()))
     return ProfileListResponse(
         profiles=[ProfileEntryResponse.from_entry(e) for e in catalog.entries]
