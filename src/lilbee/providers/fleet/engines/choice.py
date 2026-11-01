@@ -10,7 +10,7 @@ from typing import Any
 
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
     EngineStore,
@@ -79,7 +79,7 @@ class EngineChoice:
     def require(self) -> EngineName:
         """The engine name, or ``NoEngineError`` when no engine can load the format."""
         if self.name is None:
-            raise NoEngineError(self.notice or "")
+            raise NoEngineError(self.notice or "", kind=ProviderErrorKind.BAD_REQUEST)
         return self.name
 
 
