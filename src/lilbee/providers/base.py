@@ -138,6 +138,10 @@ def normalize_generation_options(options: dict[str, Any] | None) -> dict[str, An
     return filtered
 
 
+SERVER_STOPPING_MESSAGE = "The server is stopping."
+"""What a caller reads when a stop of the server ends its wait or its stream."""
+
+
 class ProviderErrorKind(StrEnum):
     """Provider-agnostic category of a failed provider call.
 
