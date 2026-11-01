@@ -3063,7 +3063,7 @@ def _resolve_placement(
             """The auto roles on *cards*, with the unified budget less the card roles."""
             charged = sum(m.est_vram_bytes * m.replicas for m in inputs if m.role in on_cards)
             budget = None if unified_budget is None else max(0, unified_budget - charged)
-            return _auto_placement(
+            placed = _auto_placement(
                 [model for model in inputs if model.role in auto_roles],
                 cards,
                 devices,
@@ -3072,7 +3072,13 @@ def _resolve_placement(
                 estimate_peak=estimate_peak,
                 unified_budget=budget,
                 unpinnable=unpinnable,
+                refuse_oversize=bool(on_cards) or _is_mixed(engines),
             )
+            if on_cards:
+                past_named = _auto_roles_past_named(placed, inputs, unpinnable, on_cards)
+                if past_named:
+                    raise TargetRefusedError(past_named)
+            return placed
 
         return placement_from_spec(
             placement,
@@ -3090,7 +3096,25 @@ def _resolve_placement(
         estimate_peak=estimate_peak,
         unified_budget=unified_budget,
         unpinnable=unpinnable,
+        refuse_oversize=_is_mixed(engines),
     )
+
+
+def _auto_roles_past_named(
+    placed: Placement,
+    inputs: Sequence[ModelPlacementInput],
+    unpinnable: tuple[WorkerRole, ...],
+    named: frozenset[WorkerRole],
+) -> dict[WorkerRole, str]:
+    """The reason for each auto role the planner left out beside the *named* card roles."""
+    sizes = {model.role: model.est_vram_bytes for model in inputs}
+    beside = ", ".join(sorted(role.value for role in named))
+    return {
+        role: f"{role.value}: needs {sizes[role] / 1024**3:.1f} GiB, which does not fit in the "
+        f"memory left beside {beside}. Use a smaller model, or set its target to cpu."
+        for role in placed.unplaceable_roles
+        if role not in unpinnable
+    }
 
 
 def _auto_placement(
@@ -3103,6 +3127,7 @@ def _auto_placement(
     estimate_peak: PeakEstimator,
     unified_budget: int | None,
     unpinnable: tuple[WorkerRole, ...],
+    refuse_oversize: bool,
 ) -> Placement:
     """Plan *inputs* on *cards* (index to total bytes) with the auto planner."""
     # The chat split's card count is decided against the snapshot's free VRAM (what the
@@ -3121,7 +3146,7 @@ def _auto_placement(
         chat_ctx_fit=chat_ctx_fit,
         chat_ctx_target=chat_ctx_target,
         free_headroom={d.index: d.free_bytes for d in devices if d.index in cards},
-        refuse_oversize=_is_mixed(engines),
+        refuse_oversize=refuse_oversize,
     )
     held_back = tuple(model.role for model in inputs if model.role in unpinnable)
     return replace(placed, unplaceable_roles=(*placed.unplaceable_roles, *held_back))
@@ -3299,8 +3324,8 @@ def _placement_or_auto(
     caller just asked for and a silent substitution would be the surprise. A spec
     that names a device target also fails loud on a pin error: the target is a
     refusal to run anywhere else, and automatic placement would put that role on a
-    card. A role whose target the engine cannot run is not an error here: that role
-    gets no server and the others launch.
+    card. A role whose target the engine cannot run, or an auto role with no room
+    beside the named roles, raises for :func:`_placement_that_runs` to refuse alone.
     """
     if placement is None:
         return _resolve_placement(
@@ -3355,35 +3380,30 @@ def _placement_that_runs(
 ) -> tuple[Placement, bool, dict[WorkerRole, str]]:
     """The placement the fleet runs for *spec*, whether the spec applied, and the roles it drops.
 
-    A role on a card this machine lacks, or on a target its engine cannot run, gets
-    no server and a reason; the others launch. The launch and the placement view
-    both read this, so the view reports what runs.
+    A role on a card this machine lacks, on a target its engine cannot run, or on
+    auto with no room beside the named roles gets no server and a reason; the others
+    launch. Each refusal drops its roles and plans again, so the loop ends. The launch
+    and the placement view both read this, so the view reports what runs.
     """
     refused = _roles_on_missing_cards(spec, model_refs, devices)
     for refusal in refused.values():
         log.warning(refusal)
-    try:
-        placed, applied = _placement_or_auto(
-            spec,
-            *_without_roles(inputs, model_refs, refused),
-            devices,
-            engines=engines,
-            unified_budget=unified_budget,
-            charge_against_free=charge_against_free,
-        )
-    except TargetRefusedError as exc:
-        refused = {**refused, **exc.reasons}
-        for refusal in exc.reasons.values():
-            log.warning(refusal)
-        placed, applied = _placement_or_auto(
-            spec,
-            *_without_roles(inputs, model_refs, refused),
-            devices,
-            engines=engines,
-            unified_budget=unified_budget,
-            charge_against_free=charge_against_free,
-        )
-    return placed, applied, refused
+    while True:
+        try:
+            placed, applied = _placement_or_auto(
+                spec,
+                *_without_roles(inputs, model_refs, refused),
+                devices,
+                engines=engines,
+                unified_budget=unified_budget,
+                charge_against_free=charge_against_free,
+            )
+        except TargetRefusedError as exc:
+            refused = {**refused, **exc.reasons}
+            for refusal in exc.reasons.values():
+                log.warning(refusal)
+        else:
+            return placed, applied, refused
 
 
 @dataclass(frozen=True)
