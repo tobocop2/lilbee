@@ -26,6 +26,7 @@ from lilbee.providers.fleet import provider as fleet_provider
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.memory_types import MemoryKind
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.fleet.placement_spec import (
     PlacementError,
@@ -249,6 +250,27 @@ def _launched(plan) -> list[WorkerRole]:
     return [launch.role for launch in plan.launches]
 
 
+def test_a_cpu_chat_past_the_card_launches_in_system_memory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, ALL_CPU)
+    plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+    assert WorkerRole.CHAT in _launched(plan)
+    assert WorkerRole.CHAT not in plan.refused_roles
+
+
+def test_a_launch_refused_on_a_fixed_reserve_names_the_gib(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, "")
+    monkeypatch.setattr(planning, "_role_ctx", lambda *_args, **_kwargs: 512)
+    monkeypatch.setattr(type(engine), "memory_kind", MemoryKind.FIXED_RESERVE)
+    plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+    reason = plan.refused_roles[WorkerRole.CHAT]
+    assert "does not hold the model" in reason
+    assert FLOOR_REASON not in reason
+
+
 class TestARoleThatDoesNotLaunchChargesNothing:
     """A chat below the prompt floor leaves the bound, so the other cpu roles can launch."""
 
@@ -256,6 +278,7 @@ class TestARoleThatDoesNotLaunchChargesNothing:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, ALL_CPU)
+        monkeypatch.setattr(planning, "_cpu_sizing_budget", lambda: 0)
         plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
         assert _launched(plan) == [WorkerRole.EMBED]
         assert FLOOR_REASON in plan.refused_roles[WorkerRole.CHAT]
@@ -266,6 +289,7 @@ class TestARoleThatDoesNotLaunchChargesNothing:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, ALL_CPU)
+        monkeypatch.setattr(planning, "_cpu_sizing_budget", lambda: 0)
         view = planning.resolve_placement_plan(
             PlacementSpec.from_json(ALL_CPU),
             engines=engines_for_all_roles(engine),
@@ -278,6 +302,7 @@ class TestARoleThatDoesNotLaunchChargesNothing:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, ALL_CPU)
+        monkeypatch.setattr(planning, "_cpu_sizing_budget", lambda: 0)
         with pytest.raises(TargetRefusedError, match="vision: the CPU needs") as caught:
             planning.resolve_placement_plan(
                 PlacementSpec.from_json(ALL_CPU), engines=engines_for_all_roles(engine)
