@@ -22,7 +22,12 @@ from functools import reduce
 from math import gcd
 
 from lilbee.providers.fleet.memory_types import MemoryKind
-from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
+from lilbee.providers.fleet.placement_spec import (
+    PlacementError,
+    PlacementSpec,
+    RolePlacement,
+    TargetRefusedError,
+)
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import ROLE_REGISTRY, RoleTarget, WorkerRole
 
@@ -715,6 +720,9 @@ def placement_from_spec(
     A role with the auto target is planned last by *plan_auto*, on the capacity
     the other roles leave. It never names a card, so a card the machine lacks
     cannot refuse it.
+
+    A role its card cannot hold raises a plain error when the automatic plan can
+    replace the spec. Otherwise it raises :class:`TargetRefusedError`, naming the role.
     """
     usable = usable_vram_fraction()
     remaining = {idx: total * usable for idx, total in device_capacity.items()}
@@ -737,7 +745,14 @@ def placement_from_spec(
         per_device = estimate_peak(role, ratio)
         split = ratio if len(rp.devices) > 1 else ()
         for replica in range(rp.replicas):
-            _charge_devices(role, rp.devices, per_device, remaining, device_capacity)
+            _charge_devices(
+                role,
+                rp.devices,
+                per_device,
+                remaining,
+                device_capacity,
+                refuse_alone=not spec.all_on_cards,
+            )
             instances.append(
                 InstancePlan(
                     role=role, devices=tuple(rp.devices), tensor_split=split, replica=replica
@@ -871,25 +886,33 @@ def _charge_devices(
     per_device: tuple[int, ...],
     remaining: dict[int, float],
     device_capacity: dict[int, int],
+    *,
+    refuse_alone: bool,
 ) -> None:
     """Subtract one instance's per-device peaks from *remaining*; fail loud if a card overflows.
 
     An estimate that does not cover every pinned device is a PlacementError rather
     than a zip mismatch: gguf-parser returns no per-device breakdown for some
     models, and the auto planner skips such a candidate (see :func:`_place_split`),
-    so the manual path must refuse in the currency callers already handle.
+    so the manual path must refuse in the currency callers already handle. With
+    *refuse_alone* the error names the role, for the launch to drop only that role.
     """
+
+    def refusal(reason: str) -> PlacementError:
+        return TargetRefusedError({role: reason}) if refuse_alone else PlacementError(reason)
+
     if len(per_device) != len(devices):
-        raise PlacementError(
+        raise refusal(
             f"{role.value} is pinned to {len(devices)} device(s) but its memory estimate "
             f"covers {len(per_device)}; clear the placement to place it automatically"
         )
+    fix = ". Use a smaller model, or set its target to cpu." if refuse_alone else ""
     for idx, peak in zip(devices, per_device, strict=True):
         if peak > remaining[idx]:
-            raise PlacementError(
+            raise refusal(
                 f"{role.value} pinned to device {idx} needs {peak / 1024**3:.1f} GiB but "
                 f"device {idx} has {remaining[idx] / 1024**3:.1f} GiB usable "
-                f"({device_capacity[idx] / 1024**3:.1f} GiB total, 90% headroom)"
+                f"({device_capacity[idx] / 1024**3:.1f} GiB total, 90% headroom){fix}"
             )
     for idx, peak in zip(devices, per_device, strict=True):
         remaining[idx] -= peak

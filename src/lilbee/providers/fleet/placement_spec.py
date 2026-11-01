@@ -19,7 +19,7 @@ class PlacementError(ValueError):
 
 
 class TargetRefusedError(PlacementError):
-    """Roles a spec's device target refuses alone, each with its reason."""
+    """Roles a spec that names a device target refuses alone, each with its reason."""
 
     def __init__(self, reasons: Mapping[WorkerRole, str]) -> None:
         super().__init__(" ".join(reasons.values()))
@@ -49,6 +49,11 @@ class PlacementSpec:
     """A manual placement for every active role, keyed by role."""
 
     roles: Mapping[WorkerRole, RolePlacement] = field(default_factory=dict)
+
+    @property
+    def all_on_cards(self) -> bool:
+        """Whether every role runs on a card, so the automatic plan can replace this spec."""
+        return all(entry.device_target is RoleTarget.GPU for entry in self.roles.values())
 
     def to_json(self) -> str:
         """Serialize to a compact JSON string keyed by role value."""
