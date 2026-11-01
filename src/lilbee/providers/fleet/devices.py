@@ -15,6 +15,7 @@ import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -196,21 +197,40 @@ def host_lacks_nvlink() -> bool:
     return len(gpu_rows) >= _TOPO_MIN_GPUS and not pairs
 
 
+@cache
+def _warn_order_replaced(preset: str) -> None:
+    """Warn once for each preset order that a child does not get."""
+    log.warning(
+        "Ignoring %s=%s: lilbee numbers NVIDIA cards in bus order, so it sets %s.",
+        _CUDA_ORDER_VAR,
+        preset,
+        _PCI_BUS_ID_ORDER,
+    )
+
+
+def _bus_order(env: Mapping[str, str]) -> str:
+    """The CUDA order of every child, with a warning when it replaces a preset order."""
+    preset = env.get(_CUDA_ORDER_VAR)
+    if preset and preset != _PCI_BUS_ID_ORDER:
+        _warn_order_replaced(preset)
+    return _PCI_BUS_ID_ORDER
+
+
 def _probe_env(binary: Path) -> dict[str, str]:
     """Env for the probe: stable PCI ordering so CUDA indices match what we pin.
 
-    A preset ``CUDA_DEVICE_ORDER`` is respected; ``visible_env`` re-emits the same
-    order var, so the probe and the spawned servers see one device ordering. The
-    probe runs under the engine's own environment (pin, loader safety) and with the
-    CUDA runtime libraries *binary* needs on its library path, so a zero-device
-    result reflects an unusable GPU rather than a probe that lacked them.
+    ``visible_env`` sets the same order, so the probe, the spawned servers and the
+    driver tools see one device ordering. The probe runs under the engine's own
+    environment (pin, loader safety) and with the CUDA runtime libraries *binary*
+    needs on its library path, so a zero-device result reflects an unusable GPU
+    rather than a probe that lacked them.
     """
     from lilbee.providers.fleet.cuda_runtime import cuda_runtime_env
     from lilbee.providers.fleet.gpu_env import engine_environ
 
     env = engine_environ()
     env.update(cuda_runtime_env(binary))
-    env.setdefault(_CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER)
+    env[_CUDA_ORDER_VAR] = _bus_order(env)
     return env
 
 
@@ -609,7 +629,7 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
     if backend == "CUDA":
         return {
             _CUDA_VISIBLE_VAR: _compose_visible(indices, env.get(_CUDA_VISIBLE_VAR)),
-            _CUDA_ORDER_VAR: env.get(_CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER),
+            _CUDA_ORDER_VAR: _bus_order(env),
         }
     if backend in ("ROCm", "HIP"):
         return _amd_visible_env(indices, env)
