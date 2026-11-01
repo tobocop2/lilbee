@@ -363,6 +363,13 @@ def peek_services() -> Services | None:
     return _state.singleton
 
 
+def answer_provider_waiters() -> None:
+    """Answer the callers that wait on the cached provider, now and later."""
+    services = peek_services()
+    if services is not None:
+        services.provider.stop_waiting()
+
+
 # Serializes the singleton swap in reset_services: a signal's teardown thread
 # and an exiting caller's can race, and both tearing down the same container
 # would double-close the store.
@@ -455,7 +462,7 @@ def set_server_exit_hook(hook: Callable[[int], None] | None) -> None:
 def request_server_exit(status: int = 0) -> bool:
     """Ask the running server to exit with *status*; False when none registered.
 
-    A nonzero *status* is a hard exit: the server does not wait for responses in flight.
+    A nonzero *status* is a hard exit: responses in flight get a short wait, then cancel.
     """
     return _server_exit.request(status)
 
@@ -652,6 +659,7 @@ def _teardown_for_signal(signum: int) -> None:
     log.info(
         "Received signal %s; stopping the engine fleet before exit", signal.Signals(signum).name
     )
+    answer_provider_waiters()
     reset_services()
 
 
