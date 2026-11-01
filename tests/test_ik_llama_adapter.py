@@ -159,12 +159,10 @@ def test_a_cpu_with_avx2_or_neon_passes_the_gate(
     assert (gate.ok, gate.known, gate.auto_selectable) == (True, True, True)
 
 
-def test_a_cpu_without_avx2_is_refused_naming_avx2_and_llama_cpp() -> None:
+def test_a_cpu_without_avx2_is_refused_naming_avx2() -> None:
     gate = IK_LLAMA.host_gate(_host("Linux", "x86_64", ["avx", "sse4_2"]))
     assert gate.ok is False
-    assert gate.reason == (
-        "Test CPU lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON. llama.cpp stays in use."
-    )
+    assert gate.reason == "Test CPU lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON."
 
 
 def test_an_unreadable_cpu_stays_selectable_but_never_automatic() -> None:
@@ -185,7 +183,9 @@ def test_install_on_a_host_without_avx2_is_refused_and_writes_nothing(
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install("ik_llama.cpp")
     assert "AVX2" in str(exc.value)
-    assert "llama.cpp stays in use" in str(exc.value)
+    assert str(exc.value).endswith(
+        "ik_llama.cpp needs a CPU with AVX2 or NEON. llama.cpp stays in use."
+    )
     assert not engines_root(cfg.models_dir).exists()
 
 
