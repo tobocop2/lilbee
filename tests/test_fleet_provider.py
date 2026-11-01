@@ -5164,6 +5164,52 @@ def test_ladder_builds_into_the_machine_dir_when_slot_is_empty(monkeypatch, tmp_
     assert len(users) == 1  # holding membership
 
 
+def test_an_exit_while_the_engine_starts_stops_that_engine(monkeypatch, tmp_path: Path) -> None:
+    """The membership exists before the start, so a start that never finishes is stopped."""
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    p = FleetProvider()
+
+    def _exit_during_start(launches: list, **_kwargs: object) -> None:
+        p._release_engines()
+
+    monkeypatch.setattr(swap, "start", _exit_during_start)
+    assert p._ensure_fleet() is True
+
+    assert stopped == [machine]
+
+
+def test_a_start_that_serves_nothing_leaves_no_membership(monkeypatch, tmp_path: Path) -> None:
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
+    p = FleetProvider()
+
+    assert p._ensure_fleet() is False
+
+    assert p._engine_holds == {}
+    assert not list((machine / "engine-users").glob("*.lock"))
+
+
+def test_a_failed_start_leaves_no_membership(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.providers.base import ProviderError
+    from lilbee.runtime.engine_lock import live_users_exist
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+
+    def _fail(launches: list, **_kwargs: object) -> None:
+        raise ProviderError("engine did not come up", provider="fleet")
+
+    monkeypatch.setattr(swap, "start", _fail)
+    p = FleetProvider()
+
+    with pytest.raises(ProviderError, match="engine did not come up"):
+        p._ensure_fleet()
+
+    assert p._engine_holds == {}
+    assert not live_users_exist(machine)
+
+
 def test_ladder_overflows_to_private_dir_on_pin_mismatch(monkeypatch, tmp_path: Path) -> None:
     from lilbee.runtime.engine_lock import hold_user_lock
 
