@@ -116,7 +116,12 @@ class ProfileTab(Vertical):
         yield table
         with Horizontal(id="profile-actions"):
             for action in _ROW_ACTIONS:
-                yield ConfirmPill("", pill_id=f"profile-{action.value}", answer=action)
+                yield ConfirmPill(
+                    "",
+                    pill_id=f"profile-{action.value}",
+                    answer=action,
+                    primary=action is ProfileAction.UPDATE,
+                )
         yield Static(msg.PROFILE_ALL_TITLE, classes="setting-title profile-section")
         yield Static(msg.PROFILE_ALL_HELP, classes="setting-help")
         with Horizontal(id="profile-manage-row"):

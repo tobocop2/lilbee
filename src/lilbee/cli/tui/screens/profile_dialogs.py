@@ -321,7 +321,12 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
                 pill_id="apply-reindex",
                 answer=ApplyChoice.APPLY_REINDEX,
             )
-        yield ConfirmPill(msg.PROFILE_APPLY_LABEL, pill_id="apply-apply", answer=ApplyChoice.APPLY)
+        yield ConfirmPill(
+            msg.PROFILE_APPLY_LABEL,
+            pill_id="apply-apply",
+            answer=ApplyChoice.APPLY,
+            primary=True,
+        )
         yield ConfirmPill(
             msg.PROFILE_CANCEL_LABEL, pill_id="apply-cancel", answer=ApplyChoice.CANCEL
         )
@@ -378,7 +383,10 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
             yield Static(self._explain, id="save-explain", markup=False)
             with Horizontal(id="save-actions"):
                 yield ConfirmPill(
-                    msg.PROFILE_SAVE_LABEL, pill_id="save-save", answer=_SaveAnswer.SAVE
+                    msg.PROFILE_SAVE_LABEL,
+                    pill_id="save-save",
+                    answer=_SaveAnswer.SAVE,
+                    primary=True,
                 )
                 yield ConfirmPill(
                     msg.PROFILE_CANCEL_LABEL, pill_id="save-cancel", answer=_SaveAnswer.CANCEL
@@ -464,7 +472,9 @@ class ProfilePathDialog(ModalScreen[PathRequest | None]):
                 yield from _folder_choice("path-folder", self._folders)
                 yield Static("", id="path-error", markup=False)
             with Horizontal(id="path-actions"):
-                yield ConfirmPill(self._action_label, pill_id="path-ok", answer=_SaveAnswer.SAVE)
+                yield ConfirmPill(
+                    self._action_label, pill_id="path-ok", answer=_SaveAnswer.SAVE, primary=True
+                )
                 yield ConfirmPill(
                     msg.PROFILE_CANCEL_LABEL, pill_id="path-cancel", answer=_SaveAnswer.CANCEL
                 )

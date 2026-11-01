@@ -263,7 +263,10 @@ class AnalyzeReportScreen(Screen[None]):
             yield from self._compose_notes()
         with Horizontal(id="analyze-actions"):
             yield ConfirmPill(
-                msg.PROFILE_APPLY_LABEL, pill_id="analyze-apply", answer=ReportAction.APPLY
+                msg.PROFILE_APPLY_LABEL,
+                pill_id="analyze-apply",
+                answer=ReportAction.APPLY,
+                primary=True,
             )
             if self._report.recommendation.name is not None:
                 yield ConfirmPill(

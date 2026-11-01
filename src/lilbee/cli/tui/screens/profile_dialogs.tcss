@@ -84,21 +84,3 @@ ApplyProfileDialog, SaveProfileDialog, ProfilePathDialog {
     margin-top: 1;
     align-horizontal: center;
 }
-
-#apply-actions ConfirmPill, #save-actions ConfirmPill, #path-actions ConfirmPill {
-    width: auto;
-    height: 1;
-    padding: 0 2;
-    margin: 0 1;
-    background: $boost;
-    color: $text;
-    text-style: bold;
-
-    &:focus, &:hover {
-        background: $accent;
-    }
-}
-
-#save-actions ConfirmPill.-disabled, #path-actions ConfirmPill.-disabled {
-    color: $text-disabled;
-}

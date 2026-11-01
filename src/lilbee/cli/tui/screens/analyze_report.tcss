@@ -27,17 +27,3 @@
     margin: 1 0 0 0;
     align-horizontal: center;
 }
-
-#analyze-actions ConfirmPill {
-    width: auto;
-    height: 1;
-    padding: 0 2;
-    margin: 0 1;
-    background: $boost;
-    color: $text;
-    text-style: bold;
-
-    &:focus, &:hover {
-        background: $accent;
-    }
-}

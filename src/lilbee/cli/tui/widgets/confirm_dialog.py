@@ -19,6 +19,30 @@ from lilbee.cli.tui import messages as msg
 class ConfirmPill(Static, can_focus=True):
     """Focusable dialog pill; Enter, Space or a click picks the answer it stands for."""
 
+    DEFAULT_CSS = """
+    ConfirmPill {
+        width: auto;
+        height: 1;
+        padding: 0 2;
+        margin: 0 1;
+        color: $text;
+        text-style: bold;
+        background: $surface-lighten-2;
+
+        &.-primary {
+            background: $primary 20%;
+        }
+
+        &:focus, &:hover {
+            background: $accent;
+        }
+
+        &.-disabled {
+            color: $text-disabled;
+        }
+    }
+    """
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "select", "Pick", show=False),
         Binding("space", "select", "Pick", show=False),
@@ -31,8 +55,10 @@ class ConfirmPill(Static, can_focus=True):
             super().__init__()
             self.answer = answer
 
-    def __init__(self, label: str, *, pill_id: str, answer: bool | StrEnum) -> None:
-        super().__init__(label, id=pill_id)
+    def __init__(
+        self, label: str, *, pill_id: str, answer: bool | StrEnum, primary: bool = False
+    ) -> None:
+        super().__init__(label, id=pill_id, classes="-primary" if primary else None)
         self._answer = answer
 
     def action_select(self) -> None:
@@ -70,7 +96,7 @@ class ConfirmDialog(ModalScreen[bool]):
             yield Static(self._title, id="confirm-title", markup=False)
             yield Label(self._message, id="confirm-message", markup=False)
             with Center(), Horizontal(id="confirm-buttons"):
-                yield ConfirmPill(msg.CONFIRM_YES_LABEL, pill_id="confirm-yes", answer=True)
+                yield ConfirmPill(msg.CONFIRM_YES_LABEL, pill_id="confirm-yes", answer=True, primary=True)
                 yield ConfirmPill(msg.CONFIRM_NO_LABEL, pill_id="confirm-no", answer=False)
 
     @on(ConfirmPill.Picked)

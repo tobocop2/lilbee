@@ -85,19 +85,6 @@ SettingsScreen {
         margin-top: 1;
     }
 
-    #profile-actions ConfirmPill, #profile-manage-row ConfirmPill {
-        width: auto;
-        padding: 0 2;
-        margin-right: 2;
-        background: $boost;
-        color: $text;
-        text-style: bold;
-
-        &:focus, &:hover {
-            background: $accent;
-        }
-    }
-
     /* TabbedContent's inner ContentSwitcher and TabPane default to
      * height: auto. With a tall settings group (Ingest, Generation) that
      * pushes the docked BottomBars off-screen. Force flex so the
