@@ -365,7 +365,7 @@ def _tight_device_group(needed: int, remaining: dict[int, float]) -> tuple[int, 
     return tuple(usable or by_room[:1])
 
 
-def _states_no_share_per_card(role: WorkerRole, count: int, estimate_peak: PeakEstimator) -> bool:
+def states_no_share_per_card(role: WorkerRole, count: int, estimate_peak: PeakEstimator) -> bool:
     """True when the estimator answers for *count* cards with no share for each card."""
     from lilbee.providers.base import ProviderError
 
@@ -400,7 +400,7 @@ def _place_tight(
         for idx, held in charged.items():
             remaining[idx] += held
     devices = _tight_device_group(model.est_vram_bytes, remaining)
-    if len(devices) > 1 and _states_no_share_per_card(model.role, len(devices), estimate_peak):
+    if len(devices) > 1 and states_no_share_per_card(model.role, len(devices), estimate_peak):
         devices = devices[:1]
     claimed = {idx: remaining[idx] for idx in devices}
     available = sum(claimed.values())
