@@ -31,6 +31,7 @@ from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
 from lilbee.providers.base import is_header_safe
 from lilbee.providers.factory import sdk_library
+from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import styled
 from lilbee.runtime.progress import EventType, SetupProgressEvent
@@ -251,7 +252,7 @@ def _self_check_leg(
         console.print(Text.assemble(f"Loading {label} model ", str(model_path)), soft_wrap=True)
         result = check(model_path)
     except Exception as exc:
-        _self_check_emit_failure(repr(exc))
+        _self_check_emit_failure(str(exc) if isinstance(exc, PlacementError) else repr(exc))
         raise typer.Exit(1) from exc
     finally:
         if download_dir is not None:
