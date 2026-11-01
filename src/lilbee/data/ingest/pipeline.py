@@ -2325,11 +2325,12 @@ def _classify_result(
         updated.pop(result.name, None)
         skipped[result.name] = result.ocr
         if reasons is not None:
-            reasons[result.name] = (
-                "no text extracted (0 chunks)"
-                if not result.page_texts
-                else "stored page text only (0 searchable chunks)"
-            )
+            if result.page_texts:
+                reasons[result.name] = "stored page text only (0 searchable chunks)"
+            elif result.ocr is not None and result.ocr.backend is OcrBackendUsed.NONE:
+                reasons[result.name] = "no text extracted, OCR is off (0 chunks)"
+            else:
+                reasons[result.name] = "no text extracted (0 chunks)"
         return BatchStatus.SKIPPED if not result.page_texts else BatchStatus.INGESTED
     return BatchStatus.INGESTED
 

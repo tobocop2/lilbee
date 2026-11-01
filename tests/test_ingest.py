@@ -3355,6 +3355,24 @@ class TestClassifyResult:
         assert reasons["err.pdf"] == "TimeoutError: OCR timed out"
         assert reasons["blank.tiff"] == "no text extracted (0 chunks)"
 
+    @pytest.mark.parametrize(
+        ("backend", "reason"),
+        [
+            (OcrBackendUsed.NONE, "no text extracted, OCR is off (0 chunks)"),
+            (OcrBackendUsed.TESSERACT, "no text extracted (0 chunks)"),
+        ],
+    )
+    def test_zero_chunk_reason_names_the_ocr_state(self, backend, reason):
+        from lilbee.data.ingest.pipeline import _classify_result
+        from lilbee.data.types import OcrReport, _IngestResult
+
+        reasons: dict[str, str] = {}
+        result = _IngestResult(
+            "scan.pdf", Path("scan.pdf"), chunk_count=0, error=None, ocr=OcrReport(backend=backend)
+        )
+        _classify_result(result, {}, {}, {}, {}, reasons)
+        assert reasons["scan.pdf"] == reason
+
     def test_zero_chunks_not_recorded_as_added(self):
         from lilbee.data.ingest.pipeline import _classify_result
         from lilbee.data.types import _IngestResult

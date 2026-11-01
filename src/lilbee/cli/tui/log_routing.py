@@ -27,6 +27,6 @@ def setup_tui_log_file() -> Path:
         log_path,
         max_bytes=_MAX_BYTES,
         backup_count=_BACKUP_COUNT,
-        level=logging.WARNING,
+        level=logging.getLogger().getEffectiveLevel(),
     )
     return log_path

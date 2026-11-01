@@ -1339,6 +1339,8 @@ class TestOverlayPersistedSettings:
             settings.overlay_persisted_settings(tmp_path)
             assert cfg.vision_model == ""
             assert cfg.top_k == 9
+            assert resolve("vision_model", read_layers(tmp_path)).source is SettingSource.ENV
+            assert resolve("top_k", read_layers(tmp_path)).source is SettingSource.USER
         finally:
             cfg.vision_model, cfg.top_k = original_vision, original_top_k
 

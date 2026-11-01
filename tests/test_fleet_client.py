@@ -2783,6 +2783,7 @@ class _ClosingServer(_LoopbackServer):
     def __init__(self, frames: int, mode: str = "close") -> None:
         self._frames = frames
         self._mode = mode
+        self._release = threading.Event()
         super().__init__()
 
     def _serve(self) -> None:
@@ -2800,12 +2801,16 @@ class _ClosingServer(_LoopbackServer):
                 frame = b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
                 conn.sendall(f"{len(frame):x}\r\n".encode() + frame + b"\r\n")
             if self._mode == "silent":
-                time.sleep(1.0)
+                self._release.wait(timeout=5)
             elif self._mode == "reset":
                 time.sleep(0.05)
                 conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
             else:
                 time.sleep(0.05)
+
+    def close(self) -> None:
+        self._release.set()
+        super().close()
 
 
 def _real_client(url: str) -> LlamaServerClient:
