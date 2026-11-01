@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -2192,3 +2192,48 @@ class TestModelNamedByPath:
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post("/v1/chat/completions", json=_path_body(missing), headers=_h())
         assert resp.status_code == 404
+
+
+class TestResponseFormatOnRoute:
+    _BODY: ClassVar[dict[str, Any]] = {
+        "model": INSTALLED_REF,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize("bad", ["json_object", ["json_object"], 7])
+    async def test_a_value_that_is_not_an_object_is_refused_naming_the_field(
+        self, services_with_chat_model, _auth_token, bad, stream
+    ):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={**self._BODY, "response_format": bad, "stream": stream},
+            )
+        assert resp.status_code == 400
+        error = resp.json()["error"]
+        assert error["type"] == "invalid_request_error"
+        assert "response_format" in error["message"]
+        services_with_chat_model.provider.chat.assert_not_called()
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize(
+        "value",
+        [{"type": "json_object"}, {"type": "bogus"}, {"type": "json_schema"}],
+    )
+    async def test_an_object_reaches_the_provider_as_sent(
+        self, services_with_chat_model, _auth_token, value, stream
+    ):
+        provider = services_with_chat_model.provider
+        if stream:
+            provider.chat.return_value = FakeProviderStream(["ok"])
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={**self._BODY, "response_format": value, "stream": stream},
+            )
+        assert resp.status_code == 200
+        provider.chat.assert_called_once()
+        assert provider.chat.call_args.kwargs["options"]["response_format"] == value
