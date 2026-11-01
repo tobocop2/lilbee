@@ -875,7 +875,8 @@ def _estimate_role(
     ``slots`` defaults to the role's resolved batching slots (chat and vision are
     memory-aware); ``chat_reservation`` shrinks chat to leave room for the search
     roles; ``device_count`` resolves an auto (0) replica knob to one per GPU.
-    Charges the unified footprint with no discrete GPU, else the VRAM one.
+    Charges the unified footprint with no discrete GPU or no layer on one, else the
+    VRAM one.
     """
     path = engine_params.resolve_model_path(model_ref)
     mmproj = _vision_mmproj(model_ref) if role is WorkerRole.VISION else None
@@ -910,8 +911,9 @@ def _estimate_role(
             expert_offload=_role_expert_offload(path, engine=engine),
         )
     )
-    fp = est.footprint(unified=unified_budget is not None)
-    if role is WorkerRole.CHAT and unified_budget is None and est.kind is MemoryKind.SIZED:
+    one_pool = unified_budget is not None or gpu_layers == 0
+    fp = est.footprint(unified=one_pool)
+    if role is WorkerRole.CHAT and not one_pool and est.kind is MemoryKind.SIZED:
         fp = _chat_serve_budget_footprint(fp)
     return ModelPlacementInput(
         role=role,
@@ -1249,10 +1251,13 @@ def _estimate_cpu_role(
     engine: EngineAdapter,
     skipped_not_installed: dict[WorkerRole, str],
 ) -> ModelPlacementInput | None:
-    """Size a role that runs on the CPU: nothing on a card, every byte in system memory.
+    """Size a role that runs on the CPU: nothing on a card, its one pool in system memory.
 
-    A model that is not installed is skipped and recorded. A sizing failure on an
-    installed model charges the weight bytes, the least the host must hold.
+    The estimate's unified footprint is that pool. It holds no mapped weights, which
+    page in and out, so two roles on one file do not charge the file. A load with no
+    map must hold the weights, so they are added. A model that is not installed is
+    skipped and recorded. A sizing failure on an installed model charges the weight
+    bytes, the least the host must hold.
     """
     from lilbee.providers.base import ProviderErrorKind
 
@@ -1266,9 +1271,8 @@ def _estimate_cpu_role(
         return ModelPlacementInput(
             role=role, est_vram_bytes=0, est_ram_bytes=_role_weights_bytes(role, ref)
         )
-    return replace(
-        sized, est_vram_bytes=0, est_ram_bytes=sized.est_vram_bytes + sized.est_ram_bytes
-    )
+    weights = _role_weights_bytes(role, ref) if _host_bytes_must_be_resident(role, ref) else 0
+    return replace(sized, est_vram_bytes=0, est_ram_bytes=sized.est_vram_bytes + weights)
 
 
 def _admit_estimate(
@@ -3324,8 +3328,9 @@ def _placement_or_auto(
     caller just asked for and a silent substitution would be the surprise. A spec
     that names a device target also fails loud on a pin error: the target is a
     refusal to run anywhere else, and automatic placement would put that role on a
-    card. A role whose target the engine cannot run, or an auto role with no room
-    beside the named roles, raises for :func:`_placement_that_runs` to refuse alone.
+    card. A role whose target the engine cannot run, an auto role with no room beside
+    the named roles, or a named role its card cannot hold in a spec that has a role off
+    the cards, raises for :func:`_placement_that_runs` to refuse alone.
     """
     if placement is None:
         return _resolve_placement(
@@ -3350,7 +3355,7 @@ def _placement_or_auto(
     except TargetRefusedError:
         raise
     except PlacementError as exc:
-        if not all(_targets_gpu(placement, role) for role in placement.roles):
+        if not placement.all_on_cards:
             raise
         log.warning(
             "The saved GPU placement does not fit this hardware (%s); using automatic "
@@ -3380,10 +3385,11 @@ def _placement_that_runs(
 ) -> tuple[Placement, bool, dict[WorkerRole, str]]:
     """The placement the fleet runs for *spec*, whether the spec applied, and the roles it drops.
 
-    A role on a card this machine lacks, on a target its engine cannot run, or on
-    auto with no room beside the named roles gets no server and a reason; the others
-    launch. Each refusal drops its roles and plans again, so the loop ends. The launch
-    and the placement view both read this, so the view reports what runs.
+    A role on a card this machine lacks or cannot hold it, on a target its engine
+    cannot run, or on auto with no room beside the named roles gets no server and a
+    reason; the others launch. Each refusal drops its roles and plans again, so the
+    loop ends. The launch and the placement view both read this, so the view reports
+    what runs. An interactive set does not read this: it raises the same reason.
     """
     refused = _roles_on_missing_cards(spec, model_refs, devices)
     for refusal in refused.values():
