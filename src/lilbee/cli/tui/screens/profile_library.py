@@ -113,7 +113,6 @@ def entry_label(entry: ProfileEntry, name_width: int = 0, row_width: int = 0) ->
     """
     name = entry.name
     if row_width > 0 and cell_len(name) > name_width:
-        # Keep both ends: names often differ only in their tail.
         kept = name_width - 1
         tail = kept // 2
         name = name[: kept - tail] + _ELLIPSIS + (name[len(name) - tail :] if tail else "")

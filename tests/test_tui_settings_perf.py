@@ -109,13 +109,12 @@ async def test_toggle_fleet_and_sessions_checks_do_not_query_the_screen():
 
 async def test_first_direct_child_finds_only_immediate_children():
     """The drawer lookup helper does not recurse past direct children."""
-    from textual.app import App
     from textual.containers import Vertical
     from textual.widgets import Static
 
     from lilbee.cli.tui.widgets.drawer import first_direct_child
 
-    class _ProbeApp(App[None]):
+    class _ProbeApp(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield Vertical(Vertical(Static()), id="outer")
 

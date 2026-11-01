@@ -763,14 +763,19 @@ def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
 
 
 def launch_settings(
-    role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None
+    role: WorkerRole,
+    rerank_mode: RerankMode | None,
+    meta: dict[str, str] | None,
+    model_path: Path,
 ) -> str:
     """The settings a launch of *role* bakes in, as the text two processes compare.
 
     Only what this role's launch uses, resolved from config and the model's
     metadata, never from a device probe: the same config gives the same text in
-    every process. Ctx sizing is not here, because peers share a window by
-    coverage (contract.chat_ctx_covers). The model is not here, because the bind
+    every process. Chat and vision ctx sizing is not here, because peers share a
+    window by coverage (contract.chat_ctx_covers). An embed or rerank launch
+    carries its served window, which ``chunk_size`` sets only until the model's
+    trained context clamps it. The model is not here, because the bind
     matches (role, model) pairs.
     """
     from lilbee.core.config import cfg
@@ -786,7 +791,7 @@ def launch_settings(
         "flash_attention": flash,
         "kv_cache_type": cfg.kv_cache_type if role is WorkerRole.CHAT and flash else None,
         "rerank_mode": rerank_mode,
-        "chunk_size": cfg.chunk_size if role in _EMBED_ROLES else None,
+        "embed_window": _role_ctx(role, model_path, meta) if role in _EMBED_ROLES else None,
     }
     return ";".join(f"{key}={value}" for key, value in values.items())
 
@@ -1811,7 +1816,7 @@ def _launch_for(
         est_vram_by_device=_charge_by_device(chosen, plan.tensor_split, est_vram_bytes),
         est_unreported_bytes=_unreported_bytes(plan.role, mmproj),
         est_host_bytes=_chat_host_estimate(model_path, ctx, slots) if fit_moves_chat else 0,
-        settings=launch_settings(plan.role, rerank_mode, meta),
+        settings=launch_settings(plan.role, rerank_mode, meta, model_path),
     )
 
 

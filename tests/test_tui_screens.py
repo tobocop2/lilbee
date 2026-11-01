@@ -4051,6 +4051,26 @@ async def test_chat_slash_set_valid():
         assert cfg.top_k == 10
 
 
+async def test_chat_slash_set_force_ocr_pages_stores_the_page_list_and_echoes_it():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("force_ocr_pages 3,1,3")
+        assert cfg.force_ocr_pages == [1, 3]
+        assert any(
+            "force_ocr_pages" in str(c) and "1" in str(c) for c in mock_notify.call_args_list
+        )
+
+
+async def test_chat_slash_set_force_ocr_pages_refuses_a_word_for_a_page():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("force_ocr_pages abc")
+        assert cfg.force_ocr_pages == []
+        assert any("not a page number" in str(c) for c in mock_notify.call_args_list)
+
+
 async def test_chat_slash_set_bool():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:

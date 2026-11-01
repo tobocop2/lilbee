@@ -142,20 +142,27 @@ def read_profile_table(root: Path) -> ProfileTable:
 
 def read_layers(root: Path) -> SettingLayers:
     """Read the env vars and ``root/config.toml`` once."""
+    return read_table_and_layers(root)[1]
+
+
+def read_table_and_layers(root: Path) -> tuple[ProfileTable, SettingLayers]:
+    """The ``[profile]`` table and the setting layers, from one read of ``root/config.toml``."""
     path = root / CONFIG_FILE_NAME
     data = _read_toml(path)
+    table = _profile_table(data, path)
     user = _present({key: value for key, value in data.items() if key != PROFILE_TABLE})
-    profile = _present(_profile_table(data, path).values)
+    profile = _present(table.values)
     # A user value its setting refuses falls through to the next layer, so the source names the
     # layer that supplies the value. The load of config.toml reports it. A refused profile value
     # stays in its layer: a reset or a null write refuses to land on it.
     refused_user = hard_refusals(user)
-    return SettingLayers(
+    layers = SettingLayers(
         env=_env_layer(),
         user={k: v for k, v in user.items() if k not in refused_user},
         profile=profile,
         refused_user=frozenset(refused_user),
     )
+    return table, layers
 
 
 def builtin_value(key: str) -> Any:

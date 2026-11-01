@@ -2,10 +2,20 @@
 
 import pytest
 
-from lilbee.providers.fleet.contract import chat_ctx_covers, contract_matches, vision_slots_cover
+from lilbee.providers.fleet.contract import (
+    NO_SETTINGS,
+    chat_ctx_covers,
+    vision_slots_cover,
+)
+from lilbee.providers.fleet.contract import contract_matches as _contract_matches
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_manager import SwapState
 from lilbee.providers.roles import WorkerRole
+
+
+def contract_matches(state: SwapState, wanted, pin: str) -> bool:
+    """The models-and-pin contract, with no settings demanded."""
+    return _contract_matches(state, wanted, pin, NO_SETTINGS)
 
 
 def _launch(

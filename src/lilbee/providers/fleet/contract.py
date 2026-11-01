@@ -78,7 +78,7 @@ def contract_matches(
     state: SwapState,
     wanted: Iterable[tuple[WorkerRole, str]],
     pin: str,
-    settings: Mapping[WorkerRole, str] = NO_SETTINGS,
+    settings: Mapping[WorkerRole, str],
 ) -> bool:
     """Whether the engine behind *state* serves every wanted (role, model) pair.
 

@@ -76,6 +76,17 @@ def test_list_shows_every_setting_in_the_group_with_value_and_source(project):
     }
 
 
+def test_list_shows_every_key_whole_at_80_columns(project):
+    result = runner.invoke(
+        app,
+        ["settings", "list", "--data-dir", str(project)],
+        env={"COLUMNS": "80"},
+    )
+    assert result.exit_code == 0, result.output
+    longest = max(SETTINGS_MAP, key=len)
+    assert longest in result.output
+
+
 def test_list_filters_on_the_ocr_tuning_group_and_shows_the_profile_source(project):
     (project / "config.toml").write_text(
         '[profile]\nname = "Scans"\n[profile.values]\nocr_scan_confidence = 0.5\n',

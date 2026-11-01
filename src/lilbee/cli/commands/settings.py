@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import typer
-from rich.table import Table
+from rich.table import Column, Table
 from rich.text import Text
 
 from lilbee.cli import theme
@@ -35,7 +35,7 @@ def _is_secret(key: str) -> bool:
 
 
 def _render_list(infos: list[SettingInfo]) -> None:
-    table = Table("Key", "Group", "Value", "Source")
+    table = Table(Column("Key", no_wrap=True), "Group", "Value", "Source")
     for info in infos:
         source = info.source.value.replace("_", " ")
         table.add_row(info.key, info.group.value, Text(shown_value(info.value)), source)

@@ -739,6 +739,20 @@ def test_your_changes_under_default_compare_with_the_built_in_value():
     )
 
 
+def test_active_reads_config_toml_once(store, monkeypatch):
+    reads: list[Path] = []
+    real = tomllib.load
+
+    def counting(handle):
+        reads.append(Path(handle.name))
+        return real(handle)
+
+    _write_config("chunk_size = 900\n")
+    monkeypatch.setattr("lilbee.core.config.resolve.tomllib.load", counting)
+    profiles.active(store)
+    assert [path.name for path in reads].count("config.toml") == 1
+
+
 def test_active_carries_your_changes_under_default_and_an_applied_profile(store):
     _write_config("chunk_size = 900\n")
     default = profiles.active(store)

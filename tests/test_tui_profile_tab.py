@@ -325,6 +325,82 @@ async def test_no_changes_hides_the_table_and_says_so() -> None:
         )
 
 
+class _CountedLoads:
+    """Counts the snapshot loads the settings screen starts."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def __call__(self) -> ProfileSnapshot:
+        self.count += 1
+        return load_snapshot()
+
+
+async def _settled(pilot: Pilot, loads: _CountedLoads) -> None:
+    """Wait until no new load starts for several pauses."""
+    seen = -1
+    while seen != loads.count:
+        seen = loads.count
+        for _ in range(10):
+            await pilot.pause()
+
+
+def _opaque_screen() -> Screen:
+    """A screen that hides whatever is under it, as a full screen does."""
+    cover = Screen()
+    cover.styles.background = "black"
+    return cover
+
+
+async def test_opening_settings_loads_the_profile_snapshot_once() -> None:
+    app = _SettingsApp()
+    loads = _CountedLoads()
+    with mock.patch("lilbee.cli.tui.screens.settings.load_snapshot", loads):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _loaded(app, pilot, "Default")
+            await _settled(pilot, loads)
+            assert loads.count == 1
+
+
+async def test_returning_to_the_profile_tab_and_to_the_screen_each_load_once() -> None:
+    app = _SettingsApp()
+    loads = _CountedLoads()
+    with mock.patch("lilbee.cli.tui.screens.settings.load_snapshot", loads):
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _loaded(app, pilot, "Default")
+            await _settled(pilot, loads)
+            tabs = screen.query_one("#settings-tabs", TabbedContent)
+            tabs.active = next(
+                pane_id for pane_id in screen._pane_ids if pane_id != PROFILE_PANE_ID
+            )
+            await _settled(pilot, loads)
+            before = loads.count
+            screen.show_profile_tab()
+            await _settled(pilot, loads)
+            assert loads.count - before == 1
+            await app.push_screen(_opaque_screen())
+            await _settled(pilot, loads)
+            before = loads.count
+            await app.pop_screen()
+            await _settled(pilot, loads)
+            assert loads.count - before == 1
+
+
+async def test_a_setting_change_under_a_hidden_settings_screen_loads_nothing() -> None:
+    app = _SettingsApp()
+    loads = _CountedLoads()
+    with mock.patch("lilbee.cli.tui.screens.settings.load_snapshot", loads):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _loaded(app, pilot, "Default")
+            await _settled(pilot, loads)
+            await app.push_screen(_opaque_screen())
+            await _settled(pilot, loads)
+            before = loads.count
+            app.settings_changed_signal.publish(("top_k", 7))
+            await _settled(pilot, loads)
+            assert loads.count == before
+
+
 async def test_a_load_that_lands_while_the_dropdown_composes_leaves_the_tab_unfilled() -> None:
     """A snapshot before the tab's mount changes nothing; the load its mount asks for fills it."""
     app = _SettingsApp()

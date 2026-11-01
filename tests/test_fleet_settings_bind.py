@@ -245,6 +245,10 @@ def test_an_ocr_change_with_a_vision_model_stops_vision_and_keeps_the_rest_binda
     _assert_new_process_binds_all(monkeypatch, tmp_path, states)
 
 
+def _settings(role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None) -> str:
+    return planning_mod.launch_settings(role, rerank_mode, meta, Path("model.gguf"))
+
+
 @pytest.mark.parametrize(
     ("key", "value", "moved", "kept"),
     [
@@ -260,45 +264,50 @@ def test_an_ocr_change_with_a_vision_model_stops_vision_and_keeps_the_rest_binda
 def test_a_setting_moves_only_the_settings_of_the_roles_that_use_it(
     monkeypatch, key: str, value: object, moved: WorkerRole, kept: WorkerRole
 ) -> None:
-    before = {role: planning_mod.launch_settings(role, None, None) for role in (moved, kept)}
+    before = {role: _settings(role, None, None) for role in (moved, kept)}
     monkeypatch.setattr(cfg, key, value)
-    assert planning_mod.launch_settings(moved, None, None) != before[moved]
-    assert planning_mod.launch_settings(kept, None, None) == before[kept]
+    assert _settings(moved, None, None) != before[moved]
+    assert _settings(kept, None, None) == before[kept]
+
+
+def test_a_chunk_size_the_trained_window_clamps_leaves_the_embed_settings(monkeypatch) -> None:
+    clamped = {"context_length": "256"}
+    before = _settings(WorkerRole.EMBED, None, clamped)
+    monkeypatch.setattr(cfg, "chunk_size", cfg.chunk_size + 100)
+    assert _settings(WorkerRole.EMBED, None, clamped) == before
 
 
 def test_the_rerank_mode_moves_the_settings() -> None:
     role = WorkerRole.RERANK
-    assert planning_mod.launch_settings(role, RerankMode.LLM, None) != (
-        planning_mod.launch_settings(role, None, None)
-    )
+    assert _settings(role, RerankMode.LLM, None) != _settings(role, None, None)
 
 
 @pytest.mark.parametrize("role", list(WorkerRole))
 def test_gpu_devices_moves_every_role_and_ctx_sizing_moves_none(monkeypatch, role) -> None:
-    before = planning_mod.launch_settings(role, None, None)
+    before = _settings(role, None, None)
     monkeypatch.setattr(cfg, "num_ctx", 4096)
     monkeypatch.setattr(cfg, "num_ctx_max", 16384)
     monkeypatch.setattr(cfg, "chat_n_ctx_target", 49152)
-    assert planning_mod.launch_settings(role, None, None) == before
+    assert _settings(role, None, None) == before
     monkeypatch.setattr(cfg, "gpu_devices", "1")
-    assert planning_mod.launch_settings(role, None, None) != before
+    assert _settings(role, None, None) != before
 
 
 def test_expert_offload_moves_the_settings_only_for_a_moe_model(monkeypatch) -> None:
     moe = {"expert_count": "8"}
-    before_plain = planning_mod.launch_settings(WorkerRole.CHAT, None, None)
-    before_moe = planning_mod.launch_settings(WorkerRole.CHAT, None, moe)
+    before_plain = _settings(WorkerRole.CHAT, None, None)
+    before_moe = _settings(WorkerRole.CHAT, None, moe)
     monkeypatch.setattr(cfg, "cpu_moe", True)
-    assert planning_mod.launch_settings(WorkerRole.CHAT, None, None) == before_plain
-    assert planning_mod.launch_settings(WorkerRole.CHAT, None, moe) != before_moe
+    assert _settings(WorkerRole.CHAT, None, None) == before_plain
+    assert _settings(WorkerRole.CHAT, None, moe) != before_moe
 
 
 def test_an_llm_reranker_carries_flash_attention(monkeypatch) -> None:
-    before = planning_mod.launch_settings(WorkerRole.RERANK, RerankMode.LLM, None)
-    pooled = planning_mod.launch_settings(WorkerRole.RERANK, RerankMode.CROSS_ENCODER, None)
+    before = _settings(WorkerRole.RERANK, RerankMode.LLM, None)
+    pooled = _settings(WorkerRole.RERANK, RerankMode.CROSS_ENCODER, None)
     monkeypatch.setattr(cfg, "flash_attention", False)
-    assert planning_mod.launch_settings(WorkerRole.RERANK, RerankMode.LLM, None) != before
-    assert planning_mod.launch_settings(WorkerRole.RERANK, RerankMode.CROSS_ENCODER, None) == pooled
+    assert _settings(WorkerRole.RERANK, RerankMode.LLM, None) != before
+    assert _settings(WorkerRole.RERANK, RerankMode.CROSS_ENCODER, None) == pooled
 
 
 def test_the_contract_refuses_a_launch_with_other_settings() -> None:

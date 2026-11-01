@@ -27,6 +27,7 @@ from lilbee.core.config.resolve import (
     builtin_value,
     read_layers,
     read_profile_table,
+    read_table_and_layers,
     resolve,
 )
 from lilbee.core.profile_files import (
@@ -217,10 +218,10 @@ def _file_status(entry: ProfileEntry | None, recorded: Mapping[str, Any]) -> Pro
 
 def active(store: ProfileStore) -> ActiveProfile:
     """The applied profile and whether its file is current, changed, gone or broken."""
-    table = read_profile_table(cfg.data_root)
+    table, layers = read_table_and_layers(cfg.data_root)
     name = table.name or DEFAULT_PROFILE_NAME
     entry = store.scan().find(name)
-    changes = your_changes()
+    changes = _changes_in(layers)
     if profile_key(name) == profile_key(DEFAULT_PROFILE_NAME):
         return ActiveProfile(name, table.values, ProfileStatus.CURRENT, changes, entry=entry)
     error = entry.error if entry is not None else None
@@ -365,7 +366,10 @@ def _your_profile_keys(layers: SettingLayers) -> tuple[str, ...]:
 
 def your_changes() -> tuple[ChangeRow, ...]:
     """Your config.toml values of profile settings against the profile's; env-set keys stay out."""
-    layers = read_layers(cfg.data_root)
+    return _changes_in(read_layers(cfg.data_root))
+
+
+def _changes_in(layers: SettingLayers) -> tuple[ChangeRow, ...]:
     underneath = replace(layers, user={})
     return tuple(
         _change_row(key, layers.user[key], resolve(key, underneath))

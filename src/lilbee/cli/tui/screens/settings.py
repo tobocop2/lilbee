@@ -231,8 +231,12 @@ class SettingsScreen(Screen[None]):
         self.call_after_refresh(self._populate_pane, self._eagerly_populate)
 
     def on_screen_resume(self) -> None:
-        """Rescan the profiles, which the CLI or another terminal may have changed."""
-        self.reload_profile()
+        """Rescan the profiles, which the CLI or another terminal may have changed.
+
+        The first resume only opens the screen: the Profile tab loads its own state on mount.
+        """
+        if self._pane_is_populated(PROFILE_PANE_ID):
+            self.reload_profile()
 
     def _on_setting_changed(self, change: tuple[str, object]) -> None:
         """Queue the changed key's source pill and editor, and the profile state, for a refresh."""
@@ -246,7 +250,6 @@ class SettingsScreen(Screen[None]):
         keys, self._stale_source_keys = self._stale_source_keys, set()
         sources = setting_sources()
         profile_name = active_profile_name()
-        # A reset queues every key: one walk of the screen, then each row's own subtree.
         rows = {row.id: row for row in self.query(".setting-row")}
         for key in keys:
             row = rows.get(f"{ROW_ID_PREFIX}{key}")
@@ -255,7 +258,13 @@ class SettingsScreen(Screen[None]):
             for title in row.query_children(".setting-title").results(Static):
                 title.update(title_content(key, SETTINGS_MAP[key], sources[key], profile_name))
             self._sync_editor(row, key)
-        self.reload_profile()
+        if self._is_visible():
+            self.reload_profile()
+
+    def _is_visible(self) -> bool:
+        """Whether the user sees this screen: it is on top, or the top screen is see-through."""
+        top = self.app.screen
+        return top is self or top.styles.background.a < 1
 
     def _sync_editor(self, row: Widget, key: str) -> None:
         """Show cfg's value in the editor in *row*, unless the user is typing in it."""
@@ -310,9 +319,16 @@ class SettingsScreen(Screen[None]):
         pane = event.pane
         if pane is None or pane.id is None:
             return
+        revisit = pane.id == PROFILE_PANE_ID and self._pane_is_populated(pane.id)
         self._populate_pane(pane.id)
-        if pane.id == PROFILE_PANE_ID:
+        if revisit:
             self.reload_profile()
+
+    def _pane_is_populated(self, pane_id: str) -> bool:
+        """Whether *pane_id*'s body already built its rows; a new body loads its own state."""
+        return any(
+            body.populated for body in self.query(f"#{pane_id}-body").results(_LazyGroupBody)
+        )
 
     def populate_all_panes(self) -> None:
         """Force every tab body to populate now (test/agent helper)."""
