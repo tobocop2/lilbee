@@ -451,7 +451,7 @@ class TestErrorPaths:
         fleet = FleetProvider()
         reason = "backs only a 512-token context; use a smaller model or set num_ctx"
         monkeypatch.setattr(fleet, "_ensure_fleet", lambda: True)
-        fleet._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+        fleet._refused_roles = {WorkerRole.CHAT: reason}
         with pytest.raises(ProviderError) as excinfo:
             fleet._require_clients(WorkerRole.CHAT)
         services_with_chat_model.provider.chat.side_effect = excinfo.value
