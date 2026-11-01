@@ -37,6 +37,9 @@ PeakEstimator = Callable[[WorkerRole, tuple[int, ...]], tuple[int, ...]]
 # context the launch would serve on that chat shard. Lets the planner widen a chat
 # split onto idle cards when a tighter shard would starve KV below the target.
 SplitCtxFitter = Callable[[tuple[int, ...], Sequence[int]], int]
+# Plans the auto roles of a spec on the cards the other roles leave (index to
+# total bytes) and the roles that were charged to cards.
+AutoPlanner = Callable[[dict[int, int], frozenset[WorkerRole]], "Placement"]
 
 
 @dataclass(frozen=True)
@@ -699,6 +702,7 @@ def placement_from_spec(
     device_capacity: dict[int, int],
     *,
     estimate_peak: PeakEstimator,
+    plan_auto: AutoPlanner | None = None,
 ) -> Placement:
     """Build a Placement from a manual *spec*, charging each card and failing loud.
 
@@ -707,18 +711,28 @@ def placement_from_spec(
     free VRAM would double-count models already loaded. Every active role must
     have an entry; every device must exist; each card must fit the sum of the
     per-device peaks charged to it, within the cfg.usable_vram_fraction headroom.
+
+    A role with the auto target is planned last by *plan_auto*, on the capacity
+    the other roles leave. It never names a card, so a card the machine lacks
+    cannot refuse it.
     """
     usable = usable_vram_fraction()
     remaining = {idx: total * usable for idx, total in device_capacity.items()}
     instances: list[InstancePlan] = []
+    auto_roles: list[WorkerRole] = []
+    card_roles: list[WorkerRole] = []
     for role in active_roles:
         rp = _required_entry(spec, role, device_capacity)
+        if rp.device_target is RoleTarget.AUTO:
+            auto_roles.append(role)
+            continue
         if rp.device_target is not RoleTarget.GPU:
             instances.extend(
                 InstancePlan(role=role, devices=(), replica=replica, target=rp.device_target)
                 for replica in range(rp.replicas)
             )
             continue
+        card_roles.append(role)
         ratio = rp.tensor_split or _vram_proportional_split(rp.devices, remaining)
         per_device = estimate_peak(role, ratio)
         split = ratio if len(rp.devices) > 1 else ()
@@ -729,7 +743,14 @@ def placement_from_spec(
                     role=role, devices=tuple(rp.devices), tensor_split=split, replica=replica
                 )
             )
-    return Placement(instances=tuple(instances), unplaceable_roles=())
+    if not auto_roles:
+        return Placement(instances=tuple(instances), unplaceable_roles=())
+    if plan_auto is None:
+        names = ", ".join(role.value for role in auto_roles)
+        raise PlacementError(f"{names}: the auto target needs a planner to place it")
+    left = {idx: round(room / usable) for idx, room in remaining.items()}
+    placed = plan_auto(left, frozenset(card_roles))
+    return replace(placed, instances=(*instances, *placed.instances))
 
 
 def _vram_proportional_split(
