@@ -99,6 +99,57 @@ class TestRecordingProxy:
         assert seen == [("lilbee", "/v1/embeddings", f"Bearer {_TOKEN}")]
 
 
+def _post_body(base: str, path: str, body: dict) -> int:
+    request = urllib.request.Request(  # noqa: S310
+        base + path, data=json.dumps(body).encode(), method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310
+        return resp.status
+
+
+_IMAGE_CHAT = {
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "colour?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+        }
+    ]
+}
+_TEXT_CHAT = {"messages": [{"role": "user", "content": "hi"}]}
+
+
+class TestVisionUrl:
+    def test_a_chat_request_with_an_image_goes_to_the_vision_server(self) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with (
+            _server("lilbee", seen) as upstream,
+            _server("vision", seen) as vision,
+            recording(upstream, token=_TOKEN, vision_url=vision) as (proxy, _),
+        ):
+            _post_body(proxy, "/v1/chat/completions", _IMAGE_CHAT)
+            _post_body(proxy, "/v1/chat/completions", _TEXT_CHAT)
+        assert seen == [
+            ("vision", "/v1/chat/completions", ""),
+            ("lilbee", "/v1/chat/completions", f"Bearer {_TOKEN}"),
+        ]
+
+    def test_without_a_vision_server_an_image_request_stays_on_the_main_server(self) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with _server("lilbee", seen) as upstream, recording(upstream, token=_TOKEN) as (proxy, _):
+            _post_body(proxy, "/v1/chat/completions", _IMAGE_CHAT)
+        assert seen == [("lilbee", "/v1/chat/completions", f"Bearer {_TOKEN}")]
+
+    def test_the_option_reaches_the_parser(self) -> None:
+        base = ["--server", "s", "--version", "1", "--url", "u", "--roles", "chat"]
+        args = build_parser().parse_args(
+            [*base, "--models", "chat=m", "--out", "o.json", "--vision-url", "http://v"]
+        )
+        assert args.vision_url == "http://v"
+
+
 class TestTokenOption:
     @staticmethod
     def _args(*extra: str) -> argparse.Namespace:

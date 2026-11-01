@@ -342,6 +342,27 @@ class TestDispatchChat:
         opts = services_with_model.provider.chat.call_args.kwargs["options"]
         assert opts == {"think": False}
 
+    @pytest.mark.parametrize(
+        "response_format",
+        [
+            {"type": "text"},
+            {"type": "json_object"},
+            {"type": "json_schema", "json_schema": {"name": "city", "schema": {"type": "object"}}},
+            {"type": "bogus"},
+        ],
+    )
+    def test_response_format_passed_verbatim_to_provider(
+        self, services_with_model, response_format
+    ) -> None:
+        dispatch_chat(_req(response_format=response_format))
+        opts = services_with_model.provider.chat.call_args.kwargs["options"]
+        assert opts == {"response_format": response_format}
+
+    def test_response_format_omitted_when_unset(self, services_with_model) -> None:
+        dispatch_chat(_req(temperature=0.2))
+        opts = services_with_model.provider.chat.call_args.kwargs["options"]
+        assert "response_format" not in opts
+
     def test_think_omitted_when_unset(self, services_with_model) -> None:
         dispatch_chat(_req(temperature=0.2))
         opts = services_with_model.provider.chat.call_args.kwargs["options"]

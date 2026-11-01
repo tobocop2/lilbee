@@ -109,6 +109,8 @@ class CanonicalChatRequest:
     # Thinking-template control (chat_template_kwargs.enable_thinking); None
     # leaves the model's template default in place.
     think: bool | None = None
+    # The caller's response_format, forwarded to the engine as sent.
+    response_format: Any = None
     # Image parts the wire request carried and the translator dropped.
     dropped_images: int = 0
 
