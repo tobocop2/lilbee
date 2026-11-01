@@ -184,7 +184,7 @@ def _reject_before_dispatch(request: Request, data: CompletionsRequest) -> Respo
     """Multi-choice and unsupported-param checks before any dispatch work.
 
     Returns a 4xx Response to short-circuit, or None to proceed. Unmapped OpenAI
-    params (``response_format``, ``logprobs``, and any other unknown field) are
+    params (``logprobs``, and any other unknown field) are
     accepted but logged at debug so a client learns they had no effect. Auth is
     not checked here: it runs in the before_request hook, ahead of body parsing.
     """

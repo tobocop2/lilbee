@@ -102,6 +102,7 @@ def completions_to_canonical_request(
         # OFF asks the template to skip thinking; the other modes only change
         # presentation, so the template default stands.
         think=False if mode is ReasoningMode.OFF else None,
+        response_format=request.response_format,
     )
     return require_content_beside_images(req)
 
