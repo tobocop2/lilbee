@@ -229,7 +229,7 @@ def test_a_write_that_joins_a_reload_that_fails_reports_the_failure(
     assert _ProcessSwap.starting.wait(_WAIT_S)
     second = threading.Thread(target=write, args=("second", lambda: engine_service.prefer("auto")))
     second.start()
-    _wait_for(lambda: _local(fleet)._reload_pending)
+    _wait_for(lambda: _local(fleet)._writes_wanted == 2)
     gate.set()
     first.join(_WAIT_S)
     second.join(_WAIT_S)
@@ -255,7 +255,7 @@ def test_a_write_while_a_reload_has_every_group_stopped_reaches_the_engines(
         target=engine_service.use_for_role, args=(WorkerRole.CHAT, GGUF_CHAT, "llama.cpp")
     )
     second.start()
-    _wait_for(lambda: local._reload_pending)
+    _wait_for(lambda: local._writes_wanted == 2)
     gate.set()
     first.join(_WAIT_S)
     second.join(_WAIT_S)
@@ -315,7 +315,7 @@ def test_a_background_reload_failure_is_logged_with_its_text_and_raises_no_trace
         local.reload_placement(wait=False)
         _wait_for(lambda: any(r.levelname == "ERROR" for r in caplog.records))
         for thread in threading.enumerate():
-            if thread.name == "fleet-reload-placement":
+            if thread.name == "fleet-work":
                 thread.join(_WAIT_S)
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert errors == [f"The engine reload failed: {failure}"]
