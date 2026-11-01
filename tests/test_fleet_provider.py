@@ -3709,7 +3709,7 @@ class TestLifecycleMethods:
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}  # non-None so reload dispatches
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reload_pass = lambda: done.set()  # type: ignore[method-assign]
+        p._reload_pass = lambda force: done.set()  # type: ignore[method-assign]
         p.reload_role(WorkerRole.EMBED)
         assert done.wait(timeout=2.0)  # the spawned thread ran the restart
 
@@ -3742,7 +3742,7 @@ class TestLifecycleMethods:
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
         ran = {"pass": False}
-        p._reload_pass = lambda: ran.__setitem__("pass", True)  # type: ignore[method-assign]
+        p._reload_pass = lambda force: ran.__setitem__("pass", True)  # type: ignore[method-assign]
         p.reload_role(WorkerRole.CHAT, wait=True)
         assert ran["pass"] is True  # the pass ran before the caller returned
         assert p._fleet_work is None
@@ -3752,7 +3752,7 @@ class TestLifecycleMethods:
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
 
-        def boom() -> None:
+        def boom(force: frozenset[WorkerRole]) -> None:
             raise RuntimeError("reload failed")
 
         p._reload_pass = boom  # type: ignore[method-assign]
@@ -4789,12 +4789,12 @@ def test_ensure_fleet_partial_failure_tears_down_started_groups(monkeypatch) -> 
     assert p._swaps == {}
 
 
-def test_drop_dead_swaps_drops_only_dead_groups() -> None:
+def test_a_failed_end_of_work_drops_only_dead_groups() -> None:
     p = FleetProvider()
     dead, live = _FakeSwap(), _FakeSwap()
     dead.running = False
     p._swaps = {WorkerRole.EMBED: dead, WorkerRole.CHAT: live}
-    p._drop_dead_swaps()
+    p._end_fleet_work(RuntimeError("step failed"))
     assert set(p._swaps) == {WorkerRole.CHAT}  # the live group is untouched
 
 

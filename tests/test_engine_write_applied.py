@@ -64,6 +64,7 @@ class _ProcessSwap:
 
     script: ClassVar[Path]
     live: ClassVar[dict[Any, _ProcessSwap]] = {}
+    started: ClassVar[list[_ProcessSwap]] = []
     start_failure: ClassVar[BaseException | None] = None
     start_gate: ClassVar[threading.Event | None] = None
     starting: ClassVar[threading.Event] = threading.Event()
@@ -89,6 +90,7 @@ class _ProcessSwap:
         assert self.process.stdout is not None
         self.port = int(self.process.stdout.readline())
         type(self).live[self.group] = self
+        type(self).started.append(self)
 
     def endpoint(self) -> str:
         return f"http://127.0.0.1:{self.port}"
@@ -150,6 +152,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Services]
     script.write_text(_ENGINE_SCRIPT, encoding="utf-8")
     monkeypatch.setattr(_ProcessSwap, "script", script, raising=False)
     monkeypatch.setattr(_ProcessSwap, "live", {})
+    monkeypatch.setattr(_ProcessSwap, "started", [])
     monkeypatch.setattr(_ProcessSwap, "start_failure", None)
     monkeypatch.setattr(_ProcessSwap, "start_gate", None)
     monkeypatch.setattr(_ProcessSwap, "starting", threading.Event())
@@ -162,7 +165,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Services]
     _ProcessSwap.starting.clear()
     yield services
     services.provider.shutdown()
-    for swap in _ProcessSwap.live.values():
+    for swap in _ProcessSwap.started:
         if swap.process is not None and swap.process.poll() is None:
             swap.process.kill()
             swap.process.wait(_WAIT_S)
