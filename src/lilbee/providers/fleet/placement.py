@@ -178,7 +178,7 @@ def plan_placement(
     ]
 
     instances, co_tenants, tight = _place_persistent(
-        persistent_singles, placer(remaining), remaining
+        persistent_singles, placer(remaining), remaining, estimate_peak
     )
     instances.extend(_place_elastic(replicated, instances, remaining, co_tenants))
 
@@ -286,6 +286,7 @@ def _place_persistent(
     persistent_singles: list[ModelPlacementInput],
     place: Callable[[ModelPlacementInput], _Placed | None],
     remaining: dict[int, float],
+    estimate_peak: PeakEstimator,
 ) -> tuple[list[InstancePlan], frozenset[WorkerRole], dict[WorkerRole, int]]:
     """Charge every persistent single in ``placement_rank`` order.
 
@@ -306,7 +307,7 @@ def _place_persistent(
             placed, group = _place_beside_disjoint(model, place, remaining, charges)
             co_tenants |= group
         if placed is None:
-            placed, group, shortfall = _place_tight(model, remaining, charges)
+            placed, group, shortfall = _place_tight(model, remaining, charges, estimate_peak)
             co_tenants |= group
             tight[model.role] = shortfall
         instances.append(placed.plan)
@@ -364,10 +365,21 @@ def _tight_device_group(needed: int, remaining: dict[int, float]) -> tuple[int, 
     return tuple(usable or by_room[:1])
 
 
+def _states_no_share_per_card(role: WorkerRole, count: int, estimate_peak: PeakEstimator) -> bool:
+    """True when the estimator answers for *count* cards with no share for each card."""
+    from lilbee.providers.base import ProviderError
+
+    try:
+        return not estimate_peak(role, (1,) * count)
+    except (ProviderError, OSError):
+        return False
+
+
 def _place_tight(
     model: ModelPlacementInput,
     remaining: dict[int, float],
     charges: dict[WorkerRole, dict[int, float]],
+    estimate_peak: PeakEstimator,
 ) -> tuple[_Placed, frozenset[WorkerRole], int]:
     """Place an oversize *model* best-effort instead of refusing it.
 
@@ -379,13 +391,17 @@ def _place_tight(
     others excluded by that pin, a model too big for it has nowhere to go and the
     tight placement is only a slower refusal; given the group, llama-server can
     split across them. One card is still used when one card is enough, since a
-    split it does not need costs it interconnect bandwidth.
+    split it does not need costs it interconnect bandwidth. A model with no share per
+    card takes the roomiest card alone, the same rule as a pin: nothing can check a
+    split of it before the launch.
     """
     refunds = {r: c for r, c in charges.items() if _phase_disjoint(r, model.role)}
     for charged in refunds.values():
         for idx, held in charged.items():
             remaining[idx] += held
     devices = _tight_device_group(model.est_vram_bytes, remaining)
+    if len(devices) > 1 and _states_no_share_per_card(model.role, len(devices), estimate_peak):
+        devices = devices[:1]
     claimed = {idx: remaining[idx] for idx in devices}
     available = sum(claimed.values())
     for idx in devices:

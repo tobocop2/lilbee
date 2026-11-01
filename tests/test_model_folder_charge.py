@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,7 +13,13 @@ from lilbee.providers.fleet import model_memory, planning
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.placement import _charge_devices, placement_from_spec
+from lilbee.providers.fleet.placement import (
+    InstancePlan,
+    ModelPlacementInput,
+    _charge_devices,
+    placement_from_spec,
+    plan_placement,
+)
 from lilbee.providers.fleet.placement_spec import (
     PlacementError,
     PlacementSpec,
@@ -240,3 +247,85 @@ def test_a_folder_larger_than_the_hardware_is_not_placeable(tmp_path, monkeypatc
     monkeypatch.setattr(planning.model_cache, "total_system_memory", lambda: 8 * GIB)
     monkeypatch.setattr(planning, "total_system_memory", lambda: 8 * GIB)
     assert not planning.role_model_placeable(WorkerRole.CHAT, _REF, _CARD, engine=MISTRAL)
+
+
+def test_the_adapter_sums_a_folder_named_like_a_shard(tmp_path: Path) -> None:
+    folder = tmp_path / "m-00001-of-00002.gguf"
+    _sparse(folder / "model.safetensors", GIB)
+    estimate = MISTRAL.estimate_memory(_request(folder))
+    assert (estimate.device_bytes, estimate.shared_bytes) == (GIB, GIB)
+
+
+class TestOversizeModelOnSeveralCards:
+    def _plan(self, tmp_path: Path, monkeypatch, peak=None) -> tuple[int, ...]:
+        folder = _folder(tmp_path, 30 * GIB)
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+        peak = peak or planning._peak_estimator(
+            {WorkerRole.CHAT: "ref"}, {WorkerRole.CHAT: MISTRAL}
+        )
+        model = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
+        placed = plan_placement([model], [(0, 24 * GIB), (1, 24 * GIB)], estimate_peak=peak)
+        return placed.instances[0].devices
+
+    def test_no_share_per_card_takes_one_card(self, tmp_path: Path, monkeypatch) -> None:
+        assert self._plan(tmp_path, monkeypatch) == (0,)
+
+    def test_a_share_per_card_that_overruns_keeps_the_group(self, tmp_path, monkeypatch) -> None:
+        over = lambda _role, _ratio: (29 * GIB, 29 * GIB)  # noqa: E731
+        assert self._plan(tmp_path, monkeypatch, over) == (0, 1)
+
+    def test_an_estimator_failure_keeps_the_group(self, tmp_path, monkeypatch) -> None:
+        def fails(_role, _ratio):
+            raise OSError("no estimator")
+
+        assert self._plan(tmp_path, monkeypatch, fails) == (0, 1)
+
+
+class TestTheChatRefusal:
+    def _reason(self, engine) -> str | None:
+        launch = SimpleNamespace(
+            role=WorkerRole.CHAT, model="org/m", ctx=512, weights_bytes=30 * GIB
+        )
+        return planning._chat_launch_refusal(launch, engine=engine)
+
+    def test_a_weights_only_figure_names_the_gib(self) -> None:
+        reason = self._reason(MISTRAL)
+        assert reason is not None
+        assert "needs 30.0 GiB" in reason
+        assert "backs only" not in reason
+
+    def test_a_sized_engine_keeps_the_window_text(self) -> None:
+        reason = self._reason(SimpleNamespace(memory_kind=MemoryKind.SIZED))
+        assert reason is not None
+        assert "backs only a 512-token context" in reason
+
+    def test_a_usable_window_has_no_refusal(self) -> None:
+        launch = SimpleNamespace(
+            role=WorkerRole.CHAT, model="org/m", ctx=1_000_000, weights_bytes=30 * GIB
+        )
+        assert planning._chat_launch_refusal(launch, engine=MISTRAL) is None
+
+
+class TestACpuRoleWindow:
+    def _ctx(self, target: RoleTarget, tmp_path: Path, monkeypatch) -> int:
+        folder = _folder(tmp_path, 20 * GIB)
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+        monkeypatch.setattr(planning, "plan_sizing_budget", lambda _engine, _device=None: 6 * GIB)
+        monkeypatch.setattr(planning, "total_system_memory", lambda: 64 * GIB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(), target=target)
+        return planning._placed_role_ctx(plan, folder, None, None, engine=MISTRAL)
+
+    def test_the_cpu_window_reads_system_memory(self, tmp_path, monkeypatch) -> None:
+        needed = engine_params.min_usable_chat_ctx()
+        assert self._ctx(RoleTarget.CPU, tmp_path, monkeypatch) >= needed
+
+    def test_a_card_target_still_reads_the_card(self, tmp_path, monkeypatch) -> None:
+        needed = engine_params.min_usable_chat_ctx()
+        assert self._ctx(RoleTarget.GPU, tmp_path, monkeypatch) < needed
+
+    def test_unreadable_memory_gives_no_budget(self, monkeypatch) -> None:
+        def unreadable() -> int:
+            raise RuntimeError("no reading")
+
+        monkeypatch.setattr(planning, "total_system_memory", unreadable)
+        assert planning._cpu_sizing_budget() == 0

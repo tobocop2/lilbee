@@ -647,6 +647,32 @@ def _role_ctx(
     )
 
 
+def _placed_role_ctx(
+    plan: InstancePlan,
+    model_path: Path,
+    meta: dict[str, str] | None,
+    device: FleetDevice | None,
+    *,
+    engine: EngineAdapter,
+) -> int:
+    """Per-slot context of a placed role; a chat on the cpu target reads system memory."""
+    from lilbee.core.config import cfg
+
+    if plan.target is RoleTarget.CPU and plan.role is WorkerRole.CHAT and cfg.num_ctx is None:
+        return engine_params.resolve_chat_ctx(
+            model_path, meta, engine=engine, available_bytes=_cpu_sizing_budget()
+        )
+    return _role_ctx(plan.role, model_path, meta, device, engine=engine)
+
+
+def _cpu_sizing_budget() -> int:
+    """System memory for a role on the cpu target; 0 when it cannot be read."""
+    try:
+        return total_system_memory()
+    except RuntimeError:
+        return 0
+
+
 def _aux_role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
     """Per-slot context for an embed, rerank or vision role, which no engine sizes."""
     if role is WorkerRole.EMBED:
@@ -1859,7 +1885,7 @@ def _launch_for(
         # load OOM re-emits a byte-identical argv and dies the same way. The
         # split branch above already inherits it through its ctx_ceiling.
         ctx = apply_ctx_downshift(
-            plan.role, _role_ctx(plan.role, model_path, meta, placed_device, engine=engine)
+            plan.role, _placed_role_ctx(plan, model_path, meta, placed_device, engine=engine)
         )
     rerank_mode = _role_rerank_mode(plan.role, meta)
     is_llm_rerank = rerank_mode is RerankMode.LLM
@@ -3761,6 +3787,22 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
     )
 
 
+def _chat_launch_refusal(launch: InstanceLaunch, *, engine: EngineAdapter) -> str | None:
+    """The refusal of a chat launch, in the terms of what the engine's figure measures.
+
+    A fixed reserve does not vary with the window, so a window at the floor means that
+    the card does not hold the model, not that its weights leave too little behind.
+    """
+    reason = _unusable_chat_ctx_reason(launch)
+    if reason is None or engine.memory_kind is not MemoryKind.FIXED_RESERVE:
+        return reason
+    return (
+        f"The chat model {launch.model} needs {launch.weights_bytes / 1024**3:.1f} GiB, and "
+        "lilbee runs this engine on one card. That card does not hold the model, so it will "
+        "not be served. Use a smaller model or a smaller quant, or set the chat target to cpu."
+    )
+
+
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     by_index: dict[int, FleetDevice],
@@ -3852,7 +3894,7 @@ def _planned_launches(
             est_vram_bytes=charged.get(plan.role, 0),
             engine=engines[plan.role],
         )
-        reason = _unusable_chat_ctx_reason(launch)
+        reason = _chat_launch_refusal(launch, engine=engines[plan.role])
         if reason is not None:
             refused_roles[launch.role] = reason
             log.warning(reason)
