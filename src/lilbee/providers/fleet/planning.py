@@ -3218,10 +3218,11 @@ def _cpu_roles_past_memory(
     """The reason for each CPU role that system memory cannot hold.
 
     The bound is total system memory less what the card roles in *launching* commit:
-    their host bytes, and their card bytes when the card shares system memory. A swap
-    group commits its largest member, since one is resident at a time. The CPU roles
-    are taken in order and the first past the total is refused, with no fallback to a
-    card. A CPU role that is not in *launching* adds no charge for the next one.
+    their host bytes, or on a card that shares system memory their whole footprint,
+    which already holds the host bytes. A swap group commits its largest member, since
+    one is resident at a time. The CPU roles are taken in order and the first past the
+    total is refused, with no fallback to a card. A CPU role that is not in *launching*
+    adds no charge for the next one.
     """
     cpu = _cpu_roles(placement)
     sized = cpu.intersection(i.role for i in inputs)
@@ -3240,7 +3241,7 @@ def _cpu_roles_past_memory(
 
     def commit(role: WorkerRole) -> int:
         model = by_role[role]
-        return model.est_ram_bytes + (model.est_vram_bytes if unified else 0)
+        return model.est_vram_bytes if unified else model.est_ram_bytes
 
     card_roles = [inst.role for inst in launching if inst.role not in cpu]
     swapped = [commit(role) for role in card_roles if role in co_tenants]

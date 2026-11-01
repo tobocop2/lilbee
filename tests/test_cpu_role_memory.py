@@ -236,10 +236,13 @@ def _host(
     cards: list[FleetDevice],
     total_gib: int,
     spec: str,
+    host_gib: float = 0,
 ) -> CardEngine:
     prepare_host(monkeypatch, tmp_path, roles, total_gib * GIB)
     monkeypatch.setattr(cfg, "placement", spec)
-    return CardEngine("engine-a", tmp_path / "engine-server", roles, cards, spans=True)
+    return CardEngine(
+        "engine-a", tmp_path / "engine-server", roles, cards, spans=True, host_gib=host_gib
+    )
 
 
 def _launched(plan) -> list[WorkerRole]:
@@ -362,6 +365,16 @@ class TestTheBoundChargesWhatTheCardsCommit:
         assert _launched(plan) == [WorkerRole.CHAT]
         assert plan.refused_roles == {WorkerRole.EMBED: UNIFIED_PAST}
 
+    @pytest.mark.parametrize("spec", [NAMED_CHAT_CPU_EMBED, AUTO_CHAT_CPU_EMBED])
+    def test_a_unified_role_charges_its_host_bytes_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spec: str
+    ) -> None:
+        roles = (Role(WorkerRole.CHAT, 12), Role(WorkerRole.EMBED, 20))
+        engine = _host(monkeypatch, tmp_path, roles, _unified_card(32), 32, spec, host_gib=2)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert set(_launched(plan)) == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert plan.refused_roles == {}
+
     def test_a_card_with_its_own_memory_leaves_the_cpu_all_of_it(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -421,7 +434,7 @@ class TestTheBoundChargesWhatTheCardsCommit:
         monkeypatch.setattr(planning, "total_system_memory", lambda: 32 * GIB)
         spec = PlacementSpec.from_json(NAMED_CHAT_CPU_EMBED)
         inputs = [
-            ModelPlacementInput(WorkerRole.CHAT, 10 * GIB, est_ram_bytes=1 * GIB),
+            ModelPlacementInput(WorkerRole.CHAT, 12 * GIB, est_ram_bytes=1 * GIB),
             ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=11 * GIB),
         ]
         chat = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
@@ -430,7 +443,7 @@ class TestTheBoundChargesWhatTheCardsCommit:
         two = planning._cpu_roles_past_memory(spec, inputs, [chat, chat, embed], unified=True)
         assert one == {}
         assert two[WorkerRole.EMBED].startswith(
-            "embed: the CPU needs 11.0 GiB of system memory, 10.0 GiB of 32.0 GiB is left."
+            "embed: the CPU needs 11.0 GiB of system memory, 8.0 GiB of 32.0 GiB is left."
         )
 
 
