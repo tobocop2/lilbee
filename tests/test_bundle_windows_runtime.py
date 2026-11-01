@@ -1,4 +1,4 @@
-"""The Windows bundler ships the Visual C++ runtime and refuses an import it did not ship."""
+"""The Windows bundler ships the Visual C++ runtime and fails on an absent file."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="the helper is driven here with POSIX fakes of cygpath and dumpbin",
+    reason="the helper is driven here with a POSIX fake of cygpath",
 )
 
 _SCRIPT = (
@@ -36,14 +36,12 @@ def tree(tmp_path: pathlib.Path) -> pathlib.Path:
         (crt / name).write_bytes(b"x")
     (omp / "vcomp140.dll").write_bytes(b"x")
     (tmp_path / "bin").mkdir()
-    (tmp_path / "bin/ggml-base.dll").write_bytes(b"x")
     (tmp_path / "fake").mkdir()
     _executable(tmp_path / "fake/cygpath", 'printf "%s\\n" "$2"\n')
     return tmp_path
 
 
-def _run(tree: pathlib.Path, imports: str) -> subprocess.CompletedProcess[str]:
-    _executable(tree / "fake/dumpbin", f"printf '    {imports}\\n'\n")
+def _run(tree: pathlib.Path) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "PATH": f"{tree / 'fake'}:{os.environ['PATH']}",
@@ -60,20 +58,27 @@ def _run(tree: pathlib.Path, imports: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_ships_the_crt_and_the_openmp_runtime(tree) -> None:
-    result = _run(tree, "VCOMP140.dll")
+    result = _run(tree)
     assert result.returncode == 0, result.stderr
     shipped = {p.name for p in (tree / "bin").iterdir()}
     assert {*_CRT, "vcomp140.dll"} <= shipped
 
 
-def test_an_import_it_did_not_ship_fails_and_names_the_dll(tree) -> None:
-    result = _run(tree, "msvcp140_2.dll")
-    assert result.returncode != 0
-    assert "msvcp140_2.dll" in result.stderr
-
-
 def test_a_missing_redist_file_fails(tree) -> None:
     (tree / "redist/x64/Microsoft.VC143.OpenMP/vcomp140.dll").unlink()
-    result = _run(tree, "vcomp140.dll")
+    result = _run(tree)
     assert result.returncode != 0
     assert "vcomp140.dll" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "workflow",
+    [
+        ".github/actions/bundle-llama-server/action.yml",
+        ".github/workflows/build-multigpu.yml",
+        ".github/workflows/warm-engine-cache.yml",
+    ],
+)
+def test_every_engine_cache_key_hashes_the_helper(workflow: str) -> None:
+    text = (_SCRIPT.parents[2] / workflow).read_text(encoding="utf-8")
+    assert "tools/wheel-build/bundle_windows_runtime.sh" in text
