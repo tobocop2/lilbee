@@ -682,10 +682,10 @@ def test_acquire_engine_records_the_demand_plans_refusal(monkeypatch, tmp_path: 
     p = FleetProvider()
     monkeypatch.setattr(p, "_acquire_in_dir", lambda *_a, **_k: False)
     assert p._acquire_engine(tmp_path) is False
-    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: reason}
+    assert p._refused_roles == {WorkerRole.CHAT: reason}
 
 
-def test_ensure_fleet_records_skipped_unusable_ctx_from_plan(monkeypatch, tmp_path: Path) -> None:
+def test_ensure_fleet_records_refused_roles_from_plan(monkeypatch, tmp_path: Path) -> None:
     # The plan refused a chat launch whose window cannot hold a grounded prompt;
     # _plan_and_spawn records the reason so the warm finalizer and the request
     # path can name it. The installed embed role still starts.
@@ -695,12 +695,12 @@ def test_ensure_fleet_records_skipped_unusable_ctx_from_plan(monkeypatch, tmp_pa
         "plan_all_launches",
         lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED),),
-            skipped_unusable_ctx={WorkerRole.CHAT: "chat model serves only 512 tokens"},
+            refused_roles={WorkerRole.CHAT: "chat model serves only 512 tokens"},
         ),
     )
     p = FleetProvider()
     p._ensure_fleet()
-    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
+    assert p._refused_roles == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
 
 
 def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) -> None:
@@ -2363,14 +2363,14 @@ def test_reload_pass_refreshes_the_skip_reasons_from_the_new_plan(monkeypatch) -
         "plan_all_launches",
         lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED),),
-            skipped_unusable_ctx={WorkerRole.CHAT: "chat model serves only 512 tokens"},
+            refused_roles={WorkerRole.CHAT: "chat model serves only 512 tokens"},
         ),
     )
     p = FleetProvider()
     p._swaps = {SwapGroup.CHAT: swap}
     p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
     p._reload_pass()
-    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
+    assert p._refused_roles == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
 
 
 def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch, tmp_path: Path) -> None:
@@ -3139,7 +3139,7 @@ def test_warm_up_blocking_fails_when_chat_window_is_unusable(monkeypatch) -> Non
     reason = "The chat model org/m.gguf leaves room for only a 512-token context"
 
     def _plan_refuses_chat(**_: object) -> None:
-        p._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+        p._refused_roles = {WorkerRole.CHAT: reason}
 
     monkeypatch.setattr(p, "_ensure_fleet", _plan_refuses_chat)
     monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
@@ -4591,7 +4591,7 @@ def test_require_clients_names_the_unusable_window_refusal(monkeypatch) -> None:
     p = FleetProvider()
     reason = "The chat model org/m.gguf leaves room for only a 512-token context"
     monkeypatch.setattr(p, "_ensure_fleet", lambda: True)
-    p._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+    p._refused_roles = {WorkerRole.CHAT: reason}
     with pytest.raises(ProviderError, match="512-token context") as excinfo:
         p._require_clients(WorkerRole.CHAT)
     assert excinfo.value.kind is ProviderErrorKind.BAD_REQUEST

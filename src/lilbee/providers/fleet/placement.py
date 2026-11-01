@@ -713,9 +713,9 @@ def placement_from_spec(
     instances: list[InstancePlan] = []
     for role in active_roles:
         rp = _required_entry(spec, role, device_capacity)
-        if rp.target is not RoleTarget.GPU:
+        if rp.device_target is not RoleTarget.GPU:
             instances.extend(
-                InstancePlan(role=role, devices=(), replica=replica, target=rp.target)
+                InstancePlan(role=role, devices=(), replica=replica, target=rp.device_target)
                 for replica in range(rp.replicas)
             )
             continue
