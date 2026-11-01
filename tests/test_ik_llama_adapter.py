@@ -22,24 +22,23 @@ from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
 from lilbee.providers.fleet.engines import choice, ik_llama
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
-from lilbee.providers.fleet.engines.choice import HostFacts, installed_engines
+from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import WorkerRole
 
 COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
 runner = CliRunner()
 
 
-def _host(system: str, machine: str, flags: list[str] | None, mac_ver: str = "") -> Any:
+def _host(system: str, machine: str, flags: list[str] | None) -> Any:
     cpu_info: dict[str, Any] = {} if flags is None else {"flags": flags, "brand_raw": "Test CPU"}
     return host_caps.collect(
         system=system,
         machine=machine,
-        mac_ver=mac_ver,
         cpu_info=cpu_info,
         nvml=None,
-        npu_devices=[],
     )
 
 
@@ -58,7 +57,9 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(cfg, "preferred_engine", "auto")
     monkeypatch.setattr(cfg, "engine_choices", None)
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="linux", machine="x86_64")
+        engine_choice,
+        "session_host",
+        lambda: collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None),
     )
 
 
@@ -148,13 +149,13 @@ def test_binary_skips_a_build_of_another_version_or_backend_that_has_a_server(
 
 
 @pytest.mark.parametrize(
-    ("system", "machine", "flags", "mac_ver"),
-    [("Linux", "x86_64", ["avx2"], ""), ("Darwin", "arm64", None, "15.0")],
+    ("system", "machine", "flags"),
+    [("Linux", "x86_64", ["avx2"]), ("Darwin", "arm64", None)],
 )
 def test_a_cpu_with_avx2_or_neon_passes_the_gate(
-    system: str, machine: str, flags: list[str] | None, mac_ver: str
+    system: str, machine: str, flags: list[str] | None
 ) -> None:
-    gate = IK_LLAMA.host_gate(_host(system, machine, flags, mac_ver))
+    gate = IK_LLAMA.host_gate(_host(system, machine, flags))
     assert (gate.ok, gate.known, gate.auto_selectable) == (True, True, True)
 
 
@@ -228,7 +229,11 @@ def test_install_from_a_pack_with_the_pinned_digest_lists_the_engine(
 def test_auto_never_picks_the_installed_engine(system: str, build: Path, monkeypatch) -> None:
     machine = "arm64" if system == "darwin" else "x86_64"
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system=system, machine=machine)
+        engine_choice,
+        "session_host",
+        lambda: collect(
+            system=system.capitalize(), machine=machine, cpu_info={"flags": ["avx2"]}, nvml=None
+        ),
     )
     assert EngineName.IK_LLAMA in installed_engines()
     got = engine_choice.resolve_engines(cfg).choices[WorkerRole.CHAT]

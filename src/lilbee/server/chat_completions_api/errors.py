@@ -75,6 +75,7 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
     ProviderErrorKind.SERVER: (502, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.CAPACITY: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.PORT_CONFLICT: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.CPU_UNSUPPORTED: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.STARTING: (503, CompletionsErrorCode.INTERNAL_ERROR),
 }
 
@@ -89,6 +90,7 @@ _INFRASTRUCTURE_KINDS = frozenset(
         ProviderErrorKind.SERVER,
         ProviderErrorKind.CAPACITY,
         ProviderErrorKind.PORT_CONFLICT,
+        ProviderErrorKind.CPU_UNSUPPORTED,
     }
 )
 

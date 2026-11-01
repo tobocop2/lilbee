@@ -23,7 +23,7 @@ from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
-from lilbee.providers.fleet.host_caps import Feature, HostCaps, NvidiaGpu, nvidia_feature
+from lilbee.providers.fleet.host_caps import Feature, HostCaps, NvidiaGpu
 from tests.conformance.fake_adapter import FakeAdapter
 
 PRESENT = Feature(True)
@@ -41,14 +41,12 @@ def _host(
     return HostCaps(
         os=None,
         arch=None,
-        macos_version=None,
         avx2=avx2,
         neon=neon,
         gpus=gpus,
         nvidia_driver_cuda=None,
         nvidia_reason="" if known else host_caps.NVIDIA_UNREADABLE,
         nvidia_known=known,
-        npus=(),
     )
 
 
@@ -92,7 +90,7 @@ def test_host_field_gates_in_three_states(
 def test_nvidia_field_gates_in_three_states(
     gpus: tuple[NvidiaGpu, ...], known: bool, ok: bool, auto: bool
 ) -> None:
-    gate = gate_on(nvidia_feature(_host(gpus=gpus, known=known)))
+    gate = gate_on(Feature(bool(gpus), "no NVIDIA GPU", known=known))
     assert (gate.ok, gate.auto_selectable) == (ok, auto)
     if not ok or not known:
         assert gate.reason

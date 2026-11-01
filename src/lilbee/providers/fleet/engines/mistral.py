@@ -20,7 +20,7 @@ from lilbee.providers.fleet.engines.base import (
     LaunchRequest,
     RequestProfile,
 )
-from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
@@ -117,9 +117,7 @@ class MistralAdapter:
 
     def host_gate(self, host: HostCaps) -> HostGate:
         if host.os is None or host.arch is None:
-            return HostGate(
-                True, "The OS or CPU architecture of this host could not be read.", known=False
-            )
+            return PLATFORM_UNREAD
         if (host.os, host.arch) in _SUPPORTED_HOSTS:
             reason = self._archive(host, host.os).reason
             return HostGate(True, reason) if reason else PASS

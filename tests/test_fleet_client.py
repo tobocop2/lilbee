@@ -3015,3 +3015,28 @@ def test_llama_profile_keeps_tokenize_routes_and_has_no_rerank_route() -> None:
     profile = LLAMA.request_profile(WorkerRole.RERANK)
     assert (profile.tokenize_path, profile.detokenize_path) == ("/tokenize", "/detokenize")
     assert profile.rerank_path is None
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ["proxy: upstream exited: signal: illegal instruction (core dumped)", "Illegal instruction"],
+)
+def test_raise_for_status_death_on_an_illegal_instruction_names_the_cpu(monkeypatch, tail) -> None:
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+
+    monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda resp: tail)
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.CPU_UNSUPPORTED
+    assert "this CPU" in str(excinfo.value)
+    assert ProviderErrorKind.CPU_UNSUPPORTED not in client_mod._RETRY_KINDS
+    assert ProviderErrorKind.CPU_UNSUPPORTED not in client_mod._REBUILDABLE_KINDS
+
+
+def test_an_allocation_failure_beside_an_illegal_instruction_stays_capacity() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import classify_upstream_death
+
+    tail = "cudaMalloc failed\nsignal: illegal instruction"
+    assert classify_upstream_death(tail) is ProviderErrorKind.CAPACITY

@@ -184,6 +184,9 @@ def _estimate_tokens(text: str) -> int:
 _UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
     ProviderErrorKind.CAPACITY: "The engine ran out of memory while loading {model}",
     ProviderErrorKind.PORT_CONFLICT: "The engine could not start {model}: its port was taken",
+    ProviderErrorKind.CPU_UNSUPPORTED: (
+        "The engine for {model} stopped on an instruction this CPU does not have"
+    ),
 }
 _UPSTREAM_DEATH_DEFAULT = "The engine for {model} stopped before it could answer"
 
@@ -230,6 +233,9 @@ _OOM_MARKERS: tuple[str, ...] = (
 # would be read as a memory shortfall and answered with a context reduction.
 _SURVIVABLE_LINE_MARKERS: tuple[str, ...] = ("warning:", "warn:")
 
+# The text for a process stopped by SIGILL, from the C library and from Go.
+_ILLEGAL_INSTRUCTION_MARKER = "illegal instruction"
+
 
 def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
     """The kind of failure an engine's dying output describes, or ``None``.
@@ -240,7 +246,8 @@ def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
     because the retry re-drives llama-swap's spawn, and worth naming because a
     port held for good needs a different port rather than another attempt at the
     same one. ``None`` leaves the existing classification alone rather than
-    guessing at an unfamiliar death.
+    guessing at an unfamiliar death. ``CPU_UNSUPPORTED`` for an engine the CPU
+    cannot run, which no retry or smaller plan can fix.
     """
     fatal = [
         line
@@ -251,6 +258,8 @@ def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
         return ProviderErrorKind.CAPACITY
     if _BIND_FAILURE_MARKER in tail:
         return ProviderErrorKind.PORT_CONFLICT
+    if any(_ILLEGAL_INSTRUCTION_MARKER in line for line in fatal):
+        return ProviderErrorKind.CPU_UNSUPPORTED
     return None
 
 

@@ -38,3 +38,6 @@ def gate_on(*features: Feature) -> HostGate:
 
 
 PASS = HostGate(True)
+PLATFORM_UNREAD = HostGate(
+    True, "The OS or CPU architecture of this host could not be read.", known=False
+)

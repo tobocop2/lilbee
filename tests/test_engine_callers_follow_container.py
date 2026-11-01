@@ -18,7 +18,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.choice import HostFacts
+from lilbee.providers.fleet.host_caps import collect
 from lilbee.server import handlers
 from tests._lilbee_app_test_host import LilbeeAppHost
 from tests.conformance.fake_adapter import BundledFakeAdapter
@@ -45,7 +45,9 @@ LIBRARY_ENGINE = _LibraryEngine()
 @pytest.fixture(autouse=True)
 def _two_engines(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="darwin", machine="arm64")
+        engine_choice,
+        "session_host",
+        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
     )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GLOBAL_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setitem(choice.ADAPTERS, EngineName.OPENVINO, LIBRARY_ENGINE)  # type: ignore[arg-type]

@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from lilbee.app import engine_choice
-from lilbee.app.engine_choice import engine_for_format, host_facts, resolve_engines
+from lilbee.app.engine_choice import engine_for_format, resolve_engines
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
@@ -23,11 +23,12 @@ from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.choice import (
     ADAPTERS,
     EngineAssignment,
-    HostFacts,
     NoEngineError,
     choose_engine,
     installed_engines,
 )
+from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
 
@@ -88,7 +89,9 @@ def test_a_role_with_no_engine_raises_and_the_others_still_answer() -> None:
 def test_the_notice_names_the_role_as_an_input_of_the_text() -> None:
     kwargs = dict(
         fmt=ModelFormat.GGUF,
-        host=HostFacts(system="linux", machine="x86_64"),
+        host=lambda: collect(
+            system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None
+        ),
         installed={EngineName.LLAMA: frozenset({ModelFormat.GGUF})},
         preferred="mlx",
         override=None,
@@ -118,13 +121,6 @@ def test_the_notice_names_the_role_as_an_input_of_the_text() -> None:
         **{**kwargs, "fmt": ModelFormat.MLX, "preferred": "auto"}, role=WorkerRole.EMBED
     )
     assert named.notice == f"For embed: {none.notice}"
-
-
-def test_host_facts_are_lower_case(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("platform.system", lambda: "Darwin")
-    monkeypatch.setattr("platform.machine", lambda: "ARM64")
-    facts = host_facts()
-    assert (facts.system, facts.machine) == ("darwin", "arm64")
 
 
 def test_placement_plans_with_the_adapter_the_chat_role_resolves(
@@ -354,13 +350,13 @@ def test_an_adapter_that_never_states_bundled_is_reported_not_hidden(
 
 GGUF = ModelFormat.GGUF
 BOTH = {EngineName.LLAMA: frozenset({GGUF}), EngineName.MISTRAL: frozenset({GGUF})}
-LINUX = HostFacts(system="linux", machine="x86_64")
+LINUX = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None)
 
 
 def _rule(role: WorkerRole, preferred: str = "auto", override: str | None = None) -> Any:
     return choose_engine(
         fmt=GGUF,
-        host=LINUX,
+        host=lambda: LINUX,
         installed=BOTH,
         preferred=preferred,
         override=override,
@@ -388,11 +384,14 @@ def test_a_stored_override_for_an_unserved_role_falls_back_with_a_notice() -> No
 class _NoChat(FakeAdapter):
     served_roles = frozenset({WorkerRole.RERANK, WorkerRole.EMBED})
 
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return PASS
+
 
 def test_a_stand_in_with_no_chat_is_never_chosen_for_chat(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(ADAPTERS, EngineName.TEI, _NoChat())  # type: ignore[arg-type]
     installed = {**BOTH, EngineName.TEI: frozenset({GGUF})}
-    kwargs: dict[str, Any] = dict(fmt=GGUF, host=LINUX, installed=installed, override=None)
+    kwargs: dict[str, Any] = dict(fmt=GGUF, host=lambda: LINUX, installed=installed, override=None)
     chat = choose_engine(**kwargs, preferred="tei", role=WorkerRole.CHAT)
     embed = choose_engine(**kwargs, preferred="tei", role=WorkerRole.EMBED)
     assert (chat.name, embed.name) == (EngineName.LLAMA, EngineName.TEI)
@@ -415,7 +414,7 @@ def test_the_launch_plan_puts_rerank_on_the_next_engine_after_the_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(engine_choice, "installed_engines", lambda: BOTH)
-    monkeypatch.setattr(engine_choice, "host_facts", lambda: LINUX)
+    monkeypatch.setattr(engine_choice, "session_host", lambda: LINUX)
     config = Config()
     config.preferred_engine = EngineSetting.MISTRAL
     config.reranker_model = "org/rerank/r.gguf"

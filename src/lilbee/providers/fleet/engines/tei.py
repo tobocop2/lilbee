@@ -23,7 +23,7 @@ from lilbee.providers.fleet.engines.base import (
     LaunchRequest,
     RequestProfile,
 )
-from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
@@ -123,6 +123,8 @@ class TeiAdapter:
         return BuildPick(None, "No build exists for this operating system and CPU architecture.")
 
     def host_gate(self, host: HostCaps) -> HostGate:
+        if host.os is None or host.arch is None:
+            return PLATFORM_UNREAD
         pick = self.pick_build(host)
         return PASS if pick.backend is not None else HostGate(False, pick.reason)
 

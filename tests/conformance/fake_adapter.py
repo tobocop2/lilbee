@@ -14,7 +14,7 @@ from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engines.base import LaunchRequest, RequestProfile
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
-from lilbee.providers.fleet.host_caps import HostCaps, nvidia_feature
+from lilbee.providers.fleet.host_caps import Feature, HostCaps
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
@@ -59,7 +59,10 @@ class FakeAdapter:
         return architecture in self.architectures
 
     def host_gate(self, host: HostCaps) -> HostGate:
-        return gate_on(host.avx2, nvidia_feature(host))
+        nvidia = Feature(
+            bool(host.gpus), host.nvidia_reason or "no NVIDIA GPU", known=host.nvidia_known
+        )
+        return gate_on(host.avx2, nvidia)
 
     def binary(self) -> Path:
         return _binary_path()

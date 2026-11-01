@@ -155,6 +155,7 @@ class ProviderErrorKind(StrEnum):
     SERVER = "server"
     CAPACITY = "capacity"
     PORT_CONFLICT = "port_conflict"
+    CPU_UNSUPPORTED = "cpu_unsupported"
     STARTING = "starting"
     UNKNOWN = "unknown"
 
