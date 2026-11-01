@@ -256,7 +256,7 @@ def test_engine_the_host_refuses_falls_back_with_the_reason() -> None:
     assert got.notice_kind is NoticeKind.OVERRIDE_UNUSABLE
     assert got.notice == (
         "Engine ik_llama.cpp for chat cannot run on this host. Xeon lacks AVX2. "
-        "ik_llama.cpp needs a CPU with AVX2 or NEON. llama.cpp stays in use. Using llama.cpp."
+        "ik_llama.cpp needs a CPU with AVX2 or NEON. Using llama.cpp."
     )
 
 
