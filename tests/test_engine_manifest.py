@@ -22,10 +22,8 @@ def _host(system: str, machine: str) -> host_caps.HostCaps:
     return host_caps.collect(
         system=system,
         machine=machine,
-        mac_ver="14.0" if system == "Darwin" else "",
         cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
         nvml=None,
-        npu_devices=[],
     )
 
 

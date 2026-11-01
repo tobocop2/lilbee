@@ -49,10 +49,8 @@ def _caps(
     return collect(
         system=system,
         machine=machine,
-        mac_ver="15.0" if system == "Darwin" else "",
         cpu_info={"flags": ["avx", "avx2"], "brand_raw": "Test CPU"},
         nvml=nvml,
-        npu_devices=[],
     )
 
 
@@ -372,3 +370,8 @@ def test_the_launch_argv_carries_the_figure_the_profile_holds(
     )
     argv = TEI.launch_argv(TEI.role_spec(WorkerRole.EMBED, None, None), request)
     assert argv[argv.index("--max-client-batch-size") + 1] == "17"
+
+
+def test_an_unreadable_platform_stands_and_is_never_auto_selected() -> None:
+    gate = TEI.host_gate(_caps("", ""))
+    assert (gate.ok, gate.known, gate.auto_selectable) == (True, False, False)

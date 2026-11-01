@@ -59,10 +59,8 @@ def caps(
     return host_caps.collect(
         system=system,
         machine=machine,
-        mac_ver="15.1" if system == "Darwin" else "",
         cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
         nvml=nvml,
-        npu_devices=[],
     )
 
 
