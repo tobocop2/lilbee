@@ -1115,8 +1115,9 @@ class FleetProvider:
                 machine_dir,
                 ENGINE_DIR_ENV,
             )
-        # The machine slot holds a live incompatible engine in active use: overflow
-        # to this config root's private dir rather than evict another model setup.
+        # The machine slot is out: a live user holds an incompatible engine there, or
+        # its filesystem has no file locks. Use this config root's private dir
+        # rather than evict another model setup.
         private = private_engine_dir(config_root)
         return self._acquire_in_dir(private, pin, demand, is_overflow=True) or False
 
@@ -1415,9 +1416,10 @@ class FleetProvider:
         A request that lands while a reload restarts the role's group waits, up to
         ``_RELOAD_GAP_WAIT_S``, until the role has clients or the reload will not
         bring the role back. A teardown on another thread can empty the fleet after
-        the check below passes, so an empty fleet goes through the check once more.
+        the check below passes, so a fleet that was running and is now empty goes
+        through the check once more. A fleet that never started does not.
         """
-        self._ensure_fleet()
+        had_fleet = self._ensure_fleet()
         with self._lock:
             # The reload dropped this role's group and has not adopted the new one.
             settled = self._reload_done.wait_for(
@@ -1433,7 +1435,7 @@ class FleetProvider:
                 raise ProviderError(_reload_timeout_message(role), provider=_PROVIDER_NAME)
             swap = self._swap_for(role)
             fleet_is_empty = not self._swaps
-        if not clients and fleet_is_empty:
+        if not clients and fleet_is_empty and had_fleet:
             self._ensure_fleet()
             with self._lock:
                 clients = self._clients.get(role)

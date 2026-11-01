@@ -4473,6 +4473,25 @@ def test_require_clients_no_reprobe_when_swap_none(monkeypatch, engine_installed
     assert rebuilt["called"] is False
 
 
+def test_require_clients_runs_the_ladder_once_when_no_model_is_configured(
+    monkeypatch, engine_installed: Path
+) -> None:
+    """A fleet that never started has no teardown to race, so the ladder runs once."""
+    from lilbee.providers.base import ProviderError
+
+    p = FleetProvider()
+    calls: list[int] = []
+
+    def no_fleet() -> bool:
+        calls.append(1)
+        return False
+
+    monkeypatch.setattr(p, "_ensure_fleet", no_fleet)
+    with pytest.raises(ProviderError):
+        p._require_clients(WorkerRole.CHAT)
+    assert calls == [1]
+
+
 def test_require_clients_names_the_unusable_window_refusal(monkeypatch) -> None:
     """A chat request against a refused launch fails with the plan's reason (the
     numbers and the remedy), not the generic 'no server is running' line. The

@@ -270,6 +270,15 @@ def test_a_setting_moves_only_the_settings_of_the_roles_that_use_it(
     assert _settings(kept, None, None) == before[kept]
 
 
+def test_n_cpu_moe_moves_the_settings_of_a_moe_model_only(monkeypatch) -> None:
+    moe = {"expert_count": "8"}
+    before_moe = _settings(WorkerRole.CHAT, None, moe)
+    before_dense = _settings(WorkerRole.CHAT, None, None)
+    monkeypatch.setattr(cfg, "n_cpu_moe", 6)
+    assert _settings(WorkerRole.CHAT, None, moe) != before_moe
+    assert _settings(WorkerRole.CHAT, None, None) == before_dense
+
+
 def test_a_chunk_size_the_trained_window_clamps_leaves_the_embed_settings(monkeypatch) -> None:
     clamped = {"context_length": "256"}
     before = _settings(WorkerRole.EMBED, None, clamped)

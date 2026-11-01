@@ -1598,7 +1598,14 @@ def _raise_if_cut(*, started: bool, ended: bool) -> None:
 
 def _is_done_line(line: str) -> bool:
     """Whether *line* is the SSE ``data: [DONE]`` sentinel that closes a stream."""
-    return line.startswith(_DATA_PREFIX) and line[len(_DATA_PREFIX) :].strip() == _DONE_SENTINEL
+    return _sse_data_body(line) == _DONE_SENTINEL
+
+
+def _sse_data_body(line: str) -> str | None:
+    """The stripped payload of an SSE ``data:`` line, or ``None`` for any other line."""
+    if not line.startswith(_DATA_PREFIX):
+        return None
+    return line[len(_DATA_PREFIX) :].strip()
 
 
 def _parse_sse_stream_items(
@@ -1612,9 +1619,7 @@ def _parse_sse_stream_items(
     ``choices[0].finish_reason``, surfaced as a :class:`StreamFinish` so the
     dispatch reports ``length`` (and friends), not just the default end-of-turn.
     """
-    if not line.startswith(_DATA_PREFIX):
-        return
-    body = line[len(_DATA_PREFIX) :].strip()
+    body = _sse_data_body(line)
     if not body or body == _DONE_SENTINEL:
         return
     try:

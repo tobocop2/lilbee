@@ -1,7 +1,9 @@
 """No process stops a group that has a live user other than itself.
 
-The plan, the ladder, the contract, the reload pass and the user locks are real. Only the
-process layer and the health probe are fake. A peer is a user lock under another pid.
+The plan, the ladder, the contract, the reload pass and the user locks are real. The process
+layer and the health probe are fake, with four more fakes on the provider: the engine
+watcher, the check that a build can proceed, the engine stop, and the check for a recorded
+engine. A peer is a user lock under another pid.
 """
 
 from __future__ import annotations
@@ -96,11 +98,13 @@ def box(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Box:
         def start(self, launches: list[InstanceLaunch], **kwargs: object) -> None:
             super().start(launches, **kwargs)
             machine.record(self._dir, self._group, launches)
+            self._pid = machine.records[self._dir.name][self._group].pid
 
         def shutdown(self) -> None:
             super().shutdown()
-            if not self.bound:
-                machine.records[self._dir.name].pop(self._group, None)
+            held = machine.records[self._dir.name].get(self._group)
+            if not self.bound and held is not None and held.pid == self._pid:
+                del machine.records[self._dir.name][self._group]
 
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine.slot)
     monkeypatch.setattr(prov_mod, "private_engine_dir", lambda _root: machine.private)
@@ -320,8 +324,22 @@ def test_an_evicted_owner_that_writes_a_setting_leaves_the_new_owner_running(
     assert box.records[_SLOT][SwapGroup.CHAT] is new_owner_chat
     assert box.pids(box.slot)[SwapGroup.CHAT] == new_owner_pids[SwapGroup.CHAT]
     assert live_users_exist(box.slot) is True
-    evicted._engine_holds = {}
+    evicted.shutdown()
+    assert box.stopped == []
+    assert box.pids(box.slot)[SwapGroup.CHAT] == new_owner_pids[SwapGroup.CHAT]
     assert new_owner_hold.release_and_check_last() is True
+
+
+def test_a_process_that_cannot_build_leaves_a_warm_engine_it_cannot_bind(
+    real_planner, box: _Box, monkeypatch
+) -> None:
+    box.seed_fleet(box.slot)
+    warm = dict(box.records[_SLOT])
+    cfg.chunk_size = _NOTES_CHUNK_SIZE
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
+    assert _process(monkeypatch)._acquire_engine(box.root) is False
+    assert box.stopped == []
+    assert box.records[_SLOT] == warm
 
 
 def test_a_start_kills_only_the_swap_at_this_process_config(

@@ -106,6 +106,23 @@ def test_an_ocr_change_with_no_vision_model_leaves_every_launch_identical(real_p
     assert planning_mod.plan_all_launches().launches == before
 
 
+def test_an_ocr_change_with_a_vision_model_drops_only_the_vision_launch(
+    real_planner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    projector = tmp_path / "mmproj.gguf"
+    projector.write_bytes(b"projector")
+    monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _ref: projector)
+    monkeypatch.setattr(cfg, "vision_model", _CHAT_REF)
+    cfg.ocr = "all"
+    before = {launch.role: launch for launch in planning_mod.plan_all_launches().launches}
+    cfg.ocr = "off"
+    after = {launch.role: launch for launch in planning_mod.plan_all_launches().launches}
+    assert WorkerRole.VISION in before
+    assert WorkerRole.VISION not in after
+    assert before[WorkerRole.EMBED] == after[WorkerRole.EMBED]
+    assert before[WorkerRole.CHAT] == after[WorkerRole.CHAT]
+
+
 def test_a_chunk_size_change_moves_only_the_embed_window(real_planner) -> None:
     before = {launch.role: launch for launch in planning_mod.plan_all_launches().launches}
     cfg.chunk_size = _NOTES_CHUNK_SIZE

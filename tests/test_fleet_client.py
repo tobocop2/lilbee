@@ -2750,7 +2750,28 @@ def test_chat_abortable_stops_reading_once_the_run_is_cancelled() -> None:
     assert client.in_flight == 0
 
 
-class _ClosingServer:
+class _LoopbackServer:
+    """A one-connection loopback server; a subclass writes ``_serve``."""
+
+    def __init__(self) -> None:
+        import socket
+
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.url = f"http://127.0.0.1:{self._sock.getsockname()[1]}"
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        self._thread.join(timeout=5)
+        self._sock.close()
+
+
+class _ClosingServer(_LoopbackServer):
     """A loopback server that answers a chat stream, then closes mid-body.
 
     ``frames`` is the number of SSE frames it sends before it drops the socket
@@ -2760,16 +2781,9 @@ class _ClosingServer:
     """
 
     def __init__(self, frames: int, mode: str = "close") -> None:
-        import socket
-
         self._frames = frames
         self._mode = mode
-        self._sock = socket.socket()
-        self._sock.bind(("127.0.0.1", 0))
-        self._sock.listen(1)
-        self.url = f"http://127.0.0.1:{self._sock.getsockname()[1]}"
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-        self._thread.start()
+        super().__init__()
 
     def _serve(self) -> None:
         import socket
@@ -2792,10 +2806,6 @@ class _ClosingServer:
                 conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
             else:
                 time.sleep(0.05)
-
-    def close(self) -> None:
-        self._thread.join(timeout=5)
-        self._sock.close()
 
 
 def _real_client(url: str) -> LlamaServerClient:
@@ -2847,7 +2857,7 @@ def test_stream_cut_by_a_reset_keeps_its_cause_and_text() -> None:
     assert "restarted" not in str(caught.value)
 
 
-class _CleanEndServer:
+class _CleanEndServer(_LoopbackServer):
     """A loopback server whose chat body ends cleanly, with the chosen closing frames.
 
     It sends one text frame, then ``finish`` and ``sentinel`` as asked, then the
@@ -2856,17 +2866,10 @@ class _CleanEndServer:
     """
 
     def __init__(self, *, finish: bool, sentinel: bool, text: bool = True) -> None:
-        import socket
-
         self._text = text
         self._finish = finish
         self._sentinel = sentinel
-        self._sock = socket.socket()
-        self._sock.bind(("127.0.0.1", 0))
-        self._sock.listen(1)
-        self.url = f"http://127.0.0.1:{self._sock.getsockname()[1]}"
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-        self._thread.start()
+        super().__init__()
 
     def _serve(self) -> None:
         conn, _ = self._sock.accept()
@@ -2888,10 +2891,6 @@ class _CleanEndServer:
             conn.settimeout(1.0)
             with contextlib.suppress(OSError):
                 conn.recv(65536)
-
-    def close(self) -> None:
-        self._thread.join(timeout=5)
-        self._sock.close()
 
 
 @pytest.mark.parametrize(
