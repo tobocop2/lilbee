@@ -942,8 +942,9 @@ class Config(BaseSettings):
 
     # Manual GPU placement override stored as a JSON scalar (the config.toml store
     # is flat, and core must not depend on the provider PlacementSpec type). When
-    # set, it fully replaces the automatic placement planner: each active role pins
-    # to the listed device indices, with an optional tensor_split and replica count.
+    # set, it fully replaces the automatic placement planner: each active role names
+    # a target (cpu, or gpu with device indices), with an optional tensor_split and
+    # replica count. A role with no target key runs on the listed device indices.
     # Edited via the placement CLI/MCP/HTTP/TUI surfaces rather than the generic
     # settings list, so public=False. None hands off to the VRAM-aware auto planner.
     placement: str | None = ConfigField(
@@ -952,8 +953,9 @@ class Config(BaseSettings):
         public=False,
         description=(
             "Manual multi-GPU placement spec. It fully replaces the automatic planner: "
-            "each active role pins to the listed device indices. Edit it with the "
-            "placement commands, not the settings list. Empty uses the VRAM-aware planner"
+            "each active role runs on the CPU or pins to the listed device indices. "
+            "Edit it with the placement commands, not the settings list. "
+            "Empty uses the VRAM-aware planner"
         ),
     )
 

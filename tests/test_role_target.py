@@ -17,7 +17,12 @@ from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL, MistralAdapter
 from lilbee.providers.fleet.engines.tei import TEI, TeiAdapter
 from lilbee.providers.fleet.placement import InstancePlan, placement_from_spec
-from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
+from lilbee.providers.fleet.placement_spec import (
+    PlacementError,
+    PlacementSpec,
+    RolePlacement,
+    TargetRefusedError,
+)
 from lilbee.providers.roles import RoleTarget, WorkerRole
 
 GIB = 1 << 30
@@ -76,7 +81,7 @@ class TestSpecTargetClosedSet:
     ) -> None:
         spec = PlacementSpec.from_json(raw)
         assert spec.roles[WorkerRole.EMBED] == RolePlacement(
-            devices=(), replicas=replicas, target=target
+            devices=(), replicas=replicas, target=target, target_named=True
         )
         assert PlacementSpec.from_json(spec.to_json()) == spec
 
@@ -144,10 +149,13 @@ class TestSpecOldFormSamePlan:
                 '{"chat": {"devices": [0, 1], "tensor_split": [1, 2]}, '
                 '"embed": {"devices": [1], "replicas": 2}}',
             ),
-            ('{"chat": {"devices": [0], "target": "gpu"}}', '{"chat": {"devices": [0]}}'),
+            (
+                '{"chat": {"devices": [0], "target": "gpu"}}',
+                '{"chat": {"devices": [0], "target": "gpu"}}',
+            ),
         ],
     )
-    def test_stored_form_has_no_target_key(self, raw: str, stored: str) -> None:
+    def test_stored_form_names_a_target_only_when_the_spec_did(self, raw: str, stored: str) -> None:
         assert PlacementSpec.from_json(raw).to_json() == stored
 
     def test_plan_of_an_old_spec(self) -> None:
@@ -371,18 +379,20 @@ class TestTargetRefusedPlainMessage:
         assert plan.instances == (InstancePlan(WorkerRole.EMBED, (), (), 0, RoleTarget.CPU),)
 
     def test_gpu_role_never_asks_the_engine_about_targets(self) -> None:
-        planning._refuse_unusable_targets(
+        refused = planning._unusable_targets(
             PlacementSpec.from_json('{"embed": {"devices": [0]}}'),
             {WorkerRole.EMBED: "ref"},
             {WorkerRole.EMBED: _NeverAsked()},
         )
+        assert refused == {}
 
     def test_role_with_no_entry_is_left_to_the_entry_check(self) -> None:
-        planning._refuse_unusable_targets(
+        refused = planning._unusable_targets(
             PlacementSpec.from_json('{"chat": {"target": "cpu"}}'),
             {WorkerRole.EMBED: "ref"},
             {WorkerRole.EMBED: _NeverAsked()},
         )
+        assert refused == {}
 
     def test_mixed_many_card_gate_passes_a_cpu_role_and_stops_a_gpu_role(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -440,3 +450,195 @@ class TestNoDevicePinIsOnePath:
 
     def test_gpu_target_with_no_probe_pins_nothing(self) -> None:
         assert planning._no_device_pin(LLAMA, RoleTarget.GPU) == ()
+
+
+class TestExplicitGpuOnABuildWithoutOne:
+    """A spec that names the gpu target is refused where an old spec keeps its plan."""
+
+    def _resolve(self, raw: str, engine):
+        return planning._resolve_placement(
+            PlacementSpec.from_json(raw),
+            [],
+            {WorkerRole.EMBED: "ref"},
+            [FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 23 * GIB)],
+            engines={WorkerRole.EMBED: engine},
+            unified_budget=None,
+        )
+
+    @pytest.mark.parametrize(("adapter", "engine"), [(MistralAdapter, MISTRAL), (TeiAdapter, TEI)])
+    def test_named_gpu_is_refused_on_a_cpu_build(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, adapter: type, engine
+    ) -> None:
+        _build(monkeypatch, adapter, "cpu")
+        monkeypatch.setattr(type(engine), "binary", lambda _self: tmp_path / "tool")
+        monkeypatch.setattr(
+            planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
+        )
+        with pytest.raises(TargetRefusedError) as caught:
+            self._resolve('{"embed": {"target": "gpu", "devices": [0]}}', engine)
+        assert str(caught.value) == (
+            "embed: this engine's installed build cannot run on a GPU. "
+            "Choose the CPU or install a GPU build."
+        )
+        assert caught.value.reasons == {WorkerRole.EMBED: str(caught.value)}
+
+    @pytest.mark.parametrize(("adapter", "engine"), [(MistralAdapter, MISTRAL), (TeiAdapter, TEI)])
+    def test_a_spec_with_no_target_key_keeps_its_plan_on_a_cpu_build(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, adapter: type, engine
+    ) -> None:
+        _build(monkeypatch, adapter, "cpu")
+        monkeypatch.setattr(type(engine), "binary", lambda _self: tmp_path / "tool")
+        monkeypatch.setattr(
+            planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
+        )
+        plan = self._resolve('{"embed": {"devices": [0]}}', engine)
+        assert plan.instances == (InstancePlan(WorkerRole.EMBED, (0,), (), 0, RoleTarget.GPU),)
+
+    def test_named_gpu_is_kept_apart_in_the_parsed_spec(self) -> None:
+        named = PlacementSpec.from_json('{"embed": {"target": "gpu", "devices": [0]}}')
+        old = PlacementSpec.from_json('{"embed": {"devices": [0]}}')
+        assert named.roles[WorkerRole.EMBED].target_named is True
+        assert old.roles[WorkerRole.EMBED].target_named is False
+        assert PlacementSpec.from_json(named.to_json()) == named
+
+    def test_saved_named_gpu_is_not_replaced_by_the_automatic_plan(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _build(monkeypatch, TeiAdapter, "cpu")
+        monkeypatch.setattr(type(TEI), "binary", lambda _self: tmp_path / "tool")
+        monkeypatch.setattr(
+            planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
+        )
+        with caplog.at_level(logging.WARNING), pytest.raises(TargetRefusedError):
+            planning._placement_or_auto(
+                PlacementSpec.from_json('{"embed": {"target": "gpu", "devices": [0]}}'),
+                [],
+                {WorkerRole.EMBED: "ref"},
+                [FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 23 * GIB)],
+                engines={WorkerRole.EMBED: TEI},
+                unified_budget=None,
+            )
+        assert "automatic placement" not in caplog.text
+
+
+class TestARefusedRoleDoesNotStopTheOthers:
+    """Chat keeps running and the refused role reports its refusal."""
+
+    CPU_EMBED = '{"chat": {"devices": [0]}, "embed": {"target": "cpu"}}'
+
+    def _fleet(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, help_text: str):
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet.placement import ModelPlacementInput
+
+        _help(monkeypatch, help_text)
+        monkeypatch.setattr(type(LLAMA), "binary", lambda _self: tmp_path / "server")
+        monkeypatch.setattr(cfg, "placement", self.CPU_EMBED)
+        monkeypatch.setattr(
+            planning,
+            "_server_model_inputs",
+            lambda roles, *, engines, **_k: (
+                [ModelPlacementInput(role, GIB) for role in (WorkerRole.CHAT, WorkerRole.EMBED)],
+                {WorkerRole.CHAT: "chat-ref", WorkerRole.EMBED: "embed-ref"},
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning, "_launch_for", lambda plan, _ref, _by, **_k: SimpleNamespace(role=plan.role)
+        )
+        monkeypatch.setattr(planning, "_unusable_chat_ctx_reason", lambda _launch: None)
+        monkeypatch.setattr(
+            planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
+        )
+        card = FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 23 * GIB)
+        monkeypatch.setattr(planning, "_plan_devices", lambda _binary, _engine: [card])
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: LLAMA}
+        return planning.plan_launches(None, {0: card}, [card], engines=engines)
+
+    def test_chat_launches_and_the_refused_role_reports_why(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        reason = (
+            "embed: this engine's installed build cannot run on the CPU. "
+            "Choose a GPU or install the CPU build."
+        )
+        with caplog.at_level(logging.WARNING):
+            plan = self._fleet(monkeypatch, tmp_path, OLD_HELP)
+        assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT]
+        assert plan.skipped_unusable_ctx == {WorkerRole.EMBED: reason}
+        assert reason in caplog.messages
+        assert "automatic placement" not in caplog.text
+
+    def test_with_a_usable_build_both_launch_and_nothing_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = self._fleet(monkeypatch, tmp_path, LLAMA_HELP)
+        assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT, WorkerRole.EMBED]
+        assert plan.skipped_unusable_ctx == {}
+
+
+class TestSelfCheckUsesTheRoleTarget:
+    """The self-check builds the launch serving builds, so a cpu role is checked on the CPU."""
+
+    def _launch(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, placement: str | None):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "placement", placement)
+        monkeypatch.setattr(
+            planning,
+            "_plan_devices",
+            lambda _b, _e: [FleetDevice("Vulkan", 0, "Vulkan0", 24 * GIB, 23 * GIB)],
+        )
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 1000)
+        _help(monkeypatch, LLAMA_HELP)
+        monkeypatch.setattr(type(LLAMA), "binary", lambda _self: tmp_path / "server")
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(planning, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
+        monkeypatch.setattr("lilbee.providers.fleet.engines.llama.llama_server_runtime_env", dict)
+        monkeypatch.setattr(
+            planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
+        )
+        return planning.build_single_role_launch(WorkerRole.EMBED, model, engine=LLAMA)
+
+    def test_cpu_role_is_checked_with_no_card_layers(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        launch = self._launch(monkeypatch, tmp_path, '{"embed": {"target": "cpu"}}')
+        assert _flag(launch.argv, "--n-gpu-layers") == "0"
+        assert _flag(launch.argv, "--device") == "none"
+
+    def test_role_with_no_entry_is_checked_on_the_card(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        launch = self._launch(monkeypatch, tmp_path, '{"chat": {"target": "cpu"}}')
+        assert _flag(launch.argv, "--n-gpu-layers") == "-1"
+        assert _flag(launch.argv, "--device") == "Vulkan0"
+
+    def test_no_placement_is_checked_on_the_card(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        launch = self._launch(monkeypatch, tmp_path, None)
+        assert _flag(launch.argv, "--device") == "Vulkan0"
+
+
+class TestMessagesNameTheFix:
+    def test_unknown_role_lists_the_roles(self) -> None:
+        with pytest.raises(PlacementError) as caught:
+            PlacementSpec.from_json('{"gpu0": {"target": "cpu"}}')
+        assert str(caught.value) == (
+            "unknown role 'gpu0' in placement. Use one of these roles: chat, embed, rerank, vision."
+        )
+
+    def test_role_with_no_entry_names_the_entry_to_add(self) -> None:
+        spec = PlacementSpec.from_json('{"embed": {"target": "cpu"}}')
+        with pytest.raises(PlacementError) as caught:
+            placement_from_spec(
+                spec, (WorkerRole.CHAT, WorkerRole.EMBED), {0: 8 * GIB}, estimate_peak=_no_estimate
+            )
+        assert str(caught.value) == (
+            "chat has a model but the placement has no entry for it. "
+            "Add an entry for chat with devices or a target, or clear the placement."
+        )

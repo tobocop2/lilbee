@@ -39,7 +39,13 @@ def test_builds_plans_from_spec():
 
 def test_errors_when_active_role_missing_from_spec():
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
-    with pytest.raises(PlacementError, match="embed has a model but no placement entry"):
+    with pytest.raises(
+        PlacementError,
+        match=(
+            r"embed has a model but the placement has no entry for it\. "
+            r"Add an entry for embed with devices or a target, or clear the placement\."
+        ),
+    ):
         placement_from_spec(
             spec,
             (WorkerRole.CHAT, WorkerRole.EMBED),

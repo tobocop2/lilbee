@@ -831,7 +831,10 @@ def _required_entry(
     """Return *role*'s placement entry, failing loud if absent or pinned off-hardware."""
     rp = spec.roles.get(role)
     if rp is None:
-        raise PlacementError(f"{role.value} has a model but no placement entry in placement")
+        raise PlacementError(
+            f"{role.value} has a model but the placement has no entry for it. "
+            f"Add an entry for {role.value} with devices or a target, or clear the placement."
+        )
     for idx in rp.devices:
         if idx not in device_capacity:
             raise PlacementError(
