@@ -166,6 +166,7 @@ class ProviderErrorKind(StrEnum):
     CAPACITY = "capacity"
     PORT_CONFLICT = "port_conflict"
     MODEL_FILE_BROKEN = "model_file_broken"
+    STARTING = "starting"
     UNKNOWN = "unknown"
 
 
