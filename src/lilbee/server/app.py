@@ -19,7 +19,7 @@ from litestar.openapi import OpenAPIConfig
 from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 
 from lilbee.app.endpoints import MCP_PATH
-from lilbee.app.services import get_services, peek_services
+from lilbee.app.services import get_services, peek_services, reset_services
 from lilbee.app.settings import config_write_failure_message
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
@@ -309,10 +309,10 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         _server_loop.set(None)
         session_manager.cleanup()
         # Terminate the provider's worker/fleet subprocesses so they don't
-        # outlive the server (e.g. on parent-death shutdown in managed mode).
-        svc = peek_services()
-        if svc is not None:
-            svc.provider.shutdown()
+        # outlive the server (e.g. on parent-death shutdown in managed mode). The reset
+        # clears the container, so the teardown at interpreter exit does not repeat this
+        # and a stuck engine start is waited for once.
+        reset_services()
 
 
 def _json_error_response(request: Request, exc: Exception) -> Response:
