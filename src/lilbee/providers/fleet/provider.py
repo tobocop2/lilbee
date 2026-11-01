@@ -1415,7 +1415,8 @@ class FleetProvider:
         before raising so a transient llama-swap restart recovers transparently.
         A request that lands while a reload restarts the role's group waits, up to
         ``_RELOAD_GAP_WAIT_S``, until the role has clients or the reload will not
-        bring the role back.
+        bring the role back. A teardown on another thread can empty the fleet after
+        the check below passes, so an empty fleet goes through the check once more.
         """
         self._ensure_fleet()
         with self._lock:
@@ -1432,6 +1433,11 @@ class FleetProvider:
             if not clients and not settled:
                 raise ProviderError(_reload_timeout_message(role), provider=_PROVIDER_NAME)
             swap = self._swap_for(role)
+            fleet_is_empty = not self._swaps
+        if not clients and fleet_is_empty:
+            self._ensure_fleet()
+            with self._lock:
+                clients = self._clients.get(role)
         if not clients and swap is not None and not swap.is_live():
             self._rebuild_role(role)
             with self._lock:
@@ -1601,10 +1607,10 @@ class FleetProvider:
         Terminal ``shutdown()`` latches ``_shut_down`` so a discarded provider's
         in-flight warm/reload thread can't spawn an orphan swap, then releases
         membership: the engine stops only when this was the last user and
-        persistence was not opted into. The cache-drop paths
-        (``invalidate_load_cache``, ``drop_loaded_models_async``) pass
-        ``latch=False``: a config change restarts the shared engine for every
-        user (they rediscover), and this provider rebuilds on next use.
+        persistence was not opted into. The cache-drop path
+        (``invalidate_load_cache``) passes ``latch=False``: a config change
+        restarts the shared engine for every user (they rediscover), and this
+        provider rebuilds on next use.
         """
         # Latched before the lock, not inside it: every _shut_down check runs after
         # acquiring the build lock, so a warm or reload thread queued behind us can
@@ -2490,12 +2496,12 @@ class FleetProvider:
         self._dispatch_reload(f"fleet-reload-{role.value}", wait=wait)
 
     def reload_placement(self, *, wait: bool = False) -> None:
-        """Apply a placement change with current cfg, restarting only moved roles.
+        """Apply a placement or load-setting change with current cfg, restarting only moved roles.
 
         The fresh plan is diffed per role against the running fleet: a role whose
-        devices (and so its launch argv) did not change keeps serving through the
-        change -- moving the embedder never unloads a 100GB chat model. When no
-        fleet is up, the next use plans fresh, so this returns at once.
+        launch did not change keeps serving through the change -- moving the
+        embedder never unloads a 100GB chat model. When no fleet is up, the next
+        use plans fresh, so this returns at once.
         """
         self._dispatch_reload("fleet-reload-placement", wait=wait)
 
@@ -2759,22 +2765,6 @@ class FleetProvider:
         """A model or settings change restarts the engine: drop the swap."""
         del model_path  # the whole engine restarts on next use; no per-model scope.
         self._shutdown_swap(latch=False)
-
-    def drop_loaded_models_async(self) -> None:
-        """Drop the swap off the caller's thread; next use restarts with current cfg.
-
-        ``_shutdown_swap`` stops llama-swap and waits on its process group, so a
-        role-agnostic load-key change (num_ctx, kv_cache_type) routes here rather
-        than blocking the settings callback. A no-op when no swap is up.
-        """
-        with self._lock:
-            if not self._swaps:
-                return
-        threading.Thread(
-            target=lambda: self._shutdown_swap(latch=False),
-            name="fleet-drop",
-            daemon=True,
-        ).start()
 
     def shutdown(self) -> None:
         # The on-request vision grant is process-wide; the next provider starts from the setting.

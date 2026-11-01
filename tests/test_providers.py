@@ -3833,20 +3833,6 @@ class TestRoutingLifecycleForwarding:
         rp.reload_role(WorkerRole.CHAT)  # must not raise
         rp.reload_placement()  # must not raise
 
-    def test_drop_loaded_models_async_forwards_to_local(self) -> None:
-        from lilbee.providers.routing_provider import RoutingProvider
-
-        rp = RoutingProvider()
-        local = mock.MagicMock()
-        rp._local = local
-        rp.drop_loaded_models_async()
-        local.drop_loaded_models_async.assert_called_once_with()
-
-    def test_drop_loaded_models_async_noop_without_local(self) -> None:
-        from lilbee.providers.routing_provider import RoutingProvider
-
-        RoutingProvider().drop_loaded_models_async()  # _local is None: must not raise
-
     def test_max_concurrent_chats_defaults_to_one_without_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 

@@ -383,15 +383,13 @@ def _restore_snapshot(snapshot: dict[str, Any]) -> None:
 
 
 def _reload_changed_roles(changed_keys: set[str]) -> None:
-    """Off-thread reload for each changed model-role server; full off-thread drop otherwise.
+    """Re-plan the fleet off-thread, so only the servers whose launch changed restart.
 
-    A model-role change (chat_model/embedding_model/reranker_model/vision_model)
-    respawns only that role's server via the per-role reload, so unrelated roles
-    keep serving uninterrupted; so does a setting that gates a role (ocr).
-    A genuinely role-agnostic load key (num_ctx, kv_cache_type) has no single
-    owning role, so it falls back to dropping the whole fleet. Both paths run off
-    the caller's thread, so the settings write never blocks on a slow
-    stop-and-respawn.
+    A model-role change (chat_model/embedding_model/reranker_model/vision_model) or
+    a setting that gates a role (ocr) names its role. A role-agnostic load key
+    (num_ctx, kv_cache_type, chunk_size) names none, and the same re-plan finds the
+    roles it moves. The reload applies current cfg, so one write needs one reload.
+    It runs off the caller's thread: the write never blocks on a slow respawn.
     """
     from lilbee.app.services import peek_services
 
@@ -410,8 +408,8 @@ def _reload_changed_roles(changed_keys: set[str]) -> None:
 
         sync_xberg_backend(BackendKind.OCR, services.provider)
     role_agnostic = (changed_keys & LOAD_AFFECTING_KEYS) - MODEL_ROLE_FIELDS
-    if role_agnostic:
-        services.provider.drop_loaded_models_async()
+    if role_agnostic and not reloaded:
+        services.provider.reload_placement()
 
 
 def requires_services_reset(updates: dict[str, Any]) -> bool:

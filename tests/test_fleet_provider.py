@@ -2647,20 +2647,43 @@ def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch, tmp_path: P
     assert p._swaps.get(WorkerRole.CHAT) is swap
 
 
-def test_drop_loaded_models_async_leaves_provider_reusable(monkeypatch, tmp_path: Path) -> None:
-    """The off-thread drop used by settings changes must not latch shutdown.
-
-    app.settings routes num_ctx/kv_cache_type changes here while retaining the
-    provider; a latched flag would refuse every later chat/embed/rerank call
-    until process restart.
-    """
-    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+def test_a_request_rebuilds_when_a_teardown_lands_after_its_fleet_check(
+    monkeypatch, tmp_path: Path
+) -> None:
+    join_s = 10.0
+    _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
     p = FleetProvider()
     assert p._ensure_fleet() is True
-    p.drop_loaded_models_async()
-    assert _wait_until(lambda: p._swaps == {})
-    assert p._ensure_fleet() is True  # rebuilt with current cfg, not refused
-    assert p._swaps.get(WorkerRole.CHAT) is swap
+    real_ensure = p._ensure_fleet
+    checked = threading.Event()
+    torn_down = threading.Event()
+    pause_once = [True]
+
+    def ensure_then_pause() -> bool:
+        built = real_ensure()
+        if pause_once.pop() if pause_once else False:
+            checked.set()
+            assert torn_down.wait(join_s)
+        return built
+
+    monkeypatch.setattr(p, "_ensure_fleet", ensure_then_pause)
+    results: list[object] = []
+    errors: list[BaseException] = []
+
+    def request() -> None:
+        try:
+            results.append(p._require_clients(WorkerRole.CHAT))
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=request, daemon=True)
+    worker.start()
+    assert checked.wait(join_s)
+    p._drop_swap_refs()
+    torn_down.set()
+    worker.join(join_s)
+    assert errors == []
+    assert len(results) == 1
 
 
 def _wait_until(predicate, timeout: float = 5.0) -> bool:
@@ -3417,20 +3440,6 @@ def test_role_ready_reflects_swap_running_state() -> None:
     p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
     assert p.role_ready(WorkerRole.CHAT) is True
     assert p.role_ready(WorkerRole.EMBED) is False
-
-
-def test_drop_loaded_models_async_tears_down_off_thread() -> None:
-    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    p.drop_loaded_models_async()
-    # The off-thread worker drops the refs; the engine restart itself goes
-    # through stop_engine on the held dirs (none in this fixture).
-    assert _wait_until(lambda: p._swaps == {})
-
-
-def test_drop_loaded_models_async_noop_without_swap() -> None:
-    p = FleetProvider()  # _swap is None
-    p.drop_loaded_models_async()  # must not raise or spawn a thread
-    assert p._swaps == {}
 
 
 def _clear_visible_vars(monkeypatch) -> None:
