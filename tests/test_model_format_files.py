@@ -539,6 +539,50 @@ class TestPullOfAnInstalledModel:
         assert len(manager.fetched) == 1
         assert {"modules.json", "2_Dense/model.safetensors"} <= set(manager.fetched[0])
 
+    @staticmethod
+    def _pull_offline(ref: str, error: Exception) -> tuple[str, int]:
+        from lilbee.app import models as models_mod
+        from lilbee.catalog.types import ModelSource
+
+        manager = mock.Mock()
+        manager.is_installed.return_value = True
+        manager.pull.side_effect = error
+        with (
+            mock.patch.object(
+                models_mod, "get_services", return_value=mock.Mock(model_manager=manager)
+            ),
+            mock.patch.object(models_mod, "_ensure_vision_projector"),
+        ):
+            result = models_mod.pull_model_data(ref, ModelSource.NATIVE)
+        return result.status, manager.pull.call_count
+
+    @pytest.mark.parametrize(
+        ("ref", "calls"),
+        [
+            ("org/repo#safetensors", 1),
+            ("org/repo#mlx", 0),
+            ("org/repo#openvino", 0),
+            ("org/repo/model.gguf", 0),
+            ("org/repo", 0),
+        ],
+    )
+    def test_every_ref_kind_stays_installed_offline(self, ref: str, calls: int) -> None:
+        from lilbee.app.models import PullStatus
+
+        error = RuntimeError("Cannot query files for org/repo: offline")
+        assert self._pull_offline(ref, error) == (PullStatus.ALREADY_INSTALLED, calls)
+
+    def test_a_safetensors_pull_without_an_engine_stays_installed(self) -> None:
+        from lilbee.app.models import PullStatus
+        from lilbee.providers.fleet.engines.choice import NoEngineError
+
+        status, calls = self._pull_offline("org/repo#safetensors", NoEngineError("none"))
+        assert (status, calls) == (PullStatus.ALREADY_INSTALLED, 1)
+
+    def test_a_bug_in_the_fetch_still_surfaces(self) -> None:
+        with pytest.raises(KeyError, match="bug"):
+            self._pull_offline("org/repo#safetensors", KeyError("bug"))
+
     def test_a_complete_model_downloads_nothing(self, tmp_path: Path) -> None:
         manager = _PullingManager(tmp_path, set(_DENSE_LISTING))
         self._pull(manager)
