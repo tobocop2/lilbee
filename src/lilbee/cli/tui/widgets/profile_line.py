@@ -21,7 +21,7 @@ class ProfileLinePill(Static, can_focus=True):
     """The profile's name; Enter, Space or a click jumps to the Profile tab."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "jump", "Profile tab", show=False),
+        Binding("enter", "jump", "Profile tab"),
         Binding("space", "jump", "Profile tab", show=False),
     ]
 

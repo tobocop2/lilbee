@@ -79,7 +79,10 @@ async def _open(app: LilbeeAppHost, pilot: Pilot, active: str = "Default") -> Pr
 
 def _rows(library: ProfileLibrary) -> list[str]:
     listing = library.query_one("#library-list", OptionList)
-    return [re.sub(r" {3,}", "  ", str(option.prompt)) for option in listing.options]
+    return [
+        re.sub(r" {3,}", "  ", str(option.prompt)).replace("active, ", "")
+        for option in listing.options
+    ]
 
 
 def _raw_rows(library: ProfileLibrary) -> list[str]:
@@ -573,3 +576,53 @@ async def test_a_resize_repaints_the_rows_to_the_new_width() -> None:
             await pilot.resize_terminal(100, 40)
             await pilot.pause()
         paint.assert_called()
+
+
+async def test_the_active_profile_is_tagged_and_the_cursor_starts_on_it() -> None:
+    _write_global("legal-discovery", _LEGAL)
+    profiles.apply(ProfileStore(), "legal-discovery")
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        library = await _open(app, pilot, "legal-discovery")
+        rows = [re.sub(r" {3,}", "  ", row) for row in _raw_rows(library)]
+        listing = library.query_one("#library-list", OptionList)
+        assert rows.index("legal-discovery  active, global") == listing.highlighted
+        assert sum("active" in row for row in rows) == 1
+
+
+async def test_rename_keeps_the_highlight_on_the_renamed_profile() -> None:
+    _write_global("zzz-last", _PLAIN)
+    _write_global("legal-discovery", _LEGAL)
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        library = await _open(app, pilot)
+        await _highlight(pilot, library, "legal-discovery  global")
+        await pilot.press("r")
+        dialog = await _dialog(app, pilot, SaveProfileDialog)
+        dialog.query_one("#save-name", Input).value = "aaa-first"
+        await pilot.press("enter")
+        assert await _until(pilot, lambda: "aaa-first  global" in _rows(library))
+        listing = library.query_one("#library-list", OptionList)
+        assert await _until(
+            pilot, lambda: _rows(library)[listing.highlighted or 0] == "aaa-first  global"
+        )
+
+
+async def test_a_click_on_a_footer_hint_runs_its_action() -> None:
+    _write_global("legal-discovery", _LEGAL)
+    app = _SettingsApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        library = await _open(app, pilot)
+        await _highlight(pilot, library, "legal-discovery  global")
+        hints = library.query_one("#library-hints", Static)
+        text = str(hints.render())
+        offset = text.index(msg.PROFILE_KEY_RENAME)
+        await pilot.click("#library-hints", offset=(offset, 0))
+        await _dialog(app, pilot, SaveProfileDialog)
+
+
+def test_a_wide_character_name_pads_by_cells() -> None:
+    wide = ProfileEntry("日本", ProfileFolder.GLOBAL, Path("w.toml"), None, None)
+    plain = ProfileEntry("abcd", ProfileFolder.GLOBAL, Path("p.toml"), None, None)
+    wide_row = entry_label(wide, 6, active=True)
+    assert wide_row.cell_length == entry_label(plain, 6, active=True).cell_length

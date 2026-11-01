@@ -31,6 +31,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
     add_cost_column,
     diff_cells,
     run_profile_op,
+    shorten_middle,
     start_profile_switch,
     start_switch,
     switch_plan,
@@ -61,12 +62,21 @@ class ReportAction(StrEnum):
     CLOSE = "close"
 
 
+_REASON_WIDTH = 48  # the longest reason a failed-file row shows
+
+
 @dataclass(frozen=True)
 class FinishedAnalysis:
     """A finished analyze run: its report and the folder it read."""
 
     report: AnalyzeReport
     folder: str
+
+
+def _short_reason(error: str) -> str:
+    """The first line of a parser's *error*, cut to fit a table cell."""
+    lines = error.strip().splitlines()
+    return shorten_middle(lines[0].strip() if lines else "", _REASON_WIDTH)
 
 
 def start_analysis(app: LilbeeApp, directory: Path | None) -> None:
@@ -77,7 +87,8 @@ def start_analysis(app: LilbeeApp, directory: Path | None) -> None:
         report = _analyze(app, directory, reporter)
         call_from_thread(app, _finished, app, FinishedAnalysis(report, folder))
 
-    name = msg.TASK_NAME_ANALYZE.format(folder=folder)
+    shown = (directory.name or folder) if directory is not None else folder
+    name = msg.TASK_NAME_ANALYZE.format(folder=shown)
     app.task_bar.start_task(name, TaskType.ANALYZE, _target, indeterminate=True)
 
 
@@ -283,7 +294,7 @@ class AnalyzeReportScreen(Screen[None]):
             return
         yield Static(msg.ANALYZE_FAILED_TITLE, classes="analyze-heading")
         table = _table("analyze-failed", msg.ANALYZE_COL_FILE, msg.ANALYZE_COL_REASON)
-        table.add_rows((failure.file, failure.error) for failure in failed)
+        table.add_rows((failure.file, _short_reason(failure.error)) for failure in failed)
         yield table
 
     def _compose_recommendation(self) -> ComposeResult:

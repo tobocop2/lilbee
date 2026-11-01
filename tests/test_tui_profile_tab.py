@@ -253,7 +253,7 @@ async def test_clicking_the_line_pill_jumps_to_the_profile_tab() -> None:
         tabs = screen.query_one("#settings-tabs", TabbedContent)
         tabs.active = "settings-tab-models"
         await _until(pilot, lambda: tabs.active == "settings-tab-models")
-        assert _text(screen.query_one("#profile-line-count", Static)) == "0 values set by you"
+        assert _text(screen.query_one("#profile-line-count", Static)) == ""
         await pilot.click("#profile-line-name")
         assert await _until(pilot, lambda: tabs.active == PROFILE_PANE_ID)
 
@@ -755,7 +755,7 @@ async def test_discard_empties_the_table_and_publishes_the_keys() -> None:
         await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
         assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
         count = screen.query_one("#profile-line-count", Static)
-        assert await _until(pilot, lambda: _text(count) == "0 values set by you")
+        assert await _until(pilot, lambda: _text(count) == "")
     assert cfg.chunk_size == 512
     assert set(seen) == {"chunk_size", "layout_detection", "max_chunks_per_file"}
 
@@ -1152,3 +1152,20 @@ async def test_a_scan_failure_after_a_good_load_disables_the_tab() -> None:
         await _press(pilot, tab.query_one("#profile-new", ConfirmPill))
         await pilot.pause()
         assert app.screen is screen
+
+
+def test_the_action_pills_have_labels_before_the_first_show() -> None:
+    from lilbee.cli.tui.screens.profile_tab import ProfileAction, _action_labels
+
+    labels = _action_labels("Default")
+    assert all(labels.values())
+    assert labels[ProfileAction.UPDATE] == "Update Default"
+
+
+def test_the_profile_pill_shows_its_enter_hint_in_the_footer() -> None:
+    from textual.binding import Binding
+
+    from lilbee.cli.tui.widgets.profile_line import ProfileLinePill
+
+    shown = {b.key: b.show for b in ProfileLinePill.BINDINGS if isinstance(b, Binding)}
+    assert shown == {"enter": True, "space": False}

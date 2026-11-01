@@ -1115,9 +1115,7 @@ class FleetProvider:
                 machine_dir,
                 ENGINE_DIR_ENV,
             )
-        # The machine slot is out: a live user holds an incompatible engine there, or
-        # its filesystem has no file locks. Use this config root's private dir
-        # rather than evict another model setup.
+        # The machine slot is out; use this config root's private engine dir.
         private = private_engine_dir(config_root)
         return self._acquire_in_dir(private, pin, demand, is_overflow=True) or False
 

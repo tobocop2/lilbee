@@ -7,7 +7,7 @@ import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from functools import partial
+from functools import cache, partial
 from importlib.metadata import version as installed_version
 from pathlib import Path
 from typing import Any, TypeVar
@@ -220,36 +220,40 @@ def _check_name(meta: Mapping[str, Any], stem: str) -> str:
     name = stem if raw is None else raw
     if _bad_name(name):
         raise ProfileFileError(
-            f"Bad name {name!r}: use 1 to {MAX_NAME_LENGTH} letters, digits, spaces, hyphens, "
-            "underscores or parentheses"
+            f"Bad name {name!r}: use 1 to {MAX_NAME_LENGTH} ASCII letters, digits, spaces, "
+            "hyphens, underscores or parentheses"
         )
     if profile_key(name) in RESERVED_NAME_KEYS:
         raise ProfileFileError(f"Reserved name: {name} cannot name a profile")
     return name
 
 
+def _assign(trial: Config, key: str, value: Any) -> Any:
+    """*value* as *trial* holds it after its field validator runs; raises on a bad value."""
+    try:
+        setattr(trial, key, value)
+    except ValidationError as exc:
+        raise ProfileFileError(f"Bad value for {key}: {exc.errors()[0]['msg']}") from None
+    # A validator's TypeError is a bad value
+    except TypeError as exc:
+        raise ProfileFileError(f"Bad value for {key}: {exc}") from None
+    return getattr(trial, key)
+
+
 def normalized_values(values: Mapping[str, Any]) -> dict[str, Any]:
     """Each value as Config holds it once its field validator runs; raises on a bad value."""
     trial = cfg.model_copy()
-    for key, value in values.items():
-        try:
-            setattr(trial, key, value)
-        except ValidationError as exc:
-            raise ProfileFileError(f"Bad value for {key}: {exc.errors()[0]['msg']}") from None
-        # A validator's TypeError is a bad value
-        except TypeError as exc:
-            raise ProfileFileError(f"Bad value for {key}: {exc}") from None
-    return {key: getattr(trial, key) for key in values}
+    return {key: _assign(trial, key, value) for key, value in values.items()}
 
 
-def _normalized(key: str, value: Any, min_lilbee: str | None) -> Any:
+def _normalized(trial: Config, key: str, value: Any, min_lilbee: str | None) -> Any:
     """*value* as Config holds it; raises when *key* is not a profile setting or *value* is bad."""
     if key not in Config.model_fields:
         raise ProfileFileError(_needs_newer(min_lilbee) or f"Unknown setting: {key}")
     if key not in PROFILE_FIELDS:
         raise ProfileFileError(f"Profiles cannot set {key}")
     try:
-        return normalized_values({key: value})[key]
+        return _assign(trial, key, value)
     except ProfileFileError as exc:
         raise ProfileFileError(_needs_newer(min_lilbee) or str(exc)) from None
 
@@ -277,9 +281,10 @@ def _value_problems(
 ) -> list[str]:
     problems: list[str] = []
     normalized: dict[str, Any] = {}
+    trial = cfg.model_copy()
     for key, value in raw.items():
         try:
-            normalized[key] = _normalized(key, value, min_lilbee)
+            normalized[key] = _normalized(trial, key, value, min_lilbee)
         except ProfileFileError as exc:
             problems.append(str(exc))
     problems += _overlap_problems(normalized)
@@ -520,10 +525,15 @@ def _same_file(first: Path, second: Path) -> bool:
         return False
 
 
+@cache
+def _keys_in(folder: Path) -> frozenset[str]:
+    """The lookup keys of the built-in files in *folder*, which ship with the package."""
+    return frozenset(profile_key(e.name) for e in _read_folder(ProfileFolder.BUILTIN, folder))
+
+
 def builtin_keys() -> frozenset[str]:
     """The lookup keys of the built-in profiles, which no other profile may take."""
-    folder = PACKAGE_PROFILES_DIR / BUILTIN_DIRNAME
-    return frozenset(profile_key(e.name) for e in _read_folder(ProfileFolder.BUILTIN, folder))
+    return _keys_in(PACKAGE_PROFILES_DIR / BUILTIN_DIRNAME)
 
 
 def validate_file(path: Path, folder: ProfileFolder) -> ProfileValidation:

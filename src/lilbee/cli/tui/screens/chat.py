@@ -16,6 +16,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from pydantic import ValidationError
 from rich.rule import Rule
 from textual import events, getters, on, work
 from textual.actions import SkipAction
@@ -237,7 +238,16 @@ def _set_echo(key: str, parsed: object, *, secret: bool, show_stored: bool) -> o
     if not show_stored:
         return parsed
     stored = getattr(cfg, key)
-    return msg.CMD_SET_AUTO if stored is None else stored
+    if stored is None:
+        return msg.CMD_SET_AUTO
+    return stored if stored != [] else msg.CMD_SET_EMPTY_LIST
+
+
+def _refusal_text(exc: ValueError | TypeError) -> str:
+    """Why a write refused, as one short sentence: a validator's own message, else the text."""
+    if isinstance(exc, ValidationError):
+        return str(exc.errors()[0]["msg"]).removeprefix("Value error, ")
+    return str(exc)
 
 
 def _setting_type_hint(kind: type) -> str:
@@ -1542,15 +1552,15 @@ class ChatScreen(Screen[None]):
                     )
                     return
             # Route through set_setting so settings_changed_signal subscribers
-            # (model bar, scope chip, status bar) refresh. The boundary's
-            # _invalidate_caches now handles llm_provider service reset.
+            # (model bar, scope chip, status bar) refresh.
             self.app.set_setting(key, parsed)
             shown = _set_echo(
                 key, parsed, secret=defn.secret, show_stored=defn.type in (bool, list)
             )
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
         except (ValueError, TypeError) as exc:
-            self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
+            reason = _refusal_text(exc)
+            self.notify(msg.CMD_SET_INVALID.format(key=key, error=reason), severity="error")
 
     def _cmd_settings(self, _args: str) -> None:
         self.app.switch_view("Settings")

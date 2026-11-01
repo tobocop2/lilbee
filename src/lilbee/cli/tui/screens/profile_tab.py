@@ -35,6 +35,7 @@ from lilbee.cli.tui.screens.profile_library import ProfileLibrary
 from lilbee.cli.tui.screens.settings_widgets import user_pill
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
 from lilbee.core.profile_files import (
+    DEFAULT_PROFILE_NAME,
     ProfileCatalog,
     ProfileFolder,
     ProfileStore,
@@ -42,6 +43,17 @@ from lilbee.core.profile_files import (
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
+
+
+def _action_labels(name: str) -> dict[ProfileAction, str]:
+    """The text of each action pill while *name* is the active profile."""
+    return {
+        ProfileAction.UPDATE: msg.PROFILE_ACTION_UPDATE.format(name=name),
+        ProfileAction.SAVE_AS: msg.PROFILE_ACTION_SAVE_AS,
+        ProfileAction.DISCARD: msg.PROFILE_ACTION_DISCARD,
+        ProfileAction.REAPPLY: msg.PROFILE_ACTION_REAPPLY.format(name=name),
+    }
+
 
 PROFILE_SELECT_ID = "profile-select"
 _NOT_LOADED = ""
@@ -138,7 +150,7 @@ class ProfileTab(Vertical):
         with Horizontal(id="profile-actions"):
             for action in _ROW_ACTIONS:
                 yield ConfirmPill(
-                    "",
+                    _action_labels(DEFAULT_PROFILE_NAME)[action],
                     pill_id=f"profile-{action.value}",
                     answer=action,
                     primary=action is ProfileAction.UPDATE,
@@ -219,12 +231,7 @@ class ProfileTab(Vertical):
             ProfileAction.DISCARD: bool(active.changes),
             ProfileAction.REAPPLY: active.status is ProfileStatus.CHANGED,
         }
-        labels = {
-            ProfileAction.UPDATE: msg.PROFILE_ACTION_UPDATE.format(name=active.name),
-            ProfileAction.SAVE_AS: msg.PROFILE_ACTION_SAVE_AS,
-            ProfileAction.DISCARD: msg.PROFILE_ACTION_DISCARD,
-            ProfileAction.REAPPLY: msg.PROFILE_ACTION_REAPPLY.format(name=active.name),
-        }
+        labels = _action_labels(active.name)
         for action in _ROW_ACTIONS:
             pill = self.query_one(f"#profile-{action.value}", ConfirmPill)
             pill.update(labels[action])

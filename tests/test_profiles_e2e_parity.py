@@ -850,7 +850,7 @@ async def _library(app: LilbeeApp, pilot: Pilot) -> ProfileLibrary:
 
 def _rows(library: ProfileLibrary) -> list[str]:
     return [
-        re.sub(r" {3,}", "  ", str(option.prompt))
+        re.sub(r" {3,}", "  ", str(option.prompt)).replace("active, ", "")
         for option in library.query_one(OptionList).options
     ]
 

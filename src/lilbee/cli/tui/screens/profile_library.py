@@ -16,6 +16,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen
+from textual.style import Style
 from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.option_list import Option
 
@@ -91,15 +92,24 @@ class LibraryState:
 
     catalog: ProfileCatalog
     has_project: bool
+    active_path: Path | None = None
 
 
 def load_library() -> LibraryState:
     """Scan the profile folders; runs off the event loop."""
-    return LibraryState(profiles.list_profiles(ProfileStore()), has_project_folder())
+    store = ProfileStore()
+    applied = profiles.active(store).entry
+    return LibraryState(
+        profiles.list_profiles(store),
+        has_project_folder(),
+        applied.path if applied is not None else None,
+    )
 
 
-def _tag_text(entry: ProfileEntry, *, with_problem: bool = True) -> str:
+def _tag_text(entry: ProfileEntry, *, active: bool = False, with_problem: bool = True) -> str:
     tags = [msg.PROFILE_FOLDER_TAG[entry.folder]]
+    if active:
+        tags.insert(0, msg.PROFILE_LIBRARY_ACTIVE)
     if entry.shadowed_by is not None:
         tags.append(msg.PROFILE_LIBRARY_SHADOWED)
     if with_problem and entry.error is not None:
@@ -107,7 +117,9 @@ def _tag_text(entry: ProfileEntry, *, with_problem: bool = True) -> str:
     return ", ".join(tags)
 
 
-def entry_label(entry: ProfileEntry, name_width: int = 0, row_width: int = 0) -> Content:
+def entry_label(
+    entry: ProfileEntry, name_width: int = 0, row_width: int = 0, *, active: bool = False
+) -> Content:
     """A list row: the name padded to *name_width*, then its folder and any problem.
 
     With a *row_width*, the row is cut with an ellipsis to fit, so it never wraps.
@@ -115,18 +127,25 @@ def entry_label(entry: ProfileEntry, name_width: int = 0, row_width: int = 0) ->
     """
     name = shorten_middle(entry.name, name_width) if row_width > 0 else entry.name
     padding = " " * (name_width - cell_len(name))
-    row = Content.assemble(name, padding, _ROW_GAP, Content.styled(_tag_text(entry), "$text-muted"))
+    tags = Content.styled(_tag_text(entry, active=active), "$text-muted")
+    row = Content.assemble(name, padding, _ROW_GAP, tags)
     return row.truncate(row_width, ellipsis=True) if row_width > 0 else row
 
 
 def _hints(*, narrow: bool = False) -> Content:
     pairs = [
-        (_APPLY_KEY, msg.PROFILE_KEY_APPLY),
-        *((k.key, k.short_label if narrow else k.label) for k in _KEYS),
-        (_CLOSE_KEY, msg.PROFILE_KEY_CLOSE),
+        (_APPLY_KEY, msg.PROFILE_KEY_APPLY, "screen.apply"),
+        *(
+            (k.key, k.short_label if narrow else k.label, f"screen.run('{k.action}')")
+            for k in _KEYS
+        ),
+        (_CLOSE_KEY, msg.PROFILE_KEY_CLOSE, "screen.close"),
     ]
     return Content("   ").join(
-        Content.assemble(Content.styled(key, "$accent bold"), " ", label) for key, label in pairs
+        Content.assemble(Content.styled(key, "$accent bold"), " ", label).stylize(
+            Style.from_meta({"@click": action})
+        )
+        for key, label, action in pairs
     )
 
 
@@ -150,6 +169,7 @@ class ProfileLibrary(ModalScreen[None]):
         super().__init__()
         self._on_change = on_change
         self._state: LibraryState | None = None
+        self._select_path: Path | None = None
         self._entries: list[ProfileEntry] = []
         self._credit: str | None = None
         self._handlers: dict[LibraryAction, Callable[[LibraryState], None]] = {
@@ -209,14 +229,16 @@ class ProfileLibrary(ModalScreen[None]):
     def show(self, state: LibraryState) -> None:
         """Fill the list from *state*, keeping the highlighted file when it is still there."""
         selected = self._selected()
+        wanted = self._select_path or (selected.path if selected is not None else state.active_path)
+        self._select_path = None
         self._state = state
         self._entries = list(state.catalog.entries)
         listing = self.query_one("#library-list", OptionList)
         listing.set_options(Option("") for _ in self._entries)
         self._paint_rows()
         paths = [entry.path for entry in self._entries]
-        if selected is not None and selected.path in paths:
-            listing.highlighted = paths.index(selected.path)
+        if wanted in paths:
+            listing.highlighted = paths.index(wanted)
         elif self._entries:
             listing.highlighted = 0
 
@@ -228,11 +250,16 @@ class ProfileLibrary(ModalScreen[None]):
         if row_width:
             # A long problem text is cut at the row end; it must not squeeze every name.
             tag_width = max(
-                (len(_tag_text(entry, with_problem=False)) for entry in self._entries), default=0
+                (cell_len(_tag_text(entry, with_problem=False)) for entry in self._entries),
+                default=0,
             )
             name_width = max(min(name_width, row_width - len(_ROW_GAP) - tag_width), _MIN_NAME)
         for index, entry in enumerate(self._entries):
-            listing.replace_option_prompt_at_index(index, entry_label(entry, name_width, row_width))
+            label = entry_label(entry, name_width, row_width, active=self._is_active(entry))
+            listing.replace_option_prompt_at_index(index, label)
+
+    def _is_active(self, entry: ProfileEntry) -> bool:
+        return self._state is not None and entry.path == self._state.active_path
 
     def _selected(self) -> ProfileEntry | None:
         index = self.query_one("#library-list", OptionList).highlighted
@@ -311,7 +338,9 @@ class ProfileLibrary(ModalScreen[None]):
         )
         return None
 
-    def _changed(self) -> None:
+    def _changed(self, select: Path | None = None) -> None:
+        """Rescan; the list then highlights the file at *select*, else the one it had."""
+        self._select_path = select
         self.reload()
         self._on_change()
 
@@ -376,7 +405,7 @@ class ProfileLibrary(ModalScreen[None]):
 
         def _done(location: profiles.ProfileLocation) -> None:
             self.notify(msg.PROFILE_RENAMED.format(old=entry.name, name=location.name))
-            self._changed()
+            self._changed(select=location.path)
 
         run_profile_op(self, lambda: profiles.owned(ProfileStore(), entry.name), _ask_name)
 

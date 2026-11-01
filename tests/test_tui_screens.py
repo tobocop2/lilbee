@@ -17281,3 +17281,33 @@ def test_failed_sync_toast_names_the_key_that_starts_a_sync():
         "Sync failed for 1 file(s). Press Esc to leave the prompt. "
         "Then press t to see the reason. Fix it, then press S to sync again."
     ]
+
+
+def test_set_refusal_text_is_the_validators_message_not_the_pydantic_report():
+    from pydantic import BaseModel, ValidationError, field_validator
+
+    from lilbee.cli.tui.screens.chat import _refusal_text
+
+    class Probe(BaseModel):
+        pages: int
+
+        @field_validator("pages")
+        @classmethod
+        def _positive(cls, value: int) -> int:
+            if value < 1:
+                raise ValueError("pages must be at least 1")
+            return value
+
+    with pytest.raises(ValidationError) as caught:
+        Probe(pages=0)
+    assert _refusal_text(caught.value) == "pages must be at least 1"
+    assert _refusal_text(ValueError("plain")) == "plain"
+
+
+def test_set_echo_names_an_empty_list_setting(monkeypatch):
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.chat import _set_echo
+
+    monkeypatch.setattr(cfg, "force_ocr_pages", [])
+    shown = _set_echo("force_ocr_pages", [], secret=False, show_stored=True)
+    assert shown == msg.CMD_SET_EMPTY_LIST

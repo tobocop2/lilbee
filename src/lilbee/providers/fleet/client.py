@@ -461,11 +461,7 @@ class ChatDeadlineError(ProviderError):
 
 
 class StreamInterruptedError(ProviderError):
-    """A chat stream broke after it had sent frames, so its answer is cut.
-
-    The partial answer cannot be retried. Its ``UNKNOWN`` kind keeps it out of
-    ``is_connection_failure`` (no failover).
-    """
+    """A chat stream broke after it had sent frames, so its answer is cut."""
 
     def __init__(self) -> None:
         super().__init__(_STREAM_INTERRUPTED_MESSAGE, provider=_PROVIDER_NAME)
@@ -955,8 +951,6 @@ class LlamaServerClient:
                     yield tail
                 _raise_if_cut(started=started, ended=ended)
         except httpx.TransportError as exc:
-            # Before the first frame the raw error stays: the caller rediscovers the
-            # engine and retries. After it, the partial answer cannot be retried.
             if not started:
                 raise
             raise StreamInterruptedError from exc

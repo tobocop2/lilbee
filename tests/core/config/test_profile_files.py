@@ -553,3 +553,41 @@ def test_usable_names_leave_out_broken_and_shadowed_profiles(tmp_path):
     assert names.count("Court") == 1
     assert "busted" not in names
     assert "Research papers" in names
+
+
+def test_the_bad_name_message_says_ascii_because_an_accented_letter_is_refused():
+    result = profile_files.validate_text(
+        '[profile]\nname = "Café"\n[values]\n', Path("cafe.toml"), ProfileFolder.GLOBAL
+    )
+    assert "ASCII letters" in result.problems[0]
+
+
+def test_validating_a_profile_copies_the_config_once_for_all_its_values(monkeypatch):
+    calls = []
+    real_copy = type(cfg).model_copy
+
+    def counting_copy(self, *args, **kwargs):
+        calls.append(1)
+        return real_copy(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(cfg), "model_copy", counting_copy)
+    text = "[values]\nchunk_size = 900\nchunk_overlap = 50\ntop_k = 4\n"
+    result = profile_files.validate_text(text, Path("many.toml"), ProfileFolder.GLOBAL)
+    assert result.problems == ()
+    assert len(calls) == 1
+
+
+def test_builtin_keys_reads_the_built_in_files_once_per_folder(monkeypatch):
+    reads = []
+    real_read = profile_files._read_folder
+
+    def counting_read(folder, path):
+        reads.append(path)
+        return real_read(folder, path)
+
+    monkeypatch.setattr(profile_files, "_read_folder", counting_read)
+    profile_files._keys_in.cache_clear()
+    first = profile_files.builtin_keys()
+    assert profile_files.builtin_keys() == first
+    assert len(reads) == 1
+    assert profile_key(DEFAULT_PROFILE_NAME) in first

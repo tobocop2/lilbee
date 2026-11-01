@@ -771,12 +771,9 @@ def launch_settings(
     """The settings a launch of *role* bakes in, as the text two processes compare.
 
     Only what this role's launch uses, resolved from config and the model's
-    metadata, never from a device probe: the same config gives the same text in
-    every process. Chat and vision ctx sizing is not here, because peers share a
-    window by coverage (contract.chat_ctx_covers). An embed or rerank launch
-    carries its served window, which ``chunk_size`` sets only until the model's
-    trained context clamps it. The model is not here, because the bind
-    matches (role, model) pairs.
+    metadata, never from a device probe. Chat and vision ctx sizing is not here
+    (see contract.chat_ctx_covers). The model is not here: the bind matches
+    (role, model) pairs.
     """
     from lilbee.core.config import cfg
 

@@ -22,7 +22,12 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.command_registry import get_command
 from lilbee.cli.tui.commands import LilbeeCommandProvider
-from lilbee.cli.tui.screens.analyze_report import AnalyzeReportScreen, fact_rows, reading_text
+from lilbee.cli.tui.screens.analyze_report import (
+    AnalyzeReportScreen,
+    _short_reason,
+    fact_rows,
+    reading_text,
+)
 from lilbee.cli.tui.screens.profile_dialogs import ApplyProfileDialog
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
@@ -509,7 +514,7 @@ async def test_slash_analyze_reads_a_folder_and_its_report_opens_on_request(
         assert "".join(f"What's in {folder}".split()) in flat
         tasks = _analyze_tasks(chat_app)
         assert [t.status for t in tasks] == [TaskStatus.DONE]
-        assert tasks[0].name == msg.TASK_NAME_ANALYZE.format(folder=folder)
+        assert tasks[0].name == msg.TASK_NAME_ANALYZE.format(folder=Path(folder).name)
     assert read_state(cfg.data_root).analyzed_at is not None
 
 
@@ -523,7 +528,8 @@ async def test_typed_slash_analyze_takes_a_quoted_folder_with_spaces(chat_app, t
         await pilot.press("enter")
         screen = await _finished_report(chat_app, pilot, chat)
         assert screen._report.signals.files_total == 3
-        assert _analyze_tasks(chat_app)[0].name == msg.TASK_NAME_ANALYZE.format(folder=folder)
+        name = _analyze_tasks(chat_app)[0].name
+        assert name == msg.TASK_NAME_ANALYZE.format(folder="city records")
 
 
 async def test_slash_analyze_alone_reads_the_indexed_documents(chat_app) -> None:
@@ -844,3 +850,11 @@ async def test_the_report_pills_share_the_dialog_pill_look(size) -> None:
         assert apply_pill.has_class("-primary") and not close.has_class("-primary")
         assert close.styles.background.a >= 0.15
         assert apply_pill.styles.background != close.styles.background
+
+
+def test_a_failed_file_reason_is_the_parsers_first_line_cut_to_fit() -> None:
+    assert _short_reason("not a PDF\nTraceback: deep inside the parser") == "not a PDF"
+    assert _short_reason("") == ""
+    long = _short_reason("x" * 200)
+    assert len(long) <= 48
+    assert "…" in long

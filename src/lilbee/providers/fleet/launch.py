@@ -60,7 +60,6 @@ class InstanceLaunch:
     per device in its mmproj field, so that path compares the full estimate and
     ignores this.
     """
-    # The settings this launch bakes in; a process on other values never binds it.
     settings: str = ""
     est_host_bytes: int = 0
     """Host bytes the estimate expects chat to hold when the engine fits its layers.

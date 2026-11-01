@@ -175,6 +175,7 @@ EXPORT_STATUS_RUNNING = "Exporting..."
 CMD_SET_UNKNOWN = "Unknown setting: {key}"
 CMD_SET_SUCCESS = "{key} = {value}"
 CMD_SET_AUTO = "auto"
+CMD_SET_EMPTY_LIST = "(empty list)"
 # Stands in for a credential's value wherever one would otherwise be echoed.
 MASKED_VALUE = "************"
 CMD_SET_INVALID = "Invalid value for {key}: {error}"
@@ -838,7 +839,7 @@ MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
 
 # Settings Profile tab, the profile line, and the Apply and Save-as dialogs
 PROFILE_TAB_LABEL = "Profile"
-PROFILE_LINE_LABEL = "Profile"
+PROFILE_LINE_LABEL = PROFILE_TAB_LABEL
 PROFILE_LINE_COUNT_ONE = "1 value set by you"
 PROFILE_LINE_COUNT = "{count} values set by you"
 PROFILE_TAB_TITLE = "profile"
@@ -895,6 +896,7 @@ PROFILE_ALL_TITLE = "All profiles"
 PROFILE_ALL_HELP = "Apply, duplicate, rename, delete, export or import any profile."
 PROFILE_MANAGE_LABEL = "Manage profiles"
 PROFILE_LIBRARY_TITLE = "Profiles"
+PROFILE_LIBRARY_ACTIVE = "active"
 PROFILE_LIBRARY_SHADOWED = "shadowed"
 PROFILE_LIBRARY_BROKEN = "cannot load: {reason}"
 PROFILE_LIBRARY_SHADOWED_NOTE = "Hidden by the {folder} profile with the same name."
@@ -904,7 +906,7 @@ PROFILE_LIBRARY_UNREACHABLE = (
     "The name {name} picks another file, so lilbee cannot act on {path} here. "
     "Rename or remove it in its folder."
 )
-PROFILE_KEY_APPLY = "Apply"
+PROFILE_KEY_APPLY = PROFILE_APPLY_LABEL
 PROFILE_KEY_DUPLICATE = "Duplicate"
 PROFILE_KEY_RENAME = "Rename"
 PROFILE_KEY_DELETE = "Delete"
@@ -930,11 +932,11 @@ PROFILE_PATH_PLACEHOLDER = "Path to a file or a folder"
 PROFILE_PATH_EMPTY = "Type a path."
 PROFILE_EXPORT_TITLE = "Export {name}"
 PROFILE_EXPORT_EXPLAIN = "Writes a file anyone can import. Give a folder or a file path."
-PROFILE_EXPORT_LABEL = "Export"
+PROFILE_EXPORT_LABEL = PROFILE_KEY_EXPORT
 PROFILE_EXPORTED = "Exported {name} to {path}."
 PROFILE_IMPORT_TITLE = "Import a profile"
 PROFILE_IMPORT_EXPLAIN = "Checks a profile file and copies it into a profile folder."
-PROFILE_IMPORT_LABEL = "Import"
+PROFILE_IMPORT_LABEL = PROFILE_KEY_IMPORT
 PROFILE_IMPORTED = "Imported {name} to {path}."
 PROFILE_DISCARD_REINDEX_MESSAGE = (
     "The index was built with values you discarded. Rebuild it so search uses {name}'s values."
@@ -970,7 +972,9 @@ PROFILE_STATUS_PILL: dict[ProfileStatus, str] = {
 }
 PROFILE_NAME_PROBLEM_TEXT: dict[NameProblem, str] = {
     NameProblem.EMPTY: "Type a name for the profile.",
-    NameProblem.INVALID: "Use 1 to 40 letters, digits, spaces, hyphens, underscores, parentheses.",
+    NameProblem.INVALID: (
+        "Use 1 to 40 ASCII letters, digits, spaces, hyphens, underscores, parentheses."
+    ),
     NameProblem.RESERVED: "A built-in profile already has this name.",
     NameProblem.RESERVED_WORD: "This name already names a lilbee page or a Windows device.",
     NameProblem.TAKEN: "A profile in that folder already has this name.",
@@ -1042,7 +1046,9 @@ def profile_save_explain(name: str, count: int) -> str:
 
 
 def profile_count_text(count: int) -> str:
-    """The profile line's count of values set by you."""
+    """The profile line's count of values set by you; empty when there are none."""
+    if count == 0:
+        return ""
     return PROFILE_LINE_COUNT_ONE if count == 1 else PROFILE_LINE_COUNT.format(count=count)
 
 
