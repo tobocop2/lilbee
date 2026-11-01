@@ -187,7 +187,7 @@ fi
 # listed -- see the rocm block after this one.
 # Every Windows build links the MSVC runtime dynamically. The llama.cpp release
 # zips ship their OpenMP runtime but not the CRT, so the helper ships both beside
-# the binary and fails on a Visual C++ import it did not ship.
+# the binary and fails when a redistributable file is absent.
 case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN*) bash "${script_dir}/bundle_windows_runtime.sh" "${pkg_bin_dir}" ;;
 esac

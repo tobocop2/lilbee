@@ -99,7 +99,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_ref }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/bundle_rocm_runtime.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_ref }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/bundle_rocm_runtime.sh', 'tools/wheel-build/bundle_windows_runtime.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
 
       # The mirror first, same as the executable builds. This job publishes to it
       # but used to never read it, so every warm run rebuilt engines the mirror
