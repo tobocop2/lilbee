@@ -32,7 +32,7 @@ _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
 _LICENCES = ["MIT"]
 # The digest of the pack; None until a pack is published, and an install is refused then.
-PACK_SHA256: str | None = None
+PACK_SHA256: str | None = "5d941ad8e5cd89003ac6ba3a286bd72e555fe38c1a604c6ec4a94086567f66c9"
 _CPU = "cpu"
 # The one id the engine serves a model under; it answers 400 to any other.
 _SERVED_NAME = "default"
