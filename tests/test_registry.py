@@ -765,6 +765,46 @@ class TestModelRegistryResolve:
             assert registry.resolve(_REF) == blob.resolve()
         assert not registry.list_installed()  # the write failed, so still no manifest
 
+    def test_recovery_keeps_the_shard_prefix_of_a_sharded_blob_store(self, tmp_path: Path) -> None:
+        """Newer huggingface_hub shards blobs as blobs/<2 chars>/<sha>; the manifest keeps it."""
+        content = b"GGUF\x00\x00"
+        digest = hashlib.sha256(content).hexdigest()
+        cache = tmp_path / f"models--{repo_to_dir(_REPO)}"
+        blob = cache / "blobs" / digest[:2] / digest
+        blob.parent.mkdir(parents=True)
+        blob.write_bytes(content)
+        link = cache / "snapshots" / _FAKE_REV / _FILENAME
+        link.parent.mkdir(parents=True)
+        link.symlink_to(blob)
+        registry = ModelRegistry(tmp_path)
+
+        assert registry.resolve(_REF) == blob.resolve()
+
+        [manifest] = registry.list_installed()
+        assert manifest.blob == f"{digest[:2]}/{digest}"
+        assert registry.resolve(_REF) == blob.resolve()  # now served through the manifest
+
+    def test_recovery_labels_a_model_with_a_projector_as_vision(self, tmp_path: Path) -> None:
+        """A cached model with an mmproj beside it is a VLM even when its name says nothing."""
+        _seed_hf_cache(tmp_path)
+        mmproj_blob = _seed_hf_cache(tmp_path, filename="mmproj-f16.gguf", content=b"GGUF\x01")
+        assert mmproj_blob.exists()
+        registry = ModelRegistry(tmp_path)
+
+        registry.resolve(_REF)
+
+        tasks = {m.gguf_filename: m.task for m in registry.list_installed()}
+        assert tasks[_FILENAME] == "vision"
+
+    def test_recovery_keeps_chat_for_a_model_without_a_projector(self, tmp_path: Path) -> None:
+        _seed_hf_cache(tmp_path)
+        registry = ModelRegistry(tmp_path)
+
+        registry.resolve(_REF)
+
+        [manifest] = registry.list_installed()
+        assert manifest.task == "chat"
+
     def test_resolve_bare_repo_ref_recovers_from_cache(self, tmp_path: Path) -> None:
         """A bare ``<org>/<repo>`` ref (older builds persisted these) resolves via the HF cache."""
         registry = ModelRegistry(tmp_path)

@@ -103,6 +103,16 @@ class TestExportCommand:
         assert "cancelled" in result.output.lower()
         assert not out.exists()
 
+    def test_export_to_a_missing_folder_fails_with_a_plain_message(self, store, tmp_path):
+        _seed(store)
+        out = tmp_path / "no-such-folder" / "pages.parquet"
+        result = runner.invoke(app, ["export", str(out)])
+
+        assert result.exit_code == 1
+        assert "no-such-folder" in result.output
+        assert "Traceback" not in result.output
+        assert not isinstance(result.exception, OSError)
+
     def test_export_empty_store_fails(self, store, tmp_path):
         result = runner.invoke(app, ["--json", "export", str(tmp_path / "pages.parquet")])
         assert result.exit_code == 1

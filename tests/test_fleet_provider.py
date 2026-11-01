@@ -491,6 +491,29 @@ def test_chat_routes_to_chat_server() -> None:
     client.chat_result.assert_called_once()
 
 
+def test_vision_without_server_names_the_missing_projector(
+    engine_installed: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(prov_mod, "_configured_model_for", lambda _role: "org/vlm/vlm.gguf")
+    monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: None)
+
+    message = prov_mod._no_server_message(WorkerRole.VISION)
+
+    assert "org/vlm/vlm.gguf has no mmproj" in message
+
+
+def test_vision_without_server_keeps_the_generic_message_when_the_projector_exists(
+    engine_installed: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(prov_mod, "_configured_model_for", lambda _role: "org/vlm/vlm.gguf")
+    monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: Path("/m/mmproj.gguf"))
+
+    message = prov_mod._no_server_message(WorkerRole.VISION)
+
+    assert "mmproj" not in message
+    assert "No vision model server is running" in message
+
+
 def test_chat_without_server_raises(engine_installed: Path) -> None:
     from lilbee.providers.base import ProviderError
 

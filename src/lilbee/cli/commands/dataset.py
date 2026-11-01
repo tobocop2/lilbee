@@ -61,7 +61,7 @@ def export_cmd(
             summary = export_to_path(output, fmt, source, cancel=cancel)
     except TaskCancelledError:
         _fail("Export cancelled; the partial file was removed.")
-    except DatasetError as exc:
+    except (DatasetError, OSError) as exc:  # OSError: the output path cannot be written
         _fail(str(exc))
 
     if cfg.json_mode:

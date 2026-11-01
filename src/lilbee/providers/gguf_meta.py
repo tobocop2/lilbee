@@ -22,6 +22,7 @@ from lilbee.providers.base import ProviderError
 log = logging.getLogger(__name__)
 
 _HF_BLOBS_DIR_NAME = "blobs"
+_HF_SHARD_LEN = 2
 _HF_SNAPSHOTS_DIR_NAME = "snapshots"
 _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 _DEFAULT_ARCH = "llama"
@@ -287,10 +288,18 @@ def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None:
 
 
 def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
-    """Walk an HF-cache ``blobs/`` dir up to its sibling ``snapshots/`` tree."""
-    if model_dir.name != _HF_BLOBS_DIR_NAME:
+    """Walk an HF-cache ``blobs/`` dir up to its sibling ``snapshots/`` tree.
+
+    The blob sits in ``blobs/`` directly, or in a two-character shard dir under
+    it (``blobs/a0/``) with newer huggingface_hub releases.
+    """
+    if model_dir.name == _HF_BLOBS_DIR_NAME:
+        cache_dir = model_dir.parent
+    elif model_dir.parent.name == _HF_BLOBS_DIR_NAME and len(model_dir.name) == _HF_SHARD_LEN:
+        cache_dir = model_dir.parent.parent
+    else:
         return None
-    snapshots_dir = model_dir.parent / _HF_SNAPSHOTS_DIR_NAME
+    snapshots_dir = cache_dir / _HF_SNAPSHOTS_DIR_NAME
     if not snapshots_dir.is_dir():
         return None
     for snapshot in snapshots_dir.iterdir():
