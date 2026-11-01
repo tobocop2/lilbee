@@ -175,8 +175,16 @@ def test_one_lock_file_per_engine_outside_the_engine_directory(
     store: EngineStore, wheel: tuple[Path, str]
 ) -> None:
     path, sha = wheel
-    store.install_from_wheel(pin(sha), path)
-    assert (store.root / ".locks" / "fx.lock").is_file()
+    taken: list[Path] = []
+    real = engine_store.file_lock
+
+    def spy(lock_path: Path, timeout: float):  # type: ignore[no-untyped-def]
+        taken.append(lock_path)
+        return real(lock_path, timeout)
+
+    with mock.patch.object(engine_store, "file_lock", spy):
+        store.install_from_wheel(pin(sha), path)
+    assert taken == [store.root / ".locks" / "fx"]
     assert names(store.root / "fx") == ["1-cpu"]
 
 
@@ -509,7 +517,6 @@ def test_recorded_binary_outside_the_build_is_not_installed(
     assert store.installed() == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
 def test_wheel_whose_tool_is_a_symlink_is_refused(store: EngineStore, tmp_path: Path) -> None:
     path = tmp_path / "link.whl"
     with zipfile.ZipFile(path, "w") as archive:
@@ -909,16 +916,20 @@ def test_ensure_holds_a_download_lock_while_it_fetches(
 ) -> None:
     path, sha = wheel
     during: list[list[Path]] = []
+    lock_files: list[list[str]] = []
 
     def fetch(lock: PinLock, dest: Path) -> Path:
         dest.mkdir(parents=True)
         during.append(store.sweep())
+        lock_files.append(sorted(p.name for p in (store.root / ".locks").iterdir()))
         return path
 
     store.ensure(pin(sha), fetch)
     assert during == [[]]
     assert names(store.root) == [".locks", "fx"]
-    assert sorted(p.name for p in (store.root / ".locks").iterdir()) == ["fx.lock"]
+    assert len(lock_files) == 1
+    assert [n.startswith(".download-") and n.endswith(".lock") for n in lock_files[0]] == [True]
+    assert not [p for p in (store.root / ".locks").iterdir() if p.name.startswith(".download-")]
 
 
 def test_sweep_engines_ignores_a_relative_models_dir(tmp_path: Path, monkeypatch) -> None:

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import stat
+import sys
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -99,10 +101,34 @@ def test_download_goes_through_the_wheel_checks(
     assert store.ensure(lock_of(sha), lambda _lock, _dest: path) == store.root / "fx" / "9-cpu"
 
 
-def test_damaged_build_is_fetched_and_replaced(store: EngineStore, wheel: tuple[Path, str]) -> None:
+def _remove_the_tool(binary: Path) -> None:
+    binary.unlink()
+
+
+def _clear_the_exec_bit(binary: Path) -> None:
+    binary.chmod(0o644)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        pytest.param(_remove_the_tool, id="tool-removed"),
+        pytest.param(
+            _clear_the_exec_bit,
+            id="exec-bit-cleared",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows has no exec bit, and the store skips that check there",
+            ),
+        ),
+    ],
+)
+def test_damaged_build_is_fetched_and_replaced(
+    store: EngineStore, wheel: tuple[Path, str], damage: Callable[[Path], None]
+) -> None:
     path, sha = wheel
     built = store.install_from_wheel(lock_of(sha), path)
-    (built / "lilbee_engine_fx" / "bin" / "server").chmod(0o644)
+    damage(built / "lilbee_engine_fx" / "bin" / "server")
     assert store.installed() == []
     fetched: list[PinLock] = []
 

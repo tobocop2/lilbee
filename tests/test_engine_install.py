@@ -382,7 +382,16 @@ def test_an_engine_with_no_published_pack_is_refused_on_every_surface_and_touche
 
     monkeypatch.setattr(EngineStore, "ensure", spy)
     monkeypatch.setattr(EngineStore, "install_from_wheel", spy)
-    monkeypatch.setattr(socket.socket, "connect", spy)
+    real_connect = socket.socket.connect
+
+    def connect_spy(sock: socket.socket, address: Any, *args: object) -> None:
+        # The event loop of the REST client joins its own socket pair over loopback on Windows.
+        if not isinstance(address, tuple) or address[0] in ("127.0.0.1", "::1"):
+            real_connect(sock, address, *args)
+        else:
+            reads.append("network")
+
+    monkeypatch.setattr(socket.socket, "connect", connect_spy)
     pack = tmp_path / "pack.whl"
     pack.write_bytes(b"not read")
     with pytest.raises(engine_service.EngineRefusedError) as exc:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -292,6 +293,11 @@ class TestTable:
         assert LLAMA.formats <= set(mm.FORMAT_ESTIMATORS)
 
 
+_WINDOWS_CHILD_VARIABLES = frozenset(
+    {"SYSTEMROOT", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA"}
+)
+
+
 class TestColdImport:
     @pytest.mark.parametrize(
         "module",
@@ -305,6 +311,11 @@ class TestColdImport:
             encoding="utf-8",
             check=False,
             timeout=120,
-            env={"PYTHONPATH": str(Path(mm.__file__).parents[3])},
+            env={
+                "PYTHONPATH": str(Path(mm.__file__).parents[3]),
+                # A Windows child needs its system root for the network stack, and its
+                # profile variables for the home folder that the data directory names.
+                **{k: v for k, v in os.environ.items() if k in _WINDOWS_CHILD_VARIABLES},
+            },
         )
         assert done.returncode == 0, done.stderr
