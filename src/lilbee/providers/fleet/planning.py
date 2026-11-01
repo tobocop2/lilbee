@@ -1975,7 +1975,11 @@ def build_single_role_launch(
 
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     entry = spec.roles.get(role) if spec is not None else None
-    target = entry.target if entry is not None else RoleTarget.GPU
+    target = entry.device_target if entry is not None else RoleTarget.GPU
+    if spec is not None:
+        refused = _unusable_targets(spec, {role: model_path.as_posix()}, {role: engine})
+        if refused:
+            raise TargetRefusedError(refused)
     binary = engine.binary()
     with _one_engine_per_pass(engine=engine):
         devices = _plan_devices(binary, engine)
@@ -3083,7 +3087,7 @@ def _resolve_placement(
 def _targets_gpu(placement: PlacementSpec, role: WorkerRole) -> bool:
     """Whether *role* needs a card under *placement*; a role with no entry is refused later."""
     entry = placement.roles.get(role)
-    return entry is None or entry.target is RoleTarget.GPU
+    return entry is None or entry.device_target is RoleTarget.GPU
 
 
 def _unusable_targets(
@@ -3098,7 +3102,7 @@ def _unusable_targets(
     refused: dict[WorkerRole, str] = {}
     for role in roles:
         entry = placement.roles.get(role)
-        if entry is None or not entry.target_named:
+        if entry is None or entry.target is None:
             continue
         if entry.target is RoleTarget.AUTO:
             refused[role] = (
@@ -3110,6 +3114,47 @@ def _unusable_targets(
         if entry.target not in engine.device_targets(engine.binary()):
             refused[role] = f"{role.value}: {_TARGET_REFUSED[entry.target]}"
     return refused
+
+
+def _roles_on_missing_cards(
+    spec: PlacementSpec | None,
+    roles: Mapping[WorkerRole, str],
+    devices: list[FleetDevice],
+) -> dict[WorkerRole, str]:
+    """The reason for each role pinned to a card this machine lacks, in a spec that names a target.
+
+    Such a spec never falls back to automatic placement, which could put a CPU role
+    on a card, so the role on the missing card gets no server and the others launch.
+    A spec with no target key keeps the fallback and names none.
+    """
+    if spec is None or all(entry.target is None for entry in spec.roles.values()):
+        return {}
+    present = {d.index for d in devices}
+    refused: dict[WorkerRole, str] = {}
+    for role in roles:
+        entry = spec.roles.get(role)
+        if entry is None or entry.device_target is not RoleTarget.GPU:
+            continue
+        missing = [str(idx) for idx in entry.devices if idx not in present]
+        if missing:
+            refused[role] = (
+                f"{role.value}: GPU {', '.join(missing)} is not on this machine "
+                f"({len(present)} found). Set the {role.value} devices to a GPU "
+                "that exists, or set its target to cpu."
+            )
+    return refused
+
+
+def _without_roles(
+    inputs: list[ModelPlacementInput],
+    model_refs: dict[WorkerRole, str],
+    refused: Mapping[WorkerRole, str],
+) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str]]:
+    """*inputs* and *model_refs* without the roles in *refused*."""
+    return (
+        [model for model in inputs if model.role not in refused],
+        {role: ref for role, ref in model_refs.items() if role not in refused},
+    )
 
 
 def _roles_without_a_pin(
@@ -3314,7 +3359,7 @@ class FleetPlan:
     skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
     # Roles left unlaunched, each with its user-facing reason: a window below the
     # minimum grounded prompt, or a device target the engine's build cannot run.
-    skipped_unusable_ctx: dict[WorkerRole, str] = field(default_factory=dict)
+    refused_roles: dict[WorkerRole, str] = field(default_factory=dict)
     # Configured roles whose engine mapping has no engine (role -> ref); the plan
     # warns for each. Left out of the repr so a one-engine plan reads as it always did.
     skipped_no_engine: dict[WorkerRole, str] = field(default_factory=dict, repr=False)
@@ -3575,12 +3620,13 @@ def _planned_launches(
     )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     admission_budget = _unified_admission_budget(devices, snapshot_engine)
-    refused_targets: dict[WorkerRole, str] = {}
+    refused_roles = _roles_on_missing_cards(spec, model_refs, devices)
+    for refusal in refused_roles.values():
+        log.warning(refusal)
     try:
         placement, _spec_applied = _placement_or_auto(
             spec,
-            inputs,
-            model_refs,
+            *_without_roles(inputs, model_refs, refused_roles),
             devices,
             engines=engines,
             unified_budget=admission_budget,
@@ -3588,13 +3634,12 @@ def _planned_launches(
         )
     except TargetRefusedError as exc:
         # The refused roles get no server and report their reason; the others launch.
-        refused_targets = exc.reasons
-        for refusal in refused_targets.values():
+        refused_roles = {**refused_roles, **exc.reasons}
+        for refusal in exc.reasons.values():
             log.warning(refusal)
         placement, _spec_applied = _placement_or_auto(
             spec,
-            [model for model in inputs if model.role not in refused_targets],
-            {role: ref for role, ref in model_refs.items() if role not in refused_targets},
+            *_without_roles(inputs, model_refs, refused_roles),
             devices,
             engines=engines,
             unified_budget=admission_budget,
@@ -3618,7 +3663,6 @@ def _planned_launches(
     )
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
     launches: list[InstanceLaunch] = []
-    skipped_unusable_ctx: dict[WorkerRole, str] = refused_targets.copy()
     for plan in placement.instances:
         launch = _launch_for(
             plan,
@@ -3635,7 +3679,7 @@ def _planned_launches(
             launch, [by_index[i] for i in plan.devices if i in by_index] if clean_box else []
         )
         if reason is not None:
-            skipped_unusable_ctx[launch.role] = reason
+            refused_roles[launch.role] = reason
             log.warning(reason)
             continue
         launches.append(launch)
@@ -3643,7 +3687,7 @@ def _planned_launches(
         launches=tuple(launches),
         co_tenants=placement.co_tenants,
         skipped_not_installed=skipped_not_installed,
-        skipped_unusable_ctx=skipped_unusable_ctx,
+        refused_roles=refused_roles,
     )
 
 

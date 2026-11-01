@@ -1940,7 +1940,7 @@ class TestBuildFleetWiring:
             plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
 
         assert plan.launches == ()
-        reason = plan.skipped_unusable_ctx[WorkerRole.CHAT]
+        reason = plan.refused_roles[WorkerRole.CHAT]
         assert "512" in reason
         assert str(min_usable_chat_ctx()) in reason
         assert "org/repo/chat.gguf" in reason
@@ -1986,7 +1986,7 @@ class TestBuildFleetWiring:
 
         plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
         assert plan.launches == (pinned,)
-        assert plan.skipped_unusable_ctx == {}
+        assert plan.refused_roles == {}
 
     def test_plan_launches_reports_co_tenant_roles(self, monkeypatch, caplog) -> None:
         # Co-tenancy changes how the box behaves (one model resident at a time), so it

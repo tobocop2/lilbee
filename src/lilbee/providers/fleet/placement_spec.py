@@ -30,14 +30,18 @@ class TargetRefusedError(PlacementError):
 class RolePlacement:
     """One role's manual placement: device pins, optional split, replica count, target.
 
-    ``target_named`` is False for a spec that has no target key, so it keeps its plan.
+    ``target`` is None for a spec that has no target key, so it keeps its plan.
     """
 
     devices: tuple[int, ...]
     tensor_split: tuple[int, ...] | None = None
     replicas: int = 1
-    target: RoleTarget = RoleTarget.GPU
-    target_named: bool = False
+    target: RoleTarget | None = None
+
+    @property
+    def device_target(self) -> RoleTarget:
+        """The target the role runs on: the named one, else the GPU."""
+        return RoleTarget.GPU if self.target is None else self.target
 
 
 @dataclass(frozen=True)
@@ -51,9 +55,9 @@ class PlacementSpec:
         out: dict[str, dict[str, object]] = {}
         for role, rp in self.roles.items():
             entry: dict[str, object] = {}
-            if rp.target_named:
+            if rp.target is not None:
                 entry[_KEY_TARGET] = rp.target.value
-            if rp.target is RoleTarget.GPU:
+            if rp.device_target is RoleTarget.GPU:
                 entry[_KEY_DEVICES] = list(rp.devices)
             if rp.tensor_split is not None:
                 entry[_KEY_TENSOR_SPLIT] = list(rp.tensor_split)
@@ -127,9 +131,8 @@ def _role_placement(role: WorkerRole, entry: object) -> RolePlacement:
         raise PlacementError(
             f"{role.value}: unknown placement key(s) {sorted(unknown)}; allowed: {allowed}"
         )
-    named = _KEY_TARGET in entry
-    target = _role_target(role, entry[_KEY_TARGET]) if named else RoleTarget.GPU
-    if target is not RoleTarget.GPU:
+    target = _role_target(role, entry[_KEY_TARGET]) if _KEY_TARGET in entry else None
+    if target is not None and target is not RoleTarget.GPU:
         return _deviceless_placement(role, target, entry)
     devices = _int_list(role, _KEY_DEVICES, entry.get(_KEY_DEVICES, []))
     if not devices:
@@ -155,7 +158,7 @@ def _role_placement(role: WorkerRole, entry: object) -> RolePlacement:
         devices=devices,
         tensor_split=tensor_split,
         replicas=_replica_count(role, entry),
-        target_named=named,
+        target=target,
     )
 
 
@@ -176,9 +179,7 @@ def _deviceless_placement(
             f"{role.value}: the {target.value} target takes no {' or '.join(refused)}. "
             f"Remove {', '.join(refused)}, or set the devices with no target."
         )
-    return RolePlacement(
-        devices=(), replicas=_replica_count(role, entry), target=target, target_named=True
-    )
+    return RolePlacement(devices=(), replicas=_replica_count(role, entry), target=target)
 
 
 def _replica_count(role: WorkerRole, entry: Mapping[str, object]) -> int:

@@ -266,7 +266,7 @@ class TestThePlanScriptStaysInSyncWithLilbee:
     def test_the_plan_fields_it_reads_exist(self) -> None:
         from lilbee.providers.fleet.planning import FleetPlan
 
-        assert {"launches", "skipped_unusable_ctx"} <= set(FleetPlan.__dataclass_fields__)
+        assert {"launches", "refused_roles"} <= set(FleetPlan.__dataclass_fields__)
 
 
 class TestTheHarnessCannotReportGreenOnNothing:
