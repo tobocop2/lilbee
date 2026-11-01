@@ -294,6 +294,21 @@ class TestModelRegistryInstall:
         second = registry.install(_REPO, _FILENAME, src, manifest)
         assert first == second
 
+    def test_install_from_a_sharded_blob_store_creates_the_shard_dir(self, tmp_path: Path) -> None:
+        """A source in a sharded cache (blobs/a0/<sha>) installs into a fresh models dir."""
+        sharded = tmp_path / "other" / "blobs" / "a0"
+        sharded.mkdir(parents=True)
+        payload = b"GGUF\x00\x00sharded"
+        digest = hashlib.sha256(payload).hexdigest()
+        src = sharded / digest
+        src.write_bytes(payload)
+        registry = ModelRegistry(tmp_path / "models")
+
+        blob_path = registry.install(_REPO, _FILENAME, src, _make_manifest())
+
+        assert blob_path.read_bytes() == payload
+        assert blob_path.parent.name == "a0"
+
     def test_install_blob_copy_is_atomic(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

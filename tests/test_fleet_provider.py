@@ -5068,6 +5068,24 @@ def test_ladder_overflows_to_private_dir_on_pin_mismatch(monkeypatch, tmp_path: 
     holder.release_and_check_last()
 
 
+def test_ladder_warns_when_it_overflows_to_the_private_dir(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    with caplog.at_level(logging.WARNING, logger=prov_mod.__name__):
+        assert FleetProvider()._ensure_fleet() is True
+    holder.release_and_check_last()
+    assert "starting a private engine for this one" in caplog.text
+
+
 def test_ladder_private_path_stops_short_when_it_cannot_build(monkeypatch, tmp_path: Path) -> None:
     """Overflow to the private dir also refuses to build when nothing is buildable,
     rather than stopping a private incumbent it cannot replace."""

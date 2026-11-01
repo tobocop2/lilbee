@@ -32,6 +32,8 @@ from lilbee.catalog.refs import (
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
+from lilbee.providers import gguf_meta
+from lilbee.providers.base import ProviderError
 
 if TYPE_CHECKING:
     from lilbee.catalog.models import CatalogModel
@@ -460,11 +462,8 @@ class ModelRegistry:
         both ask this question. The lookup walks the HF cache layout, so it
         finds the projector from a content-hashed blob path too.
         """
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.gguf_meta import find_mmproj_for_model
-
         try:
-            find_mmproj_for_model(self.resolve(ref))
+            gguf_meta.find_mmproj_for_model(self.resolve(ref))
         except (KeyError, ValueError, ProviderError):
             return False
         return True
@@ -490,7 +489,7 @@ class ModelRegistry:
         blobs_dir = cache_path / "blobs"
         blob_path = blobs_dir / digest
         if not blob_path.exists():
-            blobs_dir.mkdir(parents=True, exist_ok=True)
+            blob_path.parent.mkdir(parents=True, exist_ok=True)
             _copy_atomic(source_path, blob_path)
 
         updated = ModelManifest(

@@ -1093,6 +1093,10 @@ class FleetProvider:
             machine = self._acquire_in_dir(machine_dir, pin, demand, is_overflow=False)
             if machine is not None:
                 return machine
+            log.warning(
+                "The engine in %s serves another setup; starting a private engine for this one.",
+                machine_dir,
+            )
         else:
             # Without kernel-arbitrated locks the membership refcount cannot be
             # trusted, and sharing is exactly what needs it: a probe would
