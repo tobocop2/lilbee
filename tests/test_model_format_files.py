@@ -20,6 +20,21 @@ from lilbee.modelhub.registry import ModelRegistry, register_downloaded_model
 _TOKENIZER = ["merges.txt", "tokenizer.json", "tokenizer_config.json", "vocab.json"]
 _JUNK = [".gitattributes", "README.md", "LICENSE"]
 _REV = "0" * 40
+_QWEN3_EMBEDDING_LISTING = [
+    ".gitattributes",
+    "1_Pooling/config.json",
+    "LICENSE",
+    "README.md",
+    "config.json",
+    "config_sentence_transformers.json",
+    "generation_config.json",
+    "merges.txt",
+    "model.safetensors",
+    "modules.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+]
 
 
 class TestFormatsFromTags:
@@ -82,6 +97,28 @@ class TestSelectFiles:
             "config.json",
             "generation_config.json",
         ]
+
+    def test_an_embedding_repo_takes_the_sentence_transformers_files(self) -> None:
+        got = select_files(ModelFormat.SAFETENSORS, _QWEN3_EMBEDDING_LISTING)
+        assert got[0] == "model.safetensors"
+        assert {
+            "modules.json",
+            "1_Pooling/config.json",
+            "config_sentence_transformers.json",
+        } <= set(got)
+        assert "README.md" not in got
+
+    def test_a_gguf_pull_never_takes_the_sentence_transformers_files(self) -> None:
+        names = [*_QWEN3_EMBEDDING_LISTING, "Qwen3-Embedding-0.6B-Q8_0.gguf"]
+        assert select_files(ModelFormat.GGUF, names) == ["Qwen3-Embedding-0.6B-Q8_0.gguf"]
+
+    def test_an_mlx_pull_does_not_take_the_sentence_transformers_files(self) -> None:
+        got = select_files(ModelFormat.MLX, _QWEN3_EMBEDDING_LISTING)
+        assert not {
+            "modules.json",
+            "1_Pooling/config.json",
+            "config_sentence_transformers.json",
+        } & set(got)
 
     def test_four_of_five_shards_is_refused_naming_the_fifth(self) -> None:
         names = [f"model-0000{i}-of-00005.safetensors" for i in (1, 2, 3, 4)]
@@ -232,6 +269,58 @@ class TestDownloadRouting:
             )
         assert fetched == [["model.safetensors", "config.json", "tokenizer.json"]]
         assert path == tmp_path / "model.safetensors"
+
+    def test_an_embedding_pull_fetches_the_sentence_transformers_files(
+        self, tmp_path: Path
+    ) -> None:
+        fetched: list[list[str]] = []
+
+        def fake_fetch(_entry, _dir, _token, files, _progress, _probe, _cached) -> list[Path]:
+            fetched.append(files)
+            return [tmp_path / name for name in files]
+
+        with (
+            mock.patch.object(
+                download, "_repo_sibling_files", return_value=_QWEN3_EMBEDDING_LISTING
+            ),
+            mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
+        ):
+            download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)
+        assert {
+            "modules.json",
+            "1_Pooling/config.json",
+            "config_sentence_transformers.json",
+        } <= set(fetched[0])
+
+    def test_a_model_pulled_before_the_fix_fetches_only_the_missing_files(
+        self, tmp_path: Path
+    ) -> None:
+        old = ["model.safetensors", "config.json", "merges.txt"]
+        old += ["tokenizer.json", "tokenizer_config.json", "vocab.json", "generation_config.json"]
+        seen: list[tuple[list[str], frozenset[str]]] = []
+
+        def fake_fetch(_entry, _dir, _token, files, _progress, _probe, cached) -> list[Path]:
+            seen.append((files, cached))
+            return [tmp_path / name for name in files]
+
+        with (
+            mock.patch.object(
+                download, "_repo_sibling_files", return_value=_QWEN3_EMBEDDING_LISTING
+            ),
+            mock.patch.object(
+                download,
+                "_cached_path",
+                side_effect=lambda _repo, name, _dir: tmp_path / name if name in old else None,
+            ),
+            mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
+        ):
+            download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)
+        assert seen[0][1] == frozenset(old)
+        assert set(seen[0][0]) - seen[0][1] == {
+            "modules.json",
+            "1_Pooling/config.json",
+            "config_sentence_transformers.json",
+        }
 
     def test_a_repo_without_the_format_is_refused_by_name(self, tmp_path: Path) -> None:
         with (

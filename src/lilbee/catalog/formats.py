@@ -32,6 +32,7 @@ _TOKENIZER_FILES = (
     "vocab.json",
 )
 _POOLING_FILES = ("1_Pooling/config.json", "modules.json")
+_SENTENCE_TRANSFORMERS_FILES = (*_POOLING_FILES, "config_sentence_transformers.json")
 
 
 def formats_from_tags(tags: Iterable[str]) -> frozenset[ModelFormat]:
@@ -108,7 +109,7 @@ def _select_safetensors(fmt: ModelFormat, names: list[str]) -> list[str]:
     index = _present(names, [_SAFETENSORS_INDEX])
     extras = _present(names, ["config.json", *_TOKENIZER_FILES])
     if fmt == ModelFormat.SAFETENSORS:
-        extras += _present(names, ["generation_config.json"])
+        extras += _present(names, ["generation_config.json", *_SENTENCE_TRANSFORMERS_FILES])
     entry = index + weights if shards else weights + index
     return [*entry, *sorted(extras)]
 
