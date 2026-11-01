@@ -38,12 +38,6 @@ def decoded_launches(state: SwapState) -> list[InstanceLaunch] | None:
         return None
 
 
-def served_pairs(state: SwapState) -> set[tuple[WorkerRole, str]] | None:
-    """The (role, model) pairs the engine behind *state* serves, or ``None``."""
-    launches = decoded_launches(state)
-    return None if launches is None else {(launch.role, launch.model) for launch in launches}
-
-
 def chat_ctx_covers(launches: Iterable[InstanceLaunch], demanded_ctx: int) -> bool:
     """Whether the engine's per-slot chat window serves *demanded_ctx* tokens.
 

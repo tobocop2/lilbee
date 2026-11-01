@@ -5484,15 +5484,10 @@ def test_ladder_rolls_back_earlier_binds_when_a_later_one_fails(
     assert swap.shutdowns_after_bind >= 1  # the earlier bind was rolled back
 
 
-def test_ladder_rebuilds_partially_dead_compatible_machine_slot_in_place(
+def test_ladder_overflows_around_a_partially_dead_machine_slot_with_a_live_user(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """A pin-equal incumbent missing a wanted group is rebuilt in place, not overflowed.
-
-    The healthy groups serve only wanted models, so the slot is this
-    contract's own engine and its live members are waiting for exactly this
-    rebuild; overflowing around it would load duplicate weights.
-    """
+    """A pin-equal incumbent missing a wanted group keeps its live user and its healthy groups."""
     from lilbee.runtime.engine_lock import hold_user_lock
 
     _swap, machine, built = _install_ladder(
@@ -5511,8 +5506,8 @@ def test_ladder_rebuilds_partially_dead_compatible_machine_slot_in_place(
     monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
     p = FleetProvider()
     assert p._ensure_fleet() is True
-    assert stopped == [machine]  # the partially dead engine was stopped...
-    assert built and built[0] == machine  # ...and rebuilt in the machine slot
+    assert stopped == []
+    assert built and built[0] == prov_mod.private_engine_dir(tmp_path / "root")
     holder.release_and_check_last()
 
 
@@ -5531,15 +5526,10 @@ def test_a_services_reset_drops_the_request_vision_grant(monkeypatch, ocr_gated_
     assert not planning_mod.vision_role_wanted("org/repo/v.gguf")
 
 
-def test_ladder_rebuilds_a_pin_equal_engine_that_lacks_the_vision_role(
+def test_ladder_overflows_around_a_live_peer_engine_that_lacks_the_vision_role(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """ocr is not in the pin, so an OCR-on process rebuilds an OCR-off peer's engine.
-
-    The peer's engine serves only wanted pairs and shares the pin, so the ladder
-    treats it as this contract's own partial cover and rebuilds it in place,
-    restarting the peer's roles, instead of loading a second fleet beside it.
-    """
+    """An OCR-on process builds its own fleet and leaves an OCR-off peer's engine running."""
     from lilbee.runtime.engine_lock import hold_user_lock
 
     vision = InstanceLaunch(
@@ -5564,8 +5554,8 @@ def test_ladder_rebuilds_a_pin_equal_engine_that_lacks_the_vision_role(
         assert p._ensure_fleet() is True
     finally:
         peer.release_and_check_last()
-    assert stopped == [machine]  # the peer's engine was stopped...
-    assert built and built[0] == machine  # ...and rebuilt in place with vision
+    assert stopped == []
+    assert built and built[0] == prov_mod.private_engine_dir(tmp_path / "root")
 
 
 def test_ladder_adopts_a_warm_engine_planned_with_a_different_ctx_target(
@@ -5668,13 +5658,13 @@ def test_ladder_adopts_an_engine_started_by_the_same_lilbee(monkeypatch, tmp_pat
     assert swap.started == [] and stopped == []
 
 
-def test_ladder_restarts_when_the_demand_exceeds_the_live_window(
+def test_ladder_overflows_when_the_demand_exceeds_a_live_window(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """A pinned window larger than the live per-slot ctx still restarts the engine."""
+    """A pinned window larger than a live per-slot ctx builds a private engine, with no stop."""
     from lilbee.runtime.engine_lock import hold_user_lock
 
-    swap, machine, _built = _install_ladder(
+    swap, machine, built = _install_ladder(
         monkeypatch,
         tmp_path,
         launches=[_fake_launch(WorkerRole.CHAT, model="m-chat", ctx=16384)],
@@ -5692,8 +5682,8 @@ def test_ladder_restarts_when_the_demand_exceeds_the_live_window(
     try:
         assert p._ensure_fleet() is True
         assert swap.binds == []  # too small to adopt
-        assert stopped == [machine]  # replaced in place with the larger window
-        assert swap.started  # rebuilt fresh
+        assert stopped == []
+        assert built and built[0] == prov_mod.private_engine_dir(tmp_path / "root")
     finally:
         holder.release_and_check_last()
 
@@ -5792,13 +5782,6 @@ def test_ladder_skips_the_shared_slot_without_kernel_arbitrated_locks(
 
     assert swap.binds == []  # never bound the shared engine
     assert machine not in p._engine_holds  # and took no membership in it
-
-
-def test_healthy_groups_ours_is_false_with_no_healthy_group() -> None:
-    # The vacuous case: an empty snapshot is "not ours" (live membership owns
-    # that branch); the helper must not claim it.
-    demand = prov_mod._EngineDemand({(WorkerRole.CHAT, "m-chat")}, 0, {}, {})
-    assert prov_mod._healthy_groups_ours({}, "pin-a", demand) is False
 
 
 def test_ladder_overflows_when_a_live_used_pin_equal_group_serves_unwanted_models(

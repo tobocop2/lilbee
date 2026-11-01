@@ -1142,13 +1142,12 @@ through the same ladder, under a cross-process build lock:
    llama-swap config, so a release that writes a new config key never binds
    an engine started without it.
 2. **Build** into the empty slot otherwise. An incumbent is replaced in place
-   when no live user holds it, and also when it is this contract's own engine
-   left partially dead (a killed group) or partially covering (config grew a
-   role): its members need that rebuild too, and rediscover it, so leftovers
-   never poison the slot and weights are never duplicated.
-3. **Overflow** to the config root's private dir (`<root>/data/engine/`) only
-   when the slot holds a live *incompatible* engine in active use: two engines
-   exist exactly while two different model setups run at once.
+   only when no live user holds it, so leftovers never poison the slot and no
+   process stops an engine that another process is using.
+3. **Overflow** to the config root's private dir (`<root>/data/engine/`) when
+   the slot holds an engine with a live user that this process cannot bind: a
+   different model setup, an added role or a dead group. The joining process
+   gets a full private fleet, chat included, and the live engine stays as it is.
 
 Lifetime is kernel-refcounted membership: each process holds a user lock the
 OS releases on any death. The engine belongs to that set of users, not to the

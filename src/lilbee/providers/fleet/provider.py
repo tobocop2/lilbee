@@ -51,7 +51,6 @@ from lilbee.providers.fleet.contract import (
     chat_ctx_covers,
     contract_matches,
     decoded_launches,
-    served_pairs,
     vision_slots_cover,
 )
 from lilbee.providers.fleet.groups import SwapGroup, group_for
@@ -241,28 +240,6 @@ def _launch_changes(old: tuple[InstanceLaunch, ...], new: tuple[InstanceLaunch, 
         if value != getattr(after, name)
     ]
     return ", ".join(moved) or "no launch field moved"
-
-
-def _healthy_groups_ours(
-    states: dict[SwapGroup, SwapState], pin: str, demand: _EngineDemand
-) -> bool:
-    """Whether every healthy group in *states* matches the contract and serves only wanted pairs.
-
-    True marks the incumbent as this contract's own engine that a full bind
-    could not cover (a dead group, or config grew a role): the ladder rebuilds
-    it in place even with live users, since those users need the rebuild too.
-    False (a foreign pin or a model outside the contract) keeps the incumbent
-    protected while in use. Vacuously False with no healthy group.
-    """
-    if not states:
-        return False
-    for state in states.values():
-        if not contract_matches(state, (), pin, demand.settings):
-            return False
-        pairs = served_pairs(state)
-        if pairs is None or not pairs <= demand.pairs:
-            return False
-    return True
 
 
 def _healthy_states(engine_dir: Path) -> dict[SwapGroup, SwapState]:
@@ -1095,16 +1072,12 @@ class FleetProvider:
     def _acquire_engine(self, config_root: Path) -> bool:
         """The acquisition ladder: bind to a compatible engine, else build one.
 
-        Machine slot first. An incumbent is replaced in place when no live
-        user holds it, or when it is this contract's own engine (contract-equal,
-        serving only wanted models) left partially dead or partially covering:
-        its members are waiting for exactly that rebuild, and overflowing
-        around it would load duplicate weights. Only a live incompatible
-        engine in active use sends the build to the config root's private
-        overflow dir. Per-dir the step is all-or-nothing: every configured
-        (role, model) pair bound, or built fresh. Runs under the cross-process
-        build lock, so two starts never both build and stop-if-last never
-        races an arrival.
+        Machine slot first. An incumbent is replaced in place only when no live
+        user holds it. An engine with a live user that this process cannot bind
+        sends the build to the config root's private overflow dir. Per-dir the
+        step is all-or-nothing: every configured (role, model) pair bound, or
+        built fresh. Runs under the cross-process build lock, so two starts
+        never both build and stop-if-last never races an arrival.
         """
         pin = engine_pin()
         demand = _placeable_demand()
@@ -1145,16 +1118,14 @@ class FleetProvider:
         is decided by kernel-refcounted membership, not the proxy HTTP probe: an
         engine with a live user is never reaped or stopped, so a transient probe
         failure (fd exhaustion, host thrash) cannot kill a busy engine. Replace in
-        place only when no live user holds it or it is this contract's own engine
-        (contract-equal, serving only wanted models). A live incompatible engine in
-        active use is never evicted or stacked on: on the machine slot it returns
-        ``None`` (overflow), and in the overflow dir it serves nothing rather than
-        duplicate weights beside it. Before building, any recorded engine is cleared
-        -- keyed on
-        the state file, not the probe -- so an unprobeable incumbent is stopped
-        rather than double-built beside. The stop is gated on ``_can_build_engine``
-        so a process that can serve nothing never destroys a warm engine it can't
-        replace. Held under the cross-process build lock.
+        place only when no live user holds it. An engine with a live user that this
+        process cannot bind is never evicted or stacked on: on the machine slot it
+        returns ``None`` (overflow), and in the overflow dir it serves nothing rather
+        than duplicate weights beside it. Before building, any recorded engine is
+        cleared -- keyed on the state file, not the probe -- so an unprobeable
+        incumbent is stopped rather than double-built beside. The stop is gated on
+        ``_can_build_engine`` so a process that can serve nothing never destroys a
+        warm engine it can't replace. Held under the cross-process build lock.
         """
         wanted = demand.pairs
         with build_lock(engine_dir):
@@ -1163,21 +1134,18 @@ class FleetProvider:
                 self._hold_membership(engine_dir)
                 _watch_bound_engine(engine_dir)
                 return True
-            replaceable = not live_users_exist(engine_dir) or _healthy_groups_ours(
-                states, pin, demand
-            )
-            if not replaceable:
-                # A live engine another setup is actively using is never evicted or
-                # stacked on. On the machine slot that means overflow (None); in the
-                # overflow dir there is nowhere further to go, so serve nothing rather
-                # than kill the incumbent or load a second fleet's weights beside it
-                # (an OOM on a small-VRAM box).
+            if live_users_exist(engine_dir):
+                # A live engine is never evicted or stacked on. On the machine slot
+                # that means overflow (None); in the overflow dir there is nowhere
+                # further to go, so serve nothing rather than kill the incumbent or
+                # load a second fleet's weights beside it (an OOM on a small-VRAM box).
+                log.info("The engine at %s has a live user and cannot serve this setup", engine_dir)
                 return None if not is_overflow else False
             if not _can_build_engine(wanted):
                 return False
-            # No live user holds this dir now (or it is ours to rebuild): reap dead
-            # leftovers and stop any recorded engine so planning sees true free VRAM
-            # and the build never lands beside an unprobeable incumbent.
+            # No live user holds this dir now: reap dead leftovers and stop any
+            # recorded engine so planning sees true free VRAM and the build never
+            # lands beside an unprobeable incumbent.
             reap_stale(engine_dir)
             if engine_record_exists(engine_dir):
                 stop_engine(engine_dir)
@@ -1474,13 +1442,12 @@ class FleetProvider:
     def _with_rediscover(self, call: Callable[[], _T], *, role: WorkerRole | None = None) -> _T:
         """Run *call*; on a connection-kind or load-capacity failure, retry once.
 
-        A vanished engine (its last user left on a config change, or it died)
-        surfaces as ProviderErrorKind.CONNECTION, or as a raw httpx transport
-        error when the proxy itself is gone (nothing listening to answer with
-        a status). Membership is still held, so dropping the swap refs and
-        retrying sends the call through _ensure_fleet, which rediscovers the
-        new proxy ports or rebuilds. One retry only; a second failure surfaces
-        to the caller.
+        A vanished engine (it died, or its owner restarted its group) surfaces as
+        ProviderErrorKind.CONNECTION, or as a raw httpx transport error when the
+        proxy itself is gone (nothing listening to answer with a status). Membership
+        is still held, so dropping the swap refs and retrying sends the call through
+        _ensure_fleet, which rediscovers the new proxy ports or rebuilds. One retry
+        only; a second failure surfaces to the caller.
 
         A ProviderErrorKind.CAPACITY failure is the engine dying on load because
         the estimate was too optimistic. Retrying it unchanged respawns the same

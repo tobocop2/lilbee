@@ -254,6 +254,7 @@ def test_an_ocr_change_with_a_vision_model_stops_vision_and_keeps_the_rest_binda
         ("flash_attention", False, WorkerRole.VISION, WorkerRole.RERANK),
         ("kv_cache_type", KvCacheType.F16, WorkerRole.CHAT, WorkerRole.VISION),
         ("placement", '{"chat": {"devices": [1]}}', WorkerRole.CHAT, WorkerRole.EMBED),
+        ("n_gpu_layers", 10, WorkerRole.CHAT, WorkerRole.EMBED),
     ],
 )
 def test_a_setting_moves_only_the_settings_of_the_roles_that_use_it(
@@ -263,6 +264,13 @@ def test_a_setting_moves_only_the_settings_of_the_roles_that_use_it(
     monkeypatch.setattr(cfg, key, value)
     assert planning_mod.launch_settings(moved, None, None) != before[moved]
     assert planning_mod.launch_settings(kept, None, None) == before[kept]
+
+
+def test_the_rerank_mode_moves_the_settings() -> None:
+    role = WorkerRole.RERANK
+    assert planning_mod.launch_settings(role, RerankMode.LLM, None) != (
+        planning_mod.launch_settings(role, None, None)
+    )
 
 
 @pytest.mark.parametrize("role", list(WorkerRole))
