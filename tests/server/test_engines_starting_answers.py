@@ -10,7 +10,7 @@ from litestar.testing import create_test_client
 
 from lilbee.app.placement import _apply_to_running
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.server.app import _provider_error_response
+from lilbee.server.app import _provider_error_response, create_app
 from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.handlers.rag import _classify_stream_error
 from lilbee.server.routes import search as search_routes
@@ -89,3 +89,7 @@ def test_the_search_route_returns_only_this_text(
     with create_test_client(route_handlers=[search_routes.search_route]) as client:
         answer = client.get("/api/search", params={"q": "x"})
     assert (answer.status_code, answer.json()["detail"]) == (503, detail)
+
+
+def test_the_app_registers_the_handler_for_provider_failures() -> None:
+    assert create_app().exception_handlers[ProviderError] is _provider_error_response
