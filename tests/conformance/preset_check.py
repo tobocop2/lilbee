@@ -38,6 +38,7 @@ PRESET = "check"
 FIXTURES = Path(__file__).with_name("fixtures") / "presets"
 ENGINE_FIXTURES = Path(__file__).with_name("fixtures") / "engines"
 _TIMEOUT_S = 600.0
+_EMBED_PATH = "/v1/embeddings"
 _NOT_NAME = re.compile(r"[^a-z0-9_-]")
 _OVERSIZE = "w " * 60000
 _CONVERSATION = [
@@ -359,14 +360,21 @@ def _scrubbed(value: Any) -> Any:
     return value
 
 
-def _proxy_handler(upstream: str, tape: _Tape) -> type[BaseHTTPRequestHandler]:
+def _proxy_handler(
+    upstream: str, tape: _Tape, token: str | None, embed_url: str | None
+) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def _forward(self) -> None:
             size = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(size) if size else b""
             headers = {"Content-Type": self.headers.get("Content-Type", "application/json")}
+            target = upstream
+            if embed_url is not None and self.path.startswith(_EMBED_PATH):
+                target = embed_url
+            elif token is not None:
+                headers["Authorization"] = f"Bearer {token}"
             request = urllib.request.Request(  # noqa: S310  a local server under test
-                upstream + self.path, data=raw or None, method=self.command, headers=headers
+                target + self.path, data=raw or None, method=self.command, headers=headers
             )
             try:
                 with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as resp:  # noqa: S310
@@ -399,10 +407,16 @@ def _proxy_handler(upstream: str, tape: _Tape) -> type[BaseHTTPRequestHandler]:
 
 
 @contextmanager
-def recording(upstream: str) -> Iterator[tuple[str, _Tape]]:
-    """A proxy in front of *upstream* that records every exchange; yields its URL and tape."""
+def recording(
+    upstream: str, *, token: str | None = None, embed_url: str | None = None
+) -> Iterator[tuple[str, _Tape]]:
+    """A proxy in front of *upstream* that records every exchange; yields its URL and tape.
+
+    *token* is sent to *upstream* as a bearer token and never reaches the tape.
+    *embed_url* takes the embeddings route, for an upstream that does not serve it.
+    """
     tape = _Tape()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _proxy_handler(upstream, tape))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _proxy_handler(upstream, tape, token, embed_url))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
