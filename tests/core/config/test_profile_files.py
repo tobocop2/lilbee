@@ -563,6 +563,8 @@ def test_the_bad_name_message_says_ascii_because_an_accented_letter_is_refused()
 
 
 def test_validating_a_profile_copies_the_config_once_for_all_its_values(monkeypatch):
+    # The first call reads and validates the built-in files, which copy the config too.
+    profile_files.builtin_keys()
     calls = []
     real_copy = type(cfg).model_copy
 
