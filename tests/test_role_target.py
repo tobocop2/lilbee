@@ -81,7 +81,7 @@ class TestSpecTargetClosedSet:
     ) -> None:
         spec = PlacementSpec.from_json(raw)
         assert spec.roles[WorkerRole.EMBED] == RolePlacement(
-            devices=(), replicas=replicas, target=target, target_named=True
+            devices=(), replicas=replicas, target=target
         )
         assert PlacementSpec.from_json(spec.to_json()) == spec
 
@@ -497,8 +497,9 @@ class TestExplicitGpuOnABuildWithoutOne:
     def test_named_gpu_is_kept_apart_in_the_parsed_spec(self) -> None:
         named = PlacementSpec.from_json('{"embed": {"target": "gpu", "devices": [0]}}')
         old = PlacementSpec.from_json('{"embed": {"devices": [0]}}')
-        assert named.roles[WorkerRole.EMBED].target_named is True
-        assert old.roles[WorkerRole.EMBED].target_named is False
+        assert named.roles[WorkerRole.EMBED].target is RoleTarget.GPU
+        assert old.roles[WorkerRole.EMBED].target is None
+        assert old.to_json() == '{"embed": {"devices": [0]}}'
         assert PlacementSpec.from_json(named.to_json()) == named
 
     def test_saved_named_gpu_is_not_replaced_by_the_automatic_plan(
@@ -565,7 +566,7 @@ class TestARefusedRoleDoesNotStopTheOthers:
         with caplog.at_level(logging.WARNING):
             plan = self._fleet(monkeypatch, tmp_path, OLD_HELP)
         assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT]
-        assert plan.skipped_unusable_ctx == {WorkerRole.EMBED: reason}
+        assert plan.refused_roles == {WorkerRole.EMBED: reason}
         assert reason in caplog.messages
         assert "automatic placement" not in caplog.text
 
@@ -574,7 +575,134 @@ class TestARefusedRoleDoesNotStopTheOthers:
     ) -> None:
         plan = self._fleet(monkeypatch, tmp_path, LLAMA_HELP)
         assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT, WorkerRole.EMBED]
-        assert plan.skipped_unusable_ctx == {}
+        assert plan.refused_roles == {}
+
+
+class TestAGoneCardRefusesOnlyItsRole:
+    """With a target in the spec, a pin to a missing card refuses that role and no other."""
+
+    ROLES = (WorkerRole.CHAT, WorkerRole.VISION, WorkerRole.EMBED)
+
+    def _fleet(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spec: str):
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet.placement import ModelPlacementInput
+
+        _help(monkeypatch, LLAMA_HELP)
+        monkeypatch.setattr(type(LLAMA), "binary", lambda _self: tmp_path / "server")
+        monkeypatch.setattr(cfg, "placement", spec)
+        monkeypatch.setattr(
+            planning,
+            "_server_model_inputs",
+            lambda roles, *, engines, **_k: (
+                [ModelPlacementInput(role, GIB) for role in self.ROLES],
+                {role: f"{role.value}-ref" for role in self.ROLES},
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning, "_launch_for", lambda plan, _ref, _by, **_k: SimpleNamespace(role=plan.role)
+        )
+        monkeypatch.setattr(planning, "_unusable_chat_ctx_reason", lambda _launch: None)
+        monkeypatch.setattr(
+            planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
+        )
+        card = FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 23 * GIB)
+        monkeypatch.setattr(planning, "_plan_devices", lambda _binary, _engine: [card])
+        engines = {role: LLAMA for role in self.ROLES}
+        return planning.plan_launches(None, {0: card}, [card], engines=engines)
+
+    @staticmethod
+    def _gone(role: str, card: int = 1) -> str:
+        return (
+            f"{role}: GPU {card} is not on this machine (1 found). Set the {role} devices "
+            "to a GPU that exists, or set its target to cpu."
+        )
+
+    def test_vision_on_the_missing_card_is_refused_and_the_rest_launch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        spec = '{"chat": {"devices": [0]}, "vision": {"devices": [1]}, "embed": {"target": "cpu"}}'
+        with caplog.at_level(logging.WARNING):
+            plan = self._fleet(monkeypatch, tmp_path, spec)
+        assert sorted(launch.role for launch in plan.launches) == [
+            WorkerRole.CHAT,
+            WorkerRole.EMBED,
+        ]
+        assert plan.refused_roles == {WorkerRole.VISION: self._gone("vision")}
+        assert self._gone("vision") in caplog.messages
+        assert "automatic placement" not in caplog.text
+
+    def test_chat_on_the_missing_card_is_refused_and_the_rest_launch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        spec = '{"chat": {"devices": [2]}, "vision": {"devices": [0]}, "embed": {"target": "cpu"}}'
+        plan = self._fleet(monkeypatch, tmp_path, spec)
+        assert sorted(launch.role for launch in plan.launches) == [
+            WorkerRole.EMBED,
+            WorkerRole.VISION,
+        ]
+        assert plan.refused_roles == {WorkerRole.CHAT: self._gone("chat", 2)}
+
+    def test_a_refused_target_and_a_gone_card_each_refuse_only_their_role(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        spec = '{"chat": {"devices": [0]}, "vision": {"devices": [1]}, "embed": {"target": "auto"}}'
+        plan = self._fleet(monkeypatch, tmp_path, spec)
+        assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT]
+        assert plan.refused_roles == {
+            WorkerRole.VISION: self._gone("vision"),
+            WorkerRole.EMBED: (
+                "embed: the auto target is not available yet. "
+                "Name the devices or set the target to cpu."
+            ),
+        }
+
+    def test_a_spec_with_no_target_still_falls_back_to_automatic_placement(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        spec = '{"chat": {"devices": [0]}, "vision": {"devices": [1]}, "embed": {"devices": [0]}}'
+        with caplog.at_level(logging.WARNING):
+            plan = self._fleet(monkeypatch, tmp_path, spec)
+        assert sorted(launch.role for launch in plan.launches) == sorted(self.ROLES)
+        assert plan.refused_roles == {}
+        assert "using automatic placement instead" in caplog.text
+
+
+class TestSelfCheckRefusesWhatServingRefuses:
+    def test_a_cpu_role_on_a_build_without_cpu_is_refused_before_any_launch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "placement", '{"embed": {"target": "cpu"}}')
+        _help(monkeypatch, OLD_HELP)
+        monkeypatch.setattr(type(LLAMA), "binary", lambda _self: tmp_path / "server")
+
+        def never(*_a, **_k):
+            raise AssertionError("the check planned a launch")
+
+        monkeypatch.setattr(planning, "_launch_for", never)
+        with pytest.raises(TargetRefusedError) as caught:
+            planning.build_single_role_launch(WorkerRole.EMBED, tmp_path / "m.gguf", engine=LLAMA)
+        assert caught.value.reasons == {
+            WorkerRole.EMBED: (
+                "embed: this engine's installed build cannot run on the CPU. "
+                "Choose a GPU or install the CPU build."
+            )
+        }
+
+
+class TestAbsentTargetIsNone:
+    def test_a_cpu_role_always_stores_and_prints_its_target(self) -> None:
+        spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(), target=RoleTarget.CPU)})
+        assert spec.to_json() == '{"embed": {"target": "cpu"}}'
+
+    def test_a_spec_with_no_target_key_stores_no_target(self) -> None:
+        raw = '{"chat": {"devices": [0]}}'
+        spec = PlacementSpec.from_json(raw)
+        assert spec.roles[WorkerRole.CHAT] == RolePlacement(devices=(0,))
+        assert spec.to_json() == raw
 
 
 class TestSelfCheckUsesTheRoleTarget:

@@ -751,7 +751,7 @@ class _EngineDemand(NamedTuple):
     skipped_not_installed: dict[WorkerRole, str]
     # Launches the demand plan refused for an unusable window (role -> reason);
     # recorded even when the ladder binds an engine or never builds one.
-    skipped_unusable_ctx: dict[WorkerRole, str]
+    refused_roles: dict[WorkerRole, str]
     # Vision slots this process needs at once; 0 demands nothing.
     vision_slots: int = 0
 
@@ -794,7 +794,7 @@ def _placeable_demand(
         pairs,
         _demanded_chat_ctx(plan.launches, pairs),
         dict(plan.skipped_not_installed),
-        dict(plan.skipped_unusable_ctx),
+        dict(plan.refused_roles),
         _demanded_vision_slots(pairs),
     )
 
@@ -999,7 +999,7 @@ class FleetProvider:
         self._skipped_not_installed: dict[WorkerRole, str] = {}
         # Launches the last plan refused for an unusable window (role -> reason);
         # read by the warm finalizer and _require_clients.
-        self._skipped_unusable_ctx: dict[WorkerRole, str] = {}
+        self._refused_roles: dict[WorkerRole, str] = {}
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -1211,7 +1211,7 @@ class FleetProvider:
         # tracker must still be able to say "chat model X is not installed"
         # rather than a retryable not-ready.
         self._skipped_not_installed = dict(demand.skipped_not_installed)
-        self._skipped_unusable_ctx = dict(demand.skipped_unusable_ctx)
+        self._refused_roles = dict(demand.refused_roles)
         machine_dir = machine_engine_dir()
         if kernel_arbitrates_locks(machine_dir):
             machine = self._acquire_in_dir(machine_dir, pin, demand, is_overflow=False)
@@ -1390,7 +1390,7 @@ class FleetProvider:
         # _acquire_engine instead of wiping it.
         if plan is not None:
             self._skipped_not_installed = dict(plan.skipped_not_installed)
-            self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
+            self._refused_roles = dict(plan.refused_roles)
         if plan is None or not plan.launches:
             # No engine binary, or no installed/configured model: serve nothing.
             return False
@@ -1548,7 +1548,7 @@ class FleetProvider:
             # A refused launch's recorded reason wins over the generic line.
             # BAD_REQUEST so the HTTP surfaces return this deterministic,
             # actionable refusal in a 4xx body instead of a generic 500.
-            reason = self._skipped_unusable_ctx.get(role)
+            reason = self._refused_roles.get(role)
             if reason is not None:
                 raise ProviderError(
                     reason, provider=_PROVIDER_NAME, kind=ProviderErrorKind.BAD_REQUEST
@@ -2351,7 +2351,7 @@ class FleetProvider:
         if missing is not None:
             self._warm_tracker.fail(f"chat model {clean_display_name(missing)} is not installed")
             return
-        unusable = self._skipped_unusable_ctx.get(WorkerRole.CHAT)
+        unusable = self._refused_roles.get(WorkerRole.CHAT)
         if unusable is not None:
             self._warm_tracker.fail(unusable)
             return
@@ -2717,7 +2717,7 @@ class FleetProvider:
             plan = planning.plan_all_launches(engines=engines)
             # Keep the skip reasons in step with the fresh plan.
             self._skipped_not_installed = dict(plan.skipped_not_installed)
-            self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
+            self._refused_roles = dict(plan.refused_roles)
             new = _launches_by_group(plan)
             # A group restarts when its launches changed OR its running/planned
             # presence disagrees (covers a group the new plan drops or adds).
