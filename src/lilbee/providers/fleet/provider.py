@@ -950,10 +950,6 @@ def _reaper_unloads_weights(engine_dir: Path) -> bool:
 class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
-    # The roles the running reload will start a server for; None until its plan is known.
-    # A request for any other role does not wait for the reload.
-    _reload_awaited: frozenset[WorkerRole] | None = None
-
     def __init__(self, *, hold_warm: bool = False) -> None:
         # An interactive session (the TUI) owns this process for its whole
         # lifetime, so a fleet bound to it stays resident instead of idle-unloading
@@ -1043,9 +1039,13 @@ class FleetProvider:
         # Set when a reload arrives mid-reload: the in-flight pass may have
         # already snapshotted its plan, so the change must be re-applied.
         self._reload_pending = False
-        # Notified when ``_reloading`` clears, so a ``reload_role(wait=True)`` caller
-        # can block until the reload it requested (or the in-flight one that will
-        # run its pending pass) has finished.
+        # Roles the running reload may still bring a server back for: every role
+        # from the start of a reload until its plan is known, then the planned
+        # restarts. A request for any other role does not wait for the reload.
+        self._reload_owed: frozenset[WorkerRole] = frozenset()
+        # Notified when ``_reloading`` clears, when a reload publishes its plan and
+        # when it adopts a group, so a ``reload_role(wait=True)`` caller and a
+        # request waiting for its role's server wake at the change they wait for.
         self._reload_done = threading.Condition(self._lock)
 
     def _ensure_fleet(self) -> bool:
@@ -1343,6 +1343,7 @@ class FleetProvider:
             if role is WorkerRole.EMBED:
                 planning.warn_when_embed_window_below_chunk(role_launches[0])
             self._retire_clients(old_clients)
+        self._reload_done.notify_all()
 
     def _swap_for(self, role: WorkerRole) -> SwapManager | None:
         """The swap process serving *role*, or None when the role has no server.
@@ -1412,21 +1413,24 @@ class FleetProvider:
         When the pool is empty but a swap was previously built and its process has
         since exited (detected via ``is_live()``), a one-shot rebuild is attempted
         before raising so a transient llama-swap restart recovers transparently.
-        A request that lands while a reload restarts the role's group waits for the
-        reload to end, up to ``_RELOAD_GAP_WAIT_S``.
+        A request that lands while a reload restarts the role's group waits, up to
+        ``_RELOAD_GAP_WAIT_S``, until the role has clients or the reload will not
+        bring the role back.
         """
         self._ensure_fleet()
         with self._lock:
             # The reload dropped this role's group and has not adopted the new one.
-            if (
-                self._reloading
-                and not self._clients.get(role)
-                and not self._reload_done.wait_for(
-                    lambda: self._reload_settled_for(role), _RELOAD_GAP_WAIT_S
-                )
-            ):
-                raise ProviderError(_reload_timeout_message(role), provider=_PROVIDER_NAME)
+            settled = self._reload_done.wait_for(
+                lambda: (
+                    bool(self._clients.get(role))
+                    or not self._reloading
+                    or role not in self._reload_owed
+                ),
+                _RELOAD_GAP_WAIT_S,
+            )
             clients = self._clients.get(role)
+            if not clients and not settled:
+                raise ProviderError(_reload_timeout_message(role), provider=_PROVIDER_NAME)
             swap = self._swap_for(role)
         if not clients and swap is not None and not swap.is_live():
             self._rebuild_role(role)
@@ -1443,15 +1447,6 @@ class FleetProvider:
                 )
             raise ProviderError(_no_server_message(role), provider=_PROVIDER_NAME)
         return list(clients)
-
-    def _reload_settled_for(self, role: WorkerRole) -> bool:
-        """True when *role* need not wait: no reload runs, or the plan leaves it no server.
-
-        Caller holds ``self._lock``.
-        """
-        if not self._reloading:
-            return True
-        return self._reload_awaited is not None and role not in self._reload_awaited
 
     def _with_rediscover(self, call: Callable[[], _T], *, role: WorkerRole | None = None) -> _T:
         """Run *call*; on a connection-kind or load-capacity failure, retry once.
@@ -2532,6 +2527,7 @@ class FleetProvider:
                         self._reload_done.wait()
                 return
             self._reloading = True
+            self._reload_owed = frozenset(WorkerRole)
             self._reload_pending = False
         if wait:
             self._reload_blocking()
@@ -2559,8 +2555,11 @@ class FleetProvider:
                 with self._lock:
                     rerun = self._reload_pending
                     self._reload_pending = False
-                    if not rerun:
+                    if rerun:
+                        self._reload_owed = frozenset(WorkerRole)
+                    else:
                         self._reloading = False
+                        self._reload_owed = frozenset()
                         self._reload_done.notify_all()
                 if rerun:
                     log.warning(
@@ -2572,9 +2571,11 @@ class FleetProvider:
             with self._lock:
                 if not self._reload_pending:
                     self._reloading = False
+                    self._reload_owed = frozenset()
                     self._reload_done.notify_all()
                     return
                 self._reload_pending = False
+                self._reload_owed = frozenset(WorkerRole)
 
     def _rebind_or_overflow(self) -> list[WorkerRole]:
         """Re-acquire a bound engine after a config change; caller holds the build lock.
@@ -2632,7 +2633,6 @@ class FleetProvider:
                     return
                 running = set(self._swaps)
                 old = dict(self._launches)
-                self._reload_awaited = None
                 # All groups share one dir and one ownership by construction, so any
                 # bound manager means this provider rides another process's engine.
                 bound = any(swap.bound for swap in self._swaps.values())
@@ -2682,7 +2682,7 @@ class FleetProvider:
                 }
                 changed |= {group_for(role, plan.co_tenants) for role in force}
                 with self._lock:
-                    self._reload_awaited = frozenset(
+                    self._reload_owed = frozenset(
                         role for group in changed & set(new) for role in _by_role(list(new[group]))
                     )
                     self._reload_done.notify_all()

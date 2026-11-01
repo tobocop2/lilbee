@@ -65,6 +65,7 @@ IMAGE_SCAN_NOTE = (
 )
 TARGET_WITHOUT_SAVE_MESSAGE = "target takes effect only with apply or save; nothing was read."
 RELATIVE_DIRECTORY_MESSAGE = "directory must be an absolute path on the lilbee server: {value!r}"
+DIRECTORY_NOT_READABLE_MESSAGE = "Path '{path}' is not readable."
 TIP_TEXT = (
     "This project uses the Default profile. Run lilbee analyze to get a profile "
     "recommendation, or lilbee analyze --off to hide this tip."
@@ -349,9 +350,8 @@ def validate_request(request: AnalyzeRequest) -> None:
         raise ValueError(TARGET_WITHOUT_SAVE_MESSAGE)
     if request.directory is not None and not request.directory.is_dir():
         raise ValueError(f"{request.directory} is not a folder")
-    # The walk skips a folder it cannot open without a word, so analyze would report an empty one.
     if request.directory is not None and not os.access(request.directory, os.R_OK | os.X_OK):
-        raise ValueError(f"Path '{request.directory}' is not readable.")
+        raise ValueError(DIRECTORY_NOT_READABLE_MESSAGE.format(path=request.directory))
 
 
 def server_directory(value: str | None) -> Path | None:

@@ -2267,7 +2267,7 @@ def test_reload_pass_names_the_roles_it_restarts_and_logs_replica_counts(
     p._role_group = {WorkerRole.EMBED: SwapGroup.EMBED}
     with caplog.at_level("DEBUG", logger=prov_mod.log.name):
         p._reload_pass()
-    assert p._reload_awaited == frozenset({WorkerRole.EMBED})
+    assert p._reload_owed == frozenset({WorkerRole.EMBED})
     assert any(
         "Reload restarts group" in r.getMessage() and r.args == (SwapGroup.EMBED.value, 1, 2)
         for r in caplog.records

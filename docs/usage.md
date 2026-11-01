@@ -614,7 +614,7 @@ lilbee --json self-check                       # runtime + model self-check
 lilbee --json add ~/docs ~/notes               # register files / dirs, index them in place
 lilbee --json add https://example.com/page     # URL becomes a markdown source
 lilbee --json sync                             # re-index after edits to the documents directory
-lilbee --json rebuild                          # nuke the index and re-ingest everything
+lilbee --json rebuild                          # drop the index and re-ingest every document
 lilbee --json remove manual.pdf                # drop chunks (source files are always kept)
 lilbee --json remove reports/2024              # a folder: remove everything indexed beneath it
 lilbee --json remove '**/*.log'                # a glob: remove every matching source
@@ -912,7 +912,7 @@ happens if you edit `config.toml` to point the folder at its new place.
 | `lilbee chunks manual.pdf` | Inspect how a document was chunked |
 | `lilbee sync` | Re-index changed files |
 | `lilbee sync --prune-ignored` | Re-index, and drop documents a `.lilbeeignore` now excludes |
-| `lilbee rebuild` | Nuke the database and re-ingest everything |
+| `lilbee rebuild` | Drop the index and re-ingest every document |
 | `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
 | `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |
 | `lilbee reset` | Factory reset. Deletes all documents and data. Refuses while a sync, an import or a wiki build runs on the same library |
