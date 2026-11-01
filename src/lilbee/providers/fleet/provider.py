@@ -480,17 +480,17 @@ def _warm_role(role: WorkerRole, client: LlamaServerClient) -> None:
 
 
 @functools.lru_cache(maxsize=32)
-def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
-    """Memoised tool-template probe keyed on the GGUF's path + mtime.
+def _supports_tools_cached(engine: EngineAdapter, path_str: str, _mtime_ns: int) -> bool:
+    """Memoised tool-template probe keyed on the engine + the model's path + mtime.
 
-    The mtime arg participates in the cache key only; a re-quantised file at the
-    same path invalidates automatically because its mtime changes.
+    An engine with no header to read for the model has no template to judge, so
+    the probe passes and the engine answers the tool request itself. The mtime
+    arg participates in the cache key only; a re-quantised file at the same path
+    invalidates automatically because its mtime changes.
     """
-    from lilbee.providers.gguf_meta import read_gguf_metadata
-
-    meta = read_gguf_metadata(Path(path_str))
-    if not isinstance(meta, dict):
-        return False
+    meta = engine.model_meta(Path(path_str))
+    if meta is None:
+        return True
     template = meta.get("chat_template")
     if not isinstance(template, str):
         return False
@@ -2136,11 +2136,13 @@ class FleetProvider:
     def supports_tools(self, model_ref: str) -> bool:
         """True iff *model_ref*'s GGUF chat template references tool tokens.
 
-        The server parses native tool calls via ``--jinja``; a template that
-        declares tools is the signal that the model was trained to emit them.
-        Cached on ``(path, mtime)`` so a tool-bearing chat doesn't re-read the
-        GGUF header each request; a re-quantised file at the same path
-        invalidates because its mtime changes.
+        True as well when the chat engine reads no header for the model: it
+        answers the tool request itself. The server parses native tool calls
+        via ``--jinja``; a template that declares tools is the signal that the
+        model was trained to emit them. Cached on ``(path, mtime)`` so a
+        tool-bearing chat doesn't re-read the GGUF header each request; a
+        re-quantised file at the same path invalidates because its mtime
+        changes.
         """
         from lilbee.providers.engine_params import resolve_model_path
 
@@ -2153,7 +2155,7 @@ class FleetProvider:
             mtime_ns = path.stat().st_mtime_ns
         except OSError:
             mtime_ns = 0
-        return _supports_tools_cached(str(path), mtime_ns)
+        return _supports_tools_cached(self._adopt_engine(WorkerRole.CHAT), str(path), mtime_ns)
 
     def warm_up_pool(self) -> None:
         """Pre-load every configured role off the caller's thread (idempotent).
