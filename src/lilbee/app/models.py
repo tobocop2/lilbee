@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field
 
 from lilbee.app.services import get_services
 from lilbee.catalog.query import reclassify_by_name
-from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
+from lilbee.catalog.refs import model_format
+from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import parse_model_ref
@@ -390,6 +391,10 @@ def pull_model_data(
     if manager.is_installed(ref, source) and (
         source is not ModelSource.NATIVE or manager.is_registered(ref)
     ):
+        if source is ModelSource.NATIVE and model_format(ref) is not ModelFormat.GGUF:
+            # A pull made before the module files were selected lacks them; the
+            # pull fetches only the files the cache does not hold.
+            manager.pull(ref, source, cancel=cancel)
         # A cached vision install may carry the main GGUF but not its mmproj
         # projector; without it llama-server can't serve OCR, so ensure it before
         # reporting already-installed.
