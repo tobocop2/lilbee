@@ -4269,13 +4269,13 @@ class TestReloadSingleFlight:
         p = FleetProvider()
         with p._lock:  # the work's pass has stopped every group
             p._fleet_work = prov_mod.DaemonCall(lambda: None, name="test-work")
-        p.reload_placement()
+        p.replan_fleet()
         assert p._writes_wanted == 1
         assert p._writes_done == 0
 
     def test_a_reload_with_no_group_up_and_no_work_starts_nothing(self) -> None:
         p = FleetProvider()
-        p.reload_placement()
+        p.replan_fleet()
         assert p._writes_wanted == 1
         assert p._fleet_work is None
 
@@ -4438,18 +4438,28 @@ class TestReloadSingleFlight:
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
         monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
         monkeypatch.setattr(planning_mod, "plan_all_launches", _slow_plan)
-        reloader = threading.Thread(target=_run_work, args=(p,))
-        reloader.start()
-        assert reload_entered.wait(5.0)  # the reload holds the build lock first
+        with p._lock:
+            p._writes_wanted += 1
+            work = p._start_fleet_work()
+        assert reload_entered.wait(5.0)  # the pass is the running fleet work
+        latched = threading.Event()
+        wait_on_work = work.wait
+
+        def _wait_seen(timeout: float | None = None) -> bool:
+            latched.set()
+            return wait_on_work(timeout)
+
+        monkeypatch.setattr(work, "wait", _wait_seen)
         shutter = threading.Thread(target=p._shutdown_swap)
         shutter.start()
-        time.sleep(0.05)
-        assert order == []  # shutdown is blocked behind the in-flight reload
+        assert latched.wait(5.0)
+        assert order == []  # shutdown waits on the in-flight pass
         gate.set()
-        reloader.join(timeout=5.0)
+        assert wait_on_work(5.0) is True
         shutter.join(timeout=5.0)
-        # The reload's stop phase ran (nothing planned -> group stops); the
-        # terminal shutdown then dropped refs, serialized on the build lock.
+        assert not shutter.is_alive()
+        # The pass's stop phase ran (nothing planned -> group stops); the terminal
+        # shutdown then dropped refs, after the pass ended.
         assert order == ["shutdown"]
         assert p._swaps == {}  # the shutdown's state cleanup still landed
 
@@ -6312,17 +6322,46 @@ def test_an_exception_right_after_the_open_count_goes_up_brings_it_down(monkeypa
     assert p._open_rediscovers == 0
 
 
-def test_a_sweep_with_nothing_to_release_does_not_wait_on_the_build_lock() -> None:
+class _RunningWork:
+    """Fleet work that ends when waited on, as the loop does, and records each wait."""
+
+    def __init__(self, provider: FleetProvider) -> None:
+        self.provider = provider
+        self.waits = 0
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits += 1
+        self.provider._fleet_work = None
+        return True
+
+
+def test_a_sweep_with_nothing_to_release_does_not_wait_on_the_fleet_work() -> None:
     p = FleetProvider()
     hold = MagicMock()
     p._engine_holds = {Path("/e1"): hold}
     p._group_dirs = {SwapGroup.CHAT: Path("/e1")}
-    p._build_lock = MagicMock()  # type: ignore[assignment]
+    work = _RunningWork(p)
+    p._fleet_work = work  # type: ignore[assignment]
 
     p._release_unused_holds()
 
-    p._build_lock.__enter__.assert_not_called()
+    assert work.waits == 0
     hold.release_and_check_last.assert_not_called()
+
+
+def test_a_sweep_waits_for_the_fleet_work_before_it_releases_a_hold() -> None:
+    # A build on the loop may be about to hold a dir no group uses yet.
+    p = FleetProvider()
+    hold = MagicMock()
+    p._engine_holds = {Path("/e1"): hold}
+    work = _RunningWork(p)
+    p._fleet_work = work  # type: ignore[assignment]
+
+    p._release_unused_holds()
+
+    assert work.waits == 1
+    assert p._engine_holds == {}
+    hold.release_and_check_last.assert_called_once()
 
 
 def test_a_hold_sweep_that_cannot_start_a_thread_is_skipped(monkeypatch) -> None:
@@ -6658,29 +6697,56 @@ def test_ladder_clears_an_unprobeable_incumbent_before_build(monkeypatch, tmp_pa
     assert built and built[0] == machine  # ...then built fresh in the same slot
 
 
-def test_shutdown_does_not_hang_on_a_wedged_build(monkeypatch) -> None:
-    """A wedged engine start must not make process exit unreachable.
+class _FakeWork:
+    """Fleet work whose wait reports a set answer and records the bound it was given."""
 
-    Every _shut_down check runs after the build lock is taken, so a build that
-    never finishes used to hold shutdown forever rather than for a bounded time.
-    """
-    import threading
+    def __init__(self, provider: FleetProvider, finished: bool) -> None:
+        self.finished = finished
+        self.provider = provider
+        self.waits: list[float | None] = []
+        self.latched: list[bool] = []
 
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits.append(timeout)
+        self.latched.append(self.provider._shut_down)
+        return self.finished
+
+
+@pytest.mark.parametrize("finished", [True, False], ids=["work_ends", "work_is_stuck"])
+def test_shutdown_waits_on_the_fleet_work_with_the_latch_set_then_tears_down(
+    monkeypatch, finished: bool
+) -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    monkeypatch.setattr(prov_mod, "_SHUTDOWN_BUILD_LOCK_WAIT_S", 0.2)
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", 7.0)
     released: list[str] = []
     monkeypatch.setattr(p, "_release_engines", lambda **_kw: released.append("released"))
+    work = _FakeWork(p, finished)
+    p._fleet_work = work  # type: ignore[assignment]
 
-    p._build_lock.acquire()  # stand in for a builder that never returns
-    try:
-        done = threading.Event()
-        threading.Thread(target=lambda: (p.shutdown(), done.set()), daemon=True).start()
-        assert done.wait(timeout=10), "shutdown blocked on the build lock"
-    finally:
-        p._build_lock.release()
+    p.shutdown()
 
-    assert released == ["released"]  # teardown ran rather than being skipped
-    assert p._shut_down is True  # and the latch is set for any queued thread
+    assert work.waits == [7.0]
+    assert work.latched == [True]
+    assert released == ["released"]
+    assert p._clients == {}
+
+
+def test_a_second_shutdown_during_the_first_releases_no_hold_twice(tmp_path: Path) -> None:
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    releases: list[str] = []
+
+    class _Hold:
+        def release_and_check_last(self) -> bool:
+            releases.append("released")
+            p.shutdown()  # the other caller arrives while this one holds the release
+            return False
+
+    p._engine_holds = {tmp_path: _Hold()}  # type: ignore[dict-item]
+
+    p.shutdown()
+
+    assert releases == ["released"]
+    assert p._engine_holds == {}
 
 
 def test_two_concurrent_shutdowns_release_each_engine_once(monkeypatch, tmp_path: Path) -> None:
@@ -6692,70 +6758,42 @@ def test_two_concurrent_shutdowns_release_each_engine_once(monkeypatch, tmp_path
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     in_stop = threading.Event()
-    second_waits = threading.Event()
+    second_is_done = threading.Event()
     stopped: list[Path] = []
 
     def stop_engine(engine_dir: Path) -> None:
         stopped.append(engine_dir)
         in_stop.set()
-        assert second_waits.wait(10)
+        assert second_is_done.wait(10)
 
     monkeypatch.setattr(prov_mod, "stop_engine", stop_engine)
-    inner = p._build_lock
-
-    class _SpyLock:
-        def acquire(self, *args, **kwargs):
-            if in_stop.is_set():
-                second_waits.set()  # the second shutdown asks while the first holds it
-            return inner.acquire(*args, **kwargs)
-
-        def release(self) -> None:
-            inner.release()
-
-    p._build_lock = _SpyLock()  # type: ignore[assignment]
     first = threading.Thread(target=p.shutdown)
     first.start()
     assert in_stop.wait(10)
     second = threading.Thread(target=p.shutdown)
     second.start()
-    first.join(10)
     second.join(10)
+    second_ended_during_the_stop = not second.is_alive()
+    second_is_done.set()
+    first.join(10)
 
-    assert second_waits.is_set()
-    assert not first.is_alive() and not second.is_alive()
+    assert second_ended_during_the_stop
+    assert not first.is_alive()
     assert stopped == [tmp_path]
     hold.release_and_check_last.assert_called_once_with()
     client.close.assert_called_once_with()
     assert p._engine_holds == {}
 
 
-def test_shutdown_latches_before_taking_the_build_lock() -> None:
-    """A queued warm thread can only bail early if the flag is already set."""
-    provider = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    seen: list[bool] = []
+def test_shutdown_with_no_fleet_work_tears_down_at_once(monkeypatch) -> None:
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    released: list[str] = []
+    monkeypatch.setattr(p, "_release_engines", lambda **_kw: released.append("released"))
 
-    class _SpyLock:
-        def __init__(self, inner) -> None:
-            self._inner = inner
+    p.shutdown()
 
-        def acquire(self, *args, **kwargs):
-            # What a warm or reload thread would observe on getting the lock next.
-            seen.append(provider._shut_down)
-            return self._inner.acquire(*args, **kwargs)
-
-        def release(self) -> None:
-            self._inner.release()
-
-        def __enter__(self):
-            self.acquire()
-            return self
-
-        def __exit__(self, *_exc) -> None:
-            self.release()
-
-    provider._build_lock = _SpyLock(provider._build_lock)  # type: ignore[assignment]
-    provider.shutdown()
-    assert seen == [True]
+    assert p._shut_down is True
+    assert released == ["released"]
 
     def test_no_detached_states_means_no_adoption(self, tmp_path) -> None:
         assert FleetProvider()._try_adopt_detached(tmp_path) is False
