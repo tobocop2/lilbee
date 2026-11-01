@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -36,7 +37,6 @@ from lilbee.cli.tui.screens.profile_dialogs import (
     shorten_middle,
     start_profile_switch,
 )
-from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.core.profile_files import ProfileCatalog, ProfileEntry, ProfileFolder, ProfileStore
 
@@ -198,10 +198,13 @@ class ProfileLibrary(ModalScreen[None]):
         self.query_one("#library-hints", Static).update(_hints(narrow=narrow))
         self._update_narrow_credit()
 
-    @work(thread=True, exclusive=True, group="profile-library-load", exit_on_error=False)
-    def reload(self) -> None:
-        """Rescan the profile folders off the loop, then show the list."""
-        call_from_thread(self, self.show, load_library())
+    @work(exclusive=True, group="profile-library-load", exit_on_error=False)
+    async def reload(self) -> None:
+        """Rescan the profile folders off the loop, then show the list.
+
+        Only the scan runs on a thread, so a newer rescan cancels this task at the await.
+        """
+        self.show(await asyncio.to_thread(load_library))
 
     def show(self, state: LibraryState) -> None:
         """Fill the list from *state*, keeping the highlighted file when it is still there."""
@@ -269,13 +272,13 @@ class ProfileLibrary(ModalScreen[None]):
         widget.update(self._credit or "")
         widget.display = bool(self._credit) and self.has_class(NARROW_CLASS)
 
-    @work(thread=True, exclusive=True, group="profile-library-diff", exit_on_error=False)
-    def _load_diff(self, entry: ProfileEntry) -> None:
+    @work(exclusive=True, group="profile-library-diff", exit_on_error=False)
+    async def _load_diff(self, entry: ProfileEntry) -> None:
         try:
-            diff = profiles.diff(ProfileStore(), entry.name)
+            diff = await asyncio.to_thread(profiles.diff, ProfileStore(), entry.name)
         except (ValueError, OSError):
             return
-        call_from_thread(self, self._show_diff, entry.path, diff)
+        self._show_diff(entry.path, diff)
 
     def _show_diff(self, path: Path, diff: ProfileDiff | None) -> None:
         """Show *diff* for the file at *path*; None, or a file no longer highlighted, hides it."""

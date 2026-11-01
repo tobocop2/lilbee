@@ -1,17 +1,24 @@
 """The Profile tab, its + button, and the shared look of the profile dialogs, in a Textual pilot."""
 
 import re
+import threading
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+from unittest import mock
 
 import pytest
 from textual.widgets import Input, OptionList, Select, Static
 
 import tests._suite_data_root  # noqa: F401  # must run before lilbee loads
+from lilbee.app import profiles
 from lilbee.cli.tui.screens.profile_dialogs import (
     ApplyProfileDialog,
     ProfilePathDialog,
     SaveProfileDialog,
 )
-from lilbee.cli.tui.screens.profile_library import ProfileLibrary
+from lilbee.cli.tui.screens.profile_library import ProfileLibrary, load_library
+from lilbee.cli.tui.screens.profile_tab import load_snapshot
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
 from lilbee.core.system import default_data_dir
@@ -31,6 +38,7 @@ from tests.test_tui_profile_tab import (
 
 _PLAIN = '[profile]\nname = "{name}"\n\n[values]\nchunk_size = 400\n'
 SIZES = [(120, 36), (80, 24)]
+_STALE_APPLY_PAUSES = 20
 BUILTINS = [
     "Default",
     "Code repository",
@@ -82,6 +90,122 @@ async def test_the_plus_button_saves_a_new_named_profile() -> None:
     saved = list((default_data_dir() / PROFILES_DIRNAME).glob("*.toml"))
     assert len(saved) == 1, saved
     assert ProfileStore().scan().find(name).folder is ProfileFolder.GLOBAL
+
+
+class _HeldLoad:
+    """Wraps a load: once armed, the first call reads its result, then waits for ``release``."""
+
+    def __init__(self, load: Callable[..., Any]) -> None:
+        self._load = load
+        self.armed = threading.Event()
+        self.read = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+
+    def __call__(self, *args: Any) -> Any:
+        result = self._load(*args)
+        if self.armed.is_set() and not self.read.is_set():
+            self.read.set()
+            self.release.wait(timeout=30)
+            self.finished.set()
+        return result
+
+    async def end(self, pilot) -> None:
+        """Let the held call return, and give its result the time to reach the screen."""
+        self.release.set()
+        assert await _until(pilot, self.finished.is_set), "the held load never ended"
+        for _ in range(_STALE_APPLY_PAUSES):
+            await pilot.pause()
+
+
+async def test_a_load_that_read_before_the_save_cannot_undo_the_saved_profile() -> None:
+    held = _HeldLoad(load_snapshot)
+    real_save = profiles.save_as
+
+    def _save_after_the_stale_read(*args: Any) -> profiles.SaveResult:
+        assert held.read.wait(timeout=30), "no load started before the save"
+        return real_save(*args)
+
+    app = _SettingsApp()
+    with (
+        mock.patch("lilbee.cli.tui.screens.settings.load_snapshot", held),
+        mock.patch.object(profiles, "save_as", _save_after_the_stale_read),
+    ):
+        try:
+            async with app.run_test(size=(120, 36)) as pilot:
+                screen = await _loaded(app, pilot, "Default")
+                await _press(pilot, screen.query_one("#profile-new", ConfirmPill))
+                dialog = await _dialog(app, pilot, SaveProfileDialog)
+                name = dialog.query_one("#save-name", Input).value
+                held.armed.set()
+                await _press(pilot, dialog.query_one("#save-save", ConfirmPill))
+                await _loaded(app, pilot, name)
+                await held.end(pilot)
+                assert _text(screen.query_one("#profile-line-name", Static)) == name
+                assert screen.query_one("#profile-select", Select).value == name
+        finally:
+            held.release.set()
+
+
+async def _open_library(app, pilot) -> ProfileLibrary:
+    screen = await _loaded(app, pilot, "Default")
+    await _press(pilot, screen.query_one("#profile-manage", ConfirmPill))
+    library = await _dialog(app, pilot, ProfileLibrary)
+    listing = library.query_one("#library-list", OptionList)
+    assert await _until(pilot, lambda: listing.option_count > 0)
+    return library
+
+
+async def test_a_library_scan_that_read_before_a_save_cannot_hide_the_new_file() -> None:
+    held = _HeldLoad(load_library)
+    app = _SettingsApp()
+
+    def _has_zeta(library: ProfileLibrary) -> bool:
+        return "Zeta" in [entry.name for entry in library._entries]
+
+    with mock.patch("lilbee.cli.tui.screens.profile_library.load_library", held):
+        try:
+            async with app.run_test(size=(120, 36)) as pilot:
+                library = await _open_library(app, pilot)
+                held.armed.set()
+                library.reload()
+                assert await _until(pilot, held.read.is_set), "the first scan never read"
+                _write_global("zeta", _PLAIN.format(name="Zeta"))
+                library.reload()
+                assert await _until(pilot, lambda: _has_zeta(library)), "no Zeta after the rescan"
+                await held.end(pilot)
+                assert _has_zeta(library), "the first scan brought back the old list"
+        finally:
+            held.release.set()
+
+
+async def test_a_library_diff_that_ends_late_cannot_replace_a_newer_diff() -> None:
+    old = profiles.ProfileDiff("Default", (), ("old",), 0)
+    new = profiles.ProfileDiff("Default", (), ("new",), 0)
+    held = _HeldLoad(lambda *_: new if held.read.is_set() else old)
+    shown: list[profiles.ProfileDiff | None] = []
+    app = _SettingsApp()
+    with mock.patch.object(profiles, "diff", held):
+        try:
+            async with app.run_test(size=(120, 36)) as pilot:
+                library = await _open_library(app, pilot)
+                entry = library._selected()
+                real_show = library._show_diff
+
+                def _record(path: Path, diff: profiles.ProfileDiff | None) -> None:
+                    shown.append(diff)
+                    real_show(path, diff)
+
+                library._show_diff = _record
+                held.armed.set()
+                library._load_diff(entry)
+                assert await _until(pilot, held.read.is_set), "the first diff never read"
+                library._load_diff(entry)
+                assert await _until(pilot, lambda: new in shown), "the newer diff never showed"
+                await held.end(pilot)
+                assert shown[-1] is new, shown
+        finally:
+            held.release.set()
 
 
 @pytest.mark.parametrize(

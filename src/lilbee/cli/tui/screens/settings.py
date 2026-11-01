@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -61,7 +62,6 @@ from lilbee.cli.tui.screens.settings_widgets import (
     set_widget_value,
     title_content,
 )
-from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.model_pick import apply_model_pick
 from lilbee.cli.tui.widgets.profile_line import ProfileLine, ProfileLinePill
@@ -272,15 +272,19 @@ class SettingsScreen(Screen[None]):
         if editor and not editor.first().has_focus_within:
             self._show_editor_value(key, editor.first(), getattr(cfg, key))
 
-    @work(thread=True, exclusive=True, group="profile-load", exit_on_error=False)
-    def reload_profile(self) -> None:
-        """Load the profile state off the loop, then show it on the line and the Profile tab."""
+    @work(exclusive=True, group="profile-load", exit_on_error=False)
+    async def reload_profile(self) -> None:
+        """Load the profile state off the loop, then show it on the line and the Profile tab.
+
+        Only the read runs on a thread. A newer load cancels this task at the await,
+        and a cancelled thread worker would still deliver its old snapshot.
+        """
         try:
-            snapshot = load_snapshot()
+            snapshot = await asyncio.to_thread(load_snapshot)
         except OSError as exc:
-            call_from_thread(self, self._show_profile_failure, str(exc))
+            self._show_profile_failure(str(exc))
             return
-        call_from_thread(self, self._show_profile, snapshot)
+        self._show_profile(snapshot)
 
     def _mounted_profile_tabs(self) -> list[ProfileTab]:
         """The tabs that can take a snapshot: filling one before it mounts raises."""
