@@ -183,7 +183,7 @@ def _apply_to_running() -> None:
         log.warning("The running server did not apply the engine choice: %s", exc)
         raise EngineNotAppliedError(
             "The engine choice is saved, but the running server could not apply it: "
-            f"{exc}. Restart lilbee to use the choice."
+            f"{str(exc).rstrip('.')}. Restart lilbee to use the choice."
         ) from exc
 
 

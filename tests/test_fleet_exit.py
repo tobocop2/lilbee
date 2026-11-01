@@ -30,7 +30,6 @@ _STILL_STARTING = f"The engines are still starting after {_WRITE_BOUND_S} s."
 _PROBE = f"""
 import signal, sys, threading
 import typer
-from lilbee.app import engine_service
 from lilbee.cli.commands import servers
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import provider as fleet
@@ -38,6 +37,10 @@ from lilbee.providers.fleet import provider as fleet
 fleet._FLEET_WAIT_S = {_WRITE_BOUND_S}
 fleet._SHUTDOWN_WORK_WAIT_S = {_SHUTDOWN_BOUND_S}
 cfg.allow_http_engines = True
+cfg.allow_http_placement = True
+# The memory route reads the fleet only with memory on and an embedding model set.
+cfg.memory_enabled = True
+cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
 # A runner in the background starts this process with SIGINT ignored; a shell does not.
 signal.signal(signal.SIGINT, signal.default_int_handler)
 
@@ -69,9 +72,6 @@ def _local():
 
 def _start_the_stuck_build():
     _local()._ensure_fleet(bounded=False)
-
-# No route reads a fleet on an empty data dir, so this route's worker reads it.
-engine_service.roles = lambda: _local()._ensure_fleet()
 
 threading.Thread(target=_start_the_stuck_build, daemon=True).start()
 try:
@@ -196,16 +196,31 @@ def test_a_server_with_a_queued_write_ends_after_sigint(server: _Server, tmp_pat
     assert answer.status_code == 503
     assert answer.json()["detail"] == (
         "The engine choice is saved, but the running server could not apply it: "
-        f"{_STILL_STARTING}. Restart lilbee to use the choice."
+        f"{_STILL_STARTING} Restart lilbee to use the choice."
     )
 
 
 def test_a_server_with_an_open_read_ends_after_sigint(server: _Server, tmp_path: Path) -> None:
     elapsed, answer = _sigint_with_a_request_open(
-        server, tmp_path, "GET", "/api/engines/roles", None
+        server, tmp_path, "POST", "/api/memories", {"text": "a note"}
     )
     _assert_ended_by_the_signal(server, elapsed)
-    assert answer.status_code == 500
+    assert answer.status_code == 503
+    assert answer.json()["detail"] == _STILL_STARTING
+
+
+def test_a_server_with_a_queued_placement_write_says_it_is_saved(
+    server: _Server, tmp_path: Path
+) -> None:
+    elapsed, answer = _sigint_with_a_request_open(
+        server, tmp_path, "DELETE", "/api/placement", None
+    )
+    _assert_ended_by_the_signal(server, elapsed)
+    assert answer.status_code == 503
+    assert answer.json()["detail"] == (
+        "The placement is saved, but the running server could not apply it: "
+        f"{_STILL_STARTING} Restart lilbee to use the placement."
+    )
 
 
 def test_a_server_with_no_write_ends_after_sigint(server: _Server) -> None:

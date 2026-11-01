@@ -1096,6 +1096,7 @@ class FleetProvider:
             raise ProviderError(
                 f"The engines are still starting after {_FLEET_WAIT_S:.0f} s.",
                 provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.STARTING,
             )
         work.result()
 
@@ -2137,6 +2138,9 @@ class FleetProvider:
                 self._dispatch_reload(wait=True)
             except BaseException:
                 planning.revoke_vision_on_request()
+                # Work that read the grant can still end with a vision role; this write
+                # stays wanted past that work, so a further pass plans without it.
+                self._dispatch_reload(wait=False)
                 raise
 
     # PDF/image OCR now runs inside xberg via the registered lilbee-vision

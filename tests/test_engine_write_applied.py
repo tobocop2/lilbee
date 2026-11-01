@@ -244,6 +244,35 @@ def test_a_write_that_joins_a_reload_that_fails_reports_the_failure(
     }
 
 
+def test_vision_at_the_bound_fails_the_call_and_leaves_no_vision_role(
+    fleet: Services, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "vision_model", GGUF_CHAT)
+    monkeypatch.setattr(cfg, "ocr", "off")
+    monkeypatch.setattr(fleet_provider, "_FLEET_WAIT_S", 0)
+    gate = threading.Event()
+    _ProcessSwap.start_gate = gate
+    first = threading.Thread(target=fleet.provider.reload_placement)
+    local = _local(fleet)
+    monkeypatch.setattr(cfg, "preferred_engine", EngineSetting.MLX)
+    first.start()
+    assert _ProcessSwap.starting.wait(_WAIT_S)
+    wanted = local._writes_wanted
+    with pytest.raises(ProviderError, match=r"still starting after 0 s") as raised:
+        local._serve_vision_on_request()
+    assert raised.value.kind is ProviderErrorKind.STARTING
+    assert not planning.vision_role_wanted(GGUF_CHAT)
+    # One write asked for the grant; a second, after the revoke, plans without it.
+    assert local._writes_wanted == wanted + 2
+    gate.set()
+    first.join(_WAIT_S)
+    _wait_for(lambda: local._fleet_work is None)
+    assert local._writes_done == local._writes_wanted
+    assert WorkerRole.VISION not in {
+        launch.role for group in local._launches.values() for launch in group
+    }
+
+
 def test_a_write_while_a_reload_has_every_group_stopped_reaches_the_engines(
     fleet: Services,
 ) -> None:
