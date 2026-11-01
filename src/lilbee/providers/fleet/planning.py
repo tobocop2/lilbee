@@ -880,14 +880,26 @@ def chat_cache_type_flag(engine: EngineAdapter) -> str | None:
 
 
 def _vision_mmproj(model_ref: str) -> Path | None:
-    """Resolve a vision model's mmproj sidecar, or ``None`` if absent."""
+    """Resolve a vision model's mmproj sidecar, or ``None`` if absent or a model folder."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.gguf_meta import find_mmproj_for_model
+    from lilbee.providers.gguf_meta import find_mmproj_for_model, needs_sidecar_projector
 
     try:
-        return find_mmproj_for_model(engine_params.resolve_model_path(model_ref))
+        path = engine_params.resolve_model_path(model_ref)
+        return find_mmproj_for_model(path) if needs_sidecar_projector(path) else None
     except (ProviderError, OSError, ValueError, KeyError):
         return None
+
+
+def _vision_ref_needs_projector(model_ref: str) -> bool:
+    """True unless *model_ref* resolves to a model folder; an unresolved ref stays refused."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.gguf_meta import needs_sidecar_projector
+
+    try:
+        return needs_sidecar_projector(engine_params.resolve_model_path(model_ref))
+    except (ProviderError, OSError, ValueError, KeyError):
+        return True
 
 
 def _estimate_role(
@@ -1212,7 +1224,11 @@ def _vision_without_mmproj(role: WorkerRole, ref: str) -> bool:
 
     The skip would silently disable OCR; the warning names the cause and the fix.
     """
-    if role is not WorkerRole.VISION or _vision_mmproj(ref) is not None:
+    if (
+        role is not WorkerRole.VISION
+        or not _vision_ref_needs_projector(ref)
+        or _vision_mmproj(ref) is not None
+    ):
         return False
     log.warning(
         "Vision model %s has no mmproj (CLIP projector); OCR is disabled. "
