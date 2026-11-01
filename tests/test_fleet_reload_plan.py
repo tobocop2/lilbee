@@ -100,7 +100,7 @@ def _apply_settings_write(monkeypatch, provider: FleetProvider, keys: set[str]) 
     _join_fleet_threads()
 
 
-def test_an_ocr_change_leaves_every_launch_identical(real_planner) -> None:
+def test_an_ocr_change_with_no_vision_model_leaves_every_launch_identical(real_planner) -> None:
     before = planning_mod.plan_all_launches().launches
     cfg.ocr = "off"
     assert planning_mod.plan_all_launches().launches == before

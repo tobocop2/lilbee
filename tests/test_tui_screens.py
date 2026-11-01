@@ -4042,6 +4042,24 @@ async def test_chat_slash_set_bool():
         assert cfg.show_reasoning is True
 
 
+async def test_chat_slash_set_echoes_what_a_bool_setting_stored(monkeypatch, tmp_path):
+    """/set shows the stored value, and auto when no value clears a nullable bool."""
+    from lilbee.core import settings as persisted
+
+    monkeypatch.setattr(cfg, "flash_attention", None)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch.object(app.screen, "notify") as mock_notify,
+            patch.object(persisted, "set_value"),
+        ):
+            app.screen._cmd_set("flash_attention 1")
+            assert mock_notify.call_args[0][0] == "flash_attention = True"
+            app.screen._cmd_set("flash_attention")
+            assert mock_notify.call_args[0][0] == "flash_attention = auto"
+        assert cfg.flash_attention is None
+
+
 async def test_chat_slash_set_refuses_text_a_bool_setting_cannot_read(tmp_path):
     """/set shows the refusal the CLI shows, keeps the old value and writes nothing."""
     from lilbee.core import settings as persisted

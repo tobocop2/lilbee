@@ -1,24 +1,27 @@
 """Decides whether a running engine can serve a lilbee's configuration.
 
-The contract is the per-role models plus the engine build pin. Planner-derived
-values (ctx, slots) are accepted from the running engine, never recomputed:
-they vary legitimately with GPU occupancy at plan time. The one exception is
-``chat_ctx_covers``: a live chat window smaller than what this process needs
+The contract is the per-role models, the engine build pin and the settings each
+launch bakes in. Planner-derived values (ctx, slots) are accepted from the running
+engine, never recomputed: they vary legitimately with GPU occupancy at plan time.
+The one exception is ``chat_ctx_covers``: a live chat window smaller than what this process needs
 cannot be adopted, since no prompt fit can grow it. ``vision_slots_cover``
 applies the same rule to the vision role's slot ceiling.
 """
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from lilbee.providers.fleet.swap_manager import SwapState
+
+_NO_SETTINGS: Mapping[WorkerRole, str] = MappingProxyType({})
 
 
 def decoded_launches(state: SwapState) -> list[InstanceLaunch] | None:
@@ -77,15 +80,25 @@ def vision_slots_cover(launches: Iterable[InstanceLaunch], demanded_slots: int) 
     return built_target > 0 and demanded_slots <= built_target
 
 
-def contract_matches(state: SwapState, wanted: Iterable[tuple[WorkerRole, str]], pin: str) -> bool:
+def contract_matches(
+    state: SwapState,
+    wanted: Iterable[tuple[WorkerRole, str]],
+    pin: str,
+    settings: Mapping[WorkerRole, str] = _NO_SETTINGS,
+) -> bool:
     """Whether the engine behind *state* serves every wanted (role, model) pair.
 
     The engine may serve more roles than asked; the engine build pin must
     equal *pin*, and an empty or undecodable served contract never matches.
+    *settings* holds what a plan here gives each role: a launch with other
+    settings never matches, and a role absent from it never refuses.
     """
     if state.engine_pin != pin:
         return False
-    served = served_pairs(state)
-    if not served:
+    launches = decoded_launches(state)
+    if not launches:
         return False
+    if any(settings.get(launch.role, launch.settings) != launch.settings for launch in launches):
+        return False
+    served = {(launch.role, launch.model) for launch in launches}
     return all(pair in served for pair in wanted)

@@ -409,7 +409,7 @@ def _reload_changed_roles(changed_keys: set[str]) -> None:
         sync_xberg_backend(BackendKind.OCR, services.provider)
     role_agnostic = (changed_keys & LOAD_AFFECTING_KEYS) - MODEL_ROLE_FIELDS
     if role_agnostic and not reloaded:
-        services.provider.reload_placement()
+        services.provider.replan_fleet()
 
 
 def requires_services_reset(updates: dict[str, Any]) -> bool:

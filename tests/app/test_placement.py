@@ -222,13 +222,13 @@ def test_preview_has_no_side_effects(monkeypatch):
 
 
 class _FakeProviderServices:
-    """A peeked services container whose provider records reload_placement calls."""
+    """A peeked services container whose provider records replan_fleet calls."""
 
     class _Provider:
         def __init__(self) -> None:
             self.reloads: list[bool] = []
 
-        def reload_placement(self, *, wait: bool = False) -> None:
+        def replan_fleet(self, *, wait: bool = False) -> None:
             self.reloads.append(wait)
 
     def __init__(self) -> None:

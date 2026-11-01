@@ -67,6 +67,7 @@ def _fake_launch(
 ) -> MagicMock:
     launch = MagicMock()
     launch.role = role
+    launch.settings = ""
     launch.model = model or f"model-{role.value}"
     launch.slots = slots
     launch.ctx = ctx
@@ -759,11 +760,11 @@ def test_restart_engines_releases_and_prunes_holds(monkeypatch, tmp_path: Path) 
     p._engine_holds = {tmp_path: hold_user_lock(tmp_path)}
     assert live_users_exist(tmp_path) is True  # we hold membership
 
-    p._release_engines(config_changed=True)
+    p._release_engines()
 
     assert p._engine_holds == {}  # hold map pruned
     assert live_users_exist(tmp_path) is False  # membership released, not left stale
-    assert stopped == [tmp_path]  # engine stopped for the config change
+    assert stopped == [tmp_path]  # the last user out stops the engine
 
 
 def test_reload_of_a_bound_engine_reacquires_instead_of_duplicating(monkeypatch) -> None:
@@ -2269,7 +2270,8 @@ def test_reload_pass_names_the_roles_it_restarts_and_logs_replica_counts(
         p._reload_pass()
     assert p._reload_owed == frozenset({WorkerRole.EMBED})
     assert any(
-        "Reload restarts group" in r.getMessage() and r.args == (SwapGroup.EMBED.value, 1, 2)
+        "Reload restarts group" in r.getMessage()
+        and r.args == (SwapGroup.EMBED.value, "replicas 1 -> 2")
         for r in caplog.records
     )
 
@@ -2628,23 +2630,6 @@ def test_shutdown_drops_refs_and_closes_clients() -> None:
     client.close.assert_called_once()
     assert p._swaps == {}
     assert p._shut_down is True
-
-
-def test_invalidate_load_cache_drops_swap_refs() -> None:
-    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    p.invalidate_load_cache()
-    assert p._swaps == {}
-
-
-def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch, tmp_path: Path) -> None:
-    """A cache drop is not terminal: the next use rebuilds the swap."""
-    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
-    p = FleetProvider()
-    assert p._ensure_fleet() is True
-    p.invalidate_load_cache()
-    assert p._swaps == {}
-    assert p._ensure_fleet() is True  # rebuilt with current cfg, not refused
-    assert p._swaps.get(WorkerRole.CHAT) is swap
 
 
 def test_a_request_rebuilds_when_a_teardown_lands_after_its_fleet_check(
@@ -4645,13 +4630,13 @@ def test_drop_dead_swaps_drops_only_dead_groups() -> None:
     assert set(p._swaps) == {WorkerRole.CHAT}  # the live group is untouched
 
 
-def test_reload_placement_dispatches_the_diff_reload(monkeypatch) -> None:
+def test_replan_fleet_dispatches_the_diff_reload(monkeypatch) -> None:
     passes: list[bool] = []
     p = FleetProvider()
     p._swaps = {SwapGroup.CHAT: _FakeSwap()}
     p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
     monkeypatch.setattr(p, "_reload_pass", lambda force=frozenset(): passes.append(True))
-    p.reload_placement(wait=True)
+    p.replan_fleet(wait=True)
     assert passes == [True]
 
 
@@ -5213,42 +5198,6 @@ def test_opting_in_after_binding_still_keeps_the_engine(monkeypatch, tmp_path: P
     assert stopped == []
 
 
-def test_a_config_change_leaves_an_engine_other_users_are_serving(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """One member's settings change must not interrupt every peer's requests."""
-    from lilbee.runtime.engine_lock import hold_user_lock
-
-    _swap, machine = _bindable_machine(monkeypatch, tmp_path)
-    stopped: list[Path] = []
-    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
-    p = FleetProvider()
-    assert p._ensure_fleet() is True
-    peer = hold_user_lock(machine, pid=555_555)
-
-    p.invalidate_load_cache()
-
-    assert stopped == []  # the peer is mid-request; we rebind or overflow on next use
-    assert p._engine_holds == {}  # our membership is gone either way
-    peer.release_and_check_last()
-
-
-def test_a_config_change_stops_an_engine_no_one_else_is_using(monkeypatch, tmp_path: Path) -> None:
-    """Nothing keeps a stale-config engine resident once its last user leaves."""
-    _swap, machine = _bindable_machine(monkeypatch, tmp_path)
-    stopped: list[Path] = []
-    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
-    # Even an explicit warm opt-in does not preserve an engine built for a
-    # configuration that no longer exists.
-    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
-    p = FleetProvider()
-    assert p._ensure_fleet() is True
-
-    p.invalidate_load_cache()
-
-    assert stopped == [machine]
-
-
 def test_stopping_an_engine_forgets_its_keep_warm_optin(tmp_path: Path) -> None:
     """The mark describes one engine instance; the next one starts unmarked."""
     from lilbee.providers.fleet.swap_manager import stop_engine
@@ -5364,20 +5313,6 @@ def test_the_last_user_out_of_a_keep_warm_engine_leaves_a_reaper_to_unload_it(
     assert reaper_ensures == [tmp_path]
 
 
-def test_a_config_change_that_keeps_peers_does_not_start_a_reaper(
-    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
-) -> None:
-    """Only a withdrawn opt-in changes who watches the engine; a restart does not."""
-    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
-    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
-    p = FleetProvider()
-    p._engine_holds = {tmp_path: _hold_reporting(False)}
-
-    p._release_engines(config_changed=True)
-
-    assert reaper_ensures == []
-
-
 def test_ttl_applies_with_warm_off(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
@@ -5391,25 +5326,6 @@ def test_shutdown_latches_regardless_of_warm(monkeypatch, tmp_path: Path) -> Non
     assert p._ensure_fleet() is True
     p.shutdown()
     assert p._shut_down is True
-
-
-def test_config_change_restarts_the_engine_and_releases_membership(
-    monkeypatch, tmp_path: Path
-) -> None:
-    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
-    stopped: list[Path] = []
-    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
-    p = FleetProvider()
-    assert p._ensure_fleet() is True
-    p.invalidate_load_cache()
-    assert stopped == [machine]  # the shared engine restarts for everyone
-    # Membership is released, not kept: a retained hold would let a later config
-    # change stop a foreign engine that claimed the slot, and keep it falsely live.
-    # The next use re-runs the ladder and re-acquires membership in whatever dir it
-    # rebuilds into.
-    assert not list((machine / "engine-users").glob("*.lock"))
-    assert p._engine_holds == {}
-    assert p._shut_down is False  # provider reusable; next use rebuilds
 
 
 def test_ladder_binds_in_the_private_dir_when_machine_is_incompatible(
@@ -5732,7 +5648,7 @@ def test_ladder_does_not_adopt_an_engine_started_with_an_older_swap_config(
     """
     from lilbee.providers.fleet import binary as binary_mod
 
-    older_pin = f"{binary_mod.engine_build_id()}|{binary_mod._load_config_signature()}"
+    older_pin = f"{binary_mod.engine_build_id()}|swap-config=older"
     swap, machine, built, stopped = _ladder_against_live_chat_engine(
         monkeypatch, tmp_path, older_pin
     )
@@ -5815,7 +5731,8 @@ def test_bindable_group_refuses_an_undecodable_contract_on_its_own(monkeypatch) 
     monkeypatch.setattr(prov_mod, "contract_matches", lambda *_a, **_k: True)  # guard removed
     monkeypatch.setattr(prov_mod, "decoded_launches", lambda _s: None)  # undecodable record
 
-    assert prov_mod._bindable_group(state, "pin-a", {(WorkerRole.CHAT, "m")}) is None
+    demand = prov_mod._EngineDemand({(WorkerRole.CHAT, "m")}, 0, {}, {})
+    assert prov_mod._bindable_group(state, "pin-a", demand) is None
 
 
 def test_ladder_probes_each_group_once_per_pass(monkeypatch, tmp_path: Path) -> None:
@@ -5880,7 +5797,8 @@ def test_ladder_skips_the_shared_slot_without_kernel_arbitrated_locks(
 def test_healthy_groups_ours_is_false_with_no_healthy_group() -> None:
     # The vacuous case: an empty snapshot is "not ours" (live membership owns
     # that branch); the helper must not claim it.
-    assert prov_mod._healthy_groups_ours({}, "pin-a", {(WorkerRole.CHAT, "m-chat")}) is False
+    demand = prov_mod._EngineDemand({(WorkerRole.CHAT, "m-chat")}, 0, {}, {})
+    assert prov_mod._healthy_groups_ours({}, "pin-a", demand) is False
 
 
 def test_ladder_overflows_when_a_live_used_pin_equal_group_serves_unwanted_models(

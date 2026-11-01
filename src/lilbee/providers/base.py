@@ -6,7 +6,6 @@ import math
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, runtime_checkable
 
 from pydantic import BaseModel
@@ -506,10 +505,6 @@ class LLMProvider(Protocol):
         """Release resources (e.g. background threads). No-op if nothing to clean up."""
         ...
 
-    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """Drop loaded-model state; ``None`` evicts all, else only that path. No-op default."""
-        return
-
     def warm_up_pool(self) -> None:
         """Eagerly start the configured role servers so the first call lands warm.
 
@@ -539,12 +534,12 @@ class LLMProvider(Protocol):
         """
         return
 
-    def reload_placement(self, *, wait: bool = False) -> None:
-        """Re-plan GPU placement with current cfg, restarting only moved roles.
+    def replan_fleet(self, *, wait: bool = False) -> None:
+        """Re-plan the fleet from current cfg, restarting only moved roles.
 
         Default no-op for providers without GPU-placed servers. The fleet diffs
         the fresh plan against the running fleet and respawns only the roles
-        whose placement changed, so an untouched role's loaded model stays
+        whose launch changed, so an untouched role's loaded model stays
         resident. ``wait=True`` blocks until the restarted proxies are healthy.
         """
         return

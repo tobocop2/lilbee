@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, Literal, overload
 
 import numpy as np
@@ -425,6 +424,3 @@ class SdkLLMProvider(LLMProvider):
 
     def shutdown(self) -> None:
         """SDK-backed providers hold no lilbee-side resources."""
-
-    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """No-op: cloud backends have no local model cache to evict."""

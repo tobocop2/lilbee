@@ -50,20 +50,19 @@ def _bundled_tool(tool: EngineTool) -> Path | None:
 def engine_pin() -> str:
     """Identity of the engine this lilbee would spawn; sharing keys on it.
 
-    Three dimensions must match for two processes to share one engine: the engine
+    Two dimensions must match for two processes to share one engine: the engine
     BUILD (a configured ``LILBEE_LLAMA_SERVER_PATH`` is its own identity so a
-    bring-your-own engine never silently shares with a bundled one), the
-    load-affecting CONFIG baked into the launch argv (kv-cache type, expert
-    offload, n-gpu-layers, ctx target, ...), and the revision of the llama-swap
-    config the engine runs under. A process whose pin differs has
-    ``contract_matches`` refuse the bind and overflows to its own engine rather
-    than silently running on the incumbent's flags. Total: never raises, because
-    it runs on every state write.
+    bring-your-own engine never silently shares with a bundled one) and the
+    revision of the llama-swap config the engine runs under. A process whose pin
+    differs has ``contract_matches`` refuse the bind and overflows to its own
+    engine. The settings a launch bakes in are matched per launch instead
+    (``InstanceLaunch.settings``). Total: never raises, because it runs on every
+    state write.
     """
     # circular: swap_config -> binary via readback.engine_help
     from lilbee.providers.fleet.swap_config import SWAP_CONFIG_REVISION
 
-    return f"{engine_build_id()}|{_load_config_signature()}|swap-config={SWAP_CONFIG_REVISION}"
+    return f"{engine_build_id()}|swap-config={SWAP_CONFIG_REVISION}"
 
 
 def engine_build_id() -> str:
@@ -143,29 +142,6 @@ def engine_binary_identity(binary: Path) -> str:
             return f"{binary}@{hashlib.file_digest(handle, 'sha256').hexdigest()}"
     except OSError:
         return f"{binary}@unreadable"
-
-
-# Ctx sizing keys share by window coverage (contract.chat_ctx_covers), not
-# value equality: a running window that covers the demand serves both peers.
-# chat_n_ctx_target in particular defaults per process from its cgroup-capped
-# RAM, so exact equality here restarted a warm engine per co-tenant.
-_CTX_SIZING_KEYS = frozenset({"num_ctx", "num_ctx_max", "chat_n_ctx_target"})
-
-
-def _load_config_signature() -> str:
-    """A deterministic digest of the settings an engine bakes in at launch.
-
-    These decide cross-process sharing, since an engine launched with one set
-    cannot serve a peer that configured another: the ``LOAD_AFFECTING_KEYS`` a
-    single process reloads on (minus the ctx sizing keys, matched by coverage
-    instead), plus the placement keys that fix which devices a launch uses, so
-    a peer with different placement binds its own engine.
-    """
-    from lilbee.core.config import cfg
-    from lilbee.core.config.keys import LOAD_AFFECTING_KEYS, PLACEMENT_PIN_KEYS
-
-    keys = (LOAD_AFFECTING_KEYS - _CTX_SIZING_KEYS) | PLACEMENT_PIN_KEYS
-    return ";".join(f"{key}={getattr(cfg, key, None)}" for key in sorted(keys))
 
 
 def resolve_engine_tool(tool: EngineTool) -> Path:

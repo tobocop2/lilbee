@@ -1133,7 +1133,9 @@ holds the running fleet's records; every process acquires its engine
 through the same ladder, under a cross-process build lock:
 
 1. **Bind** when the slot's engine is healthy and its contract (per-role
-   models plus the bundled **engine pin**) covers the configuration. Binders
+   models, the bundled **engine pin**, and the settings each launch bakes in)
+   covers the configuration. A write restarts a group only when its launch
+   moves, so a kept group stays bindable. Binders
    spawn nothing and write nothing. lilbee version is not in the contract:
    releases sharing a pin share an engine; differing pins never run on a
    build they were not tested against. The pin carries the revision of the
@@ -1188,7 +1190,7 @@ unauthenticated localhost port; the machine slot only makes discovery easier.
 ```mermaid
 flowchart TD
     S["lilbee process starts"] --> L["hold user lock<br/>(kernel releases on ANY death)"]
-    L --> Q{"machine slot engine healthy,<br/>models + engine pin match?"}
+    L --> Q{"machine slot engine healthy,<br/>models, engine pin + settings match?"}
     Q -- bind --> B["use its proxy ports<br/>spawn nothing"]
     Q -- "slot empty" --> BU["build engine in the slot"]
     Q -- "occupied, incompatible,<br/>in live use" --> PR["build private engine<br/>in this config root"]

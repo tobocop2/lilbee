@@ -229,6 +229,16 @@ def _stream_error_text(exc: Exception) -> str:
     return msg.STREAM_ERROR.format(error=exc)
 
 
+def _set_echo(key: str, parsed: object, *, secret: bool, is_bool: bool) -> object:
+    """What /set shows after a write: a bool setting shows what it stored, auto when unset."""
+    if secret and parsed:
+        return msg.MASKED_VALUE
+    if not is_bool:
+        return parsed
+    stored = getattr(cfg, key)
+    return msg.CMD_SET_AUTO if stored is None else stored
+
+
 def _setting_type_hint(kind: type) -> str:
     """Human phrase for what a settings value must be."""
     return _SETTING_TYPE_HINTS.get(kind, f"a valid {kind.__name__} value")
@@ -1534,8 +1544,7 @@ class ChatScreen(Screen[None]):
             # (model bar, scope chip, status bar) refresh. The boundary's
             # _invalidate_caches now handles llm_provider service reset.
             self.app.set_setting(key, parsed)
-            shown = getattr(cfg, key) if defn.type is bool and not clears else parsed
-            shown = msg.MASKED_VALUE if defn.secret and parsed else shown
+            shown = _set_echo(key, parsed, secret=defn.secret, is_bool=defn.type is bool)
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
         except (ValueError, TypeError) as exc:
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")

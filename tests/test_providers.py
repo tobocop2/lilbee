@@ -783,15 +783,6 @@ class TestRoutingProvider:
         assert caps == ["completion", "vision"]
         mock_sdk.get_capabilities.assert_called_once_with("ollama/llava:7b")
 
-    def test_invalidate_load_cache_forwards_to_native(self) -> None:
-        """``invalidate_load_cache`` releases the native side; SDK has no cache."""
-        rp = self._make_provider()
-        mock_native = mock.MagicMock()
-        rp._local = mock_native
-
-        rp.invalidate_load_cache()
-        mock_native.invalidate_load_cache.assert_called_once_with(None)
-
     def test_warm_up_pool_forwards_to_native(self) -> None:
         """``warm_up_pool`` lazily constructs the native provider and warms it."""
         rp = self._make_provider()
@@ -3821,8 +3812,8 @@ class TestRoutingLifecycleForwarding:
         local.cancel_inference.assert_called_once_with()
         rp.reload_role(WorkerRole.EMBED)
         local.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=False)
-        rp.reload_placement(wait=True)
-        local.reload_placement.assert_called_once_with(wait=True)
+        rp.replan_fleet(wait=True)
+        local.replan_fleet.assert_called_once_with(wait=True)
 
     def test_cancel_and_reload_are_noop_without_local(self) -> None:
         from lilbee.providers.roles import WorkerRole
@@ -3831,7 +3822,7 @@ class TestRoutingLifecycleForwarding:
         rp = RoutingProvider()  # _local is None
         rp.cancel_inference()  # must not raise
         rp.reload_role(WorkerRole.CHAT)  # must not raise
-        rp.reload_placement()  # must not raise
+        rp.replan_fleet()  # must not raise
 
     def test_max_concurrent_chats_defaults_to_one_without_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider

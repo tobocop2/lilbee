@@ -480,3 +480,13 @@ def test_entry_label_names_the_folder_and_each_problem() -> None:
     _write_global("broken-profile", _BROKEN)
     entry = next(e for e in ProfileStore().scan().entries if e.name == "broken-profile")
     assert str(entry_label(entry)).startswith("broken-profile  global, cannot load: ")
+
+
+async def test_a_resize_repaints_the_rows_to_the_new_width() -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        library = await _open(app, pilot)
+        with mock.patch.object(library, "_paint_rows") as paint:
+            await pilot.resize_terminal(100, 40)
+            await pilot.pause()
+        paint.assert_called()

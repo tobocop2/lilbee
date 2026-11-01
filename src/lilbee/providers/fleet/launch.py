@@ -60,6 +60,11 @@ class InstanceLaunch:
     per device in its mmproj field, so that path compares the full estimate and
     ignores this.
     """
+    # The settings this launch bakes in (planning.launch_settings). A process on
+    # other values never binds it. It takes part in launch equality, so a reload
+    # restarts a group exactly when this moves, and a kept group always carries
+    # the value a plan from the current config gives it.
+    settings: str = ""
     est_host_bytes: int = 0
     """Host bytes the estimate expects chat to hold when the engine fits its layers.
 
@@ -87,6 +92,7 @@ class InstanceLaunch:
             "est_vram_by_device": dict(self.est_vram_by_device),
             "est_unreported_bytes": self.est_unreported_bytes,
             "est_host_bytes": self.est_host_bytes,
+            "settings": self.settings,
         }
 
     @classmethod
@@ -112,6 +118,7 @@ class InstanceLaunch:
             built_slots_target=int(payload.get("built_slots_target") or 0),
             replica=int(payload.get("replica") or 0),
             rerank_mode=RerankMode(raw_mode) if raw_mode else None,
+            settings=str(payload.get("settings") or ""),
         )
 
     @property

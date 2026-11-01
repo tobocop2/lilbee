@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -19,23 +18,18 @@ from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 class _RecordingProvider:
     """Stand-in provider recording the lifecycle calls the boundary makes.
 
-    ``calls`` keeps the legacy invalidate_load_cache trail; ``reloaded_roles``
-    and ``replanned`` capture the off-thread reload that a load-affecting change
-    routes to, named by role or not.
+    ``reloaded_roles`` and ``replanned`` capture the off-thread reload that a
+    load-affecting change routes to, named by role or not.
     """
 
     def __init__(self) -> None:
-        self.calls: list[Path | None] = []
         self.reloaded_roles: list[object] = []
         self.replanned = 0
-
-    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        self.calls.append(model_path)
 
     def reload_role(self, role: object, *, wait: bool = False) -> None:
         self.reloaded_roles.append(role)
 
-    def reload_placement(self, *, wait: bool = False) -> None:
+    def replan_fleet(self, *, wait: bool = False) -> None:
         self.replanned += 1
 
     def vision_ocr(
@@ -377,18 +371,6 @@ def test_unknown_key_does_not_touch_fleet():
         assert provider.replanned == 0
     finally:
         _restore_services()
-
-
-def test_protocol_default_is_safe_for_remote_provider():
-    """A backend that subclasses LLMProvider but doesn't override
-    invalidate_load_cache gets the Protocol's no-op default body."""
-
-    class _BackendWithNoOverride(LLMProvider):  # type: ignore[misc]
-        """Concrete subclass without an explicit invalidate_load_cache override."""
-
-    backend = _BackendWithNoOverride()
-    assert backend.invalidate_load_cache() is None
-    assert backend.invalidate_load_cache(Path("/tmp/whatever.gguf")) is None
 
 
 def test_protocol_defaults_for_drop_and_role_ready():
