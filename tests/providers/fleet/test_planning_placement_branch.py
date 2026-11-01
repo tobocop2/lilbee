@@ -89,7 +89,9 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
     devices = [FleetDevice("CUDA", 0, "A", 80 * GIB, 10 * GIB)]
     captured = {}
 
-    def fake_from_spec(spec, active_roles, device_capacity, *, estimate_peak, plan_auto):
+    def fake_from_spec(
+        spec, active_roles, device_capacity, *, estimate_peak, plan_auto, model_refs
+    ):
         captured["spec"] = spec
         captured["roles"] = active_roles
         captured["capacity"] = device_capacity
