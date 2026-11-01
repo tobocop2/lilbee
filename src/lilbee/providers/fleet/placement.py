@@ -892,15 +892,20 @@ def _charge_devices(
     """Subtract one instance's per-device peaks from *remaining*; fail loud if a card overflows.
 
     An estimate that does not cover every pinned device is a PlacementError rather
-    than a zip mismatch: gguf-parser returns no per-device breakdown for some
-    models, and the auto planner skips such a candidate (see :func:`_place_split`),
-    so the manual path must refuse in the currency callers already handle. With
-    *refuse_alone* the error names the role, for the launch to drop only that role.
+    than a zip mismatch: an engine can state no per-device breakdown, and the auto
+    planner skips such a candidate (see :func:`_place_split`), so the manual path
+    must refuse in the currency callers already handle. With *refuse_alone* the
+    error names the role, for the launch to drop only that role.
     """
 
     def refusal(reason: str) -> PlacementError:
         return TargetRefusedError({role: reason}) if refuse_alone else PlacementError(reason)
 
+    if not per_device and len(devices) > 1:
+        raise refusal(
+            f"{role.value} has no per-card memory figure, so it cannot be pinned to "
+            f"{len(devices)} cards. Pin one card, or set its target to auto."
+        )
     if len(per_device) != len(devices):
         raise refusal(
             f"{role.value} is pinned to {len(devices)} device(s) but its memory estimate "
