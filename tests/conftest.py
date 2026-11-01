@@ -549,6 +549,21 @@ def _isolate_playwright_browsers_path(_playwright_browsers_root, monkeypatch):
 
 
 @pytest.fixture
+def unreadable_folder(tmp_path: Path) -> Iterator[Path]:
+    """A folder the current user cannot open; skips where the mode bits do not apply."""
+    folder = tmp_path / "locked"
+    folder.mkdir()
+    (folder / "note.txt").write_text("hidden", encoding="utf-8")
+    folder.chmod(0)
+    try:
+        if os.access(folder, os.R_OK):
+            pytest.skip("this user can open a mode 0 folder")
+        yield folder
+    finally:
+        folder.chmod(0o700)
+
+
+@pytest.fixture
 def permissive_umask():
     """Run the body under umask 0 so anything not created owner-only lands world-readable."""
     previous = os.umask(0)

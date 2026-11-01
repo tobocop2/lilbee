@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -343,11 +344,14 @@ def _save(
 
 
 def validate_request(request: AnalyzeRequest) -> None:
-    """Refuse a *target* without *apply* or *save*, and a *directory* that is not a folder."""
+    """Refuse a *target* with no *apply* or *save*, and a *directory* that is not readable."""
     if request.target is not None and not request.apply and request.save is None:
         raise ValueError(TARGET_WITHOUT_SAVE_MESSAGE)
     if request.directory is not None and not request.directory.is_dir():
         raise ValueError(f"{request.directory} is not a folder")
+    # The walk skips a folder it cannot open without a word, so analyze would report an empty one.
+    if request.directory is not None and not os.access(request.directory, os.R_OK | os.X_OK):
+        raise ValueError(f"Path '{request.directory}' is not readable.")
 
 
 def server_directory(value: str | None) -> Path | None:
@@ -399,7 +403,7 @@ async def run_analysis(
     """Read the corpus, recommend a profile, save it when asked, and record the run.
 
     Raises ``TaskCancelledError`` on cancel, before anything is saved or recorded;
-    raises ``ValueError`` when *directory* is not a folder, a *target* comes without
+    raises ``ValueError`` when *directory* is not a readable folder, a *target* comes without
     *apply* or *save*, or the save is refused.
     """
     await asyncio.to_thread(validate_request, request)

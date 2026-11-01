@@ -586,6 +586,23 @@ async def test_slash_analyze_on_a_missing_folder_toasts_and_starts_nothing(
         assert _analyze_tasks(chat_app) == []
 
 
+async def test_slash_analyze_on_a_folder_the_user_cannot_open_toasts_the_failure(
+    chat_app, unreadable_folder
+) -> None:
+    async with chat_app.run_test(size=_NARROW) as pilot:
+        chat = await await_chat(chat_app, pilot)
+        chat.run_command(f"/analyze {unreadable_folder}")
+        assert await _until(
+            pilot,
+            lambda: any(
+                msg.ANALYZE_FAILED.format(error=f"Path '{unreadable_folder}' is not readable.")
+                in n.message
+                for n in chat_app._notifications
+            ),
+        )
+        assert not any("finished" in n.message for n in chat_app._notifications)
+
+
 def _stalled_collect(started: list[bool]):
     async def _collect(files, *, on_progress, cancel):
         on_progress(EventType.ANALYZE, AnalyzeEvent(done=1, total=4, file="a.pdf"))

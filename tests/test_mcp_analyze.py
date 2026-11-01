@@ -107,6 +107,13 @@ async def test_a_refused_request_is_an_error_before_any_file_is_read(monkeypatch
     assert not (cfg.data_root / STATE_FILE_NAME).exists()
 
 
+async def test_a_folder_the_user_cannot_open_is_an_error(monkeypatch, unreadable_folder):
+    seen = _forbid_reading(monkeypatch)
+    result = await analyze(directory=str(unreadable_folder))
+    assert "is not readable" in result["error"]
+    assert seen == []
+
+
 async def test_a_missing_folder_is_an_error(monkeypatch, tmp_path):
     seen = _forbid_reading(monkeypatch)
     result = await analyze(directory=str(tmp_path / "missing"))

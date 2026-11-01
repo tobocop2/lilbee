@@ -144,6 +144,14 @@ def test_a_refused_request_is_a_400_before_any_file_is_read(client, monkeypatch,
     assert not (cfg.data_root / STATE_FILE_NAME).exists()
 
 
+def test_a_folder_the_user_cannot_open_is_a_400(client, monkeypatch, unreadable_folder):
+    seen = _forbid_reading(monkeypatch)
+    resp = client.post("/api/analyze", json={"directory": str(unreadable_folder)})
+    assert resp.status_code == 400
+    assert "is not readable" in resp.json()["detail"]
+    assert seen == []
+
+
 def test_a_missing_folder_is_a_400(client, monkeypatch, tmp_path):
     seen = _forbid_reading(monkeypatch)
     resp = client.post("/api/analyze", json={"directory": str(tmp_path / "missing")})

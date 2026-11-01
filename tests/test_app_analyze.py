@@ -463,6 +463,16 @@ def test_every_builtin_analyze_can_pick_is_a_shipped_builtin(store):
         assert entry.file is not None, name
 
 
+def test_a_folder_the_user_cannot_open_is_refused_not_read_as_empty(
+    store, monkeypatch, unreadable_folder
+):
+    seen: list = []
+    with pytest.raises(ValueError, match="is not readable"):
+        _run(store, AnalyzeRequest(directory=unreadable_folder), monkeypatch=monkeypatch, seen=seen)
+    assert seen == []
+    assert not (cfg.data_root / STATE_FILE_NAME).exists()
+
+
 def test_a_directory_that_is_not_a_folder_is_refused(store, monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="is not a folder"):
         _run(store, AnalyzeRequest(directory=tmp_path / "missing"), monkeypatch=monkeypatch)
