@@ -13,13 +13,13 @@ from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engines.base import EngineAdapter
-from lilbee.providers.fleet.placement_spec import PlacementSpec
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.fleet.planning import (
     ResolvedPlacement,
     clear_read_device_cache,
     resolve_placement_plan,
 )
-from lilbee.providers.roles import EngineBackend, WorkerRole
+from lilbee.providers.roles import EngineBackend, RoleTarget, WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress, is_active_warm
 
 log = logging.getLogger(__name__)
@@ -57,6 +57,8 @@ class RolePlacementView:
     tensor_split: tuple[int, ...] | None
     replicas: int
     engine: str
+    # Where the role runs. ``devices`` is empty for a CPU role, which holds no card.
+    target: RoleTarget = RoleTarget.GPU
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,9 @@ class PlacementView:
     # it off ``gpus``: an empty device list is a CPU host and a failed probe
     # alike, and only UNKNOWN says which one this is.
     engine_backend: EngineBackend = EngineBackend.UNKNOWN
+    # Why the saved spec cannot run here, in words a user can act on. The spec
+    # itself is in ``rejected_spec_json`` so it can be corrected.
+    refusal: str | None = None
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -128,6 +133,7 @@ def _view(
     manual: bool,
     spec_json: str | None,
     rejected_spec_json: str | None = None,
+    refusal: str | None = None,
 ) -> PlacementView:
     gpus = tuple(
         GpuInfo(
@@ -154,6 +160,7 @@ def _view(
                 tensor_split=plan.tensor_split or None,
                 replicas=1,
                 engine=str(engines[plan.role].name),
+                target=plan.target,
             )
     return PlacementView(
         gpus=gpus,
@@ -176,6 +183,7 @@ def _view(
         co_tenants=tuple(sorted(resolved.co_tenants, key=lambda role: role.value)),
         rejected_spec_json=rejected_spec_json,
         engine_backend=resolved.engine_backend,
+        refusal=refusal,
     )
 
 
@@ -203,9 +211,19 @@ def get_placement() -> PlacementView:
     the fleet runs the auto plan, and this reports that rather than a manual layout
     nothing is using.
     """
-    spec = _active_spec()
     reading = _planning_engines()
-    resolved = _resolve(spec, reading, fall_back_to_auto=True)
+    try:
+        spec = _active_spec()
+        resolved = _resolve(spec, reading, fall_back_to_auto=True)
+    except PlacementError as exc:
+        return _view(
+            _resolve(None, reading),
+            reading.adapters,
+            manual=False,
+            spec_json=None,
+            rejected_spec_json=cfg.placement,
+            refusal=str(exc),
+        )
     engines = reading.adapters
     if spec is None:
         return _view(resolved, engines, manual=False, spec_json=None)

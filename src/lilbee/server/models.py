@@ -39,7 +39,7 @@ from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.profile_files import ProfileEntry, ProfileFolder, ProfileValidation
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
-from lilbee.providers.roles import EngineBackend, WorkerRole
+from lilbee.providers.roles import EngineBackend, RoleTarget, WorkerRole
 from lilbee.providers.server_registry import RerankWire
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 from lilbee.runtime.progress import LibraryUpgradeEvent
@@ -945,6 +945,7 @@ class RolePlacementResponse(BaseModel):
     devices: list[int]
     tensor_split: list[int] | None
     replicas: int
+    target: RoleTarget = RoleTarget.GPU
 
 
 class SkippedRoleResponse(BaseModel):
@@ -975,6 +976,7 @@ class PlacementResponse(BaseModel):
     co_tenants: list[str] = []
     notice: str | None = None
     rejected_spec_json: str | None = None
+    refusal: str | None = None
     # The backend the engine selected, reported rather than inferred. ``gpus``
     # being empty does not mean ``cpu``: a host whose device probe never answered
     # reports ``unknown``, so a client never mislabels a GPU box as a CPU one.
@@ -993,6 +995,7 @@ class PlacementResponse(BaseModel):
                     devices=list(r.devices),
                     tensor_split=list(r.tensor_split) if r.tensor_split else None,
                     replicas=r.replicas,
+                    target=r.target,
                 )
                 for r in view.roles
             ],
@@ -1008,6 +1011,7 @@ class PlacementResponse(BaseModel):
             ],
             co_tenants=[r.value for r in view.co_tenants],
             rejected_spec_json=view.rejected_spec_json,
+            refusal=view.refusal,
             engine_backend=view.engine_backend,
         )
 
