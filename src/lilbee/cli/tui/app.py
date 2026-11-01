@@ -763,8 +763,12 @@ class LilbeeApp(App[None]):
         # screen/app bindings see them (verified empirically: this holds for
         # priority bindings too), so `t`/`m` type literals there and the guard
         # exists purely to keep the footer honest.
-        if action in ("open_tasks", "open_catalog", "open_chat") and isinstance(
-            self.focused, (Input, TextArea)
+        # run_sync (S) is a priority binding. Live at the gate, it swaps chat in
+        # under the gate, which then skips its handover. Off, the gate keeps the
+        # key as typed text.
+        if (action == "run_sync" and self._gate_is_showing()) or (
+            action in ("open_tasks", "open_catalog", "open_chat")
+            and isinstance(self.focused, (Input, TextArea))
         ):
             return False
         # Nothing to jump to when Chat is already the active view.
@@ -785,6 +789,12 @@ class LilbeeApp(App[None]):
         if action == "toggle_sessions" and self._toggle_sessions_is_noop():
             return False
         return super().check_action(action, parameters)
+
+    def _gate_is_showing(self) -> bool:
+        """True while the startup gate is the screen on top."""
+        from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+        return isinstance(self.screen, StartupGate)
 
     def go_back(self) -> None:
         """Return to the view the user came from (Chat when there is none)."""

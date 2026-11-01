@@ -71,6 +71,12 @@ class StartupGate(Screen[None]):
             event.prevent_default()
             event.stop()
 
+    def on_paste(self, event: events.Paste) -> None:
+        """Keep pasted text for the prompt, as for typed keys."""
+        self._typed.append(event.text)
+        event.prevent_default()
+        event.stop()
+
     def compose(self) -> ComposeResult:
         with Vertical(id="gate-body"):
             yield Static(_LOGO, id="gate-logo")

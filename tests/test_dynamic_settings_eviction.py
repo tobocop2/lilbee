@@ -140,6 +140,40 @@ def test_chunk_size_change_drops_fleet():
         _restore_services()
 
 
+_ROLE_AGNOSTIC_LOAD_WRITES: dict[str, object] = {
+    "num_ctx": 4096,
+    "num_ctx_max": 131072,
+    "chat_n_ctx_target": 16384,
+    "kv_cache_type": "q8_0",
+    "n_gpu_layers": 12,
+    "cpu_moe": True,
+    "n_cpu_moe": 4,
+    "flash_attention": True,
+    "reranker_type": "llm",
+    "chunk_size": 1024,
+}
+
+
+def test_every_role_agnostic_load_key_has_a_drop_case():
+    """A key added to LOAD_AFFECTING_KEYS must name its write here, or this fails."""
+    from lilbee.core.config.keys import LOAD_AFFECTING_KEYS
+    from lilbee.providers.roles import MODEL_ROLE_FIELDS
+
+    assert set(_ROLE_AGNOSTIC_LOAD_WRITES) == LOAD_AFFECTING_KEYS - MODEL_ROLE_FIELDS
+
+
+@pytest.mark.parametrize("key", sorted(_ROLE_AGNOSTIC_LOAD_WRITES))
+def test_each_role_agnostic_load_key_drops_fleet(key):
+    """Each launch-argument key drops the whole fleet once and reloads no single role."""
+    provider = _install_recording_provider()
+    try:
+        apply_settings_update({key: _ROLE_AGNOSTIC_LOAD_WRITES[key]})
+        assert provider.dropped == 1
+        assert provider.reloaded_roles == []
+    finally:
+        _restore_services()
+
+
 def test_embed_and_rerank_model_change_reloads_only_those_roles():
     """Switching embedding_model / reranker_model reloads just that role's server
     off-thread; the whole fleet is never dropped (other roles keep serving)."""

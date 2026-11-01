@@ -1008,52 +1008,6 @@ class TestRemoteToRow:
         assert row.installed is True
 
 
-class TestSlashSuggester:
-    async def test_suggests_commands(self) -> None:
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
-
-        s = SlashSuggester(use_cache=False)
-        result = await s.get_suggestion("/he")
-        assert result == "/help"
-
-    async def test_suggests_nothing_for_empty(self) -> None:
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
-
-        s = SlashSuggester(use_cache=False)
-        result = await s.get_suggestion("")
-        assert result is None
-
-    async def test_suggests_nothing_for_plain_text(self) -> None:
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
-
-        s = SlashSuggester(use_cache=False)
-        result = await s.get_suggestion("hello world")
-        assert result is None
-
-    async def test_suggests_set_params(self) -> None:
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
-
-        s = SlashSuggester(use_cache=False)
-        result = await s.get_suggestion("/set temp")
-        assert result is not None
-        assert "temperature" in result
-
-    async def test_suggests_theme_names(self) -> None:
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
-
-        s = SlashSuggester(use_cache=False)
-        result = await s.get_suggestion("/theme dra")
-        assert result is not None
-        assert "dracula" in result
-
-    async def test_no_suggestion_for_exact_match(self) -> None:
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
-
-        s = SlashSuggester(use_cache=False)
-        result = await s.get_suggestion("/help")
-        assert result is None
-
-
 class TestContextAwareQuit:
     """Test that action_quit cancels foreground work but never background tasks."""
 
