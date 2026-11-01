@@ -66,10 +66,12 @@ class CardEngine(FakeAdapter):
         backend: EngineBackend = EngineBackend.CUDA,
         takes_device_names: bool = False,
         cpu_only: bool = False,
+        host_gib: float = 0,
     ) -> None:
         self.name = name
         self.takes_device_names = takes_device_names
         self._cpu_only = cpu_only
+        self._host_bytes = int(host_gib * GIB)
         self._binary = binary
         self._sizes = {model_file(r.role): int(r.gib * GIB) for r in roles}
         self._devices = devices
@@ -112,7 +114,7 @@ class CardEngine(FakeAdapter):
         return MemoryEstimate(
             kind=self.memory_kind,
             device_bytes=size,
-            host_bytes=0,
+            host_bytes=self._host_bytes,
             shared_bytes=size,
             per_device=per_device,
             per_device_shared=per_device,
