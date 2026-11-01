@@ -186,11 +186,7 @@ class SettingsScreen(Screen[None]):
         with TopBars():
             yield ViewTabs()
         yield ProfileLine(id="profile-line")
-        # Container (not VerticalScroll) here -- each tab body is itself a
-        # VerticalScroll, and stacking two scrollables on the same column
-        # tears the layout when the inner one wheels past its top edge
-        # (bb-...-wiki-tear). Only the inner pane scrolls; the outer just
-        # reserves the flex row.
+        # A Container, not a VerticalScroll: each tab body scrolls, and nested scrollables tear.
         with Container(id="settings-scroll"), TabbedContent(id="settings-tabs"):
             yield TabPane(
                 msg.PROFILE_TAB_LABEL,
@@ -430,14 +426,7 @@ class SettingsScreen(Screen[None]):
 
     @staticmethod
     def _mount_baseline(key: str, defn: SettingDef, editor: Collapsible | SettingEditor) -> str:
-        """The text a freshly built editor will show once mounted.
-
-        A ``Select``'s ``value`` reactive is not populated from its
-        constructor kwarg until the widget mounts, so reading it off
-        *editor* here (right after construction, before it is ever mounted)
-        would see the pre-mount default rather than what it will display;
-        this recomputes the same choice match ``make_select`` used instead.
-        """
+        """The text a freshly built editor will show once mounted."""
         # A list setting's editor is a Collapsible that holds the text area.
         if isinstance(editor, Collapsible):
             return list_editor_text(key)

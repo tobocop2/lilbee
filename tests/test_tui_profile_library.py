@@ -373,6 +373,9 @@ async def test_an_entry_its_name_does_not_pick_is_refused(key) -> None:
         await _highlight(pilot, library, "court-filings  global, shadowed")
         await pilot.press(key)
         await _toasted(app, pilot, "The name court-filings picks another file")
+        toast = next(n.message for n in app._notifications if "picks another file" in n.message)
+        assert "the global one" in toast
+        assert str(hidden) not in toast, "a long path wraps in the toast and covers the hints"
         await app.workers.wait_for_complete()
         assert app.screen is library
     assert hidden.is_file()

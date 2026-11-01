@@ -17,6 +17,13 @@ ViewTabs Static {
     width: auto;
 }
 
+/* The trailing pills take the width the tabs leave, and a long project path ends in an ellipsis. */
+ViewTabs #view-tabs-trailing {
+    width: 1fr;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
 .view-tab {
     width: auto;
     padding: 0;

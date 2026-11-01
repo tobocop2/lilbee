@@ -336,7 +336,9 @@ class ProfileLibrary(ModalScreen[None]):
         if entry is None or self._reaches(entry):
             return entry
         self.notify(
-            msg.PROFILE_LIBRARY_UNREACHABLE.format(name=entry.name, path=entry.path),
+            msg.PROFILE_LIBRARY_UNREACHABLE.format(
+                name=entry.name, folder=msg.PROFILE_FOLDER_TAG[entry.folder]
+            ),
             severity="error",
         )
         return None

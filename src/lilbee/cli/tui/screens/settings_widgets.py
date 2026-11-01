@@ -102,16 +102,7 @@ EDITOR_KINDS = (Input, TextArea, Checkbox, Select)
 
 
 def displayed_text(widget: SettingEditor) -> str:
-    """The raw text a settings editor currently shows.
-
-    Covers every editor kind a save handler compares a new value against to
-    tell an edit from a field that was never touched (whether it shows a
-    real cfg value or an unset field's model-default text): an Input or
-    multi-line TextArea round-trips through plain text, a Select's blank
-    sentinel maps to the empty string the same way a save handler treats it,
-    and a Checkbox reports its boolean as text so a save handler can tell a
-    stale queued toggle from one that still disagrees with the last save.
-    """
+    """The raw text an editor shows: a Select's blank is "", a Checkbox is "True" or "False"."""
     if isinstance(widget, Input):
         return widget.value
     if isinstance(widget, TextArea):
@@ -132,12 +123,9 @@ def list_editor_text(key: str, value: list[object] | None = None) -> str:
 
 
 def select_shown_value(defn: SettingDef, value: str) -> str:
-    """The value a Select actually shows for *value*: the matching choice, else blank.
+    """The value a Select shows for *value*: the matching choice, else blank.
 
-    Computed from *value* and *defn* rather than read off the widget: a
-    ``Select``'s ``value`` reactive is not populated from its constructor
-    kwarg until the widget mounts, so reading it beforehand (e.g. right after
-    construction) sees the pre-mount default, not what it will display.
+    A Select's ``value`` is not set from its constructor until it mounts, so this does not read it.
     """
     if value in (defn.choices or ()):
         return value

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 from typing import ClassVar
 
@@ -23,6 +24,8 @@ for _cmd in COMMANDS:
 
 TIP_COMMAND = "/add"
 _TIP_GROUP = "analyze-tip"
+_TIP_GAP = 2  # cells between the tip label and its text
+_TIP_MIN_WIDTH = 20  # before the first layout the width reads 0
 
 
 class ArgHintLine(Static):
@@ -57,6 +60,11 @@ class ArgHintLine(Static):
         self._tip = shows
         self._render_hint()
 
+    def on_resize(self) -> None:
+        """Wrap the tip again for the new width."""
+        if self._tip:
+            self._render_hint()
+
     def _render_hint(self) -> None:
         rendered = _hint_for(self._text)
         if rendered is None:
@@ -64,7 +72,7 @@ class ArgHintLine(Static):
             self.display = False
             return
         if self._tip and _command(self._text) == TIP_COMMAND:
-            rendered = Content("\n").join([rendered, _tip_line()])
+            rendered = Content("\n").join([rendered, _tip_lines(self.content_size.width)])
         self.update(rendered)
         self.display = True
 
@@ -77,11 +85,19 @@ def _command(text: str) -> str | None:
     return command.lower()
 
 
-def _tip_line() -> Content:
-    return Content.assemble(
-        Content.styled(f"  {msg.ANALYZE_TIP_LABEL}", "$accent"),
-        Content.styled(f"  {msg.ANALYZE_TIP}", "$text-muted"),
-    )
+def _tip_lines(width: int) -> Content:
+    """The tip in *width* cells, each wrapped line indented under the first line's text."""
+    label = f"  {msg.ANALYZE_TIP_LABEL}"
+    indent = " " * (len(label) + _TIP_GAP)
+    wrapped = textwrap.wrap(msg.ANALYZE_TIP, width=max(width - len(indent), _TIP_MIN_WIDTH))
+    first, *rest = wrapped
+    lines = [
+        Content.assemble(
+            Content.styled(label, "$accent"), Content.styled(" " * _TIP_GAP + first, "$text-muted")
+        ),
+        *(Content.styled(indent + line, "$text-muted") for line in rest),
+    ]
+    return Content("\n").join(lines)
 
 
 def _hint_for(text: str) -> Content | None:

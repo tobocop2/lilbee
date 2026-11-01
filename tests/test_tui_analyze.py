@@ -745,12 +745,29 @@ async def test_the_tip_shows_under_the_add_hint_before_anything_is_added(
             assert await _until(
                 pilot, lambda: "This project uses the Default profile" in _screen_text(chat_app)
             )
-            text = _screen_text(chat_app)
-            assert "/analyze off to hide this tip" in text.replace("\n", " ").replace("  ", " ")
+            assert "/analyze off to hide this tip" in " ".join(_hint_text(chat).split())
             submit.assert_not_called()
             assert chat_app.task_bar.queue.is_empty
             await pilot.press("enter")
             assert await _until(pilot, lambda: submit.called)
+
+
+@pytest.mark.parametrize("size", [_NARROW, _WIDE])
+async def test_a_wrapped_tip_line_is_indented_under_the_tip_text(chat_app, tmp_path, size) -> None:
+    folder = _write_notes(tmp_path / "city-records")
+    async with chat_app.run_test(size=size) as pilot:
+        chat = await _type_add(chat_app, pilot, folder)
+        assert await _until(pilot, lambda: msg.ANALYZE_TIP_LABEL in _hint_text(chat))
+        hint = chat.query_one("#arg-hint", ArgHintLine)
+        assert await _until(pilot, lambda: hint.content_size.width > 0 and hint.size.height > 2)
+        lines = _hint_text(chat).splitlines()
+        tip_lines = lines[1:]
+        assert len(tip_lines) >= 2, lines
+        text_column = tip_lines[0].index("This project")
+        for line in tip_lines[1:]:
+            assert line[:text_column].strip() == "", line
+            assert len(line) - len(line.lstrip()) == text_column, line
+        assert all(len(line) <= hint.content_size.width for line in tip_lines), lines
 
 
 @pytest.mark.parametrize(

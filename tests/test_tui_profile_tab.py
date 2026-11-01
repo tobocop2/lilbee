@@ -222,6 +222,19 @@ def sources():
         yield services
 
 
+@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
+async def test_the_action_pill_box_starts_on_the_heading_column(size) -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=size) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        await pilot.pause()
+        tab = screen.query_one(ProfileTab)
+        heading = tab.query_one("#profile-changes-title", Static)
+        pill = tab.query_one("#profile-manage", ConfirmPill)
+        heading_text_x = heading.content_region.x
+        assert pill.region.x == heading_text_x, (pill.region, heading.region, heading_text_x)
+
+
 async def test_profile_line_is_exactly_one_row_tall() -> None:
     app = _SettingsApp()
     async with app.run_test(size=(100, 30)) as pilot:

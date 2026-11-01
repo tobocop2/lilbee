@@ -903,7 +903,7 @@ PROFILE_LIBRARY_SHADOWED_NOTE = "Hidden by the {folder} profile with the same na
 PROFILE_LIBRARY_CHANGES = "Applying it changes"
 PROFILE_LIBRARY_NO_CHANGES = "Applying it changes nothing."
 PROFILE_LIBRARY_UNREACHABLE = (
-    "The name {name} picks another file, so lilbee cannot act on {path} here. "
+    "The name {name} picks another file, so lilbee cannot act on the {folder} one. "
     "Rename or remove it in its folder."
 )
 PROFILE_KEY_APPLY = PROFILE_APPLY_LABEL
