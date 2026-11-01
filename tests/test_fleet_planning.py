@@ -90,7 +90,7 @@ def test_vision_mmproj_returns_path_when_found(monkeypatch) -> None:
         "lilbee.providers.gguf_meta.find_mmproj_for_model",
         lambda _p: Path("/m/mmproj.gguf"),
     )
-    assert planning_mod._vision_mmproj("ref") == Path("/m/mmproj.gguf")
+    assert planning_mod.vision_mmproj("ref") == Path("/m/mmproj.gguf")
 
 
 def test_vision_mmproj_returns_none_when_absent(monkeypatch) -> None:
@@ -104,7 +104,7 @@ def test_vision_mmproj_returns_none_when_absent(monkeypatch) -> None:
         raise ProviderError("no mmproj")
 
     monkeypatch.setattr("lilbee.providers.gguf_meta.find_mmproj_for_model", _raise)
-    assert planning_mod._vision_mmproj("ref") is None
+    assert planning_mod.vision_mmproj("ref") is None
 
 
 def test_role_ctx_chat_honors_configured_num_ctx(monkeypatch) -> None:
@@ -711,7 +711,7 @@ def test_peak_estimator_vision_passes_mmproj(monkeypatch) -> None:
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/v.gguf")
     )
     monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-    monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
+    monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
     monkeypatch.setattr(planning_mod, "_placement_estimate_slots", lambda _r, _m: 1)
     monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 100)
     seen: dict = {}
@@ -842,10 +842,10 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "reranker_model", "")
         monkeypatch.setattr(cfg, "vision_model", "some/vision.gguf")
 
-        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: None)
+        monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: None)
         assert WorkerRole.VISION not in planning_mod._server_model_inputs()[1]
 
-        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
+        monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         assert WorkerRole.VISION in planning_mod._server_model_inputs()[1]
 
     @pytest.mark.parametrize(
@@ -881,7 +881,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             planning_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
         )
-        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
+        monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr(cfg, "reranker_model", "")
         monkeypatch.setattr(cfg, "vision_model", "some/vision.gguf")
         monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
@@ -895,7 +895,7 @@ class TestBuildFleetWiring:
         mmproj.write_bytes(b"y" * 500)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
+        monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: mmproj)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
         seen: dict[str, object] = {}
 
@@ -915,7 +915,7 @@ class TestBuildFleetWiring:
         model.write_bytes(b"x" * 1000)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: None)
+        monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: None)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
         monkeypatch.setattr(
             planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=4242)
@@ -993,7 +993,7 @@ class TestBuildFleetWiring:
             "lilbee.providers.engine_params.resolve_model_path",
             lambda _r: model,
         )
-        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
+        monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
         plan = InstancePlan(role=WorkerRole.VISION, devices=(0,))
@@ -1473,7 +1473,7 @@ class TestBuildFleetWiring:
             lambda _r: model,
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
+        monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: ctx)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=role, devices=(0,))
@@ -2236,7 +2236,7 @@ class TestEstimateLaunchParity:
         monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: backend)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
         mmproj = Path("/m/mmproj.gguf") if role is WorkerRole.VISION else None
-        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
+        monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: mmproj)
         monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
         captured: dict[str, object] = {}
 
@@ -3145,7 +3145,7 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
             return ModelPlacementInput(role, 512)
 
         monkeypatch.setattr(planning_mod, "_estimate_role", boom)
-        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
+        monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: mmproj)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
         monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")

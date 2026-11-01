@@ -25,7 +25,7 @@ def _launch_ctx(tmp_path, monkeypatch, role: WorkerRole) -> int:
     model.write_bytes(b"x" * 1000)
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
     monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-    monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
+    monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
     # The role's own resolver is a pure function of model and config: it is the
     # thing that never hears about the downshift.
     monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: _LAUNCH_CTX)

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from pydantic import ValidationError
 from typer._click import Context
 from typer.core import TyperCommand
 
@@ -151,8 +152,12 @@ def apply_overrides(
         "seed": seed,
     }
     for attr, value in overrides.items():
-        if value is not None:
+        if value is None:
+            continue
+        try:
             setattr(cfg, attr, value)
+        except ValidationError as exc:
+            raise typer.BadParameter(f"{attr}: {exc.errors()[0]['msg']}") from None
 
 
 def _refuse_environment(json_output: bool) -> None:

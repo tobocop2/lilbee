@@ -2764,6 +2764,25 @@ class TestFindMmprojForModel:
 
         assert find_mmproj_for_model(model_path) == mmproj
 
+    @pytest.mark.parametrize("shard", [None, "a0"])
+    def test_finds_projector_beside_blobs_flat_or_sharded(
+        self, tmp_path: Path, shard: str | None
+    ) -> None:
+        """huggingface_hub 2.x shards blobs under blobs/<2 chars>/; snapshots/ stays reachable."""
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
+
+        blobs = tmp_path / "blobs"
+        blob_dir = blobs / shard if shard else blobs
+        blob_dir.mkdir(parents=True)
+        model_path = blob_dir / ("a" * 64)
+        model_path.touch()
+        snapshot = tmp_path / "snapshots" / "rev"
+        snapshot.mkdir(parents=True)
+        mmproj = snapshot / "mmproj-f16.gguf"
+        mmproj.touch()
+
+        assert find_mmproj_for_model(model_path) == mmproj
+
     def test_raises_when_not_found(self, tmp_path: Path) -> None:
         """find_mmproj_for_model raises ProviderError when no mmproj found."""
         from lilbee.providers.base import ProviderError

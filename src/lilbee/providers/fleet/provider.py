@@ -744,6 +744,12 @@ def _no_server_message(role: WorkerRole) -> str:
     reason = _unusable_engine_reason()
     if reason is not None:
         return f"No {role.value} model server is running: {reason}"
+    ref = _configured_model_for(role)
+    if role is WorkerRole.VISION and ref and planning.vision_mmproj(ref) is None:
+        return (
+            f"No vision model server is running: {ref} has no mmproj (CLIP projector) "
+            "file beside it. Put the projector next to the model file, then try again."
+        )
     return (
         f"No {role.value} model server is running. Make sure the {role.value} "
         "model is installed and configured, then try again."
@@ -1087,6 +1093,10 @@ class FleetProvider:
             machine = self._acquire_in_dir(machine_dir, pin, demand, is_overflow=False)
             if machine is not None:
                 return machine
+            log.warning(
+                "The engine in %s serves another setup; starting a private engine for this one.",
+                machine_dir,
+            )
         else:
             # Without kernel-arbitrated locks the membership refcount cannot be
             # trusted, and sharing is exactly what needs it: a probe would

@@ -32,6 +32,8 @@ from lilbee.catalog.refs import (
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
+from lilbee.providers import gguf_meta
+from lilbee.providers.base import ProviderError
 
 if TYPE_CHECKING:
     from lilbee.catalog.models import CatalogModel
@@ -159,6 +161,7 @@ def _sha256_file(path: Path) -> str:
 
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_BLOB_SHARD_LEN = 2
 
 
 def _blob_digest(source_path: Path) -> str:
@@ -170,9 +173,24 @@ def _blob_digest(source_path: Path) -> str:
     I/O-fragile enough to fail registration outright. Plain files still hash.
     """
     real = source_path.resolve()
-    if real.parent.name == "blobs" and _SHA256_HEX.fullmatch(real.name):
-        return real.name
+    name = _cache_blob_name(real)
+    if name is not None and _SHA256_HEX.fullmatch(real.name):
+        return name
     return _sha256_file(source_path)
+
+
+def _cache_blob_name(real: Path) -> str | None:
+    """Name of *real* relative to its cache ``blobs/`` dir, or None outside one.
+
+    Older huggingface_hub keeps blobs flat (``blobs/<sha>``); newer releases
+    shard them under a two-character prefix (``blobs/a0/<sha>``). The name
+    keeps that prefix, so ``cache_path / "blobs" / name`` finds the file in both.
+    """
+    if real.parent.name == "blobs":
+        return real.name
+    if real.parent.parent.name == "blobs" and len(real.parent.name) == _BLOB_SHARD_LEN:
+        return f"{real.parent.name}/{real.name}"
+    return None
 
 
 def _reraise_walk_error(error: OSError) -> None:
@@ -427,7 +445,7 @@ class ModelRegistry:
                     downloaded_at=datetime.now(UTC).isoformat(),
                     # Only a file under blobs/ is named by its sha; a symlink-less
                     # snapshot file is not, so no digest is recorded for it.
-                    blob=blob_path.name if blob_path.parent.name == "blobs" else None,
+                    blob=_cache_blob_name(blob_path),
                     total_size_bytes=total_size,
                     shard_blobs=shard_blobs,
                 )
@@ -435,6 +453,20 @@ class ModelRegistry:
             log.info("Recovered manifest for %s from the model cache", ref)
         except Exception:  # cache-warming write; the resolve already returned a path
             log.debug("Could not re-register %s from the model cache", ref, exc_info=True)
+
+    def has_vision_projector(self, ref: str) -> bool:
+        """True when *ref* is installed with an mmproj projector beside its weights.
+
+        A vision model is a chat model with a projector, so the manifest task
+        cannot tell the two apart. The vision picker and the vision-role check
+        both ask this question. The lookup walks the HF cache layout, so it
+        finds the projector from a content-hashed blob path too.
+        """
+        try:
+            gguf_meta.find_mmproj_for_model(self.resolve(ref))
+        except (KeyError, ValueError, ProviderError):
+            return False
+        return True
 
     def is_installed(self, ref: str) -> bool:
         """Return True if a model is installed and its blob is present."""
@@ -457,7 +489,7 @@ class ModelRegistry:
         blobs_dir = cache_path / "blobs"
         blob_path = blobs_dir / digest
         if not blob_path.exists():
-            blobs_dir.mkdir(parents=True, exist_ok=True)
+            blob_path.parent.mkdir(parents=True, exist_ok=True)
             _copy_atomic(source_path, blob_path)
 
         updated = ModelManifest(

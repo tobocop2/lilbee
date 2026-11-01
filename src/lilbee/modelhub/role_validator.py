@@ -84,16 +84,21 @@ def _canonical_pick_ref(ref: str, entry: CatalogModel, want: ModelTask) -> str:
     return canonical
 
 
-def _installed_ref_and_task(ref: str) -> tuple[str, str | None]:
-    """Canonical installed ref for *ref* and its manifest task, task None if absent.
+def _installed_ref_and_task(ref: str, want: ModelTask) -> tuple[str, str | None]:
+    """Canonical installed ref for *ref* and its role-relevant task, task None if absent.
 
     A bare ``<org>/<repo>`` ref canonicalizes to its installed quant's full ref
-    so the persisted value always names the exact GGUF file.
+    so the persisted value always names the exact GGUF file. A chat model with
+    an mmproj projector is a vision model, the same rule the vision picker
+    uses, so it reports the vision task when *want* is vision.
     """
     registry = ModelRegistry(cfg.models_dir)
     if is_bare_hf_repo(ref):
         ref = registry.installed_ref_for_repo(ref) or ref
-    return ref, _resolve_installed_task(registry, ref)
+    task = _resolve_installed_task(registry, ref)
+    if want is ModelTask.VISION and task is ModelTask.CHAT and registry.has_vision_projector(ref):
+        task = ModelTask.VISION
+    return ref, task
 
 
 def _not_installed(ref: str) -> ValueError:
@@ -120,7 +125,7 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     # The manifest is consulted first because it answers without touching the
     # network. This runs on the TUI main thread from /model and the model-bar
     # picker, where resolving picks would block the UI.
-    installed_ref, installed_task = _installed_ref_and_task(ref)
+    installed_ref, installed_task = _installed_ref_and_task(ref, want)
     if installed_task is not None:
         if installed_task != want:
             raise TaskMismatchError(installed_ref, ModelTask(installed_task), want)

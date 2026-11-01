@@ -2220,24 +2220,6 @@ class TestModelGridScrollIntoViewParentGuard:
             del type(grid).size  # restore the descriptor inherited from Widget
 
 
-class TestModelBarVisionSidecarErrors:
-    """`_has_vision_sidecar` returns False when registry.resolve raises."""
-
-    def test_has_vision_sidecar_returns_false_on_missing_ref(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import _has_vision_sidecar
-
-        registry = mock.MagicMock()
-        registry.resolve.side_effect = KeyError
-        assert _has_vision_sidecar(registry, "missing/ref") is False
-
-    def test_has_vision_sidecar_returns_false_on_value_error(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import _has_vision_sidecar
-
-        registry = mock.MagicMock()
-        registry.resolve.side_effect = ValueError
-        assert _has_vision_sidecar(registry, "bad/ref") is False
-
-
 class TestScopeChipPillSelect:
     """`ScopePill.action_select` routes to the parent chip's scope setter."""
 

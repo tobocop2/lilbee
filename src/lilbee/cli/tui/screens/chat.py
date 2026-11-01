@@ -16,6 +16,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from pydantic import ValidationError
 from rich.rule import Rule
 from textual import events, getters, on, work
 from textual.actions import SkipAction
@@ -219,6 +220,13 @@ def _stream_error_text(exc: Exception) -> str:
     if isinstance(exc, ConnectionError):
         return msg.STREAM_DISCONNECTED
     return msg.STREAM_ERROR.format(error=exc)
+
+
+def _refusal_reason(exc: Exception) -> str | Exception:
+    """The sentence a config refusal carries, without pydantic's error scaffolding."""
+    if isinstance(exc, ValidationError):
+        return exc.errors()[0]["msg"].removeprefix("Value error, ")
+    return exc
 
 
 def _setting_type_hint(kind: type) -> str:
@@ -521,6 +529,10 @@ class ChatScreen(Screen[None]):
                 self._enter_insert_mode()
             else:
                 self.set_focus(self._chat_log)
+        typed, self.app.type_ahead = self.app.type_ahead, ""
+        if typed:
+            self._enter_insert_mode()
+            self._chat_input.insert(typed)
 
     def _embedding_ready(self) -> bool:
         """Quick check if the embedding model resolves (no network calls)."""
@@ -1523,7 +1535,8 @@ class ChatScreen(Screen[None]):
             shown = msg.MASKED_VALUE if defn.secret and parsed else parsed
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
         except (ValueError, TypeError) as exc:
-            self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
+            error = _refusal_reason(exc)
+            self.notify(msg.CMD_SET_INVALID.format(key=key, error=error), severity="error")
 
     def _cmd_settings(self, _args: str) -> None:
         self.app.switch_view("Settings")

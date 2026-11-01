@@ -303,6 +303,9 @@ class LilbeeApp(App[None]):
     # Production never sets it. See tests/_lilbee_app_test_host.py.
     _test_skip_auto_init: ClassVar[bool] = False
 
+    # Keys pressed while the startup gate showed; the chat prompt takes them on show.
+    type_ahead: str = ""
+
     async def on_mount(self) -> None:
         # The app's own signal graph is part of being a working app, not
         # "heavyweight auto-init": wiring it before the test-skip guard lets a
@@ -384,6 +387,7 @@ class LilbeeApp(App[None]):
             if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
                 self.switch_view(self._initial_view)
         else:
+            self.type_ahead = ""
             self.switch_view(msg.CATALOG_VIEW)
         # Cheap detection only: filesystem walk + hash compare. The user
         # initiates sync explicitly via S or the command palette.
@@ -640,15 +644,15 @@ class LilbeeApp(App[None]):
         stream) get the cancel-first treatment; a background task like an
         engine warm or a sync never swallows a quit.
         """
-        get_services().cancel_inference()
-
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.screen
         if isinstance(screen, ChatScreen) and screen.streaming and not screen.stopping:
+            # The turn sets its stop flag first, then severs the stream.
             screen.action_cancel_stream()
             self.notify(msg.APP_QUIT_AGAIN_HINT)
             return
+        get_services().cancel_inference()
         self.exit()
 
     def _view_is_refused(self, view_name: str) -> bool:

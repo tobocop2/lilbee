@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from time import monotonic
 
-from textual import work
+from textual import events, work
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import Screen
@@ -61,6 +61,15 @@ class StartupGate(Screen[None]):
         self._upgrade_event = LibraryUpgradeEvent(phase=UpgradePhase.WAITING)
         self._upgrade_started = 0.0
         self._upgrade_timer: Timer | None = None
+        # Printable keys pressed while the gate shows; the prompt receives them.
+        self._typed: list[str] = []
+
+    def on_key(self, event: events.Key) -> None:
+        """Keep printable keys for the prompt so no view binding takes them."""
+        if event.is_printable and event.character:
+            self._typed.append(event.character)
+            event.prevent_default()
+            event.stop()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="gate-body"):
@@ -196,4 +205,5 @@ class StartupGate(Screen[None]):
         """
         if self._ui_app.screen is not self:
             return
+        self._ui_app.type_ahead = "".join(self._typed)
         self._ui_app.reveal_landing()
