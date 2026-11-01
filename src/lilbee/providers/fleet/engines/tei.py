@@ -27,7 +27,7 @@ from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "1.9.4"
 # The digest of the pack; None until a pack is published, and an install is refused then.
@@ -190,6 +190,13 @@ class TeiAdapter:
         if self.pick_build(session_host()).backend in (None, _CPU):
             return DeviceProbe(devices=[], output="", spoke_protocol=False)
         return DeviceProbe(devices=visible_nvidia_cards(), output="", spoke_protocol=False)
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        from lilbee.catalog.runnable import session_host
+
+        if self.pick_build(session_host()).backend in (None, _CPU):
+            return frozenset({RoleTarget.CPU})
+        return frozenset({RoleTarget.GPU})
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return MemoryEstimate(

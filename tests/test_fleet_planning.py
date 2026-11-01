@@ -4080,27 +4080,25 @@ class TestARefusedDeviceIsAlsoKeptFromTheEngine:
     def test_the_launch_names_no_device(self, monkeypatch) -> None:
         _pin_snapshot(monkeypatch, engine_devices_all_refused=True)
 
-        assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ("none",)
+        assert planning_mod._no_device_pin(engine=LLAMA) == ("none",)
 
     def test_a_plain_cpu_host_is_left_unpinned(self, monkeypatch) -> None:
         """Nothing was refused, so there is nothing to keep the engine off."""
         _pin_snapshot(monkeypatch, engine_devices_all_refused=False)
 
-        assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
+        assert planning_mod._no_device_pin(engine=LLAMA) == ()
 
     def test_no_snapshot_means_no_claim(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
 
-        assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
+        assert planning_mod._no_device_pin(engine=LLAMA) == ()
 
     def test_a_placed_gpu_still_wins_over_the_cpu_pin(self, monkeypatch) -> None:
         """The refusal pin is a fallback for an empty device list, not an override."""
         _pin_snapshot(monkeypatch, engine_devices_all_refused=True)
         chosen = (FleetDevice(VULKAN_BACKEND, 0, "Card A", 8 * _GB, 8 * _GB),)
 
-        names = planning_mod._device_names(chosen) or (
-            planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA)
-        )
+        names = planning_mod._device_names(chosen) or (planning_mod._no_device_pin(engine=LLAMA))
 
         assert names == ("Vulkan0",)
 

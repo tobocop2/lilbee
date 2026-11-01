@@ -51,7 +51,13 @@ from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.model_cache import free_system_memory, total_system_memory
 from lilbee.providers.model_ref import parse_model_ref
-from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, RerankMode, WorkerRole
+from lilbee.providers.roles import (
+    ROLE_REGISTRY,
+    EngineBackend,
+    RerankMode,
+    RoleTarget,
+    WorkerRole,
+)
 from lilbee.runtime.progress.types import OcrBackendUsed
 
 log = logging.getLogger(__name__)
@@ -199,6 +205,13 @@ _FLASH_OFF = "off"
 _FLASH_AUTO = "auto"
 # llama-server's documented way to say "offload nothing": --device none.
 _NO_DEVICE = "none"
+_TARGET_REFUSED = {
+    RoleTarget.CPU: (
+        "this engine's installed build cannot run on the CPU. "
+        "Choose a GPU or install the CPU build."
+    ),
+    RoleTarget.NPU: "this engine's installed build cannot run on an NPU. Choose a GPU or the CPU.",
+}
 # Backends pinned by the name the engine printed rather than through an env var,
 # because their variables index a different space than --list-devices reports.
 _NAME_PINNED_BACKENDS = frozenset({VULKAN_BACKEND, "SYCL"})
@@ -1840,7 +1853,8 @@ def _launch_for(
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
         cpu_moe=expert_offload_all(meta),
         n_cpu_moe=expert_offload_layers(meta),
-        device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(engine),
+        device_names=_device_names(chosen) or _no_device_pin(engine, plan.target),
+        target=plan.target,
         memory_endpoint=engine.check_readback(binary),
         fit_target_mib=(
             _chat_fit_target_mib(binary, chosen, reserved_after_chat or {}, engine=engine)
@@ -2690,8 +2704,8 @@ def clear_plan_probe() -> None:
     _plan_probe_store.clear()
 
 
-def _cpu_pin_when_every_device_was_refused(engine: EngineAdapter) -> tuple[str, ...]:
-    """``("none",)`` when the engine offered GPUs that lilbee refused, else empty.
+def _no_device_pin(engine: EngineAdapter, target: RoleTarget = RoleTarget.GPU) -> tuple[str, ...]:
+    """``("none",)`` for a cpu target or when lilbee refused every GPU the engine offered.
 
     Dropping a device from lilbee's view does not stop the engine using it. With
     no pin at all, ggml applies its own selection, and its fallback takes the
@@ -2700,6 +2714,8 @@ def _cpu_pin_when_every_device_was_refused(engine: EngineAdapter) -> tuple[str, 
     placement budgeted against system RAM. Naming no device keeps the engine on
     the CPU the plan was shaped for.
     """
+    if target is RoleTarget.CPU:
+        return (_NO_DEVICE,)
     probe = _current_plan_probe(engine)
     if probe is None or not probe.engine_devices_all_refused:
         return ()
@@ -2974,8 +2990,10 @@ def _resolve_placement(
     capacity = _device_capacity(devices, charge_against_free)
     unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
     if placement is not None:
-        if unpinnable:
-            names = ", ".join(role.value for role in unpinnable)
+        _refuse_unusable_targets(placement, model_refs, engines)
+        pinned = [role for role in unpinnable if _targets_gpu(placement, role)]
+        if pinned:
+            names = ", ".join(role.value for role in pinned)
             raise PlacementError(f"the engine of {names} cannot be told which GPU to use")
         return placement_from_spec(
             placement,
@@ -3002,6 +3020,32 @@ def _resolve_placement(
         refuse_oversize=_is_mixed(engines),
     )
     return replace(placed, unplaceable_roles=(*placed.unplaceable_roles, *unpinnable))
+
+
+def _targets_gpu(placement: PlacementSpec, role: WorkerRole) -> bool:
+    """Whether *role* needs a card under *placement*; a role with no entry is refused later."""
+    entry = placement.roles.get(role)
+    return entry is None or entry.target is RoleTarget.GPU
+
+
+def _refuse_unusable_targets(
+    placement: PlacementSpec,
+    roles: Mapping[WorkerRole, str],
+    engines: Mapping[WorkerRole, EngineAdapter],
+) -> None:
+    """Raise when a role names a target its engine's installed build cannot run on."""
+    for role in roles:
+        if _targets_gpu(placement, role):
+            continue
+        target = placement.roles[role].target
+        if target is RoleTarget.AUTO:
+            raise PlacementError(
+                f"{role.value}: the auto target is not available yet. "
+                "Name the devices or set the target to cpu."
+            )
+        engine = engines[role]
+        if target not in engine.device_targets(engine.binary()):
+            raise PlacementError(f"{role.value}: {_TARGET_REFUSED[target]}")
 
 
 def _roles_without_a_pin(
@@ -3056,7 +3100,9 @@ def _placement_or_auto(
     ingest down over a pin set on hardware the host no longer has, so the fleet
     degrades to automatic placement and logs why. An interactive apply still fails
     loud (:func:`lilbee.app.placement.set_placement`), where the pin is what the
-    caller just asked for and a silent substitution would be the surprise.
+    caller just asked for and a silent substitution would be the surprise. A spec
+    that names a device target also fails loud: the target is a refusal to run
+    anywhere else, and automatic placement would put that role on a card.
     """
     if placement is None:
         return _resolve_placement(
@@ -3079,6 +3125,8 @@ def _placement_or_auto(
             charge_against_free=charge_against_free,
         ), True
     except PlacementError as exc:
+        if not all(_targets_gpu(placement, role) for role in placement.roles):
+            raise
         log.warning(
             "The saved GPU placement does not fit this hardware (%s); using automatic "
             "placement instead. Set a new placement to replace it.",

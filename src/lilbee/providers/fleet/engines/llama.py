@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -11,6 +12,7 @@ from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF, SUPPORTED_ARCHS
 from lilbee.catalog.header_probe import GGUF_MAGIC
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.adapters import (
+    FLAG_DEVICE,
     FLAG_FIT_TARGET,
     FLAG_KV_UNIFIED_PER_SLOT,
     ROLE_SPECS,
@@ -38,7 +40,7 @@ from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, Memo
 from lilbee.providers.fleet.model_memory import estimate_memory
 from lilbee.providers.fleet.readback import engine_advertises, supports_memory_readback
 from lilbee.providers.gguf_meta import read_gguf_metadata
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _PROFILE = RequestProfile(
     embed_fields={"embd_normalize": -1},
@@ -109,6 +111,8 @@ class LlamaCppAdapter:
         return ROLE_SPECS[role]
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
+        if request.target is RoleTarget.CPU:
+            request = replace(request, n_gpu_layers=0, fit_target_mib=())
         return build_server_argv(
             binary=request.binary,
             spec=spec,
@@ -133,6 +137,12 @@ class LlamaCppAdapter:
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return probe_devices(binary)
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        """A build whose help lists no device flag keeps the card, so it has no cpu target."""
+        if engine_advertises(binary, FLAG_DEVICE):
+            return frozenset({RoleTarget.GPU, RoleTarget.CPU})
+        return frozenset({RoleTarget.GPU})
 
     def model_meta(self, path: Path) -> dict[str, str] | None:
         if not _starts_with_gguf_magic(path):

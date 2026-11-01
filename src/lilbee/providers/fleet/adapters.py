@@ -25,6 +25,7 @@ _HOST = "127.0.0.1"
 # llama-server batch flags; gguf-parser accepts the same names, so vram.py shares these.
 FLAG_BATCH_SIZE = "--batch-size"
 FLAG_UBATCH_SIZE = "--ubatch-size"
+FLAG_DEVICE = "--device"
 FLAG_FIT_TARGET = "--fit-target"
 FLAG_KV_UNIFIED = "--kv-unified"
 FLAG_KV_UNIFIED_PER_SLOT = "--kv-unified-per-slot"
@@ -249,7 +250,7 @@ class _OptionalFlag:
 # flag and the planner gated flags (--memory, --fit-target, --kv-unified-per-slot) are
 # written by other rules.
 _OPTIONAL_FLAGS: dict[str, _OptionalFlag] = {
-    "--device": _OptionalFlag(1, "the engine picks its own devices"),
+    FLAG_DEVICE: _OptionalFlag(1, "the engine picks its own devices"),
     "--tensor-split": _OptionalFlag(1, "the engine splits the layers by its own rule"),
     "--flash-attn": _OptionalFlag(1, "flash attention stays at the engine default"),
     "--cache-type-k": _OptionalFlag(1, "the K cache keeps the engine default type"),
@@ -361,7 +362,7 @@ def build_server_argv(
         # instead, so re-emitting parsed ordinals into it silently changes index
         # space, and setting it also turns off ggml's own type filter, support
         # check and same-UUID dedup. This keeps all of that active.
-        optional += ["--device", ",".join(device_names)]
+        optional += [FLAG_DEVICE, ",".join(device_names)]
     if len(devices) > 1 and tensor_split:
         # Only a ratio the planner actually chose. Inventing an even one for a
         # group that did not choose disables the engine's own fit: it aborts the

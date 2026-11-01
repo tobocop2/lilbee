@@ -19,7 +19,7 @@ from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 # A commit of the upstream main branch, never "latest": a bump follows a passing harness run.
 IK_LLAMA_COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
@@ -92,6 +92,9 @@ class IkLlamaAdapter:
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return LLAMA.discover_devices(binary)
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        return LLAMA.device_targets(binary)
 
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return LLAMA.model_meta(path)

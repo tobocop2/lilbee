@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.adapters import RoleServerSpec
@@ -57,6 +57,7 @@ class LaunchRequest:
     memory_endpoint: bool = False
     fit_target_mib: tuple[int, ...] = ()
     kv_unified_per_slot: int | None = None
+    target: RoleTarget = RoleTarget.GPU
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,8 @@ class EngineAdapter(Protocol, Hashable):
     executable, ``discover_devices`` probes it, ``estimate_memory`` sizes a
     plan, ``role_spec`` and ``launch_argv`` build each command line, and
     ``check_readback`` says whether the running instance reports its memory.
+    ``device_targets`` runs after ``binary()``, before ``launch_argv``, and only
+    for a role that names a target other than gpu.
     """
 
     @property
@@ -136,6 +139,10 @@ class EngineAdapter(Protocol, Hashable):
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]: ...
 
     def discover_devices(self, binary: Path) -> DeviceProbe: ...
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        """The targets *binary* can run a role on; ``launch_argv`` writes their flags."""
+        ...
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         """Size one instance; ``per_device`` follows a ratio only if ``launch_argv`` honours it."""
