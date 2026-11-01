@@ -114,7 +114,7 @@ class EngineAdapter(Protocol, Hashable):
     architectures: frozenset[str]
     served_roles: frozenset[WorkerRole]
     memory_kind: MemoryKind
-    """How far this engine's memory figures can be trusted, known without an estimate."""
+    """A fixed reserve's figure does not follow the window and has no share per card."""
     bundled: bool
     """Whether the engine ships in the package, so it needs no build in the engine store."""
     takes_device_names: bool

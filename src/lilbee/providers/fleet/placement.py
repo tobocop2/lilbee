@@ -178,7 +178,7 @@ def plan_placement(
     ]
 
     instances, co_tenants, tight = _place_persistent(
-        persistent_singles, placer(remaining), remaining, estimate_peak
+        persistent_singles, placer(remaining), remaining
     )
     instances.extend(_place_elastic(replicated, instances, remaining, co_tenants))
 
@@ -286,7 +286,6 @@ def _place_persistent(
     persistent_singles: list[ModelPlacementInput],
     place: Callable[[ModelPlacementInput], _Placed | None],
     remaining: dict[int, float],
-    estimate_peak: PeakEstimator,
 ) -> tuple[list[InstancePlan], frozenset[WorkerRole], dict[WorkerRole, int]]:
     """Charge every persistent single in ``placement_rank`` order.
 
@@ -307,7 +306,7 @@ def _place_persistent(
             placed, group = _place_beside_disjoint(model, place, remaining, charges)
             co_tenants |= group
         if placed is None:
-            placed, group, shortfall = _place_tight(model, remaining, charges, estimate_peak)
+            placed, group, shortfall = _place_tight(model, remaining, charges)
             co_tenants |= group
             tight[model.role] = shortfall
         instances.append(placed.plan)
@@ -365,21 +364,24 @@ def _tight_device_group(needed: int, remaining: dict[int, float]) -> tuple[int, 
     return tuple(usable or by_room[:1])
 
 
-def states_no_share_per_card(role: WorkerRole, count: int, estimate_peak: PeakEstimator) -> bool:
-    """True when the estimator answers for *count* cards with no share for each card."""
-    from lilbee.providers.base import ProviderError
-
-    try:
-        return not estimate_peak(role, (1,) * count)
-    except (ProviderError, OSError):
-        return False
+def card_refusal(
+    subject: str, device: int, needed: float, room: float, capacity: int, *, fix: bool
+) -> str | None:
+    """The refusal of *needed* bytes on a card with *room* usable bytes; None when they fit."""
+    if needed <= room:
+        return None
+    return (
+        f"{subject} needs {needed / 1024**3:.1f} GiB but device {device} has "
+        f"{room / 1024**3:.1f} GiB usable ({capacity / 1024**3:.1f} GiB total, "
+        f"{usable_vram_fraction():.0%} headroom)"
+        + (". Use a smaller model, or set its target to cpu." if fix else "")
+    )
 
 
 def _place_tight(
     model: ModelPlacementInput,
     remaining: dict[int, float],
     charges: dict[WorkerRole, dict[int, float]],
-    estimate_peak: PeakEstimator,
 ) -> tuple[_Placed, frozenset[WorkerRole], int]:
     """Place an oversize *model* best-effort instead of refusing it.
 
@@ -391,16 +393,15 @@ def _place_tight(
     others excluded by that pin, a model too big for it has nowhere to go and the
     tight placement is only a slower refusal; given the group, llama-server can
     split across them. One card is still used when one card is enough, since a
-    split it does not need costs it interconnect bandwidth. A model with no share per
-    card takes the roomiest card alone, the same rule as a pin: nothing can check a
-    split of it before the launch.
+    split it does not need costs it interconnect bandwidth. A fixed reserve takes the
+    roomiest card alone: it has no share per card to check before the launch.
     """
     refunds = {r: c for r, c in charges.items() if _phase_disjoint(r, model.role)}
     for charged in refunds.values():
         for idx, held in charged.items():
             remaining[idx] += held
     devices = _tight_device_group(model.est_vram_bytes, remaining)
-    if len(devices) > 1 and states_no_share_per_card(model.role, len(devices), estimate_peak):
+    if model.kind is MemoryKind.FIXED_RESERVE:
         devices = devices[:1]
     claimed = {idx: remaining[idx] for idx in devices}
     available = sum(claimed.values())
@@ -927,13 +928,16 @@ def _charge_devices(
             f"{role.value} is pinned to {len(devices)} device(s) but its memory estimate "
             f"covers {len(per_device)}; clear the placement to place it automatically"
         )
-    fix = ". Use a smaller model, or set its target to cpu." if refuse_alone else ""
     for idx, peak in zip(devices, per_device, strict=True):
-        if peak > remaining[idx]:
-            raise refusal(
-                f"{role.value} pinned to device {idx} needs {peak / 1024**3:.1f} GiB but "
-                f"device {idx} has {remaining[idx] / 1024**3:.1f} GiB usable "
-                f"({device_capacity[idx] / 1024**3:.1f} GiB total, 90% headroom){fix}"
-            )
+        reason = card_refusal(
+            f"{role.value} pinned to device {idx}",
+            idx,
+            peak,
+            remaining[idx],
+            device_capacity[idx],
+            fix=refuse_alone,
+        )
+        if reason is not None:
+            raise refusal(reason)
     for idx, peak in zip(devices, per_device, strict=True):
         remaining[idx] -= peak

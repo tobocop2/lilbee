@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
+from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import engine_params
 from lilbee.providers.fleet import model_memory, planning
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
@@ -17,6 +18,7 @@ from lilbee.providers.fleet.placement import (
     InstancePlan,
     ModelPlacementInput,
     _charge_devices,
+    card_refusal,
     placement_from_spec,
     plan_placement,
 )
@@ -257,101 +259,78 @@ def test_the_adapter_sums_a_folder_named_like_a_shard(tmp_path: Path) -> None:
 
 
 class TestOversizeModelOnSeveralCards:
-    def _plan(self, tmp_path: Path, monkeypatch, peak=None) -> tuple[int, ...]:
+    def _plan(self, tmp_path: Path, monkeypatch, kind: MemoryKind, peak=None) -> tuple[int, ...]:
         folder = _folder(tmp_path, 30 * GIB)
         monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
         peak = peak or planning._peak_estimator(
             {WorkerRole.CHAT: "ref"}, {WorkerRole.CHAT: MISTRAL}
         )
-        model = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
+        model = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB, kind=kind)
         placed = plan_placement([model], [(0, 24 * GIB), (1, 24 * GIB)], estimate_peak=peak)
         return placed.instances[0].devices
 
-    def test_no_share_per_card_takes_one_card(self, tmp_path: Path, monkeypatch) -> None:
-        assert self._plan(tmp_path, monkeypatch) == (0,)
+    def test_a_fixed_reserve_takes_one_card(self, tmp_path: Path, monkeypatch) -> None:
+        assert self._plan(tmp_path, monkeypatch, MemoryKind.FIXED_RESERVE) == (0,)
 
-    def test_a_share_per_card_that_overruns_keeps_the_group(self, tmp_path, monkeypatch) -> None:
+    def test_a_sized_model_with_no_share_keeps_the_group(self, tmp_path, monkeypatch) -> None:
+        assert self._plan(tmp_path, monkeypatch, MemoryKind.SIZED) == (0, 1)
+
+    def test_a_sized_share_that_overruns_keeps_the_group(self, tmp_path, monkeypatch) -> None:
         def over(_role, _ratio):
             return (29 * GIB, 29 * GIB)
 
-        assert self._plan(tmp_path, monkeypatch, over) == (0, 1)
-
-    def test_an_estimator_failure_keeps_the_group(self, tmp_path, monkeypatch) -> None:
-        def fails(_role, _ratio):
-            raise OSError("no estimator")
-
-        assert self._plan(tmp_path, monkeypatch, fails) == (0, 1)
+        assert self._plan(tmp_path, monkeypatch, MemoryKind.SIZED, over) == (0, 1)
 
 
-class TestTheChatRefusal:
-    def _reason(self, engine, shares: tuple[int, ...] = ()) -> str | None:
-        launch = SimpleNamespace(
-            role=WorkerRole.CHAT,
-            model="org/m",
-            ctx=512,
-            weights_bytes=4096,
-            est_vram_bytes=30 * GIB,
-        )
-        return planning._chat_launch_refusal(
-            launch, engine=engine, estimate_peak=lambda _role, _ratio: shares
+class TestTheCardRefusal:
+    def test_a_model_that_fills_the_room_exactly_has_no_refusal(self) -> None:
+        assert card_refusal("chat", 0, 10 * GIB, 10 * GIB, 24 * GIB, fix=True) is None
+
+    def test_a_model_past_the_room_names_both_figures_and_the_fix(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        assert card_refusal("The chat model m", 2, 22 * GIB, 21.6 * GIB, 24 * GIB, fix=True) == (
+            "The chat model m needs 22.0 GiB but device 2 has 21.6 GiB usable "
+            "(24.0 GiB total, 90% headroom). Use a smaller model, or set its target to cpu."
         )
 
-    def test_a_weights_only_figure_names_the_charged_gib(self) -> None:
-        reason = self._reason(MISTRAL)
-        assert reason is not None
-        assert "needs 30.0 GiB" in reason
-        assert "backs only" not in reason
-
-    def test_a_fixed_reserve_with_a_share_per_card_keeps_the_window_text(self) -> None:
-        reason = self._reason(MISTRAL, (15 * GIB, 15 * GIB))
-        assert reason is not None
-        assert "backs only a 512-token context" in reason
-        assert "does not hold the model" not in reason
-
-    def test_an_estimator_failure_keeps_the_window_text(self) -> None:
-        def fails(_role, _ratio):
-            raise OSError("no estimator")
-
-        launch = SimpleNamespace(
-            role=WorkerRole.CHAT, model="org/m", ctx=512, est_vram_bytes=30 * GIB
+    def test_a_refusal_with_a_fallback_offers_no_fix(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.8)
+        assert card_refusal(
+            "chat pinned to device 0", 0, 22 * GIB, 19.2 * GIB, 24 * GIB, fix=False
+        ) == (
+            "chat pinned to device 0 needs 22.0 GiB but device 0 has 19.2 GiB usable "
+            "(24.0 GiB total, 80% headroom)"
         )
-        reason = planning._chat_launch_refusal(launch, engine=MISTRAL, estimate_peak=fails)
-        assert reason is not None
-        assert "backs only a 512-token context" in reason
 
-    def test_a_sized_engine_keeps_the_window_text(self) -> None:
-        reason = self._reason(SimpleNamespace(memory_kind=MemoryKind.SIZED))
-        assert reason is not None
-        assert "backs only a 512-token context" in reason
 
-    def test_a_usable_window_has_no_refusal(self) -> None:
-        launch = SimpleNamespace(
-            role=WorkerRole.CHAT, model="org/m", ctx=1_000_000, weights_bytes=30 * GIB
-        )
+class TestAFixedReserveWindow:
+    def test_the_window_is_the_upper_bound_whatever_the_budget(self, tmp_path, monkeypatch) -> None:
+        folder = _folder(tmp_path, 20 * GIB)
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 6000)
+        monkeypatch.setattr(cfg, "num_ctx_max", None)
+        meta = {"context_length": "8192"}
         assert (
-            planning._chat_launch_refusal(
-                launch, engine=MISTRAL, estimate_peak=lambda _role, _ratio: ()
-            )
-            is None
+            engine_params.resolve_chat_ctx(folder, meta, engine=MISTRAL, available_bytes=1) == 6000
         )
 
 
 class TestACpuRoleWindow:
-    def _ctx(self, target: RoleTarget, tmp_path: Path, monkeypatch) -> int:
+    def _budget(self, target: RoleTarget, tmp_path: Path, monkeypatch) -> int:
+        """The budget that a sized chat on *target* gets to size its window."""
         folder = _folder(tmp_path, 20 * GIB)
-        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
         monkeypatch.setattr(planning, "plan_sizing_budget", lambda _engine, _device=None: 6 * GIB)
         monkeypatch.setattr(planning, "total_system_memory", lambda: 64 * GIB)
+        monkeypatch.setattr(
+            engine_params, "resolve_chat_ctx", lambda *_a, **kw: kw["available_bytes"]
+        )
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(), target=target)
-        return planning._placed_role_ctx(plan, folder, None, None, engine=MISTRAL)
+        return planning._placed_role_ctx(plan, folder, None, None, engine=LLAMA)
 
     def test_the_cpu_window_reads_system_memory(self, tmp_path, monkeypatch) -> None:
-        needed = engine_params.min_usable_chat_ctx()
-        assert self._ctx(RoleTarget.CPU, tmp_path, monkeypatch) >= needed
+        assert self._budget(RoleTarget.CPU, tmp_path, monkeypatch) == 64 * GIB
 
     def test_a_card_target_still_reads_the_card(self, tmp_path, monkeypatch) -> None:
-        needed = engine_params.min_usable_chat_ctx()
-        assert self._ctx(RoleTarget.GPU, tmp_path, monkeypatch) < needed
+        assert self._budget(RoleTarget.GPU, tmp_path, monkeypatch) == 6 * GIB
 
     def test_unreadable_memory_gives_no_budget(self, monkeypatch) -> None:
         def unreadable() -> int:

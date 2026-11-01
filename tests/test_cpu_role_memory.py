@@ -218,6 +218,8 @@ PAST_HUGE = (
     "Choose a smaller model or a GPU."
 )
 FLOOR_REASON = "a grounded answer needs about"
+# A grounded prompt larger than the 4096 tokens that the test models train on.
+PAST_THE_TRAINED_WINDOW = 5000
 NAMED_CHAT_CPU_EMBED = '{"chat": {"devices": [0]}, "embed": {"target": "cpu"}}'
 AUTO_CHAT_CPU_EMBED = '{"chat": {"target": "auto"}, "embed": {"target": "cpu"}}'
 UNIFIED_PAST = (
@@ -259,36 +261,41 @@ def test_a_cpu_chat_past_the_card_launches_in_system_memory(
     assert WorkerRole.CHAT not in plan.refused_roles
 
 
-def test_a_launch_refused_on_a_reserve_with_no_share_names_the_charged_gib(
+def test_a_fixed_reserve_past_its_card_is_refused_with_both_figures(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, "")
-    monkeypatch.setattr(planning, "_role_ctx", lambda *_args, **_kwargs: 512)
+    roles = (Role(WorkerRole.CHAT, 40), Role(WorkerRole.EMBED, 6))
+    engine = _host(monkeypatch, tmp_path, roles, cards_of((24,)), 64, "")
     monkeypatch.setattr(type(engine), "memory_kind", MemoryKind.FIXED_RESERVE)
-    no_share = MemoryEstimate(
-        kind=MemoryKind.FIXED_RESERVE,
-        device_bytes=40 * GIB,
-        host_bytes=0,
-        shared_bytes=40 * GIB,
-    )
-    monkeypatch.setattr(type(engine), "estimate_memory", lambda _self, _request: no_share)
+
+    def reserve(_self, request) -> MemoryEstimate:
+        size = 40 * GIB if request.model_path.name == "chat.gguf" else 6 * GIB
+        return MemoryEstimate(
+            kind=MemoryKind.FIXED_RESERVE,
+            device_bytes=size,
+            host_bytes=2 * GIB,
+            shared_bytes=size,
+        )
+
+    monkeypatch.setattr(type(engine), "estimate_memory", reserve)
     plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
-    reason = plan.refused_roles[WorkerRole.CHAT]
-    assert "needs 40.0 GiB" in reason
-    assert "does not hold the model" in reason
-    assert FLOOR_REASON not in reason
+    assert _launched(plan) == [WorkerRole.EMBED]
+    assert plan.refused_roles == {
+        WorkerRole.CHAT: "The chat model org/repo/chat.gguf needs 40.0 GiB but device 0 has "
+        "15.6 GiB usable (24.0 GiB total, 90% headroom). "
+        "Use a smaller model, or set its target to cpu."
+    }
 
 
-def test_a_launch_refused_on_a_reserve_with_a_share_keeps_the_window_text(
+def test_a_sized_chat_past_its_card_keeps_the_window_text(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, "")
     monkeypatch.setattr(planning, "_role_ctx", lambda *_args, **_kwargs: 512)
-    monkeypatch.setattr(type(engine), "memory_kind", MemoryKind.FIXED_RESERVE)
     plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
     reason = plan.refused_roles[WorkerRole.CHAT]
     assert FLOOR_REASON in reason
-    assert "does not hold the model" not in reason
+    assert "GiB usable" not in reason
 
 
 class TestARoleThatDoesNotLaunchChargesNothing:
@@ -298,7 +305,7 @@ class TestARoleThatDoesNotLaunchChargesNothing:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, ALL_CPU)
-        monkeypatch.setattr(planning, "_cpu_sizing_budget", lambda: 0)
+        monkeypatch.setattr(cfg, "chunk_size", PAST_THE_TRAINED_WINDOW)
         plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
         assert _launched(plan) == [WorkerRole.EMBED]
         assert FLOOR_REASON in plan.refused_roles[WorkerRole.CHAT]
@@ -309,7 +316,7 @@ class TestARoleThatDoesNotLaunchChargesNothing:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, ALL_CPU)
-        monkeypatch.setattr(planning, "_cpu_sizing_budget", lambda: 0)
+        monkeypatch.setattr(cfg, "chunk_size", PAST_THE_TRAINED_WINDOW)
         view = planning.resolve_placement_plan(
             PlacementSpec.from_json(ALL_CPU),
             engines=engines_for_all_roles(engine),
@@ -322,7 +329,7 @@ class TestARoleThatDoesNotLaunchChargesNothing:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, ALL_CPU)
-        monkeypatch.setattr(planning, "_cpu_sizing_budget", lambda: 0)
+        monkeypatch.setattr(cfg, "chunk_size", PAST_THE_TRAINED_WINDOW)
         with pytest.raises(TargetRefusedError, match="vision: the CPU needs") as caught:
             planning.resolve_placement_plan(
                 PlacementSpec.from_json(ALL_CPU), engines=engines_for_all_roles(engine)
