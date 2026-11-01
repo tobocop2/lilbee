@@ -24,10 +24,11 @@ _WRITE_BOUND_S = 2
 _SHUTDOWN_BOUND_S = 1
 _EXIT_BUDGET_S = 20.0
 _WAIT_FOR_SERVER_S = 30.0
+_INTERRUPTED_STATUS = 130
 _STILL_STARTING = f"The engines are still starting after {_WRITE_BOUND_S} s."
 
 _PROBE = f"""
-import signal, threading
+import signal, sys, threading
 import typer
 from lilbee.app import engine_service
 from lilbee.cli.commands import servers
@@ -77,6 +78,11 @@ try:
     servers.serve(host="127.0.0.1", port=0, data_dir=None, use_global=False)
 except typer.Exit as exit_:
     print(f"exit {{exit_.exit_code}}", flush=True)
+except KeyboardInterrupt:
+    # The interpreter's own status for an unhandled interrupt varies. A normal exit
+    # still joins threads and runs atexit, which is what this test proves.
+    print("interrupted", flush=True)
+    sys.exit(130)
 """
 
 
@@ -159,8 +165,9 @@ def _request(
 
 def _assert_ended_by_the_signal(server: _Server, elapsed: float) -> None:
     assert elapsed < _EXIT_BUDGET_S
-    assert server.process.returncode == -signal.SIGINT
-    assert "teardown" in server.lines
+    assert server.process.returncode == _INTERRUPTED_STATUS, "\n".join(server.lines)
+    assert "interrupted" in server.lines
+    assert server.lines.count("teardown") == 1, "\n".join(server.lines)
 
 
 def _sigint_with_a_request_open(
