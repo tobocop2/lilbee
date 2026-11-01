@@ -218,7 +218,12 @@ class TestSecondHostEachEntryPoint:
     def test_the_command_line_sends_no_stored_login_to_another_host(self, site, isolated_env):
         # The command re-resolves the settings from config.toml at start, so the login lives there.
         persistent_settings.save(
-            isolated_env / "data", {"crawl_cookie": COOKIE, "crawl_authorization": TOKEN}
+            isolated_env / "data",
+            {
+                "crawl_cookie": COOKIE,
+                "crawl_authorization": TOKEN,
+                "worker_pool_eager_start": False,
+            },
         )
         result = _add(site, isolated_env, site.url("/landing", "localhost"))
         # Positive control: the crawl of the other host ran.
@@ -228,7 +233,12 @@ class TestSecondHostEachEntryPoint:
 
     def test_the_command_line_sends_the_stored_login_to_the_host_it_names(self, site, isolated_env):
         persistent_settings.save(
-            isolated_env / "data", {"crawl_cookie": COOKIE, "crawl_login_host": "127.0.0.1"}
+            isolated_env / "data",
+            {
+                "crawl_cookie": COOKIE,
+                "crawl_login_host": "127.0.0.1",
+                "worker_pool_eager_start": False,
+            },
         )
         result = _add(site, isolated_env, site.url("/cookie/"))
         assert result.exit_code == 0, result.output
