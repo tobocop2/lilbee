@@ -287,11 +287,11 @@ class TestPresetVisibleDeviceComposition:
         assert env == {"CUDA_VISIBLE_DEVICES": "0,1", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
 
     @pytest.mark.usefixtures("_quiet_probe_env")
-    def test_preset_cuda_device_order_is_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_preset_cuda_device_order_is_replaced(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
-        assert dev_mod._probe_env(Path("/bin/srv"))["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
+        assert dev_mod._probe_env(Path("/bin/srv"))["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
         env = visible_env((FleetDevice("CUDA", 0, "", 0, 0),))
-        assert env["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"  # same order the probe used
+        assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"  # same order the probe used
 
     @pytest.mark.usefixtures("_quiet_probe_env")
     def test_probe_env_defaults_order_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
