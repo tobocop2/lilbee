@@ -182,7 +182,9 @@ async def search_route(
         # and model ids. Log the real cause for the operator; return a generic
         # message on the wire.
         log.exception("Search failed")
-        raise HTTPException(status_code=503, detail="Search is temporarily unavailable.") from exc
+        starting = isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.STARTING
+        detail = str(exc) if starting else "Search is temporarily unavailable."
+        raise HTTPException(status_code=503, detail=detail) from exc
 
 
 @post("/api/ask")

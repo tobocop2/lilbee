@@ -75,6 +75,7 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
     ProviderErrorKind.SERVER: (502, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.CAPACITY: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.PORT_CONFLICT: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.STARTING: (503, CompletionsErrorCode.INTERNAL_ERROR),
 }
 
 

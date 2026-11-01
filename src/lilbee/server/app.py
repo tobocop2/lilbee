@@ -24,6 +24,7 @@ from lilbee.app.settings import config_write_failure_message
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
@@ -335,6 +336,14 @@ def _unhandled_error_response(request: Request, exc: Exception) -> Response:
     return _json_error_response(request, exc)
 
 
+def _provider_error_response(request: Request, exc: ProviderError) -> Response:
+    """Answer engines that are still starting as a 503 with their text; the rest stay a 500."""
+    if exc.kind is ProviderErrorKind.STARTING:
+        unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+        return _json_error_response(request, unavailable)
+    return _unhandled_error_response(request, exc)
+
+
 def _config_locked_response(request: Request, exc: FileLockUnavailableError) -> Response:
     """Answer a config write that could not take its lock as a 503 with a plain message."""
     unavailable = HTTPException(
@@ -360,6 +369,7 @@ def create_app() -> Litestar:
         exception_handlers={
             HTTPException: _json_error_response,
             FileLockUnavailableError: _config_locked_response,
+            ProviderError: _provider_error_response,
             Exception: _unhandled_error_response,
         },
         route_handlers=[
