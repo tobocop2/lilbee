@@ -186,6 +186,15 @@ _DISPATCH_HEALTH_RECHECK_S = 0.5
 _T = TypeVar("_T")
 
 
+def _folder_declares_vision(folder: Path) -> bool:
+    """True when the model folder's ``config.json`` has a ``vision_config`` key."""
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and "vision_config" in config
+
+
 def _prewarm_key(shard: Path) -> tuple[str, int, int]:
     """The prewarm identity of *shard*: same path, size, and mtime -> same pages."""
     stat = shard.stat()
@@ -2487,15 +2496,15 @@ class FleetProvider:
         return read_gguf_metadata(path)
 
     def get_capabilities(self, model: str) -> list[str]:
-        """Detect capabilities from the local GGUF files.
+        """Detect capabilities from the local model files.
 
         Cross-encoder rerank GGUFs report ``["rerank"]`` (they cannot generate);
         other models report ``"completion"`` plus ``"vision"`` when an mmproj
-        sidecar is present.
+        sidecar is present, or for a folder whose config declares vision.
         """
         from lilbee.catalog import is_rerank_ref
         from lilbee.providers.engine_params import resolve_model_path
-        from lilbee.providers.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model, needs_sidecar_projector
 
         if model and is_rerank_ref(model):
             return ["rerank"]
@@ -2504,6 +2513,8 @@ class FleetProvider:
             path = resolve_model_path(model)
         except ProviderError:
             return caps
+        if not needs_sidecar_projector(path):
+            return [*caps, "vision"] if _folder_declares_vision(path) else caps
         try:
             find_mmproj_for_model(path)
             caps.append("vision")

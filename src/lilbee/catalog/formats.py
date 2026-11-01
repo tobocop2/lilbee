@@ -20,6 +20,7 @@ _IR_COMPANIONS = (
     "openvino_detokenizer.xml",
     "openvino_detokenizer.bin",
 )
+_PROCESSOR_FILES = ("preprocessor_config.json", "processor_config.json")
 _TOKENIZER_FILES = (
     "added_tokens.json",
     "chat_template.jinja",
@@ -110,7 +111,8 @@ def _select_safetensors(fmt: ModelFormat, names: list[str]) -> list[str]:
     index = _present(names, [_SAFETENSORS_INDEX])
     extras = _present(names, ["config.json", *_TOKENIZER_FILES])
     if fmt == ModelFormat.SAFETENSORS:
-        extras += _present(names, ["generation_config.json"]) + _module_files(names)
+        extras += _present(names, ["generation_config.json", *_PROCESSOR_FILES])
+        extras += _module_files(names)
     entry = index + weights if shards else weights + index
     return [*entry, *sorted(extras)]
 
