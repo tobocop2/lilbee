@@ -87,7 +87,6 @@ class TestTheReloadPassAsksForRediscovery:
         )
         prov = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
         prov.engine = LLAMA
-        prov._build_lock = threading.RLock()
         prov._lock = threading.RLock()
         prov._shut_down = True  # returns immediately, after the refresh
         prov._reload_pass()

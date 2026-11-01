@@ -64,6 +64,7 @@ class _ProcessSwap:
 
     script: ClassVar[Path]
     live: ClassVar[dict[Any, _ProcessSwap]] = {}
+    started: ClassVar[list[_ProcessSwap]] = []
     start_failure: ClassVar[BaseException | None] = None
     start_gate: ClassVar[threading.Event | None] = None
     starting: ClassVar[threading.Event] = threading.Event()
@@ -89,6 +90,7 @@ class _ProcessSwap:
         assert self.process.stdout is not None
         self.port = int(self.process.stdout.readline())
         type(self).live[self.group] = self
+        type(self).started.append(self)
 
     def endpoint(self) -> str:
         return f"http://127.0.0.1:{self.port}"
@@ -150,6 +152,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Services]
     script.write_text(_ENGINE_SCRIPT, encoding="utf-8")
     monkeypatch.setattr(_ProcessSwap, "script", script, raising=False)
     monkeypatch.setattr(_ProcessSwap, "live", {})
+    monkeypatch.setattr(_ProcessSwap, "started", [])
     monkeypatch.setattr(_ProcessSwap, "start_failure", None)
     monkeypatch.setattr(_ProcessSwap, "start_gate", None)
     monkeypatch.setattr(_ProcessSwap, "starting", threading.Event())
@@ -162,7 +165,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Services]
     _ProcessSwap.starting.clear()
     yield services
     services.provider.shutdown()
-    for swap in _ProcessSwap.live.values():
+    for swap in _ProcessSwap.started:
         if swap.process is not None and swap.process.poll() is None:
             swap.process.kill()
             swap.process.wait(_WAIT_S)
@@ -229,7 +232,7 @@ def test_a_write_that_joins_a_reload_that_fails_reports_the_failure(
     assert _ProcessSwap.starting.wait(_WAIT_S)
     second = threading.Thread(target=write, args=("second", lambda: engine_service.prefer("auto")))
     second.start()
-    _wait_for(lambda: _local(fleet)._reload_pending)
+    _wait_for(lambda: _local(fleet)._writes_wanted == 2)
     gate.set()
     first.join(_WAIT_S)
     second.join(_WAIT_S)
@@ -238,6 +241,35 @@ def test_a_write_that_joins_a_reload_that_fails_reports_the_failure(
     assert {name: type(value) for name, value in outcomes.items()} == {
         "first": engine_service.EngineNotAppliedError,
         "second": engine_service.EngineNotAppliedError,
+    }
+
+
+def test_vision_at_the_bound_fails_the_call_and_leaves_no_vision_role(
+    fleet: Services, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "vision_model", GGUF_CHAT)
+    monkeypatch.setattr(cfg, "ocr", "off")
+    monkeypatch.setattr(fleet_provider, "_FLEET_WAIT_S", 0)
+    gate = threading.Event()
+    _ProcessSwap.start_gate = gate
+    first = threading.Thread(target=fleet.provider.reload_placement)
+    local = _local(fleet)
+    monkeypatch.setattr(cfg, "preferred_engine", EngineSetting.MLX)
+    first.start()
+    assert _ProcessSwap.starting.wait(_WAIT_S)
+    wanted = local._writes_wanted
+    with pytest.raises(ProviderError, match=r"still starting after 0 s") as raised:
+        local._serve_vision_on_request()
+    assert raised.value.kind is ProviderErrorKind.STARTING
+    assert not planning.vision_role_wanted(GGUF_CHAT)
+    # One write asked for the grant; a second, after the revoke, plans without it.
+    assert local._writes_wanted == wanted + 2
+    gate.set()
+    first.join(_WAIT_S)
+    _wait_for(lambda: local._fleet_work is None)
+    assert local._writes_done == local._writes_wanted
+    assert WorkerRole.VISION not in {
+        launch.role for group in local._launches.values() for launch in group
     }
 
 
@@ -255,7 +287,7 @@ def test_a_write_while_a_reload_has_every_group_stopped_reaches_the_engines(
         target=engine_service.use_for_role, args=(WorkerRole.CHAT, GGUF_CHAT, "llama.cpp")
     )
     second.start()
-    _wait_for(lambda: local._reload_pending)
+    _wait_for(lambda: local._writes_wanted == 2)
     gate.set()
     first.join(_WAIT_S)
     second.join(_WAIT_S)
@@ -315,7 +347,7 @@ def test_a_background_reload_failure_is_logged_with_its_text_and_raises_no_trace
         local.reload_placement(wait=False)
         _wait_for(lambda: any(r.levelname == "ERROR" for r in caplog.records))
         for thread in threading.enumerate():
-            if thread.name == "fleet-reload-placement":
+            if thread.name == "fleet-work":
                 thread.join(_WAIT_S)
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert errors == [f"The engine reload failed: {failure}"]

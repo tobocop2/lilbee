@@ -19,11 +19,12 @@ from litestar.openapi import OpenAPIConfig
 from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 
 from lilbee.app.endpoints import MCP_PATH
-from lilbee.app.services import get_services, peek_services
+from lilbee.app.services import get_services, peek_services, reset_services
 from lilbee.app.settings import config_write_failure_message
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
@@ -309,10 +310,10 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         _server_loop.set(None)
         session_manager.cleanup()
         # Terminate the provider's worker/fleet subprocesses so they don't
-        # outlive the server (e.g. on parent-death shutdown in managed mode).
-        svc = peek_services()
-        if svc is not None:
-            svc.provider.shutdown()
+        # outlive the server (e.g. on parent-death shutdown in managed mode). The reset
+        # clears the container, so the teardown at interpreter exit does not repeat this
+        # and a stuck engine start is waited for once.
+        reset_services()
 
 
 def _json_error_response(request: Request, exc: Exception) -> Response:
@@ -333,6 +334,14 @@ def _unhandled_error_response(request: Request, exc: Exception) -> Response:
     """
     log.error("Unhandled error serving %s %s", request.method, request.url.path, exc_info=exc)
     return _json_error_response(request, exc)
+
+
+def _provider_error_response(request: Request, exc: ProviderError) -> Response:
+    """Answer engines that are still starting as a 503 with their text; the rest stay a 500."""
+    if exc.kind is ProviderErrorKind.STARTING:
+        unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+        return _json_error_response(request, unavailable)
+    return _unhandled_error_response(request, exc)
 
 
 def _config_locked_response(request: Request, exc: FileLockUnavailableError) -> Response:
@@ -360,6 +369,7 @@ def create_app() -> Litestar:
         exception_handlers={
             HTTPException: _json_error_response,
             FileLockUnavailableError: _config_locked_response,
+            ProviderError: _provider_error_response,
             Exception: _unhandled_error_response,
         },
         route_handlers=[
