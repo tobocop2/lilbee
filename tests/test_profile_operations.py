@@ -429,8 +429,10 @@ def test_import_refuses_an_invalid_or_unreadable_file_and_writes_nothing(store, 
     latin.write_bytes(raw)
     with pytest.raises(ValueError, match="Not UTF-8 text"):
         profiles.import_profile(store, latin)
-    with pytest.raises(ValueError, match="Cannot read the file"):
+    with pytest.raises(ValueError, match=r"^No file at .*missing\.toml$"):
         profiles.import_profile(store, tmp_path / "in" / "missing.toml")
+    with pytest.raises(ValueError, match="Cannot read the file"):
+        profiles.import_profile(store, tmp_path / "in")
     assert _files(_global_dir()) == []
 
 

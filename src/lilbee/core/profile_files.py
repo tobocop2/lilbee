@@ -372,6 +372,8 @@ def read_profile_text(path: Path) -> str:
     try:
         with path.open("rb") as f:
             data = f.read(MAX_PROFILE_BYTES + 1)
+    except FileNotFoundError:
+        raise ProfileFileError(f"No file at {path}") from None
     except OSError as exc:
         raise ProfileFileError(f"Cannot read the file: {exc}") from None
     _check_size(len(data))

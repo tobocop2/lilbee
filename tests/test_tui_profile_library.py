@@ -451,7 +451,7 @@ async def test_import_of_a_missing_file_toasts_and_writes_nothing(tmp_path) -> N
         dialog = await _dialog(app, pilot, ProfilePathDialog)
         dialog.query_one("#path-input", Input).value = str(tmp_path / "nope.toml")
         await pilot.press("enter")
-        await _toasted(app, pilot, "Cannot read the file")
+        await _toasted(app, pilot, "No file at")
         await app.workers.wait_for_complete()
         assert app.screen is dialog
     assert not _global_dir().exists() or not list(_global_dir().iterdir())

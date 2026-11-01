@@ -111,6 +111,10 @@ def _write_atomically(path: Path, text: str, opener: _Opener | None) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        # The error names the file the user asked to write, not the hidden temp file.
+        raise OSError(exc.errno, exc.strerror, str(path)) from None
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

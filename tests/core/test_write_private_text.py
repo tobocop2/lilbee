@@ -411,3 +411,21 @@ class TestPrivateDirAndOpener:
             handle.write("x\n")
         assert target.read_text(encoding="utf-8") == "x\n"
         assert file_mode(target) == 0o600
+
+
+def test_a_failed_write_names_the_target_not_the_hidden_temp_file(tmp_path, monkeypatch):
+    def refuse(src, dst):
+        raise PermissionError(13, "Permission denied", str(src), None, str(dst))
+
+    monkeypatch.setattr(os, "replace", refuse)
+    target = tmp_path / "mine.toml"
+    with pytest.raises(PermissionError) as caught:
+        write_private_text(target, "x = 1\n")
+    assert str(caught.value) == f"[Errno 13] Permission denied: {str(target)!r}"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_write_that_fails_for_another_reason_keeps_its_error(tmp_path):
+    with pytest.raises(UnicodeEncodeError):
+        write_private_text(tmp_path / "mine.toml", "\ud800")
+    assert list(tmp_path.iterdir()) == []

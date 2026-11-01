@@ -4294,10 +4294,10 @@ class TestUpdateConfig:
         assert result.reindex_required is False
 
     async def test_invalid_type_raises(self):
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError) as caught:
             await handlers.update_config({"chunk_size": "not_a_number"})
+        assert "validation error" not in str(caught.value)
+        assert str(caught.value).startswith("chunk_size = 'not_a_number' is not ")
 
     async def test_chunk_size_below_minimum_rejected(self):
         with pytest.raises(ValueError, match="chunk_size must be >= 64"):

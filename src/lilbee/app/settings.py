@@ -27,7 +27,7 @@ from lilbee.core.config.keys import (
     PROVIDER_SWITCHING_KEYS,
 )
 from lilbee.core.config.login_host import refuse_unless_host
-from lilbee.core.config.model import checked_write, default_refusal
+from lilbee.core.config.model import checked_write, default_refusal, refusal_sentence
 from lilbee.core.config.resolve import (
     PROFILE_FIELDS,
     Resolved,
@@ -245,7 +245,7 @@ def get_setting(key: str) -> SettingInfo:
     if not _is_settable(key):
         raise ValueError(f"Unknown or read-only setting: {key}")
     if _is_write_only(key):
-        raise KeyError(f"Setting '{key}' is write-only and cannot be read back")
+        raise ValueError(f"Setting '{key}' is write-only and cannot be read back")
     layers = read_layers(cfg.data_root)
     return _setting_info(key, layers, _sources(layers)[key])
 
@@ -372,7 +372,7 @@ def _apply_with_rollback(
             except ValidationError as exc:
                 if _is_write_only(key):
                     raise ValueError(_secret_refusal(key, exc)) from None
-                raise
+                raise ValueError(refusal_sentence(key, raw)) from None
             normalized = getattr(cfg, key)
             if isinstance(normalized, list):
                 to_persist[key] = "\n".join(str(x) for x in normalized)

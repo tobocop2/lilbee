@@ -224,7 +224,9 @@ class TestSettingsWriteLockSpansEveryEntryPoint:
 
 
 class TestSyncFromResolverRefusedValue:
-    def test_a_stored_value_warns_and_cfg_keeps_its_value(self, tmp_path, monkeypatch, caplog):
+    def test_a_refused_profile_value_warns_once_in_one_line_and_cfg_keeps_its_value(
+        self, tmp_path, monkeypatch, caplog
+    ):
         from lilbee.core.config import cfg
 
         (tmp_path / "config.toml").write_text(
@@ -234,8 +236,36 @@ class TestSyncFromResolverRefusedValue:
         monkeypatch.setattr(cfg, "chunk_size", 700)
         with caplog.at_level("WARNING"):
             settings.sync_from_resolver(cfg, ["chunk_size"])
+            settings.sync_from_resolver(cfg, ["chunk_size"])
         assert cfg.chunk_size == 700
-        assert "Ignoring invalid profile value for chunk_size" in caplog.text
+        lines = [r.getMessage() for r in caplog.records if "chunk_size" in r.getMessage()]
+        assert len(lines) == 1
+        assert "profile value in" in lines[0] and "chunk_size = 'many' is not " in lines[0]
+        assert "validation error" not in lines[0]
+
+    def test_a_value_the_field_rejects_late_warns_in_one_line(self, tmp_path, monkeypatch, caplog):
+        from lilbee.core.config import cfg
+        from lilbee.core.config.enums import SettingSource
+        from lilbee.core.config.resolve import Resolved
+
+        monkeypatch.setattr(cfg, "data_root", tmp_path)
+        monkeypatch.setattr(cfg, "top_k", 7)
+        late = {"top_k": Resolved("many", SettingSource.PROFILE)}
+        with caplog.at_level("WARNING"):
+            settings._assign_resolved(cfg, late, ["top_k"], tmp_path)
+        assert cfg.top_k == 7
+        assert "top_k = 'many' is not " in caplog.text
+        assert "validation error" not in caplog.text
+
+    def test_a_refused_user_value_is_not_the_source(self, tmp_path):
+        from lilbee.core.config.enums import SettingSource
+        from lilbee.core.config.resolve import read_layers, resolve
+
+        (tmp_path / "config.toml").write_text("top_k = -5\nchunk_size = 900\n", encoding="utf-8")
+        layers = read_layers(tmp_path)
+        assert layers.refused_user == {"top_k"} and "top_k" not in layers.user
+        assert resolve("top_k", layers).source is SettingSource.BUILT_IN
+        assert resolve("chunk_size", layers).source is SettingSource.USER
 
     def test_a_variable_stays_quiet_for_the_entry_point_to_refuse(
         self, tmp_path, monkeypatch, caplog

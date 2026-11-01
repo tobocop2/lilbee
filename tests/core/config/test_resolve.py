@@ -123,6 +123,28 @@ def test_skip_toml_drops_user_and_profile_layers(tmp_path, monkeypatch):
     assert resolve("chunk_size", layers).source is SettingSource.ENV
 
 
+def test_many_refused_values_of_one_layer_read_the_profile_name_once(tmp_path, monkeypatch):
+    from lilbee.core.config import resolve as resolve_module
+
+    root = _write(tmp_path / "root", '[profile]\nname = "Scans"\n')
+    reads = []
+    real = resolve_module.read_profile_table
+    monkeypatch.setattr(resolve_module, "read_profile_table", lambda r: reads.append(r) or real(r))
+    resolved = {
+        "semantic_chunking": Resolved("maybe", SettingSource.PROFILE),
+        "flash_attention": Resolved("maybe", SettingSource.PROFILE),
+    }
+    sanitize_soft_fields(resolved, root)
+    assert len(reads) == 1
+
+
+def test_a_refused_user_value_falls_through_to_the_next_layer(tmp_path):
+    root = _write(tmp_path / "root", "top_k = 'banana'\n[profile.values]\ntop_k = 30\n")
+    layers = read_layers(root)
+    assert layers.refused_user == {"top_k"} and "top_k" not in layers.user
+    assert resolve("top_k", layers) == Resolved(30, SettingSource.PROFILE)
+
+
 def test_unreadable_config_toml_drops_user_and_profile_layers(tmp_path):
     root = _write(tmp_path / "root", "top_k = [\n")
     layers = read_layers(root)
@@ -210,12 +232,14 @@ def test_disallowed_profile_value_is_dropped_with_warning(tmp_path, caplog):
         tmp_path / "root",
         '[profile]\nname = "x"\n[profile.values]\nchat_model = "a/b/c.gguf"\nchunk_size = 900\n',
     )
-    with caplog.at_level("WARNING", logger="lilbee.core.config.resolve"):
+    with caplog.at_level("WARNING"):
         layers = read_layers(root)
+        for _ in range(4):
+            read_layers(root)
     assert layers.profile == {"chunk_size": 900}
     assert resolve("chat_model", layers).source is SettingSource.BUILT_IN
     assert resolve("chunk_size", layers).source is SettingSource.PROFILE
-    assert any("chat_model" in record.getMessage() for record in caplog.records)
+    assert [("chat_model" in r.getMessage()) for r in caplog.records] == [True]
     table = read_profile_table(root)
     assert (table.name, dict(table.values)) == ("x", {"chunk_size": 900})
 
@@ -260,3 +284,11 @@ def test_config_construction_ignores_a_disallowed_profile_value(tmp_path, monkey
     built = Config()
     assert built.temperature == builtin_value("temperature") == 0.1
     assert built.layout_detection is True
+
+
+def test_a_refusal_sentence_is_one_line_and_has_a_fallback_reason():
+    from lilbee.core.config.model import hard_refusals, refusal_sentence
+
+    assert refusal_sentence("top_k", "x").startswith("top_k = 'x' is not ")
+    assert refusal_sentence("top_k", 5) == "top_k = 5 is not a value it accepts"
+    assert hard_refusals({"semantic_chunking": "maybe", "top_k": "x"}).keys() == {"top_k"}

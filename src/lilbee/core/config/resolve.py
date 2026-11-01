@@ -5,7 +5,6 @@ Per-run CLI flags and ``apply_ephemeral_model_swap`` set cfg for one process and
 
 from __future__ import annotations
 
-import logging
 import os
 import tomllib
 from collections.abc import Mapping
@@ -20,9 +19,7 @@ from pydantic_core import PydanticUndefined
 from .defaults import CONFIG_FILE_NAME, SKIP_TOML_ENV, env_var_name
 from .enums import ProfileScope, SettingSource
 from .load_warnings import warn_on_load
-from .model import Config, default_refusal, value_is_set
-
-log = logging.getLogger(__name__)
+from .model import Config, default_refusal, hard_refusals, value_is_set
 
 PROFILE_TABLE = "profile"
 PROFILE_NAME_KEY = "name"
@@ -61,11 +58,16 @@ class ProfileTable:
 
 @dataclass(frozen=True)
 class SettingLayers:
-    """The explicit layers read once: env vars, config.toml keys, and the ``[profile]`` values."""
+    """The explicit layers read once: env vars, config.toml keys, and the ``[profile]`` values.
+
+    The user layer holds no value its setting refuses. ``refused_user`` names the config.toml
+    keys left out for that reason.
+    """
 
     env: Mapping[str, str]
     user: Mapping[str, Any]
     profile: Mapping[str, Any]
+    refused_user: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -128,9 +130,7 @@ def _profile_table(data: Mapping[str, Any], path: Path) -> ProfileTable:
         if key in PROFILE_FIELDS:
             kept[key] = value
         else:
-            log.warning(
-                "Ignoring %s in the [profile] values of %s: profiles cannot set it", key, path
-            )
+            warn_on_load(f"Ignoring {key} in the profile values of {path}: profiles cannot set it")
     return ProfileTable(name=name if isinstance(name, str) else None, values=kept)
 
 
@@ -144,11 +144,17 @@ def read_layers(root: Path) -> SettingLayers:
     """Read the env vars and ``root/config.toml`` once."""
     path = root / CONFIG_FILE_NAME
     data = _read_toml(path)
-    user = {key: value for key, value in data.items() if key != PROFILE_TABLE}
+    user = _present({key: value for key, value in data.items() if key != PROFILE_TABLE})
+    profile = _present(_profile_table(data, path).values)
+    # A user value its setting refuses falls through to the next layer, so the source names the
+    # layer that supplies the value. The load of config.toml reports it. A refused profile value
+    # stays in its layer: a reset or a null write refuses to land on it.
+    refused_user = hard_refusals(user)
     return SettingLayers(
         env=_env_layer(),
-        user=_present(user),
-        profile=_present(_profile_table(data, path).values),
+        user={k: v for k, v in user.items() if k not in refused_user},
+        profile=profile,
+        refused_user=frozenset(refused_user),
     )
 
 
@@ -202,6 +208,7 @@ def sanitize_soft_fields(resolved: dict[str, Resolved], root: Path) -> dict[str,
     A load of the same value reports it in the same words, so one process prints one line.
     """
     sanitized = dict(resolved)
+    labels: dict[SettingSource, str] = {}
     for key, entry in resolved.items():
         if entry.source in (SettingSource.BUILT_IN, SettingSource.AUTO):
             continue
@@ -211,6 +218,8 @@ def sanitize_soft_fields(resolved: dict[str, Resolved], root: Path) -> dict[str,
         if entry.source is SettingSource.ENV:
             warn_on_load(f"{env_var_name(key)} = {refusal}")
         else:
-            warn_on_load(f"{_source_label(entry.source, root)}: {key} = {refusal}")
+            if entry.source not in labels:
+                labels[entry.source] = _source_label(entry.source, root)
+            warn_on_load(f"{labels[entry.source]}: {key} = {refusal}")
         sanitized[key] = Resolved(builtin_value(key), entry.source)
     return sanitized

@@ -17,7 +17,8 @@ from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.core.config.defaults import SKIP_TOML_ENV
 from lilbee.core.config.enums import SettingSource
-from lilbee.core.config.model import toml_value, toml_values
+from lilbee.core.config.load_warnings import warn_on_load
+from lilbee.core.config.model import refusal_sentence, toml_value, toml_values
 from lilbee.core.config.resolve import (
     PROFILE_NAME_KEY,
     PROFILE_TABLE,
@@ -43,12 +44,7 @@ T = TypeVar("T")
 _CONFIG_LOCK_TIMEOUT_S = 10.0
 
 # An overlay leaves these on cfg when the root gives them no value of its own.
-_HELD_AT_BUILT_IN = ROOT_DERIVED_FIELDS | {
-    "chat_model",
-    "embedding_model",
-    "vision_model",
-    "reranker_model",
-}
+_HELD_AT_BUILT_IN = ROOT_DERIVED_FIELDS | set(MODEL_ROLE_FIELDS)
 
 
 def _config_path(data_root: Path) -> Path:
@@ -197,11 +193,12 @@ def _assign_resolved(
         entry = sanitized[key]
         try:
             setattr(config, key, entry.value)
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError):
             # A bad variable is the entry point's to refuse, in its one line.
             if entry.source is not SettingSource.ENV:
-                log.warning(
-                    "Ignoring invalid %s value for %s in %s: %s", entry.source, key, root, exc
+                warn_on_load(
+                    f"Ignoring {entry.source} value in {root}: "
+                    f"{refusal_sentence(key, entry.value)}"
                 )
 
 
@@ -252,7 +249,7 @@ def overlay_persisted_settings(root: Path) -> None:
         if not toml_is_readable(path):
             return
     layers = read_layers(root)
-    refused = layers.user.keys() - accepted.keys()
+    refused = (layers.user.keys() - accepted.keys()) | layers.refused_user
     resolved = resolve_all(
         replace(layers, user={key: layers.user[key] for key in layers.user.keys() - refused})
     )

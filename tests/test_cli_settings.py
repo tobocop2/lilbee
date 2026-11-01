@@ -160,7 +160,8 @@ def test_get_unknown_key_is_an_error(project):
 def test_get_refuses_write_only_fields(project):
     result = _invoke(project, "get", "hf_token")
     assert result.exit_code == 1
-    assert "write-only" in result.output
+    assert "Setting 'hf_token' is write-only and cannot be read back" in result.output
+    assert '"Setting' not in result.output
 
 
 # -- set ----------------------------------------------------------------------
@@ -187,6 +188,27 @@ def test_set_a_bool_setting_echoes_the_value_it_stored(project, typed, shown, st
     assert result.exit_code == 0, result.output
     assert f"Set flash_attention to {shown}." in result.output
     assert _stored(project) == stored
+
+
+def test_set_a_list_setting_echoes_its_items_on_one_line(project):
+    result = _invoke(project, "set", "ocr_language", "eng\ndeu")
+    assert result.exit_code == 0, result.output
+    assert "Set ocr_language to eng, deu." in result.output
+
+
+@pytest.mark.parametrize("key", ["n_gpu_layers", "gpu_devices"])
+def test_set_a_blank_value_echoes_auto(project, key):
+    result = _invoke(project, "set", key, "")
+    assert result.exit_code == 0, result.output
+    assert f"Set {key} to auto." in result.output
+
+
+def test_set_a_value_of_the_wrong_type_names_it_in_one_sentence(project):
+    result = _invoke(project, "set", "chunk_size", "abc")
+    assert result.exit_code == 1
+    assert "chunk_size = 'abc' is not " in result.output
+    assert "validation error" not in result.output
+    assert "pydantic.dev" not in result.output
 
 
 @pytest.mark.parametrize(("key", "bad"), [("flash_attention", "maybe"), ("n_gpu_layers", "many")])

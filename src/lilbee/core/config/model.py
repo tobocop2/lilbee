@@ -8,6 +8,7 @@ to the same instance defined at module bottom.
 import logging
 import os
 import re
+from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -1852,6 +1853,22 @@ def default_refusal(key: str, value: Any) -> str | None:
         return None
     reason = _refusals(Config, {key: value}).get(key)
     return None if reason is None else f"{value!r} {reason}; {key} {_USES_ITS_DEFAULT}"
+
+
+def hard_refusals(values: Mapping[str, Any]) -> dict[str, str]:
+    """Why its own field refuses each of *values* that one refuses, by key.
+
+    A setting that takes its default when refused is left out: its value is kept and replaced
+    by :func:`default_refusal`.
+    """
+    checked = {key: v for key, v in values.items() if key not in _TAKES_DEFAULT_WHEN_REFUSED}
+    return _refusals(Config, checked)
+
+
+def refusal_sentence(key: str, value: Any) -> str:
+    """One plain sentence for a *value* that *key* refuses, with no validator dump."""
+    reason = _refusals(Config, {key: value}).get(key, "is not a value it accepts")
+    return f"{key} = {value!r} {reason}"
 
 
 def checked_write(key: str, value: Any) -> Any:

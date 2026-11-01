@@ -107,13 +107,20 @@ def _parse_cli_value(key: str, raw: str) -> Any:
 
 
 def _stored_text(key: str, typed: str) -> str:
-    """What the write stored for a bool setting (true, false, auto); other settings echo *typed*."""
+    """What the write stored, on one line: a list joins its items, a blank value reads auto.
+
+    A bool shows as true, false or auto; any other setting echoes *typed*.
+    """
     from lilbee.app.settings_map import SETTINGS_MAP
 
+    stored = getattr(cfg, key)
+    if isinstance(stored, list):
+        return ", ".join(str(item) for item in stored)
+    if stored is None and not typed.strip():
+        return "auto"
     definition = SETTINGS_MAP.get(key)
     if definition is None or definition.type is not bool:
         return typed
-    stored = getattr(cfg, key)
     return "auto" if stored is None else shown_value(stored)
 
 
@@ -160,7 +167,7 @@ def settings_unset(
         for key in result.updated:
             try:
                 info = get_setting(key)
-            except KeyError:
+            except ValueError:
                 line(f"{key}: removed your value (write-only; new value not shown)")
                 continue
             source = info.source.value.replace("_", " ")
