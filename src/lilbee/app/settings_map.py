@@ -1159,7 +1159,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.GENERATION,
-        help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
+        help_text="Fraction of GPU memory used to size the context window (0.1-1.0)",
     ),
     "usable_vram_fraction": SettingDef(
         float,

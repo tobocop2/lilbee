@@ -342,13 +342,15 @@ def show_model_data(ref: str) -> ShowModelResult:
 
 
 def _vision_projector_missing(ref: str) -> bool:
-    """True when *ref*'s mmproj projector does not resolve on disk."""
+    """True when *ref* is a GGUF whose mmproj projector does not resolve on disk."""
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_model_path
-    from lilbee.providers.gguf_meta import find_mmproj_for_model
+    from lilbee.providers.gguf_meta import find_mmproj_for_model, needs_sidecar_projector
 
     try:
-        find_mmproj_for_model(resolve_model_path(ref))
+        path = resolve_model_path(ref)
+        if needs_sidecar_projector(path):
+            find_mmproj_for_model(path)
     except (ProviderError, OSError, ValueError, KeyError):
         return True
     return False

@@ -65,7 +65,12 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+            [],
+            {},
+            0,
+            {},
+        ),
     )
     monkeypatch.setattr(
         planning,
@@ -84,7 +89,9 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
     devices = [FleetDevice("CUDA", 0, "A", 80 * GIB, 10 * GIB)]
     captured = {}
 
-    def fake_from_spec(spec, active_roles, device_capacity, *, estimate_peak):
+    def fake_from_spec(
+        spec, active_roles, device_capacity, *, estimate_peak, plan_auto, model_refs
+    ):
         captured["spec"] = spec
         captured["roles"] = active_roles
         captured["capacity"] = device_capacity
@@ -214,7 +221,12 @@ def test_interactive_resolve_still_raises(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+            [],
+            {},
+            0,
+            {},
+        ),
     )
 
     def refuse(*_a, **_kw):
@@ -241,7 +253,12 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+            [],
+            {},
+            0,
+            {},
+        ),
     )
 
     def refuse(spec, *_a, **_kw):

@@ -328,6 +328,11 @@ def find_mmproj_for_model(model_path: Path) -> Path:
     )
 
 
+def needs_sidecar_projector(model_path: Path) -> bool:
+    """False for a model folder, which holds its own vision weights; True for a GGUF."""
+    return not model_path.is_dir()
+
+
 def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
     """Read ``clip.projector_type`` from a GGUF mmproj without loading the model."""
     value = _scalars(mmproj_path).get(_CLIP_PROJECTOR_TYPE_KEY)

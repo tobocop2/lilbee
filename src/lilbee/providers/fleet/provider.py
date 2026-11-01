@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextvars
 import functools
+import json
 import logging
 import re
 import sys
@@ -159,6 +160,15 @@ _VISION_REPEAT_LAST_N = 64
 # unhealthy replica re-admits itself by cool-down expiry, which notifies nobody.
 _DISPATCH_HEALTH_RECHECK_S = 0.5
 _T = TypeVar("_T")
+
+
+def _folder_declares_vision(folder: Path) -> bool:
+    """True when the model folder's ``config.json`` has a ``vision_config`` key."""
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and "vision_config" in config
 
 
 def _prewarm_key(shard: Path) -> tuple[str, int, int]:
@@ -751,7 +761,7 @@ class _EngineDemand(NamedTuple):
     skipped_not_installed: dict[WorkerRole, str]
     # Launches the demand plan refused for an unusable window (role -> reason);
     # recorded even when the ladder binds an engine or never builds one.
-    skipped_unusable_ctx: dict[WorkerRole, str]
+    refused_roles: dict[WorkerRole, str]
     # Vision slots this process needs at once; 0 demands nothing.
     vision_slots: int = 0
 
@@ -794,7 +804,7 @@ def _placeable_demand(
         pairs,
         _demanded_chat_ctx(plan.launches, pairs),
         dict(plan.skipped_not_installed),
-        dict(plan.skipped_unusable_ctx),
+        dict(plan.refused_roles),
         _demanded_vision_slots(pairs),
     )
 
@@ -999,7 +1009,7 @@ class FleetProvider:
         self._skipped_not_installed: dict[WorkerRole, str] = {}
         # Launches the last plan refused for an unusable window (role -> reason);
         # read by the warm finalizer and _require_clients.
-        self._skipped_unusable_ctx: dict[WorkerRole, str] = {}
+        self._refused_roles: dict[WorkerRole, str] = {}
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -1211,7 +1221,7 @@ class FleetProvider:
         # tracker must still be able to say "chat model X is not installed"
         # rather than a retryable not-ready.
         self._skipped_not_installed = dict(demand.skipped_not_installed)
-        self._skipped_unusable_ctx = dict(demand.skipped_unusable_ctx)
+        self._refused_roles = dict(demand.refused_roles)
         machine_dir = machine_engine_dir()
         if kernel_arbitrates_locks(machine_dir):
             machine = self._acquire_in_dir(machine_dir, pin, demand, is_overflow=False)
@@ -1390,7 +1400,7 @@ class FleetProvider:
         # _acquire_engine instead of wiping it.
         if plan is not None:
             self._skipped_not_installed = dict(plan.skipped_not_installed)
-            self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
+            self._refused_roles = dict(plan.refused_roles)
         if plan is None or not plan.launches:
             # No engine binary, or no installed/configured model: serve nothing.
             return False
@@ -1548,7 +1558,7 @@ class FleetProvider:
             # A refused launch's recorded reason wins over the generic line.
             # BAD_REQUEST so the HTTP surfaces return this deterministic,
             # actionable refusal in a 4xx body instead of a generic 500.
-            reason = self._skipped_unusable_ctx.get(role)
+            reason = self._refused_roles.get(role)
             if reason is not None:
                 raise ProviderError(
                     reason, provider=_PROVIDER_NAME, kind=ProviderErrorKind.BAD_REQUEST
@@ -2197,15 +2207,15 @@ class FleetProvider:
         return read_gguf_metadata(path)
 
     def get_capabilities(self, model: str) -> list[str]:
-        """Detect capabilities from the local GGUF files.
+        """Detect capabilities from the local model files.
 
         Cross-encoder rerank GGUFs report ``["rerank"]`` (they cannot generate);
         other models report ``"completion"`` plus ``"vision"`` when an mmproj
-        sidecar is present.
+        sidecar is present, or for a folder whose config declares vision.
         """
         from lilbee.catalog import is_rerank_ref
         from lilbee.providers.engine_params import resolve_model_path
-        from lilbee.providers.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model, needs_sidecar_projector
 
         if model and is_rerank_ref(model):
             return ["rerank"]
@@ -2214,6 +2224,8 @@ class FleetProvider:
             path = resolve_model_path(model)
         except ProviderError:
             return caps
+        if not needs_sidecar_projector(path):
+            return [*caps, "vision"] if _folder_declares_vision(path) else caps
         try:
             find_mmproj_for_model(path)
             caps.append("vision")
@@ -2351,7 +2363,7 @@ class FleetProvider:
         if missing is not None:
             self._warm_tracker.fail(f"chat model {clean_display_name(missing)} is not installed")
             return
-        unusable = self._skipped_unusable_ctx.get(WorkerRole.CHAT)
+        unusable = self._refused_roles.get(WorkerRole.CHAT)
         if unusable is not None:
             self._warm_tracker.fail(unusable)
             return
@@ -2717,7 +2729,7 @@ class FleetProvider:
             plan = planning.plan_all_launches(engines=engines)
             # Keep the skip reasons in step with the fresh plan.
             self._skipped_not_installed = dict(plan.skipped_not_installed)
-            self._skipped_unusable_ctx = dict(plan.skipped_unusable_ctx)
+            self._refused_roles = dict(plan.refused_roles)
             new = _launches_by_group(plan)
             # A group restarts when its launches changed OR its running/planned
             # presence disagrees (covers a group the new plan drops or adds).

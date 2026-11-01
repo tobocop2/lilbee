@@ -16,15 +16,21 @@ from __future__ import annotations
 import functools
 import itertools
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import reduce
-from math import gcd
+from math import ceil, gcd
+from types import MappingProxyType
 
 from lilbee.providers.fleet.memory_types import MemoryKind
-from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
+from lilbee.providers.fleet.placement_spec import (
+    PlacementError,
+    PlacementSpec,
+    RolePlacement,
+    TargetRefusedError,
+)
 from lilbee.providers.fleet.vram import usable_vram_fraction
-from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, RoleTarget, WorkerRole
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +43,9 @@ PeakEstimator = Callable[[WorkerRole, tuple[int, ...]], tuple[int, ...]]
 # context the launch would serve on that chat shard. Lets the planner widen a chat
 # split onto idle cards when a tighter shard would starve KV below the target.
 SplitCtxFitter = Callable[[tuple[int, ...], Sequence[int]], int]
+# Plans the auto roles of a spec on the cards the other roles leave (index to
+# total bytes) and the roles that were charged to cards.
+AutoPlanner = Callable[[dict[int, int], frozenset[WorkerRole]], "Placement"]
 
 
 @dataclass(frozen=True)
@@ -75,6 +84,16 @@ class InstancePlan:
     devices: tuple[int, ...]
     tensor_split: tuple[int, ...] = ()
     replica: int = 0
+    target: RoleTarget = RoleTarget.GPU
+
+
+@dataclass(frozen=True)
+class RoomHolder:
+    """A role charged to a card ahead of the role that a refusal names."""
+
+    role: WorkerRole
+    model: str
+    charged_bytes: float
 
 
 @dataclass(frozen=True)
@@ -355,6 +374,46 @@ def _tight_device_group(needed: int, remaining: dict[int, float]) -> tuple[int, 
     return tuple(usable or by_room[:1])
 
 
+def _holders_sentence(holders: Sequence[RoomHolder]) -> str:
+    """The sentence that names each role charged to a card ahead of the refused one."""
+    named = [
+        f"the {h.role.value} model {h.model} ({h.charged_bytes / 1024**3:.1f} GiB)" for h in holders
+    ]
+    verb = "holds" if len(named) == 1 else "hold"
+    joined = " and ".join(named)
+    return f"{joined[0].upper()}{joined[1:]} {verb} the rest."
+
+
+def card_refusal(
+    subject: str,
+    device: int,
+    needed: float,
+    room: float,
+    capacity: int,
+    *,
+    fix: bool,
+    holders: Sequence[RoomHolder] = (),
+) -> str | None:
+    """The refusal of *needed* bytes on a card with *room* usable bytes; None when they fit."""
+    if needed <= room:
+        return None
+    figures = (
+        f"{subject} needs {needed / 1024**3:.1f} GiB but device {device} has "
+        f"{room / 1024**3:.1f} GiB usable ({capacity / 1024**3:.1f} GiB total, "
+        f"{usable_vram_fraction():.0%} headroom)"
+    )
+    held = _holders_sentence(holders) if holders else ""
+    if not fix:
+        return f"{figures}. {held}" if held else figures
+    if held and needed <= capacity * usable_vram_fraction():
+        roles = " or ".join(h.role.value for h in holders)
+        return (
+            f"{figures}. {held} Use a smaller {roles} model, or set the target of one of "
+            "these models to cpu or another card."
+        )
+    return f"{figures}. Use a smaller model, or set its target to cpu. {held}".rstrip()
+
+
 def _place_tight(
     model: ModelPlacementInput,
     remaining: dict[int, float],
@@ -370,13 +429,16 @@ def _place_tight(
     others excluded by that pin, a model too big for it has nowhere to go and the
     tight placement is only a slower refusal; given the group, llama-server can
     split across them. One card is still used when one card is enough, since a
-    split it does not need costs it interconnect bandwidth.
+    split it does not need costs it interconnect bandwidth. A fixed reserve takes the
+    roomiest card alone: it has no share per card to check before the launch.
     """
     refunds = {r: c for r, c in charges.items() if _phase_disjoint(r, model.role)}
     for charged in refunds.values():
         for idx, held in charged.items():
             remaining[idx] += held
     devices = _tight_device_group(model.est_vram_bytes, remaining)
+    if model.kind is MemoryKind.FIXED_RESERVE:
+        devices = devices[:1]
     claimed = {idx: remaining[idx] for idx in devices}
     available = sum(claimed.values())
     for idx in devices:
@@ -389,7 +451,7 @@ def _place_tight(
         charges=slot,
     )
     group = frozenset(refunds) | {model.role} if refunds else frozenset()
-    return placed, group, int(model.est_vram_bytes - available)
+    return placed, group, ceil(model.est_vram_bytes - available)
 
 
 def _group_slot(
@@ -698,6 +760,8 @@ def placement_from_spec(
     device_capacity: dict[int, int],
     *,
     estimate_peak: PeakEstimator,
+    plan_auto: AutoPlanner | None = None,
+    model_refs: Mapping[WorkerRole, str] = MappingProxyType({}),
 ) -> Placement:
     """Build a Placement from a manual *spec*, charging each card and failing loud.
 
@@ -706,23 +770,61 @@ def placement_from_spec(
     free VRAM would double-count models already loaded. Every active role must
     have an entry; every device must exist; each card must fit the sum of the
     per-device peaks charged to it, within the cfg.usable_vram_fraction headroom.
+
+    A role with the auto target is planned last by *plan_auto*, on the capacity
+    the other roles leave. It never names a card, so a card the machine lacks
+    cannot refuse it.
+
+    A role its card cannot hold raises a plain error when the automatic plan can
+    replace the spec. Otherwise it raises :class:`TargetRefusedError`, naming the role.
     """
     usable = usable_vram_fraction()
     remaining = {idx: total * usable for idx, total in device_capacity.items()}
     instances: list[InstancePlan] = []
+    auto_roles: list[WorkerRole] = []
+    card_roles: list[WorkerRole] = []
+    held: dict[int, list[RoomHolder]] = {}
     for role in active_roles:
         rp = _required_entry(spec, role, device_capacity)
+        if rp.device_target is RoleTarget.AUTO:
+            auto_roles.append(role)
+            continue
+        if rp.device_target is not RoleTarget.GPU:
+            instances.extend(
+                InstancePlan(role=role, devices=(), replica=replica, target=rp.device_target)
+                for replica in range(rp.replicas)
+            )
+            continue
+        card_roles.append(role)
         ratio = rp.tensor_split or _vram_proportional_split(rp.devices, remaining)
         per_device = estimate_peak(role, ratio)
         split = ratio if len(rp.devices) > 1 else ()
         for replica in range(rp.replicas):
-            _charge_devices(role, rp.devices, per_device, remaining, device_capacity)
+            _charge_devices(
+                role,
+                rp.devices,
+                per_device,
+                remaining,
+                device_capacity,
+                refuse_alone=not spec.all_on_cards,
+                held=held,
+            )
             instances.append(
                 InstancePlan(
                     role=role, devices=tuple(rp.devices), tensor_split=split, replica=replica
                 )
             )
-    return Placement(instances=tuple(instances), unplaceable_roles=())
+        model = model_refs.get(role, role.value)
+        for idx, peak in zip(rp.devices, per_device, strict=True):
+            held.setdefault(idx, []).append(RoomHolder(role, model, peak * rp.replicas))
+    if not auto_roles:
+        return Placement(instances=tuple(instances), unplaceable_roles=())
+    if plan_auto is None:
+        names = ", ".join(role.value for role in auto_roles)
+        raise PlacementError(f"{names}: the auto target needs a planner to place it")
+    left = {idx: round(room / usable) for idx, room in remaining.items()}
+    placed = plan_auto(left, frozenset(card_roles))
+    return replace(placed, instances=(*instances, *placed.instances))
 
 
 def _vram_proportional_split(
@@ -824,7 +926,10 @@ def _required_entry(
     """Return *role*'s placement entry, failing loud if absent or pinned off-hardware."""
     rp = spec.roles.get(role)
     if rp is None:
-        raise PlacementError(f"{role.value} has a model but no placement entry in placement")
+        raise PlacementError(
+            f"{role.value} has a model but the placement has no entry for it. "
+            f"Add an entry for {role.value} with devices or a target, or clear the placement."
+        )
     for idx in rp.devices:
         if idx not in device_capacity:
             raise PlacementError(
@@ -840,25 +945,43 @@ def _charge_devices(
     per_device: tuple[int, ...],
     remaining: dict[int, float],
     device_capacity: dict[int, int],
+    *,
+    refuse_alone: bool,
+    held: Mapping[int, Sequence[RoomHolder]],
 ) -> None:
     """Subtract one instance's per-device peaks from *remaining*; fail loud if a card overflows.
 
     An estimate that does not cover every pinned device is a PlacementError rather
-    than a zip mismatch: gguf-parser returns no per-device breakdown for some
-    models, and the auto planner skips such a candidate (see :func:`_place_split`),
-    so the manual path must refuse in the currency callers already handle.
+    than a zip mismatch: an engine can state no per-device breakdown, and the auto
+    planner skips such a candidate (see :func:`_place_split`), so the manual path
+    must refuse in the currency callers already handle. With *refuse_alone* the
+    error names the role, for the launch to drop only that role.
     """
+
+    def refusal(reason: str) -> PlacementError:
+        return TargetRefusedError({role: reason}) if refuse_alone else PlacementError(reason)
+
+    if not per_device and len(devices) > 1:
+        raise refusal(
+            f"{role.value} has no per-card memory figure, so it cannot be pinned to "
+            f"{len(devices)} cards. Pin one card, or set its target to auto."
+        )
     if len(per_device) != len(devices):
-        raise PlacementError(
+        raise refusal(
             f"{role.value} is pinned to {len(devices)} device(s) but its memory estimate "
             f"covers {len(per_device)}; clear the placement to place it automatically"
         )
     for idx, peak in zip(devices, per_device, strict=True):
-        if peak > remaining[idx]:
-            raise PlacementError(
-                f"{role.value} pinned to device {idx} needs {peak / 1024**3:.1f} GiB but "
-                f"device {idx} has {remaining[idx] / 1024**3:.1f} GiB usable "
-                f"({device_capacity[idx] / 1024**3:.1f} GiB total, 90% headroom)"
-            )
+        reason = card_refusal(
+            f"{role.value} pinned to device {idx}",
+            idx,
+            peak,
+            remaining[idx],
+            device_capacity[idx],
+            fix=refuse_alone,
+            holders=held.get(idx, ()),
+        )
+        if reason is not None:
+            raise refusal(reason)
     for idx, peak in zip(devices, per_device, strict=True):
         remaining[idx] -= peak

@@ -24,8 +24,8 @@ from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, estimate_memory
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"
@@ -183,7 +183,8 @@ class MistralAdapter:
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
         """The serve command; the engine places the model itself, so layers and context stay unset.
 
-        The backend of the build decides the device flags: a CPU build gets ``--cpu``, and
+        A cpu target gets ``--cpu`` on any build. Otherwise the backend of the build
+        decides the device flags: a CPU build gets ``--cpu``, and
         any GPU build turns paged attention off, because its cache takes the whole card
         and the first chat then answers 503. The port flag
         belongs to ``serve``, so it sits before the model subcommand. A GGUF file
@@ -193,18 +194,25 @@ class MistralAdapter:
         argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
         if spec.role is WorkerRole.EMBED:
             argv.append("embedding")
-        argv += self._device_flags()
+        argv += self._device_flags(request.target)
         path = request.model_path
         if path.suffix.lower() == _GGUF_SUFFIX:
             return [*argv, "-m", str(path.parent), "-f", path.name]
         return [*argv, "-m", str(path)]
 
-    def _device_flags(self) -> list[str]:
+    def _device_flags(self, target: RoleTarget) -> list[str]:
+        from lilbee.catalog.runnable import session_host
+
+        if target is RoleTarget.CPU or self.pick_build(session_host()).backend in (None, _CPU):
+            return ["--cpu"]
+        return ["--paged-attn", "off"]
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         from lilbee.catalog.runnable import session_host
 
         if self.pick_build(session_host()).backend in (None, _CPU):
-            return ["--cpu"]
-        return ["--paged-attn", "off"]
+            return frozenset({RoleTarget.CPU})
+        return frozenset({RoleTarget.CPU, RoleTarget.GPU})
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         from lilbee.catalog.runnable import session_host
@@ -214,6 +222,8 @@ class MistralAdapter:
         return DeviceProbe(devices=visible_nvidia_cards(), output="")
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        if request.model_path.is_dir():
+            return estimate_memory(ModelFormat.SAFETENSORS, request)
         try:
             weights = request.model_path.stat().st_size
         except OSError:

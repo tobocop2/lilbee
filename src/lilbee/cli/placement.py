@@ -96,7 +96,8 @@ def _render_view(view: PlacementView) -> None:
         split_info = f" split={list(role_view.tensor_split)}" if role_view.tensor_split else ""
         console.print(
             Text(
-                f"  {role_view.role.value}: devices={list(role_view.devices)}"
+                f"  {role_view.role.value}: target={role_view.target.value}"
+                f" devices={list(role_view.devices)}"
                 f" replicas={role_view.replicas}{split_info}  {role_view.model}"
             ),
             soft_wrap=True,
@@ -127,6 +128,14 @@ def _render_view(view: PlacementView) -> None:
             ),
             soft_wrap=True,
         )
+
+    _render_rejected(view)
+
+
+def _render_rejected(view: PlacementView) -> None:
+    """Print why a saved placement is not in use, when it is not."""
+    if view.refusal:
+        console.print(Text(f"  {view.refusal}", style=theme.ERROR), soft_wrap=True)
 
     if view.rejected_spec_json:
         console.print(

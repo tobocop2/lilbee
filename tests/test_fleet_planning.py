@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -12,6 +13,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, OcrMode, RerankerType
+from lilbee.providers import engine_params
 from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import model_memory as model_memory_mod
 from lilbee.providers.fleet import planning as planning_mod
@@ -23,11 +25,12 @@ from lilbee.providers.fleet.devices import (
 )
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
+from lilbee.providers.fleet.engines.mistral import MistralAdapter
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import EngineBackend, RerankMode, WorkerRole
-from tests._fleet_engines import engines_for_all_roles
+from tests._fleet_engines import Role, cards_of, engines_for_all_roles, prepare_host
 from tests._gguf_fixture import GGUF_MAGIC
 
 _GB = 1024**3
@@ -1940,7 +1943,7 @@ class TestBuildFleetWiring:
             plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
 
         assert plan.launches == ()
-        reason = plan.skipped_unusable_ctx[WorkerRole.CHAT]
+        reason = plan.refused_roles[WorkerRole.CHAT]
         assert "512" in reason
         assert str(min_usable_chat_ctx()) in reason
         assert "org/repo/chat.gguf" in reason
@@ -1986,7 +1989,7 @@ class TestBuildFleetWiring:
 
         plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
         assert plan.launches == (pinned,)
-        assert plan.skipped_unusable_ctx == {}
+        assert plan.refused_roles == {}
 
     def test_plan_launches_reports_co_tenant_roles(self, monkeypatch, caplog) -> None:
         # Co-tenancy changes how the box behaves (one model resident at a time), so it
@@ -4080,27 +4083,25 @@ class TestARefusedDeviceIsAlsoKeptFromTheEngine:
     def test_the_launch_names_no_device(self, monkeypatch) -> None:
         _pin_snapshot(monkeypatch, engine_devices_all_refused=True)
 
-        assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ("none",)
+        assert planning_mod._no_device_pin(engine=LLAMA) == ("none",)
 
     def test_a_plain_cpu_host_is_left_unpinned(self, monkeypatch) -> None:
         """Nothing was refused, so there is nothing to keep the engine off."""
         _pin_snapshot(monkeypatch, engine_devices_all_refused=False)
 
-        assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
+        assert planning_mod._no_device_pin(engine=LLAMA) == ()
 
     def test_no_snapshot_means_no_claim(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
 
-        assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
+        assert planning_mod._no_device_pin(engine=LLAMA) == ()
 
     def test_a_placed_gpu_still_wins_over_the_cpu_pin(self, monkeypatch) -> None:
         """The refusal pin is a fallback for an empty device list, not an override."""
         _pin_snapshot(monkeypatch, engine_devices_all_refused=True)
         chosen = (FleetDevice(VULKAN_BACKEND, 0, "Card A", 8 * _GB, 8 * _GB),)
 
-        names = planning_mod._device_names(chosen) or (
-            planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA)
-        )
+        names = planning_mod._device_names(chosen) or (planning_mod._no_device_pin(engine=LLAMA))
 
         assert names == ("Vulkan0",)
 
@@ -4882,3 +4883,120 @@ class TestSnapshotEngineWithMixedReadings:
         self._no_launches(monkeypatch)
         plan = planning_mod.plan_all_launches(engines={WorkerRole.CHAT: LLAMA})
         assert plan.skipped_no_engine == {WorkerRole.VISION: "org/repo/vision.gguf"}
+
+
+class _FolderEngine(MistralAdapter):
+    """The real folder engine, on a host with one known binary and known cards."""
+
+    def __init__(self, binary_path: Path, devices: list[FleetDevice]) -> None:
+        self._binary = binary_path
+        self._devices = devices
+
+    def binary(self) -> Path:
+        return self._binary
+
+    def discover_devices(self, binary: Path) -> DeviceProbe:
+        return DeviceProbe(devices=self._devices, output="")
+
+
+def _plan_folder_chat(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    gib: int,
+    *,
+    cards: tuple[int, ...] = (24,),
+    fraction: float = 0.75,
+    usable: float = 0.9,
+):
+    """Plan one chat model folder of *gib* GiB through the planner's real entry."""
+    prepare_host(monkeypatch, tmp_path, (Role(WorkerRole.CHAT, gib),), 256 * _GB)
+    folder = tmp_path / "chat-folder"
+    folder.mkdir()
+    with (folder / "model.safetensors").open("wb") as weights:
+        weights.truncate(gib * _GB)
+    (folder / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", fraction)
+    monkeypatch.setattr(cfg, "usable_vram_fraction", usable)
+    engine = _FolderEngine(tmp_path / "engine-server", cards_of(cards))
+    (tmp_path / "engine-server").write_text("", encoding="utf-8")
+    return planning_mod.plan_all_launches(engines=engines_for_all_roles(engine))
+
+
+class TestAFolderFitsByTheUsableShareOfItsCard:
+    """The window target of gpu_memory_fraction has no bearing on a fixed reserve."""
+
+    @pytest.mark.parametrize("fraction", [0.75, 0.5])
+    def test_a_folder_under_the_usable_share_launches_at_the_full_window(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fraction: float
+    ) -> None:
+        plan = _plan_folder_chat(monkeypatch, tmp_path, 20, fraction=fraction)
+        assert plan.refused_roles == {}
+        [launch] = plan.launches
+        assert launch.est_vram_bytes == 20 * _GB
+        assert launch.ctx >= engine_params.min_usable_chat_ctx()
+
+    def test_a_folder_over_the_usable_share_is_refused_with_both_figures(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = _plan_folder_chat(monkeypatch, tmp_path, 22)
+        assert plan.launches == ()
+        assert plan.refused_roles == {
+            WorkerRole.CHAT: "The chat model org/repo/chat.gguf needs 22.0 GiB but device 0 "
+            "has 21.6 GiB usable (24.0 GiB total, 90% headroom). "
+            "Use a smaller model, or set its target to cpu."
+        }
+
+    def test_the_refusal_prints_the_usable_share_that_applied(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = _plan_folder_chat(monkeypatch, tmp_path, 22, usable=0.8)
+        reason = plan.refused_roles[WorkerRole.CHAT]
+        assert "has 19.2 GiB usable (24.0 GiB total, 80% headroom)" in reason
+
+    def test_a_raised_usable_share_admits_the_same_folder(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = _plan_folder_chat(monkeypatch, tmp_path, 22, usable=1.0)
+        assert plan.refused_roles == {}
+        assert [launch.est_vram_bytes for launch in plan.launches] == [22 * _GB]
+
+    def test_a_folder_on_a_host_with_no_card_launches_with_no_card_figure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = _plan_folder_chat(monkeypatch, tmp_path, 22, cards=())
+        assert plan.refused_roles == {}
+        assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT]
+
+    def _tight(self, monkeypatch: pytest.MonkeyPatch, shortfall: int) -> None:
+        real = planning_mod.plan_placement
+
+        def tight(*args, **kwargs):
+            return replace(real(*args, **kwargs), tight_roles={WorkerRole.CHAT: shortfall})
+
+        monkeypatch.setattr(planning_mod, "plan_placement", tight)
+
+    def test_a_tight_chat_with_no_shortfall_launches(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._tight(monkeypatch, 0)
+        plan = _plan_folder_chat(monkeypatch, tmp_path, 20)
+        assert plan.refused_roles == {}
+        assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT]
+
+    def test_a_tight_chat_that_fits_keeps_the_refusal_of_a_low_window(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._tight(monkeypatch, 0)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda *_args, **_kwargs: 512)
+        plan = _plan_folder_chat(monkeypatch, tmp_path, 20)
+        assert "backs only a 512-token context" in plan.refused_roles[WorkerRole.CHAT]
+
+    def test_a_folder_past_each_of_two_cards_takes_one_card_and_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = _plan_folder_chat(monkeypatch, tmp_path, 30, cards=(24, 24))
+        assert (
+            "needs 30.0 GiB but device 0 has 21.6 GiB usable"
+            in (plan.refused_roles[WorkerRole.CHAT])
+        )
