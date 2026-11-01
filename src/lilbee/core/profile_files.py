@@ -588,13 +588,16 @@ def _clash(
     """A file in *directory*, other than *replacing*, at *planned* or holding the same name."""
     if not directory.is_dir():
         return None
-    key = planned.stem
+    key = planned.stem.casefold()
     for path in sorted(directory.glob(f"*{PROFILE_SUFFIX}")):
-        # a case-insensitive file system treats Mine.toml and mine.toml as one file
-        same_file = path.name.casefold() == planned.name.casefold()
-        if path != replacing and (same_file or profile_key(read_entry(path, folder).name) == key):
+        if path != replacing and key in _name_keys(read_entry(path, folder)):
             return path
     return None
+
+
+def _name_keys(entry: ProfileEntry) -> tuple[str, str]:
+    """The keys *entry* takes: its name and its file stem, since a file system can fold case."""
+    return profile_key(entry.name), entry.path.stem.casefold()
 
 
 def name_problem(name: str, folder: ProfileFolder, catalog: ProfileCatalog) -> NameProblem | None:
@@ -606,11 +609,7 @@ def name_problem(name: str, folder: ProfileFolder, catalog: ProfileCatalog) -> N
     key = profile_key(name)
     if key in RESERVED_NAME_KEYS:
         return NameProblem.RESERVED_WORD
-    taken = {
-        (e.folder, k)
-        for e in catalog.entries
-        for k in (profile_key(e.name), e.path.stem.casefold())
-    }
+    taken = {(e.folder, k) for e in catalog.entries for k in _name_keys(e)}
     if (ProfileFolder.BUILTIN, key) in taken:
         return NameProblem.RESERVED
     return NameProblem.TAKEN if (folder, key) in taken else None

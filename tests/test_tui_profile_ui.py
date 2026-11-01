@@ -375,6 +375,21 @@ async def test_library_rows_pad_the_name_so_the_folder_tags_align() -> None:
 
 
 @pytest.mark.parametrize("size", SIZES)
+async def test_the_active_library_row_shows_its_whole_tag(size) -> None:
+    _write_global("long", _PLAIN.format(name="L" * 40))
+    app = _SettingsApp()
+    async with app.run_test(size=size) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        await _press(pilot, screen.query_one("#profile-manage", ConfirmPill))
+        library = await _dialog(app, pilot, ProfileLibrary)
+        listing = library.query_one("#library-list", OptionList)
+        assert await _until(pilot, lambda: listing.option_count > 1)
+        await pilot.pause()
+        rows = [str(option.prompt) for option in listing.options]
+        assert [row for row in rows if row.endswith("built-in, active")], rows
+
+
+@pytest.mark.parametrize("size", SIZES)
 async def test_a_long_profile_name_is_cut_and_every_library_row_stays_on_one_line(size) -> None:
     long_name = "L" * 40
     _write_global("long", _PLAIN.format(name=long_name))

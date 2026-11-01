@@ -116,6 +116,7 @@ layout_detection = true
 max_chunks_per_file = 3000
 """
 _PAUSES = 300
+_TAB_WALK_PRESSES = 45
 _SECONDS = 30.0
 _YOURS = "chunk_size = 384\nlayout_detection = false\nmax_chunks_per_file = 2000\n"
 
@@ -1152,6 +1153,21 @@ async def test_a_scan_failure_after_a_good_load_disables_the_tab() -> None:
         await _press(pilot, tab.query_one("#profile-new", ConfirmPill))
         await pilot.pause()
         assert app.screen is screen
+
+
+@pytest.mark.parametrize("size", [(120, 40), (80, 24)])
+async def test_every_tab_stop_from_the_profile_tab_onward_is_on_screen(size) -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=size) as pilot:
+        await _loaded(app, pilot, "Default")
+        invisible = set()
+        for _ in range(_TAB_WALK_PRESSES):
+            await pilot.press("tab")
+            await pilot.pause()
+            focused = app.focused
+            if focused is not None and focused.region.area == 0:
+                invisible.add(f"{type(focused).__name__}#{focused.id}")
+        assert not invisible
 
 
 def test_the_action_pills_have_labels_before_the_first_show() -> None:

@@ -6,6 +6,7 @@ through a surface. The end states must match, and so must what the surface repor
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import re
 from collections.abc import Awaitable, Callable
@@ -20,7 +21,8 @@ from urllib.parse import quote
 import pytest
 from litestar.testing import TestClient
 from pydantic_core import to_jsonable_python
-from textual.notifications import Notification
+from textual.app import App
+from textual.notifications import Notification, Notify
 from textual.pilot import Pilot
 from textual.widgets import DataTable, Input, OptionList, Select, Static
 from typer.testing import Result
@@ -181,6 +183,8 @@ TEXT_REINDEX_MARK: dict[Scenario, str] = {
     Scenario.ANALYZE_APPLY: ProfileEffect.REINDEX.value,
 }
 _TUI_SIZE = (120, 40)
+_FIRST_TOAST = "first toast"
+_WARNING_TOAST = "warning toast"
 # An offer that is coming is pushed within a few message-loop ticks of the reset.
 _OFFER_PAUSES = 30
 _OTHER = "other"
@@ -720,8 +724,12 @@ def _warnings(app: LilbeeApp, seen: set[str]) -> list[str]:
 
 
 async def _notified(app: LilbeeApp, pilot: Pilot, seen: set[str]) -> None:
-    """Wait until a new toast appears; the end state judges the outcome."""
+    """Wait until a new toast appears and the toasts queued behind it show.
+
+    The end state judges the outcome.
+    """
     await until(pilot, lambda: bool(_new_notices(app, seen)))
+    await pilot.pause()
 
 
 def _settings(app: LilbeeApp) -> SettingsScreen:
@@ -850,7 +858,7 @@ async def _library(app: LilbeeApp, pilot: Pilot) -> ProfileLibrary:
 
 def _rows(library: ProfileLibrary) -> list[str]:
     return [
-        re.sub(r" {3,}", "  ", str(option.prompt)).replace("active, ", "")
+        re.sub(r" {3,}", "  ", str(option.prompt)).replace(", active", "")
         for option in library.query_one(OptionList).options
     ]
 
@@ -1214,6 +1222,35 @@ async def test_surface_matches_the_app_layer(
     want, got = _comparable(surface, scenario, aspect, *pair)
     assert got == want, f"{surface} diverges on {scenario} ({aspect})"
     assert real_root_listing() == real_before
+
+
+async def test_the_toast_wait_reads_a_warning_still_queued_behind_the_first_toast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each toast is its own message: the wait can see the first with the warning still queued."""
+    real_notify = App._on_notify
+    first_shown = asyncio.Event()
+    release_warning = asyncio.Event()
+
+    async def _held_warning(self: App[Any], event: Notify) -> None:
+        if event.notification.severity == "warning":
+            await release_warning.wait()
+        real_notify(self, event)
+        if event.notification.message == _FIRST_TOAST:
+            first_shown.set()
+
+    monkeypatch.setattr(App, "_on_notify", _held_warning)
+    with ready_services():
+        host = SettingsHost()
+        async with host.run_test(size=_TUI_SIZE) as pilot:
+            seen = _seen(host)
+            host.notify(_FIRST_TOAST)
+            host.notify(_WARNING_TOAST, severity="warning")
+            await first_shown.wait()
+            assert [n.message for n in _new_notices(host, seen)] == [_FIRST_TOAST]
+            asyncio.get_running_loop().call_soon(release_warning.set)
+            await _notified(host, pilot, seen)
+            assert _warnings(host, seen) == [_WARNING_TOAST]
 
 
 async def test_every_scenario_changes_or_answers_something(

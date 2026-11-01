@@ -20,12 +20,12 @@ ProfileLibrary.-narrow #library-body {
 }
 
 #library-list {
-    width: 1fr;
+    width: 3fr;
     height: 100%;
 }
 
 #library-detail {
-    width: 1fr;
+    width: 2fr;
     height: 100%;
     padding: 0 0 0 2;
 }

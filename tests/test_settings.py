@@ -2305,6 +2305,40 @@ class TestDeleteValues:
         assert settings.load(tmp_path) == {"seed": 3}
 
 
+class TestSourceOfAValueNoLayerSupplies:
+    def test_an_inherited_model_does_not_say_built_in(self, monkeypatch, tmp_path):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "chat_model", "acme/inherited-model")
+        assert appset.setting_sources()["chat_model"] is SettingSource.AUTO
+        assert appset.get_setting("chat_model").source is SettingSource.AUTO
+
+    def test_a_root_that_does_not_parse_keeps_a_value_that_does_not_say_built_in(
+        self, monkeypatch, tmp_path
+    ):
+        from lilbee.app import settings as appset
+
+        (tmp_path / "config.toml").write_text("chunk_size = [", encoding="utf-8")
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "chunk_size", 900)
+        assert appset.setting_sources()["chunk_size"] is SettingSource.AUTO
+
+    def test_only_the_root_paths_of_a_fresh_config_leave_built_in(self, monkeypatch, tmp_path):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import Config
+
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        fresh = Config.model_validate({"data_root": tmp_path})
+        for key in appset.Config.model_fields:
+            if key != "data_root":
+                monkeypatch.setattr(appset.cfg, key, getattr(fresh, key))
+        sources = appset.setting_sources()
+        expected = {k: resolve(k, read_layers(tmp_path)).source for k in sources}
+        root_paths = {"data_root", "data_dir", "documents_dir", "lancedb_dir", "models_dir"}
+        assert sources == {**expected, **dict.fromkeys(root_paths, SettingSource.AUTO)}
+
+
 class TestListSettingsHidesNonPublicFields:
     def test_a_field_marked_not_public_is_not_listed(self, monkeypatch, tmp_path):
         from lilbee.app import settings as appset

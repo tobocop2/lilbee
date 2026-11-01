@@ -114,9 +114,7 @@ def _write_atomically(path: Path, text: str, opener: _Opener | None) -> None:
     except OSError as exc:
         tmp.unlink(missing_ok=True)
         # The error names the file the user asked to write, not the hidden temp file.
-        exc.filename = str(path)
-        exc.filename2 = None
-        raise
+        raise OSError(exc.errno, exc.strerror, str(path)) from None
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

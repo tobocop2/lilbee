@@ -871,7 +871,7 @@ class SettingsScreen(Screen[None]):
         except Exception:
             self._focus_adjacent(direction)
             return
-        focusables = [w for w in body.query("*") if w.focusable]
+        focusables = self._focus_stops(body)
         if not focusables or focused is None or focused not in focusables:
             self._focus_adjacent(direction)
             return
@@ -897,7 +897,11 @@ class SettingsScreen(Screen[None]):
             body = self.query_one(f"#{pane_id}-body", _LazyGroupBody)
         except Exception:
             return
-        focusables = [w for w in body.query("*") if w.focusable]
+        focusables = self._focus_stops(body)
         if not focusables:
             return
         focusables[0 if direction == 1 else -1].focus()
+
+    def _focus_stops(self, body: _LazyGroupBody) -> list[Widget]:
+        """The widgets in *body* that Tab can reach, without the hidden ones."""
+        return [w for w in self.focus_chain if body in w.ancestors]

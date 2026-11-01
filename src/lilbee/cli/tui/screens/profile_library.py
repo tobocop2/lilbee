@@ -109,7 +109,7 @@ def load_library() -> LibraryState:
 def _tag_text(entry: ProfileEntry, *, active: bool = False, with_problem: bool = True) -> str:
     tags = [msg.PROFILE_FOLDER_TAG[entry.folder]]
     if active:
-        tags.insert(0, msg.PROFILE_LIBRARY_ACTIVE)
+        tags.append(msg.PROFILE_LIBRARY_ACTIVE)
     if entry.shadowed_by is not None:
         tags.append(msg.PROFILE_LIBRARY_SHADOWED)
     if with_problem and entry.error is not None:
@@ -250,7 +250,10 @@ class ProfileLibrary(ModalScreen[None]):
         if row_width:
             # A long problem text is cut at the row end; it must not squeeze every name.
             tag_width = max(
-                (cell_len(_tag_text(entry, with_problem=False)) for entry in self._entries),
+                (
+                    cell_len(_tag_text(entry, active=self._is_active(entry), with_problem=False))
+                    for entry in self._entries
+                ),
                 default=0,
             )
             name_width = max(min(name_width, row_width - len(_ROW_GAP) - tag_width), _MIN_NAME)

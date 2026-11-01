@@ -186,7 +186,14 @@ def setting_sources() -> dict[str, SettingSource]:
 
 def _sources(layers: SettingLayers) -> dict[str, SettingSource]:
     """The source of every Config field's effective value under *layers*."""
-    return {key: entry.source for key, entry in resolve_all(layers).items()}
+    return {key: _true_source(key, entry) for key, entry in resolve_all(layers).items()}
+
+
+def _true_source(key: str, entry: Resolved) -> SettingSource:
+    """The source of *entry*; a live value that differs from the built-in is not a built-in."""
+    if entry.source is SettingSource.BUILT_IN and getattr(cfg, key) != entry.value:
+        return SettingSource.AUTO
+    return entry.source
 
 
 def _reset_target(key: str, layers: SettingLayers) -> Any:

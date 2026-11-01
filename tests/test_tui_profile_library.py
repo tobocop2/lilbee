@@ -80,7 +80,7 @@ async def _open(app: LilbeeAppHost, pilot: Pilot, active: str = "Default") -> Pr
 def _rows(library: ProfileLibrary) -> list[str]:
     listing = library.query_one("#library-list", OptionList)
     return [
-        re.sub(r" {3,}", "  ", str(option.prompt)).replace("active, ", "")
+        re.sub(r" {3,}", "  ", str(option.prompt)).replace(", active", "")
         for option in listing.options
     ]
 
@@ -586,7 +586,7 @@ async def test_the_active_profile_is_tagged_and_the_cursor_starts_on_it() -> Non
         library = await _open(app, pilot, "legal-discovery")
         rows = [re.sub(r" {3,}", "  ", row) for row in _raw_rows(library)]
         listing = library.query_one("#library-list", OptionList)
-        assert rows.index("legal-discovery  active, global") == listing.highlighted
+        assert rows.index("legal-discovery  global, active") == listing.highlighted
         assert sum("active" in row for row in rows) == 1
 
 

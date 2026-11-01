@@ -5552,7 +5552,7 @@ class TestWikiRefreshed:
         store.record_wiki_refreshed(old)
         before = sorted(path.name for path in beside_the_tables.iterdir())
         assert ".wiki_refreshed" in before
-        monkeypatch.setattr(os, "replace", mock.Mock(side_effect=OSError("the disk is full")))
+        monkeypatch.setattr(os, "replace", mock.Mock(side_effect=OSError(28, "the disk is full")))
 
         with pytest.raises(OSError, match="the disk is full"):
             store.record_wiki_refreshed(SourcesCheckpoint("2026-02-02T00:00:00+00:00", 9))
