@@ -149,6 +149,7 @@ def mock_svc():
     store.drop_all.side_effect = index.drop_all
     store.ensure_fts_index.return_value = None
     store.get_meta.return_value = None
+    store.count_chunks.return_value = 0
     store.index_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.side_effect = lambda text, **kw: np.full(768, 0.1, dtype=np.float32)
@@ -364,6 +365,22 @@ class TestSync:
         assert result.index_mismatch.adoptable is False
         assert "old/embed-GGUF/old.gguf" in str(result)
         mock_svc.store.drop_all.assert_not_called()
+
+    async def test_a_rebuild_of_a_store_with_chunks_and_no_stamp_keeps_it_when_the_embedder_fails(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """A store with chunks and no stamp is refused by nobody, so a rebuild keeps it."""
+        from lilbee.data.ingest import pipeline
+
+        mock_svc.store.get_meta.return_value = None
+        mock_svc.store.count_chunks.return_value = 3
+        mock_svc.embedder.embedding_available.return_value = False
+        mock_svc.embedder.embed_batch.side_effect = ConnectionError("embedder down")
+
+        assert pipeline._prepare_forced_rebuild(mock_svc.store) is True
+
+        mock_svc.store.drop_all.assert_not_called()
+        mock_svc.embedder.embed_batch.assert_not_called()
 
     async def test_ingest_text_file(self, mock_extract_file, isolated_env):
         (isolated_env / "test.txt").write_text("Hello world. This is a test document.")
@@ -1452,6 +1469,25 @@ class TestSyncDropsNewlyIgnored:
 
         assert result.removed == ["drop.txt"]
         assert result.added == [] and result.updated == []
+        concepts.rebuild_clusters.assert_called_once_with()
+
+    async def test_a_rebuild_reclusters_the_whole_graph(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """A rebuild re-ingests every source, so an incremental pass would leave stale edges."""
+        from lilbee.data.ingest import sync
+
+        monkeypatch.setattr(cfg, "concept_graph", True)
+        concepts = svc_mod.get_services().concepts
+        concepts.get_graph.return_value = True
+        await self._ingest_two(isolated_env)
+        concepts.rebuild_clusters.reset_mock()
+        svc_mod.get_services().store.get_meta.return_value = {"embedding_model": "m"}
+
+        with mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True):
+            result = await sync(force_rebuild=True)
+
+        assert sorted(result.added) == ["drop.txt", "keep.txt"]
         concepts.rebuild_clusters.assert_called_once_with()
 
     async def test_a_shard_worker_leaves_removal_to_the_parent(
@@ -3318,6 +3354,24 @@ class TestClassifyResult:
         )
         assert reasons["err.pdf"] == "TimeoutError: OCR timed out"
         assert reasons["blank.tiff"] == "no text extracted (0 chunks)"
+
+    @pytest.mark.parametrize(
+        ("backend", "reason"),
+        [
+            (OcrBackendUsed.NONE, "no text extracted, OCR is off (0 chunks)"),
+            (OcrBackendUsed.TESSERACT, "no text extracted (0 chunks)"),
+        ],
+    )
+    def test_zero_chunk_reason_names_the_ocr_state(self, backend, reason):
+        from lilbee.data.ingest.pipeline import _classify_result
+        from lilbee.data.types import OcrReport, _IngestResult
+
+        reasons: dict[str, str] = {}
+        result = _IngestResult(
+            "scan.pdf", Path("scan.pdf"), chunk_count=0, error=None, ocr=OcrReport(backend=backend)
+        )
+        _classify_result(result, {}, {}, {}, {}, reasons)
+        assert reasons["scan.pdf"] == reason
 
     def test_zero_chunks_not_recorded_as_added(self):
         from lilbee.data.ingest.pipeline import _classify_result
@@ -8848,9 +8902,7 @@ class TestSyncLoadsThePersistedRegistry:
     """A sync indexes the roots ``config.toml`` holds, whatever this process loaded earlier."""
 
     @pytest.fixture(autouse=True)
-    def _the_data_root_file_is_the_loaded_one(
-        self, isolated_env, monkeypatch, overlay_reads_config_toml
-    ):
+    def _the_data_root_file_is_the_loaded_one(self, isolated_env, monkeypatch):
         """The layout of the CLI, serve and the TUI: cfg was built from the data root's file."""
         from lilbee.core.config import CONFIG_FILE_NAME, model
 

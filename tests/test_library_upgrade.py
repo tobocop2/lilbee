@@ -701,11 +701,17 @@ class TestTuiShowsTheUpgrade:
 
         gate._ui_app.call_from_thread.assert_not_called()
 
-    async def test_the_elapsed_time_ticks_while_a_slow_upgrade_runs_then_stops(self, library):
+    async def test_the_elapsed_time_ticks_while_a_slow_upgrade_runs_then_stops(
+        self, library, monkeypatch
+    ):
+        from lilbee.cli.tui.screens import startup_gate
         from lilbee.cli.tui.screens.startup_gate import StartupGate
         from tests._async_wait import wait_until
         from tests._lilbee_app_test_host import LilbeeAppHost
 
+        clock = [100.0]
+        monkeypatch.setattr(startup_gate, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(core_mod, "time", mock.Mock(monotonic=lambda: clock[0]))
         app = LilbeeAppHost()
         release = threading.Event()
         async with app.run_test(size=(120, 36)) as pilot:
@@ -720,6 +726,7 @@ class TestTuiShowsTheUpgrade:
                 started = await wait_until(
                     pilot, lambda: f"{running} · 0 s" in _gate_text(gate), timeout=5
                 )
+                clock[0] += 2.0
                 ticked = await wait_until(
                     pilot, lambda: f"{running} · 2 s" in _gate_text(gate), timeout=5
                 )

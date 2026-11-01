@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
+import re
+
 from litestar.exceptions import ValidationException
+
+_BODY_KIND_PATTERN = re.compile(r"^Input should be a valid dictionary or instance of \w+$")
+BODY_KIND_MESSAGE = "The request body must be a JSON object."
+
+
+def plain_validation(exc: ValidationException) -> ValidationException:
+    """Replace the message that names an internal model class with a plain one.
+
+    A body that is not an object makes pydantic say "a valid dictionary or instance of
+    <ModelName>", which leaks the name of a class a client never sees.
+    """
+    if isinstance(exc.extra, list):
+        exc.extra = [
+            {**item, "message": BODY_KIND_MESSAGE}
+            if isinstance(item, dict) and _BODY_KIND_PATTERN.match(str(item.get("message", "")))
+            else item
+            for item in exc.extra
+        ]
+    return exc
 
 
 def format_validation(exc: ValidationException) -> str:

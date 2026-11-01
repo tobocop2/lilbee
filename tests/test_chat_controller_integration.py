@@ -1,7 +1,7 @@
 """Coverage for the chat screen's TaskBarController-backed flows.
 
 These exercise the public entry points (``_cmd_add``, ``_start_crawl``,
-``_run_sync``) and the worker bodies (``_do_add``, ``_do_crawl``,
+``run_sync``) and the worker bodies (``_do_add``, ``_do_crawl``,
 ``_do_sync``) that the old screen-owned @work paths no longer cover.
 """
 
@@ -732,14 +732,21 @@ def test_do_sync_raises_on_sync_failed() -> None:
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
-        return SyncResult(failed=["broken.pdf"])
+        return SyncResult(failed=["broken.pdf", "bad.md"])
 
     captured: list[Exception] = []
+    toasts: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def _worker() -> None:
         try:
-            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
-                screen._do_sync(reporter)
+            with (
+                patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+                patch(
+                    "lilbee.cli.tui.screens.chat.call_from_thread",
+                    side_effect=lambda *a, **kw: toasts.append((a, kw)),
+                ),
+            ):
+                screen._do_sync(reporter, force_rebuild=True)
         except Exception as e:
             captured.append(e)
 
@@ -749,6 +756,11 @@ def test_do_sync_raises_on_sync_failed() -> None:
     assert captured, "worker should have raised"
     assert isinstance(captured[0], RuntimeError)
     assert "broken.pdf" in str(captured[0])
+    # The footer notice is short-lived: a toast tells the user how many files failed.
+    ((args, kwargs),) = toasts
+    assert "2 file(s)" in str(args[2])
+    assert kwargs["severity"] == "error"
+    assert float(kwargs["timeout"]) >= 5
 
 
 def test_do_sync_reports_a_cancel_with_the_resume_hint() -> None:
@@ -1035,7 +1047,7 @@ async def test_start_crawl_submits_task_to_controller() -> None:
 
 @pytest.mark.asyncio
 async def test_run_sync_submits_task_to_controller() -> None:
-    """_run_sync routes through TaskBarController.start_task with SYNC type."""
+    """run_sync routes through TaskBarController.start_task with SYNC type."""
 
     app = LilbeeApp()
     async with app.run_test() as pilot:
@@ -1043,7 +1055,7 @@ async def test_run_sync_submits_task_to_controller() -> None:
         screen = await await_chat(app, pilot)
         assert screen is not None
         with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
-            screen._run_sync()
+            screen.run_sync()
         assert mock_start.called
         assert mock_start.call_args.args[1] == TaskType.SYNC
 
@@ -1131,7 +1143,7 @@ async def test_indexing_active_true_during_wiki_task() -> None:
 
 @pytest.mark.asyncio
 async def test_run_sync_rejects_when_already_active() -> None:
-    """_run_sync refuses when another sync is already running."""
+    """run_sync refuses when another sync is already running."""
 
     app = LilbeeApp()
     async with app.run_test() as pilot:
@@ -1141,7 +1153,7 @@ async def test_run_sync_rejects_when_already_active() -> None:
         screen._sync_active = True
         notified: list[str] = []
         screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
-        screen._run_sync()
+        screen.run_sync()
         assert any("sync in progress" in n.lower() for n in notified)
 
 
@@ -1858,7 +1870,7 @@ async def test_cancelling_a_tui_crawl_stops_its_sync(tmp_path, monkeypatch) -> N
             patch("lilbee.crawler.runner._ensure_crawler_ready", new_callable=AsyncMock),
             patch("lilbee.crawler.runner.crawl_single", side_effect=_fake_single),
             patch("lilbee.data.ingest.sync", _sync_until_cancelled),
-            patch.object(screen, "_run_sync") as follow_up_sync,
+            patch.object(screen, "run_sync") as follow_up_sync,
         ):
             screen._cmd_crawl("https://example.com/c --depth 0")
             assert await wait_until(pilot, sync_started.is_set, max_pauses=500)

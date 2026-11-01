@@ -1,6 +1,7 @@
 """Tests for Config (pydantic-settings BaseSettings) and env var overrides."""
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -27,7 +28,7 @@ from lilbee.core.config import (
     refuse_environment,
     validate_ocr_timeout,
 )
-from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
+from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX, env_var_name
 from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
 from lilbee.core.config.model import (
     _TAKES_DEFAULT_WHEN_REFUSED,
@@ -35,6 +36,7 @@ from lilbee.core.config.model import (
     env_value,
     value_is_set,
 )
+from lilbee.core.config.resolve import read_layers
 from tests._sys_modules import inject_modules
 
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
@@ -140,9 +142,7 @@ class TestEnvVarOverrides:
         assert through_link.data_dir == direct.data_dir
         assert through_link.lancedb_dir == direct.lancedb_dir
 
-    def test_padded_data_env_finds_the_same_dir_for_root_and_config(
-        self, tmp_path, overlay_reads_config_toml
-    ):
+    def test_padded_data_env_finds_the_same_dir_for_root_and_config(self, tmp_path):
         """A padded LILBEE_DATA sends the root and its config.toml to one dir."""
         (tmp_path / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"LILBEE_DATA": f"  {tmp_path}  "}):
@@ -484,6 +484,31 @@ class TestOcrStrategy:
 
 
 class TestTomlConfigFile:
+    def test_config_construction_equals_resolver_per_field(self, tmp_path):
+        from lilbee.core.config.resolve import (
+            ROOT_DERIVED_FIELDS,
+            read_layers,
+            resolve_all,
+        )
+
+        (tmp_path / "config.toml").write_text(
+            'top_k = 7\nchunk_size = 900\n[profile]\nname = "x"\n[profile.values]\n'
+            "top_k = 3\nchunk_overlap = 50\nrerank_min_score = 0.7\n",
+            encoding="utf-8",
+        )
+        env = clean_env(tmp_path)
+        env["LILBEE_CHUNK_SIZE"] = "1024"
+        with mock.patch.dict(os.environ, env, clear=True):
+            built = Config()
+            resolved = resolve_all(read_layers(tmp_path))
+        probe = Config.model_validate({k: v.value for k, v in resolved.items()})
+        keys = sorted(set(Config.model_fields) - ROOT_DERIVED_FIELDS)
+        assert len(keys) > 100
+        assert {k for k in keys if getattr(built, k) != getattr(probe, k)} == set()
+        assert (built.top_k, built.chunk_size, built.chunk_overlap) == (7, 1024, 50)
+        assert built.rerank_min_score == 0.7
+        assert built.top_p == 0.9
+
     def test_toml_values_loaded(self, tmp_path):
         ref = "ollama/my-saved-model:latest"
         toml_path = tmp_path / "config.toml"
@@ -951,6 +976,62 @@ class TestSemanticChunkingConfig:
         assert parse([]) is False
 
 
+class TestSoftFieldWarningNamesItsRealSource:
+    """A warn-and-fall-back Config field names where the bad value actually came from."""
+
+    def test_env_source_names_the_env_var(self, tmp_path, caplog) -> None:
+        env = {**clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "not-a-number"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.n_gpu_layers is None
+        messages = [rec.message for rec in caplog.records]
+        assert any(env_var_name("n_gpu_layers") in m for m in messages)
+
+    def test_config_toml_source_names_the_file_not_the_env_var(self, tmp_path, caplog) -> None:
+        (tmp_path / "config.toml").write_text('n_gpu_layers = "not-a-number"\n', encoding="utf-8")
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.n_gpu_layers is None
+        messages = [rec.message for rec in caplog.records]
+        assert any("config.toml" in m for m in messages)
+        assert not any(env_var_name("n_gpu_layers") in m for m in messages)
+
+    def test_profile_source_names_the_profile_not_the_env_var(self, tmp_path, caplog) -> None:
+        (tmp_path / "config.toml").write_text(
+            '[profile]\nname = "my-profile"\n\n[profile.values]\nsemantic_chunking = "maybe"\n',
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.semantic_chunking is False
+        messages = [rec.message for rec in caplog.records]
+        assert any("my-profile" in m for m in messages)
+        assert not any(env_var_name("semantic_chunking") in m for m in messages)
+
+    def test_profile_source_with_no_name_uses_the_generic_phrase(self, tmp_path, caplog) -> None:
+        """A hand-edited [profile] table with values but no name key still says something."""
+        (tmp_path / "config.toml").write_text(
+            '[profile]\n\n[profile.values]\nsemantic_chunking = "maybe"\n', encoding="utf-8"
+        )
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.semantic_chunking is False
+        messages = [rec.message for rec in caplog.records]
+        assert any("the applied profile" in m for m in messages)
+
+
 class TestResolveDefaultsValidator:
     def test_non_dict_input_passes_through(self) -> None:
         """The before-validator hands non-dict input straight back; pydantic
@@ -1146,7 +1227,7 @@ class TestCorsOriginRegexConfig:
             assert c.cors_origin_regex == r"^https://only-this\.example$"
 
     def test_cors_origin_regex_from_env_match_nothing_disables_default(self, tmp_path) -> None:
-        # Empty env vars are ignored by _PlainEnvSource, so the documented opt-out is
+        # Empty env vars are ignored by the settings resolver, so the documented opt-out is
         # to set a regex that matches nothing: e.g. ^$.
         env = clean_env(tmp_path)
         env["LILBEE_CORS_ORIGIN_REGEX"] = "^$"
@@ -2230,11 +2311,9 @@ class TestEmptyValueClearsModelRole:
             'vision_model = ""\nreranker_model = ""\nchat_model = ""\nchunk_size = ""\ntop_k = 9\n',
             encoding="utf-8",
         )
-        assert _TomlSource(Config, toml_path)() == {
-            "vision_model": "",
-            "reranker_model": "",
-            "top_k": 9,
-        }
+        expected = {"vision_model": "", "reranker_model": "", "top_k": 9}
+        assert read_layers(tmp_path).user == expected
+        assert _TomlSource(Config, toml_path)() == expected
 
 
 @pytest.fixture()

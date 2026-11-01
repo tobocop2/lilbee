@@ -192,7 +192,7 @@ async def test_settings_tab_rolls_over_to_next_pane() -> None:
         tabs = screen.query_one(TabbedContent)
         starting_pane = tabs.active
         body = screen.query_one(f"#{starting_pane}-body", _LazyGroupBody)
-        focusables = [w for w in body.query("*") if w.focusable]
+        focusables = [w for w in screen.focus_chain if body in w.ancestors]
         assert focusables, "active pane should expose at least one focusable"
         focusables[-1].focus()
         await pilot.pause()
@@ -229,7 +229,8 @@ async def test_settings_tab_advances_within_pane() -> None:
         tabs = screen.query_one(TabbedContent)
         starting_pane = tabs.active
         body = screen.query_one(f"#{starting_pane}-body", _LazyGroupBody)
-        focusables = [w for w in body.query("*") if w.focusable]
+        # Tab walks the visible fields; the Select's hidden overlay is focusable but is no stop.
+        focusables = [w for w in screen.focus_chain if body in w.ancestors]
         assert len(focusables) >= 2, "pane needs at least two focusables to test mid-pane move"
         focusables[0].focus()
         await pilot.pause()

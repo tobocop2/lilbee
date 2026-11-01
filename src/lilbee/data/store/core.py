@@ -1203,6 +1203,14 @@ class Store:
         # re-decides instead of logging a mismatch this write just resolved.
         self._doc_prefix_warned = False
 
+    def restamp_meta(self) -> None:
+        """Record the current embedding identity and schema version after a full rebuild."""
+        with self._write_lock():
+            self._write_meta_unlocked(
+                embedding_model=self._config.embedding_model,
+                embedding_dim=self._config.embedding_dim,
+            )
+
     def _has_chunks(self) -> bool:
         """Return True when the chunks table exists and has at least one row."""
         chunks = self.open_table(CHUNKS_TABLE)

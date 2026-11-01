@@ -23,7 +23,7 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 
 An empty environment value counts as unset, so the next surface decides. The exception is `vision_model` and `reranker_model`: an empty `LILBEE_VISION_MODEL` or `LILBEE_RERANKER_MODEL` clears that model for the process.
 
-An environment value that its setting refuses stops every command with one line that names the variable, the value and what the setting takes. `--help` still prints. The exception is the settings whose default is automatic or off, `flash_attention`, `gpu_devices`, `n_gpu_layers` and `semantic_chunking`: a refused value prints a warning and the setting takes its default. A write of text they cannot read over MCP or HTTP stores the default too, with a warning in the log. A refused value in `config.toml` is dropped with a warning: that setting takes its default and the rest of the file loads.
+An environment value that its setting refuses stops every command with one line that names the variable, the value and what the setting takes. `--help` still prints. The exception is the settings whose default is automatic or off, `flash_attention`, `gpu_devices`, `n_gpu_layers` and `semantic_chunking`: a refused value prints a warning and the setting takes its default. A write of text they cannot read is refused on every surface, and nothing is stored. A refused value in `config.toml` is dropped with a warning: that setting takes its default and the rest of the file loads.
 
 `main_gpu` is not a setting. A `main_gpu` key in `config.toml` or a `LILBEE_MAIN_GPU` variable prints a warning and is ignored: choose the cards with `gpu_devices` or `placement`.
 
@@ -41,9 +41,17 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 **CLI.** The command that writes this setting, or `no`.
 
+**Advanced.** `yes` means the TUI folds this setting into the collapsed "Advanced" section at the bottom of its tab: a normal user never needs it to get good results. `no` means the setting stays with the tab's regular rows. Every setting is still reachable through every other surface either way.
+
+## Where a value comes from
+
+Each setting takes its value from the first source that sets it: a non-empty environment variable (`env`), then `config.toml` (`user`), then the project's profile (`profile`), then lilbee's default. A default that lilbee computes at runtime is `auto`; any other default is `built_in`. An empty `LILBEE_<SETTING>=` sets nothing.
+
+The TUI marks an override with a pill on the setting's row: `set by you` for a `config.toml` value, and the variable's name for an environment value. Resetting a setting removes its `config.toml` value, so its pill goes away. MCP returns the source in the `source` field of `lilbee_settings_list` and `lilbee_settings_get`. HTTP returns it from `GET /api/config/sources`, as `{"sources": {"<setting>": "<source>"}}` over the same settings as `GET /api/config`.
+
 ## Three rules that apply only over MCP
 
-**Some settings change the tool list, and the change needs a reconnect.** `wiki`, `memory_enabled` and `mcp_sessions_enabled` decide which tools register. The gate runs once, when the server is built, and MCP sends no `tools/list_changed` notification from here. So `lilbee_settings_set({"wiki": true})` succeeds and persists, and the `lilbee_wiki_*` tools still do not appear until the client reconnects. Ask the user to restart the MCP server. `lilbee_wiki_status` and `lilbee_wiki_wipe` register either way, so a caller can always read the wiki's state and can always delete pages an earlier build wrote.
+**Some settings change the tool list, and the change needs a reconnect.** `wiki`, `memory_enabled`, `mcp_sessions_enabled` and `mcp_profiles_enabled` decide which tools register. The gate runs once, when the server is built, and MCP sends no `tools/list_changed` notification from here. So `lilbee_settings_set({"wiki": true})` succeeds and persists, and the `lilbee_wiki_*` tools still do not appear until the client reconnects. Ask the user to restart the MCP server. `lilbee_wiki_status` and `lilbee_wiki_wipe` register either way, so a caller can always read the wiki's state and can always delete pages an earlier build wrote.
 
 **Turning a feature on does not run it.** Setting `wiki` generates no pages. Build them with `lilbee_wiki_index`, then `lilbee_wiki_generate(slug)` for one page on demand, or `lilbee_wiki_build` for the whole corpus, which spends about one LLM call per source document. Set `wiki_auto_update` to regenerate touched pages after each sync.
 

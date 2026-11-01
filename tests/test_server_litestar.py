@@ -135,9 +135,27 @@ class TestSearchRoute:
         assert len(resp.json()) == 1
 
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
-    def test_default_top_k(self, mock_search, client):
+    def test_omitted_top_k_forwarded_as_none(self, mock_search, client):
+        """The route carries no hardcoded default; the handler resolves an omitted top_k."""
         client.get("/api/search", params={"q": "x"})
-        mock_search.assert_awaited_once_with("x", top_k=5, chunk_type=None)
+        mock_search.assert_awaited_once_with("x", top_k=None, chunk_type=None)
+
+    def test_omitted_top_k_uses_configured_value_end_to_end(self, client):
+        """The real route and handler resolve an omitted top_k from cfg, not a hardcoded default."""
+        from lilbee.app.services import set_services
+        from tests.conftest import make_mock_services
+
+        searcher = mock.MagicMock()
+        searcher.search.return_value = []
+        services = make_mock_services(searcher=searcher)
+        cfg.top_k = 7
+        set_services(services)
+        try:
+            resp = client.get("/api/search", params={"q": "x"})
+            assert resp.status_code == 200
+            searcher.search.assert_called_once_with("x", top_k=7, chunk_type=None)
+        finally:
+            set_services(None)
 
     def test_invalid_chunk_type_rejected_with_400(self, client):
         resp = client.get("/api/search", params={"q": "x", "chunk_type": "bogus"})
@@ -1143,6 +1161,41 @@ class TestConfigRoute:
         assert "rag_system_prompt" in resp.json()
 
 
+class TestConfigSourcesRoute:
+    def test_config_sources_route_covers_every_public_key(self, client):
+        """The sources payload names every key GET /api/config answers, and no other."""
+        config_keys = set(client.get("/api/config").json())
+        resp = client.get("/api/config/sources")
+        assert resp.status_code == 200
+        sources = resp.json()["sources"]
+        assert config_keys
+        assert set(sources) == config_keys
+
+    def test_each_key_carries_the_layer_that_supplies_it(self, client, isolated_env, monkeypatch):
+        """Env beats config.toml on top_k; chunk_size, named only in config.toml, stays user."""
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7, "chunk_size": 900})
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        monkeypatch.setenv("LILBEE_TEMPERATURE", "")
+        sources = client.get("/api/config/sources").json()["sources"]
+        assert sources["top_k"] == "env"
+        assert sources["chunk_size"] == "user"
+        assert sources["temperature"] == "built_in"
+        assert sources["num_ctx"] == "auto"
+
+    def test_get_config_shape_has_no_source_key(self, client, isolated_env):
+        """GET /api/config stays a flat key-to-value map beside the new route."""
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7})
+        cfg.top_k = 7
+        data = client.get("/api/config").json()
+        assert "sources" not in data
+        assert "source" not in data
+        assert data["top_k"] == 7
+
+
 class TestConfigDefaultsRoute:
     def test_returns_writable_defaults(self, client):
         from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
@@ -1213,7 +1266,7 @@ class TestConfigSchemaRoute:
 
         entries = self._by_key(client)
         assert not [key for key, entry in entries.items() if not entry["help"]]
-        for key in ("embed_batch_sequences", "ingest_max_inflight", "linked_roots", "placement"):
+        for key in ("embed_batch_sequences", "ingest_max_inflight"):
             assert entries[key]["help"] == Config.model_fields[key].description
 
     def test_choices_of_an_enum_typed_field_are_the_enums_values(self, client):
@@ -1246,6 +1299,17 @@ class TestConfigSchemaRoute:
         assert entry["group"] == SETTINGS_MAP["fts_language"].group.value
         assert entry["type"] == "str"
         assert entry["nullable"] is False
+
+    def test_advanced_flag_matches_the_settings_map(self, client):
+        """``advanced`` is read off SETTINGS_MAP, not restated per field."""
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        entries = self._by_key(client)
+        assert entries["reranker_type"]["advanced"] is True
+        assert entries["top_k"]["advanced"] is False
+        assert {key for key, entry in entries.items() if entry["advanced"]} == {
+            key for key, defn in SETTINGS_MAP.items() if defn.advanced
+        }
 
 
 # Each setting that takes its default when refused: a valid write, a refused one, the default.
@@ -1319,26 +1383,22 @@ class TestConfigUpdateRoute:
         resp = client.patch("/api/config", json={"temperature": blank, "seed": blank})
         assert resp.status_code == 200
         assert set(resp.json()["updated"]) == {"temperature", "seed"}
-        assert cfg.temperature is None
+        assert cfg.temperature == Config.model_fields["temperature"].default
         assert cfg.seed is None
 
     @pytest.mark.parametrize(("key", "good", "bad", "default"), _DEFAULT_WHEN_REFUSED_WRITES)
-    def test_a_refused_value_of_a_named_exception_stores_the_default(
-        self, client, caplog, key, good, bad, default
+    def test_a_refused_value_of_a_named_exception_is_a_400_and_keeps_the_stored_one(
+        self, client, key, good, bad, default
     ):
-        """The losing field: the valid value written first is gone after the refused one."""
+        """The losing field: the valid value written first is still there after the refusal."""
         assert client.patch("/api/config", json={key: good}).status_code == 200
         assert getattr(cfg, key) != default
-        with caplog.at_level("WARNING"):
-            resp = client.patch("/api/config", json={key: bad})
-        assert (resp.status_code, resp.json()["updated"]) == (200, [key])
-        assert getattr(cfg, key) == default
-        warned = [record for record in caplog.records if record.levelname == "WARNING"]
-        assert [record.getMessage() for record in warned] == [
-            f"{key} = {bad!r} {_refusals(Config, {key: bad})[key]}; {key} uses its default"
-        ]
+        resp = client.patch("/api/config", json={key: bad})
+        assert resp.status_code == 400
+        assert f"{key} = {bad!r} {_refusals(Config, {key: bad})[key]}" in resp.json()["detail"]
+        assert getattr(cfg, key) == good
 
-    def test_the_named_exceptions_are_every_setting_a_write_gives_its_default(self, client):
+    def test_the_named_exceptions_are_every_setting_a_load_gives_its_default(self, client):
         """The twin: a refused value of any other setting is a 400 and changes nothing."""
         assert {key for key, *_ in _DEFAULT_WHEN_REFUSED_WRITES} == _TAKES_DEFAULT_WHEN_REFUSED
         before = cfg.top_k
@@ -1475,6 +1535,120 @@ class TestConfigUpdateRoute:
         assert saved["vault_base"] == str(vault)
 
 
+class TestConfigResetRoute:
+    def test_removes_the_user_value_and_answers_the_reset_keys(self, client, isolated_env):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7, "chunk_size": 900})
+        cfg.top_k = 7
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 200
+        assert resp.json() == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
+        assert settings.load(isolated_env) == {"chunk_size": 900}
+        assert cfg.top_k == 12
+
+    def test_resolves_to_the_env_value_when_one_is_set(self, client, isolated_env, monkeypatch):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7})
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 200
+        assert cfg.top_k == 9
+        assert "top_k" not in settings.load(isolated_env)
+
+    def test_duplicate_keys_reset_the_key_once(self, client, isolated_env):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7, "seed": 3})
+        cfg.top_k = 7
+        resp = client.post("/api/config/reset", json={"keys": ["top_k", "top_k"]})
+        assert resp.status_code == 200
+        assert resp.json() == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
+        assert settings.load(isolated_env) == {"seed": 3}
+        assert cfg.top_k == 12
+
+    def test_a_reset_answers_the_config_update_shape_with_no_warnings(self, client, isolated_env):
+        (isolated_env / "config.toml").write_text(
+            "ocr = 'all'\n[profile.values]\nocr = 'off'\n", encoding="utf-8"
+        )
+        cfg.ocr = OcrMode.ALL
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        resp = client.post("/api/config/reset", json={"keys": ["ocr"]})
+        assert resp.status_code == 200
+        assert resp.json()["warnings"] == []
+        assert cfg.ocr is OcrMode.OFF
+
+    def test_resolves_to_the_profile_value(self, client, isolated_env):
+        from lilbee.core import settings
+
+        (isolated_env / "config.toml").write_text(
+            "top_k = 99\nseed = 3\n[profile.values]\ntop_k = 7\n", encoding="utf-8"
+        )
+        cfg.top_k = 99
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 200
+        assert cfg.top_k == 7
+        assert settings.load(isolated_env) == {"seed": 3, "profile": {"values": {"top_k": 7}}}
+
+    def test_an_invalid_profile_value_answers_400_and_changes_nothing(self, client, isolated_env):
+        from lilbee.core import settings
+
+        (isolated_env / "config.toml").write_text(
+            "max_distance = 0.3\n[profile.values]\nmax_distance = -5.0\n", encoding="utf-8"
+        )
+        cfg.max_distance = 0.3
+        resp = client.post("/api/config/reset", json={"keys": ["max_distance"]})
+        assert resp.status_code == 400
+        assert "Cannot reset 'max_distance': its profile value -5.0 is invalid" in resp.text
+        assert cfg.max_distance == 0.3
+        assert settings.load(isolated_env)["max_distance"] == 0.3
+
+    def test_documents_dir_answers_400_without_naming_an_mcp_tool(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"keys": ["documents_dir"]})
+        assert resp.status_code == 400
+        assert "'documents_dir' has no default to reset to; set a folder path" in resp.text
+        assert "settings_set" not in resp.text
+
+    def test_an_unknown_key_answers_400_naming_it(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"keys": ["bogus"]})
+        assert resp.status_code == 400
+        assert "Unknown or read-only setting: bogus" in resp.text
+
+    def test_a_model_role_answers_400_and_changes_nothing(self, client, isolated_env):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"chat_model": "acme/a-GGUF/a.gguf"})
+        resp = client.post("/api/config/reset", json={"keys": ["chat_model"]})
+        assert resp.status_code == 400
+        assert "dedicated model route" in resp.text
+        assert settings.load(isolated_env) == {"chat_model": "acme/a-GGUF/a.gguf"}
+
+    def test_a_provider_switch_answers_400(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"keys": ["llm_provider"]})
+        assert resp.status_code == 400
+        assert "Resetting the model provider is unavailable on the HTTP server" in resp.text
+
+    def test_a_body_without_keys_answers_400(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"top_k": 1})
+        assert resp.status_code == 400
+
+    def test_a_config_toml_held_open_answers_503(self, client, isolated_env, monkeypatch):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7})
+        cfg.top_k = 7
+
+        def refuse(_src, _dst):
+            raise PermissionError(13, "The process cannot access the file")
+
+        monkeypatch.setattr(os, "replace", refuse)
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 503
+        assert "Close the program that holds config.toml open" in resp.json()["detail"]
+        assert cfg.top_k == 7
+
+
 class TestModelsSetEmbeddingRoute:
     @mock.patch(
         "lilbee.server.handlers.set_embedding_model",
@@ -1568,6 +1742,16 @@ class TestOpenAPISchema:
         ]
         assert set(responses["200"]["content"]) == {"application/octet-stream"}
         assert set(responses["400"]["content"]) == {"application/json"}
+
+    def test_analyze_stream_publishes_its_report_schema(self, client):
+        """The done event carries the report, so the stream arm names it and the report's
+        parts are registered components."""
+        schema = client.get("/schema/openapi.json").json()
+        ok = schema["paths"]["/api/analyze"]["post"]["responses"]["200"]
+        assert ok["content"]["text/event-stream"]["schema"]["$ref"].endswith("/AnalyzeResponse")
+        assert {"AnalyzeResponse", "AnalyzeRecommendationResponse"} <= set(
+            schema["components"]["schemas"]
+        )
 
     def test_session_markdown_publishes_the_markdown_media_type(self, client):
         """The export route answers with a markdown document, and the schema
@@ -2747,3 +2931,28 @@ class TestUnhandledErrorsReachTheLog:
         assert "GET" in caplog.text
         assert "/api/health" in caplog.text
         assert "engine exploded" in caplog.text
+
+
+class TestBodyOfTheWrongKind:
+    """A body that is not an object is refused without the name of an internal class."""
+
+    @pytest.mark.parametrize("path", ["/api/profiles/new", "/api/config/reset"])
+    def test_a_string_body_gets_a_plain_message(self, client, path):
+        resp = client.post(path, content='"Hq"', headers={"content-type": "application/json"})
+        assert resp.status_code == 400
+        assert resp.json()["extra"] == [{"message": "The request body must be a JSON object."}]
+        assert "instance of" not in resp.text
+
+
+class TestPlainValidation:
+    def test_other_messages_and_other_shapes_stay_as_they_are(self):
+        from litestar.exceptions import ValidationException
+
+        from lilbee.server.validation_format import plain_validation
+
+        other = ValidationException(extra=[{"key": "top_k", "message": "Input should be a number"}])
+        assert plain_validation(other).extra == [
+            {"key": "top_k", "message": "Input should be a number"}
+        ]
+        bare = ValidationException(extra={"detail": "x"})
+        assert plain_validation(bare).extra == {"detail": "x"}

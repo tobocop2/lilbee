@@ -23,7 +23,7 @@ _PLACEMENT_KEY = "placement"
 # Ceiling and cadence for waiting out the post-reload chat warm: a cold
 # tensor-split giant off a slow filesystem takes minutes, and the wait stops
 # early when nothing is warming or the warm failed. The grace covers the gap
-# between reload_placement returning and its off-thread warm stamping a phase.
+# between replan_fleet returning and its off-thread warm stamping a phase.
 _CHAT_READY_TIMEOUT_S = 1800.0
 _CHAT_READY_POLL_S = 0.5
 _CHAT_READY_GRACE_S = 3.0
@@ -194,7 +194,7 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     """Validate, persist to config.toml, apply to the live fleet, and return the new view.
 
     Raises PlacementError before any write when the spec does not fit the hardware.
-    The live fleet applies the change surgically (``reload_placement`` restarts
+    The live fleet applies the change surgically (``replan_fleet`` restarts
     only the roles whose placement moved), so an untouched role's loaded model
     stays resident; with no services built there is nothing running and the next
     use plans fresh. On the live path the planner re-plans against its clean-box
@@ -203,19 +203,20 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     context sizing, while charging stays against total capacity (bb-a8f).
     """
     resolved = resolve_placement_plan(spec)
-    if spec is None:
+    spec_json = None if spec is None else spec.to_json()
+    if spec_json is None:
         settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
-        cfg.placement = None
     else:
-        spec_json = spec.to_json()
         settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
-        cfg.placement = spec_json
+    settings.sync_from_resolver(cfg, [_PLACEMENT_KEY])
     services = peek_services()
     if services is None:
         clear_read_device_cache()  # nothing running; let the next boot probe fresh
     else:
-        services.provider.reload_placement(wait=True)
-    return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+        services.provider.replan_fleet(wait=True)
+    if cfg.placement != spec_json:
+        return get_placement()  # LILBEE_PLACEMENT outranks the saved spec; report what runs
+    return _view(resolved, manual=spec is not None, spec_json=spec_json)
 
 
 def wait_chat_ready(
@@ -226,7 +227,7 @@ def wait_chat_ready(
 ) -> bool:
     """Block while a chat warm is in flight; True once a prompt can be served.
 
-    ``reload_placement(wait=True)`` returns once the proxies are healthy while the
+    ``replan_fleet(wait=True)`` returns once the proxies are healthy while the
     restarted model still warms off-thread, so a chat request sent right after an
     apply reaches a model that is still loading. Callers that gate user input on the reload call
     this to hold until the model actually serves. Waits only while a warm is

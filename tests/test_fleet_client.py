@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import threading
 import time
@@ -15,14 +16,16 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from lilbee.providers.base import ProviderError, TokenUsage
+from lilbee.providers.base import ProviderError, StreamFinish, TokenUsage
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
+    StreamInterruptedError,
     _first_token_top_logprobs,
     _llm_rerank_score,
     _parse_sse_deltas,
     _ThinkInliner,
+    is_connection_failure,
 )
 from lilbee.providers.roles import RerankMode
 from lilbee.runtime.cancellation import TaskCancelledError
@@ -2745,3 +2748,190 @@ def test_chat_abortable_stops_reading_once_the_run_is_cancelled() -> None:
         client.chat_abortable([{"role": "user", "content": "hi"}], deadline_s=5.0, cancel=cancel)
     assert time.monotonic() - started < 2.0
     assert client.in_flight == 0
+
+
+class _LoopbackServer:
+    """A one-connection loopback server; a subclass writes ``_serve``."""
+
+    def __init__(self) -> None:
+        import socket
+
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.url = f"http://127.0.0.1:{self._sock.getsockname()[1]}"
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        self._thread.join(timeout=5)
+        self._sock.close()
+
+
+class _ClosingServer(_LoopbackServer):
+    """A loopback server that answers a chat stream, then closes mid-body.
+
+    ``frames`` is the number of SSE frames it sends before it drops the socket
+    without the closing chunk, as an engine does when its owner moves its group.
+    ``mode`` ``"reset"`` drops the socket with a reset. ``"silent"`` keeps it open
+    and sends nothing more, so the client read times out.
+    """
+
+    def __init__(self, frames: int, mode: str = "close") -> None:
+        self._frames = frames
+        self._mode = mode
+        self._release = threading.Event()
+        super().__init__()
+
+    def _serve(self) -> None:
+        import socket
+        import struct
+
+        conn, _ = self._sock.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            )
+            for _ in range(self._frames):
+                frame = b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+                conn.sendall(f"{len(frame):x}\r\n".encode() + frame + b"\r\n")
+            if self._mode == "silent":
+                self._release.wait(timeout=5)
+            elif self._mode == "reset":
+                time.sleep(0.05)
+                conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            else:
+                time.sleep(0.05)
+
+    def close(self) -> None:
+        self._release.set()
+        super().close()
+
+
+def _real_client(url: str) -> LlamaServerClient:
+    client = LlamaServerClient(url, "test-model", http=httpx.Client(base_url=url))
+    client._needs_alternation = False
+    return client
+
+
+def test_stream_cut_after_first_frame_says_the_answer_is_cut() -> None:
+    server = _ClosingServer(frames=2)
+    stream = _real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert "stopped answering" in str(caught.value)
+    assert "restarted" not in str(caught.value)
+    assert "Send your message again" in str(caught.value)
+    assert not isinstance(caught.value, httpx.HTTPError)
+    assert not is_connection_failure(caught.value)
+    assert isinstance(caught.value.__cause__, httpx.TransportError)
+
+
+def test_stream_cut_by_a_read_timeout_keeps_its_cause_and_text() -> None:
+    """The engine is alive but silent: nothing restarted, and the text says so."""
+    server = _ClosingServer(frames=1, mode="silent")
+    http = httpx.Client(base_url=server.url, timeout=httpx.Timeout(0.2))
+    client = LlamaServerClient(server.url, "test-model", http=http)
+    client._needs_alternation = False
+    stream = client.chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert isinstance(caught.value.__cause__, httpx.ReadTimeout)
+    assert "stopped answering" in str(caught.value)
+    assert "restarted" not in str(caught.value)
+
+
+def test_stream_cut_by_a_reset_keeps_its_cause_and_text() -> None:
+    server = _ClosingServer(frames=1, mode="reset")
+    stream = _real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert isinstance(caught.value.__cause__, httpx.TransportError)
+    assert "stopped answering" in str(caught.value)
+    assert "restarted" not in str(caught.value)
+
+
+class _CleanEndServer(_LoopbackServer):
+    """A loopback server whose chat body ends cleanly, with the chosen closing frames.
+
+    It sends one text frame, then ``finish`` and ``sentinel`` as asked, then the
+    chunked terminator. A proxy that outlives a killed engine ends its body like
+    this when ``finish`` and ``sentinel`` are both off.
+    """
+
+    def __init__(self, *, finish: bool, sentinel: bool, text: bool = True) -> None:
+        self._text = text
+        self._finish = finish
+        self._sentinel = sentinel
+        super().__init__()
+
+    def _serve(self) -> None:
+        conn, _ = self._sock.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            )
+            frames = [b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'] if self._text else []
+            if self._finish:
+                frames.append(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+            if self._sentinel:
+                frames.append(b"data: [DONE]\n\n")
+            for frame in frames:
+                conn.sendall(f"{len(frame):x}\r\n".encode() + frame + b"\r\n")
+            conn.sendall(b"0\r\n\r\n")
+            # Close only after the client has read the body, so no reset hides it.
+            conn.settimeout(1.0)
+            with contextlib.suppress(OSError):
+                conn.recv(65536)
+
+
+@pytest.mark.parametrize(
+    ("finish", "sentinel"), [(True, True), (True, False), (False, True)], ids=lambda v: str(v)
+)
+def test_stream_with_a_finish_or_a_sentinel_ends_as_complete(finish: bool, sentinel: bool) -> None:
+    server = _CleanEndServer(finish=finish, sentinel=sentinel)
+    items = list(_real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}]))
+    server.close()
+    assert items[0] == "Hi"
+    assert any(isinstance(i, StreamFinish) for i in items) is finish
+
+
+def test_stream_ending_with_no_finish_and_no_sentinel_is_cut() -> None:
+    server = _CleanEndServer(finish=False, sentinel=False)
+    stream = _real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert "The model server stopped answering and the answer is cut." in str(caught.value)
+    assert "Send your message again." in str(caught.value)
+
+
+def test_stream_with_no_frame_at_all_is_not_called_cut() -> None:
+    """No frame was sent, so the caller's existing retry path decides, not this check."""
+    server = _CleanEndServer(finish=False, sentinel=False, text=False)
+    items = list(_real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}]))
+    server.close()
+    assert items == []
+
+
+def test_stream_cut_before_first_frame_keeps_the_transport_error() -> None:
+    """Nothing was sent, so the caller can still rediscover the engine and retry."""
+    server = _ClosingServer(frames=0)
+    stream = _real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}])
+    with pytest.raises(httpx.TransportError):
+        next(stream)
+    server.close()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+from pathlib import Path
 from typing import ClassVar
 
 from textual import events, on
@@ -14,9 +16,13 @@ from textual.widgets import Label, Static
 
 from lilbee.cli.tui import messages as msg
 
+_CSS_FILE = Path(__file__).parent / "confirm_pill.tcss"
+
 
 class ConfirmPill(Static, can_focus=True):
-    """Focusable yes/no pill; Enter, Space or a click picks it."""
+    """Focusable dialog pill; Enter, Space or a click picks the answer it stands for."""
+
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "select", "Pick", show=False),
@@ -26,12 +32,14 @@ class ConfirmPill(Static, can_focus=True):
     class Picked(Message):
         """A pill was picked, carrying the answer it stands for."""
 
-        def __init__(self, answer: bool) -> None:
+        def __init__(self, answer: bool | StrEnum) -> None:
             super().__init__()
             self.answer = answer
 
-    def __init__(self, label: str, *, pill_id: str, answer: bool) -> None:
-        super().__init__(label, id=pill_id)
+    def __init__(
+        self, label: str, *, pill_id: str, answer: bool | StrEnum, primary: bool = False
+    ) -> None:
+        super().__init__(label, id=pill_id, classes="-primary" if primary else None)
         self._answer = answer
 
     def action_select(self) -> None:
@@ -59,23 +67,30 @@ class ConfirmDialog(ModalScreen[bool]):
         Binding("right", "app.focus_next", "Next", show=False),
     ]
 
-    def __init__(self, title: str, message: str) -> None:
+    def __init__(self, title: str, message: str, *, focus_no: bool = False) -> None:
         super().__init__()
         self._title = title
         self._message = message
+        self._focus_no = focus_no
+
+    def on_mount(self) -> None:
+        if self._focus_no:
+            self.query_one("#confirm-no", ConfirmPill).focus()
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self._title, id="confirm-title", markup=False)
             yield Label(self._message, id="confirm-message", markup=False)
             with Center(), Horizontal(id="confirm-buttons"):
-                yield ConfirmPill(msg.CONFIRM_YES_LABEL, pill_id="confirm-yes", answer=True)
+                yield ConfirmPill(
+                    msg.CONFIRM_YES_LABEL, pill_id="confirm-yes", answer=True, primary=True
+                )
                 yield ConfirmPill(msg.CONFIRM_NO_LABEL, pill_id="confirm-no", answer=False)
 
     @on(ConfirmPill.Picked)
     def _on_pill_picked(self, event: ConfirmPill.Picked) -> None:
         event.stop()
-        self.dismiss(event.answer)
+        self.dismiss(event.answer is True)
 
     def action_confirm(self) -> None:
         self.dismiss(True)

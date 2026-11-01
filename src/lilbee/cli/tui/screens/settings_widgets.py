@@ -16,7 +16,9 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core.config import cfg
-from lilbee.core.config.model import env_value
+from lilbee.core.config.defaults import env_var_name
+from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.resolve import read_profile_table
 from lilbee.crawler import crawler_available
 
 if TYPE_CHECKING:
@@ -37,10 +39,13 @@ _TYPE_COLORS: dict[str, tuple[str, str]] = {
 }
 
 _DEFAULTS_REMAP: dict[str, str] = {"top_k_sampling": "top_k"}
+MODEL_DEFAULT_MARKER = " (model default)"
 
 LIST_RESTORE_PREFIX = "list-restore-"
 LIST_ERROR_ID_PREFIX = "err-"
 LIST_ERROR_VISIBLE_CLASS = "-visible"
+ADVANCED_COLLAPSIBLE_ID_PREFIX = "settings-advanced-"
+ADVANCED_COLLAPSIBLE_CLASS = "settings-advanced-collapsible"
 
 API_KEYS_GROUP = SettingGroup.API_KEYS
 API_KEYS_WARNING_CLASS = "api-keys-warning"
@@ -91,6 +96,47 @@ def set_widget_value(widget: Widget, value: object) -> None:
             widget.load_text("" if value is None else str(value))
 
 
+SettingEditor = Input | TextArea | Checkbox | Select[str]
+"""Every widget kind that edits one setting's value."""
+EDITOR_KINDS = (Input, TextArea, Checkbox, Select)
+
+
+def displayed_text(widget: SettingEditor) -> str:
+    """The raw text an editor shows: a Select's blank is "", a Checkbox is "True" or "False"."""
+    if isinstance(widget, Input):
+        return widget.value
+    if isinstance(widget, TextArea):
+        return widget.text
+    if isinstance(widget, Checkbox):
+        return str(widget.value)
+    return "" if widget.value == Select.BLANK else str(widget.value)
+
+
+def list_editor_text(key: str, value: list[object] | None = None) -> str:
+    """The newline-joined text a list setting's editor shows for *value*.
+
+    *value* defaults to the current cfg value; a caller that already read it
+    (to also compute a count, say) passes it through instead of re-reading cfg.
+    """
+    items = (getattr(cfg, key, None) or []) if value is None else value
+    return "\n".join(str(item) for item in items)
+
+
+def select_shown_value(defn: SettingDef, value: str) -> str:
+    """The value a Select shows for *value*: the matching choice, else blank.
+
+    A Select's ``value`` is not set from its constructor until it mounts, so this does not read it.
+    """
+    if value in (defn.choices or ()):
+        return value
+    return ""
+
+
+def strip_model_default_marker(value: str) -> str:
+    """Drop the model-default marker and the sentinel "None" display text."""
+    return "" if value == "None" else value.replace(MODEL_DEFAULT_MARKER, "")
+
+
 def model_picker_label(key: str) -> str:
     """Render the picker button label as the human-friendly model name."""
     from lilbee.catalog.formatting import display_label_for_ref
@@ -116,7 +162,7 @@ def effective_value(key: str) -> str:
     defaults_key = _DEFAULTS_REMAP.get(key, key)
     default_val = getattr(defaults, defaults_key, None)
     if default_val is not None:
-        return f"{default_val} (model default)"
+        return f"{default_val}{MODEL_DEFAULT_MARKER}"
     return "None"
 
 
@@ -135,16 +181,48 @@ def type_pill(defn: SettingDef) -> Content:
     return pill(type_name, bg, fg)
 
 
-def env_var_name(key: str) -> str:
-    """Return the LILBEE_* env var name for a config key."""
-    return f"LILBEE_{key.upper()}"
+def user_pill() -> Content:
+    """The accent pill that marks a value set by you."""
+    return pill(msg.SETTINGS_SOURCE_USER_PILL, "$accent", "$text")
 
 
-def env_pill(key: str) -> Content | None:
-    """Pill warning that an env var is overriding TUI edits, or None."""
-    if env_value(key) is None:
-        return None
+def _user_pill(_key: str, _profile_name: str | None) -> Content:
+    return user_pill()
+
+
+def _env_pill(key: str, _profile_name: str | None) -> Content:
     return pill(env_var_name(key), "$warning", "$text")
+
+
+def _profile_pill(_key: str, profile_name: str | None) -> Content:
+    label = (
+        msg.SETTINGS_SOURCE_PROFILE_NAMED_PILL.format(name=profile_name)
+        if profile_name
+        else msg.SETTINGS_SOURCE_PROFILE_PILL
+    )
+    return pill(label, "$secondary", "$text")
+
+
+_SOURCE_PILLS: dict[SettingSource, Callable[[str, str | None], Content]] = {
+    SettingSource.USER: _user_pill,
+    SettingSource.ENV: _env_pill,
+    SettingSource.PROFILE: _profile_pill,
+}
+
+
+def active_profile_name() -> str | None:
+    """The active profile's name, one config.toml read; call once per render, not per row."""
+    return read_profile_table(cfg.data_root).name
+
+
+def source_pill(key: str, source: SettingSource, profile_name: str | None = None) -> Content | None:
+    """Pill for a value the user, an env var, or a profile overrides; None for any other source.
+
+    *profile_name* is the caller's own ``active_profile_name()`` read, passed in rather than
+    read here, so a pane with several profile-set rows shares one config.toml read.
+    """
+    build = _SOURCE_PILLS.get(source)
+    return None if build is None else build(key, profile_name)
 
 
 def help_content(key: str, defn: SettingDef) -> Content:
@@ -155,23 +233,16 @@ def help_content(key: str, defn: SettingDef) -> Content:
     return Content.assemble(help_text, "\n", scanned_pages_line())
 
 
-def title_content(key: str, defn: SettingDef) -> Content:
-    """Assemble the setting-row title: key name, type pill, and env pill when set."""
+def title_content(
+    key: str, defn: SettingDef, source: SettingSource, profile_name: str | None = None
+) -> Content:
+    """Assemble the setting-row title: key name, type pill, and the source pill for an override."""
     parts: list[Content] = [Content(key + "  "), type_pill(defn)]
-    env_badge = env_pill(key)
-    if env_badge is not None:
+    source_badge = source_pill(key, source, profile_name)
+    if source_badge is not None:
         parts.append(Content("  "))
-        parts.append(env_badge)
+        parts.append(source_badge)
     return Content.assemble(*parts)
-
-
-def stringify_default(default: object) -> str:
-    """Serialize a default for the TOML settings store."""
-    if default is None:
-        return ""
-    if isinstance(default, list):
-        return "\n".join(str(item) for item in default)
-    return str(default)
 
 
 def _providers_installed() -> bool:
@@ -223,7 +294,7 @@ def group_settings() -> dict[SettingGroup, list[tuple[str, SettingDef]]]:
     return dict(groups)
 
 
-def make_editor(key: str, defn: SettingDef) -> Widget:
+def make_editor(key: str, defn: SettingDef) -> Collapsible | SettingEditor:
     """Create the appropriate editor widget for a setting."""
     # A list never reaches an Input: str(list) would be saved back as the value.
     if defn.type is list:
@@ -240,7 +311,7 @@ def make_editor(key: str, defn: SettingDef) -> Widget:
 
 def make_multiline_editor(key: str, value: str) -> ListTextArea:
     """Create a multi-line editor for string settings (system prompts, etc.)."""
-    display = "" if value == "None" else value
+    display = strip_model_default_marker(value)
     return ListTextArea(
         text=display,
         show_line_numbers=False,
@@ -256,7 +327,7 @@ def make_list_editor(key: str) -> Collapsible:
     current = getattr(cfg, key, None) or []
     title = msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=len(current))
     editor = ListTextArea(
-        text="\n".join(str(item) for item in current),
+        text=list_editor_text(key, current),
         show_line_numbers=True,
         name=key,
         id=f"{EDITOR_ID_PREFIX}{key}",
@@ -287,7 +358,7 @@ def make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
     if value in {c[1] for c in choices}:
         return Select(
             choices,
-            value=value,
+            value=select_shown_value(defn, value),
             allow_blank=defn.nullable,
             name=key,
             classes="setting-editor",
@@ -311,7 +382,7 @@ def make_input(key: str, value: str, *, secret: bool = False) -> Input:
     the real value is still submitted and saved, and text pasted into a masked
     field never appears on screen.
     """
-    display = "" if value == "None" else value.replace(" (model default)", "")
+    display = strip_model_default_marker(value)
     return Input(
         value=display,
         name=key,

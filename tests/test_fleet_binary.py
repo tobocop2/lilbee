@@ -253,84 +253,6 @@ class TestEnginePin:
         finally:
             cfg.llama_server_path = original
 
-    def test_placement_is_part_of_the_load_signature(self) -> None:
-        # A process with a manual GPU placement must not adopt an engine placed
-        # differently, so placement flows into the pin's load signature.
-        original = cfg.placement
-        try:
-            cfg.placement = None
-            base = binary_mod._load_config_signature()
-            cfg.placement = '{"chat": {"devices": [1]}}'
-            assert binary_mod._load_config_signature() != base
-        finally:
-            cfg.placement = original
-
-    def test_ctx_sizing_values_are_not_part_of_the_load_signature(self) -> None:
-        # Ctx sizing shares by window coverage (contract.chat_ctx_covers), not
-        # value equality: a co-tenant whose target fits inside the running
-        # window must compute the same pin and adopt the engine.
-        originals = {k: getattr(cfg, k) for k in ("num_ctx", "num_ctx_max", "chat_n_ctx_target")}
-        try:
-            cfg.num_ctx = None
-            cfg.num_ctx_max = None
-            cfg.chat_n_ctx_target = 12288
-            base = binary_mod._load_config_signature()
-            cfg.chat_n_ctx_target = 49152
-            assert binary_mod._load_config_signature() == base
-            cfg.num_ctx = 4096
-            assert binary_mod._load_config_signature() == base
-            cfg.num_ctx_max = 16384
-            assert binary_mod._load_config_signature() == base
-        finally:
-            for key, value in originals.items():
-                setattr(cfg, key, value)
-
-    def test_chunk_size_is_part_of_the_load_signature(self) -> None:
-        # The embed window is sized from chunk_size, so a peer under another
-        # budget must not adopt this engine's token cap.
-        original = cfg.chunk_size
-        try:
-            cfg.chunk_size = 512
-            base = binary_mod._load_config_signature()
-            cfg.chunk_size = 126
-            assert binary_mod._load_config_signature() != base
-        finally:
-            cfg.chunk_size = original
-
-    def test_load_signature_keys_are_pinned(self) -> None:
-        # Every key here bakes into the launch argv or the embed window; a key
-        # that only changes request-time behavior must not split peers.
-        from lilbee.core.config.keys import LOAD_AFFECTING_KEYS, PLACEMENT_PIN_KEYS
-
-        signed = (LOAD_AFFECTING_KEYS - binary_mod._CTX_SIZING_KEYS) | PLACEMENT_PIN_KEYS
-        assert signed == frozenset(
-            {
-                "chat_model",
-                "chunk_size",
-                "cpu_moe",
-                "embedding_model",
-                "flash_attention",
-                "gpu_devices",
-                "kv_cache_type",
-                "n_cpu_moe",
-                "n_gpu_layers",
-                "placement",
-                "reranker_model",
-                "reranker_type",
-                "vision_model",
-            }
-        )
-
-    def test_gpu_devices_is_part_of_the_load_signature(self) -> None:
-        original = cfg.gpu_devices
-        try:
-            cfg.gpu_devices = None
-            base = binary_mod._load_config_signature()
-            cfg.gpu_devices = "1"
-            assert binary_mod._load_config_signature() != base
-        finally:
-            cfg.gpu_devices = original
-
     def test_bundled_wheel_pin_wins_when_no_custom_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -360,17 +282,6 @@ class TestEnginePin:
         monkeypatch.setattr("lilbee.providers.fleet.binary._pkg_version", lambda name: "0.6.91")
         assert engine_build_id() == "wheel:0.6.91"
 
-    def test_pin_folds_in_load_affecting_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Same build, different expert-offload config: the pins must differ so two
-        # processes with conflicting load flags never share one engine.
-        monkeypatch.setattr(binary_mod, "engine_build_id", lambda: "build-x")
-        monkeypatch.setattr(cfg, "cpu_moe", False)
-        pin_off = engine_pin()
-        monkeypatch.setattr(cfg, "cpu_moe", True)
-        pin_on = engine_pin()
-        assert pin_off != pin_on
-        assert pin_on.startswith("build-x|")  # build identity still leads the pin
-
     def test_pin_folds_in_the_swap_config_revision(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A peer whose llama-swap config is another revision never shares its engine.
         monkeypatch.setattr(binary_mod, "engine_build_id", lambda: "build-x")
@@ -379,6 +290,16 @@ class TestEnginePin:
         monkeypatch.setattr(swap_config_mod, "SWAP_CONFIG_REVISION", revision + 1)
         assert engine_pin() != current
         assert current.endswith(f"|swap-config={revision}")
+
+    def test_a_setting_never_moves_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Settings are matched per launch, so no write can make a kept group foreign.
+        monkeypatch.setattr(binary_mod, "engine_build_id", lambda: "build-x")
+        before = engine_pin()
+        monkeypatch.setattr(cfg, "cpu_moe", True)
+        monkeypatch.setattr(cfg, "chunk_size", 126)
+        monkeypatch.setattr(cfg, "gpu_devices", "1")
+        assert engine_pin() == before
+        assert before.startswith("build-x|")
 
     def test_pin_is_stable_for_identical_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The load signature is deterministic: identical config yields the same pin

@@ -58,6 +58,20 @@ def test_setup_tui_log_file_attaches_handler():
     assert isinstance(new_handlers[0], RotatingFileHandler)
 
 
+@pytest.mark.parametrize("level", [logging.DEBUG, logging.WARNING, logging.ERROR])
+def test_setup_tui_log_file_handler_follows_the_root_level(level):
+    root = logging.getLogger()
+    previous = root.level
+    root.setLevel(level)
+    try:
+        before = {id(h) for h in root.handlers}
+        setup_tui_log_file()
+        (handler,) = [h for h in root.handlers if id(h) not in before]
+    finally:
+        root.setLevel(previous)
+    assert handler.level == level
+
+
 def test_setup_tui_log_file_idempotent():
     root = logging.getLogger()
     setup_tui_log_file()

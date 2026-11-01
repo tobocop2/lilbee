@@ -12,6 +12,7 @@ running server. See docs/architecture.md for swap tenancy.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import logging
 import re
@@ -47,10 +48,10 @@ from lilbee.providers.fleet.client import (
     retry_on_gateway_error,
 )
 from lilbee.providers.fleet.contract import (
+    NO_SETTINGS,
     chat_ctx_covers,
     contract_matches,
     decoded_launches,
-    served_pairs,
     vision_slots_cover,
 )
 from lilbee.providers.fleet.groups import SwapGroup, group_for
@@ -101,6 +102,9 @@ log = logging.getLogger(__name__)
 # and far short of any supervisor's patience for a process that will not exit.
 _SHUTDOWN_BUILD_LOCK_WAIT_S = 45.0
 
+# How long a request waits for a reload that is restarting its role's server.
+_RELOAD_GAP_WAIT_S = 60.0
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
@@ -118,6 +122,12 @@ _PROVIDER_NAME = "llama-server"
 _NOT_RESPONDING_MESSAGE = (
     "The model server is not responding and no healthy replica is available. "
     "It may be restarting; try again in a moment."
+)
+# Why a process has no fleet when the shared and the private engine both have a live user.
+_ENGINES_IN_USE_MESSAGE = (
+    "The shared and private engines are in use by other lilbee processes, so this "
+    "process has no model server. Close the other lilbee processes, or set "
+    f"{ENGINE_DIR_ENV} to a separate engine directory, then try again."
 )
 # Tokens held back from the served context for the model's own generation when the
 # request does not cap it, plus a margin for chat-template overhead and estimate drift.
@@ -226,26 +236,17 @@ def _reserve_least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerCli
         return client
 
 
-def _healthy_groups_ours(
-    states: dict[SwapGroup, SwapState], pin: str, wanted: set[tuple[WorkerRole, str]]
-) -> bool:
-    """Whether every healthy group in *states* is pin-equal and serves only wanted pairs.
-
-    True marks the incumbent as this contract's own engine that a full bind
-    could not cover (a dead group, or config grew a role): the ladder rebuilds
-    it in place even with live users, since those users need the rebuild too.
-    False (a foreign pin or a model outside the contract) keeps the incumbent
-    protected while in use. Vacuously False with no healthy group.
-    """
-    if not states:
-        return False
-    for state in states.values():
-        if not contract_matches(state, (), pin):
-            return False
-        pairs = served_pairs(state)
-        if pairs is None or not pairs <= wanted:
-            return False
-    return True
+def _launch_changes(old: tuple[InstanceLaunch, ...], new: tuple[InstanceLaunch, ...]) -> str:
+    """The launch fields that differ, as ``field before -> after``."""
+    if len(old) != len(new):
+        return f"replicas {len(old)} -> {len(new)}"
+    moved = [
+        f"{field.name} {getattr(before, field.name)!r} -> {getattr(after, field.name)!r}"
+        for before, after in zip(old, new, strict=True)
+        for field in dataclasses.fields(InstanceLaunch)
+        if getattr(before, field.name) != getattr(after, field.name)
+    ]
+    return ", ".join(moved) or "no launch field moved"
 
 
 def _healthy_states(engine_dir: Path) -> dict[SwapGroup, SwapState]:
@@ -266,20 +267,20 @@ def _healthy_states(engine_dir: Path) -> dict[SwapGroup, SwapState]:
 
 
 def _bindable_group(
-    state: SwapState, pin: str, wanted: set[tuple[WorkerRole, str]]
+    state: SwapState, pin: str, demand: _EngineDemand
 ) -> tuple[SwapState, list[InstanceLaunch], set[tuple[WorkerRole, str]]] | None:
     """*state*'s launches and the wanted pairs it covers, or ``None``.
 
     ``None`` for every reason an already-healthy group is not bindable by us:
-    a foreign pin, an undecodable contract, or serving nothing we want.
+    a foreign pin, other settings, an undecodable contract, or serving nothing
+    we want.
     """
-    if not contract_matches(state, (), pin):
-        # Pin mismatch or undecodable contract: not bindable by us.
+    if not contract_matches(state, (), pin, demand.settings):
         return None
     launches = decoded_launches(state)
     if launches is None:
         return None
-    pairs = {(launch.role, launch.model) for launch in launches} & wanted
+    pairs = {(launch.role, launch.model) for launch in launches} & demand.pairs
     return (state, launches, pairs) if pairs else None
 
 
@@ -750,6 +751,14 @@ def _no_server_message(role: WorkerRole) -> str:
     )
 
 
+def _reload_timeout_message(role: WorkerRole) -> str:
+    """User-facing reason a request gave up waiting for *role*'s restarting server."""
+    return (
+        f"The {role.value} model server is still restarting after a settings change. "
+        "Wait for the restart to finish, then try again."
+    )
+
+
 class _EngineDemand(NamedTuple):
     """What this process needs an engine to serve: pairs plus its chat window."""
 
@@ -766,6 +775,8 @@ class _EngineDemand(NamedTuple):
     skipped_unusable_ctx: dict[WorkerRole, str]
     # Vision slots this process needs at once; 0 demands nothing.
     vision_slots: int = 0
+    # The settings the demand plan gives each role's launch.
+    settings: Mapping[WorkerRole, str] = NO_SETTINGS
 
 
 def _placeable_demand() -> _EngineDemand:
@@ -806,6 +817,7 @@ def _placeable_demand() -> _EngineDemand:
         dict(plan.skipped_not_installed),
         dict(plan.skipped_unusable_ctx),
         _demanded_vision_slots(pairs),
+        {launch.role: launch.settings for launch in plan.launches},
     )
 
 
@@ -988,7 +1000,7 @@ class FleetProvider:
         self._chat_prefill: tuple[int, int] | None = None
         # Single-flight guard: the HTTP/MCP servers route concurrently, so two
         # first-requests must not each start a swap (double GPU allocation) or
-        # tear one down mid-route. Reentrant: invalidate_load_cache nests calls.
+        # tear one down mid-route.
         self._lock = threading.RLock()
         # Serializes the slow startup (GPU probe + GGUF parse + llama-swap spawn)
         # across concurrent callers, so the off-thread warm-up and an on-demand call
@@ -1014,6 +1026,9 @@ class FleetProvider:
         # Launches the last plan refused for an unusable window (role -> reason);
         # read by the warm finalizer and _require_clients.
         self._skipped_unusable_ctx: dict[WorkerRole, str] = {}
+        # Why the last acquisition left this process without a fleet because the
+        # private dir has a live user; shown before any generic no-server line.
+        self._engine_refusal: str | None = None
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -1028,9 +1043,13 @@ class FleetProvider:
         # Set when a reload arrives mid-reload: the in-flight pass may have
         # already snapshotted its plan, so the change must be re-applied.
         self._reload_pending = False
-        # Notified when ``_reloading`` clears, so a ``reload_role(wait=True)`` caller
-        # can block until the reload it requested (or the in-flight one that will
-        # run its pending pass) has finished.
+        # Roles the running reload may still bring a server back for: every role
+        # from the start of a reload until its plan is known, then the planned
+        # restarts. A request for any other role does not wait for the reload.
+        self._reload_owed: frozenset[WorkerRole] = frozenset()
+        # Notified when ``_reloading`` clears, when a reload publishes its plan and
+        # when it adopts a group, so a ``reload_role(wait=True)`` caller and a
+        # request waiting for its role's server wake at the change they wait for.
         self._reload_done = threading.Condition(self._lock)
 
     def _ensure_fleet(self) -> bool:
@@ -1063,16 +1082,12 @@ class FleetProvider:
     def _acquire_engine(self, config_root: Path) -> bool:
         """The acquisition ladder: bind to a compatible engine, else build one.
 
-        Machine slot first. An incumbent is replaced in place when no live
-        user holds it, or when it is this contract's own engine (pin-equal,
-        serving only wanted models) left partially dead or partially covering:
-        its members are waiting for exactly that rebuild, and overflowing
-        around it would load duplicate weights. Only a live incompatible
-        engine in active use sends the build to the config root's private
-        overflow dir. Per-dir the step is all-or-nothing: every configured
-        (role, model) pair bound, or built fresh. Runs under the cross-process
-        build lock, so two starts never both build and stop-if-last never
-        races an arrival.
+        Machine slot first. An incumbent is replaced in place only when no live
+        user holds it. An engine with a live user that this process cannot bind
+        sends the build to the config root's private overflow dir. Per-dir the
+        step is all-or-nothing: every configured (role, model) pair bound, or
+        built fresh. Runs under the cross-process build lock, so two starts
+        never both build and stop-if-last never races an arrival.
         """
         pin = engine_pin()
         demand = _placeable_demand()
@@ -1082,6 +1097,7 @@ class FleetProvider:
         # rather than a retryable not-ready.
         self._skipped_not_installed = dict(demand.skipped_not_installed)
         self._skipped_unusable_ctx = dict(demand.skipped_unusable_ctx)
+        self._engine_refusal = None
         machine_dir = machine_engine_dir()
         if kernel_arbitrates_locks(machine_dir):
             machine = self._acquire_in_dir(machine_dir, pin, demand, is_overflow=False)
@@ -1099,8 +1115,7 @@ class FleetProvider:
                 machine_dir,
                 ENGINE_DIR_ENV,
             )
-        # The machine slot holds a live incompatible engine in active use: overflow
-        # to this config root's private dir rather than evict another model setup.
+        # The machine slot is out; use this config root's private engine dir.
         private = private_engine_dir(config_root)
         return self._acquire_in_dir(private, pin, demand, is_overflow=True) or False
 
@@ -1113,16 +1128,14 @@ class FleetProvider:
         is decided by kernel-refcounted membership, not the proxy HTTP probe: an
         engine with a live user is never reaped or stopped, so a transient probe
         failure (fd exhaustion, host thrash) cannot kill a busy engine. Replace in
-        place only when no live user holds it or it is this contract's own engine
-        (pin-equal, serving only wanted models). A live incompatible engine in
-        active use is never evicted or stacked on: on the machine slot it returns
-        ``None`` (overflow), and in the overflow dir it serves nothing rather than
-        duplicate weights beside it. Before building, any recorded engine is cleared
-        -- keyed on
-        the state file, not the probe -- so an unprobeable incumbent is stopped
-        rather than double-built beside. The stop is gated on ``_can_build_engine``
-        so a process that can serve nothing never destroys a warm engine it can't
-        replace. Held under the cross-process build lock.
+        place only when no live user holds it. An engine with a live user that this
+        process cannot bind is never evicted or stacked on: on the machine slot it
+        returns ``None`` (overflow), and in the overflow dir it serves nothing rather
+        than duplicate weights beside it. Before building, any recorded engine is
+        cleared -- keyed on the state file, not the probe -- so an unprobeable
+        incumbent is stopped rather than double-built beside. The stop is gated on
+        ``_can_build_engine`` so a process that can serve nothing never destroys a
+        warm engine it can't replace. Held under the cross-process build lock.
         """
         wanted = demand.pairs
         with build_lock(engine_dir):
@@ -1131,21 +1144,21 @@ class FleetProvider:
                 self._hold_membership(engine_dir)
                 _watch_bound_engine(engine_dir)
                 return True
-            replaceable = not live_users_exist(engine_dir) or _healthy_groups_ours(
-                states, pin, wanted
-            )
-            if not replaceable:
-                # A live engine another setup is actively using is never evicted or
-                # stacked on. On the machine slot that means overflow (None); in the
-                # overflow dir there is nowhere further to go, so serve nothing rather
-                # than kill the incumbent or load a second fleet's weights beside it
-                # (an OOM on a small-VRAM box).
-                return None if not is_overflow else False
+            if live_users_exist(engine_dir):
+                # A live engine is never evicted or stacked on. On the machine slot
+                # that means overflow (None); in the overflow dir there is nowhere
+                # further to go, so serve nothing rather than kill the incumbent or
+                # load a second fleet's weights beside it (an OOM on a small-VRAM box).
+                log.info("The engine at %s has a live user and cannot serve this setup", engine_dir)
+                if is_overflow:
+                    self._engine_refusal = _ENGINES_IN_USE_MESSAGE
+                    return False
+                return None
             if not _can_build_engine(wanted):
                 return False
-            # No live user holds this dir now (or it is ours to rebuild): reap dead
-            # leftovers and stop any recorded engine so planning sees true free VRAM
-            # and the build never lands beside an unprobeable incumbent.
+            # No live user holds this dir now: reap dead leftovers and stop any
+            # recorded engine so planning sees true free VRAM and the build never
+            # lands beside an unprobeable incumbent.
             reap_stale(engine_dir)
             if engine_record_exists(engine_dir):
                 stop_engine(engine_dir)
@@ -1165,7 +1178,7 @@ class FleetProvider:
         """Bind every group needed to cover the demanded pairs; False leaves nothing bound.
 
         Binding never touches groups serving models outside the demand; the dir
-        matches only when healthy, pin-equal groups cover every wanted pair and
+        matches only when healthy, contract-equal groups cover every wanted pair and
         the served chat window covers the demanded per-slot ctx. (Whether an
         unmatched dir's engine is then replaced or overflowed around is the
         ladder's call, based on live users.)
@@ -1174,7 +1187,7 @@ class FleetProvider:
         candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]] = []
         covered: set[tuple[WorkerRole, str]] = set()
         for group, state in states.items():
-            found = _bindable_group(state, pin, wanted)
+            found = _bindable_group(state, pin, demand)
             if found is None:
                 continue
             bindable, launches, pairs = found
@@ -1328,6 +1341,7 @@ class FleetProvider:
             if role is WorkerRole.EMBED:
                 planning.warn_when_embed_window_below_chunk(role_launches[0])
             self._retire_clients(old_clients)
+        self._reload_done.notify_all()
 
     def _swap_for(self, role: WorkerRole) -> SwapManager | None:
         """The swap process serving *role*, or None when the role has no server.
@@ -1397,11 +1411,32 @@ class FleetProvider:
         When the pool is empty but a swap was previously built and its process has
         since exited (detected via ``is_live()``), a one-shot rebuild is attempted
         before raising so a transient llama-swap restart recovers transparently.
+        A request that lands while a reload restarts the role's group waits, up to
+        ``_RELOAD_GAP_WAIT_S``, until the role has clients or the reload will not
+        bring the role back. A teardown on another thread can empty the fleet after
+        the check below passes, so a fleet that was running and is now empty goes
+        through the check once more. A fleet that never started does not.
         """
-        self._ensure_fleet()
+        had_fleet = self._ensure_fleet()
         with self._lock:
+            # The reload dropped this role's group and has not adopted the new one.
+            settled = self._reload_done.wait_for(
+                lambda: (
+                    bool(self._clients.get(role))
+                    or not self._reloading
+                    or role not in self._reload_owed
+                ),
+                _RELOAD_GAP_WAIT_S,
+            )
             clients = self._clients.get(role)
+            if not clients and not settled:
+                raise ProviderError(_reload_timeout_message(role), provider=_PROVIDER_NAME)
             swap = self._swap_for(role)
+            fleet_is_empty = not self._swaps
+        if not clients and fleet_is_empty and had_fleet:
+            self._ensure_fleet()
+            with self._lock:
+                clients = self._clients.get(role)
         if not clients and swap is not None and not swap.is_live():
             self._rebuild_role(role)
             with self._lock:
@@ -1410,7 +1445,7 @@ class FleetProvider:
             # A refused launch's recorded reason wins over the generic line.
             # BAD_REQUEST so the HTTP surfaces return this deterministic,
             # actionable refusal in a 4xx body instead of a generic 500.
-            reason = self._skipped_unusable_ctx.get(role)
+            reason = self._engine_refusal or self._skipped_unusable_ctx.get(role)
             if reason is not None:
                 raise ProviderError(
                     reason, provider=_PROVIDER_NAME, kind=ProviderErrorKind.BAD_REQUEST
@@ -1421,13 +1456,12 @@ class FleetProvider:
     def _with_rediscover(self, call: Callable[[], _T], *, role: WorkerRole | None = None) -> _T:
         """Run *call*; on a connection-kind or load-capacity failure, retry once.
 
-        A vanished engine (its last user left on a config change, or it died)
-        surfaces as ProviderErrorKind.CONNECTION, or as a raw httpx transport
-        error when the proxy itself is gone (nothing listening to answer with
-        a status). Membership is still held, so dropping the swap refs and
-        retrying sends the call through _ensure_fleet, which rediscovers the
-        new proxy ports or rebuilds. One retry only; a second failure surfaces
-        to the caller.
+        A vanished engine (it died, or its owner restarted its group) surfaces as
+        ProviderErrorKind.CONNECTION, or as a raw httpx transport error when the
+        proxy itself is gone (nothing listening to answer with a status). Membership
+        is still held, so dropping the swap refs and retrying sends the call through
+        _ensure_fleet, which rediscovers the new proxy ports or rebuilds. One retry
+        only; a second failure surfaces to the caller.
 
         A ProviderErrorKind.CAPACITY failure is the engine dying on load because
         the estimate was too optimistic. Retrying it unchanged respawns the same
@@ -1565,23 +1599,18 @@ class FleetProvider:
         """Live cold-load progress for the chat role, or None before warm begins."""
         return self._warm_tracker.snapshot()
 
-    def _shutdown_swap(self, *, latch: bool = True) -> None:
-        """Release this process's engine use; ``latch=False`` keeps the provider reusable.
+    def _shutdown_swap(self) -> None:
+        """Release this process's engine use for good.
 
-        Terminal ``shutdown()`` latches ``_shut_down`` so a discarded provider's
-        in-flight warm/reload thread can't spawn an orphan swap, then releases
-        membership: the engine stops only when this was the last user and
-        persistence was not opted into. The cache-drop paths
-        (``invalidate_load_cache``, ``drop_loaded_models_async``) pass
-        ``latch=False``: a config change restarts the shared engine for every
-        user (they rediscover), and this provider rebuilds on next use.
+        Latches ``_shut_down`` so a discarded provider's in-flight warm/reload
+        thread can't spawn an orphan swap, then releases membership: the engine
+        stops only when this was the last user and persistence was not opted into.
         """
         # Latched before the lock, not inside it: every _shut_down check runs after
         # acquiring the build lock, so a warm or reload thread queued behind us can
         # only bail early if the flag is already set when its turn comes.
-        if latch:
-            with self._lock:
-                self._shut_down = True
+        with self._lock:
+            self._shut_down = True
         # The build lock serializes shutdown against a concurrent reload/build:
         # both mutate self._swaps and the llama-swap processes, so an unserialized
         # loser would overwrite the winner's state and leak a live llama-swap.
@@ -1598,15 +1627,13 @@ class FleetProvider:
                 _SHUTDOWN_BUILD_LOCK_WAIT_S,
             )
         try:
-            # Terminal shutdown closes every client; a config-change teardown
-            # retires them so an in-flight reader is never severed.
-            self._drop_swap_refs(close_all=latch)
-            self._release_engines(config_changed=not latch)
+            self._drop_swap_refs(close_all=True)
+            self._release_engines()
         finally:
             if acquired:
                 self._build_lock.release()
 
-    def _release_engines(self, *, config_changed: bool = False) -> None:
+    def _release_engines(self) -> None:
         """Drop membership in every used engine dir; stop each engine we leave last.
 
         Runs under each dir's cross-process build lock so a departing last user
@@ -1617,13 +1644,6 @@ class FleetProvider:
         just the exiting process's config: the machine slot is shared by
         installations that configure it differently, and which one leaves last
         is arbitrary.
-
-        *config_changed* is the cache-drop path, where this provider's settings
-        or model changed. That makes the running engine stale for us, so no
-        persistence opt-in preserves it -- but it says nothing about the peers
-        still serving requests against it, so a shared engine is left running
-        and the next use re-runs the ladder, binding it if it happens to match
-        and overflowing to a private dir if it does not.
 
         The hold map is cleared either way. Leaving a stale hold behind is not
         benign: after a lazy rebuild overflows to a private dir (a foreign
@@ -1638,26 +1658,21 @@ class FleetProvider:
             with build_lock(engine_dir, best_effort=True):
                 last = hold.release_and_check_last()
                 # A flip after binding never re-acquires, so reconcile our own mark
-                # here. Skipped on a config change, which stops and clears regardless.
-                # A withdrawn opt-in turns a detached engine into one its remaining
-                # users share, so a reaper must watch it as after a bind.
-                if not config_changed:
-                    if cfg.keep_engine_warm:
-                        request_keep_warm(engine_dir, cfg.data_root, cfg.engine_idle_ttl_minutes)
-                    else:
-                        withdraw_keep_warm(engine_dir, cfg.data_root)
-                        if not last:
-                            _watch_bound_engine(engine_dir)
+                # here. A withdrawn opt-in turns a detached engine into one its
+                # remaining users share, so a reaper must watch it as after a bind.
+                if cfg.keep_engine_warm:
+                    request_keep_warm(engine_dir, cfg.data_root, cfg.engine_idle_ttl_minutes)
+                else:
+                    withdraw_keep_warm(engine_dir, cfg.data_root)
+                    if not last:
+                        _watch_bound_engine(engine_dir)
                 # Any remaining opt-in keeps the engine, including a peer's.
-                keep = not config_changed and keep_warm_requested(engine_dir)
-                if last and not keep:
+                if last and not keep_warm_requested(engine_dir):
                     stop_engine(engine_dir)
                     log.info("Engine stopped at %s (last user out)", engine_dir)
                 elif last:
                     _watch_bound_engine(engine_dir)
                     log.info("Engine left warm at %s (last user out)", engine_dir)
-                elif config_changed:
-                    log.info("Engine left running at %s (still in use by peers)", engine_dir)
         self._engine_holds = {}
 
     def _release_holds(self) -> None:
@@ -1728,9 +1743,8 @@ class FleetProvider:
         """Reject a per-call model that differs from the server's configured one.
 
         The fleet serves the configured model for each role; switching models is
-        a config change that respawns the server (via ``invalidate_load_cache``),
-        not a per-call override. An empty/None ``model`` means "use the configured
-        one" and is always accepted.
+        a config change that respawns the server, not a per-call override. An
+        empty/None ``model`` means "use the configured one" and is always accepted.
         """
         if model and model != configured:
             raise ProviderError(
@@ -2208,11 +2222,14 @@ class FleetProvider:
         if missing is not None:
             self._warm_tracker.fail(f"chat model {clean_display_name(missing)} is not installed")
             return
-        unusable = self._skipped_unusable_ctx.get(WorkerRole.CHAT)
+        needs_engine = _chat_needs_local_engine()
+        unusable = (self._engine_refusal if needs_engine else None) or (
+            self._skipped_unusable_ctx.get(WorkerRole.CHAT)
+        )
         if unusable is not None:
             self._warm_tracker.fail(unusable)
             return
-        if _chat_needs_local_engine() and (reason := _unusable_engine_reason()) is not None:
+        if needs_engine and (reason := _unusable_engine_reason()) is not None:
             self._warm_tracker.fail(reason)
             return
         self._warm_tracker.clear()
@@ -2459,15 +2476,15 @@ class FleetProvider:
             planning.revoke_vision_on_request()
         self._dispatch_reload(f"fleet-reload-{role.value}", wait=wait)
 
-    def reload_placement(self, *, wait: bool = False) -> None:
-        """Apply a placement change with current cfg, restarting only moved roles.
+    def replan_fleet(self, *, wait: bool = False) -> None:
+        """Apply a placement or load-setting change with current cfg, restarting only moved roles.
 
         The fresh plan is diffed per role against the running fleet: a role whose
-        devices (and so its launch argv) did not change keeps serving through the
-        change -- moving the embedder never unloads a 100GB chat model. When no
-        fleet is up, the next use plans fresh, so this returns at once.
+        launch did not change keeps serving through the change -- moving the
+        embedder never unloads a 100GB chat model. When no fleet is up, the next
+        use plans fresh, so this returns at once.
         """
-        self._dispatch_reload("fleet-reload-placement", wait=wait)
+        self._dispatch_reload("fleet-replan", wait=wait)
 
     def _dispatch_reload(self, thread_name: str, *, wait: bool) -> None:
         """Run the diff-driven reload once, off-thread unless *wait*.
@@ -2497,15 +2514,23 @@ class FleetProvider:
                         self._reload_done.wait()
                 return
             self._reloading = True
+            self._reload_owed = frozenset(WorkerRole)
             self._reload_pending = False
         if wait:
             self._reload_blocking()
             return
-        threading.Thread(
-            target=self._reload_blocking,
-            name=thread_name,
-            daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=self._reload_blocking,
+                name=thread_name,
+                daemon=True,
+            ).start()
+        except RuntimeError:
+            with self._lock:
+                self._reloading = False
+                self._reload_owed = frozenset()
+                self._reload_done.notify_all()
+            raise
 
     def _reload_blocking(self) -> None:
         """Run reload passes until no further reload arrived mid-pass.
@@ -2524,8 +2549,11 @@ class FleetProvider:
                 with self._lock:
                     rerun = self._reload_pending
                     self._reload_pending = False
-                    if not rerun:
+                    if rerun:
+                        self._reload_owed = frozenset(WorkerRole)
+                    else:
                         self._reloading = False
+                        self._reload_owed = frozenset()
                         self._reload_done.notify_all()
                 if rerun:
                     log.warning(
@@ -2537,9 +2565,11 @@ class FleetProvider:
             with self._lock:
                 if not self._reload_pending:
                     self._reloading = False
+                    self._reload_owed = frozenset()
                     self._reload_done.notify_all()
                     return
                 self._reload_pending = False
+                self._reload_owed = frozenset(WorkerRole)
 
     def _rebind_or_overflow(self) -> list[WorkerRole]:
         """Re-acquire a bound engine after a config change; caller holds the build lock.
@@ -2645,6 +2675,12 @@ class FleetProvider:
                     or old.get(group, ()) != new.get(group, ())
                 }
                 changed |= {group_for(role, plan.co_tenants) for role in force}
+                with self._lock:
+                    self._reload_owed = frozenset(
+                        role for group in changed & set(new) for role in _by_role(list(new[group]))
+                    )
+                    self._reload_done.notify_all()
+                self._log_dropped_groups(changed, old, new)
                 # Stop phase: free the changed groups' VRAM before their replacements
                 # (or another group's grown plan) spawn against it.
                 for group in sorted(changed, key=lambda g: g.value):
@@ -2672,6 +2708,20 @@ class FleetProvider:
                     restarted.extend(_by_role(group_launches))
         self._preload_restarted(restarted)
 
+    @staticmethod
+    def _log_dropped_groups(
+        changed: set[SwapGroup],
+        old: dict[SwapGroup, tuple[InstanceLaunch, ...]],
+        new: dict[SwapGroup, tuple[InstanceLaunch, ...]],
+    ) -> None:
+        """Log what moved in each restarted group's launches, before and after."""
+        for group in sorted(changed, key=lambda g: g.value):
+            log.debug(
+                "Reload restarts group %s: %s",
+                group.value,
+                _launch_changes(old.get(group, ()), new.get(group, ())),
+            )
+
     def _preload_restarted(self, restarted: list[WorkerRole]) -> None:
         """Load the restarted roles' models off-thread (a no-op for none).
 
@@ -2697,27 +2747,6 @@ class FleetProvider:
         with self._lock:
             self._on_spawning = on_spawning
             self._on_spawned = on_spawned
-
-    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """A model or settings change restarts the engine: drop the swap."""
-        del model_path  # the whole engine restarts on next use; no per-model scope.
-        self._shutdown_swap(latch=False)
-
-    def drop_loaded_models_async(self) -> None:
-        """Drop the swap off the caller's thread; next use restarts with current cfg.
-
-        ``_shutdown_swap`` stops llama-swap and waits on its process group, so a
-        role-agnostic load-key change (num_ctx, kv_cache_type) routes here rather
-        than blocking the settings callback. A no-op when no swap is up.
-        """
-        with self._lock:
-            if not self._swaps:
-                return
-        threading.Thread(
-            target=lambda: self._shutdown_swap(latch=False),
-            name="fleet-drop",
-            daemon=True,
-        ).start()
 
     def shutdown(self) -> None:
         # The on-request vision grant is process-wide; the next provider starts from the setting.

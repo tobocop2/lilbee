@@ -79,8 +79,8 @@ def _apply_data_root(root: Path) -> None:
     cfg.data_root = root
     # An explicit LILBEE_DOCUMENTS_DIR wins over the root-derived default,
     # matching the env precedence a bare ``import lilbee`` applies.
-    documents_env = os.environ.get("LILBEE_DOCUMENTS_DIR", "").strip()
-    cfg.documents_dir = Path(documents_env) if documents_env else root / "documents"
+    documents_env = os.environ.get("LILBEE_DOCUMENTS_DIR", "")
+    cfg.documents_dir = Path(documents_env) if documents_env.strip() else root / "documents"
     cfg.data_dir = root / "data"
     cfg.lancedb_dir = root / "data" / "lancedb"
     os.environ["LILBEE_DATA"] = str(root)
@@ -96,7 +96,11 @@ def _resolve_data_root(data_dir: Path | None, use_global: bool) -> None:
         _apply_data_root(default_data_dir())
         return
     if data_dir is not None:
-        _apply_data_root(data_dir)
+        from lilbee.core.system import LOCAL_ROOT_DIRNAME
+
+        # A project folder holding .lilbee/ names that knowledge base, as it does from the cwd.
+        local = data_dir / LOCAL_ROOT_DIRNAME
+        _apply_data_root(local if local.is_dir() else data_dir)
         return
     data_env = os.environ.get("LILBEE_DATA", "")
     if data_env:
@@ -104,19 +108,24 @@ def _resolve_data_root(data_dir: Path | None, use_global: bool) -> None:
 
 
 class _OverrideState:
-    """Which one-off CLI overrides were given this invocation, wherever the
-    flag sat (typer binds --model both before and after the subcommand)."""
+    """The one-off CLI overrides given this invocation, wherever the flag sat
+    (typer binds --model both before and after the subcommand)."""
 
     def __init__(self) -> None:
-        self.chat_model = False
+        self.values: dict[str, Any] = {}
 
 
 _override_state = _OverrideState()
 
 
+def clear_overrides() -> None:
+    """Forget the one-off CLI overrides; each invocation starts with none."""
+    _override_state.values.clear()
+
+
 def chat_model_overridden() -> bool:
     """Whether --model was passed anywhere on this invocation's command line."""
-    return _override_state.chat_model
+    return "chat_model" in _override_state.values
 
 
 def apply_overrides(
@@ -139,8 +148,6 @@ def apply_overrides(
 
     _resolve_data_root(data_dir, use_global)
 
-    if model is not None:
-        _override_state.chat_model = True
     overrides: dict[str, Any] = {
         "chat_model": model,
         "temperature": temperature,
@@ -150,9 +157,10 @@ def apply_overrides(
         "num_ctx": num_ctx,
         "seed": seed,
     }
-    for attr, value in overrides.items():
-        if value is not None:
-            setattr(cfg, attr, value)
+    _override_state.values.update({k: v for k, v in overrides.items() if v is not None})
+    # Re-applied every call: a later call's data-root overlay resets the fields.
+    for attr, value in _override_state.values.items():
+        setattr(cfg, attr, value)
 
 
 def _refuse_environment(json_output: bool) -> None:
@@ -201,7 +209,7 @@ def _default(
     ),
 ) -> None:
     """Start interactive chat when no command is given."""
-    _override_state.chat_model = False
+    clear_overrides()
     if show_version:
         typer.echo(f"lilbee {get_version()}")
         raise SystemExit(0)

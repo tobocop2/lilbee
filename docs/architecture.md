@@ -1133,20 +1133,24 @@ holds the running fleet's records; every process acquires its engine
 through the same ladder, under a cross-process build lock:
 
 1. **Bind** when the slot's engine is healthy and its contract (per-role
-   models plus the bundled **engine pin**) covers the configuration. Binders
+   models, the bundled **engine pin**, and the settings each launch bakes in)
+   covers the configuration. A write restarts a group only when its launch
+   moves, so a kept group stays bindable. Binders
    spawn nothing and write nothing. lilbee version is not in the contract:
    releases sharing a pin share an engine; differing pins never run on a
    build they were not tested against. The pin carries the revision of the
    llama-swap config, so a release that writes a new config key never binds
    an engine started without it.
 2. **Build** into the empty slot otherwise. An incumbent is replaced in place
-   when no live user holds it, and also when it is this contract's own engine
-   left partially dead (a killed group) or partially covering (config grew a
-   role): its members need that rebuild too, and rediscover it, so leftovers
-   never poison the slot and weights are never duplicated.
-3. **Overflow** to the config root's private dir (`<root>/data/engine/`) only
-   when the slot holds a live *incompatible* engine in active use: two engines
-   exist exactly while two different model setups run at once.
+   only when no live user holds it, so leftovers never poison the slot and no
+   process stops an engine that another process is using.
+3. **Overflow** to the config root's private dir (`<root>/data/engine/`) when
+   the slot holds an engine with a live user that this process cannot bind: a
+   different model setup, an added role or a dead group. The live engine stays
+   as it is, and the joining process builds a private fleet beside it. If the
+   private dir also has a live user that the process cannot bind, the process
+   gets no fleet and no engine stops. Each request then names the cause and
+   tells the user to close the other processes or set `LILBEE_ENGINE_DIR`.
 
 Lifetime is kernel-refcounted membership: each process holds a user lock the
 OS releases on any death. The engine belongs to that set of users, not to the
@@ -1180,15 +1184,17 @@ because a shared engine outlives the holder. The command
 disagrees with binding: an engine answering on its proxy is spared, anything
 else is stopped through its state record.
 
-Two costs ride along. A model or placement change restarts the shared engine;
-peers rediscover the new ports with a one-shot retry, and an in-flight
+Two costs ride along. A model or placement change in the process that built
+the engine restarts only the moved groups; a process that only binds drops its
+binding on a setting write and re-acquires, and may overflow to a private
+engine. Peers rediscover the new ports with a one-shot retry, and an in-flight
 request surfaces a retry error. And the proxy still listens on an
 unauthenticated localhost port; the machine slot only makes discovery easier.
 
 ```mermaid
 flowchart TD
     S["lilbee process starts"] --> L["hold user lock<br/>(kernel releases on ANY death)"]
-    L --> Q{"machine slot engine healthy,<br/>models + engine pin match?"}
+    L --> Q{"machine slot engine healthy,<br/>models, engine pin + settings match?"}
     Q -- bind --> B["use its proxy ports<br/>spawn nothing"]
     Q -- "slot empty" --> BU["build engine in the slot"]
     Q -- "occupied, incompatible,<br/>in live use" --> PR["build private engine<br/>in this config root"]
@@ -1575,7 +1581,9 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 - Models: `GET /api/models`, `GET /api/models/catalog`, `GET /api/models/installed`, `PUT /api/models/{chat,embedding,vision,reranker}`, `POST /api/models/pull`, `DELETE /api/models/{model}`
 - Crawl: `POST /api/crawl` (SSE progress)
 - Wiki: `GET /api/wiki`, `GET /api/wiki/{slug}`, `GET /api/wiki/{slug}/citations`, `GET /api/wiki/citations?source=`, `GET /api/wiki/status`, `POST /api/wiki/build` (add `?dry_run=true` for the JSON entity preview), `PATCH /api/wiki/update`, `POST /api/wiki/synthesize`, `POST /api/wiki/generate/{slug}` (these four are SSE streams; generate's done event carries the slug the read route accepts), `POST /api/wiki/lint`, `POST /api/wiki/prune`, `DELETE /api/wiki` (wipe; the one wiki route that answers while the wiki is disabled), `POST /api/wiki/index`, `GET /api/wiki/stubs` (the indexed pages nothing has written yet), `GET /api/wiki/drafts`, `GET /api/wiki/drafts/diff/{slug}`, `POST /api/wiki/drafts/accept/{slug}`, `DELETE /api/wiki/drafts/{slug}`
-- Config: `GET /api/config`, `GET /api/config/defaults`, `GET /api/config/schema`, `PATCH /api/config`. The schema route answers with one entry per public setting carrying `type`, `nullable`, `choices`, `writable`, `reindex_required`, `group` and `help`, so a client renders a picker for a closed value set instead of a text box. The entries come from the same settings boundary MCP `settings_list` reads, so a new setting appears without a route change.
+- Config: `GET /api/config`, `GET /api/config/defaults`, `GET /api/config/schema`, `GET /api/config/sources`, `PATCH /api/config`, `POST /api/config/reset`. The reset route takes `{"keys": [...]}` and removes each key from `config.toml`, so the value falls back to its `LILBEE_*` variable, the profile, or the built-in value; it answers `200` with the `PATCH` response shape and refuses the same keys `PATCH` refuses, plus a key whose fallback value its field rejects. `GET /api/config/defaults` answers the built-in value of each public setting, or the value the active profile sets. It ignores `LILBEE_*` variables, which a reset still falls back to first. `GET /api/config/sources` answers `{"sources": {"<key>": "<source>"}}` over the same keys as `GET /api/config`, where the source is `env`, `user`, `profile`, `built_in` or `auto`. The source `auto` marks a value that no layer supplies: a derived path, a model that a root inherits, or a value that a `config.toml` with a parse error leaves in place. `GET /api/config` keeps its flat shape. The schema route answers with one entry per public setting carrying `type`, `nullable`, `choices`, `writable`, `reindex_required`, `group`, `advanced` and `help`, so a client renders a picker for a closed value set instead of a text box. The entries come from the same settings boundary MCP `settings_list` reads, so a new setting appears without a route change.
+- Profiles: `GET /api/profiles`, `GET /api/profiles/active`, `GET /api/profiles/{name}`, `GET /api/profiles/{name}/diff`, `GET /api/profiles/{name}/export` (a TOML download), `POST /api/profiles` (save as), `PUT /api/profiles/{name}` (update the active profile), `PATCH /api/profiles/{name}` (rename), `DELETE /api/profiles/{name}`, `POST /api/profiles/{name}/apply`, `POST /api/profiles/{name}/duplicate`, `POST /api/profiles/new`, `POST /api/profiles/discard`, `POST /api/profiles/import` and `POST /api/profiles/validate` (both take the file text and its file name). `GET /api/profiles/active` carries `changes`: each profile setting config.toml sets, with `key`, `yours`, `profile_value`, `profile_source` (where the value comes from without yours) and `effect`. `POST /api/profiles/discard` answers `dropped`, `reindex_required`, and `warnings` holding any notice the discard raises. A name in the URL only reaches the profile lookup, never a file path; a missing profile answers `404`, a name clash `409`, and any other refused operation `400`, with the same message the CLI and MCP print. A profile cannot take the name of a fixed route under `/api/profiles/` (`active`, `new`, `discard`, `import`, `validate`) or a Windows device name (`CON`, `NUL`, `COM1` and the like), in any spelling; a file on disk with such a name is listed as broken. Import and validate refuse a file over 256 KB, the same cap the file reader applies.
+- Analyze: `POST /api/analyze` takes `{"directory", "apply", "save", "target"}` (all optional) and streams `analyze` progress events (`done`, `total`, `file`), then `done` with the report `lilbee --json analyze` prints, or `error`. A `directory` is an absolute folder on the server, inside or outside the project; a relative one, a missing folder, or a `target` without `apply` or `save` answers `400` before any file is read. A client that disconnects before the save starts cancels the run, and nothing is saved or recorded. `GET /api/analyze/state` and `POST /api/analyze/dismiss` answer `{"analyzed", "tip_dismissed", "tip_shows"}`; dismiss hides the tip first.
 - Agent configs: `GET /api/agent-config` (supported clients plus whether each CLI is installed here), `GET /api/agent-config/{client}` (that client's config block, carrying this server's URL and current token)
 - Status/health: `GET /api/status`, `GET /api/health`
 - Interactive docs at `/schema/redoc`; OpenAPI JSON at `/schema/openapi.json`. Every release also attaches the same schema as an `openapi.json` asset, so a client can pin the contract for a version without running the server. Streaming routes declare `text/event-stream` on the decorator, which is where litestar reads the documented content type from.

@@ -762,6 +762,41 @@ def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
     return KvCacheType.F16
 
 
+def launch_settings(
+    role: WorkerRole,
+    rerank_mode: RerankMode | None,
+    meta: dict[str, str] | None,
+    model_path: Path,
+) -> str:
+    """The settings a launch of *role* bakes in, as the text two processes compare.
+
+    Only what this role's launch asks for, resolved from config and the model's
+    metadata, never from a device probe. The text records the request: chat carries
+    ``kv_cache_type`` whenever flash attention is not switched off, because whether
+    the argv applies it depends on the probed backend. A cache type change under
+    flash ``auto`` can restart a worker whose argv stays the same.
+    Chat and vision ctx sizing is not here
+    (see contract.chat_ctx_covers). The model is not here: the bind matches
+    (role, model) pairs.
+    """
+    from lilbee.core.config import cfg
+
+    spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
+    flash = _flash_enabled() if _role_launches_with_flash(role, rerank_mode) else None
+    values: dict[str, object] = {
+        "gpu_devices": cfg.gpu_devices,
+        "placement": spec.roles.get(role) if spec else None,
+        "n_gpu_layers": _role_gpu_layers(role),
+        "cpu_moe": expert_offload_all(meta),
+        "n_cpu_moe": expert_offload_layers(meta),
+        "flash_attention": flash,
+        "kv_cache_type": cfg.kv_cache_type if role is WorkerRole.CHAT and flash else None,
+        "rerank_mode": rerank_mode,
+        "embed_window": _role_ctx(role, model_path, meta) if role in _EMBED_ROLES else None,
+    }
+    return ";".join(f"{key}={value}" for key, value in values.items())
+
+
 def _replica_count(role: WorkerRole, device_count: int) -> int:
     """Requested data-parallel instances for *role* via the shared resolver."""
     return resolve_replica_count(role, device_count)
@@ -1782,6 +1817,7 @@ def _launch_for(
         est_vram_by_device=_charge_by_device(chosen, plan.tensor_split, est_vram_bytes),
         est_unreported_bytes=_unreported_bytes(plan.role, mmproj),
         est_host_bytes=_chat_host_estimate(model_path, ctx, slots) if fit_moves_chat else 0,
+        settings=launch_settings(plan.role, rerank_mode, meta, model_path),
     )
 
 

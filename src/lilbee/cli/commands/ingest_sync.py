@@ -8,7 +8,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import typer
 from rich.text import Text
@@ -16,6 +16,7 @@ from rich.text import Text
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
+    from lilbee.data.ingest import SyncResult
     from lilbee.data.store.types import RemoveResult
     from lilbee.runtime.progress import DetailedProgressCallback
 
@@ -38,7 +39,8 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
+from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN, MAX_FAILURES_SHOWN
+from lilbee.cli.commands.analyze import print_tip_if_shown
 from lilbee.cli.commands.crawl_login import crawl_login
 from lilbee.cli.helpers import (
     add_paths,
@@ -537,6 +539,41 @@ def sync_cmd(
     console.print(result)
 
 
+def rebuild_failure_message(failed: list[str]) -> str:
+    """The failed-file report of a rebuild: how many, which, and what to do next."""
+    shown = ", ".join(failed[:MAX_FAILURES_SHOWN])
+    if len(failed) > MAX_FAILURES_SHOWN:
+        shown += f" and {len(failed) - MAX_FAILURES_SHOWN} more"
+    noun = "document" if len(failed) == 1 else "documents"
+    return (
+        f"{len(failed)} {noun} failed to ingest: {shown}. "
+        "They keep their earlier chunks. Fix the cause, then run `lilbee rebuild` again."
+    )
+
+
+def rebuild_or_raise() -> SyncResult:
+    """Re-ingest every document in place; raises RuntimeError on a refused rebuild."""
+    from lilbee.data.ingest import SyncResult
+
+    result = run_sync_with_signal_cancel(force_rebuild=True)
+    # untyped return: run_sync_with_signal_cancel returns object to avoid a heavy top-level import
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
+    return result
+
+
+def run_rebuild() -> SyncResult:
+    """Re-ingest every document in place; a refused rebuild exits 1 with its reason."""
+    try:
+        return rebuild_or_raise()
+    except RuntimeError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+            raise SystemExit(1) from None
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+        raise SystemExit(1) from None
+
+
 def rebuild(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -545,34 +582,31 @@ def rebuild(
     max_cpus: int | None = _max_cpus_option,
     processes: int | None = _processes_option,
 ) -> None:
-    """Nuke the DB and re-ingest everything from documents/."""
+    """Re-ingest everything from documents/ over the index; a failed file exits 1."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
     if max_cpus is not None:
         cfg.ingest_workers = max_cpus
     if processes is not None:
         cfg.ingest_processes = processes
-    from lilbee.data.ingest import SyncResult
-
-    try:
-        result = run_sync_with_signal_cancel(force_rebuild=True)
-    except RuntimeError as exc:
-        if cfg.json_mode:
-            json_output({"error": str(exc)})
-            raise SystemExit(1) from None
-        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
-        raise SystemExit(1) from None
-    if not isinstance(result, SyncResult):
-        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
+    result = run_rebuild()
     if cfg.json_mode:
-        json_output(
-            {
-                "command": "rebuild",
-                "ingested": len(result.added),
-            }
-        )
-        return
-    console.print(f"Rebuilt: {len(result.added)} documents ingested")
+        payload: dict[str, Any] = {
+            "command": "rebuild",
+            "ingested": len(result.added),
+            "failed": len(result.failed),
+        }
+        if result.failed:
+            payload["error"] = rebuild_failure_message(result.failed)
+        json_output(payload)
+    else:
+        console.print(f"Rebuilt: {len(result.added)} documents ingested")
+        if result.failed:
+            print_prefixed(
+                console, "Error: ", rebuild_failure_message(result.failed), style=theme.ERROR
+            )
+    if result.failed:
+        raise SystemExit(1)
 
 
 def index(
@@ -779,6 +813,7 @@ def add(
 
     file_paths, urls = _partition_inputs(paths)
     _validate_file_paths(file_paths)
+    print_tip_if_shown(cfg.data_root)
 
     cancel_event = threading.Event()
     rollback = AddRollback(paths=file_paths, at_sync=False)

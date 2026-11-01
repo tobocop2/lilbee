@@ -1,0 +1,9 @@
+[profile]
+name = "Notes and markdown"
+description = "Short notes in Markdown, such as an Obsidian vault."
+format = 1
+
+[values]
+ocr = "off"
+chunk_size = 384
+chunk_overlap = 64

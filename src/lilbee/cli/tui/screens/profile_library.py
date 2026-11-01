@@ -1,0 +1,492 @@
+"""The profile library: every profile with its folder, and the file operations on each."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar, TypeVar
+
+from rich.cells import cell_len
+from textual import events, on, work
+from textual.app import ComposeResult, CSSPathType
+from textual.binding import Binding, BindingType
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
+from textual.screen import ModalScreen
+from textual.style import Style
+from textual.widgets import DataTable, OptionList, Static
+from textual.widgets.option_list import Option
+
+from lilbee.app import profiles
+from lilbee.app.profiles import ProfileDiff
+from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.screens.profile_dialogs import (
+    PathRequest,
+    ProfilePathDialog,
+    SaveProfileDialog,
+    SaveRequest,
+    add_cost_column,
+    credit_text,
+    diff_cells,
+    free_copy_name,
+    has_project_folder,
+    run_profile_op,
+    save_folders,
+    shorten_middle,
+    start_profile_switch,
+)
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+from lilbee.core.profile_files import ProfileCatalog, ProfileEntry, ProfileFolder, ProfileStore
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
+
+R = TypeVar("R")
+
+WIDE_COLUMNS = 100
+NARROW_CLASS = "-narrow"
+_ROW_GAP = "  "
+_ROW_PADDING = 2  # an option's left and right padding inside the list
+_MIN_NAME = 8
+# The 60-cell confirm dialog, less its border, its padding and the full stop after the path.
+_DELETE_PATH_WIDTH = 53
+_APPLY_KEY = "enter"
+_CLOSE_KEY = "esc"
+
+
+class LibraryAction(StrEnum):
+    """A file operation the library runs on a key."""
+
+    DUPLICATE = "duplicate"
+    RENAME = "rename"
+    DELETE = "delete"
+    EXPORT = "export"
+    IMPORT = "import"
+
+
+@dataclass(frozen=True)
+class _LibraryKey:
+    key: str
+    action: LibraryAction
+    label: str
+    short_label: str
+
+
+_KEYS = (
+    _LibraryKey(
+        "d", LibraryAction.DUPLICATE, msg.PROFILE_KEY_DUPLICATE, msg.PROFILE_KEY_DUPLICATE_SHORT
+    ),
+    _LibraryKey("r", LibraryAction.RENAME, msg.PROFILE_KEY_RENAME, msg.PROFILE_KEY_RENAME_SHORT),
+    _LibraryKey("x", LibraryAction.DELETE, msg.PROFILE_KEY_DELETE, msg.PROFILE_KEY_DELETE_SHORT),
+    _LibraryKey("e", LibraryAction.EXPORT, msg.PROFILE_KEY_EXPORT, msg.PROFILE_KEY_EXPORT_SHORT),
+    _LibraryKey("i", LibraryAction.IMPORT, msg.PROFILE_KEY_IMPORT, msg.PROFILE_KEY_IMPORT_SHORT),
+)
+
+
+@dataclass(frozen=True)
+class LibraryState:
+    """Every profile file found, and whether there is a project folder to write to."""
+
+    catalog: ProfileCatalog
+    has_project: bool
+    active_path: Path | None = None
+
+
+def load_library() -> LibraryState:
+    """Scan the profile folders; runs off the event loop."""
+    store = ProfileStore()
+    applied = profiles.active(store).entry
+    return LibraryState(
+        profiles.list_profiles(store),
+        has_project_folder(),
+        applied.path if applied is not None else None,
+    )
+
+
+def _tag_text(entry: ProfileEntry, *, active: bool = False, with_problem: bool = True) -> str:
+    tags = [msg.PROFILE_FOLDER_TAG[entry.folder]]
+    if active:
+        tags.append(msg.PROFILE_LIBRARY_ACTIVE)
+    if entry.shadowed_by is not None:
+        tags.append(msg.PROFILE_LIBRARY_SHADOWED)
+    if with_problem and entry.error is not None:
+        tags.append(msg.PROFILE_LIBRARY_BROKEN.format(reason=entry.error))
+    return ", ".join(tags)
+
+
+def entry_label(
+    entry: ProfileEntry, name_width: int = 0, row_width: int = 0, *, active: bool = False
+) -> Content:
+    """A list row: the name padded to *name_width*, then its folder and any problem.
+
+    With a *row_width*, the row is cut with an ellipsis to fit, so it never wraps.
+    A name that is too long loses its middle, so its tail still shows.
+    """
+    name = shorten_middle(entry.name, name_width) if row_width > 0 else entry.name
+    padding = " " * (name_width - cell_len(name))
+    tags = Content.styled(_tag_text(entry, active=active), "$text-muted")
+    row = Content.assemble(name, padding, _ROW_GAP, tags)
+    return row.truncate(row_width, ellipsis=True) if row_width > 0 else row
+
+
+def _hints(*, narrow: bool = False) -> Content:
+    pairs = [
+        (_APPLY_KEY, msg.PROFILE_KEY_APPLY, "screen.apply"),
+        *(
+            (k.key, k.short_label if narrow else k.label, f"screen.run('{k.action}')")
+            for k in _KEYS
+        ),
+        (_CLOSE_KEY, msg.PROFILE_KEY_CLOSE, "screen.close"),
+    ]
+    return Content("   ").join(
+        Content.assemble(Content.styled(key, "$accent bold"), " ", label).stylize(
+            Style.from_meta({"@click": action})
+        )
+        for key, label, action in pairs
+    )
+
+
+def _without(catalog: ProfileCatalog, path: Path) -> ProfileCatalog:
+    return replace(catalog, entries=tuple(e for e in catalog.entries if e.path != path))
+
+
+class ProfileLibrary(ModalScreen[None]):
+    """Lists every profile and applies, duplicates, renames, deletes, exports or imports one."""
+
+    CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_library.tcss"]
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "close", msg.PROFILE_KEY_CLOSE, show=False),
+        Binding("enter", "apply", msg.PROFILE_KEY_APPLY, show=False, priority=True),
+        *(Binding(k.key, f"run('{k.action.value}')", k.label, show=False) for k in _KEYS),
+    ]
+
+    app: LilbeeApp  # type: ignore[assignment]
+
+    def __init__(self, *, on_change: Callable[[], None]) -> None:
+        super().__init__()
+        self._on_change = on_change
+        self._state: LibraryState | None = None
+        self._select_path: Path | None = None
+        self._entries: list[ProfileEntry] = []
+        self._credit: str | None = None
+        self._handlers: dict[LibraryAction, Callable[[LibraryState], None]] = {
+            LibraryAction.DUPLICATE: self._duplicate,
+            LibraryAction.RENAME: self._rename,
+            LibraryAction.DELETE: self._delete,
+            LibraryAction.EXPORT: self._export,
+            LibraryAction.IMPORT: self._import,
+        }
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="library-body", classes="dialog-body"):
+            yield Static(msg.PROFILE_LIBRARY_TITLE, id="library-title", classes="dialog-title")
+            with Horizontal(id="library-main"):
+                yield OptionList(id="library-list")
+                with VerticalScroll(id="library-detail"):
+                    yield Static("", id="library-name", markup=False)
+                    for widget_id in ("library-folder", "library-description", "library-credit"):
+                        yield Static("", id=widget_id, classes="library-muted", markup=False)
+                    yield Static("", id="library-problem", markup=False)
+                    yield Static("", id="library-changes-title", classes="profile-section-title")
+                    table: DataTable[str | Content] = DataTable(
+                        id="library-changes", cursor_type="none"
+                    )
+                    table.add_columns(
+                        msg.PROFILE_COL_SETTING, msg.PROFILE_COL_NOW, msg.PROFILE_COL_AFTER
+                    )
+                    add_cost_column(table)
+                    yield table
+            yield Static("", id="library-narrow-credit", classes="library-muted", markup=False)
+            yield Static(_hints(), id="library-hints")
+
+    def on_mount(self) -> None:
+        self._fit(self.app.size.width)
+        self.query_one("#library-list", OptionList).focus()
+        self.reload()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._fit(event.size.width)
+        self.call_after_refresh(self._paint_rows)
+
+    def _fit(self, width: int) -> None:
+        """Below WIDE_COLUMNS the library shows the list only, plus the selection's credit."""
+        narrow = width < WIDE_COLUMNS
+        self.set_class(narrow, NARROW_CLASS)
+        self.query_one("#library-hints", Static).update(_hints(narrow=narrow))
+        self._update_narrow_credit()
+
+    @work(exclusive=True, group="profile-library-load", exit_on_error=False)
+    async def reload(self) -> None:
+        """Rescan the profile folders off the loop, then show the list.
+
+        Only the scan runs on a thread, so a newer rescan cancels this task at the await.
+        """
+        self.show(await asyncio.to_thread(load_library))
+
+    def show(self, state: LibraryState) -> None:
+        """Fill the list from *state*, keeping the highlighted file when it is still there."""
+        selected = self._selected()
+        wanted = self._select_path or (selected.path if selected is not None else state.active_path)
+        self._select_path = None
+        self._state = state
+        self._entries = list(state.catalog.entries)
+        listing = self.query_one("#library-list", OptionList)
+        listing.set_options(Option("") for _ in self._entries)
+        self._paint_rows()
+        paths = [entry.path for entry in self._entries]
+        if wanted in paths:
+            listing.highlighted = paths.index(wanted)
+        elif self._entries:
+            listing.highlighted = 0
+
+    def _paint_rows(self) -> None:
+        """Label each row to fit the list: the name is cut, and the folder tags stay aligned."""
+        listing = self.query_one("#library-list", OptionList)
+        row_width = max(listing.scrollable_content_region.width - _ROW_PADDING, 0)
+        name_width = max((cell_len(entry.name) for entry in self._entries), default=0)
+        if row_width:
+            # A long problem text is cut at the row end; it must not squeeze every name.
+            tag_width = max(
+                (
+                    cell_len(_tag_text(entry, active=self._is_active(entry), with_problem=False))
+                    for entry in self._entries
+                ),
+                default=0,
+            )
+            name_width = max(min(name_width, row_width - len(_ROW_GAP) - tag_width), _MIN_NAME)
+        for index, entry in enumerate(self._entries):
+            label = entry_label(entry, name_width, row_width, active=self._is_active(entry))
+            listing.replace_option_prompt_at_index(index, label)
+
+    def _is_active(self, entry: ProfileEntry) -> bool:
+        return self._state is not None and entry.path == self._state.active_path
+
+    def _selected(self) -> ProfileEntry | None:
+        index = self.query_one("#library-list", OptionList).highlighted
+        return None if index is None or index >= len(self._entries) else self._entries[index]
+
+    @on(OptionList.OptionHighlighted, "#library-list")
+    def _on_highlight(self) -> None:
+        entry = self._selected()
+        if entry is not None:
+            self._show_detail(entry)
+
+    def _show_detail(self, entry: ProfileEntry) -> None:
+        profile = entry.file
+        shadowed = entry.shadowed_by
+        problem = entry.error
+        if problem is None and shadowed is not None:
+            problem = msg.PROFILE_LIBRARY_SHADOWED_NOTE.format(folder=shadowed.value)
+        self._credit = credit_text(profile) if profile is not None else None
+        for widget_id, text in (
+            ("library-name", entry.name),
+            ("library-folder", msg.PROFILE_FOLDER_TEXT[entry.folder]),
+            ("library-description", profile.description if profile is not None else None),
+            ("library-credit", self._credit),
+            ("library-problem", problem),
+        ):
+            line = self.query_one(f"#{widget_id}", Static)
+            line.update(text or "")
+            line.display = bool(text)
+        self._update_narrow_credit()
+        self._show_diff(entry.path, None)
+        if profile is not None and self._reaches(entry):
+            self._load_diff(entry)
+
+    def _update_narrow_credit(self) -> None:
+        """Mirror the selection's credit outside the detail pane, for the list-only layout."""
+        widget = self.query_one("#library-narrow-credit", Static)
+        widget.update(self._credit or "")
+        widget.display = bool(self._credit) and self.has_class(NARROW_CLASS)
+
+    @work(exclusive=True, group="profile-library-diff", exit_on_error=False)
+    async def _load_diff(self, entry: ProfileEntry) -> None:
+        try:
+            diff = await asyncio.to_thread(profiles.diff, ProfileStore(), entry.name)
+        except (ValueError, OSError):
+            return
+        self._show_diff(entry.path, diff)
+
+    def _show_diff(self, path: Path, diff: ProfileDiff | None) -> None:
+        """Show *diff* for the file at *path*; None, or a file no longer highlighted, hides it."""
+        selected = self._selected()
+        current = diff if selected is not None and selected.path == path else None
+        title = self.query_one("#library-changes-title", Static)
+        table = self.query_one("#library-changes", DataTable)
+        title.display = current is not None
+        table.display = current is not None and bool(current.changes)
+        if current is None:
+            return
+        changes = current.changes
+        title.update(msg.PROFILE_LIBRARY_CHANGES if changes else msg.PROFILE_LIBRARY_NO_CHANGES)
+        table.clear()
+        table.add_rows(diff_cells(row) for row in changes)
+
+    def _reaches(self, entry: ProfileEntry) -> bool:
+        """Whether the name of *entry* picks its own file; operations act by name."""
+        found = self._state.catalog.find(entry.name) if self._state is not None else None
+        return found is not None and found.path == entry.path
+
+    def _target(self) -> ProfileEntry | None:
+        """The highlighted entry, or None with a toast when its name picks another file."""
+        entry = self._selected()
+        if entry is None or self._reaches(entry):
+            return entry
+        self.notify(
+            msg.PROFILE_LIBRARY_UNREACHABLE.format(
+                name=entry.name, folder=msg.PROFILE_FOLDER_TAG[entry.folder]
+            ),
+            severity="error",
+        )
+        return None
+
+    def _changed(self, select: Path | None = None) -> None:
+        """Rescan; the list then highlights the file at *select*, else the one it had."""
+        self._select_path = select
+        self.reload()
+        self._on_change()
+
+    def action_run(self, action: str) -> None:
+        """Run the file operation a key stands for."""
+        if self._state is not None:
+            self._handlers[LibraryAction(action)](self._state)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    @on(OptionList.OptionSelected, "#library-list")
+    def _on_row_selected(self, event: OptionList.OptionSelected) -> None:
+        """A click only highlights a row; Enter applies it."""
+        event.stop()
+
+    def action_apply(self) -> None:
+        """Ask to apply the highlighted profile."""
+        entry = self._target()
+        if entry is not None:
+            start_profile_switch(self.app, self, entry.name, self._changed)
+
+    def _duplicate(self, state: LibraryState) -> None:
+        entry = self._target()
+        if entry is None:
+            return
+        folders = save_folders(state.has_project)
+        dialog = SaveProfileDialog(
+            title=msg.PROFILE_DUPLICATE_TITLE.format(name=entry.name),
+            explain=msg.PROFILE_DUPLICATE_EXPLAIN.format(name=entry.name),
+            catalog=state.catalog,
+            folders=folders,
+            initial=free_copy_name(entry.name, folders[0], state.catalog),
+        )
+
+        def _write(request: SaveRequest) -> profiles.ProfileLocation:
+            return profiles.duplicate(ProfileStore(), entry.name, request.name, request.folder)
+
+        def _done(location: profiles.ProfileLocation) -> None:
+            self.notify(msg.PROFILE_SAVED.format(name=location.name, path=location.path))
+            self._changed()
+
+        self._ask(dialog, _write, _done)
+
+    def _rename(self, state: LibraryState) -> None:
+        entry = self._target()
+        if entry is None:
+            return
+
+        def _ask_name(owned: ProfileEntry) -> None:
+            dialog = SaveProfileDialog(
+                title=msg.PROFILE_RENAME_TITLE.format(name=owned.name),
+                explain=msg.PROFILE_RENAME_EXPLAIN,
+                catalog=_without(state.catalog, owned.path),
+                folders=(owned.folder,),
+                initial=owned.name,
+            )
+            self._ask(dialog, _write, _done)
+
+        def _write(request: SaveRequest) -> profiles.ProfileLocation:
+            return profiles.rename(ProfileStore(), entry.name, request.name)
+
+        def _done(location: profiles.ProfileLocation) -> None:
+            self.notify(msg.PROFILE_RENAMED.format(old=entry.name, name=location.name))
+            self._changed(select=location.path)
+
+        run_profile_op(self, lambda: profiles.owned(ProfileStore(), entry.name), _ask_name)
+
+    def _delete(self, state: LibraryState) -> None:
+        entry = self._target()
+        if entry is None:
+            return
+
+        def _confirm(owned: ProfileEntry) -> None:
+            dialog = ConfirmDialog(
+                msg.PROFILE_DELETE_TITLE.format(name=owned.name),
+                msg.PROFILE_DELETE_MESSAGE.format(
+                    path=shorten_middle(str(owned.path), _DELETE_PATH_WIDTH)
+                ),
+                focus_no=True,
+            )
+            self.app.push_screen(dialog, _on_answer)
+
+        def _on_answer(confirmed: bool | None) -> None:
+            if confirmed:
+                run_profile_op(self, lambda: profiles.delete(ProfileStore(), entry.name), _done)
+
+        def _done(location: profiles.ProfileLocation) -> None:
+            self.notify(msg.PROFILE_DELETED.format(path=location.path))
+            self._changed()
+
+        run_profile_op(self, lambda: profiles.owned(ProfileStore(), entry.name), _confirm)
+
+    def _export(self, state: LibraryState) -> None:
+        entry = self._target()
+        if entry is None:
+            return
+        dialog = ProfilePathDialog(
+            title=msg.PROFILE_EXPORT_TITLE.format(name=entry.name),
+            explain=msg.PROFILE_EXPORT_EXPLAIN,
+            action_label=msg.PROFILE_EXPORT_LABEL,
+            write=lambda request: profiles.export(ProfileStore(), entry.name, request.path),
+        )
+
+        def _done(location: profiles.ProfileLocation | None) -> None:
+            if location is not None:
+                self.notify(msg.PROFILE_EXPORTED.format(name=location.name, path=location.path))
+                self._changed()
+
+        self.app.push_screen(dialog, _done)
+
+    def _import(self, state: LibraryState) -> None:
+        def _write(request: PathRequest) -> profiles.ProfileLocation:
+            folder = request.folder or ProfileFolder.GLOBAL
+            return profiles.import_profile(ProfileStore(), request.path, folder)
+
+        dialog = ProfilePathDialog(
+            title=msg.PROFILE_IMPORT_TITLE,
+            explain=msg.PROFILE_IMPORT_EXPLAIN,
+            action_label=msg.PROFILE_IMPORT_LABEL,
+            write=_write,
+            folders=save_folders(state.has_project),
+        )
+
+        def _done(location: profiles.ProfileLocation | None) -> None:
+            if location is not None:
+                self.notify(msg.PROFILE_IMPORTED.format(name=location.name, path=location.path))
+                self._changed()
+
+        self.app.push_screen(dialog, _done)
+
+    def _ask(
+        self,
+        dialog: ModalScreen[R | None],
+        write: Callable[[R], profiles.ProfileLocation],
+        done: Callable[[profiles.ProfileLocation], None],
+    ) -> None:
+        """Push *dialog*; on an answer, run *write* with it in a worker, then *done*."""
+
+        def _on_answer(request: R | None) -> None:
+            if request is not None:
+                run_profile_op(self, lambda: write(request), done)
+
+        self.app.push_screen(dialog, _on_answer)

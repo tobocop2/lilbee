@@ -1,0 +1,25 @@
+.dialog-body {
+    border: $rail-heavy $primary;
+    background: $surface;
+    padding: 1 2;
+    height: auto;
+}
+
+.dialog-title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.dialog-note {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+.dialog-error {
+    color: $error;
+}
+
+.profile-section-title {
+    text-style: bold;
+    margin-top: 1;
+}

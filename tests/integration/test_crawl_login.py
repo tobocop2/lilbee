@@ -17,6 +17,7 @@ from litestar.testing import TestClient
 crawlberg = pytest.importorskip("crawlberg")
 
 import lilbee.server.auth as auth_mod  # noqa: E402
+from lilbee.core import settings as persistent_settings  # noqa: E402
 from lilbee.core.config import cfg  # noqa: E402
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
 from lilbee.crawler import url_filter  # noqa: E402
@@ -214,23 +215,31 @@ class TestSecondHostEachEntryPoint:
         assert not _carries_login(site.seen("/landing"))
         assert not _carries_login(site.seen("/cookie/"))
 
-    def test_the_command_line_sends_no_stored_login_to_another_host(
-        self, site, isolated_env, monkeypatch
-    ):
-        # The settings hold the login; `cfg` is read once at start, so a test sets it directly.
-        monkeypatch.setattr(cfg, "crawl_cookie", COOKIE)
-        monkeypatch.setattr(cfg, "crawl_authorization", TOKEN)
+    def test_the_command_line_sends_no_stored_login_to_another_host(self, site, isolated_env):
+        # The command re-resolves the settings from config.toml at start, so the login lives there.
+        persistent_settings.save(
+            isolated_env / "data",
+            {
+                "crawl_cookie": COOKIE,
+                "crawl_authorization": TOKEN,
+                "worker_pool_eager_start": False,
+            },
+        )
         result = _add(site, isolated_env, site.url("/landing", "localhost"))
         # Positive control: the crawl of the other host ran.
         assert result.exit_code == 0, result.output
         assert site.seen("/landing")
         assert not _carries_login(site.seen("/landing"))
 
-    def test_the_command_line_sends_the_stored_login_to_the_host_it_names(
-        self, site, isolated_env, monkeypatch
-    ):
-        monkeypatch.setattr(cfg, "crawl_cookie", COOKIE)
-        monkeypatch.setattr(cfg, "crawl_login_host", "127.0.0.1")
+    def test_the_command_line_sends_the_stored_login_to_the_host_it_names(self, site, isolated_env):
+        persistent_settings.save(
+            isolated_env / "data",
+            {
+                "crawl_cookie": COOKIE,
+                "crawl_login_host": "127.0.0.1",
+                "worker_pool_eager_start": False,
+            },
+        )
         result = _add(site, isolated_env, site.url("/cookie/"))
         assert result.exit_code == 0, result.output
         assert site.seen("/cookie/")[0][2] == COOKIE

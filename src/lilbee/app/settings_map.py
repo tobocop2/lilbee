@@ -5,10 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
-from pydantic_core import PydanticUndefined
-
 from lilbee.app.themes import DARK_THEMES
-from lilbee.core.config import cfg
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.core.config.schema import field_value_set
 
@@ -36,7 +33,6 @@ class SettingGroup(StrEnum):
     API_KEYS = "API-Keys"
     SYSTEM = "System"
     DISPLAY = "Display"
-    GENERAL = "General"
 
 
 @dataclass(frozen=True)
@@ -59,32 +55,28 @@ class SettingDef:
     leaving it reachable via ``lilbee set`` and the ``LILBEE_*`` env
     var: use it for transport/server knobs that aren't relevant to a
     typical TUI session.
+
+    ``advanced`` keeps the setting shown, but folded into a collapsed
+    section at the bottom of its tab: use it for a setting a normal
+    user never needs to get good results (engine internals, timeouts,
+    batch sizes, thresholds for internal heuristics, debug knobs).
     """
 
     type: type
     nullable: bool
+    group: SettingGroup
     writable: bool = True
     render: RenderStyle = field(default=RenderStyle.COMPACT)
-    group: SettingGroup = SettingGroup.GENERAL
     help_text: str = ""
     choices: tuple[str, ...] | None = None
     hidden: bool = False
+    advanced: bool = False
     # List editors validate each line as a regex only when this is set; flag-style
     # lists (e.g. crawl_browser_extra_args) would be wrongly rejected otherwise.
     validate_regex: bool = False
     # Credentials: the TUI masks the editor so the value is never on screen in
     # plain text, including while it is being pasted.
     secret: bool = False
-
-
-def get_default(key: str) -> object:
-    """Return the cfg default for a setting key."""
-    field_info = type(cfg).model_fields[key]
-    if field_info.default_factory is not None:
-        return field_info.default_factory()  # type: ignore[call-arg]
-    if field_info.default is PydanticUndefined:
-        return None
-    return field_info.default
 
 
 SETTINGS_MAP: dict[str, SettingDef] = {
@@ -121,6 +113,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.OCR_TUNING,
         help_text="Per-page timeout in seconds for vision OCR (0 = no limit)",
+        advanced=True,
     ),
     "vision_load_budget_s": SettingDef(
         float,
@@ -130,6 +123,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Wall-clock seconds reserved for the vision worker to load the"
             " model. Total PDF-OCR budget = load_budget + ocr_timeout * pages."
         ),
+        advanced=True,
     ),
     "vision_ocr_max_tokens": SettingDef(
         int,
@@ -139,12 +133,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Hard cap on tokens generated per OCR page (bounds runaway repetition"
             " loops); raising it lengthens page generation, so give ocr_timeout headroom"
         ),
+        advanced=True,
     ),
     "vision_ocr_concurrency": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.OCR_TUNING,
         help_text="Pages OCR'd concurrently per vision server; each slot adds KV cache memory",
+        advanced=True,
     ),
     "extraction_timeout": SettingDef(
         int,
@@ -154,12 +150,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Wall-clock seconds one file gets to extract before ingest gives up"
             " on it (0 = no limit)"
         ),
+        advanced=True,
     ),
     "ingest_workers": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.INGEST,
         help_text="Workers for discovering and hashing files (0 = auto, all available cores)",
+        advanced=True,
     ),
     "ingest_processes": SettingDef(
         int,
@@ -170,6 +168,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             " once the corpus is big enough to pay for them; 1 keeps ingest in this"
             " process"
         ),
+        advanced=True,
     ),
     "mcp_tool_threads": SettingDef(
         int,
@@ -179,6 +178,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Threads for synchronous MCP tool handlers; the ceiling on how many agents"
             " one daemon serves before retrieval calls queue"
         ),
+        advanced=True,
     ),
     "auto_sync": SettingDef(
         bool,
@@ -196,13 +196,20 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.INGEST,
-        help_text="Opt-in topic-aware chunker (default off; may fragment numbered procedures)",
+        help_text=(
+            "Opt-in topic-aware chunker (default off; may fragment numbered procedures) "
+            "(changes invalidate the index)"
+        ),
     ),
     "topic_threshold": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.INGEST,
-        help_text="Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking is on",
+        help_text=(
+            "Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking "
+            "is on (changes invalidate the index)"
+        ),
+        advanced=True,
     ),
     "token_sizing": SettingDef(
         bool,
@@ -237,6 +244,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "(docling-parity default), other slanet variants, tatr, or disabled "
             "(changes invalidate the index)"
         ),
+        advanced=True,
     ),
     "batch_extraction": SettingDef(
         bool,
@@ -249,6 +257,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.INGEST,
         help_text="Max files per extract_batch call when batch extraction is on",
+        advanced=True,
+    ),
+    "analyze_max_files": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Most documents lilbee analyze reads; more are sampled evenly down to this many."
+            " Code, image and archive files are counted, not read. Raise it to cover more"
+            " documents for a slower run. The default is not yet measured on large corpora"
+        ),
     ),
     "extraction_threads": SettingDef(
         int,
@@ -259,6 +278,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             " most Tesseract OCR sessions that run at once (0 = auto, half the"
             " available cores). Takes full effect after a restart."
         ),
+        advanced=True,
     ),
     "embedding_model": SettingDef(
         str,
@@ -282,6 +302,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Reranker serving mode: auto (detect cross-encoder vs LLM by model), "
             "cross_encoder, or llm"
         ),
+        advanced=True,
     ),
     "reranker_prompt": SettingDef(
         str,
@@ -340,6 +361,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "use the model's training_ctx from GGUF metadata as the only "
             "ceiling. Set to cap below training_ctx (saves KV memory)."
         ),
+        advanced=True,
     ),
     "chat_n_ctx_target": SettingDef(
         int,
@@ -349,6 +371,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Working context the dynamic picker aims for. Fits a RAG turn "
             "with reasoning headroom; raise for long-document chat."
         ),
+        advanced=True,
     ),
     "flash_attention": SettingDef(
         bool,
@@ -360,6 +383,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "on models with uneven per-layer V dims. On Vulkan and SYCL lilbee "
             "sends auto, not on, even when this is true."
         ),
+        advanced=True,
     ),
     "kv_cache_type": SettingDef(
         str,
@@ -371,6 +395,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Vulkan and SYCL lilbee sends auto, so the cache is f16 there; it is "
             "also f16 when flash attention is off."
         ),
+        advanced=True,
     ),
     "n_gpu_layers": SettingDef(
         int,
@@ -380,6 +405,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Layers to offload to GPU. Empty = all (recommended), 0 = CPU only, "
             "positive int = partial offload for tight VRAM."
         ),
+        advanced=True,
     ),
     "cpu_moe": SettingDef(
         bool,
@@ -389,6 +415,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Keep a mixture-of-experts model's expert weights in system memory so "
             "it fits a smaller GPU. No effect on dense models."
         ),
+        advanced=True,
     ),
     "n_cpu_moe": SettingDef(
         int,
@@ -398,6 +425,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Offload only the first N layers' experts to system memory. Takes "
             "precedence over the offload-everything setting; smaller N stays faster."
         ),
+        advanced=True,
     ),
     "fast_model_downloads": SettingDef(
         bool,
@@ -410,6 +438,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "on the machine. Leave it off unless the machine can spare that. "
             "Requires a restart to take effect."
         ),
+        advanced=True,
     ),
     "gpu_devices": SettingDef(
         str,
@@ -420,12 +449,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "(e.g. NVIDIA dGPU + integrated). Comma-separated, like '0' or '0,1'. "
             "Applies to Vulkan, CUDA, and ROCm. Requires a restart to take effect."
         ),
+        advanced=True,
     ),
     "seed": SettingDef(
         int,
         nullable=True,
         group=SettingGroup.GENERATION,
         help_text="Random seed for reproducible output",
+        advanced=True,
     ),
     "rag_system_prompt": SettingDef(
         str,
@@ -481,6 +512,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "stays off unless you want an agent owning conversations."
         ),
     ),
+    "mcp_profiles_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Off (default): the profile tools are not offered over MCP. On: a connected "
+            "agent can list, compare, apply, save and manage profiles. The tools cost "
+            "context on every request, so this stays off unless you want an agent tuning "
+            "a project's settings through profiles."
+        ),
+    ),
     "chat_mode": SettingDef(
         str,
         nullable=False,
@@ -498,6 +540,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Candidate pool size for reranking",
+        advanced=True,
     ),
     "rerank_blend": SettingDef(
         bool,
@@ -510,6 +553,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         group=SettingGroup.RETRIEVAL,
         help_text="Drop candidates whose raw reranker score is below this (unset = off)",
+        advanced=True,
     ),
     "show_reasoning": SettingDef(
         bool,
@@ -526,6 +570,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "reasoning_content field, inline thinking as plain content text, "
             "or off (ask the model not to think)"
         ),
+        advanced=True,
     ),
     "messages_reasoning": SettingDef(
         str,
@@ -536,6 +581,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "inline thinking as plain answer text, or off (ask the model not "
             "to think)"
         ),
+        advanced=True,
     ),
     "lilbee_name": SettingDef(
         str,
@@ -604,24 +650,28 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "the mean of its source chunk vectors before publishing. "
             "Pages below the threshold route to drafts/."
         ),
+        advanced=True,
     ),
     "wiki_stale_citation_threshold": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.WIKI,
         help_text="Fraction of stale citations before a page is flagged by wiki prune",
+        advanced=True,
     ),
     "wiki_drift_threshold": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.WIKI,
         help_text="Max fraction of changed lines before regeneration requires review",
+        advanced=True,
     ),
     "wiki_clusterer": SettingDef(
         str,
         nullable=False,
         group=SettingGroup.WIKI,
         help_text="Synthesis clusterer backend (embedding or concepts)",
+        advanced=True,
     ),
     "wiki_entity_mode": SettingDef(
         str,
@@ -631,12 +681,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Entity extraction strategy. ner_entities (typed spaCy NER) is the "
             "only implemented mode; the other values fall back to it with a warning"
         ),
+        advanced=True,
     ),
     "wiki_entity_min_mentions": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.WIKI,
         help_text="Minimum chunk mentions before an entity or concept gets its own page",
+        advanced=True,
     ),
     "wiki_stub_max_chunk_refs": SettingDef(
         int,
@@ -647,6 +699,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Caps the browse index's size; already more than one page's context "
             "budget admits, so raising it rarely changes what a page says"
         ),
+        advanced=True,
     ),
     "wiki_ingest_update_cap": SettingDef(
         int,
@@ -656,6 +709,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Touched-page cap for auto-update after sync. "
             "Beyond this count, run `lilbee wiki update` manually."
         ),
+        advanced=True,
     ),
     "wiki_synthesis_prompt": SettingDef(
         str,
@@ -696,6 +750,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Whether the per-source batched call asks the LLM to curate concept pages "
             "alongside the pre-extracted entity list."
         ),
+        advanced=True,
     ),
     "wiki_batch_min_chunks": SettingDef(
         int,
@@ -706,12 +761,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "concept curation. Sources below the floor skip the concept-curation "
             "instruction; sources with zero entities AND below the floor are skipped entirely."
         ),
+        advanced=True,
     ),
     "wiki_clusterer_k": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.WIKI,
         help_text="Mutual-kNN neighborhood size for the clusterer (0 = auto)",
+        advanced=True,
     ),
     "memory_enabled": SettingDef(
         bool,
@@ -736,12 +793,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.MEMORY,
         help_text="Recall cutoff distance, 0.0-1.0 (lower is stricter)",
+        advanced=True,
     ),
     "memory_token_budget": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.MEMORY,
         help_text="Token cap on the recalled-memory block added to the prompt",
+        advanced=True,
     ),
     "memory_max_per_owner": SettingDef(
         int,
@@ -781,6 +840,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Browser mode: extra Chromium launch flags, one per line. "
             "Defaults trim shared-memory and GPU use."
         ),
+        advanced=True,
     ),
     "crawl_browser_extra_wait_ms": SettingDef(
         int,
@@ -874,12 +934,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text="Default page bound for an unbounded crawl, so a hostile site cannot "
         "exhaust the disk, 1 to 10000000. An explicit max-pages overrides it; raise this "
         "to crawl larger sites unbounded.",
+        advanced=True,
     ),
     "crawl_timeout": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text="Per-page fetch timeout in seconds, 1 to 3600",
+        advanced=True,
     ),
     "crawl_sync_interval": SettingDef(
         int,
@@ -892,18 +954,21 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text="Seconds each concurrent request waits between requests to a site, 0 to 3600",
+        advanced=True,
     ),
     "crawl_max_delay_range": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text="Random jitter (seconds) added on top of mean delay, 0 to 3600",
+        advanced=True,
     ),
     "crawl_concurrent_requests": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text="Concurrent in-flight URLs within one crawl, 1 to 256",
+        advanced=True,
     ),
     "crawl_retry_on_rate_limit": SettingDef(
         bool,
@@ -919,6 +984,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Base delay range, low end (seconds, 0 to 3600). The first retry waits halfway"
             " between the low and high end, and each later retry waits twice as long"
         ),
+        advanced=True,
     ),
     "crawl_retry_base_delay_max": SettingDef(
         float,
@@ -928,18 +994,21 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Base delay range, high end (seconds, 0 to 3600). The first retry waits halfway"
             " between the low and high end, and each later retry waits twice as long"
         ),
+        advanced=True,
     ),
     "crawl_retry_max_backoff": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text="Upper bound on any single backoff wait (seconds, 0 to 3600)",
+        advanced=True,
     ),
     "crawl_retry_max_attempts": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text="Retries per page. A crawl makes at most 20, whatever the value",
+        advanced=True,
     ),
     "crawl_exclude_patterns": SettingDef(
         list,
@@ -1052,6 +1121,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             " missing, garbled or under 32 non-blank characters) or scanned_pages (also every"
             " page that looks like a scan, e.g. a scanned page with a hidden text layer)"
         ),
+        advanced=True,
     ),
     "ocr_scan_confidence": SettingDef(
         float,
@@ -1062,6 +1132,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             " Applies only when ocr_strategy is scanned_pages. Lower it to 0.5 to"
             " also OCR slides with a full-page background image"
         ),
+        advanced=True,
     ),
     "force_ocr_pages": SettingDef(
         list,
@@ -1071,6 +1142,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "PDF page numbers that lilbee OCRs in every PDF, comma-separated (e.g. 1,3)"
             " or one per line"
         ),
+        advanced=True,
     ),
     "worker_pool_eager_start": SettingDef(
         bool,
@@ -1080,6 +1152,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Spawn every configured role server at TUI startup instead of on first use. "
             "Trades cold-start time per role for first-call latency"
         ),
+        advanced=True,
     ),
     "keep_engine_warm": SettingDef(
         bool,
@@ -1101,6 +1174,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "counted from the last lilbee exit; 0 keeps them loaded. "
             "A change applies at the next engine start"
         ),
+        advanced=True,
     ),
     "agent_mcp_enabled": SettingDef(
         bool,
@@ -1125,18 +1199,21 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Maximum reasoning characters before lilbee forces the model to answer "
             "(0 = unlimited; per-model overrides apply on top)"
         ),
+        advanced=True,
     ),
     "model_keep_alive": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.GENERATION,
         help_text="Seconds the loaded model stays warm between calls (0 = unload immediately)",
+        advanced=True,
     ),
     "gpu_memory_fraction": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.GENERATION,
         help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
+        advanced=True,
     ),
     "usable_vram_fraction": SettingDef(
         float,
@@ -1147,6 +1224,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "overhead (0.5-1.0). Raise it if a model that should fit is being refused; "
             "lower it if loads fail near the top of the card."
         ),
+        advanced=True,
     ),
     "system_memory_reserve_gb": SettingDef(
         float,
@@ -1156,24 +1234,28 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "RAM held back for the OS in GiB when serving from system memory (no discrete "
             "GPU). Capped at a quarter of total RAM either way."
         ),
+        advanced=True,
     ),
     "embed_replicas": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.GENERATION,
         help_text="Embedding servers in parallel (0 = auto, one per GPU; positive pins the count)",
+        advanced=True,
     ),
     "vision_replicas": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.OCR_TUNING,
         help_text="Vision OCR servers in parallel (0 = auto, one per GPU; positive pins the count)",
+        advanced=True,
     ),
     "candidate_multiplier": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Candidate-pool multiplier over top_k before reranking",
+        advanced=True,
     ),
     "title_search": SettingDef(
         bool,
@@ -1186,12 +1268,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Title arm weight in rank fusion (1.0 = equal voice with the other arms)",
+        advanced=True,
     ),
     "lexical_fusion_weight": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="BM25 arm weight in fusion (1.0 = equal to vector; lower to favor dense)",
+        advanced=True,
     ),
     "adaptive_fusion": SettingDef(
         bool,
@@ -1204,6 +1288,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Vector-similarity margin at which adaptive fusion fully silences the BM25 arm",
+        advanced=True,
     ),
     "filter_structural_chunks": SettingDef(
         bool,
@@ -1259,6 +1344,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Chunk count to start building an ANN vector index (0 = always flat search)",
+        advanced=True,
     ),
     "max_distance": SettingDef(
         float,
@@ -1271,6 +1357,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Minimum RRF relevance score for hybrid search results (0.0 = no filter)",
+        advanced=True,
     ),
     "max_context_sources": SettingDef(
         int,
@@ -1283,12 +1370,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Adjacent chunks merged into each retrieved passage per side (0 = off)",
+        advanced=True,
     ),
     "diversity_max_per_source": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Maximum chunks accepted from any one source (caps source dominance)",
+        advanced=True,
     ),
     "mmr_lambda": SettingDef(
         float,
@@ -1297,6 +1386,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "MMR lambda balancing relevance vs diversity (0 = max diversity, 1 = max relevance)"
         ),
+        advanced=True,
     ),
     "temporal_filtering": SettingDef(
         bool,
@@ -1315,30 +1405,35 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Weight on the HyDE-generated query vector when blending with the original",
+        advanced=True,
     ),
     "query_expansion_count": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Number of paraphrase expansions per query (0 disables expansion)",
+        advanced=True,
     ),
     "expansion_similarity_threshold": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Minimum cosine similarity an expansion must keep with the original query",
+        advanced=True,
     ),
     "expansion_short_query_tokens": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Queries at or below this token count skip expansion (saves a model call)",
+        advanced=True,
     ),
     "expansion_guardrails": SettingDef(
         bool,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Drop expansions that diverge from the original intent",
+        advanced=True,
     ),
     "adaptive_threshold": SettingDef(
         bool,
@@ -1351,6 +1446,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Step size for adaptive relevance-score relaxation when initial recall is empty",
+        advanced=True,
     ),
     "concept_graph": SettingDef(
         bool,
@@ -1363,12 +1459,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Maximum boost (0-1) the concept graph can add to a chunk's relevance",
+        advanced=True,
     ),
     "concept_max_per_chunk": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Maximum concept tags stored per chunk (caps graph density)",
+        advanced=True,
     ),
     "documents_dir": SettingDef(
         str,
@@ -1415,18 +1513,21 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.API_KEYS,
         help_text="Path to a llama-server binary (empty: bundled wheel or PATH)",
+        advanced=True,
     ),
     "wiki_summary_max_tokens": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.WIKI,
         help_text="Maximum tokens generated per wiki page",
+        advanced=True,
     ),
     "wiki_temperature": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.WIKI,
         help_text="Temperature used for wiki page synthesis (low = stay close to sources)",
+        advanced=True,
     ),
 }
 

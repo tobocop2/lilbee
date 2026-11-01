@@ -1,0 +1,21 @@
+ConfirmPill {
+    width: auto;
+    height: 1;
+    padding: 0 2;
+    margin: 0 1;
+    color: $text;
+    text-style: bold;
+    background: $surface-lighten-2;
+
+    &.-primary {
+        background: $primary 20%;
+    }
+
+    &:focus, &:hover {
+        background: $accent;
+    }
+
+    &.-disabled {
+        color: $text-disabled;
+    }
+}
