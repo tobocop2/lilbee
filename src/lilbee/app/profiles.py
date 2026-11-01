@@ -398,7 +398,7 @@ def _switch_to(planned: PlannedWrite, yours: tuple[str, ...]) -> SaveResult:
             absorb=yours,
             write_first=lambda: written.append(planned.write()),
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         if not written:
             raise
         raise ValueError(

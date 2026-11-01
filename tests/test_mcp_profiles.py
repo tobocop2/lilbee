@@ -127,6 +127,11 @@ def test_manage_new_save_update_and_discard():
     }
 
 
+def test_manage_update_refuses_a_name_that_is_not_the_active_profile():
+    result = profile_manage(ProfileAction.UPDATE, name="research-papers")
+    assert "research-papers is not this project's profile" in result["error"]
+
+
 def test_manage_discard_of_a_reindex_setting_reports_the_reindex():
     cfg.data_root.mkdir(parents=True, exist_ok=True)
     (cfg.data_root / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")

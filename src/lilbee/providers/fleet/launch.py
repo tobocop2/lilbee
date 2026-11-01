@@ -60,10 +60,7 @@ class InstanceLaunch:
     per device in its mmproj field, so that path compares the full estimate and
     ignores this.
     """
-    # The settings this launch bakes in (planning.launch_settings). A process on
-    # other values never binds it. It takes part in launch equality, so a reload
-    # restarts a group exactly when this moves, and a kept group always carries
-    # the value a plan from the current config gives it.
+    # The settings this launch bakes in; a process on other values never binds it.
     settings: str = ""
     est_host_bytes: int = 0
     """Host bytes the estimate expects chat to hold when the engine fits its layers.

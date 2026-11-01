@@ -55,7 +55,7 @@ class ApplyChoice(StrEnum):
     CANCEL = "cancel"
 
 
-class _SaveAnswer(StrEnum):
+class _DialogAnswer(StrEnum):
     SAVE = "save"
     CANCEL = "cancel"
 
@@ -409,11 +409,11 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
                 yield ConfirmPill(
                     msg.PROFILE_SAVE_LABEL,
                     pill_id="save-save",
-                    answer=_SaveAnswer.SAVE,
+                    answer=_DialogAnswer.SAVE,
                     primary=True,
                 )
                 yield ConfirmPill(
-                    msg.PROFILE_CANCEL_LABEL, pill_id="save-cancel", answer=_SaveAnswer.CANCEL
+                    msg.PROFILE_CANCEL_LABEL, pill_id="save-cancel", answer=_DialogAnswer.CANCEL
                 )
 
     def on_mount(self) -> None:
@@ -452,7 +452,7 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
     @on(ConfirmPill.Picked)
     def _on_picked(self, event: ConfirmPill.Picked) -> None:
         event.stop()
-        if event.answer is _SaveAnswer.SAVE:
+        if event.answer is _DialogAnswer.SAVE:
             self._save()
         else:
             self.dismiss(None)
@@ -504,10 +504,10 @@ class ProfilePathDialog(ModalScreen[PathRequest | None]):
                 yield Static("", id="path-error", classes="dialog-error", markup=False)
             with Horizontal(id="path-actions"):
                 yield ConfirmPill(
-                    self._action_label, pill_id="path-ok", answer=_SaveAnswer.SAVE, primary=True
+                    self._action_label, pill_id="path-ok", answer=_DialogAnswer.SAVE, primary=True
                 )
                 yield ConfirmPill(
-                    msg.PROFILE_CANCEL_LABEL, pill_id="path-cancel", answer=_SaveAnswer.CANCEL
+                    msg.PROFILE_CANCEL_LABEL, pill_id="path-cancel", answer=_DialogAnswer.CANCEL
                 )
 
     def on_mount(self) -> None:
@@ -544,7 +544,7 @@ class ProfilePathDialog(ModalScreen[PathRequest | None]):
     @on(ConfirmPill.Picked)
     def _on_picked(self, event: ConfirmPill.Picked) -> None:
         event.stop()
-        if event.answer is _SaveAnswer.SAVE:
+        if event.answer is _DialogAnswer.SAVE:
             self._confirm()
         else:
             self.dismiss(None)

@@ -454,13 +454,7 @@ def config_write_failure_message(exc: OSError) -> str:
 
 
 def _invalidate_caches(changed_keys: set[str]) -> None:
-    """Drop every read-side cache whose freshness depends on a changed setting.
-
-    Never decides the provider-reset question: ``_settings_transaction``'s
-    callers compute that independently, from *changed_keys* directly,
-    before calling this function, so an exception raised here cannot
-    suppress it.
-    """
+    """Drop every read-side cache whose freshness depends on a changed setting."""
     if not changed_keys:
         return
     if changed_keys & MODEL_ROLE_FIELDS:
@@ -612,15 +606,10 @@ def _settle(
     changed: set[str] | None = None,
     reindex_changed: set[str] | None = None,
 ) -> SettingsUpdateResult:
-    """Set *keys* on cfg from the resolver; rederive, invalidate and report for *changed*.
+    """Set *keys* on cfg from the resolver; rederive, invalidate and report.
 
-    *changed* narrows the fleet-reload and cache-invalidation side effects to the
-    keys whose resolved value actually differs from what THIS process's cfg held;
-    it defaults to *keys* for callers where every key is already known to be a
-    real change (a PATCH and a profile apply). *reindex_changed* narrows the
-    reindex verdict the same way but from config.toml's own before/after resolved
-    value, never cfg, since the persisted vector store is a cross-process
-    resource a stale cfg cannot speak for; it defaults to *changed*.
+    *changed* (default *keys*) is the keys that differ in cfg; *reindex_changed*
+    (default *changed*) is the keys that differ in config.toml.
     """
     effective = keys if changed is None else changed
     reindex_effective = effective if reindex_changed is None else reindex_changed
@@ -755,16 +744,9 @@ def reset_settings(
         fallbacks = _values_after_reset(targets)
         coerced = _refuse_invalid_fallbacks(fallbacks, _LayerChange.RESET)
         _validate({key: entry.value for key, entry in fallbacks.items()})
-        # coerced holds each fallback after the same type coercion cfg applies, so an
-        # env var's raw string cannot misread as "changed" against cfg's own value.
-        # Scoped to THIS process's live cfg (and therefore its engine), which is
-        # exactly what fleet reload, cache invalidation and the meta pin below need
-        # to know moved.
+        # compared in cfg's own terms
         changed = {key for key in targets if getattr(cfg, key) != coerced[key]}
-        # config.toml's own before/after resolved value, never cfg: a second writer
-        # (another CLI invocation, a hand edit) can change the file's effective
-        # value without this process's cfg ever observing it, and the persisted
-        # vector store is a cross-process resource a stale cfg cannot speak for.
+        # compared on the file's resolved value
         reindex_changed = {key for key in targets if before[key].value != fallbacks[key].value}
         if "embedding_model" in changed:
             _pin_legacy_store_meta()

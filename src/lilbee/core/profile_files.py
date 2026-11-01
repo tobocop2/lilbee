@@ -42,7 +42,7 @@ _AUTHOR_KEYS = frozenset({"name", "github"})
 
 MAX_NAME_LENGTH = 40
 _NAME_PATTERN = re.compile(rf"[A-Za-z0-9 _()-]{{1,{MAX_NAME_LENGTH}}}")
-# the fixed segments under /api/profiles/, and the file names Windows keeps for devices
+# words a profile name cannot be: fixed route words and the file names Windows keeps for devices
 RESERVED_NAME_KEYS = frozenset(
     {
         "active",
@@ -236,7 +236,7 @@ def normalized_values(values: Mapping[str, Any]) -> dict[str, Any]:
             setattr(trial, key, value)
         except ValidationError as exc:
             raise ProfileFileError(f"Bad value for {key}: {exc.errors()[0]['msg']}") from None
-        # A validator's own TypeError reaches here unwrapped; a bad value costs only its file
+        # A validator's TypeError is a bad value
         except TypeError as exc:
             raise ProfileFileError(f"Bad value for {key}: {exc}") from None
     return {key: getattr(trial, key) for key in values}
@@ -514,7 +514,7 @@ def _same_file(first: Path, second: Path) -> bool:
     """True when both paths exist and name one file, whatever their spelling or case."""
     try:
         return first.samefile(second)
-    except FileNotFoundError:
+    except OSError:
         return False
 
 

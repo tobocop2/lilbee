@@ -414,6 +414,20 @@ class TestRebuild:
         assert "2 documents failed to ingest: b.txt, c.txt" in result.output
         assert "lilbee rebuild" in result.output
 
+    def test_json_rebuild_with_failed_files_has_an_error_key_and_exits_1(self, isolated_env):
+        failing = SyncResult(added=["a.txt"], failed=["b.txt"])
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=failing):
+            result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["failed"] == 1
+        assert "1 document failed to ingest: b.txt" in payload["error"]
+
+    def test_json_rebuild_without_failures_has_no_error_key(self, isolated_env):
+        result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 0
+        assert "error" not in json.loads(result.output)
+
     def test_rebuild_names_five_failed_files_and_counts_the_rest(self, isolated_env):
         failing = SyncResult(failed=[f"f{n}.txt" for n in range(7)])
         with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=failing):

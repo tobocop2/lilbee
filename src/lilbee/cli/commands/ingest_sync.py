@@ -8,7 +8,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import typer
 from rich.text import Text
@@ -39,7 +39,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
+from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN, MAX_FAILURES_SHOWN
 from lilbee.cli.commands.analyze import print_tip_if_shown
 from lilbee.cli.commands.crawl_login import crawl_login
 from lilbee.cli.helpers import (
@@ -539,14 +539,11 @@ def sync_cmd(
     console.print(result)
 
 
-_FAILED_NAMES_SHOWN = 5
-
-
 def rebuild_failure_message(failed: list[str]) -> str:
     """The failed-file report of a rebuild: how many, which, and what to do next."""
-    shown = ", ".join(failed[:_FAILED_NAMES_SHOWN])
-    if len(failed) > _FAILED_NAMES_SHOWN:
-        shown += f" and {len(failed) - _FAILED_NAMES_SHOWN} more"
+    shown = ", ".join(failed[:MAX_FAILURES_SHOWN])
+    if len(failed) > MAX_FAILURES_SHOWN:
+        shown += f" and {len(failed) - MAX_FAILURES_SHOWN} more"
     noun = "document" if len(failed) == 1 else "documents"
     return (
         f"{len(failed)} {noun} failed to ingest: {shown}. "
@@ -594,13 +591,14 @@ def rebuild(
         cfg.ingest_processes = processes
     result = run_rebuild()
     if cfg.json_mode:
-        json_output(
-            {
-                "command": "rebuild",
-                "ingested": len(result.added),
-                "failed": len(result.failed),
-            }
-        )
+        payload: dict[str, Any] = {
+            "command": "rebuild",
+            "ingested": len(result.added),
+            "failed": len(result.failed),
+        }
+        if result.failed:
+            payload["error"] = rebuild_failure_message(result.failed)
+        json_output(payload)
     else:
         console.print(f"Rebuilt: {len(result.added)} documents ingested")
         if result.failed:

@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
     from lilbee.providers.fleet.swap_manager import SwapState
 
-_NO_SETTINGS: Mapping[WorkerRole, str] = MappingProxyType({})
+NO_SETTINGS: Mapping[WorkerRole, str] = MappingProxyType({})
 
 
 def decoded_launches(state: SwapState) -> list[InstanceLaunch] | None:
@@ -78,7 +78,7 @@ def contract_matches(
     state: SwapState,
     wanted: Iterable[tuple[WorkerRole, str]],
     pin: str,
-    settings: Mapping[WorkerRole, str] = _NO_SETTINGS,
+    settings: Mapping[WorkerRole, str] = NO_SETTINGS,
 ) -> bool:
     """Whether the engine behind *state* serves every wanted (role, model) pair.
 

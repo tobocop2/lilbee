@@ -1291,7 +1291,7 @@ _MANAGE_ACTIONS: dict[ProfileAction, Callable[[ProfileStore, _ManageArgs], dict[
         profiles.new(store, a.name, a.folder, from_name=a.from_profile or None)
     ),
     ProfileAction.SAVE: lambda _store, a: _save_dict(profiles.save_as(a.name, a.folder)),
-    ProfileAction.UPDATE: lambda store, _a: _save_dict(profiles.update(store)),
+    ProfileAction.UPDATE: lambda store, a: _save_dict(profiles.update(store, a.name or None)),
     ProfileAction.DISCARD: lambda _store, _a: _discard_dict(profiles.discard()),
     ProfileAction.DUPLICATE: lambda store, a: _location_dict(
         profiles.duplicate(store, a.name, a.new_name, a.folder)

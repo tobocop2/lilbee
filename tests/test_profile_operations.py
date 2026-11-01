@@ -591,6 +591,20 @@ def test_update_whose_config_write_fails_keeps_the_new_file_and_says_so(store, m
     assert _read(path)["values"] == {"chunk_overlap": 50, "chunk_size": 700}
 
 
+def test_update_whose_config_does_not_parse_keeps_the_new_file_and_says_so(store, monkeypatch):
+    path = _write(_global_dir(), "mine", "[values]\nchunk_overlap = 50\n")
+    profiles.apply(store, "mine")
+    _prepend_config("chunk_size = 700\n")
+
+    def _bad_toml(*_args, **_kwargs):
+        raise ValueError("Invalid statement (at line 1, column 1)")
+
+    monkeypatch.setattr(settings, "save", _bad_toml)
+    with pytest.raises(ValueError, match=r"Saved the profile to .*, but switching"):
+        profiles.update(store)
+    assert _read(path)["values"] == {"chunk_overlap": 50, "chunk_size": 700}
+
+
 @posix_only
 def test_profile_files_and_exports_are_written_with_the_umask(store, tmp_path):
     previous = os.umask(0o022)

@@ -50,7 +50,7 @@ _export_path_argument = typer.Argument(_CURRENT_DIR, help="A file, or a folder f
 
 
 def _store() -> ProfileStore:
-    """The profile store; it scans the folders on each call and needs no running services."""
+    """The profile store."""
     return ProfileStore()
 
 

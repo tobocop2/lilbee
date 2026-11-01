@@ -224,7 +224,10 @@ def test_off_hides_the_tip_and_reads_nothing(project):
     with mock.patch.object(analyze, "collect_signals") as collect:
         result = _invoke(project, "--off", json_mode=True)
     assert result.exit_code == 0
-    assert json.loads(result.output) == {"tip_dismissed": True}
+    answer = json.loads(result.output)
+    assert set(answer) == {"analyzed", "tip_dismissed", "tip_shows"}
+    assert answer["tip_dismissed"] is True
+    assert answer["tip_shows"] is False
     assert read_state(project).tip_dismissed is True
     assert read_state(project).analyzed_at is None
     collect.assert_not_called()

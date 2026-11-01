@@ -18,6 +18,7 @@ from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
+MAX_FAILURES_SHOWN = 5  # file names shown before "and N more"
 
 REBUILD_HINT = "Run lilbee rebuild so the index uses the new values."
 

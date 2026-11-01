@@ -95,11 +95,7 @@ def settings_get(
 
 
 def _parse_cli_value(key: str, raw: str) -> Any:
-    """A CLI ``set`` argument as the config write boundary expects it.
-
-    List-typed fields are newline-separated, matching how config.toml persists
-    them; every other type is left to pydantic's own coercion on assignment.
-    """
+    """A list setting is one item per line; any other type is left to pydantic."""
     from lilbee.app.settings import list_setting_value
     from lilbee.core.config.schema import field_type_name
 

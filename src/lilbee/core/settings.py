@@ -237,8 +237,8 @@ def overlay_persisted_settings(root: Path) -> None:
     A value in ``<root>/config.toml`` that Config refuses is left out with a warning
     that names the file, and the setting keeps the value it had. A file that does not
     parse is reported and changes nothing. A root-derived path at its built-in keeps the
-    value the caller set from ``root``, and a chat, embedding or vision model at its
-    built-in keeps the model cfg holds, so entering a fresh root leaves it usable. A root
+    value the caller set from ``root``, and a model role at its built-in keeps the
+    model cfg holds, so entering a fresh root leaves it usable. A root
     without the file resolves as a root with an empty one, and
     ``LILBEE_SKIP_TOML_CONFIG=1`` disables the overlay.
     """

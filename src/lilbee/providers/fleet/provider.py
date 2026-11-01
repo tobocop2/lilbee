@@ -12,6 +12,7 @@ running server. See docs/architecture.md for swap tenancy.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import logging
 import re
@@ -20,7 +21,6 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, TypeVar, overload
 
 import httpx
@@ -48,6 +48,7 @@ from lilbee.providers.fleet.client import (
     retry_on_gateway_error,
 )
 from lilbee.providers.fleet.contract import (
+    NO_SETTINGS,
     chat_ctx_covers,
     contract_matches,
     decoded_launches,
@@ -240,10 +241,10 @@ def _launch_changes(old: tuple[InstanceLaunch, ...], new: tuple[InstanceLaunch, 
     if len(old) != len(new):
         return f"replicas {len(old)} -> {len(new)}"
     moved = [
-        f"{name} {value!r} -> {getattr(after, name)!r}"
+        f"{field.name} {getattr(before, field.name)!r} -> {getattr(after, field.name)!r}"
         for before, after in zip(old, new, strict=True)
-        for name, value in vars(before).items()
-        if value != getattr(after, name)
+        for field in dataclasses.fields(InstanceLaunch)
+        if getattr(before, field.name) != getattr(after, field.name)
     ]
     return ", ".join(moved) or "no launch field moved"
 
@@ -775,7 +776,7 @@ class _EngineDemand(NamedTuple):
     # Vision slots this process needs at once; 0 demands nothing.
     vision_slots: int = 0
     # The settings the demand plan gives each role's launch.
-    settings: Mapping[WorkerRole, str] = MappingProxyType({})
+    settings: Mapping[WorkerRole, str] = NO_SETTINGS
 
 
 def _placeable_demand() -> _EngineDemand:

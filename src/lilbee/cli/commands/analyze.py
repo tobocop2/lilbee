@@ -14,7 +14,7 @@ from rich.text import Text
 
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
-from lilbee.cli.commands._shared import fail, line
+from lilbee.cli.commands._shared import MAX_FAILURES_SHOWN, fail, line
 from lilbee.cli.commands.profile import render_changes
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
@@ -32,7 +32,6 @@ READING_LABEL = "Reading files"
 CANCELLED_MESSAGE = "Analyze was cancelled; nothing was saved."
 OFF_ALONE_MESSAGE = "--off hides the tip and takes no folder, --apply, --save or --target."
 TIP_HIDDEN_MESSAGE = "The analyze tip is hidden for this project."
-MAX_FAILURES_SHOWN = 5
 
 _directory_argument = typer.Argument(
     None,
@@ -195,15 +194,18 @@ def _analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 
 
 def _hide_tip() -> None:
-    from lilbee.app.analyze import hide_tip
+    from lilbee.app.analyze import hide_tip, tip_state
     from lilbee.app.profiles import file_failure_message
+    from lilbee.server.models import AnalyzeStateResponse
 
     try:
         hide_tip(cfg.data_root)
     except OSError as exc:
         fail(file_failure_message(exc))
     if cfg.json_mode:
-        json_output({"tip_dismissed": True})
+        json_output(
+            AnalyzeStateResponse.from_state(tip_state(cfg.data_root)).model_dump(mode="json")
+        )
     else:
         line(TIP_HIDDEN_MESSAGE)
 

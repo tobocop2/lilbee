@@ -1184,8 +1184,10 @@ because a shared engine outlives the holder. The command
 disagrees with binding: an engine answering on its proxy is spared, anything
 else is stopped through its state record.
 
-Two costs ride along. A model or placement change restarts the shared engine;
-peers rediscover the new ports with a one-shot retry, and an in-flight
+Two costs ride along. A model or placement change in the process that built
+the engine restarts only the moved groups; a process that only binds drops its
+binding on a setting write and re-acquires, and may overflow to a private
+engine. Peers rediscover the new ports with a one-shot retry, and an in-flight
 request surfaces a retry error. And the proxy still listens on an
 unauthenticated localhost port; the machine slot only makes discovery easier.
 
