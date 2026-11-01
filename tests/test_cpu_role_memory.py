@@ -26,7 +26,7 @@ from lilbee.providers.fleet import provider as fleet_provider
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.memory_types import MemoryKind
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.fleet.placement_spec import (
     PlacementError,
@@ -259,7 +259,27 @@ def test_a_cpu_chat_past_the_card_launches_in_system_memory(
     assert WorkerRole.CHAT not in plan.refused_roles
 
 
-def test_a_launch_refused_on_a_fixed_reserve_names_the_gib(
+def test_a_launch_refused_on_a_reserve_with_no_share_names_the_charged_gib(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, "")
+    monkeypatch.setattr(planning, "_role_ctx", lambda *_args, **_kwargs: 512)
+    monkeypatch.setattr(type(engine), "memory_kind", MemoryKind.FIXED_RESERVE)
+    no_share = MemoryEstimate(
+        kind=MemoryKind.FIXED_RESERVE,
+        device_bytes=40 * GIB,
+        host_bytes=0,
+        shared_bytes=40 * GIB,
+    )
+    monkeypatch.setattr(type(engine), "estimate_memory", lambda _self, _request: no_share)
+    plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+    reason = plan.refused_roles[WorkerRole.CHAT]
+    assert "needs 40.0 GiB" in reason
+    assert "does not hold the model" in reason
+    assert FLOOR_REASON not in reason
+
+
+def test_a_launch_refused_on_a_reserve_with_a_share_keeps_the_window_text(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, "")
@@ -267,8 +287,8 @@ def test_a_launch_refused_on_a_fixed_reserve_names_the_gib(
     monkeypatch.setattr(type(engine), "memory_kind", MemoryKind.FIXED_RESERVE)
     plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
     reason = plan.refused_roles[WorkerRole.CHAT]
-    assert "does not hold the model" in reason
-    assert FLOOR_REASON not in reason
+    assert FLOOR_REASON in reason
+    assert "does not hold the model" not in reason
 
 
 class TestARoleThatDoesNotLaunchChargesNothing:

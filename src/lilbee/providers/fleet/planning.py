@@ -46,6 +46,7 @@ from lilbee.providers.fleet.placement import (
     SplitCtxFitter,
     placement_from_spec,
     plan_placement,
+    states_no_share_per_card,
 )
 from lilbee.providers.fleet.placement_spec import (
     PlacementError,
@@ -3759,6 +3760,10 @@ def _log_placement_findings(
         )
 
 
+# One card always gets a share: the estimator answers with the total. Two cards ask the engine.
+_SHARE_PROBE_CARDS = 2
+
+
 def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
     """Reason to refuse a chat launch whose window cannot hold a grounded prompt.
 
@@ -3787,17 +3792,23 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
     )
 
 
-def _chat_launch_refusal(launch: InstanceLaunch, *, engine: EngineAdapter) -> str | None:
+def _chat_launch_refusal(
+    launch: InstanceLaunch, *, engine: EngineAdapter, estimate_peak: PeakEstimator
+) -> str | None:
     """The refusal of a chat launch, in the terms of what the engine's figure measures.
 
-    A fixed reserve does not vary with the window, so a window at the floor means that
-    the card does not hold the model, not that its weights leave too little behind.
+    A fixed reserve with no share per card takes one card and does not vary with the
+    window, so a window at the floor means that the card does not hold the model.
     """
     reason = _unusable_chat_ctx_reason(launch)
-    if reason is None or engine.memory_kind is not MemoryKind.FIXED_RESERVE:
+    if (
+        reason is None
+        or engine.memory_kind is not MemoryKind.FIXED_RESERVE
+        or not states_no_share_per_card(launch.role, _SHARE_PROBE_CARDS, estimate_peak)
+    ):
         return reason
     return (
-        f"The chat model {launch.model} needs {launch.weights_bytes / 1024**3:.1f} GiB, and "
+        f"The chat model {launch.model} needs {launch.est_vram_bytes / 1024**3:.1f} GiB, and "
         "lilbee runs this engine on one card. That card does not hold the model, so it will "
         "not be served. Use a smaller model or a smaller quant, or set the chat target to cpu."
     )
@@ -3881,6 +3892,7 @@ def _planned_launches(
         placement.co_tenants,
     )
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
+    estimate_peak = _peak_estimator(model_refs, engines)
     launches: list[InstanceLaunch] = []
     for plan in placement.instances:
         launch = _launch_for(
@@ -3894,7 +3906,9 @@ def _planned_launches(
             est_vram_bytes=charged.get(plan.role, 0),
             engine=engines[plan.role],
         )
-        reason = _chat_launch_refusal(launch, engine=engines[plan.role])
+        reason = _chat_launch_refusal(
+            launch, engine=engines[plan.role], estimate_peak=estimate_peak
+        )
         if reason is not None:
             refused_roles[launch.role] = reason
             log.warning(reason)

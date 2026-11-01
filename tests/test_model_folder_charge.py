@@ -271,7 +271,9 @@ class TestOversizeModelOnSeveralCards:
         assert self._plan(tmp_path, monkeypatch) == (0,)
 
     def test_a_share_per_card_that_overruns_keeps_the_group(self, tmp_path, monkeypatch) -> None:
-        over = lambda _role, _ratio: (29 * GIB, 29 * GIB)  # noqa: E731
+        def over(_role, _ratio):
+            return (29 * GIB, 29 * GIB)
+
         assert self._plan(tmp_path, monkeypatch, over) == (0, 1)
 
     def test_an_estimator_failure_keeps_the_group(self, tmp_path, monkeypatch) -> None:
@@ -282,17 +284,40 @@ class TestOversizeModelOnSeveralCards:
 
 
 class TestTheChatRefusal:
-    def _reason(self, engine) -> str | None:
+    def _reason(self, engine, shares: tuple[int, ...] = ()) -> str | None:
         launch = SimpleNamespace(
-            role=WorkerRole.CHAT, model="org/m", ctx=512, weights_bytes=30 * GIB
+            role=WorkerRole.CHAT,
+            model="org/m",
+            ctx=512,
+            weights_bytes=4096,
+            est_vram_bytes=30 * GIB,
         )
-        return planning._chat_launch_refusal(launch, engine=engine)
+        return planning._chat_launch_refusal(
+            launch, engine=engine, estimate_peak=lambda _role, _ratio: shares
+        )
 
-    def test_a_weights_only_figure_names_the_gib(self) -> None:
+    def test_a_weights_only_figure_names_the_charged_gib(self) -> None:
         reason = self._reason(MISTRAL)
         assert reason is not None
         assert "needs 30.0 GiB" in reason
         assert "backs only" not in reason
+
+    def test_a_fixed_reserve_with_a_share_per_card_keeps_the_window_text(self) -> None:
+        reason = self._reason(MISTRAL, (15 * GIB, 15 * GIB))
+        assert reason is not None
+        assert "backs only a 512-token context" in reason
+        assert "does not hold the model" not in reason
+
+    def test_an_estimator_failure_keeps_the_window_text(self) -> None:
+        def fails(_role, _ratio):
+            raise OSError("no estimator")
+
+        launch = SimpleNamespace(
+            role=WorkerRole.CHAT, model="org/m", ctx=512, est_vram_bytes=30 * GIB
+        )
+        reason = planning._chat_launch_refusal(launch, engine=MISTRAL, estimate_peak=fails)
+        assert reason is not None
+        assert "backs only a 512-token context" in reason
 
     def test_a_sized_engine_keeps_the_window_text(self) -> None:
         reason = self._reason(SimpleNamespace(memory_kind=MemoryKind.SIZED))
@@ -303,7 +328,12 @@ class TestTheChatRefusal:
         launch = SimpleNamespace(
             role=WorkerRole.CHAT, model="org/m", ctx=1_000_000, weights_bytes=30 * GIB
         )
-        assert planning._chat_launch_refusal(launch, engine=MISTRAL) is None
+        assert (
+            planning._chat_launch_refusal(
+                launch, engine=MISTRAL, estimate_peak=lambda _role, _ratio: ()
+            )
+            is None
+        )
 
 
 class TestACpuRoleWindow:
