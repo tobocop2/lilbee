@@ -24,7 +24,7 @@ from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
+from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, estimate_memory
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "0.9.5"
@@ -222,6 +222,8 @@ class MistralAdapter:
         return DeviceProbe(devices=visible_nvidia_cards(), output="")
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        if request.model_path.is_dir():
+            return estimate_memory(ModelFormat.SAFETENSORS, request)
         try:
             weights = request.model_path.stat().st_size
         except OSError:

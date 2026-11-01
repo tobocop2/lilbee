@@ -37,6 +37,7 @@ from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.engines.choice import LIST_HINT
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import installed_safetensors_bytes
 from lilbee.providers.fleet.placement import (
     InstancePlan,
     ModelPlacementInput,
@@ -268,7 +269,9 @@ _SPLIT_GGUF_NAME = re.compile(r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d
 
 
 def _weights_bytes(model_path: Path) -> int:
-    """Total weights size on disk; a split GGUF sums every sibling shard."""
+    """Total weights size on disk; a folder sums its shards, a split GGUF its sibling shards."""
+    if model_path.is_dir():
+        return installed_safetensors_bytes(model_path)
     match = _SPLIT_GGUF_NAME.fullmatch(model_path.name)
     if match is None:
         return model_path.stat().st_size
@@ -1019,6 +1022,8 @@ def _peak_estimator(
                 expert_offload=_role_expert_offload(path, engine=engine),
             )
         )
+        if len(ratio) == 1 and not est.per_device and est.device_bytes > 0:
+            return (est.device_bytes,)
         return est.per_device
 
     return estimate_peak
