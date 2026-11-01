@@ -12,6 +12,8 @@ import typer
 from rich.table import Table
 from rich.text import Text
 
+from lilbee.app.analyze import hide_tip, tip_state
+from lilbee.app.profiles import file_failure_message
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.commands._shared import MAX_FAILURES_SHOWN, fail, line
@@ -175,7 +177,6 @@ def _render(report: AnalyzeResponse) -> None:
 def _analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     """Run analyze with a progress bar and Ctrl+C as a clean cancel; a refusal exits 1."""
     from lilbee.app.analyze import run_analysis
-    from lilbee.app.profiles import file_failure_message
     from lilbee.runtime.cancellation import TaskCancelledError
     from lilbee.server.models import AnalyzeResponse
 
@@ -194,9 +195,7 @@ def _analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 
 
 def _hide_tip() -> None:
-    from lilbee.app.analyze import hide_tip, tip_state
-    from lilbee.app.profiles import file_failure_message
-    from lilbee.server.models import AnalyzeStateResponse
+    from lilbee.server.models import AnalyzeStateResponse  # CLI startup: 35 ms to import
 
     try:
         hide_tip(cfg.data_root)

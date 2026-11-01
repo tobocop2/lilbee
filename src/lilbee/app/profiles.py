@@ -169,6 +169,7 @@ class ApplyResult:
     changes: tuple[DiffRow, ...]
     reindex_required: bool
     new_files_only: tuple[str, ...]
+    kept: tuple[str, ...]
     warnings: tuple[str, ...] = ()
 
 
@@ -279,6 +280,7 @@ def _apply_result(planned: ProfileDiff, warnings: tuple[str, ...] = ()) -> Apply
         changes=planned.changes,
         reindex_required=ProfileEffect.REINDEX in effects.values(),
         new_files_only=tuple(k for k, e in effects.items() if e is ProfileEffect.NEW_FILES_ONLY),
+        kept=planned.kept,
         warnings=warnings,
     )
 

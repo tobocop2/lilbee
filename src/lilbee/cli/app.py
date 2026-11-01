@@ -96,7 +96,11 @@ def _resolve_data_root(data_dir: Path | None, use_global: bool) -> None:
         _apply_data_root(default_data_dir())
         return
     if data_dir is not None:
-        _apply_data_root(data_dir)
+        from lilbee.core.system import LOCAL_ROOT_DIRNAME
+
+        # A project folder holding .lilbee/ names that knowledge base, as it does from the cwd.
+        local = data_dir / LOCAL_ROOT_DIRNAME
+        _apply_data_root(local if local.is_dir() else data_dir)
         return
     data_env = os.environ.get("LILBEE_DATA", "")
     if data_env:

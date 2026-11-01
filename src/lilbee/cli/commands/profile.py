@@ -10,8 +10,8 @@ from rich.table import Table
 from rich.text import Text
 
 from lilbee.cli import theme
-from lilbee.cli.app import console, data_dir_option, global_option
-from lilbee.cli.commands._shared import REBUILD_HINT, emit, line, run_or_fail, setup, shown_value
+from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
+from lilbee.cli.commands._shared import REBUILD_HINT, emit, line, run_or_fail, shown_value
 from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import ProfileFolder, ProfileStore, profile_key
@@ -33,7 +33,8 @@ if TYPE_CHECKING:
 _CURRENT_DIR = Path()
 
 profile_app = typer.Typer(
-    help="Manage profiles: named sets of ingest, OCR, chunking and retrieval settings."
+    help="Manage profiles: named sets of ingest, OCR, chunking and retrieval settings.",
+    no_args_is_help=True,
 )
 
 _target_option = typer.Option(
@@ -46,7 +47,15 @@ _folder_option = typer.Option(
     "--folder",
     help="Check it as a profile in this folder; builtin applies the evidence rule.",
 )
+_reindex_option = typer.Option(
+    False,
+    "--reindex",
+    help="Rebuild the index afterwards when the removed values need it.",
+)
 _export_path_argument = typer.Argument(_CURRENT_DIR, help="A file, or a folder for <name>.toml.")
+_name_argument = typer.Argument(help="The name of an existing profile.")
+_new_name_argument = typer.Argument(help="The name the profile gets.")
+_file_argument = typer.Argument(help="A profile file.")
 
 
 def _store() -> ProfileStore:
@@ -147,13 +156,26 @@ def _render_save(verb: str, result: ProfileSaveResponse) -> None:
         line(warning, theme.WARNING)
 
 
-def _render_discard(result: ProfileDiscardResponse) -> None:
+def _render_rebuild(
+    reindex_required: bool, reindexed: int | None, reindex_error: str | None
+) -> None:
+    """Print the outcome of a --reindex rebuild, and the rebuild hint when the index is stale."""
+    if reindexed is not None:
+        line(f"Rebuilt: {reindexed} documents ingested")
+    if reindex_error is not None:
+        print_prefixed(console, "Error: ", reindex_error, style=theme.ERROR)
+    if reindex_required and (reindexed is None or reindex_error is not None):
+        line(REBUILD_HINT, theme.WARNING)
+
+
+def _render_discard(
+    result: ProfileDiscardResponse, reindexed: int | None, reindex_error: str | None
+) -> None:
     if not result.dropped:
         line("You have no values of profile settings to remove.")
         return
     line(f"Removed your values of: {', '.join(result.dropped)}")
-    if result.reindex_required:
-        line(REBUILD_HINT, theme.WARNING)
+    _render_rebuild(result.reindex_required, reindexed, reindex_error)
     for warning in result.warnings:
         line(warning, theme.WARNING)
 
@@ -168,7 +190,7 @@ def profile_show(
     from lilbee.app import profiles
     from lilbee.server.models import ActiveProfileResponse, ProfileEntryResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     if name is None:
         current = ActiveProfileResponse.from_active(
             run_or_fail(lambda: profiles.active(_store()), profiles.file_failure_message)
@@ -190,7 +212,7 @@ def profile_list(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileEntryResponse, ProfileListResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     catalog = run_or_fail(lambda: profiles.list_profiles(_store()), profiles.file_failure_message)
     active_name = run_or_fail(lambda: profiles.active(_store()), profiles.file_failure_message).name
     listing = ProfileListResponse(
@@ -201,7 +223,7 @@ def profile_list(
 
 @profile_app.command(name="diff")
 def profile_diff(
-    name: str,
+    name: str = _name_argument,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
@@ -209,15 +231,15 @@ def profile_diff(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileDiffResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     diff = ProfileDiffResponse.from_diff(
         run_or_fail(lambda: profiles.diff(_store(), name), profiles.file_failure_message)
     )
     emit(diff, lambda: _render_diff(diff))
 
 
-def _apply_json(
-    result: ProfileApplyResponse,
+def _rebuild_json(
+    result: ProfileApplyResponse | ProfileDiscardResponse,
     reindexed: int | None,
     reindex_error: str | None,
     reindex_failed: int,
@@ -246,7 +268,7 @@ def _reindex() -> tuple[int | None, int, str | None]:
 
 @profile_app.command(name="apply")
 def profile_apply(
-    name: str,
+    name: str = _name_argument,
     reindex: bool = typer.Option(
         False,
         "--reindex",
@@ -259,27 +281,24 @@ def profile_apply(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileApplyResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     result = ProfileApplyResponse.from_result(
         run_or_fail(lambda: profiles.apply(_store(), name), profiles.file_failure_message)
     )
     if not cfg.json_mode:
         line(f"Applied {result.name}.", theme.ACCENT)
         render_changes(result.changes)
+        if result.kept:
+            line(f"Keeps your values of: {', '.join(result.kept)}")
     reindexed: int | None = None
     reindex_failed = 0
     reindex_error: str | None = None
     if reindex and (result.reindex_required or profiles.sets_reindex_field(_store(), result.name)):
         reindexed, reindex_failed, reindex_error = _reindex()
     if cfg.json_mode:
-        json_output(_apply_json(result, reindexed, reindex_error, reindex_failed))
+        json_output(_rebuild_json(result, reindexed, reindex_error, reindex_failed))
     else:
-        if reindexed is not None:
-            line(f"Rebuilt: {reindexed} documents ingested")
-        if reindex_error is not None:
-            print_prefixed(console, "Error: ", reindex_error, style=theme.ERROR)
-        elif reindexed is None and result.reindex_required:
-            line(REBUILD_HINT, theme.WARNING)
+        _render_rebuild(result.reindex_required, reindexed, reindex_error)
         for warning in result.warnings:
             line(warning, theme.WARNING)
     if reindex_error is not None:
@@ -288,7 +307,7 @@ def profile_apply(
 
 @profile_app.command(name="new")
 def profile_new(
-    name: str,
+    name: str = _new_name_argument,
     from_profile: str | None = typer.Option(
         None, "--from", help="Start from this profile's values."
     ),
@@ -300,7 +319,7 @@ def profile_new(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     location = ProfileLocationResponse.from_location(
         run_or_fail(
             lambda: profiles.new(_store(), name, target, from_name=from_profile),
@@ -312,7 +331,7 @@ def profile_new(
 
 @profile_app.command(name="save")
 def profile_save(
-    name: str,
+    name: str = _new_name_argument,
     target: ProfileFolder = _target_option,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -321,7 +340,7 @@ def profile_save(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileSaveResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     result = ProfileSaveResponse.from_save(
         run_or_fail(lambda: profiles.save_as(name, target), profiles.file_failure_message)
     )
@@ -337,7 +356,7 @@ def profile_update(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileSaveResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     result = ProfileSaveResponse.from_save(
         run_or_fail(lambda: profiles.update(_store()), profiles.file_failure_message)
     )
@@ -346,6 +365,7 @@ def profile_update(
 
 @profile_app.command(name="discard")
 def profile_discard(
+    reindex: bool = _reindex_option,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
@@ -353,17 +373,27 @@ def profile_discard(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileDiscardResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     result = ProfileDiscardResponse.from_result(
         run_or_fail(profiles.discard, profiles.file_failure_message)
     )
-    emit(result, lambda: _render_discard(result))
+    reindexed: int | None = None
+    reindex_failed = 0
+    reindex_error: str | None = None
+    if reindex and result.reindex_required:
+        reindexed, reindex_failed, reindex_error = _reindex()
+    if cfg.json_mode and reindex:
+        json_output(_rebuild_json(result, reindexed, reindex_error, reindex_failed))
+    else:
+        emit(result, lambda: _render_discard(result, reindexed, reindex_error))
+    if reindex_error is not None:
+        raise typer.Exit(1)
 
 
 @profile_app.command(name="duplicate")
 def profile_duplicate(
-    name: str,
-    new_name: str,
+    name: str = _name_argument,
+    new_name: str = _new_name_argument,
     target: ProfileFolder = _target_option,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -372,7 +402,7 @@ def profile_duplicate(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     location = ProfileLocationResponse.from_location(
         run_or_fail(
             lambda: profiles.duplicate(_store(), name, new_name, target),
@@ -384,8 +414,8 @@ def profile_duplicate(
 
 @profile_app.command(name="rename")
 def profile_rename(
-    name: str,
-    new_name: str,
+    name: str = _name_argument,
+    new_name: str = _new_name_argument,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
@@ -393,7 +423,7 @@ def profile_rename(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     location = ProfileLocationResponse.from_location(
         run_or_fail(
             lambda: profiles.rename(_store(), name, new_name), profiles.file_failure_message
@@ -404,7 +434,7 @@ def profile_rename(
 
 @profile_app.command(name="delete")
 def profile_delete(
-    name: str,
+    name: str = _name_argument,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
@@ -412,7 +442,7 @@ def profile_delete(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     location = ProfileLocationResponse.from_location(
         run_or_fail(lambda: profiles.delete(_store(), name), profiles.file_failure_message)
     )
@@ -421,7 +451,7 @@ def profile_delete(
 
 @profile_app.command(name="export")
 def profile_export(
-    name: str,
+    name: str = _name_argument,
     path: Path = _export_path_argument,
     overwrite: bool = typer.Option(False, "--overwrite", help="Replace an existing file."),
     data_dir: Path | None = data_dir_option,
@@ -431,7 +461,7 @@ def profile_export(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     location = ProfileLocationResponse.from_location(
         run_or_fail(
             lambda: profiles.export(_store(), name, path, overwrite=overwrite),
@@ -443,7 +473,7 @@ def profile_export(
 
 @profile_app.command(name="import")
 def profile_import(
-    file: Path,
+    file: Path = _file_argument,
     target: ProfileFolder = _target_option,
     overwrite: bool = typer.Option(
         False, "--overwrite", help="Replace a profile with the same name in the target folder."
@@ -455,7 +485,7 @@ def profile_import(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     location = ProfileLocationResponse.from_location(
         run_or_fail(
             lambda: profiles.import_profile(_store(), file, target, overwrite=overwrite),
@@ -476,7 +506,7 @@ def _render_validation(result: ProfileValidationResponse) -> None:
 
 @profile_app.command(name="validate")
 def profile_validate(
-    file: Path,
+    file: Path = _file_argument,
     folder: ProfileFolder = _folder_option,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -485,7 +515,7 @@ def profile_validate(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileValidationResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     result = ProfileValidationResponse.from_validation(profiles.validate(file, folder))
     emit(result, lambda: _render_validation(result))
     if not result.valid:

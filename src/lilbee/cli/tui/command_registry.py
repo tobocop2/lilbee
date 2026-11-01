@@ -70,7 +70,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "_cmd_set",
         aliases=(),
         args_hint="<key> <value>",
-        help_text="Change a setting",
+        help_text="Change a setting; a list setting takes one item here, so use Settings for more",
     ),
     SlashCommand(
         "/theme",

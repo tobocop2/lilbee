@@ -10,8 +10,8 @@ from rich.table import Column, Table
 from rich.text import Text
 
 from lilbee.cli import theme
-from lilbee.cli.app import console, data_dir_option, global_option
-from lilbee.cli.commands._shared import REBUILD_HINT, emit, line, run_or_fail, setup, shown_value
+from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
+from lilbee.cli.commands._shared import REBUILD_HINT, emit, line, run_or_fail, shown_value
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 
@@ -19,7 +19,9 @@ if TYPE_CHECKING:
     from lilbee.app.settings import SettingInfo, SettingsUpdateResult
     from lilbee.server.models import ConfigUpdateResponse
 
-settings_app = typer.Typer(help="Show and change settings, with each value's source.")
+settings_app = typer.Typer(
+    help="Show and change settings, with each value's source.", no_args_is_help=True
+)
 
 _key_argument = typer.Argument(help="A setting's name, as shown by 'lilbee settings list'.")
 _keys_argument = typer.Argument(
@@ -74,7 +76,7 @@ def settings_list(
     from lilbee.app.settings import config_write_failure_message, list_settings
     from lilbee.server.models import SettingsListResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     infos = run_or_fail(lambda: list_settings(group), config_write_failure_message)
     emit(SettingsListResponse.from_infos(infos), lambda: _render_list(infos))
 
@@ -89,7 +91,7 @@ def settings_get(
     from lilbee.app.settings import config_write_failure_message, get_setting
     from lilbee.server.models import SettingValueResponse
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     info = run_or_fail(lambda: get_setting(key), config_write_failure_message)
     emit(SettingValueResponse.from_info(info), lambda: _render_get(info))
 
@@ -134,7 +136,7 @@ def settings_set(
     """Set a writable setting; model roles are refused (use 'lilbee model' instead)."""
     from lilbee.app.settings import apply_settings_update, config_write_failure_message
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     parsed = _parse_cli_value(key, value)
     result = run_or_fail(
         lambda: apply_settings_update({key: parsed}, allow_model_roles=False),
@@ -158,7 +160,7 @@ def settings_unset(
     """Remove your value of one or more settings; the next source applies."""
     from lilbee.app.settings import config_write_failure_message, get_setting, reset_settings
 
-    setup(data_dir, use_global)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     result = run_or_fail(
         lambda: reset_settings(keys, allow_model_roles=False), config_write_failure_message
     )

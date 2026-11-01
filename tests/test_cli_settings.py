@@ -390,3 +390,37 @@ def test_get_set_and_unset_print_the_same_unknown_key_message(project):
     assert get_result.output == expected
     assert set_result.output == expected
     assert unset_result.output == expected
+
+
+# -- groups, project folders, bare group commands ---------------------------
+
+
+def test_every_listed_group_lists_settings_and_general_is_not_a_group(project):
+    from lilbee.app.settings_map import SettingGroup
+
+    for group in SettingGroup:
+        assert _json(project, "list", "--group", group.value)["settings"], group
+    assert "General" not in {group.value for group in SettingGroup}
+    assert _invoke(project, "list", "--group", "General").exit_code == 1
+
+
+def test_set_refusing_a_model_role_names_the_model_command(project):
+    result = _invoke(project, "set", "chat_model", "some/Model-GGUF/model.gguf")
+    assert result.exit_code == 1
+    assert "lilbee model" in result.output
+
+
+def test_a_data_dir_holding_a_lilbee_folder_writes_inside_it(project):
+    (project / ".lilbee").mkdir()
+    result = _invoke(project, "set", "chunk_size", "300")
+    assert result.exit_code == 0, result.output
+    assert (project / ".lilbee" / "config.toml").exists()
+    assert not (project / "config.toml").exists()
+
+
+@pytest.mark.parametrize("group", ["profile", "settings", "wiki"])
+def test_a_bare_group_command_prints_its_help(group):
+    result = runner.invoke(app, [group])
+    assert "Missing command" not in result.output
+    assert "Usage:" in result.output
+    assert "Commands" in result.output

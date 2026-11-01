@@ -476,3 +476,74 @@ def test_show_without_a_name_lists_your_changes(project):
     assert "Your changes" in result.output
     assert "900" in result.output
     assert "512 (built in)" in result.output
+
+
+def test_apply_names_the_values_it_keeps(project):
+    (project / "config.toml").write_text("layout_detection = false\n", encoding="utf-8")
+    result = _invoke(project, "apply", "research-papers")
+    assert result.exit_code == 0, result.output
+    assert "Keeps your values of: layout_detection" in result.output
+    (project / "config.toml").write_text("layout_detection = false\n", encoding="utf-8")
+    assert _json(project, "apply", "research-papers")["kept"] == ["layout_detection"]
+
+
+def test_apply_prints_no_keeps_line_when_it_keeps_nothing(project):
+    result = _invoke(project, "apply", "research-papers")
+    assert "Keeps your values" not in result.output
+
+
+def test_apply_prints_the_rebuild_hint_after_a_failed_rebuild(project, monkeypatch):
+    rebuilds = MagicMock(side_effect=RuntimeError("A sync is already running"))
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    _write(_global_dir(), "court-filings", CREDITED)
+    result = _invoke(project, "apply", "Court filings", "--reindex")
+    assert result.exit_code == 1
+    error_at = result.output.index("A sync is already running")
+    assert error_at < result.output.index("Run lilbee rebuild")
+
+
+def test_discard_with_reindex_rebuilds_when_a_removed_value_needs_it(project, monkeypatch):
+    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf", "b.pdf"], failed=[]))
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    (project / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    result = _invoke(project, "discard", "--reindex")
+    assert result.exit_code == 0, result.output
+    assert "Rebuilt: 2 documents ingested" in result.output
+    assert "Run lilbee rebuild" not in result.output
+    rebuilds.assert_called_once_with()
+    (project / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    payload = _json(project, "discard", "--reindex")
+    assert (payload["reindexed"], payload["reindex_failed"]) == (2, 0)
+
+
+def test_discard_with_reindex_skips_the_rebuild_when_nothing_needs_it(project, monkeypatch):
+    rebuilds = MagicMock()
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    (project / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
+    result = _invoke(project, "discard", "--reindex")
+    assert result.exit_code == 0, result.output
+    rebuilds.assert_not_called()
+
+
+def test_discard_with_reindex_exits_nonzero_and_hints_when_the_rebuild_fails(project, monkeypatch):
+    rebuilds = MagicMock(side_effect=RuntimeError("A sync is already running"))
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    (project / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    result = _invoke(project, "discard", "--reindex")
+    assert result.exit_code == 1
+    assert "A sync is already running" in result.output
+    assert "Run lilbee rebuild" in result.output
+
+
+def test_every_profile_argument_has_help_text():
+    import click
+    import typer.main
+
+    group = typer.main.get_command(app).commands["profile"]
+    missing = [
+        f"{name} {param.name}"
+        for name, command in group.commands.items()
+        for param in command.params
+        if isinstance(param, click.Argument) and not param.help
+    ]
+    assert missing == []

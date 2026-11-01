@@ -209,7 +209,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/remember <text>` | | Save a memory (prefix with `pref:` for a preference). Needs memory enabled |
 | `/memories` | | Browse, delete, or share saved memories |
 | `/settings` | | View or change settings |
-| `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`) |
+| `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`); a list setting takes one item, so use Settings for more |
 | `/profile [name]` | | Switch the settings profile. No args opens the Profile tab in Settings |
 | `/analyze [dir\|report\|off]` | | Recommend a profile for your documents or a folder. `report` opens the last report; `off` hides the analyze tip |
 | `/theme <name>` | | Switch theme |
@@ -993,6 +993,7 @@ lilbee profile apply scanned-archive --reindex  # apply, then rebuild when a cha
 lilbee profile save "Court filings"           # save your settings as a profile and switch to it
 lilbee profile update                         # write your settings into the active profile
 lilbee profile discard                        # drop your values so the profile's show through
+lilbee profile discard --reindex              # same, then rebuild when a removed value needs it
 lilbee profile new "Mine" --from research-papers
 lilbee profile duplicate "Scanned archive" "My scans"
 lilbee profile rename "My scans" "Old scans"

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, NoReturn, TypeVar
 
 import typer
@@ -13,7 +12,7 @@ from pydantic_core import to_jsonable_python
 from rich.text import Text
 
 from lilbee.cli import theme
-from lilbee.cli.app import apply_overrides, console
+from lilbee.cli.app import console
 from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
 
@@ -36,11 +35,6 @@ def emit(model: BaseModel, render: Callable[[], None]) -> None:
         json_output(model.model_dump(mode="json"))
     else:
         render()
-
-
-def setup(data_dir: Path | None, use_global: bool) -> None:
-    """Apply --data-dir/--global overrides before a profile or settings command runs."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
 
 
 def fail(message: str) -> NoReturn:

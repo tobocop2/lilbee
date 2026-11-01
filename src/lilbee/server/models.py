@@ -1263,6 +1263,7 @@ class ProfileApplyResponse(BaseModel):
     changes: list[ProfileDiffRowResponse]
     reindex_required: bool
     new_files_only: list[str]
+    kept: list[str]
     warnings: list[str] = []
 
     @classmethod
@@ -1273,6 +1274,7 @@ class ProfileApplyResponse(BaseModel):
             changes=[ProfileDiffRowResponse.from_row(row) for row in result.changes],
             reindex_required=result.reindex_required,
             new_files_only=list(result.new_files_only),
+            kept=list(result.kept),
             warnings=list(result.warnings),
         )
 

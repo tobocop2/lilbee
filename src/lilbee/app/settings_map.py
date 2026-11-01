@@ -33,7 +33,6 @@ class SettingGroup(StrEnum):
     API_KEYS = "API-Keys"
     SYSTEM = "System"
     DISPLAY = "Display"
-    GENERAL = "General"
 
 
 @dataclass(frozen=True)
@@ -65,9 +64,9 @@ class SettingDef:
 
     type: type
     nullable: bool
+    group: SettingGroup
     writable: bool = True
     render: RenderStyle = field(default=RenderStyle.COMPACT)
-    group: SettingGroup = SettingGroup.GENERAL
     help_text: str = ""
     choices: tuple[str, ...] | None = None
     hidden: bool = False

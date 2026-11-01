@@ -594,8 +594,8 @@ def _refuse_model_roles(keys: Iterable[str]) -> None:
     if rejected:
         offender = sorted(rejected)[0]
         raise ValueError(
-            f"'{offender}' must be set through the dedicated model route, "
-            "not the general settings update."
+            f"'{offender}' must be set through the dedicated model route "
+            "(on the command line, lilbee model), not the general settings update."
         )
 
 

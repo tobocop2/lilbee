@@ -63,7 +63,6 @@ GROUP_ORDER: tuple[SettingGroup, ...] = (
     SettingGroup.API_KEYS,
     SettingGroup.DISPLAY,
     SettingGroup.SYSTEM,
-    SettingGroup.GENERAL,
 )
 
 # The only CLI commands that write a setting to config.toml. Everything else

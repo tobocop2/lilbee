@@ -1494,7 +1494,7 @@ async def test_settings_parse_value_list_branch():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    defn = SettingDef(list, nullable=False)
+    defn = SettingDef(list, nullable=False, group=SettingGroup.INGEST)
     screen = SettingsScreen()
     result = screen._parse_value(defn, "a\n\nb")
     assert result == ["a", "b"]
@@ -2130,7 +2130,7 @@ async def test_refresh_editor_missing_widget_is_logged(caplog):
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        defn = SettingDef(type=str, nullable=True, group="General")
+        defn = SettingDef(type=str, nullable=True, group=SettingGroup.SYSTEM)
         with caplog.at_level("DEBUG", logger="lilbee.cli.tui.screens.settings"):
             screen._refresh_editor("nonexistent_key_xyz", defn, "irrelevant")
         assert any("nonexistent_key_xyz" in record.message for record in caplog.records)
@@ -2167,7 +2167,7 @@ async def test_refresh_editor_updates_textarea_scalar(monkeypatch):
         assert isinstance(screen, SettingsScreen)
         fake = MagicMock(spec=TextArea)
         monkeypatch.setattr(screen, "query_one", lambda *a, **kw: fake)
-        defn = SettingDef(type=str, nullable=False, group="General")
+        defn = SettingDef(type=str, nullable=False, group=SettingGroup.SYSTEM)
         screen._refresh_editor("fake_str", defn, "hello")
         fake.load_text.assert_called_once_with("hello")
 
@@ -2185,7 +2185,7 @@ async def test_refresh_editor_updates_textarea_none(monkeypatch):
         assert isinstance(screen, SettingsScreen)
         fake = MagicMock(spec=TextArea)
         monkeypatch.setattr(screen, "query_one", lambda *a, **kw: fake)
-        defn = SettingDef(type=str, nullable=True, group="General")
+        defn = SettingDef(type=str, nullable=True, group=SettingGroup.SYSTEM)
         screen._refresh_editor("fake_str", defn, None)
         fake.load_text.assert_called_once_with("")
 
