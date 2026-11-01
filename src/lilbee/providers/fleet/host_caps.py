@@ -1,4 +1,4 @@
-"""What the host can run: CPU instruction sets, NVIDIA GPUs, NPUs, OS and architecture.
+"""What the host can run: CPU instruction sets, NVIDIA GPUs, OS and architecture.
 
 Each answer carries the reason an engine can show when the capability is absent.
 This module is the one reader of the NVML bindings; it reads no device text itself.
@@ -7,11 +7,10 @@ This module is the one reader of the NVML bindings; it reads no device text itse
 from __future__ import annotations
 
 import platform
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from types import ModuleType
 from typing import Any, TypeVar
 
@@ -21,7 +20,6 @@ NO_NVIDIA_DRIVER = "no NVIDIA driver"
 NVIDIA_UNREADABLE = "the NVIDIA driver answers could not be read"
 _NVML_CUDA_MAJOR_DIVISOR = 1000
 _NVML_CUDA_MINOR_DIVISOR = 10
-_SYSFS_ACCEL_DIR = Path("/sys/class/accel")
 
 
 class HostOS(StrEnum):
@@ -38,21 +36,6 @@ class HostArch(StrEnum):
     X86_64 = "x86_64"
     ARM64 = "arm64"
 
-
-class NpuVendor(StrEnum):
-    """Makers of the NPUs the host can report."""
-
-    INTEL = "intel"
-    AMD = "amd"
-    QUALCOMM = "qualcomm"
-
-
-# PCI vendor id of an accelerator, as sysfs writes it, to the NPU name reported.
-_ACCEL_NPU_NAMES = {
-    "0x8086": "Intel NPU",
-    "0x1022": "AMD NPU",
-    "0x17cb": "Qualcomm NPU",
-}
 
 _OS_BY_SYSTEM = {"Linux": HostOS.LINUX, "Darwin": HostOS.MACOS, "Windows": HostOS.WINDOWS}
 _ARCH_BY_MACHINE = {
@@ -85,32 +68,17 @@ class NvidiaGpu:
 
 
 @dataclass(frozen=True)
-class Npu:
-    """One neural processing unit."""
-
-    vendor: NpuVendor
-    name: str
-
-
-@dataclass(frozen=True)
 class HostCaps:
     """The capabilities of one host."""
 
     os: HostOS | None
     arch: HostArch | None
-    macos_version: tuple[int, ...] | None
     avx2: Feature
     neon: Feature
     gpus: tuple[NvidiaGpu, ...]
     nvidia_driver_cuda: tuple[int, int] | None
     nvidia_reason: str
     nvidia_known: bool
-    npus: tuple[Npu, ...]
-
-
-def nvidia_feature(host: HostCaps) -> Feature:
-    """The NVIDIA GPU as a feature; unknown when the driver answers could not be read."""
-    return Feature(bool(host.gpus), host.nvidia_reason or "no NVIDIA GPU", known=host.nvidia_known)
 
 
 def _decoded(value: str | bytes) -> str:
@@ -284,29 +252,12 @@ def _neon(arch: HostArch | None) -> Feature:
     return Feature(False, "not an ARM CPU")
 
 
-def _npu(name: str) -> Npu | None:
-    lowered = name.lower()
-    for vendor in NpuVendor:
-        if vendor.value in lowered:
-            return Npu(vendor, name)
-    return None
-
-
-def _macos_version(mac_ver: str) -> tuple[int, ...] | None:
-    try:
-        return tuple(int(part) for part in mac_ver.split(".")) if mac_ver else None
-    except ValueError:
-        return None
-
-
 def collect(
     *,
     system: str,
     machine: str,
-    mac_ver: str,
     cpu_info: dict[str, Any],
     nvml: dict[str, Any] | None,
-    npu_devices: Sequence[str],
 ) -> HostCaps:
     """Build the host answer from raw readings; a value that cannot be read is unknown."""
     host_os = _OS_BY_SYSTEM.get(system)
@@ -317,14 +268,12 @@ def collect(
     return HostCaps(
         os=host_os,
         arch=arch,
-        macos_version=_macos_version(mac_ver) if host_os is HostOS.MACOS else None,
         avx2=_avx2(arch, cpu_info),
         neon=_neon(arch),
         gpus=gpus or (),
         nvidia_driver_cuda=cuda,
         nvidia_reason=_nvidia_reason(nvml, nvidia_known),
         nvidia_known=nvidia_known,
-        npus=tuple(npu for npu in map(_npu, npu_devices) if npu is not None),
     )
 
 
@@ -332,24 +281,6 @@ def _nvidia_reason(nvml: dict[str, Any] | None, known: bool) -> str:
     if not nvml:
         return NO_NVIDIA_DRIVER
     return "" if known else NVIDIA_UNREADABLE
-
-
-def _accel_device_names() -> list[str]:
-    """Names of the NPUs the Linux accelerator class lists, from the PCI vendor of each."""
-    try:
-        vendor_files = sorted(_SYSFS_ACCEL_DIR.glob("accel*/device/vendor"))
-    except OSError:
-        return []
-    names = []
-    for vendor_file in vendor_files:
-        try:
-            vendor = vendor_file.read_text(encoding="utf-8").strip().lower()
-        except (OSError, UnicodeDecodeError):
-            continue
-        name = _ACCEL_NPU_NAMES.get(vendor)
-        if name is not None:
-            names.append(name)
-    return names
 
 
 def _cpu_info() -> dict[str, Any]:
@@ -364,8 +295,6 @@ def detect() -> HostCaps:
     return collect(
         system=platform.system(),
         machine=platform.machine(),
-        mac_ver=platform.mac_ver()[0],
         cpu_info=_read_or_none(_cpu_info) or {},
         nvml=read_nvml(),
-        npu_devices=_accel_device_names(),
     )

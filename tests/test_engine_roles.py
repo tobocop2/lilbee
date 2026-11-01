@@ -25,7 +25,8 @@ from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as ingest_pipeline
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.choice import HostFacts, NoEngineError
+from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import WorkerRole
 from tests.conformance.fake_adapter import BundledFakeAdapter
 
@@ -62,7 +63,9 @@ def two_engines(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, MLX_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="darwin", machine="arm64")
+        engine_choice,
+        "session_host",
+        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
     )
 
 

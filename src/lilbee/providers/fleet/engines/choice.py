@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -18,17 +18,17 @@ from lilbee.providers.fleet.engine_store import (
     engines_root,
 )
 from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
+from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.tei import TEI
+from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
 
 AUTO = "auto"
-_DARWIN = "darwin"
-_ARM64 = "arm64"
 # The command that shows the installed engines.
 LIST_HINT = "Run lilbee engine list to see the installed engines."
 
@@ -40,11 +40,8 @@ ADAPTERS: Mapping[EngineName, EngineAdapter] = {
 # What each installed engine loads: the ``formats`` of its adapter.
 InstalledEngines = Mapping[EngineName, Collection[str]]
 
-
-class Accel(StrEnum):
-    """Accelerators the default rule looks at."""
-
-    INTEL_NPU = "intel_npu"
+# The reader of the host, called only when a gate needs its answer.
+HostSource = Callable[[], HostCaps]
 
 
 class NoticeKind(StrEnum):
@@ -57,15 +54,6 @@ class NoticeKind(StrEnum):
 
 class NoEngineError(ProviderError):
     """No installed engine loads the model format."""
-
-
-@dataclass(frozen=True)
-class HostFacts:
-    """The host properties the default rule reads; ``system`` and ``machine`` are lower case."""
-
-    system: str
-    machine: str
-    accel: tuple[Accel, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -83,24 +71,44 @@ class EngineChoice:
         return self.name
 
 
+def _adapter(name: str) -> EngineAdapter | None:
+    return next((a for n, a in ADAPTERS.items() if n == name), None)
+
+
 def _serves(name: str, role: WorkerRole | None) -> bool:
     """False only for a shipped adapter that does not serve *role*."""
-    adapter = next((a for n, a in ADAPTERS.items() if n == name), None)
+    adapter = _adapter(name)
     return role is None or adapter is None or role in adapter.served_roles
 
 
+def _host_answer(name: str, host: HostSource) -> HostGate:
+    """What the host says about *name*; a bundled engine reads nothing."""
+    adapter = _adapter(name)
+    return PASS if adapter is None or adapter.bundled else adapter.host_gate(host())
+
+
+def _is_apple_silicon(caps: HostCaps) -> bool:
+    return caps.os is HostOS.MACOS and caps.arch is HostArch.ARM64
+
+
 def _default(
-    fmt: ModelFormat, host: HostFacts, installed: InstalledEngines, role: WorkerRole | None
+    fmt: ModelFormat, host: HostSource, installed: InstalledEngines, role: WorkerRole | None
 ) -> EngineName | None:
     """The first engine in the host's order that is installed, loads *fmt* and serves *role*."""
     order: list[EngineName] = []
-    if Accel.INTEL_NPU in host.accel:
-        order.append(EngineName.OPENVINO)
-    if host.system == _DARWIN and host.machine == _ARM64:
+    if EngineName.MLX in installed and _is_apple_silicon(host()):
         order.append(EngineName.MLX)
     order.append(EngineName.LLAMA)
     return next(
-        (e for e in order if e in installed and fmt in installed[e] and _serves(e, role)), None
+        (
+            e
+            for e in order
+            if e in installed
+            and fmt in installed[e]
+            and _serves(e, role)
+            and _host_answer(e, host).auto_selectable
+        ),
+        None,
     )
 
 
@@ -121,9 +129,15 @@ def engines_loading(fmt: str, installed: InstalledEngines) -> list[EngineName]:
     return [name for name, formats in installed.items() if fmt in formats]
 
 
-def _candidates(fmt: str, installed: InstalledEngines, role: WorkerRole | None) -> list[EngineName]:
-    """The installed engines that load *fmt* and serve *role*."""
-    return [name for name in engines_loading(fmt, installed) if _serves(name, role)]
+def _candidates(
+    fmt: str, installed: InstalledEngines, role: WorkerRole | None, host: HostSource
+) -> list[EngineName]:
+    """The installed engines that load *fmt*, serve *role* and can run on the host."""
+    return [
+        name
+        for name in engines_loading(fmt, installed)
+        if _serves(name, role) and _host_answer(name, host).ok
+    ]
 
 
 def _choose_hint(names: list[EngineName]) -> str:
@@ -132,7 +146,7 @@ def _choose_hint(names: list[EngineName]) -> str:
 
 def _by_default(
     fmt: ModelFormat,
-    host: HostFacts,
+    host: HostSource,
     installed: InstalledEngines,
     role: WorkerRole | None,
     of_model: str,
@@ -141,7 +155,7 @@ def _by_default(
     default = _default(fmt, host, installed, role)
     if default is not None:
         return EngineChoice(default, None, None)
-    candidates = _candidates(fmt, installed, role)
+    candidates = _candidates(fmt, installed, role, host)
     if candidates:
         text = f"No engine is chosen by default for the {fmt} format{of_model}. "
         text += _choose_hint(candidates)
@@ -153,7 +167,7 @@ def _by_default(
 def choose_engine(
     *,
     fmt: ModelFormat,
-    host: HostFacts,
+    host: HostSource,
     installed: InstalledEngines,
     preferred: str,
     override: str | None,
@@ -162,10 +176,10 @@ def choose_engine(
 ) -> EngineChoice:
     """Pick the engine for *fmt*: the override, else the preference, else the host default.
 
-    The result never names an engine that cannot load *fmt*. A preference that
-    is unusable gives the host default, with a notice. An override that is
-    installed but cannot load *fmt* gives no engine. A notice names *role* and
-    *model* when given.
+    The result never names an engine that cannot load *fmt* or that the host
+    refuses. A request that is unusable gives the host default, with a notice
+    that holds the reason. An override that is installed but cannot load *fmt*
+    gives no engine. A notice names *role* and *model* when given.
     """
     request = _request(preferred, override)
     of_model = f" of {model}" if model else ""
@@ -173,10 +187,13 @@ def choose_engine(
         return _by_default(fmt, host, installed, role, of_model)
     name, kind = request
     loads = name in engines_loading(fmt, installed)
-    if loads and _serves(name, role):
+    serves = _serves(name, role)
+    answer = _host_answer(name, host) if loads and serves else PASS
+    if loads and serves and answer.ok:
         return EngineChoice(EngineName(name), None, None)
     subject = f"Engine {name} for {role.value}" if role else f"Engine {name}"
     hint = ""
+    left = f"loads the {fmt} format"
     if name not in installed:
         reason = f"{subject} is not installed."
         hint = f" {LIST_HINT}"
@@ -184,19 +201,22 @@ def choose_engine(
         reason = f"{subject} cannot load the {fmt} format{of_model}."
         if kind is NoticeKind.OVERRIDE_UNUSABLE:
             return EngineChoice(None, kind, f"{reason} Choose an engine that loads {fmt}.")
-    else:
+    elif not serves:
         reason = f"{subject} does not serve this role."
+        left = "serves this role"
+    else:
+        reason = f"{subject} cannot run on this host. {answer.reason}"
+        left = "that loads this model can run on this host"
     default = _default(fmt, host, installed, role)
     if default is None:
-        candidates = _candidates(fmt, installed, role)
-        left = "serves this role" if loads else f"loads the {fmt} format"
+        candidates = _candidates(fmt, installed, role, host)
         tail = (
             f"No engine is chosen by default. {_choose_hint(candidates)}"
             if candidates
             else f"No installed engine {left}."
         )
         return EngineChoice(None, kind, f"{reason} {tail}")
-    if loads and kind is NoticeKind.PREFERRED_UNUSABLE:
+    if loads and not serves and kind is NoticeKind.PREFERRED_UNUSABLE:
         # A preference that skips a role leaves it on the next engine without a notice.
         return EngineChoice(default, None, None)
     return EngineChoice(default, kind, f"{reason} Using {default}.{hint}")

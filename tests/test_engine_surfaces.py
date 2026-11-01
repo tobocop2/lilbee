@@ -18,6 +18,7 @@ from typer.testing import CliRunner
 import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
 from lilbee.app.engine_choice import engine_for_ref
+from lilbee.catalog.types import ModelFormat
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import USAGE, run_engine_command
 from lilbee.core import settings
@@ -25,7 +26,8 @@ from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.choice import HostFacts, NoEngineError
+from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.server.routes import engines as routes
@@ -58,7 +60,9 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.preferred_engine = EngineSetting.AUTO
     cfg.engine_choices = None
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="darwin", machine="arm64")
+        engine_choice,
+        "session_host",
+        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
     )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, MLX_ENGINE)  # type: ignore[arg-type]
@@ -693,3 +697,27 @@ def test_every_surface_refuses_an_engine_that_does_not_serve_the_role(surface: s
     assert expected.startswith("Engine mistral.rs does not serve rerank.")
     assert _refusal(surface, "rerank", GGUF_REF, "mistral.rs") == expected
     assert _stored("engine_choices") is None
+
+
+def test_every_role_view_shows_why_the_host_refused_an_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    formats = frozenset({ModelFormat.GGUF})
+    monkeypatch.setattr(
+        engine_choice,
+        "installed_engines",
+        lambda: {EngineName.LLAMA: formats, EngineName.IK_LLAMA: formats},
+    )
+    monkeypatch.setattr(
+        engine_choice,
+        "session_host",
+        lambda: collect(
+            system="Linux",
+            machine="x86_64",
+            cpu_info={"flags": ["sse4_2"], "brand_raw": "Xeon"},
+            nvml=None,
+        ),
+    )
+    cfg.engine_choices = json.dumps({GGUF_REF: "ik_llama.cpp"})
+    for surface, text in _roles_texts().items():
+        assert "Xeon lacks AVX2" in " ".join(text.split()), surface

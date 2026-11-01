@@ -1159,7 +1159,7 @@ class TestModelsPullByFormat:
         from lilbee.catalog.types import ModelFormat
         from lilbee.providers.fleet.engines import choice
         from lilbee.providers.fleet.engines.base import EngineName
-        from lilbee.providers.fleet.engines.choice import HostFacts
+        from lilbee.providers.fleet.host_caps import collect
         from tests.conformance.fake_adapter import BundledFakeAdapter
 
         class _MlxEngine(BundledFakeAdapter):
@@ -1168,7 +1168,9 @@ class TestModelsPullByFormat:
 
         monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, _MlxEngine())
         monkeypatch.setattr(
-            engine_choice, "host_facts", lambda: HostFacts(system="darwin", machine="arm64")
+            engine_choice,
+            "session_host",
+            lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
         )
         fetched = []
 
