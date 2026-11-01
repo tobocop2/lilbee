@@ -21,7 +21,7 @@ from lilbee.cli.tui.widgets.format_picker import FormatPicker
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from tests._lilbee_app_test_host import LilbeeAppHost
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 
 class _App(LilbeeAppHost):
@@ -29,7 +29,7 @@ class _App(LilbeeAppHost):
         yield Static("host")
 
 
-class _SafetensorsEngine(FakeAdapter):
+class _SafetensorsEngine(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf", "safetensors"})
     architectures = frozenset({"gguf_arch"})
@@ -80,10 +80,13 @@ async def test_grid_scroll_hint_says_how_many_rows_are_hidden(
         screen = CatalogScreen()
         await pilot.app.push_screen(screen)
         shown = await wait_until(
-            pilot, lambda: "1 hidden (no engine for mlx)" in _screen_text(screen)
+            pilot,
+            lambda: (
+                "1 hidden (no engine for mlx)" in _screen_text(screen)
+                and "All 1 models loaded" in _screen_text(screen)
+            ),
         )
         assert shown, _screen_text(screen)
-        assert "All 1 models loaded" in _screen_text(screen)
         assert "b/mlx-only" not in _screen_text(screen)
 
 

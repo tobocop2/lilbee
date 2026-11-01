@@ -32,6 +32,8 @@ from lilbee.runtime.cancellation import TaskCancelledError
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, ready_services
 
+_WAIT_S = 10.0
+
 
 @pytest.fixture(autouse=True)
 def _stub_repo_listing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,11 +117,12 @@ async def test_start_task_failure_marks_failed_with_detail() -> None:
             raise RuntimeError("boom")
 
         task_id = controller.start_task("demo", TaskType.SYNC, _target)
-        for _ in range(30):
-            await pilot.pause()
+
+        def _failed() -> bool:
             task = controller.queue.get_task(task_id)
-            if task is not None and task.status == TaskStatus.FAILED:
-                break
+            return task is not None and task.status == TaskStatus.FAILED
+
+        await wait_until(pilot, _failed, timeout=_WAIT_S)
         task = controller.queue.get_task(task_id)
         assert task is not None
         assert task.status == TaskStatus.FAILED
@@ -191,10 +194,7 @@ async def test_on_success_runs_after_target_success() -> None:
         # Worker spawn + finalize marshal back via app.call_from_thread, which
         # blocks the worker until the main thread drains. pilot.pause yields
         # to that loop; loop until the on_success flag flips.
-        for _ in range(30):
-            await pilot.pause()
-            if on_success_ran.is_set():
-                break
+        await wait_until(pilot, on_success_ran.is_set, timeout=_WAIT_S)
         assert on_success_ran.is_set()
 
 
@@ -325,10 +325,11 @@ async def test_start_download_enqueues_under_download_type() -> None:
             assert task is not None
             assert task.task_type == TaskType.DOWNLOAD.value
             release[0] = True
-            for _ in range(30):
-                await pilot.pause()
-                if controller.queue.get_task(task_id).status == TaskStatus.DONE:
-                    break
+            await wait_until(
+                pilot,
+                lambda: controller.queue.get_task(task_id).status == TaskStatus.DONE,
+                timeout=_WAIT_S,
+            )
             assert controller.queue.get_task(task_id).status == TaskStatus.DONE
 
 
@@ -345,10 +346,11 @@ async def test_start_download_progress_flows_through_queue() -> None:
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
             task_id = controller.start_download(_make_model())
-            for _ in range(30):
-                await pilot.pause()
-                if controller.queue.get_task(task_id).status == TaskStatus.DONE:
-                    break
+            await wait_until(
+                pilot,
+                lambda: controller.queue.get_task(task_id).status == TaskStatus.DONE,
+                timeout=_WAIT_S,
+            )
         task = controller.queue.get_task(task_id)
         assert task is not None
         assert task.progress == 100
@@ -367,10 +369,11 @@ async def test_start_download_permission_error_gets_gated_repo_message() -> None
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
             task_id = controller.start_download(_make_model(display="Gated Model"))
-            for _ in range(30):
-                await pilot.pause()
-                if controller.queue.get_task(task_id).status == TaskStatus.FAILED:
-                    break
+            await wait_until(
+                pilot,
+                lambda: controller.queue.get_task(task_id).status == TaskStatus.FAILED,
+                timeout=_WAIT_S,
+            )
         task = controller.queue.get_task(task_id)
         assert task is not None
         assert task.status == TaskStatus.FAILED

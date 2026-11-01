@@ -253,10 +253,10 @@ def test_the_tools_and_routes_are_registered() -> None:
     import asyncio
 
     tools = {t.name for t in asyncio.run(mcp_server.build_mcp_server().list_tools())}
-    assert {"engine_roles", "engine_use", "engine_prefer"} <= tools
+    assert {"engine_roles", "engine_use", "engine_prefer", "engine_install"} <= tools
 
 
-ENGINE_TOOLS = {"engine_roles", "engine_use", "engine_prefer"}
+ENGINE_TOOLS = {"engine_roles", "engine_use", "engine_prefer", "engine_install"}
 
 
 def _wire_names() -> set[str]:
@@ -271,7 +271,7 @@ def test_the_engine_tools_are_off_the_wire_by_default() -> None:
     assert names.isdisjoint(ENGINE_TOOLS)
 
 
-def test_the_setting_on_registers_exactly_the_three_engine_tools() -> None:
+def test_the_setting_on_registers_exactly_the_four_engine_tools() -> None:
     cfg.mcp_engines_enabled = False
     before = _wire_names()
     cfg.mcp_engines_enabled = True
@@ -684,3 +684,12 @@ def test_the_slash_command_shows_the_not_applied_text(server_cannot_apply: str) 
     out = run_engine_command("prefer llama.cpp")
     assert (out.ok, out.text) == (False, server_cannot_apply)
     assert _stored("preferred_engine") == "llama.cpp"
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_every_surface_refuses_an_engine_that_does_not_serve_the_role(surface: str) -> None:
+    cfg.reranker_model = GGUF_REF
+    expected = _service_refusal("rerank", GGUF_REF, "mistral.rs")
+    assert expected.startswith("Engine mistral.rs does not serve rerank.")
+    assert _refusal(surface, "rerank", GGUF_REF, "mistral.rs") == expected
+    assert _stored("engine_choices") is None

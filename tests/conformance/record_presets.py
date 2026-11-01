@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import tempfile
 from pathlib import Path
@@ -23,6 +24,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--url", required=True)
+    parser.add_argument(
+        "--token-env",
+        default="",
+        help="Name of the environment variable that holds the bearer token for --url.",
+    )
+    parser.add_argument(
+        "--embed-url",
+        default="",
+        help="Server for /v1/embeddings when --url has no such route, such as the engine proxy.",
+    )
+    parser.add_argument(
+        "--vision-url",
+        default="",
+        help="Server for chat requests that carry an image, such as the proxy of the vision role.",
+    )
     parser.add_argument("--roles", required=True, help="Comma-separated roles of the server.")
     parser.add_argument("--models", required=True, help="Model ids by role: chat=ID,embed=ID.")
     parser.add_argument("--wire", default="v1")
@@ -60,12 +76,30 @@ def run_log(args: argparse.Namespace, results: dict[str, Outcome]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def token_from(args: argparse.Namespace) -> str | None:
+    """The bearer token held in the variable that --token-env names; SystemExit when it is empty."""
+    if not args.token_env:
+        return None
+    token = os.environ.get(args.token_env, "")
+    if not token:
+        raise SystemExit(f"--token-env {args.token_env}: the variable is empty or not set")
+    return token
+
+
 def main() -> int:
     args = build_parser().parse_args()
     setup = setup_from(args)
     with (
         tempfile.TemporaryDirectory() as root,
-        recording(args.url) as (proxy_url, tape),
+        recording(
+            args.url,
+            token=token_from(args),
+            embed_url=args.embed_url or None,
+            vision_url=args.vision_url or None,
+        ) as (
+            proxy_url,
+            tape,
+        ),
         configured(proxy_url, setup, Path(root)),
     ):
         results = run_steps(setup)

@@ -4,17 +4,34 @@ from __future__ import annotations
 
 import json
 import logging
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeVar
 
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.app.services import peek_services
 from lilbee.catalog.refs import model_format
+from lilbee.catalog.runnable import refresh_session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engine_store import (
+    ChecksumError,
+    EngineConflictError,
+    EngineDiskError,
+    EngineStore,
+    LicenceRefusedError,
+    MissingPackError,
+    PackageInstallError,
+    PinLock,
+    UnsafeWheelError,
+    UnsupportedPlatformError,
+    engines_root,
+)
+from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
     AUTO,
@@ -23,7 +40,7 @@ from lilbee.providers.fleet.engines.choice import (
     engines_loading,
     installed_engines,
 )
-from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
 from lilbee.retrieval.canary_probe import embedder_trigger
 
 log = logging.getLogger(__name__)
@@ -77,8 +94,53 @@ class RoleView:
     notice: str | None
 
 
+@dataclass(frozen=True)
+class InstalledBuild:
+    """The engine build an install wrote."""
+
+    engine: str
+    version: str
+    backend: str
+    note: str = ""
+
+
+_STORE_REFUSALS = (
+    ChecksumError,
+    EngineConflictError,
+    EngineDiskError,
+    LicenceRefusedError,
+    MissingPackError,
+    PackageInstallError,
+    UnsafeWheelError,
+    UnsupportedPlatformError,
+)
+
+
+# What the zip reader raises for a pinned file the store cannot read: a bad archive,
+# METADATA that is not UTF-8, an encrypted member, a compression method it lacks.
+_UNREADABLE_WHEEL = (
+    OSError,
+    zipfile.BadZipFile,
+    UnicodeDecodeError,
+    RuntimeError,
+    NotImplementedError,
+)
+
+WHEEL_CLI_ONLY = "The wheel option works only with the lilbee engine install command."
+
+
 def _unknown(name: str) -> EngineRefusedError:
     known = ", ".join([AUTO, *EngineName])
+    return EngineRefusedError(f"No engine is named {name!r}. Choose one of: {known}.")
+
+
+def _not_installable(name: str) -> EngineRefusedError:
+    """The refusal for a name install cannot take; the list leaves out auto."""
+    known = ", ".join(EngineName)
+    if name == AUTO:
+        return EngineRefusedError(
+            f"{AUTO!r} picks an engine for you and cannot be installed. Choose one of: {known}."
+        )
     return EngineRefusedError(f"No engine is named {name!r}. Choose one of: {known}.")
 
 
@@ -121,7 +183,7 @@ def _apply_to_running() -> None:
         log.warning("The running server did not apply the engine choice: %s", exc)
         raise EngineNotAppliedError(
             "The engine choice is saved, but the running server could not apply it: "
-            f"{exc}. Restart lilbee to use the choice."
+            f"{str(exc).rstrip('.')}. Restart lilbee to use the choice."
         ) from exc
 
 
@@ -153,6 +215,12 @@ def roles(config: Config = cfg) -> list[RoleView]:
     return views
 
 
+def not_installed() -> list[str]:
+    """The names of the engines this build knows that have no installed build."""
+    installed = installed_engines()
+    return [str(name) for name in choice.ADAPTERS if name not in installed]
+
+
 def engine_names(model: str) -> list[str]:
     """The names a surface may offer for *model*: ``auto`` and each engine that loads it."""
     return [AUTO, *engines_loading(model_format(model), installed_engines())]
@@ -177,6 +245,50 @@ def prefer(name: str, confirmed: bool = False) -> str:
     _store(PREFERRED_KEY, apply, commit)
     _apply_to_running()
     return setting.value
+
+
+def _no_download(_lock: PinLock, _scratch: Path) -> Path:
+    """The fetch for an install with no wheel: engines have no download route."""
+    raise FileNotFoundError("Engines have no download route.")
+
+
+def install(name: str, wheel: Path | None = None) -> InstalledBuild:
+    """Install the pinned build of engine *name* from *wheel*, else from its pack.
+
+    The host gate of the engine runs first. The store checks the digest, the licence
+    and the files of the wheel and writes the record.
+    """
+    try:
+        engine = EngineName(name)
+    except ValueError:
+        raise _not_installable(name) from None
+    adapter = choice.ADAPTERS.get(engine)
+    if adapter is None:
+        raise EngineRefusedError(
+            f"Engine {name} has no build to install in this version of lilbee."
+        )
+    if adapter.bundled:
+        raise EngineRefusedError(f"Engine {name} ships with lilbee. There is nothing to install.")
+    gate = adapter.host_gate(refresh_session_host())
+    if not gate.ok:
+        raise EngineRefusedError(f"Engine {name} cannot run on this host. {gate.reason}")
+    try:
+        lock = choice.pin_lock(adapter.pin_record())
+    except choice.NoPublishedPackError as exc:
+        raise EngineRefusedError(str(exc)) from exc
+    except choice.PinError as exc:
+        raise EngineRefusedError(f"Engine {name} cannot be installed: {exc}.") from exc
+    store = EngineStore(engines_root(cfg.models_dir))
+    try:
+        if wheel is None:
+            store.ensure(lock, _no_download)
+        else:
+            store.install_from_wheel(lock, wheel)
+    except _STORE_REFUSALS as exc:
+        raise EngineRefusedError(str(exc)) from exc
+    except _UNREADABLE_WHEEL as exc:
+        raise EngineRefusedError(f"Engine {name} was not installed: {exc}") from exc
+    return InstalledBuild(lock.engine, lock.version, lock.backend, gate.reason)
 
 
 def http_refused_message() -> str:
@@ -210,7 +322,15 @@ def use_for_role(
         raise EngineRefusedError(
             f"The {role} model is {current}, not {model}. Choose the engine for {current}."
         )
+    if name != AUTO:
+        _require_serves(_engine_name(name), role)
     return use(model, name, confirmed)
+
+
+def _require_serves(name: EngineName, role: WorkerRole) -> None:
+    adapter = choice.ADAPTERS.get(name)
+    if adapter is not None and role not in adapter.served_roles:
+        raise EngineRefusedError(unserved_role_message(name, role, adapter.served_roles))
 
 
 def use(model: str, name: str, confirmed: bool = False) -> str:

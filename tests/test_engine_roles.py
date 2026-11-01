@@ -27,7 +27,7 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import HostFacts, NoEngineError
 from lilbee.providers.roles import WorkerRole
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 MLX_REF = "org/repo#mlx"
 GGUF_REF = "org/repo/file.gguf"
@@ -38,16 +38,18 @@ _FIELD = {
 }
 
 
-class _GgufEngine(FakeAdapter):
+class _GgufEngine(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf"})
     architectures = frozenset({"gguf_arch"})
+    served_roles = frozenset(WorkerRole)
 
 
-class _MlxEngine(FakeAdapter):
+class _MlxEngine(BundledFakeAdapter):
     name = "mlx"
     formats = frozenset({"mlx"})
     architectures = frozenset({"mlx_arch_a", "mlx_arch_b"})
+    served_roles = frozenset(WorkerRole)
 
 
 GGUF_ENGINE = _GgufEngine()

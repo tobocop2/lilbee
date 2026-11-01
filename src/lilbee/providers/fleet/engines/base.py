@@ -20,11 +20,17 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.launch import InstanceLaunch
 
 
+# Stands for the port value in an argv whose port flag must sit before a subcommand.
+PORT_SLOT = "{port}"
+
+
 class EngineName(StrEnum):
     """The engines the fleet can launch."""
 
     LLAMA = "llama.cpp"
     IK_LLAMA = "ik_llama.cpp"
+    MISTRAL = "mistral.rs"
+    TEI = "tei"
     MLX = "mlx"
     OPENVINO = "openvino"
 
@@ -61,19 +67,30 @@ class RequestProfile:
     """Extra fields on every embeddings request body."""
     stream_fields: Mapping[str, Any]
     """Extra fields on a streamed chat request body."""
-    tokenize_path: str
-    detokenize_path: str
+    tokenize_path: str | None
+    """The tokenize route, or None when the engine has none (the client then estimates)."""
+    detokenize_path: str | None
+    """The detokenize route, or None when the engine has none."""
     apply_template_path: str
     label: str
     """The name of the engine's server in error messages."""
     context_overflow: re.Pattern[str]
     """Matches a 400 body that reports a prompt past the context window."""
-    batch_overflow: re.Pattern[str]
-    """Matches a 500 body that reports an input past the physical batch."""
+    batch_overflow: re.Pattern[str] | None
+    """Matches a 500 body that reports an input past the physical batch, or None."""
     unreadable_embedding_hint: str
     """What to tell the user when embedding vectors do not decode."""
     reasoning_field: str
     """The response field that carries reasoning text apart from the answer."""
+    rerank_path: str | None = None
+    """The route that scores a query against texts, or None to rank through embeddings."""
+    batch_limit: int | None = None
+    """The most inputs one embed or rerank request may hold, or None for the client default.
+
+    The launch argv of a managed server is built from this figure.
+    """
+    batch_count_refusal: re.Pattern[str] | None = None
+    """Matches an error body that refuses a request for holding too many inputs, or None."""
 
 
 class EngineAdapter(Protocol, Hashable):
@@ -95,6 +112,8 @@ class EngineAdapter(Protocol, Hashable):
     served_roles: frozenset[WorkerRole]
     memory_kind: MemoryKind
     """How far this engine's memory figures can be trusted, known without an estimate."""
+    bundled: bool
+    """Whether the engine ships in the package, so it needs no build in the engine store."""
     takes_device_names: bool
     """Whether ``launch_argv`` puts ``LaunchRequest.device_names`` on the command line."""
 

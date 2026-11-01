@@ -38,9 +38,11 @@ def _chat_argv(tmp_path: Path, monkeypatch, *, backend: str, flash: bool | None,
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     device = FleetDevice(backend, 0, "gpu", 24 * _GB, 23 * _GB)
     plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
-    launch = planning_mod._launch_for(
-        plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+        lambda: Path("/bin/llama-server"),
     )
+    launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
     return launch.argv
 
 

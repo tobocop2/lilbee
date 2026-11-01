@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -56,6 +57,7 @@ def list_builds() -> None:
     from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 
     builds = EngineStore(engines_root(cfg.models_dir)).installed()
+    absent = engine_service.not_installed()
     if cfg.json_mode:
         json_out(
             {
@@ -63,13 +65,52 @@ def list_builds() -> None:
                 "builds": [
                     {"engine": b.engine, "version": b.version, "backend": b.backend} for b in builds
                 ],
+                "not_installed": absent,
             }
         )
         return
     if not builds:
         console.print(_NO_BUILDS)
+    stale = {build.engine: build for build in reversed(builds) if build.engine in absent}
     for build in builds:
-        console.print(f"{build.engine} {build.version} ({build.backend})")
+        if build.engine not in absent:
+            console.print(f"{build.engine} {build.version} ({build.backend})")
+    for name in absent:
+        if name in stale:
+            old = stale[name]
+            console.print(
+                f"{name} not installed: the installed build {old.version} ({old.backend}) "
+                "differs from the pin"
+            )
+        else:
+            console.print(f"{name} not installed")
+
+
+@engine_app.command("install")
+def install(
+    name: str = typer.Argument(help="Engine name, as 'lilbee engine roles' shows it."),
+    wheel: Annotated[
+        Path | None,
+        typer.Option("--wheel", help="Install from this wheel file instead of the packs folder."),
+    ] = None,
+) -> None:
+    """Install an engine build from its wheel or from a pack in the packs folder."""
+    if wheel is not None and not wheel.is_file():
+        raise _refuse(
+            "engine install",
+            engine_service.EngineRefusedError(f"{wheel} is not a file. Name a wheel file."),
+        )
+    try:
+        built = engine_service.install(name, wheel)
+    except engine_service.EngineRefusedError as exc:
+        raise _refuse("engine install", exc) from exc
+    label = f"{built.engine} {built.version} ({built.backend})"
+    if cfg.json_mode:
+        json_out({"command": "engine install", "installed": label, "note": built.note})
+        return
+    console.print(f"Installed engine {label}.")
+    if built.note:
+        console.print(built.note)
 
 
 @engine_app.command("remove")

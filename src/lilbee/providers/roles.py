@@ -9,6 +9,7 @@ engine-specific module.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
@@ -168,3 +169,10 @@ def configured_model_message(role: WorkerRole, configured: str, requested: str) 
         f"To use {requested!r}, set it as the {role} model in lilbee settings "
         f"(TUI /settings), then retry; the engine reloads automatically."
     )
+
+
+def unserved_role_message(engine: str, role: WorkerRole, served: Iterable[WorkerRole]) -> str:
+    """User-facing refusal for a role that *engine* does not serve; names the roles it serves."""
+    names = sorted(served)
+    listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    return f"Engine {engine} does not serve {role}. It serves {listed}."

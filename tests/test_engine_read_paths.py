@@ -25,7 +25,7 @@ from lilbee.providers.roles import WorkerRole
 from lilbee.server.handlers import health
 from lilbee.server.handlers import status as status_handler
 from lilbee.server.handlers.models import models_show
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 MLX_REF = "org/repo#mlx"
 GGUF_REF = "org/repo/file.gguf"
@@ -33,7 +33,7 @@ ROLES = {WorkerRole.CHAT: "chat_model", WorkerRole.EMBED: "embedding_model"}
 NO_ENGINE_TEXT = "No installed engine loads the mlx format"
 
 
-class _GgufEngine(FakeAdapter):
+class _GgufEngine(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf"})
     architectures = frozenset({"gguf_arch"})

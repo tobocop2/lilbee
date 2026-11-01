@@ -9,6 +9,7 @@ fallback when the binary can't enumerate. See docs/architecture.md.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import re
 import subprocess
@@ -18,6 +19,7 @@ from pathlib import Path
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.gpu_select import USABLE_VULKAN_TYPES, VkDeviceType
+from lilbee.providers.fleet.host_caps import read_card_memory
 from lilbee.providers.fleet.proc import run_bounded
 from lilbee.providers.roles import EngineBackend
 
@@ -572,6 +574,22 @@ def _compose_visible(indices: list[int], parent_value: str | None) -> str:
             )
         out.append(entries[i])
     return ",".join(out)
+
+
+def visible_nvidia_cards() -> list[FleetDevice]:
+    """The NVIDIA cards a child would see, numbered as CUDA numbers them; starts no process."""
+    from lilbee.providers.fleet.gpu_env import gpu_environ
+
+    cards = read_card_memory()
+    mask = gpu_environ().get(_CUDA_VISIBLE_VAR)
+    if mask is not None:
+        named = {str(i): card for i, card in enumerate(cards)} | {c.uuid: c for c in cards}
+        wanted = [token.strip() for token in mask.split(",")]
+        cards = [named[token] for token in itertools.takewhile(named.__contains__, wanted)]
+    return [
+        FleetDevice("CUDA", index, card.name, card.total_bytes, card.free_bytes)
+        for index, card in enumerate(cards)
+    ]
 
 
 def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:

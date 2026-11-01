@@ -17,18 +17,18 @@ from lilbee.providers.fleet.engines.choice import HostFacts, NoEngineError
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.serving import UNKNOWN_ENGINE
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 MLX_REF = "org/repo#mlx"
 GGUF_REF = "org/repo/file.gguf"
 
 
-class _GgufEngine(FakeAdapter):
+class _GgufEngine(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf"})
 
 
-class _MlxEngine(FakeAdapter):
+class _MlxEngine(BundledFakeAdapter):
     name = "mlx"
     formats = frozenset({"mlx"})
 

@@ -1713,7 +1713,6 @@ def _engine_shares_kv(binary: Path, *, engine: EngineAdapter) -> bool:
 def _launch_for(
     plan: InstancePlan,
     model_ref: str,
-    binary: Path,
     by_index: dict[int, FleetDevice],
     *,
     unified_budget: int | None = None,
@@ -1725,6 +1724,7 @@ def _launch_for(
     engine: EngineAdapter,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
+    binary = engine.binary()
     # The self-check holds a downloaded file rather than a configured reference,
     # so it hands the path over instead of asking for one to be resolved.
     model_path = model_path or engine_params.resolve_model_path(model_ref)
@@ -1732,7 +1732,7 @@ def _launch_for(
     meta = engine.model_meta(model_path)
     from lilbee.core.config import cfg
 
-    chosen = tuple(by_index[i] for i in plan.devices)
+    chosen = _in_engine_reading(tuple(by_index[i] for i in plan.devices), engine)
     # ctx and slots are sized against the card this role landed on, not the fleet's
     # smallest, which is all the pre-placement estimate had to go on. A role spread
     # over several cards has no one budget; the split chat, the only such role today,
@@ -1919,7 +1919,6 @@ def build_single_role_launch(
         return _launch_for(
             plan,
             str(model_path),
-            binary,
             by_index,
             unified_budget=_unified_memory_budget(devices, engine),
             model_path=model_path,
@@ -2200,76 +2199,89 @@ class _PlanProbe:
     backend: EngineBackend = EngineBackend.UNKNOWN
 
 
-@dataclass(frozen=True)
-class _FailedProbe:
-    """An engine identity whose restate probe raised, and when it raised."""
-
-    engine: str
-    at: float
-
-
 # Re-reads a plan snapshot against the hardware, or answers ``None`` when the
 # probe could not run.
 _Restate: TypeAlias = "Callable[[_PlanProbe], _PlanProbe | None]"
 
 
 class _PlanProbeStore:
-    """Holds the captured plan snapshot; a single instance below (no bare global)."""
+    """Holds each engine's captured plan snapshot; a single instance below (no bare global).
+
+    Every write names the engine it answers for, so one engine's read cannot
+    replace another's.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._probe: _PlanProbe | None = None
-        self._failed: _FailedProbe | None = None
+        self._probes: dict[str, _PlanProbe] = {}
+        # When the restate of each engine identity last raised.
+        self._failed: dict[str, float] = {}
         # Held across the probe a restate runs, so a burst of reads after an
         # engine swap pays one probe. Private, and never taken outside this
         # class, so no caller can hold it across a probe of its own. Separate
         # from _lock, which must never be held across a subprocess.
         self._restate_lock = threading.Lock()
 
-    def set(self, probe: _PlanProbe) -> None:
+    def capture(self, probes: Mapping[str, _PlanProbe]) -> None:
+        """Replace every snapshot with *probes*, read together on a clean box."""
         with self._lock:
-            self._probe = probe
-            self._failed = None
+            self._probes = dict(probes)
+            self._failed = {}
 
-    def get(self) -> _PlanProbe | None:
+    def set(self, name: str, probe: _PlanProbe) -> None:
         with self._lock:
-            return self._probe
+            self._probes[name] = probe
+            self._failed.pop(probe.engine, None)
+
+    def get(self, name: str) -> _PlanProbe | None:
+        with self._lock:
+            return self._probes.get(name)
+
+    def seed_for(self, name: str) -> _PlanProbe | None:
+        """The engine's own snapshot, else any engine's: the clean figures belong to the host."""
+        with self._lock:
+            return self._probes.get(name) or next(iter(self._probes.values()), None)
+
+    def captured(self) -> bool:
+        with self._lock:
+            return bool(self._probes)
 
     def note_failed_probe(self, engine: str) -> None:
         """Record that the restate against *engine* could not probe."""
         with self._lock:
-            self._failed = _FailedProbe(engine, time.monotonic())
+            self._failed[engine] = time.monotonic()
 
     def probe_failed_recently(self, engine: str) -> bool:
         """Whether a restate against *engine* raised inside the failure wait."""
         with self._lock:
-            failed = self._failed
-        return (
-            failed is not None
-            and failed.engine == engine
-            and time.monotonic() - failed.at < _PLAN_RESTATE_FAILURE_WAIT_S
-        )
+            failed_at = self._failed.get(engine)
+        return failed_at is not None and time.monotonic() - failed_at < _PLAN_RESTATE_FAILURE_WAIT_S
 
-    def restate(self, restate: _Restate, engine: str) -> None:
-        """Re-read the snapshot with *restate*, whatever binary it answers for now."""
+    def restate(self, restate: _Restate, name: str, engine: str) -> None:
+        """Re-read the snapshot of *name* with *restate*, whatever binary it answers for now."""
         with self._restate_lock:
-            probe = self.get()
+            probe = self.seed_for(name)
             if probe is not None:
-                self._store_restated(probe, restate, engine)
+                self._store_restated(name, probe, restate, engine)
 
-    def restate_if_stale(self, restate: _Restate, engine: str) -> _PlanProbe | None:
-        """The snapshot, re-read with *restate* first when it answers for another binary.
+    def restate_if_stale(self, restate: _Restate, name: str, engine: str) -> _PlanProbe | None:
+        """The snapshot of *name*, re-read with *restate* first when it answers for another binary.
 
         The staleness and the failure wait are re-checked under the lock, so a
         burst of stale reads pays one probe and the rest take its answer.
         """
         with self._restate_lock:
-            probe = self.get()
-            if probe is None or probe.engine == engine or self.probe_failed_recently(engine):
-                return probe
-            return self._store_restated(probe, restate, engine)
+            own = self.get(name)
+            if own is not None and own.engine == engine:
+                return own
+            seed = self.seed_for(name)
+            if seed is None or self.probe_failed_recently(engine):
+                return seed
+            return self._store_restated(name, seed, restate, engine)
 
-    def _store_restated(self, probe: _PlanProbe, restate: _Restate, engine: str) -> _PlanProbe:
+    def _store_restated(
+        self, name: str, probe: _PlanProbe, restate: _Restate, engine: str
+    ) -> _PlanProbe:
         """Store *probe* restated, or keep it and hold off re-probing *engine* for a while.
 
         A probe that raised is not an answer about *engine*, so the snapshot keeps
@@ -2279,13 +2291,13 @@ class _PlanProbeStore:
         if fresh is None:
             self.note_failed_probe(engine)
             return probe
-        self.set(fresh)
+        self.set(name, fresh)
         return fresh
 
     def clear(self) -> None:
         with self._lock:
-            self._probe = None
-            self._failed = None
+            self._probes = {}
+            self._failed = {}
 
 
 _plan_probe_store = _PlanProbeStore()
@@ -2487,36 +2499,46 @@ def _engine_identity(engine: EngineAdapter) -> str:
         return _NO_ENGINE_BINARY
 
 
-# The binary one planning pass answers about. A pass reads the snapshot half a
-# dozen times; resolving the identity per read let an engine that landed between
-# two of them size the plan against one snapshot and place it against another.
-_pass_engine: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "lilbee_plan_pass_engine", default=None
+@dataclass(frozen=True)
+class _PlanPass:
+    """One planning pass: its snapshot engine, and the binary each engine answered with."""
+
+    snapshot_engine: EngineAdapter
+    identities: dict[str, str]
+
+
+# A pass reads the snapshot half a dozen times; resolving the identity per read let
+# an engine that landed between two of them size the plan against one snapshot and
+# place it against another.
+_plan_pass: contextvars.ContextVar[_PlanPass | None] = contextvars.ContextVar(
+    "lilbee_plan_pass", default=None
 )
 
 
 @contextmanager
 def _one_engine_per_pass(*, engine: EngineAdapter) -> Iterator[None]:
-    """Pin the engine identity every snapshot read in this planning pass answers about.
+    """Fix the snapshot engine of this planning pass, and one binary per engine in it.
 
-    Re-entrant: a nested pass keeps the outer one's binary, so a pass that calls
-    another still asks about one engine. A snapshot that is stale when the pass
-    opens is restated once, at the first read.
+    Re-entrant: a nested pass keeps the outer one's choice, so a pass that calls
+    another still plans against one engine. A snapshot that is stale when the
+    pass opens is restated once, at the first read.
     """
-    if _pass_engine.get() is not None:
+    if _plan_pass.get() is not None:
         yield
         return
-    token = _pass_engine.set(_engine_identity(engine))
+    token = _plan_pass.set(_PlanPass(engine, {engine.name: _engine_identity(engine)}))
     try:
         yield
     finally:
-        _pass_engine.reset(token)
+        _plan_pass.reset(token)
 
 
 def _pass_engine_identity(engine: EngineAdapter) -> str:
-    """The engine this read answers about: the pass's binary, or the live one outside a pass."""
-    pinned = _pass_engine.get()
-    return pinned if pinned is not None else _engine_identity(engine)
+    """The binary this read answers about: the one fixed in the pass, or the live one outside it."""
+    current = _plan_pass.get()
+    if current is None:
+        return _engine_identity(engine)
+    return current.identities.setdefault(engine.name, _engine_identity(engine))
 
 
 def _probe_engine_devices_and_identity(engine: EngineAdapter) -> tuple[str, DeviceReading]:
@@ -2529,19 +2551,27 @@ def _probe_engine_devices_and_identity(engine: EngineAdapter) -> tuple[str, Devi
     return _engine_identity(engine), _probe_engine_devices(engine)
 
 
-def capture_plan_probe(engine: EngineAdapter) -> None:
-    """Snapshot devices and memory for planning; call only on a clean box."""
-    identity, reading = _probe_engine_devices_and_identity(engine)
-    _plan_probe_store.set(
-        _PlanProbe(
+def capture_plan_probe(engines: Mapping[WorkerRole, EngineAdapter]) -> None:
+    """Snapshot each engine's devices, and the memory once, for planning; only on a clean box."""
+    distinct = _distinct_engines(engines)
+    free_system = model_cache.free_system_memory()
+    probes: dict[str, _PlanProbe] = {}
+    for engine in distinct:
+        try:
+            identity, reading = _probe_engine_devices_and_identity(engine)
+        except (ProviderError, OSError, RuntimeError) as exc:
+            if len(distinct) == 1:
+                raise
+            raise _engine_read_error(engine, exc) from exc
+        probes[engine.name] = _PlanProbe(
             devices=tuple(reading.devices),
             sizing_budget=_device_sizing_budget(reading.devices),
-            free_system=model_cache.free_system_memory(),
+            free_system=free_system,
             engine=identity,
             engine_devices_all_refused=reading.refused_all,
             backend=reading.backend,
         )
-    )
+    _plan_probe_store.capture(probes)
 
 
 def _structural(devices: Iterable[FleetDevice]) -> tuple[FleetDevice, ...]:
@@ -2554,8 +2584,8 @@ def _structural(devices: Iterable[FleetDevice]) -> tuple[FleetDevice, ...]:
     return tuple(replace(d, free_bytes=0) for d in devices)
 
 
-def refresh_plan_devices(engine: EngineAdapter) -> None:
-    """Re-read which devices exist, keeping the clean-box memory figures.
+def refresh_plan_devices(engines: Mapping[WorkerRole, EngineAdapter]) -> None:
+    """Re-read which devices exist for each engine, keeping the clean-box memory figures.
 
     The snapshot is captured once and only a full teardown clears it, so an eGPU
     unplugged, a driver reset, or a VM hot-remove left the fleet pinning a device
@@ -2572,7 +2602,10 @@ def refresh_plan_devices(engine: EngineAdapter) -> None:
     in the build, not here. A reload asks to look again, so it probes even inside
     the failure wait that holds the read path off.
     """
-    _plan_probe_store.restate(functools.partial(_restated, engine=engine), _engine_identity(engine))
+    for engine in _distinct_engines(engines):
+        _plan_probe_store.restate(
+            functools.partial(_restated, engine=engine), engine.name, _engine_identity(engine)
+        )
 
 
 def _restated(probe: _PlanProbe, *, engine: EngineAdapter) -> _PlanProbe | None:
@@ -2601,9 +2634,12 @@ def _restated(probe: _PlanProbe, *, engine: EngineAdapter) -> _PlanProbe | None:
         len(devices),
         len(probe.devices),
     )
-    snapshot_free = {replace(d, free_bytes=0): d.free_bytes for d in probe.devices}
+    # Keyed on the index alone: another engine names and sizes the same card
+    # differently, and its clean free figure is still the host's. A card can
+    # never have more free than it holds.
+    snapshot_free = {d.index: d.free_bytes for d in probe.devices}
     merged = tuple(
-        replace(d, free_bytes=snapshot_free.get(replace(d, free_bytes=0), d.free_bytes))
+        replace(d, free_bytes=min(snapshot_free.get(d.index, d.free_bytes), d.total_bytes))
         for d in devices
     )
     return _PlanProbe(
@@ -2617,16 +2653,19 @@ def _restated(probe: _PlanProbe, *, engine: EngineAdapter) -> _PlanProbe | None:
 
 
 def _current_plan_probe(engine: EngineAdapter) -> _PlanProbe | None:
-    """The plan snapshot, restated first when another engine binary is now in place.
+    """The engine's own plan snapshot, restated first when its binary changed.
 
     The snapshot carries the identity of the binary that answered, so an engine
     installed or upgraded under a running serve re-probes on the next plan read.
+    An engine with no snapshot yet reads the host once and keeps its clean figures.
     """
-    probe = _plan_probe_store.get()
-    if probe is None:
+    if not _plan_probe_store.captured():
         return None
     identity = _pass_engine_identity(engine)
-    return probe if probe.engine == identity else _restate_plan_probe(identity, engine)
+    probe = _plan_probe_store.get(engine.name)
+    if probe is not None and probe.engine == identity:
+        return probe
+    return _restate_plan_probe(identity, engine)
 
 
 def _restate_plan_probe(identity: str, engine: EngineAdapter) -> _PlanProbe | None:
@@ -2641,7 +2680,9 @@ def _restate_plan_probe(identity: str, engine: EngineAdapter) -> _PlanProbe | No
     so a binary repaired in place is retried without a reload as soon as its
     content changes, whatever its stat fields do.
     """
-    return _plan_probe_store.restate_if_stale(functools.partial(_restated, engine=engine), identity)
+    return _plan_probe_store.restate_if_stale(
+        functools.partial(_restated, engine=engine), engine.name, identity
+    )
 
 
 def clear_plan_probe() -> None:
@@ -2668,6 +2709,17 @@ def _cpu_pin_when_every_device_was_refused(engine: EngineAdapter) -> tuple[str, 
         "outright, and placement has been sized for system RAM."
     )
     return (_NO_DEVICE,)
+
+
+def _in_engine_reading(
+    devices: tuple[FleetDevice, ...], engine: EngineAdapter
+) -> tuple[FleetDevice, ...]:
+    """*devices* as *engine* itself read them, so its pin speaks its own backend."""
+    probe = _current_plan_probe(engine)
+    if probe is None:
+        return devices
+    own = {d.index: d for d in probe.devices}
+    return tuple(own.get(d.index, d) for d in devices)
 
 
 def _plan_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
@@ -3327,7 +3379,6 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
 
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
-    binary: Path,
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
     *,
@@ -3336,7 +3387,7 @@ def plan_launches(
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
     host_engine = snapshot_engine(engines)
     with _one_engine_per_pass(engine=host_engine):
-        plan = _planned_launches(roles, binary, by_index, devices, engines, host_engine)
+        plan = _planned_launches(roles, by_index, devices, engines, host_engine)
     plan = replace(plan, skipped_no_engine=_roles_without_engine(roles, engines))
     _log_roles_without_engine(plan)
     return plan
@@ -3356,7 +3407,6 @@ def _log_roles_without_engine(plan: FleetPlan) -> None:
 
 def _planned_launches(
     roles: tuple[WorkerRole, ...] | None,
-    binary: Path,
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
     engines: Mapping[WorkerRole, EngineAdapter],
@@ -3410,9 +3460,6 @@ def _planned_launches(
         launch = _launch_for(
             plan,
             model_refs[plan.role],
-            binary
-            if engines[plan.role].name == snapshot_engine.name
-            else engines[plan.role].binary(),
             by_index,
             unified_budget=unified_budget,
             chat_reservation=reservation,
@@ -3489,19 +3536,37 @@ def _launched_roles(engines: Mapping[WorkerRole, EngineAdapter]) -> tuple[Worker
     )
 
 
+def _distinct_engines(engines: Mapping[WorkerRole, EngineAdapter]) -> list[EngineAdapter]:
+    """Each engine in *engines* once; raises when no role has an engine."""
+    distinct = list({engine.name: engine for engine in engines.values()}.values())
+    if not distinct:
+        raise ProviderError(
+            f"No engine is assigned to any role, so there is nothing to plan. {LIST_HINT}"
+        )
+    return distinct
+
+
+def _engine_read_error(engine: EngineAdapter, exc: Exception) -> ProviderError:
+    """The error for an engine whose device read failed beside other engines."""
+    return ProviderError(
+        f"Cannot read the GPUs of the {engine.name} engine: {exc}. "
+        "Check that the engine is installed and works, or pick another engine."
+    )
+
+
 def snapshot_engine(engines: Mapping[WorkerRole, EngineAdapter]) -> EngineAdapter:
     """The engine whose device snapshot the plan reads: the one that sees least free memory.
 
     The devices belong to the host, so engines that disagree are planned against
     the tightest reading rather than overcommitting on the generous one. An
     engine that reports no device (CPU only) does not take part; when none
-    reports a device the plan is a CPU plan.
+    reports a device the plan is a CPU plan. Inside a planning pass the answer is
+    the pass's own choice, so one plan chooses once.
     """
-    distinct = list({engine.name: engine for engine in engines.values()}.values())
-    if not distinct:
-        raise ProviderError(
-            f"No engine is assigned to any role, so there is nothing to plan. {LIST_HINT}"
-        )
+    current = _plan_pass.get()
+    if current is not None:
+        return current.snapshot_engine
+    distinct = _distinct_engines(engines)
     if len(distinct) == 1:
         return distinct[0]
     free_by_engine: list[tuple[int, EngineAdapter]] = []
@@ -3509,10 +3574,7 @@ def snapshot_engine(engines: Mapping[WorkerRole, EngineAdapter]) -> EngineAdapte
         try:
             devices = _plan_devices(engine.binary(), engine)
         except (ProviderError, OSError, RuntimeError) as exc:
-            raise ProviderError(
-                f"Cannot read the GPUs of the {engine.name} engine: {exc}. "
-                "Check that the engine is installed and works, or pick another engine."
-            ) from exc
+            raise _engine_read_error(engine, exc) from exc
         if devices:
             free_by_engine.append((sum(d.free_bytes for d in devices), engine))
     if not free_by_engine:
@@ -3527,11 +3589,10 @@ def plan_all_launches(*, engines: Mapping[WorkerRole, EngineAdapter]) -> FleetPl
     ``cfg.gpu_devices`` pin in its own env, and the plan reads the pin from there.
     """
     host_engine = snapshot_engine(engines)
-    binary = host_engine.binary()
     with _one_engine_per_pass(engine=host_engine):
-        devices = _plan_devices(binary, host_engine)
+        devices = _plan_devices(host_engine.binary(), host_engine)
         by_index = {d.index: d for d in devices}
-        return plan_launches(_launched_roles(engines), binary, by_index, devices, engines=engines)
+        return plan_launches(_launched_roles(engines), by_index, devices, engines=engines)
 
 
 def _roles_without_engine(

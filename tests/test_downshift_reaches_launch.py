@@ -33,9 +33,11 @@ def _launch_ctx(tmp_path, monkeypatch, role: WorkerRole) -> int:
     monkeypatch.setattr(planning_mod, "_slots_for", lambda *_a, **_k: 1)
     device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
     plan = InstancePlan(role=role, devices=(0,))
-    launch = planning_mod._launch_for(
-        plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+        lambda: Path("/bin/llama-server"),
     )
+    launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
     argv = launch.argv
     return int(argv[argv.index("--ctx-size") + 1])
 

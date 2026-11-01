@@ -29,28 +29,30 @@ from lilbee.core.config.enums import EngineSetting
 from lilbee.data.store.canary import CanaryState
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval import canary_probe
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 GGUF_REF = "org/repo/file.gguf"
 EMBED_REF = "org/repo/embed.gguf"
 
 
-class _Gguf(FakeAdapter):
+class _Gguf(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf"})
     architectures = frozenset({"gguf_arch"})
+    served_roles = frozenset(WorkerRole)
 
 
-class _Openvino(FakeAdapter):
+class _Openvino(BundledFakeAdapter):
     name = "openvino"
     formats = frozenset({"gguf"})
     architectures = frozenset({"gguf_arch"})
 
 
-class _Mlx(FakeAdapter):
+class _Mlx(BundledFakeAdapter):
     name = "mlx"
     formats = frozenset({"mlx"})
     architectures = frozenset({"mlx_arch"})
