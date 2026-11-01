@@ -1510,7 +1510,8 @@ class ChatScreen(Screen[None]):
             if key in CLEARABLE_MODEL_FIELDS:
                 parsed = "" if clears else value
             elif defn.type is bool:
-                parsed = value.lower() in ("true", "1", "yes", "on")
+                # The text goes to the shared write, which refuses what it cannot read.
+                parsed = value
             elif clears:
                 parsed = None
             else:
@@ -1532,7 +1533,8 @@ class ChatScreen(Screen[None]):
             # (model bar, scope chip, status bar) refresh. The boundary's
             # _invalidate_caches now handles llm_provider service reset.
             self.app.set_setting(key, parsed)
-            shown = msg.MASKED_VALUE if defn.secret and parsed else parsed
+            shown = getattr(cfg, key) if defn.type is bool and not clears else parsed
+            shown = msg.MASKED_VALUE if defn.secret and parsed else shown
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
         except (ValueError, TypeError) as exc:
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")

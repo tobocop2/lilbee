@@ -367,7 +367,12 @@ def test_names_sharing_a_slug_are_duplicates_in_a_folder_and_shadowed_across(tmp
     _write(tmp_path / "global", "two", '[profile]\nname = "Court A"\n[values]\n')
     _write(tmp_path / "global", "three", '[profile]\nname = "court_a"\n[values]\n')
     catalog = scan(_folders(tmp_path))
-    court = [(e.name, e.folder, e.error, e.shadowed_by) for e in catalog.entries[:3]]
+    # The catalog lists the built-ins first now, so pick out the three files this test wrote.
+    court = [
+        (e.name, e.folder, e.error, e.shadowed_by)
+        for e in catalog.entries
+        if e.folder is not ProfileFolder.BUILTIN
+    ]
     duplicate = "Duplicate name in the global folder"
     assert court == [
         ("Court (A)", ProfileFolder.PROJECT, None, None),

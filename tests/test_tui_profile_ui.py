@@ -160,6 +160,11 @@ async def test_the_profile_tab_matches_the_other_tabs(size) -> None:
         assert not [w for w in screen.query(".setting-title") if "set by you" in _text(w)]
         assert screen.query_one("#profile-select").parent.has_class("setting-editor-row")
         first = screen.query_one("#profile-save_as", ConfirmPill)
+        # _loaded returns when the select shows the name, which can come before the action
+        # pills get their labels. Until then the empty Update pill is shown and pushes this
+        # one right.
+        assert await _until(pilot, lambda: bool(_text(first))), "the action pills got no labels"
+        await pilot.pause()
         assert first.styles.background.a >= 0.15, "resting pill is invisible"
         assert first.region.x == title.first().region.x + 1, "pill edge is off the heading column"
 

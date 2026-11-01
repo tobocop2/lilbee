@@ -520,7 +520,8 @@ class SettingsScreen(Screen[None]):
         if defn.nullable and raw.lower() in ("none", "null", ""):
             return None
         if defn.type is bool:
-            return raw.lower() in ("true", "1", "yes", "on")
+            # The text goes to the shared write, which refuses what it cannot read.
+            return raw
         if defn.type is list:
             return [line.strip() for line in raw.split("\n") if line.strip()]
         return defn.type(raw)

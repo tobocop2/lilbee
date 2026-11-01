@@ -4042,6 +4042,39 @@ async def test_chat_slash_set_bool():
         assert cfg.show_reasoning is True
 
 
+async def test_chat_slash_set_refuses_text_a_bool_setting_cannot_read(tmp_path):
+    """/set shows the refusal the CLI shows, keeps the old value and writes nothing."""
+    from lilbee.core import settings as persisted
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        before = cfg.flash_attention
+        with (
+            patch.object(app.screen, "notify") as mock_notify,
+            patch.object(persisted, "set_value") as write,
+        ):
+            app.screen._cmd_set("flash_attention maybe")
+        assert cfg.flash_attention == before
+        write.assert_not_called()
+        message = mock_notify.call_args[0][0]
+        assert "flash_attention" in message and "maybe" in message
+        assert "is refused" in message
+        assert mock_notify.call_args.kwargs["severity"] == "error"
+
+
+async def test_settings_tab_does_not_turn_unreadable_bool_text_into_false():
+    """The value editor hands bool text to the shared write, which refuses what it cannot read."""
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        assert screen._parse_value(SETTINGS_MAP["flash_attention"], "maybe") == "maybe"
+        assert screen._parse_value(SETTINGS_MAP["show_reasoning"], "True") == "True"
+
+
 async def test_chat_slash_set_nullable_none():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
