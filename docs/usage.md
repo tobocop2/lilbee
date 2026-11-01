@@ -1058,7 +1058,10 @@ In the TUI, `/analyze [dir]` (or "Analyze documents" in the command
 palette) runs in the task bar. When it finishes, a notice says so and
 `/analyze report` opens the report; it never opens over what you are
 typing. Apply shows what the profile changes and asks before it
-switches; Save only saves it without switching. While you type `/add`,
+switches; Save only saves it without switching. Both save to the
+project's profile folder, or to the global folder when lilbee uses the
+global data folder. To pick the folder, run `lilbee analyze --target`.
+While you type `/add`,
 the argument hint shows the same tip until the project has documents.
 `/analyze off` hides it.
 

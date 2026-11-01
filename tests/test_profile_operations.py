@@ -385,8 +385,14 @@ def test_export_writes_a_clean_validated_file(store, tmp_path):
     with pytest.raises(ValueError, match="already exists"):
         profiles.export(store, "mine", location.path)
     target = profiles.export(store, "Scanned archive", location.path, overwrite=True)
-    assert target.name == "Scanned archive"
-    assert _read(target.path)["profile"]["name"] == "Scanned archive"
+    assert target.name == "Scanned archive copy"
+    assert _read(target.path)["profile"]["name"] == "Scanned archive copy"
+
+
+def test_an_exported_built_in_passes_validate(store, tmp_path):
+    location = profiles.export(store, "Scanned archive", tmp_path)
+    assert location.path.name == "scanned-archive-copy.toml"
+    assert profiles.validate(location.path).problems == ()
 
 
 def test_export_refuses_a_broken_profile(store, tmp_path):

@@ -2303,3 +2303,13 @@ class TestDeleteValues:
         settings.update_values(tmp_path, {"top_k": 7, "seed": 3})
         settings.delete_values(tmp_path, ["top_k", "absent"])
         assert settings.load(tmp_path) == {"seed": 3}
+
+
+class TestListSettingsHidesNonPublicFields:
+    def test_a_field_marked_not_public_is_not_listed(self, monkeypatch, tmp_path):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        keys = {info.key for info in appset.list_settings()}
+        assert {"linked_roots", "placement"}.isdisjoint(keys)
+        assert "chunk_size" in keys

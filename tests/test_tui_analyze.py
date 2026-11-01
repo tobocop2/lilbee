@@ -858,3 +858,11 @@ def test_a_failed_file_reason_is_the_parsers_first_line_cut_to_fit() -> None:
     long = _short_reason("x" * 200)
     assert len(long) <= 48
     assert "…" in long
+
+
+async def test_a_changes_table_wider_than_80_columns_shows_a_horizontal_scrollbar() -> None:
+    app = _ReportApp(_report())
+    async with app.run_test(size=_NARROW) as pilot:
+        screen = await _report_open(app, pilot)
+        changes = screen.query_one("#analyze-changes", DataTable)
+        assert changes.virtual_size.width <= changes.size.width or changes.show_horizontal_scrollbar

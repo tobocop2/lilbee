@@ -1266,7 +1266,7 @@ class TestConfigSchemaRoute:
 
         entries = self._by_key(client)
         assert not [key for key, entry in entries.items() if not entry["help"]]
-        for key in ("embed_batch_sequences", "ingest_max_inflight", "linked_roots", "placement"):
+        for key in ("embed_batch_sequences", "ingest_max_inflight"):
             assert entries[key]["help"] == Config.model_fields[key].description
 
     def test_choices_of_an_enum_typed_field_are_the_enums_values(self, client):

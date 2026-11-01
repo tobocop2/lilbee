@@ -562,10 +562,15 @@ class ExportedProfile:
 
 
 def export_text(store: ProfileStore, name: str) -> ExportedProfile:
-    """The profile *name* picks as the text of a clean file named by its slug."""
+    """The profile *name* picks as the text of a clean file named by its slug.
+
+    A built-in exports as "<name> copy": validate and import refuse the built-in name itself.
+    """
     entry = show(store, name)
     profile = _valid_file(entry)
-    filename = f"{profile_key(entry.name)}{PROFILE_SUFFIX}"
+    if entry.folder is ProfileFolder.BUILTIN:
+        profile = replace(profile, name=f"{profile.name} copy")
+    filename = f"{profile_key(profile.name)}{PROFILE_SUFFIX}"
     return ExportedProfile(filename, entry.folder, profile, profile_text(profile))
 
 

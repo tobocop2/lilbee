@@ -770,8 +770,12 @@ def launch_settings(
 ) -> str:
     """The settings a launch of *role* bakes in, as the text two processes compare.
 
-    Only what this role's launch uses, resolved from config and the model's
-    metadata, never from a device probe. Chat and vision ctx sizing is not here
+    Only what this role's launch asks for, resolved from config and the model's
+    metadata, never from a device probe. The text records the request: chat carries
+    ``kv_cache_type`` whenever flash attention is not switched off, because whether
+    the argv applies it depends on the probed backend. A cache type change under
+    flash ``auto`` can restart a worker whose argv stays the same.
+    Chat and vision ctx sizing is not here
     (see contract.chat_ctx_covers). The model is not here: the bind matches
     (role, model) pairs.
     """

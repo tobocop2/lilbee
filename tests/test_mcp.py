@@ -2362,11 +2362,11 @@ class TestSettingsMcp:
         assert top_k["help"]
         assert top_k["reindex_required"] is False
 
-    def test_settings_list_returns_a_mapping_setting_as_an_object(self, isolated_env):
+    def test_settings_list_leaves_out_the_settings_that_are_not_public(self, isolated_env):
         cfg.data_root = isolated_env
-        linked = next(e for e in settings_list()["settings"] if e["key"] == "linked_roots")
-        assert linked["value"] == {}
-        assert linked["default"] == {}
+        keys = {e["key"] for e in settings_list()["settings"]}
+        assert {"linked_roots", "placement"}.isdisjoint(keys)
+        assert "top_k" in keys
 
     def test_settings_list_and_get_carry_source(self, isolated_env, monkeypatch):
         cfg.data_root = isolated_env

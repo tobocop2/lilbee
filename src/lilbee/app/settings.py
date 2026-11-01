@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS,
+    PUBLIC_CONFIG_FIELDS,
     REINDEX_FIELDS,
     WRITABLE_CONFIG_FIELDS,
 )
@@ -162,9 +163,9 @@ def _secret_refusal(key: str, error: ValidationError) -> str:
 
 
 def _public_writable_keys() -> list[str]:
-    """Names of every writable config field minus write-only secrets."""
+    """Names of every writable config field minus write-only secrets and non-public fields."""
     keys = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
-    return sorted(k for k in keys if not _is_write_only(k))
+    return sorted(k for k in keys if k in PUBLIC_CONFIG_FIELDS and not _is_write_only(k))
 
 
 def _setting_help(key: str, definition: SettingDef | None) -> str:

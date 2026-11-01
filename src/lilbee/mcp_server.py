@@ -1318,6 +1318,23 @@ _MANAGE_ACTIONS: dict[ProfileAction, Callable[[ProfileStore, _ManageArgs], dict[
 }
 
 
+# The parameters each action cannot run without, so an empty one is refused by name.
+_MANAGE_REQUIRED: dict[ProfileAction, tuple[str, ...]] = {
+    ProfileAction.NEW: ("name",),
+    ProfileAction.SAVE: ("name",),
+    ProfileAction.DUPLICATE: ("name", "new_name"),
+    ProfileAction.RENAME: ("name", "new_name"),
+    ProfileAction.DELETE: ("name",),
+    ProfileAction.EXPORT: ("name",),
+    ProfileAction.IMPORT: ("content",),
+    ProfileAction.VALIDATE: ("content",),
+}
+
+
+def _missing_manage_parameters(chosen: ProfileAction, args: _ManageArgs) -> list[str]:
+    return [p for p in _MANAGE_REQUIRED.get(chosen, ()) if not getattr(args, p)]
+
+
 def _profile_listing() -> dict[str, Any]:
     from lilbee.server.models import ActiveProfileResponse, ProfileEntryResponse
 
@@ -1387,6 +1404,8 @@ def profile_manage(
         allowed = ", ".join(a.value for a in ProfileAction)
         return _error(f"Unknown profile action {action!r}. Use one of: {allowed}.")
     args = _ManageArgs(name, new_name, folder, content, filename, from_profile, overwrite)
+    if missing := _missing_manage_parameters(chosen, args):
+        return _error(f"Action {chosen.value!r} needs: {', '.join(missing)}.")
     return _profile_call(lambda: _MANAGE_ACTIONS[chosen](_profile_store(), args))
 
 

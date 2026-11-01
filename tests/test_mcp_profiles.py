@@ -244,12 +244,12 @@ def test_import_and_validate_never_read_a_filename_that_looks_like_a_host_path(t
 
 def test_import_without_content_is_refused():
     result = profile_manage(ProfileAction.IMPORT, filename="fine.toml")
-    assert result == {"error": "Missing [values] table"}
+    assert result == {"error": "Action 'import' needs: content."}
 
 
-def test_validate_without_content_reports_the_problem_rather_than_erroring():
+def test_validate_without_content_names_the_missing_parameter():
     result = profile_manage(ProfileAction.VALIDATE, filename="fine.toml")
-    assert result == {"name": "fine", "valid": False, "problems": ["Missing [values] table"]}
+    assert result == {"error": "Action 'validate' needs: content."}
 
 
 @pytest.mark.parametrize("action", ["", "frobnicate"])
@@ -305,3 +305,19 @@ def test_manage_duplicate_writes_to_the_folder_it_names():
     assert (Path(dup["path"]), dup["folder"]) == (written, "project")
     assert written.exists()
     assert not _global_dir().exists()
+
+
+@pytest.mark.parametrize(
+    ("action", "args", "missing"),
+    [
+        (ProfileAction.DELETE, {}, "name"),
+        (ProfileAction.EXPORT, {}, "name"),
+        (ProfileAction.RENAME, {"name": "mine"}, "new_name"),
+        (ProfileAction.DUPLICATE, {}, "name, new_name"),
+        (ProfileAction.IMPORT, {}, "content"),
+        (ProfileAction.VALIDATE, {}, "content"),
+    ],
+)
+def test_a_missing_parameter_is_named_in_the_refusal(action, args, missing):
+    result = profile_manage(action, **args)
+    assert result == {"error": f"Action {action.value!r} needs: {missing}."}
