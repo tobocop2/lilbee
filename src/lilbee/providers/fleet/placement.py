@@ -24,7 +24,7 @@ from math import gcd
 from lilbee.providers.fleet.memory_types import MemoryKind
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.vram import usable_vram_fraction
-from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, RoleTarget, WorkerRole
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +75,7 @@ class InstancePlan:
     devices: tuple[int, ...]
     tensor_split: tuple[int, ...] = ()
     replica: int = 0
+    target: RoleTarget = RoleTarget.GPU
 
 
 @dataclass(frozen=True)
@@ -712,6 +713,12 @@ def placement_from_spec(
     instances: list[InstancePlan] = []
     for role in active_roles:
         rp = _required_entry(spec, role, device_capacity)
+        if rp.target is not RoleTarget.GPU:
+            instances.extend(
+                InstancePlan(role=role, devices=(), replica=replica, target=rp.target)
+                for replica in range(rp.replicas)
+            )
+            continue
         ratio = rp.tensor_split or _vram_proportional_split(rp.devices, remaining)
         per_device = estimate_peak(role, ratio)
         split = ratio if len(rp.devices) > 1 else ()
