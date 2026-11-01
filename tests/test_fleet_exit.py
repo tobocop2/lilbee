@@ -110,18 +110,41 @@ except KeyboardInterrupt:
     sys.exit(130)
 """
 
+_NO_BUNDLED_ENGINE = """
+from lilbee.providers.fleet import binary
+binary._bundled_tool = lambda tool: None
+"""
+
 _PROBE = _PROBE_SETUP + _BUILD_WITH_THE_LIBRARY_OPEN + _PROBE_SERVE
 _PROBE_LIBRARY_HELD = _PROBE_SETUP + _BUILD_WITH_THE_LIBRARY_HELD + _PROBE_SERVE
+_PROBE_NO_ENGINE = _PROBE_SETUP + _NO_BUNDLED_ENGINE + _BUILD_WITH_THE_LIBRARY_OPEN + _PROBE_SERVE
+
+# The placement route plans before it saves, and the plan reads the engine's devices.
+_FAKE_LLAMA_SERVER = "#!/bin/sh\necho 'Available devices:'\n"
+_NO_ENGINE_DETAIL = "llama-server binary not found."
+
+
+def _plant_engine(home: Path) -> Path:
+    """Write an engine that lists no device, so a plan does not depend on this machine."""
+    binary = home / "fake-llama-server"
+    binary.write_text(_FAKE_LLAMA_SERVER, encoding="utf-8")
+    binary.chmod(0o755)
+    return binary
 
 
 class _Server:
-    """The probe process and the lines it printed, read on a thread."""
+    """The probe process and the lines it printed, read on a thread.
 
-    def __init__(self, home: Path, probe: str = _PROBE) -> None:
+    PATH is empty, so a llama-server on this machine cannot stand in for *engine*.
+    """
+
+    def __init__(self, home: Path, probe: str = _PROBE, *, engine: Path | None = None) -> None:
         env = {
             **os.environ,
             "LILBEE_DATA": str(home),
             "HOME": str(home),
+            "PATH": "",
+            "LILBEE_LLAMA_SERVER_PATH": "" if engine is None else str(engine),
         }
         self.process = subprocess.Popen(
             [sys.executable, "-c", probe],
@@ -177,13 +200,19 @@ def _running(started: _Server) -> Iterator[_Server]:
 @pytest.fixture
 def server(tmp_path: Path) -> Iterator[_Server]:
     """The probe server, with the library open before the build sticks."""
-    yield from _running(_Server(tmp_path))
+    yield from _running(_Server(tmp_path, engine=_plant_engine(tmp_path)))
 
 
 @pytest.fixture
 def server_with_the_library_held(tmp_path: Path) -> Iterator[_Server]:
     """The probe server, with a library open that never ends."""
-    yield from _running(_Server(tmp_path, _PROBE_LIBRARY_HELD))
+    yield from _running(_Server(tmp_path, _PROBE_LIBRARY_HELD, engine=_plant_engine(tmp_path)))
+
+
+@pytest.fixture
+def server_with_no_engine(tmp_path: Path) -> Iterator[_Server]:
+    """The probe server on a machine with no engine binary."""
+    yield from _running(_Server(tmp_path, _PROBE_NO_ENGINE))
 
 
 def _request(
@@ -287,6 +316,24 @@ def test_a_request_before_the_library_opens_changes_nothing_and_joins_nothing(
     answer = _request(tmp_path, port, method, path, body)
     assert answer.status_code == 503
     assert answer.json()["detail"] == _LIBRARY_WAIT
+    assert config.read_text(encoding="utf-8") == _SAVED_PLACEMENT
+    assert not any(line.startswith("joined") for line in server.lines), server.lines
+    _assert_ended_by_the_signal(server, server.stop_and_time_the_exit())
+
+
+def test_a_placement_clear_with_no_engine_says_how_to_install_it_and_saves_nothing(
+    server_with_no_engine: _Server, tmp_path: Path
+) -> None:
+    server = server_with_no_engine
+    port = server.port()
+    assert server.wait_for_line("library") == "library open=True"
+    config = tmp_path / "config.toml"
+    config.write_text(_SAVED_PLACEMENT, encoding="utf-8")
+    answer = _request(tmp_path, port, "DELETE", "/api/placement", None)
+    assert answer.status_code == 503
+    detail = answer.json()["detail"]
+    assert detail.startswith(_NO_ENGINE_DETAIL)
+    assert "lilbee[engine]" in detail
     assert config.read_text(encoding="utf-8") == _SAVED_PLACEMENT
     assert not any(line.startswith("joined") for line in server.lines), server.lines
     _assert_ended_by_the_signal(server, server.stop_and_time_the_exit())
