@@ -16,12 +16,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import lilbee.app.services as services_module
 from lilbee.providers.base import LLMProvider, ProviderError
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.runtime.daemon_call import DaemonCall
 
 _FAILURE_CEILING_S = 30.0
+_WAKE_LIMIT_S = 5.0
 _FIXED_PATH = "/usr/bin:/bin"
 _DEADLINE_EXIT_STATUS = 1
 _SIGINT_EXIT_STATUS = 130
@@ -210,6 +212,18 @@ def test_a_signal_with_a_read_blocked_ends_at_the_deadline(
     _assert_the_deadline_ended_it(server)
 
 
+@posix_only
+def test_a_hard_exit_signal_ends_a_blocked_read_without_the_full_grace(
+    start: Callable[..., _Serve],
+) -> None:
+    server = start(X_DEADLINE="25", X_GRACE="20")
+    server.hold_a_read()
+    assert server.client is not None
+    server.client.settimeout(_WAKE_LIMIT_S)
+    server.process.send_signal(signal.SIGTERM)
+    assert b" 500 " in server.client.recv(200)
+
+
 def test_the_shutdown_route_with_a_read_blocked_ends_at_the_deadline(
     start: Callable[..., _Serve],
 ) -> None:
@@ -383,19 +397,53 @@ def _provider_with(work: DaemonCall[object] | None) -> FleetProvider:
     return provider
 
 
-def test_stop_waiting_answers_a_joined_caller_and_a_later_one_without_the_bound() -> None:
+def _answer_of_a_join(provider: FleetProvider, work: DaemonCall[None]) -> list[str]:
+    """Join *work* on a thread and return what the caller heard within the wake limit."""
+    heard: list[str] = []
+
+    def join() -> None:
+        try:
+            provider._join_fleet_work(work)
+        except ProviderError as exc:
+            heard.append(str(exc))
+
+    caller = threading.Thread(target=join, daemon=True)
+    caller.start()
+    caller.join(_WAKE_LIMIT_S)
+    return heard
+
+
+def test_stop_waiting_answers_a_joined_caller_inside_the_wake_limit() -> None:
     release = threading.Event()
-    work: DaemonCall[object] = DaemonCall(release.wait, name="held")
+    work: DaemonCall[None] = DaemonCall(lambda: release.wait() and None, name="held")
     provider = _provider_with(work)
     provider.stop_waiting()
-    with pytest.raises(ProviderError, match="The server is stopping"):
-        provider._join_fleet_work(work)
-    provider._fleet_work = None
-    provider._run_fleet_work = release.wait  # type: ignore[method-assign]
-    with pytest.raises(ProviderError, match="The server is stopping"):
-        provider._join_fleet_work(provider._start_fleet_work())
+    heard = _answer_of_a_join(provider, work)
     release.set()
-    work.result()
+    assert any("The server is stopping" in line for line in heard), heard
+
+
+def test_stop_waiting_answers_a_caller_that_joins_later_inside_the_wake_limit() -> None:
+    release = threading.Event()
+    provider = _provider_with(None)
+    provider._run_fleet_work = release.wait  # type: ignore[method-assign]
+    provider.stop_waiting()
+    work = provider._start_fleet_work()
+    heard = _answer_of_a_join(provider, work)
+    release.set()
+    assert any("The server is stopping" in line for line in heard), heard
+
+
+def test_the_signal_teardown_tells_the_provider_before_it_clears_the_services() -> None:
+    calls = MagicMock()
+    services_module.set_services(calls.services)
+    calls.services.provider.stop_waiting.side_effect = lambda: calls.seen(
+        services_module.peek_services() is calls.services
+    )
+    services_module._teardown_for_signal(signal.SIGTERM)
+    calls.seen.assert_called_once_with(True)
+    calls.services.provider.shutdown.assert_called_once_with()
+    assert services_module.peek_services() is None
 
 
 def test_stop_waiting_with_no_work_has_nothing_to_wake() -> None:

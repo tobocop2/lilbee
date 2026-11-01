@@ -25,6 +25,8 @@ _SHUTDOWN_BOUND_S = 1
 _EXIT_BUDGET_S = 20.0
 _WAIT_FOR_SERVER_S = 30.0
 _INTERRUPTED_STATUS = 130
+_SIGTERM_STATUS = 143
+_SIGHUP_STATUS = 129
 _STILL_STARTING = f"The engines are still starting after {_WRITE_BOUND_S} s."
 _STOPPING = "The server is stopping."
 _LIBRARY_WAIT = "lilbee is upgrading the library. Try again in a few seconds."
@@ -33,6 +35,7 @@ _SAVED_PLACEMENT = 'placement = "{}"\n'
 _PROBE_SETUP = f"""
 import signal, sys, threading
 import typer
+from lilbee.app.services import install_engine_lifecycle_hooks
 from lilbee.cli.commands import servers
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import provider as fleet
@@ -100,10 +103,13 @@ threading.Thread(target=_start_the_stuck_build, daemon=True).start()
 """
 
 _PROBE_SERVE = """
+# The command line installs these before it runs a command.
+install_engine_lifecycle_hooks()
 try:
     servers.serve(host="127.0.0.1", port=0, data_dir=None, use_global=False)
 except typer.Exit as exit_:
     print(f"exit {exit_.exit_code}", flush=True)
+    sys.exit(exit_.exit_code)
 except KeyboardInterrupt:
     # The interpreter's own status for an unhandled interrupt varies. A normal exit
     # still joins threads and runs atexit, which is what this test proves.
@@ -182,10 +188,16 @@ class _Server:
         """Send SIGINT; return the seconds until the process ended."""
         sent = time.monotonic()
         self.process.send_signal(signal.SIGINT)
+        return self.time_the_exit(sent)
+
+    def time_the_exit(self, sent: float) -> float:
+        """Return the seconds from *sent* until the process ended."""
         try:
             self.process.wait(timeout=_EXIT_BUDGET_S)
         except subprocess.TimeoutExpired:
-            pytest.fail(f"the process was alive {_EXIT_BUDGET_S} s after SIGINT: {self.lines[-5:]}")
+            pytest.fail(
+                f"the process was alive {_EXIT_BUDGET_S} s after the stop: {self.lines[-5:]}"
+            )
         self._reader.join(_EXIT_BUDGET_S)
         return time.monotonic() - sent
 
@@ -248,6 +260,18 @@ def _sigint_with_a_request_open(
     server: _Server, home: Path, method: str, path: str, body: dict[str, str] | None
 ) -> tuple[float, httpx.Response]:
     """Open a request that joins the stuck build, then send SIGINT."""
+    return _signal_with_a_request_open(server, home, method, path, body, signal.SIGINT)
+
+
+def _signal_with_a_request_open(
+    server: _Server,
+    home: Path,
+    method: str,
+    path: str,
+    body: dict[str, str] | None,
+    signum: signal.Signals,
+) -> tuple[float, httpx.Response]:
+    """Open a request that joins the stuck build, then send *signum*."""
     port = server.port()
     assert server.wait_for_line("library") == "library open=True"
     server.wait_for_line("stuck")
@@ -257,10 +281,12 @@ def _sigint_with_a_request_open(
     )
     client.start()
     server.wait_for_line("joined")
-    elapsed = server.stop_and_time_the_exit()
+    sent = time.monotonic()
+    server.process.send_signal(signum)
     client.join(_EXIT_BUDGET_S)
     assert not client.is_alive()
-    return elapsed, answer[0]
+    assert answer, f"the request got no response: {server.lines[-5:]}"
+    return server.time_the_exit(sent), answer[0]
 
 
 def test_a_server_with_a_queued_write_ends_after_sigint(server: _Server, tmp_path: Path) -> None:
@@ -299,6 +325,40 @@ def test_a_write_wait_past_the_grace_still_says_it_is_saved(
     assert answer.status_code == 503
     assert f"The {what} is saved" in answer.json()["detail"]
     assert _STOPPING in answer.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("signal_name", "status"),
+    [("SIGTERM", _SIGTERM_STATUS), ("SIGHUP", _SIGHUP_STATUS)],
+)
+@pytest.mark.parametrize(
+    ("method", "path", "body", "what"),
+    [
+        ("PUT", "/api/engines/preferred", {"engine": "llama.cpp"}, "engine choice"),
+        ("DELETE", "/api/placement", None, "placement"),
+    ],
+    ids=["engine", "placement"],
+)
+def test_a_hard_exit_signal_with_a_queued_write_says_it_is_saved_and_keeps_its_status(
+    server_with_the_real_write_wait: _Server,
+    tmp_path: Path,
+    method: str,
+    path: str,
+    body: dict[str, str] | None,
+    what: str,
+    signal_name: str,
+    status: int,
+) -> None:
+    server = server_with_the_real_write_wait
+    signum = signal.Signals[signal_name]
+    (tmp_path / "config.toml").write_text(_SAVED_PLACEMENT, encoding="utf-8")
+    _, answer = _signal_with_a_request_open(server, tmp_path, method, path, body, signum)
+    assert answer.status_code == 503
+    assert f"The {what} is saved" in answer.json()["detail"]
+    assert _STOPPING in answer.json()["detail"]
+    assert server.process.returncode == status, "\n".join(server.lines)
+    assert server.lines.count("teardown") == 1, "\n".join(server.lines)
+    assert "Timeout (" not in next(tmp_path.rglob("server-fault.log")).read_text(encoding="utf-8")
 
 
 def test_a_server_with_an_open_read_ends_after_sigint(server: _Server, tmp_path: Path) -> None:
