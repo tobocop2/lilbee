@@ -153,6 +153,49 @@ class _RoleEdit:
     replicas: int
     tensor_split: tuple[int, ...] | None = None
     target: RoleTarget | None = None
+    # True while the role shares a swap group the plan made and the user named no
+    # card for it: pinning it to its card would drop the group, so the saved spec
+    # leaves the role to the planner.
+    planned: bool = False
+
+
+def _edits_from_view(view: PlacementView) -> dict[WorkerRole, _RoleEdit]:
+    """One editor row per role: what the saved spec names, else what the plan runs.
+
+    A refused spec holds the user's choices, so its roles keep their rows and
+    targets even when the plan runs something else for them.
+    """
+    spec_json = view.spec_json or view.rejected_spec_json
+    named = PlacementSpec.from_json(spec_json).roles if spec_json else {}
+    edits: dict[WorkerRole, _RoleEdit] = {}
+    for r in view.roles:
+        entry = named.get(r.role)
+        if entry is None:
+            edits[r.role] = _RoleEdit(
+                r.role,
+                r.model,
+                set(r.devices),
+                r.replicas,
+                r.tensor_split,
+                planned=r.role in view.co_tenants,
+            )
+        elif view.rejected_spec_json:
+            edits[r.role] = _edit_from_entry(r.role, r.model, entry)
+        else:
+            edits[r.role] = _RoleEdit(
+                r.role, r.model, set(r.devices), r.replicas, r.tensor_split, entry.target
+            )
+    if view.rejected_spec_json:
+        for role, entry in named.items():
+            if role not in edits:
+                edits[role] = _edit_from_entry(role, "", entry)
+    return edits
+
+
+def _edit_from_entry(role: WorkerRole, model: str, entry: RolePlacement) -> _RoleEdit:
+    return _RoleEdit(
+        role, model, set(entry.devices), entry.replicas, entry.tensor_split, entry.target
+    )
 
 
 class FleetBody(Widget):
@@ -270,18 +313,7 @@ class FleetBody(Widget):
         """Reset the widget (title, live table, editor) from a resolved placement view."""
         self._view_manual = view.manual
         self._device_indices = tuple(g.index for g in view.gpus)
-        named = PlacementSpec.from_json(view.spec_json).roles if view.spec_json else {}
-        edits = {
-            r.role: _RoleEdit(
-                r.role,
-                r.model,
-                set(r.devices),
-                r.replicas,
-                r.tensor_split,
-                named[r.role].target if r.role in named else None,
-            )
-            for r in view.roles
-        }
+        edits = _edits_from_view(view)
         # Rows render in _EDITOR_ROLE_ORDER; any role beyond it keeps plan order.
         self._edits = {role: edits.pop(role) for role in _EDITOR_ROLE_ORDER if role in edits}
         self._edits.update(edits)
@@ -296,11 +328,11 @@ class FleetBody(Widget):
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")
-        if view.rejected_spec_json:
+        if view.rejected_spec_json and not view.refusal:
             self.notify(msg.FLEET_SAVED_PLACEMENT_IGNORED, severity="warning")
 
     def _render_skipped(self, view: PlacementView) -> None:
-        """Show a line per role skipped for a missing model or for no engine."""
+        """Show a line per role skipped, and why a saved spec is refused."""
         widget = self.query_one(_SKIPPED_ID, Static)
         lines = [
             msg.FLEET_MODEL_NOT_DOWNLOADED.format(
@@ -312,6 +344,8 @@ class FleetBody(Widget):
             msg.FLEET_ROLE_WITHOUT_ENGINE.format(role=skipped.role.value, notice=skipped.notice)
             for skipped in view.skipped_no_engine
         )
+        if view.refusal:
+            lines.append(view.refusal)
         widget.display = bool(lines)
         widget.update("\n".join(lines))
 
@@ -423,6 +457,9 @@ class FleetBody(Widget):
             return None
         roles: dict[WorkerRole, RolePlacement] = {}
         for edit in self._edits.values():
+            if edit.planned:
+                roles[edit.role] = RolePlacement(devices=(), target=RoleTarget.AUTO)
+                continue
             if edit.target in _TARGET_CHOICES:
                 replicas = edit.replicas if edit.target is RoleTarget.CPU else 1
                 roles[edit.role] = RolePlacement(devices=(), replicas=replicas, target=edit.target)
@@ -447,6 +484,7 @@ class FleetBody(Widget):
         role_value, target_value = key.rsplit("-", 1)
         edit = self._edits[WorkerRole(role_value)]
         chosen = RoleTarget(target_value)
+        edit.planned = False
         edit.target = None if edit.target is chosen else chosen
         if edit.target is not None:
             edit.devices = set()
@@ -459,6 +497,9 @@ class FleetBody(Widget):
         role = WorkerRole(role_value)
         edit = self._edits[role]
         idx = int(idx_str)
+        edit.planned = False
+        # A card the machine no longer has cannot stay beside the one just picked.
+        edit.devices &= set(self._device_indices)
         # Editing the device set invalidates any loaded manual split (its
         # length was sized for the old cards); fall back to a capacity split.
         edit.tensor_split = None
@@ -502,6 +543,7 @@ class FleetBody(Widget):
             role_value, op = bid.removeprefix("rep-").rsplit("-", 1)
             role = WorkerRole(role_value)
             edit = self._edits[role]
+            edit.planned = False
             edit.replicas = max(1, edit.replicas + (1 if op == "inc" else -1))
             self.query_one(f"#repn-{role.value}", Label).update(f"x{edit.replicas}")
         else:
