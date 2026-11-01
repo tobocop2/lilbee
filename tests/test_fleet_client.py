@@ -2754,12 +2754,15 @@ class _ClosingServer:
 
     ``frames`` is the number of SSE frames it sends before it drops the socket
     without the closing chunk, as an engine does when its owner moves its group.
+    ``mode`` ``"reset"`` drops the socket with a reset. ``"silent"`` keeps it open
+    and sends nothing more, so the client read times out.
     """
 
-    def __init__(self, frames: int) -> None:
+    def __init__(self, frames: int, mode: str = "close") -> None:
         import socket
 
         self._frames = frames
+        self._mode = mode
         self._sock = socket.socket()
         self._sock.bind(("127.0.0.1", 0))
         self._sock.listen(1)
@@ -2768,6 +2771,9 @@ class _ClosingServer:
         self._thread.start()
 
     def _serve(self) -> None:
+        import socket
+        import struct
+
         conn, _ = self._sock.accept()
         with conn:
             conn.recv(65536)
@@ -2778,7 +2784,13 @@ class _ClosingServer:
             for _ in range(self._frames):
                 frame = b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
                 conn.sendall(f"{len(frame):x}\r\n".encode() + frame + b"\r\n")
-            time.sleep(0.05)
+            if self._mode == "silent":
+                time.sleep(1.0)
+            elif self._mode == "reset":
+                time.sleep(0.05)
+                conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            else:
+                time.sleep(0.05)
 
     def close(self) -> None:
         self._thread.join(timeout=5)
@@ -2798,10 +2810,40 @@ def test_stream_cut_after_first_frame_says_the_answer_is_cut() -> None:
     with pytest.raises(StreamInterruptedError) as caught:
         list(stream)
     server.close()
-    assert "restarted" in str(caught.value)
+    assert "stopped answering" in str(caught.value)
+    assert "restarted" not in str(caught.value)
     assert "Send your message again" in str(caught.value)
     assert not isinstance(caught.value, httpx.HTTPError)
     assert not is_connection_failure(caught.value)
+    assert isinstance(caught.value.__cause__, httpx.TransportError)
+
+
+def test_stream_cut_by_a_read_timeout_keeps_its_cause_and_text() -> None:
+    """The engine is alive but silent: nothing restarted, and the text says so."""
+    server = _ClosingServer(frames=1, mode="silent")
+    http = httpx.Client(base_url=server.url, timeout=httpx.Timeout(0.2))
+    client = LlamaServerClient(server.url, "test-model", http=http)
+    client._needs_alternation = False
+    stream = client.chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert isinstance(caught.value.__cause__, httpx.ReadTimeout)
+    assert "stopped answering" in str(caught.value)
+    assert "restarted" not in str(caught.value)
+
+
+def test_stream_cut_by_a_reset_keeps_its_cause_and_text() -> None:
+    server = _ClosingServer(frames=1, mode="reset")
+    stream = _real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert isinstance(caught.value.__cause__, httpx.TransportError)
+    assert "stopped answering" in str(caught.value)
+    assert "restarted" not in str(caught.value)
 
 
 def test_stream_cut_before_first_frame_keeps_the_transport_error() -> None:

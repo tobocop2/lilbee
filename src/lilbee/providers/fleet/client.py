@@ -42,9 +42,9 @@ from lilbee.providers.roles import RerankMode
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 _PROVIDER_NAME = "llama-server"
-# Shown on every surface when a stream breaks after its first frame.
+# Shown when a stream breaks after its first frame. The client cannot know why.
 _STREAM_INTERRUPTED_MESSAGE = (
-    "The model server restarted and the answer is cut. Send your message again."
+    "The model server stopped answering and the answer is cut. Send your message again."
 )
 
 # Fleet clients only ever talk to a loopback llama-server over plain HTTP, so TLS is
@@ -464,7 +464,7 @@ class StreamInterruptedError(ProviderError):
     """A chat stream broke after it had sent frames, so its answer is cut.
 
     The partial answer cannot be retried. Its ``UNKNOWN`` kind keeps it out of
-    ``is_connection_failure`` (no failover) and lets every surface show its text.
+    ``is_connection_failure`` (no failover).
     """
 
     def __init__(self) -> None:

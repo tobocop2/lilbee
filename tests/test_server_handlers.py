@@ -5084,7 +5084,7 @@ class TestClassifyStreamError:
         from lilbee.server.handlers.rag import _classify_stream_error
 
         _, msg = _classify_stream_error(StreamInterruptedError())
-        assert "restarted" in msg
+        assert "stopped answering" in msg
         assert "Send your message again" in msg
 
     def test_other_exception_falls_back_to_load_error_classifier(self):

@@ -127,7 +127,7 @@ class TestStreamResponseDispatch:
         ):
             screen._do_stream_response(_Turn("q", widget, 0, None), None)
         rendered = " ".join(str(c.args) for c in widget.append_content.call_args_list)
-        assert "model server restarted" in rendered
+        assert "model server stopped answering" in rendered
         assert "Send your message again" in rendered
 
     def test_other_error_shows_stream_error(self):
