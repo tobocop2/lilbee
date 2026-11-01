@@ -12,7 +12,7 @@ from lilbee.app.engine_choice import BookReading
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind
-from lilbee.providers.fleet.placement import placement_from_spec
+from lilbee.providers.fleet.placement import InstancePlan, placement_from_spec
 from lilbee.providers.fleet.placement_spec import (
     PlacementError,
     PlacementSpec,
@@ -165,7 +165,8 @@ class TestACpuRoleIsChargedItsSinglePool:
         monkeypatch.setattr(planning, "free_system_memory", lambda: pytest.fail("live free read"))
         spec = PlacementSpec.from_json(CHAT_NAMED_EMBED_CPU)
         inputs = [planning.ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=2 * GIB)]
-        assert planning._cpu_roles_past_memory(spec, inputs, skip={}) == {}
+        launching = [InstancePlan(role=WorkerRole.EMBED, devices=())]
+        assert planning._cpu_roles_past_memory(spec, inputs, launching, unified=False) == {}
 
     def test_a_chat_role_is_not_scaled_by_the_card_serve_budget(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

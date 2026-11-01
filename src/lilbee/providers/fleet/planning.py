@@ -3052,7 +3052,6 @@ def _resolve_placement(
     unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
     if placement is not None:
         refused = _unusable_targets(placement, model_refs, engines)
-        refused.update(_cpu_roles_past_memory(placement, inputs, skip=refused))
         if refused:
             raise TargetRefusedError(refused)
         pinned = [role for role in unpinnable if _targets_gpu(placement, role)]
@@ -3086,13 +3085,25 @@ def _resolve_placement(
                     raise TargetRefusedError(past_named)
             return placed
 
-        return placement_from_spec(
+        placed = placement_from_spec(
             placement,
             tuple(model_refs),
             capacity,
             estimate_peak=estimate_peak,
             plan_auto=plan_auto,
         )
+        if _cpu_roles(placement).isdisjoint(model_refs):
+            return placed
+        past_memory = _cpu_roles_past_memory(
+            placement,
+            inputs,
+            _launching_instances(placed, inputs, model_refs, devices, engines=engines),
+            unified=unified_budget is not None,
+            co_tenants=placed.co_tenants,
+        )
+        if past_memory:
+            raise TargetRefusedError(past_memory)
+        return placed
     return _auto_placement(
         inputs,
         capacity,
@@ -3167,20 +3178,53 @@ def _cpu_roles(spec: PlacementSpec | None) -> frozenset[WorkerRole]:
     )
 
 
+def _launching_instances(
+    placed: Placement,
+    inputs: list[ModelPlacementInput],
+    model_refs: Mapping[WorkerRole, str],
+    devices: list[FleetDevice],
+    *,
+    engines: Mapping[WorkerRole, EngineAdapter],
+) -> list[InstancePlan]:
+    """The instances of *placed* that get a server: a chat below the prompt floor gets none."""
+    by_index = {d.index: d for d in devices}
+    reserved = _non_chat_reservation(placed.instances, inputs, placed.co_tenants)
+    return [
+        inst
+        for inst in placed.instances
+        if inst.role is not WorkerRole.CHAT
+        or _unusable_chat_ctx_reason(
+            _launch_for(
+                inst,
+                model_refs[inst.role],
+                by_index,
+                reserved_by_device=reserved,
+                est_vram_bytes=0,
+                engine=engines[inst.role],
+            )
+        )
+        is None
+    ]
+
+
 def _cpu_roles_past_memory(
     placement: PlacementSpec,
     inputs: Sequence[ModelPlacementInput],
+    launching: Sequence[InstancePlan],
     *,
-    skip: Mapping[WorkerRole, str],
+    unified: bool,
+    co_tenants: frozenset[WorkerRole] = frozenset(),
 ) -> dict[WorkerRole, str]:
-    """The reason for each CPU role that the machine's system memory cannot hold.
+    """The reason for each CPU role that system memory cannot hold.
 
-    A CPU role is charged to system memory, beside every other role's host bytes.
-    The roles are taken in order and the first past the total is refused, with no
-    fallback to a card. A role in *skip* is already refused and charges nothing.
+    The bound is total system memory less what the card roles in *launching* commit:
+    their host bytes, and their card bytes when the card shares system memory. A swap
+    group commits its largest member, since one is resident at a time. The CPU roles
+    are taken in order and the first past the total is refused, with no fallback to a
+    card. A CPU role that is not in *launching* adds no charge for the next one.
     """
     cpu = _cpu_roles(placement)
-    sized = cpu.intersection(i.role for i in inputs) - skip.keys()
+    sized = cpu.intersection(i.role for i in inputs)
     if not sized:
         return {}
     try:
@@ -3191,10 +3235,20 @@ def _cpu_roles_past_memory(
             "cannot be sized. Choose a GPU."
             for role in sorted(sized, key=lambda r: r.value)
         }
-    held = sum(i.est_ram_bytes for i in inputs if i.role not in cpu and i.role not in skip)
+    by_role = {i.role: i for i in inputs}
+    starts = {inst.role for inst in launching}
+
+    def commit(role: WorkerRole) -> int:
+        model = by_role[role]
+        return model.est_ram_bytes + (model.est_vram_bytes if unified else 0)
+
+    card_roles = [inst.role for inst in launching if inst.role not in cpu]
+    swapped = [commit(role) for role in card_roles if role in co_tenants]
+    held = sum(commit(role) for role in card_roles if role not in co_tenants)
+    held += max(swapped, default=0)
     refused: dict[WorkerRole, str] = {}
     for inp in inputs:
-        if inp.role not in cpu or inp.role in skip:
+        if inp.role not in sized:
             continue
         need = inp.est_ram_bytes * placement.roles[inp.role].replicas
         if held + need > total:
@@ -3203,7 +3257,7 @@ def _cpu_roles_past_memory(
                 f"{max(total - held, 0) / 1024**3:.1f} GiB of {total / 1024**3:.1f} GiB is left. "
                 "Choose a smaller model or a GPU."
             )
-        else:
+        elif inp.role in starts:
             held += need
     return refused
 
