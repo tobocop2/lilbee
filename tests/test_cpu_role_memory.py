@@ -23,10 +23,15 @@ from lilbee.cli.placement import placement_app
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet import provider as fleet_provider
+from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.placement import ModelPlacementInput
-from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
+from lilbee.providers.fleet.placement_spec import (
+    PlacementError,
+    PlacementSpec,
+    TargetRefusedError,
+)
 from lilbee.providers.fleet.readback import check_launch
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from lilbee.server import auth as auth_mod
@@ -62,6 +67,10 @@ def _plan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spec: str, total_gib:
     monkeypatch.setattr(cfg, "placement", spec)
     engine = CardEngine("engine-a", tmp_path / "engine-server", ROLES, cards_of((24,)), spans=True)
     return planning.plan_all_launches(engines=engines_for_all_roles(engine)), engine
+
+
+def _instances(inputs: list[ModelPlacementInput]) -> list[InstancePlan]:
+    return [InstancePlan(role=model.role, devices=()) for model in inputs]
 
 
 def _charges(plan) -> dict[WorkerRole, int]:
@@ -121,7 +130,7 @@ class TestTheChargeGoesToSystemMemory:
             ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=4 * GIB),
             ModelPlacementInput(WorkerRole.RERANK, 0, est_ram_bytes=2 * GIB),
         ]
-        refused = planning._cpu_roles_past_memory(spec, inputs, skip={})
+        refused = planning._cpu_roles_past_memory(spec, inputs, _instances(inputs), unified=False)
         assert list(refused) == [WorkerRole.RERANK]
         assert refused[WorkerRole.RERANK].startswith(
             "rerank: the CPU needs 2.0 GiB of system memory, 1.0 GiB of 8.0 GiB is left."
@@ -131,7 +140,8 @@ class TestTheChargeGoesToSystemMemory:
         monkeypatch.setattr(planning, "total_system_memory", lambda: 8 * GIB)
         spec = PlacementSpec.from_json('{"embed": {"target": "cpu", "replicas": 3}}')
         inputs = [ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=3 * GIB)]
-        assert list(planning._cpu_roles_past_memory(spec, inputs, skip={})) == [WorkerRole.EMBED]
+        refused = planning._cpu_roles_past_memory(spec, inputs, _instances(inputs), unified=False)
+        assert list(refused) == [WorkerRole.EMBED]
 
     def test_a_cpu_model_that_is_not_installed_is_skipped_and_recorded(
         self, monkeypatch: pytest.MonkeyPatch
@@ -190,6 +200,238 @@ def cpu_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> CardEngine:
     reading = BookReading(adapters=engines_for_all_roles(engine), notices={})
     monkeypatch.setattr(app_placement, "_planning_engines", lambda: reading)
     return engine
+
+
+ALL_CPU = (
+    '{"chat": {"target": "cpu"}, "embed": {"target": "cpu"},'
+    ' "vision": {"target": "cpu"}, "rerank": {"target": "cpu"}}'
+)
+HUGE = (
+    Role(WorkerRole.CHAT, 40),
+    Role(WorkerRole.EMBED, 40),
+    Role(WorkerRole.VISION, 40),
+    Role(WorkerRole.RERANK, 40),
+)
+PAST_HUGE = (
+    "the CPU needs 40.0 GiB of system memory, 24.0 GiB of 64.0 GiB is left. "
+    "Choose a smaller model or a GPU."
+)
+FLOOR_REASON = "a grounded answer needs about"
+NAMED_CHAT_CPU_EMBED = '{"chat": {"devices": [0]}, "embed": {"target": "cpu"}}'
+AUTO_CHAT_CPU_EMBED = '{"chat": {"target": "auto"}, "embed": {"target": "cpu"}}'
+UNIFIED_PAST = (
+    "embed: the CPU needs 20.0 GiB of system memory, 12.0 GiB of 32.0 GiB is left. "
+    "Choose a smaller model or a GPU."
+)
+
+
+def _unified_card(gib: int) -> list[FleetDevice]:
+    return [FleetDevice("Metal", 0, "Apple", gib * GIB, gib * GIB, unified=True)]
+
+
+def _host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    roles: tuple[Role, ...],
+    cards: list[FleetDevice],
+    total_gib: int,
+    spec: str,
+) -> CardEngine:
+    prepare_host(monkeypatch, tmp_path, roles, total_gib * GIB)
+    monkeypatch.setattr(cfg, "placement", spec)
+    return CardEngine("engine-a", tmp_path / "engine-server", roles, cards, spans=True)
+
+
+def _launched(plan) -> list[WorkerRole]:
+    return [launch.role for launch in plan.launches]
+
+
+class TestARoleThatDoesNotLaunchChargesNothing:
+    """A chat below the prompt floor leaves the bound, so the other cpu roles can launch."""
+
+    def test_a_cpu_chat_below_the_floor_leaves_its_memory_to_the_next_role(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, ALL_CPU)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert _launched(plan) == [WorkerRole.EMBED]
+        assert FLOOR_REASON in plan.refused_roles[WorkerRole.CHAT]
+        assert plan.refused_roles[WorkerRole.VISION] == f"vision: {PAST_HUGE}"
+        assert plan.refused_roles[WorkerRole.RERANK] == f"rerank: {PAST_HUGE}"
+
+    def test_the_saved_view_shows_the_role_the_launch_starts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, ALL_CPU)
+        view = planning.resolve_placement_plan(
+            PlacementSpec.from_json(ALL_CPU),
+            engines=engines_for_all_roles(engine),
+            fall_back_to_auto=True,
+        )
+        assert sorted(role.value for role in view.refused_roles) == ["rerank", "vision"]
+        assert {inst.role for inst in view.instances} == {WorkerRole.CHAT, WorkerRole.EMBED}
+
+    def test_an_interactive_set_refuses_the_same_roles(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(monkeypatch, tmp_path, HUGE, cards_of((24,)), 64, ALL_CPU)
+        with pytest.raises(TargetRefusedError, match="vision: the CPU needs") as caught:
+            planning.resolve_placement_plan(
+                PlacementSpec.from_json(ALL_CPU), engines=engines_for_all_roles(engine)
+            )
+        assert sorted(role.value for role in caught.value.reasons) == ["rerank", "vision"]
+
+    def test_a_chat_past_the_bound_keeps_the_bound_reason_on_every_surface(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(monkeypatch, tmp_path, HUGE, _unified_card(32), 32, ALL_CPU)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert plan.refused_roles[WorkerRole.CHAT].startswith(
+            "chat: the CPU needs 40.0 GiB of system memory, 32.0 GiB of 32.0 GiB is left."
+        )
+        with pytest.raises(TargetRefusedError, match=r"chat: the CPU needs 40\.0 GiB"):
+            planning.resolve_placement_plan(
+                PlacementSpec.from_json(ALL_CPU), engines=engines_for_all_roles(engine)
+            )
+
+    def test_a_card_chat_below_the_floor_holds_no_host_bytes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        roles = (Role(WorkerRole.CHAT, 20), Role(WorkerRole.EMBED, 6))
+        engine = _host(monkeypatch, tmp_path, roles, cards_of((24,)), 8, NAMED_CHAT_CPU_EMBED)
+        monkeypatch.setattr(planning, "_unusable_chat_ctx_reason", lambda launch: "below the floor")
+        held = ModelPlacementInput(WorkerRole.CHAT, 20 * GIB, est_ram_bytes=4 * GIB)
+        embed = ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=6 * GIB)
+        placed = Placement(
+            instances=(
+                InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+                InstancePlan(role=WorkerRole.EMBED, devices=(), target=RoleTarget.CPU),
+            ),
+            unplaceable_roles=(),
+        )
+        launching = planning._launching_instances(
+            placed,
+            [held, embed],
+            {WorkerRole.CHAT: "org/repo/chat.gguf", WorkerRole.EMBED: "org/repo/embed.gguf"},
+            cards_of((24,)),
+            engines=engines_for_all_roles(engine),
+        )
+        assert [inst.role for inst in launching] == [WorkerRole.EMBED]
+        spec = PlacementSpec.from_json(NAMED_CHAT_CPU_EMBED)
+        assert planning._cpu_roles_past_memory(spec, [held, embed], launching, unified=False) == {}
+        charged = planning._cpu_roles_past_memory(
+            spec, [held, embed], placed.instances, unified=False
+        )
+        assert list(charged) == [WorkerRole.EMBED]
+
+    def test_a_spec_with_no_cpu_role_builds_no_launch_for_the_bound(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        roles = (Role(WorkerRole.CHAT, 10), Role(WorkerRole.EMBED, 6))
+        engine = _host(monkeypatch, tmp_path, roles, cards_of((24,)), 64, GPU_EMBED)
+        monkeypatch.setattr(
+            planning, "_launching_instances", lambda *_a, **_k: pytest.fail("floor read")
+        )
+        planning.resolve_placement_plan(
+            PlacementSpec.from_json(GPU_EMBED), engines=engines_for_all_roles(engine)
+        )
+
+
+class TestTheBoundChargesWhatTheCardsCommit:
+    """On a unified host a card role holds the memory the CPU reads; on a card it does not."""
+
+    ROLES: ClassVar[tuple[Role, ...]] = (Role(WorkerRole.CHAT, 20), Role(WorkerRole.EMBED, 20))
+
+    def test_a_named_role_on_a_unified_host_leaves_less_for_the_cpu(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(
+            monkeypatch, tmp_path, self.ROLES, _unified_card(32), 32, NAMED_CHAT_CPU_EMBED
+        )
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert _launched(plan) == [WorkerRole.CHAT]
+        assert plan.refused_roles == {WorkerRole.EMBED: UNIFIED_PAST}
+
+    def test_an_auto_role_on_a_unified_host_leaves_less_for_the_cpu(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(
+            monkeypatch, tmp_path, self.ROLES, _unified_card(32), 32, AUTO_CHAT_CPU_EMBED
+        )
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert _launched(plan) == [WorkerRole.CHAT]
+        assert plan.refused_roles == {WorkerRole.EMBED: UNIFIED_PAST}
+
+    def test_a_card_with_its_own_memory_leaves_the_cpu_all_of_it(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(monkeypatch, tmp_path, self.ROLES, cards_of((24,)), 24, NAMED_CHAT_CPU_EMBED)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert set(_launched(plan)) == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert plan.refused_roles == {}
+
+    def test_a_swap_group_commits_its_largest_member(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(planning, "total_system_memory", lambda: 32 * GIB)
+        spec = PlacementSpec.from_json(
+            '{"chat": {"target": "auto"}, "vision": {"target": "auto"}, "embed": {"target": "cpu"}}'
+        )
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 20 * GIB),
+            ModelPlacementInput(WorkerRole.VISION, 10 * GIB),
+            ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=12 * GIB),
+        ]
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(), target=RoleTarget.CPU),
+        ]
+        swapped = frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        assert (
+            planning._cpu_roles_past_memory(
+                spec, inputs, instances, unified=True, co_tenants=swapped
+            )
+            == {}
+        )
+        refused = planning._cpu_roles_past_memory(
+            spec, inputs, instances, unified=True, co_tenants=frozenset()
+        )
+        assert list(refused) == [WorkerRole.EMBED]
+
+    def test_a_planned_swap_group_leaves_the_cpu_all_but_its_largest_member(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        raw = (
+            '{"chat": {"target": "auto"}, "vision": {"target": "auto"}, "embed": {"target": "cpu"}}'
+        )
+        roles = (
+            Role(WorkerRole.CHAT, 20),
+            Role(WorkerRole.VISION, 16),
+            Role(WorkerRole.EMBED, 10),
+        )
+        engine = _host(monkeypatch, tmp_path, roles, _unified_card(32), 32, raw)
+        view = planning.resolve_placement_plan(
+            PlacementSpec.from_json(raw), engines=engines_for_all_roles(engine)
+        )
+        assert view.co_tenants == {WorkerRole.CHAT, WorkerRole.VISION}
+        assert WorkerRole.EMBED in {inst.role for inst in view.instances}
+
+    def test_each_replica_of_a_card_role_commits_its_figure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning, "total_system_memory", lambda: 32 * GIB)
+        spec = PlacementSpec.from_json(NAMED_CHAT_CPU_EMBED)
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 10 * GIB, est_ram_bytes=1 * GIB),
+            ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=11 * GIB),
+        ]
+        chat = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        embed = InstancePlan(role=WorkerRole.EMBED, devices=(), target=RoleTarget.CPU)
+        one = planning._cpu_roles_past_memory(spec, inputs, [chat, embed], unified=True)
+        two = planning._cpu_roles_past_memory(spec, inputs, [chat, chat, embed], unified=True)
+        assert one == {}
+        assert two[WorkerRole.EMBED].startswith(
+            "embed: the CPU needs 11.0 GiB of system memory, 10.0 GiB of 32.0 GiB is left."
+        )
 
 
 class TestEveryEntryPointGivesTheSameRefusal:
@@ -271,7 +513,7 @@ class TestASavedRefusedSpecIsReadable:
 
         monkeypatch.setattr(planning, "total_system_memory", unreadable)
         spec = PlacementSpec.from_json('{"chat": {"devices": [0]}, "embed": {"devices": [0]}}')
-        assert planning._cpu_roles_past_memory(spec, [], skip={}) == {}
+        assert planning._cpu_roles_past_memory(spec, [], [], unified=False) == {}
 
     def test_get_placement_and_gpus_are_200_with_the_refusal(
         self, cpu_host: CardEngine, monkeypatch: pytest.MonkeyPatch
