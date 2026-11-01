@@ -927,6 +927,7 @@ class LlamaServerClient:
         on_prefill = self._on_prefill
         prefilling = False
         started = False
+        ended = False
         try:
             with (
                 self._track(),
@@ -946,10 +947,13 @@ class LlamaServerClient:
                                 prefilling = False
                                 on_prefill(None)
                             started = True
+                            ended |= isinstance(item, StreamFinish)
                             yield item
+                        ended |= _is_done_line(line)
                 tail = inliner.finish()
                 if tail:
                     yield tail
+                _raise_if_cut(started=started, ended=ended)
         except httpx.TransportError as exc:
             # Before the first frame the raw error stays: the caller rediscovers the
             # engine and retries. After it, the partial answer cannot be retried.
@@ -1580,6 +1584,21 @@ def _prefill_progress(line: str) -> tuple[int, int] | None:
         return int(progress["processed"]), int(progress["total"])
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _raise_if_cut(*, started: bool, ended: bool) -> None:
+    """Raise when a started stream's body ended with neither a finish frame nor ``[DONE]``.
+
+    The engine died but its proxy closed the body cleanly, so no transport error
+    was raised. A stream with no frame at all is left to the caller's retry path.
+    """
+    if started and not ended:
+        raise StreamInterruptedError
+
+
+def _is_done_line(line: str) -> bool:
+    """Whether *line* is the SSE ``data: [DONE]`` sentinel that closes a stream."""
+    return line.startswith(_DATA_PREFIX) and line[len(_DATA_PREFIX) :].strip() == _DONE_SENTINEL
 
 
 def _parse_sse_stream_items(

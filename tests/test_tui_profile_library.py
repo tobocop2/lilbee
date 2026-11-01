@@ -482,6 +482,26 @@ def test_entry_label_names_the_folder_and_each_problem() -> None:
     assert str(entry_label(entry)).startswith("broken-profile  global, cannot load: ")
 
 
+_LONG_A = "Fortyletternamefortheprofile-aaaaaaaaaaa"
+_LONG_B = "Fortyletternamefortheprofile-bbbbbbbbbbb"
+
+
+@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
+async def test_two_long_names_that_differ_in_the_tail_read_differently(size) -> None:
+    assert len(_LONG_A) == len(_LONG_B) == 40
+    _write_global(_LONG_A, _PLAIN)
+    _write_global(_LONG_B, _PLAIN)
+    app = _SettingsApp()
+    async with app.run_test(size=size) as pilot:
+        library = await _open(app, pilot)
+        await pilot.pause()
+        rows = [row for row in _raw_rows(library) if row.startswith("Fortyletter")]
+        assert len(rows) == 2, rows
+        assert rows[0] != rows[1], "two different profiles read the same"
+        names = [row.split("  ")[0].rstrip() for row in rows]
+        assert names[0][-3:] != names[1][-3:], names
+
+
 async def test_a_resize_repaints_the_rows_to_the_new_width() -> None:
     app = _SettingsApp()
     async with app.run_test(size=(120, 40)) as pilot:

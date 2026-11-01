@@ -84,6 +84,32 @@ async def test_the_plus_button_saves_a_new_named_profile() -> None:
     assert ProfileStore().scan().find(name).folder is ProfileFolder.GLOBAL
 
 
+@pytest.mark.parametrize(
+    ("count", "changes"), [(0, ""), (1, "your 1 change. "), (3, "your 3 changes. ")]
+)
+def test_the_save_note_counts_changes_in_the_right_number(count, changes) -> None:
+    from lilbee.cli.tui import messages as msg
+
+    note = msg.profile_save_explain("Default", count)
+    assert "your 0" not in note
+    assert note.startswith("The new profile holds Default's values")
+    if changes:
+        assert f"and {changes}" in note
+    else:
+        assert "your" not in note
+
+
+async def test_save_as_with_no_changes_does_not_say_your_0_changes() -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        await _press(pilot, screen.query_one("#profile-save_as", ConfirmPill))
+        save = await _dialog(app, pilot, SaveProfileDialog)
+        note = _text(save.query_one("#save-explain", Static))
+        assert note.startswith("The new profile holds Default's values.")
+        assert "0 changes" not in note
+
+
 @pytest.mark.parametrize("size", SIZES)
 async def test_save_as_opens_without_an_error(size) -> None:
     app = _SettingsApp()

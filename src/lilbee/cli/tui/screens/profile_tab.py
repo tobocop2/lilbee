@@ -261,9 +261,7 @@ class ProfileTab(Vertical):
     def _save_as(self, snapshot: ProfileSnapshot, initial: str = "") -> None:
         dialog = SaveProfileDialog(
             title=msg.PROFILE_SAVE_TITLE,
-            explain=msg.PROFILE_SAVE_EXPLAIN.format(
-                name=snapshot.active.name, count=len(snapshot.active.changes)
-            ),
+            explain=msg.profile_save_explain(snapshot.active.name, len(snapshot.active.changes)),
             catalog=snapshot.catalog,
             folders=save_folders(snapshot.has_project),
             initial=initial,

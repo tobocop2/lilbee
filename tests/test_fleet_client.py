@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import threading
 import time
@@ -15,7 +16,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from lilbee.providers.base import ProviderError, TokenUsage
+from lilbee.providers.base import ProviderError, StreamFinish, TokenUsage
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
@@ -2844,6 +2845,83 @@ def test_stream_cut_by_a_reset_keeps_its_cause_and_text() -> None:
     assert isinstance(caught.value.__cause__, httpx.TransportError)
     assert "stopped answering" in str(caught.value)
     assert "restarted" not in str(caught.value)
+
+
+class _CleanEndServer:
+    """A loopback server whose chat body ends cleanly, with the chosen closing frames.
+
+    It sends one text frame, then ``finish`` and ``sentinel`` as asked, then the
+    chunked terminator. A proxy that outlives a killed engine ends its body like
+    this when ``finish`` and ``sentinel`` are both off.
+    """
+
+    def __init__(self, *, finish: bool, sentinel: bool, text: bool = True) -> None:
+        import socket
+
+        self._text = text
+        self._finish = finish
+        self._sentinel = sentinel
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.url = f"http://127.0.0.1:{self._sock.getsockname()[1]}"
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        conn, _ = self._sock.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            )
+            frames = [b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'] if self._text else []
+            if self._finish:
+                frames.append(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+            if self._sentinel:
+                frames.append(b"data: [DONE]\n\n")
+            for frame in frames:
+                conn.sendall(f"{len(frame):x}\r\n".encode() + frame + b"\r\n")
+            conn.sendall(b"0\r\n\r\n")
+            # Close only after the client has read the body, so no reset hides it.
+            conn.settimeout(1.0)
+            with contextlib.suppress(OSError):
+                conn.recv(65536)
+
+    def close(self) -> None:
+        self._thread.join(timeout=5)
+        self._sock.close()
+
+
+@pytest.mark.parametrize(
+    ("finish", "sentinel"), [(True, True), (True, False), (False, True)], ids=lambda v: str(v)
+)
+def test_stream_with_a_finish_or_a_sentinel_ends_as_complete(finish: bool, sentinel: bool) -> None:
+    server = _CleanEndServer(finish=finish, sentinel=sentinel)
+    items = list(_real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}]))
+    server.close()
+    assert items[0] == "Hi"
+    assert any(isinstance(i, StreamFinish) for i in items) is finish
+
+
+def test_stream_ending_with_no_finish_and_no_sentinel_is_cut() -> None:
+    server = _CleanEndServer(finish=False, sentinel=False)
+    stream = _real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert "The model server stopped answering and the answer is cut." in str(caught.value)
+    assert "Send your message again." in str(caught.value)
+
+
+def test_stream_with_no_frame_at_all_is_not_called_cut() -> None:
+    """No frame was sent, so the caller's existing retry path decides, not this check."""
+    server = _CleanEndServer(finish=False, sentinel=False, text=False)
+    items = list(_real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}]))
+    server.close()
+    assert items == []
 
 
 def test_stream_cut_before_first_frame_keeps_the_transport_error() -> None:

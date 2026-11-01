@@ -108,10 +108,14 @@ def entry_label(entry: ProfileEntry, name_width: int = 0, row_width: int = 0) ->
     """A list row: the name padded to *name_width*, then its folder and any problem.
 
     With a *row_width*, the row is cut with an ellipsis to fit, so it never wraps.
+    A name that is too long loses its middle, so its tail still shows.
     """
     name = entry.name
     if row_width > 0 and len(name) > name_width:
-        name = name[: name_width - 1] + _ELLIPSIS
+        # Keep both ends: names often differ only in their tail.
+        kept = name_width - 1
+        tail = kept // 2
+        name = name[: kept - tail] + _ELLIPSIS + (name[len(name) - tail :] if tail else "")
     row = Content.assemble(
         name.ljust(name_width), _ROW_GAP, Content.styled(_tag_text(entry), "$text-muted")
     )

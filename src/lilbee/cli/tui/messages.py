@@ -878,6 +878,11 @@ PROFILE_SAVE_PLACEHOLDER = "Profile name"
 PROFILE_SAVE_TO = "Save to"
 PROFILE_SAVE_GLOBAL = "All my projects (global folder)"
 PROFILE_SAVE_PROJECT = "This project"
+PROFILE_SAVE_EXPLAIN_NONE = "The new profile holds {name}'s values. This project switches to it."
+PROFILE_SAVE_EXPLAIN_ONE = (
+    "The new profile holds {name}'s values and your 1 change. "
+    "This project switches to it, and your change stops showing as yours."
+)
 PROFILE_SAVE_EXPLAIN = (
     "The new profile holds {name}'s values and your {count} changes. "
     "This project switches to it, and your changes stop showing as yours."
@@ -1025,6 +1030,15 @@ ANALYZE_TIP = (
     "This project uses the Default profile. Run /analyze on the same path first to pick "
     "settings for it, or /analyze off to hide this tip."
 )
+
+
+def profile_save_explain(name: str, count: int) -> str:
+    """The Save-as note: what the new profile holds, worded for 0, 1 or many changes."""
+    if count == 0:
+        return PROFILE_SAVE_EXPLAIN_NONE.format(name=name)
+    if count == 1:
+        return PROFILE_SAVE_EXPLAIN_ONE.format(name=name)
+    return PROFILE_SAVE_EXPLAIN.format(name=name, count=count)
 
 
 def profile_count_text(count: int) -> str:
