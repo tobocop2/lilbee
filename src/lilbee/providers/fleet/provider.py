@@ -33,6 +33,7 @@ from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers import engine_params
 from lilbee.providers.base import (
     GENERATION_RESERVE_TOKENS,
+    SERVER_STOPPING_MESSAGE,
     ProviderError,
     ProviderErrorKind,
     prompt_token_budget,
@@ -1101,7 +1102,7 @@ class FleetProvider:
         finished = work.wait_unless_woken(_FLEET_WAIT_S)
         if self._stop_waiting and not finished:
             raise ProviderError(
-                "The server is stopping.",
+                SERVER_STOPPING_MESSAGE,
                 provider=_PROVIDER_NAME,
                 kind=ProviderErrorKind.STARTING,
             )

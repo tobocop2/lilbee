@@ -446,6 +446,18 @@ def test_the_signal_teardown_tells_the_provider_before_it_clears_the_services() 
     assert services_module.peek_services() is None
 
 
+def test_answering_the_waiters_marks_the_server_as_stopping_until_the_next_serve() -> None:
+    services_module.set_server_exit_hook(lambda _status: None)
+    try:
+        assert services_module.server_is_stopping() is False
+        services_module.answer_provider_waiters()
+        assert services_module.server_is_stopping() is True
+        services_module.set_server_exit_hook(lambda _status: None)
+        assert services_module.server_is_stopping() is False
+    finally:
+        services_module.set_server_exit_hook(None)
+
+
 def test_stop_waiting_with_no_work_has_nothing_to_wake() -> None:
     provider = _provider_with(None)
     provider.stop_waiting()
