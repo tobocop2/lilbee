@@ -17165,3 +17165,82 @@ async def test_settings_advanced_section_expands_and_reaches_field_at_80x24():
             f"tab past the expanded header should reach reranker_type, got {app.focused}"
         )
         assert app.focused.id == "ed-reranker_type"
+
+
+async def test_chat_slash_set_stores_a_list_setting_as_the_list_the_user_meant(tmp_path):
+    """/set crawl_browser_extra_args --no-sandbox stores one argument, not its characters."""
+    from lilbee.core import settings as persisted
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("crawl_browser_extra_args --no-sandbox")
+        assert cfg.crawl_browser_extra_args == ["--no-sandbox"]
+        assert persisted.get(cfg.data_root, "crawl_browser_extra_args") == "--no-sandbox"
+        assert mock_notify.call_args[0][0] == "crawl_browser_extra_args = ['--no-sandbox']"
+
+
+async def test_chat_slash_set_echoes_the_pages_a_list_setting_stored(tmp_path):
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("force_ocr_pages 1,2")
+        assert cfg.force_ocr_pages == [1, 2]
+        assert mock_notify.call_args[0][0] == "force_ocr_pages = [1, 2]"
+
+
+async def test_chat_slash_set_refuses_a_bad_list_value_with_the_shared_message(tmp_path):
+    """/set shows the message the write boundary gives and keeps the old list."""
+    from lilbee.core import settings as persisted
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        before = list(cfg.force_ocr_pages)
+        with (
+            patch.object(app.screen, "notify") as mock_notify,
+            patch.object(persisted, "update_values") as write,
+        ):
+            app.screen._cmd_set("force_ocr_pages 1,abc")
+        assert cfg.force_ocr_pages == before
+        write.assert_not_called()
+        message = mock_notify.call_args[0][0]
+        assert "force_ocr_pages" in message and "abc" in message
+        assert mock_notify.call_args.kwargs["severity"] == "error"
+
+
+def test_list_setting_value_is_one_parse_for_the_cli_and_both_tabs():
+    from lilbee.app.settings import list_setting_value
+
+    assert list_setting_value("1,2") == ["1,2"]
+    assert list_setting_value(" a \n\n b ") == ["a", "b"]
+
+
+def test_failed_sync_toast_names_the_key_that_starts_a_sync():
+    """The toast shown for a failed sync names S, the key that runs a sync in the TUI."""
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest import SyncResult
+
+    screen = ChatScreen.__new__(ChatScreen)
+    shown: list[str] = []
+    screen.notify = lambda text, **kw: shown.append(text)  # type: ignore[assignment]
+    failing = SyncResult(added=[], updated=[], removed=[], unchanged=0, failed=["a.txt"])
+
+    def _run(coro):
+        coro.close()
+        return failing
+
+    reporter = MagicMock()
+    with (
+        patch("lilbee.runtime.asyncio_loop.run", side_effect=_run),
+        patch(
+            "lilbee.cli.tui.screens.chat.call_from_thread", lambda _s, fn, *a, **kw: fn(*a, **kw)
+        ),
+        pytest.raises(RuntimeError, match="Sync failed"),
+    ):
+        screen._do_sync(reporter)
+
+    assert shown == [
+        "Sync failed for 1 file(s). Press t to see the reason. Fix it, then press S to sync again."
+    ]

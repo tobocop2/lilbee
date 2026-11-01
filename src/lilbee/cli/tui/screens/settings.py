@@ -24,7 +24,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from lilbee.app.settings import OCR_SETTING_KEYS, setting_sources
+from lilbee.app.settings import OCR_SETTING_KEYS, list_setting_value, setting_sources
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
@@ -523,7 +523,7 @@ class SettingsScreen(Screen[None]):
             # The text goes to the shared write, which refuses what it cannot read.
             return raw
         if defn.type is list:
-            return [line.strip() for line in raw.split("\n") if line.strip()]
+            return list_setting_value(raw)
         return defn.type(raw)
 
     @staticmethod

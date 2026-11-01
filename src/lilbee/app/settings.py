@@ -133,6 +133,15 @@ def ocr_off_vision_notice() -> tuple[str, ...]:
     return ()
 
 
+def list_setting_value(raw: str) -> list[str]:
+    """The items of a list setting typed as text: one per line, trimmed, blank lines dropped.
+
+    The CLI and both Settings views use this parse. A comma stays in the item; a
+    field validator that accepts commas splits it on write.
+    """
+    return [line.strip() for line in raw.split("\n") if line.strip()]
+
+
 def _update_warnings(changed_keys: set[str]) -> tuple[str, ...]:
     """The notice for a vision model picked while ocr = off keeps it unused."""
     return ocr_off_vision_notice() if "vision_model" in changed_keys else ()

@@ -100,13 +100,14 @@ def _parse_cli_value(key: str, raw: str) -> Any:
     List-typed fields are newline-separated, matching how config.toml persists
     them; every other type is left to pydantic's own coercion on assignment.
     """
+    from lilbee.app.settings import list_setting_value
     from lilbee.core.config.schema import field_type_name
 
     try:
         is_list = field_type_name(key) == "list"
     except KeyError:
         is_list = False
-    return raw.split("\n") if is_list else raw
+    return list_setting_value(raw) if is_list else raw
 
 
 def _stored_text(key: str, typed: str) -> str:

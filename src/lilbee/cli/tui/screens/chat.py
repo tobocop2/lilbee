@@ -48,6 +48,7 @@ from lilbee.app.ingest import (
 )
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
+from lilbee.app.settings import list_setting_value
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
@@ -229,11 +230,11 @@ def _stream_error_text(exc: Exception) -> str:
     return msg.STREAM_ERROR.format(error=exc)
 
 
-def _set_echo(key: str, parsed: object, *, secret: bool, is_bool: bool) -> object:
-    """What /set shows after a write: a bool setting shows what it stored, auto when unset."""
+def _set_echo(key: str, parsed: object, *, secret: bool, show_stored: bool) -> object:
+    """What /set shows after a write: a bool or list setting shows what it stored."""
     if secret and parsed:
         return msg.MASKED_VALUE
-    if not is_bool:
+    if not show_stored:
         return parsed
     stored = getattr(cfg, key)
     return msg.CMD_SET_AUTO if stored is None else stored
@@ -1533,7 +1534,7 @@ class ChatScreen(Screen[None]):
                     )
                     return
                 try:
-                    parsed = defn.type(value)
+                    parsed = list_setting_value(value) if defn.type is list else defn.type(value)
                 except (ValueError, TypeError):
                     self.notify(
                         msg.CMD_SET_TYPE_HINT.format(key=key, kind=_setting_type_hint(defn.type)),
@@ -1544,7 +1545,9 @@ class ChatScreen(Screen[None]):
             # (model bar, scope chip, status bar) refresh. The boundary's
             # _invalidate_caches now handles llm_provider service reset.
             self.app.set_setting(key, parsed)
-            shown = _set_echo(key, parsed, secret=defn.secret, is_bool=defn.type is bool)
+            shown = _set_echo(
+                key, parsed, secret=defn.secret, show_stored=defn.type in (bool, list)
+            )
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
         except (ValueError, TypeError) as exc:
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
