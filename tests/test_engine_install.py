@@ -26,8 +26,9 @@ from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.choice import HostFacts, installed_engines
+from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.host_caps import collect
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
 from tests.conformance.fake_adapter import FakeAdapter
@@ -85,7 +86,9 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.preferred_engine = EngineSetting.AUTO
     cfg.engine_choices = None
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="linux", machine="x86_64")
+        engine_choice,
+        "session_host",
+        lambda: collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None),
     )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setattr(runnable, "detect", _live_host)
@@ -99,10 +102,8 @@ def _live_host() -> host_caps.HostCaps:
     return host_caps.collect(
         system="Linux",
         machine="x86_64",
-        mac_ver="",
         cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
         nvml=None,
-        npu_devices=[],
     )
 
 

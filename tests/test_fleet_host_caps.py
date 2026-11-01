@@ -13,8 +13,6 @@ from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.host_caps import (
     HostArch,
     HostOS,
-    Npu,
-    NpuVendor,
     collect,
     detect,
     nvml_device_totals,
@@ -28,16 +26,14 @@ def _recorded(name: str) -> dict:
     return json.loads((FIXTURES / f"{name}.probe.json").read_text(encoding="utf-8"))
 
 
-def _collect_recorded(name: str, npu_devices: list[str] | None = None):
+def _collect_recorded(name: str):
     probe = _recorded(name)
     cpu = {k: probe[k] for k in ("arch", "arch_string_raw", "brand_raw", "flags")}
     return collect(
         system=probe["system"],
         machine=probe["machine"],
-        mac_ver=probe["mac_ver"],
         cpu_info=cpu,
         nvml=probe.get("nvml"),
-        npu_devices=npu_devices or [],
     )
 
 
@@ -90,11 +86,7 @@ class TestRecordedHosts:
         assert caps.neon.present
         assert not caps.avx2.present
         assert caps.avx2.reason == "not an x86 CPU"
-        assert (caps.os, caps.arch, caps.macos_version) == (
-            HostOS.MACOS,
-            HostArch.ARM64,
-            (14, 6, 1),
-        )
+        assert (caps.os, caps.arch) == (HostOS.MACOS, HostArch.ARM64)
         assert caps.gpus == ()
         assert caps.nvidia_driver_cuda is None
         assert caps.nvidia_reason == "no NVIDIA driver"
@@ -108,7 +100,6 @@ class TestRecordedHosts:
         assert [(g.name, g.compute) for g in caps.gpus] == [("NVIDIA GeForce GTX 1070 Ti", (6, 1))]
         assert caps.nvidia_driver_cuda == (12, 4)
         assert caps.nvidia_reason == ""
-        assert caps.macos_version is None
 
     def test_epyc_without_gpu_has_avx2(self) -> None:
         caps = _collect_recorded("gcp-epyc-nogpu")
@@ -123,49 +114,26 @@ class TestCollect:
         caps = collect(
             system="Linux",
             machine="x86_64",
-            mac_ver="",
             cpu_info={"flags": None, "brand_raw": "Odd CPU"},
             nvml=None,
-            npu_devices=[],
         )
         assert not caps.avx2.present
         assert "Odd CPU" in caps.avx2.reason
 
     def test_windows_arm_and_amd_machines_map_to_one_architecture_each(self) -> None:
-        arm = collect(
-            system="Windows", machine="ARM64", mac_ver="", cpu_info={}, nvml=None, npu_devices=[]
-        )
+        arm = collect(system="Windows", machine="ARM64", cpu_info={}, nvml=None)
         amd = collect(
             system="Windows",
             machine="AMD64",
-            mac_ver="",
             cpu_info={"flags": ["avx2"]},
             nvml=None,
-            npu_devices=[],
         )
         assert (arm.os, arm.arch, arm.neon.present) == (HostOS.WINDOWS, HostArch.ARM64, True)
         assert (amd.arch, amd.avx2.present) == (HostArch.X86_64, True)
 
     def test_linux_aarch64_is_arm64(self) -> None:
-        caps = collect(
-            system="Linux", machine="aarch64", mac_ver="", cpu_info={}, nvml=None, npu_devices=[]
-        )
+        caps = collect(system="Linux", machine="aarch64", cpu_info={}, nvml=None)
         assert caps.arch is HostArch.ARM64
-
-    def test_npu_names_map_to_vendors_and_unknown_names_are_dropped(self) -> None:
-        caps = collect(
-            system="Linux",
-            machine="x86_64",
-            mac_ver="",
-            cpu_info={"flags": []},
-            nvml=None,
-            npu_devices=["Intel NPU 3720", "Qualcomm Hexagon", "AMD XDNA", "Mystery"],
-        )
-        assert caps.npus == (
-            Npu(NpuVendor.INTEL, "Intel NPU 3720"),
-            Npu(NpuVendor.QUALCOMM, "Qualcomm Hexagon"),
-            Npu(NpuVendor.AMD, "AMD XDNA"),
-        )
 
     @pytest.mark.parametrize(
         ("code", "expected"), [(12040, (12, 4)), (12080, (12, 8)), (11080, (11, 8))]
@@ -175,10 +143,8 @@ class TestCollect:
         caps = collect(
             system="Linux",
             machine="x86_64",
-            mac_ver="",
             cpu_info={"flags": []},
             nvml=nvml,
-            npu_devices=[],
         )
         assert caps.nvidia_driver_cuda == expected
 
@@ -191,10 +157,8 @@ class TestCollect:
         caps = collect(
             system="Linux",
             machine="x86_64",
-            mac_ver="",
             cpu_info={"flags": []},
             nvml=nvml,
-            npu_devices=[],
         )
         assert [(g.name, g.compute) for g in caps.gpus] == [("A", (6, 1)), ("B", (9, 0))]
 
@@ -263,54 +227,20 @@ class TestNvmlReaders:
         assert nvml_device_totals() is None
 
 
-class TestAccelDevices:
-    def test_vendor_ids_map_to_npu_names(self, tmp_path, monkeypatch) -> None:
-        for index, vendor in enumerate(["0x8086", "0x17CB", "0x10de"]):
-            device = tmp_path / f"accel{index}" / "device"
-            device.mkdir(parents=True)
-            (device / "vendor").write_text(vendor + "\n", encoding="utf-8")
-        monkeypatch.setattr(host_caps, "_SYSFS_ACCEL_DIR", tmp_path)
-        assert host_caps._accel_device_names() == ["Intel NPU", "Qualcomm NPU"]
-
-    def test_a_glob_that_fails_lists_nothing(self, monkeypatch) -> None:
-        class FailingDir:
-            def glob(self, pattern: str):
-                raise PermissionError("denied")
-
-        monkeypatch.setattr(host_caps, "_SYSFS_ACCEL_DIR", FailingDir())
-        assert host_caps._accel_device_names() == []
-
-    def test_a_vendor_file_that_is_not_text_is_skipped(self, tmp_path, monkeypatch) -> None:
-        for index, content in enumerate([b"\xff\xfe\x00", b"0x8086\n"]):
-            device = tmp_path / f"accel{index}" / "device"
-            device.mkdir(parents=True)
-            (device / "vendor").write_bytes(content)
-        monkeypatch.setattr(host_caps, "_SYSFS_ACCEL_DIR", tmp_path)
-        assert host_caps._accel_device_names() == ["Intel NPU"]
-
-    def test_no_accel_class_lists_nothing(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr(host_caps, "_SYSFS_ACCEL_DIR", tmp_path / "absent")
-        assert host_caps._accel_device_names() == []
-
-
 class TestDetect:
     def test_detect_wires_the_platform_cpu_and_nvml_readings(self, monkeypatch) -> None:
         import cpuinfo
 
         monkeypatch.setattr(host_caps.platform, "system", lambda: "Linux")
         monkeypatch.setattr(host_caps.platform, "machine", lambda: "x86_64")
-        monkeypatch.setattr(host_caps.platform, "mac_ver", lambda: ("", ("", "", ""), ""))
         monkeypatch.setattr(cpuinfo, "get_cpu_info", lambda: {"flags": ["avx2"], "brand_raw": "X"})
         monkeypatch.setattr(host_caps, "read_nvml", lambda: None)
-        monkeypatch.setattr(host_caps, "_accel_device_names", lambda: ["AMD NPU"])
         caps = detect()
         assert caps.avx2.present
         assert caps.nvidia_reason == "no NVIDIA driver"
-        assert caps.npus == (Npu(NpuVendor.AMD, "AMD NPU"),)
 
     def test_detect_reports_the_gpus_the_nvml_binding_lists(self, monkeypatch) -> None:
         monkeypatch.setitem(sys.modules, "pynvml", _fake_nvml())
-        monkeypatch.setattr(host_caps, "_accel_device_names", list)
         caps = detect()
         assert caps.nvidia_known
         assert caps.gpus[0].compute == (8, 6)
@@ -330,10 +260,8 @@ def _collect(**overrides):
     args = {
         "system": "Linux",
         "machine": "x86_64",
-        "mac_ver": "",
         "cpu_info": {"flags": ["avx2"], "brand_raw": "X"},
         "nvml": None,
-        "npu_devices": [],
     }
     return collect(**{**args, **overrides})
 
@@ -375,11 +303,6 @@ class TestUnknownIsNotAbsent:
     def test_flags_given_as_one_string_are_unknown(self) -> None:
         avx2 = _collect(cpu_info={"flags": "avx2 sse2", "brand_raw": "Odd"}).avx2
         assert (avx2.present, avx2.known) == (False, False)
-
-    @pytest.mark.parametrize("system", ["Linux", "Windows"])
-    def test_a_mac_version_is_read_only_on_macos(self, system) -> None:
-        assert _collect(system=system, mac_ver="14.2").macos_version is None
-        assert _collect(system="Darwin", machine="arm64", mac_ver="14.2").macos_version == (14, 2)
 
     def test_a_cpu_without_avx2_is_known_absent(self) -> None:
         avx2 = _collect(cpu_info={"flags": ["sse2"], "brand_raw": "Old"}).avx2
@@ -428,11 +351,6 @@ class TestUnknownIsNotAbsent:
     def test_a_readable_driver_is_known_with_no_reason(self) -> None:
         caps = _collect(nvml=_nvml_answer())
         assert (caps.nvidia_known, caps.nvidia_reason) == (True, "")
-
-    def test_unparsable_macos_version_is_unknown(self) -> None:
-        caps = _collect(system="Darwin", machine="arm64", mac_ver="14.x")
-        assert caps.os is HostOS.MACOS
-        assert caps.macos_version is None
 
 
 class TestNvmlReadsNeverRaise:
@@ -516,15 +434,6 @@ class TestNvmlReadsNeverRaise:
 
 
 class TestDetectNeverRaises:
-    def test_unreadable_npu_vendor_file_is_skipped(self, tmp_path, monkeypatch) -> None:
-        good = tmp_path / "accel0" / "device"
-        good.mkdir(parents=True)
-        (good / "vendor").write_text("0x8086\n", encoding="utf-8")
-        bad = tmp_path / "accel1" / "device" / "vendor"
-        bad.mkdir(parents=True)
-        monkeypatch.setattr(host_caps, "_SYSFS_ACCEL_DIR", tmp_path)
-        assert host_caps._accel_device_names() == ["Intel NPU"]
-
     def test_failing_cpu_probe_reads_unknown_avx2(self, monkeypatch) -> None:
         import cpuinfo
 
@@ -535,7 +444,6 @@ class TestDetectNeverRaises:
         monkeypatch.setattr(host_caps.platform, "machine", lambda: "x86_64")
         monkeypatch.setattr(cpuinfo, "get_cpu_info", boom)
         monkeypatch.setattr(host_caps, "read_nvml", lambda: None)
-        monkeypatch.setattr(host_caps, "_accel_device_names", list)
         caps = detect()
         assert not caps.avx2.known
 

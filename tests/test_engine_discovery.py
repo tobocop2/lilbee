@@ -87,7 +87,7 @@ def test_an_adapter_with_an_unknown_name_is_refused(
         discover_adapters()
 
 
-_SHARED_MODULES = frozenset({"base"})
+_SHARED_MODULES = frozenset({"base", "host_gate"})
 
 
 def _engine_module_imports(source: str) -> list[str]:

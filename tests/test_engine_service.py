@@ -23,9 +23,9 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
     AUTO,
-    HostFacts,
     NoEngineError,
 )
+from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.chat_dispatch import capability
 from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
@@ -62,7 +62,9 @@ OPENVINO_ENGINE = _OpenvinoEngine()
 @pytest.fixture(autouse=True)
 def _host(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="darwin", machine="arm64")
+        engine_choice,
+        "session_host",
+        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
     )
 
 
