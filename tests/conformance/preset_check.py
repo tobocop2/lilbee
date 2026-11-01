@@ -8,6 +8,7 @@ import math
 import re
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterator
@@ -360,9 +361,27 @@ def _scrubbed(value: Any) -> Any:
     return value
 
 
+def _origin(url: str) -> tuple[str, str]:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme, parts.netloc
+
+
+class _SameOriginRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only to the origin of the request, so a bearer token stays there."""
+
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> Any:
+        if _origin(newurl) != _origin(req.full_url):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _proxy_handler(
     upstream: str, tape: _Tape, token: str | None, embed_url: str | None
 ) -> type[BaseHTTPRequestHandler]:
+    opener = urllib.request.build_opener(_SameOriginRedirects)
+
     class Handler(BaseHTTPRequestHandler):
         def _forward(self) -> None:
             size = int(self.headers.get("Content-Length") or 0)
@@ -371,13 +390,13 @@ def _proxy_handler(
             target = upstream
             if embed_url is not None and self.path.startswith(_EMBED_PATH):
                 target = embed_url
-            elif token is not None:
+            if token is not None and _origin(target) == _origin(upstream):
                 headers["Authorization"] = f"Bearer {token}"
             request = urllib.request.Request(  # noqa: S310  a local server under test
                 target + self.path, data=raw or None, method=self.command, headers=headers
             )
             try:
-                with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as resp:  # noqa: S310
+                with opener.open(request, timeout=_TIMEOUT_S) as resp:
                     status, body, kind = resp.status, resp.read(), resp.headers.get_content_type()
             except urllib.error.HTTPError as exc:
                 status, body, kind = exc.code, exc.read(), exc.headers.get_content_type()
