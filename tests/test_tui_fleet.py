@@ -1338,3 +1338,172 @@ async def test_one_card_still_offers_the_cpu_choice(monkeypatch):
             pilot, "#tgt-embed-cpu", lambda: body.query_one("#tgt-embed-cpu").has_class("on")
         )
         assert _generated(app) == '{"embed": {"target": "cpu"}}'
+
+
+_LOST_CARD = (
+    "chat: GPU 1 is not on this machine (1 found). "
+    "Set the chat devices to a GPU that exists, or set its target to cpu."
+)
+_LOST_CARD_SPEC = (
+    '{"chat": {"devices": [1], "target": "gpu"}, "embed": {"target": "cpu"}, '
+    '"vision": {"devices": [0], "target": "gpu"}}'
+)
+
+
+def _one_card_view(roles, **kwargs):  # type: ignore[no-untyped-def]
+    from lilbee.app.placement import GpuInfo, PlacementView
+
+    return PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A40", 24 * GIB, 24 * GIB),),
+        roles=roles,
+        unplaceable=(),
+        **kwargs,
+    )
+
+
+def _refused_view():  # type: ignore[no-untyped-def]
+    """What the service returns for a spec that names a card the machine lost."""
+    from lilbee.app.placement import RolePlacementView
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+
+    return _one_card_view(
+        (
+            RolePlacementView(
+                WorkerRole.EMBED, "e.gguf", (), None, 1, "llama.cpp", target=RoleTarget.CPU
+            ),
+            RolePlacementView(WorkerRole.VISION, "v.gguf", (0,), None, 1, "llama.cpp"),
+        ),
+        manual=False,
+        spec_json=None,
+        rejected_spec_json=_LOST_CARD_SPEC,
+        refusal=_LOST_CARD,
+    )
+
+
+@pytest.mark.asyncio
+async def test_choosing_cpu_on_a_swap_plan_leaves_the_other_roles_to_the_planner(monkeypatch):
+    """Pinning chat and vision to the one card drops their swap group, so the spec is refused."""
+    from lilbee.app.placement import RolePlacementView
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    view = _one_card_view(
+        tuple(
+            RolePlacementView(role, f"{role.value}.gguf", (0,), None, 1, "llama.cpp")
+            for role in (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION)
+        ),
+        manual=False,
+        spec_json=None,
+        co_tenants=(WorkerRole.CHAT, WorkerRole.VISION),
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        await _press_until(
+            pilot, "#tgt-embed-cpu", lambda: body.query_one("#tgt-embed-cpu").has_class("on")
+        )
+        assert _generated(app) == (
+            '{"chat": {"target": "auto"}, "embed": {"target": "cpu"}, "vision": {"target": "auto"}}'
+        )
+        assert body.query_one("#dev-chat-0").has_class("on")
+
+
+@pytest.mark.asyncio
+async def test_a_card_pressed_on_a_planned_role_pins_that_role(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    view = _make_view(co_tenants=(WorkerRole.CHAT, WorkerRole.EMBED))
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        assert _generated(app) == '{"chat": {"target": "auto"}, "embed": {"target": "auto"}}'
+        await _toggle_device(pilot, "#dev-chat-2")
+        assert _generated(app) == '{"chat": {"devices": [1, 2]}, "embed": {"target": "auto"}}'
+        await _step_until_generated(
+            pilot,
+            "#rep-embed-inc",
+            app,
+            lambda text: '"embed": {"devices": [0], "replicas": 2}' in text,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spec_keeps_every_role_the_user_chose(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        assert body.query_one("#tgt-embed-cpu").has_class("on")
+        assert list(body._edits) == [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION]
+        assert _generated(app) == _LOST_CARD_SPEC
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(60, 24), (140, 44)])
+async def test_a_refused_spec_shows_the_service_reason_and_not_the_ignored_text(monkeypatch, size):
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_view)
+    app = FleetTestApp()
+    notes: list[str] = []
+    async with app.run_test(size=size) as pilot:
+        body = app.screen.query_one(FleetBody)
+        body.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
+        body._load_worker()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        line = body.query_one("#placement-skipped", Static)
+        assert line.display
+        assert str(line.render()) == _LOST_CARD
+    assert not [note for note in notes if "being ignored" in note]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spec_applies_unedited_and_applies_a_correction(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_view)
+    calls: list[object] = []
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: calls.append(spec))
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        await _press_until(
+            pilot, "#tgt-chat-cpu", lambda: body.query_one("#tgt-chat-cpu").has_class("on")
+        )
+        body.action_apply()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert len(calls) == 1
+    roles = calls[0].roles
+    assert roles[WorkerRole.CHAT].target is RoleTarget.CPU
+    assert roles[WorkerRole.EMBED].target is RoleTarget.CPU
+    assert roles[WorkerRole.VISION].devices == (0,)
+
+
+@pytest.mark.asyncio
+async def test_a_card_pressed_on_a_role_drops_the_card_the_machine_lost(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await _toggle_device(pilot, "#dev-chat-0")
+        assert '"chat": {"devices": [0], "target": "gpu"}' in _generated(app)
