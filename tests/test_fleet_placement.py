@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from math import ceil
 
 from lilbee.providers.fleet.placement import (
     InstancePlan,
@@ -135,7 +136,7 @@ class TestPlanPlacement:
         assert plan.instances[0].devices == (0, 1)
         assert plan.unplaceable_roles == ()
         # Short by its estimate minus both cards' 90% headroom.
-        assert plan.tight_roles == {WorkerRole.CHAT: int(100 * _GB - 2 * 24 * _GB * 0.9)}
+        assert plan.tight_roles == {WorkerRole.CHAT: ceil(100 * _GB - 2 * 24 * _GB * 0.9)}
 
     def test_no_gpu_devices_places_every_role_on_cpu(self) -> None:
         # A GPU-less host (or a probe that found nothing): each role runs as a
@@ -616,7 +617,7 @@ class TestChatVisionCoTenancy:
         }
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
         # Short by its 8GB estimate minus what refunding rerank freed (7.2 - embed 1).
-        assert plan.tight_roles == {WorkerRole.VISION: int(8 * _GB - (8 * _GB * 0.9 - 1 * _GB))}
+        assert plan.tight_roles == {WorkerRole.VISION: ceil(8 * _GB - (8 * _GB * 0.9 - 1 * _GB))}
 
     def test_vision_that_fits_ingest_pulls_rerank_into_the_swap_group(self) -> None:
         # 8GB card (7.2 usable): embed 1 + rerank 1 + vision 6 = 8 overflows, but the
@@ -746,7 +747,9 @@ class TestTightPlacement:
         }
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
         # Short by the estimate minus the card's headroom less the embedder's charge.
-        assert plan.tight_roles == {WorkerRole.VISION: int(18 * _GB - (16 * _GB * 0.9 - 0.5 * _GB))}
+        assert plan.tight_roles == {
+            WorkerRole.VISION: ceil(18 * _GB - (16 * _GB * 0.9 - 0.5 * _GB))
+        }
 
     def test_lone_tight_role_forms_no_swap_group(self) -> None:
         # Nothing charged is phase-disjoint from vision (the embedder shares ingest):

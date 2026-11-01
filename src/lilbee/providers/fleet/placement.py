@@ -16,10 +16,11 @@ from __future__ import annotations
 import functools
 import itertools
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import reduce
-from math import gcd
+from math import ceil, gcd
+from types import MappingProxyType
 
 from lilbee.providers.fleet.memory_types import MemoryKind
 from lilbee.providers.fleet.placement_spec import (
@@ -84,6 +85,15 @@ class InstancePlan:
     tensor_split: tuple[int, ...] = ()
     replica: int = 0
     target: RoleTarget = RoleTarget.GPU
+
+
+@dataclass(frozen=True)
+class RoomHolder:
+    """A role charged to a card ahead of the role that a refusal names."""
+
+    role: WorkerRole
+    model: str
+    charged_bytes: float
 
 
 @dataclass(frozen=True)
@@ -364,18 +374,44 @@ def _tight_device_group(needed: int, remaining: dict[int, float]) -> tuple[int, 
     return tuple(usable or by_room[:1])
 
 
+def _holders_sentence(holders: Sequence[RoomHolder]) -> str:
+    """The sentence that names each role charged to a card ahead of the refused one."""
+    named = [
+        f"the {h.role.value} model {h.model} ({h.charged_bytes / 1024**3:.1f} GiB)" for h in holders
+    ]
+    verb = "holds" if len(named) == 1 else "hold"
+    joined = " and ".join(named)
+    return f"{joined[0].upper()}{joined[1:]} {verb} the rest."
+
+
 def card_refusal(
-    subject: str, device: int, needed: float, room: float, capacity: int, *, fix: bool
+    subject: str,
+    device: int,
+    needed: float,
+    room: float,
+    capacity: int,
+    *,
+    fix: bool,
+    holders: Sequence[RoomHolder] = (),
 ) -> str | None:
     """The refusal of *needed* bytes on a card with *room* usable bytes; None when they fit."""
     if needed <= room:
         return None
-    return (
+    figures = (
         f"{subject} needs {needed / 1024**3:.1f} GiB but device {device} has "
         f"{room / 1024**3:.1f} GiB usable ({capacity / 1024**3:.1f} GiB total, "
         f"{usable_vram_fraction():.0%} headroom)"
-        + (". Use a smaller model, or set its target to cpu." if fix else "")
     )
+    held = _holders_sentence(holders) if holders else ""
+    if not fix:
+        return f"{figures}. {held}" if held else figures
+    if held and needed <= capacity * usable_vram_fraction():
+        roles = " or ".join(h.role.value for h in holders)
+        return (
+            f"{figures}. {held} Use a smaller {roles} model, or set the target of one of "
+            "these models to cpu or another card."
+        )
+    return f"{figures}. Use a smaller model, or set its target to cpu. {held}".rstrip()
 
 
 def _place_tight(
@@ -415,7 +451,7 @@ def _place_tight(
         charges=slot,
     )
     group = frozenset(refunds) | {model.role} if refunds else frozenset()
-    return placed, group, int(model.est_vram_bytes - available)
+    return placed, group, ceil(model.est_vram_bytes - available)
 
 
 def _group_slot(
@@ -725,6 +761,7 @@ def placement_from_spec(
     *,
     estimate_peak: PeakEstimator,
     plan_auto: AutoPlanner | None = None,
+    model_refs: Mapping[WorkerRole, str] = MappingProxyType({}),
 ) -> Placement:
     """Build a Placement from a manual *spec*, charging each card and failing loud.
 
@@ -746,6 +783,7 @@ def placement_from_spec(
     instances: list[InstancePlan] = []
     auto_roles: list[WorkerRole] = []
     card_roles: list[WorkerRole] = []
+    held: dict[int, list[RoomHolder]] = {}
     for role in active_roles:
         rp = _required_entry(spec, role, device_capacity)
         if rp.device_target is RoleTarget.AUTO:
@@ -769,12 +807,16 @@ def placement_from_spec(
                 remaining,
                 device_capacity,
                 refuse_alone=not spec.all_on_cards,
+                held=held,
             )
             instances.append(
                 InstancePlan(
                     role=role, devices=tuple(rp.devices), tensor_split=split, replica=replica
                 )
             )
+        model = model_refs.get(role, role.value)
+        for idx, peak in zip(rp.devices, per_device, strict=True):
+            held.setdefault(idx, []).append(RoomHolder(role, model, peak * rp.replicas))
     if not auto_roles:
         return Placement(instances=tuple(instances), unplaceable_roles=())
     if plan_auto is None:
@@ -905,6 +947,7 @@ def _charge_devices(
     device_capacity: dict[int, int],
     *,
     refuse_alone: bool,
+    held: Mapping[int, Sequence[RoomHolder]],
 ) -> None:
     """Subtract one instance's per-device peaks from *remaining*; fail loud if a card overflows.
 
@@ -936,6 +979,7 @@ def _charge_devices(
             remaining[idx],
             device_capacity[idx],
             fix=refuse_alone,
+            holders=held.get(idx, ()),
         )
         if reason is not None:
             raise refusal(reason)

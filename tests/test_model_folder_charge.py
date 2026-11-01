@@ -228,6 +228,7 @@ def test_a_breakdown_of_the_wrong_length_keeps_the_count_text() -> None:
             dict.fromkeys(range(2), float(_CARD)),
             dict.fromkeys(range(2), _CARD),
             refuse_alone=False,
+            held={},
         )
 
 
