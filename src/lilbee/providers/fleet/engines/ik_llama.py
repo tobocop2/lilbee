@@ -29,7 +29,7 @@ VERSION = f"0+git{IK_LLAMA_COMMIT[:_VERSION_HEX_DIGITS]}"
 BACKEND = "cpu"
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
-_REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON. llama.cpp stays in use."
+_REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON."
 _PROFILE = dataclasses.replace(
     LLAMA.request_profile(WorkerRole.CHAT),
     label="ik_llama.cpp server",
