@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import http.server
+import socket
+import struct
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,12 +13,20 @@ REDIRECT_PATH = "/old"
 
 
 class ReleaseServer:
-    """Serves ``files`` by path with Range support; ``/old`` redirects to ``/f``."""
+    """Serves ``files`` by path with Range support; ``/old`` redirects to ``/f``.
+
+    ``fail_next`` answers that many requests with ``fail_status``. ``reset_next`` sends half
+    of the body and then resets the connection. ``close_next`` closes the connection before
+    it sends a status line.
+    """
 
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
         self.requests: list[dict[str, str]] = []
         self.fail_next = 0
+        self.fail_status = 503
+        self.reset_next = 0
+        self.close_next = 0
         self.url = ""
 
     def handler(self) -> type[http.server.BaseHTTPRequestHandler]:
@@ -30,8 +40,13 @@ class ReleaseServer:
                 owner.requests.append({k.lower(): v for k, v in self.headers.items()})
                 if owner.fail_next:
                     owner.fail_next -= 1
-                    self.send_response(503)
+                    self.send_response(owner.fail_status)
                     self.end_headers()
+                    return
+                if owner.close_next:
+                    owner.close_next -= 1
+                    self.close_connection = True
+                    self.connection.close()
                     return
                 if self.path == REDIRECT_PATH:
                     self.send_response(302)
@@ -47,6 +62,15 @@ class ReleaseServer:
                 self.send_response(206 if start else 200)
                 self.send_header("Content-Length", str(len(body) - start))
                 self.end_headers()
+                if owner.reset_next:
+                    owner.reset_next -= 1
+                    self.wfile.write(body[start : start + (len(body) - start) // 2])
+                    self.wfile.flush()
+                    linger = struct.pack("ii", 1, 0)
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+                    self.close_connection = True
+                    self.connection.close()
+                    return
                 self.wfile.write(body[start:])
 
         return Handler

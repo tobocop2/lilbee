@@ -11,6 +11,7 @@ import zipfile
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 from huggingface_hub import constants as hub_constants
@@ -18,7 +19,7 @@ from typer.testing import CliRunner
 
 import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
-from lilbee.catalog import runnable
+from lilbee.catalog import download, runnable
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import run_engine_command
 from lilbee.core.config import Config, cfg
@@ -137,8 +138,9 @@ def _cell(
 def good(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release: ReleaseServer) -> Path:
     """Register the stand-in with the sha of a good wheel; its cell is a 404 on the server."""
     wheel = tmp_path / "good.whl"
-    cells = _cell(f"{release.url}/gone.whl")
-    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(make_wheel(wheel), cells=cells))  # type: ignore[arg-type]
+    sha = make_wheel(wheel)
+    cells = _cell(f"{release.url}/gone.whl", sha)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
     return wheel
 
 
@@ -220,7 +222,7 @@ def test_a_system_below_the_floor_is_refused_on_the_download_and_the_wheel_route
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, good if with_wheel else None)
     head = f"Engine {ENGINE} {VERSION} (cpu) needs glibc 2.34 or later. "
-    tail = "Update the system, or set LILBEE_LLAMA_SERVER_PATH to an engine you built."
+    tail = "Update the system."
     assert str(exc.value) == f"{head}This computer has glibc 2.31. {tail}"
     assert (release.requests, _builds()) == ([], [])
 
@@ -236,6 +238,42 @@ def test_a_host_the_manifest_cannot_name_is_refused(
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, good)
     assert str(exc.value) == f"Engine {ENGINE} has no cpu build for this computer."
+
+
+def test_a_download_the_network_keeps_cutting_gives_the_missing_pack_text(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, root: Path
+) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    release.reset_next = 10
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    with (
+        mock.patch.object(download.time, "sleep"),
+        pytest.raises(engine_service.EngineRefusedError) as exc,
+    ):
+        engine_service.install(ENGINE.value)
+    assert str(exc.value) == (
+        f"Engine {ENGINE} {VERSION} (cpu) is not installed and cannot be downloaded. "
+        f"Copy {ENGINE}-{VERSION}-cpu.whl into {root / 'packs'} and run the install again."
+    )
+    assert len(release.requests) == 3
+    assert _builds() == []
+
+
+def test_a_pin_with_no_cells_installs_a_wheel_on_a_host_the_manifest_cannot_name(
+    good: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(
+        choice.ADAPTERS, ENGINE, StandIn(hashlib.sha256(good.read_bytes()).hexdigest())
+    )  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        runnable,
+        "detect",
+        lambda: host_caps.collect(system="Plan9", machine="riscv64", cpu_info={}, nvml=None),
+    )
+    engine_service.install(ENGINE.value, good)
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
 
 def test_a_pack_in_the_packs_folder_is_installed_without_a_wheel_argument(
