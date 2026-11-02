@@ -1216,6 +1216,24 @@ lilbee resolves the data directory in this order (highest priority first):
 | Linux | `~/.local/share/lilbee/` |
 | Windows | `%LOCALAPPDATA%/lilbee/` |
 
+### What the data directory holds
+
+The data directory holds your documents, the search index, `config.toml`
+and the logs. Four locations stay outside it and are shared by every data
+directory:
+
+| Location | Platform default | Variable that moves it |
+|----------|------------------|------------------------|
+| Models folder (also the Hugging Face cache) | `models/` in the platform data folder | `LILBEE_MODELS_DIR` |
+| Engines folder | `engines/` next to the models folder | follows `LILBEE_MODELS_DIR` |
+| Machine engine slot | `engine/` in the platform state folder | `LILBEE_ENGINE_DIR` |
+| GGUF metadata cache | the platform cache folder | `XDG_CACHE_HOME` (Linux), `HOME` (macOS) |
+
+A model you pull once is available to every data directory. To isolate a
+run fully, set `LILBEE_DATA`, `LILBEE_MODELS_DIR` and `LILBEE_ENGINE_DIR`
+to new folders. On Linux, also set `XDG_DATA_HOME`, `XDG_STATE_HOME` and
+`XDG_CACHE_HOME`. On macOS, set `HOME`.
+
 Run `lilbee init` to create a `.lilbee/` directory in your project. It
 contains `documents/` (your indexed files), `data/` (the search index), a
 `.gitignore` that excludes derived data, and a commented `.lilbeeignore` to

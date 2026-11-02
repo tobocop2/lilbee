@@ -299,7 +299,7 @@ These settings have no runtime write path. Set them in `config.toml`, or with th
 | `cors_origins` | `LILBEE_CORS_ORIGINS` | `list` | *(empty)* | no | no | no | no | Extra browser origins the HTTP server accepts, in addition to cors_origin_regex. |
 | `crawl_max_concurrent` | `LILBEE_CRAWL_MAX_CONCURRENT` | `int` | `0` | no | no | no | no | Pages fetched in parallel during a crawl. 0 = unlimited; default = CPU count. |
 | `data_dir` | `LILBEE_DATA_DIR` | `str` | *(computed)* | no | no | no | no | Directory holding the database. Defaults to data_root/data. |
-| `data_root` | `LILBEE_DATA_ROOT` | `str` | *(computed)* | no | no | no | no | Root directory for this library. Resolved at start from LILBEE_DATA, then a .lilbee/ directory walked up from the working directory, then the platform default. Every other path below hangs off it. |
+| `data_root` | `LILBEE_DATA_ROOT` | `str` | *(computed)* | no | no | no | no | Root directory for this library. Resolved at start from LILBEE_DATA, then a .lilbee/ directory walked up from the working directory, then the platform default. The documents, index, config file and logs live under it. The models folder (also the Hugging Face cache), the engines folder, the machine engine slot and the gguf metadata cache stay in the platform folders. LILBEE_MODELS_DIR and LILBEE_ENGINE_DIR move the first three. |
 | `embed_batch_sequences` | `LILBEE_EMBED_BATCH_SEQUENCES` | `int` | `64` | no | yes | yes | no | Passages packed into one embed request. Larger batches keep a GPU's continuous-batching slots full. The engine re-splits to its physical batch, so raising this helps only up to the server's --batch. |
 | `embedding_dim` | `LILBEE_EMBEDDING_DIM` | `int` | `768` | no | no | no | no | Vector width the index is built with. The embedding model sets it; change it only to match a model lilbee cannot introspect. |
 | `engine_choices` | no | `str|null` | *(none)* | no | no | no | no | The engine chosen for each model, by model reference. Change it with the engine commands, not the settings list. |
@@ -328,7 +328,7 @@ These are not configuration fields, so they have no row above and `config.toml` 
 |---|---|
 | `LILBEE_AGENT_ID` | Owner namespace for an MCP agent's memories and sessions. An explicit `agent_id` tool argument wins over it |
 | `LILBEE_CPU_QUOTA` | CPU concurrency cap. Defaults to half the available cores; a non-positive or unparseable value falls back to that default |
-| `LILBEE_DATA` | Data directory for this library, the same value as `data_root`. The older and more common spelling; `--data-dir` overrides it |
+| `LILBEE_DATA` | Data directory for this library, the same value as `data_root`. The older and more common spelling; `--data-dir` overrides it. It moves the documents, index, config file and logs. The models folder, the engines folder, the machine engine slot and the gguf metadata cache stay outside it; set `LILBEE_MODELS_DIR` and `LILBEE_ENGINE_DIR` to move the first three |
 | `LILBEE_ENGINE_DIR` | Directory holding the llama-server engine binaries. Set it to run against an engine build other than the bundled one |
 | `LILBEE_EXCLUSIVE_SCOPE` | A directory that at most one server may serve at a time, for a plugin's shared root |
 | `LILBEE_INGEST_CONCURRENCY` | Extraction-admission mode: `static` (the default), `adaptive-conservative`, or `adaptive-aggressive` |
