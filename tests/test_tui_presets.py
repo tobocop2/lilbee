@@ -169,6 +169,42 @@ class TestRunPresetCommand:
         add_preset("rr", LOCAL, roles=["rerank"], rerank_wire="tei")
         assert "wire: tei" in run_preset_command("list").text
 
+    def test_list_shows_the_reserve_only_when_set(self):
+        add_preset("omlx", LOCAL, roles=["chat"], memory_reserve_gb=8)
+        add_preset("far", f"{LOCAL}/x", roles=["chat"])
+        lines = run_preset_command("list").text.splitlines()
+        assert "reserve: 8 GiB" in lines[0]
+        assert "reserve: -" in lines[1]
+
+    def test_add_and_edit_take_a_reserve(self):
+        run_preset_command(f"add omlx {LOCAL} --roles chat --reserve 8")
+        assert _stored()[0]["memory_reserve_gb"] == 8
+        result = run_preset_command("edit omlx --reserve 3.5")
+        assert (result.ok, _stored()[0]["memory_reserve_gb"]) == (True, 3.5)
+
+    def test_edit_clear_reserve_unsets_it(self):
+        add_preset("omlx", LOCAL, roles=["chat"], memory_reserve_gb=8)
+        result = run_preset_command("edit omlx --clear-reserve")
+        assert result.ok
+        assert "memory_reserve_gb" not in _stored()[0]
+
+    def test_add_refuses_clear_reserve(self):
+        result = run_preset_command(f"add omlx {LOCAL} --roles chat --clear-reserve")
+        assert (result.ok, result.text) == (False, msg.PRESET_USAGE)
+
+    def test_a_remote_reserve_says_it_has_no_effect_in_list_add_and_edit(self):
+        remote = "http://93.184.216.34:8000/v1"
+        added = run_preset_command(f"add far {remote} --roles chat --reserve 8")
+        edited = run_preset_command("edit far --reserve 4")
+        listed = run_preset_command("list")
+        for result in (added, edited, listed):
+            assert "no effect" in result.text
+
+    def test_a_reserve_that_is_no_number_shows_the_text(self):
+        result = run_preset_command(f"add omlx {LOCAL} --roles chat --reserve lots")
+        assert (result.ok, result.text) == (False, "The memory reserve 'lots' is not a number.")
+        assert _stored() == []
+
     def test_add_stores_the_preset(self):
         result = run_preset_command(f"add omlx {LOCAL} --roles chat,embed --wire v1")
         assert (result.ok, result.text) == (True, "Added server preset 'omlx'.")
@@ -558,6 +594,139 @@ class TestPane:
             _press(app, "#preset-save")
             assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
         assert _stored()[0]["rerank_wire"] == "tei"
+
+    async def test_the_dialog_stores_a_reserve_on_add_and_edit(self):
+        app = _ChatApp()
+        async with app.run_test(size=(120, 50)) as pilot:
+            pane = await _open_pane(pilot, app)
+            _press(app, "#presets-add")
+            assert await await_dialog(pilot, app)
+            dialog = app.screen
+            dialog.query_one("#preset-name-input", Input).value = "omlx"
+            dialog.query_one("#preset-url-input", Input).value = LOCAL
+            dialog.query_one("#preset-role-chat", Checkbox).value = True
+            dialog.query_one("#preset-reserve-input", Input).value = "8"
+            _press(app, "#preset-save")
+            assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
+            assert _stored()[0]["memory_reserve_gb"] == 8
+            assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
+            _press(app, ".preset-edit")
+            assert await await_dialog(pilot, app)
+            reserve = app.screen.query_one("#preset-reserve-input", Input)
+            assert reserve.value == "8"
+            reserve.value = "2"
+            _press(app, "#preset-save")
+            assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
+        assert _stored()[0]["memory_reserve_gb"] == 2
+
+    async def test_the_edit_dialog_shows_a_reserve_that_is_no_number(self):
+        _seed()
+        app = _ChatApp()
+        async with app.run_test(size=(120, 50)) as pilot:
+            pane = await _open_pane(pilot, app)
+            assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
+            _press(app, ".preset-edit")
+            assert await await_dialog(pilot, app)
+            app.screen.query_one("#preset-reserve-input", Input).value = "lots"
+            _press(app, "#preset-save")
+            error = app.screen.query_one("#preset-error", Static)
+            assert await wait_until(pilot, lambda: bool(str(error.content)))
+            assert str(error.content) == "The memory reserve 'lots' is not a number."
+            assert not app.screen.query_one("#preset-save", Button).disabled
+
+    async def test_the_dialog_shows_a_reserve_that_is_no_number(self):
+        app = _ChatApp()
+        async with app.run_test(size=(120, 50)) as pilot:
+            await _open_pane(pilot, app)
+            _press(app, "#presets-add")
+            assert await await_dialog(pilot, app)
+            dialog = app.screen
+            dialog.query_one("#preset-name-input", Input).value = "omlx"
+            dialog.query_one("#preset-url-input", Input).value = LOCAL
+            dialog.query_one("#preset-role-chat", Checkbox).value = True
+            dialog.query_one("#preset-reserve-input", Input).value = "lots"
+            _press(app, "#preset-save")
+            error = dialog.query_one("#preset-error", Static)
+            assert await wait_until(pilot, lambda: bool(str(error.content)))
+            assert str(error.content) == "The memory reserve 'lots' is not a number."
+        assert _stored() == []
+
+    async def test_a_blank_reserve_field_clears_the_stored_reserve(self):
+        add_preset("omlx", LOCAL, roles=["chat"], memory_reserve_gb=8)
+        app = _ChatApp()
+        async with app.run_test(size=(120, 50)) as pilot:
+            pane = await _open_pane(pilot, app)
+            assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
+            _press(app, ".preset-edit")
+            assert await await_dialog(pilot, app)
+            app.screen.query_one("#preset-reserve-input", Input).value = ""
+            _press(app, "#preset-save")
+            assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
+        assert "memory_reserve_gb" not in _stored()[0]
+
+    async def test_the_edit_dialog_sends_only_the_fields_that_changed(self):
+        from lilbee.cli.tui.screens import settings_presets
+
+        add_preset("omlx", LOCAL, roles=["chat"], memory_reserve_gb=8)
+        sent: list[dict] = []
+        real = settings_presets.edit_preset
+
+        def spy(name, **kwargs):
+            sent.append(kwargs)
+            return real(name, **kwargs)
+
+        app = _ChatApp()
+        with mock.patch.object(settings_presets, "edit_preset", spy):
+            async with app.run_test(size=(120, 50)) as pilot:
+                pane = await _open_pane(pilot, app)
+                assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
+                _press(app, ".preset-edit")
+                assert await await_dialog(pilot, app)
+                app.screen.query_one("#preset-url-input", Input).value = "http://127.0.0.1:8000/v2"
+                _press(app, "#preset-save")
+                assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
+        assert sent == [
+            {
+                "url": "http://127.0.0.1:8000/v2",
+                "roles": None,
+                "api_key": None,
+                "rerank_wire": None,
+                "memory_reserve_gb": None,
+                "clear_reserve": False,
+                "clear_key": False,
+            }
+        ]
+
+    async def test_the_dialog_notice_says_a_remote_reserve_has_no_effect(self):
+        app = _ChatApp()
+        async with app.run_test(size=(120, 50)) as pilot:
+            pane = await _open_pane(pilot, app)
+            _press(app, "#presets-add")
+            assert await await_dialog(pilot, app)
+            dialog = app.screen
+            dialog.query_one("#preset-name-input", Input).value = "far"
+            dialog.query_one("#preset-url-input", Input).value = "http://93.184.216.34:8000/v1"
+            dialog.query_one("#preset-role-chat", Checkbox).value = True
+            dialog.query_one("#preset-reserve-input", Input).value = "8"
+            with mock.patch.object(pane, "notify") as notify:
+                _press(app, "#preset-save")
+                assert await wait_until(pilot, lambda: notify.called)
+        assert "no effect" in notify.call_args.args[0]
+
+    async def test_the_edit_dialog_notice_says_a_remote_reserve_has_no_effect(self):
+        add_preset("far", "http://93.184.216.34:8000/v1", roles=["chat"])
+        app = _ChatApp()
+        async with app.run_test(size=(120, 50)) as pilot:
+            pane = await _open_pane(pilot, app)
+            assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
+            _press(app, ".preset-edit")
+            assert await await_dialog(pilot, app)
+            app.screen.query_one("#preset-reserve-input", Input).value = "8"
+            with mock.patch.object(pane, "notify") as notify:
+                _press(app, "#preset-save")
+                assert await wait_until(pilot, lambda: notify.called)
+        assert "no effect" in notify.call_args.args[0]
+        assert _stored()[0]["memory_reserve_gb"] == 8
 
     async def test_clear_key_button_clears_the_key_alone(self):
         _seed()

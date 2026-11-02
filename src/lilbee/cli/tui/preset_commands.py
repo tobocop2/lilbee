@@ -11,8 +11,10 @@ from lilbee.app.presets import (
     edit_preset,
     failure_text,
     list_presets,
+    parse_reserve,
     remove_preset,
     split_roles,
+    with_reserve_note,
 )
 from lilbee.cli.tui import messages as msg
 from lilbee.providers.roles import WorkerRole
@@ -20,8 +22,10 @@ from lilbee.providers.server_registry import RerankWire
 
 _COMMAND = "/preset"
 _KEY_FLAG = "--key"
-_VALUE_FLAGS = ("--url", "--roles", "--wire")
-_CLEAR_FLAG = "--clear-key"
+_VALUE_FLAGS = ("--url", "--roles", "--wire", "--reserve")
+_CLEAR_KEY_FLAG = "--clear-key"
+_CLEAR_RESERVE_FLAG = "--clear-reserve"
+_CLEAR_FLAGS = (_CLEAR_KEY_FLAG, _CLEAR_RESERVE_FLAG)
 _VERB_AND_NAME = 2
 _NAME_AND_URL = 2
 
@@ -53,6 +57,14 @@ def wire_text(preset: ServerPreset) -> str:
     return preset.rerank_wire.value
 
 
+def reserve_text(preset: ServerPreset) -> str:
+    """The memory reserve in GiB, or a dash when none is set."""
+    if preset.memory_reserve_gb is None:
+        return msg.PRESET_NO_VALUE
+    text = msg.PRESET_RESERVE_GIB.format(gib=preset.memory_reserve_gb)
+    return text if preset.reserve_note is None else f"{text} ({preset.reserve_note})"
+
+
 def roles_text(preset: ServerPreset) -> str:
     """The roles of a preset as one comma-separated line."""
     return ", ".join(role.value for role in preset.roles) or msg.PRESET_NO_VALUE
@@ -65,6 +77,7 @@ def preset_line(preset: ServerPreset) -> str:
         url=preset.base_url or msg.PRESET_INVALID_URL,
         roles=roles_text(preset),
         wire=wire_text(preset),
+        reserve=reserve_text(preset),
         key=key_state_text(preset),
     )
 
@@ -109,19 +122,19 @@ def remove_target(args: str) -> str | None:
     return None
 
 
-def _flags(words: list[str]) -> tuple[dict[str, str], bool] | None:
-    """The `--flag value` pairs and the clear flag in *words*; None for any other shape."""
+def _flags(words: list[str]) -> tuple[dict[str, str], set[str]] | None:
+    """The `--flag value` pairs and the clear flags in *words*; None for any other shape."""
     values: dict[str, str] = {}
-    clear = False
+    clears: set[str] = set()
     rest = iter(words)
     for word in rest:
-        if word == _CLEAR_FLAG:
-            clear = True
+        if word in _CLEAR_FLAGS:
+            clears.add(word)
         elif word in _VALUE_FLAGS and (value := next(rest, None)) is not None:
             values[word] = value
         else:
             return None
-    return values, clear
+    return values, clears
 
 
 def _list() -> PresetCommandResult:
@@ -139,16 +152,19 @@ def _add(words: list[str]) -> PresetCommandResult | None:
     parsed = _flags(words[first_flag:])
     if parsed is None:
         return None
-    flags, clear = parsed
-    if clear or "--url" in flags:
+    flags, clears = parsed
+    if clears or "--url" in flags:
         return None
     preset = add_preset(
         " ".join(words[: first_flag - 1]),
         words[first_flag - 1],
         roles=split_roles(flags.get("--roles", "")),
         rerank_wire=flags.get("--wire", RerankWire.V1),
+        memory_reserve_gb=parse_reserve(flags.get("--reserve", "")),
     )
-    return PresetCommandResult(True, msg.PRESET_ADDED.format(name=preset.name))
+    return PresetCommandResult(
+        True, with_reserve_note(msg.PRESET_ADDED.format(name=preset.name), preset)
+    )
 
 
 def _edit(words: list[str]) -> PresetCommandResult | None:
@@ -157,16 +173,20 @@ def _edit(words: list[str]) -> PresetCommandResult | None:
     parsed = _flags(words[1:])
     if parsed is None:
         return None
-    flags, clear = parsed
+    flags, clears = parsed
     roles = flags.get("--roles")
     preset = edit_preset(
         words[0],
         url=flags.get("--url"),
         roles=None if roles is None else split_roles(roles),
         rerank_wire=flags.get("--wire"),
-        clear_key=clear,
+        memory_reserve_gb=parse_reserve(flags.get("--reserve", "")),
+        clear_reserve=_CLEAR_RESERVE_FLAG in clears,
+        clear_key=_CLEAR_KEY_FLAG in clears,
     )
-    return PresetCommandResult(True, msg.PRESET_UPDATED.format(name=preset.name))
+    return PresetCommandResult(
+        True, with_reserve_note(msg.PRESET_UPDATED.format(name=preset.name), preset)
+    )
 
 
 def _remove(words: list[str]) -> PresetCommandResult | None:

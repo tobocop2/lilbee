@@ -1820,15 +1820,23 @@ def preset_add_tool(
     roles: list[str],
     api_key: str | None = None,
     rerank_wire: str = "v1",
+    memory_reserve_gb: float | None = None,
 ) -> dict[str, Any]:
-    """Add a server preset. rerank_wire is v1 or tei."""
+    """Add a server preset. rerank_wire is v1 or tei. memory_reserve_gb (0 to 64) is optional."""
     from lilbee.server.models import PresetResponse
 
     if (refused := _preset_write_refused()) is not None:
         return refused
     return _preset_result(
         lambda: PresetResponse.from_view(
-            add_preset(name, url, roles=roles, api_key=api_key, rerank_wire=rerank_wire)
+            add_preset(
+                name,
+                url,
+                roles=roles,
+                api_key=api_key,
+                rerank_wire=rerank_wire,
+                memory_reserve_gb=memory_reserve_gb,
+            )
         )
     )
 
@@ -1840,6 +1848,8 @@ def preset_edit_tool(
     roles: list[str] | None = None,
     api_key: str | None = None,
     rerank_wire: str | None = None,
+    memory_reserve_gb: float | None = None,
+    clear_reserve: bool = False,
     clear_key: bool = False,
 ) -> dict[str, Any]:
     """Change a server preset. Give only what changes."""
@@ -1855,6 +1865,8 @@ def preset_edit_tool(
                 roles=roles,
                 api_key=api_key,
                 rerank_wire=rerank_wire,
+                memory_reserve_gb=memory_reserve_gb,
+                clear_reserve=clear_reserve,
                 clear_key=clear_key,
             )
         )

@@ -15,6 +15,7 @@ from lilbee.core.blocked_networks import check_url_form, url_origin, validate_pr
 from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.server_registry import (
+    MAX_MEMORY_RESERVE_GB,
     PRESETS_KEY,
     RESERVED_NAMES,
     Entry,
@@ -23,6 +24,7 @@ from lilbee.providers.server_registry import (
     UnreadableEntry,
     checked_key,
     decode_entries,
+    is_loopback_url,
     stored_entries,
 )
 
@@ -36,8 +38,13 @@ _KEY_STAYS_WITH_ORIGIN = (
 )
 
 
-_NOTHING_TO_CHANGE = "Nothing to change. Give a URL, roles, a key, a rerank wire or clear the key."
+_NOTHING_TO_CHANGE = (
+    "Nothing to change. Give a URL, roles, a key, a rerank wire or a memory reserve, "
+    "or clear the key or the reserve."
+)
 _CLEAR_KEY_ALONE = "Clear the key in its own edit. Do not give other changes with it."
+_RESERVE_CLEAR_OR_SET = "Clear the memory reserve or give a new one, not both."
+RESERVE_REMOTE_NOTE = "The memory reserve has no effect: the server is not on this host."
 
 _ListChange = Callable[[list[Entry]], list[Entry]]
 
@@ -63,6 +70,8 @@ class ServerPreset:
     has_key: bool
     valid: bool
     rerank_wire: RerankWire | None
+    memory_reserve_gb: float | None
+    reserve_note: str | None
 
 
 def _check_name(name: str) -> None:
@@ -97,6 +106,24 @@ def _checked_wire(wire: str) -> RerankWire:
         raise ValueError(f"Unknown rerank wire {wire!r}. Valid wires: {valid}.") from None
 
 
+def _checked_reserve(reserve: float | None) -> float | None:
+    """*reserve* in GiB; ValueError that names it when it is outside 0 to 64."""
+    if reserve is not None and not 0 <= reserve <= MAX_MEMORY_RESERVE_GB:
+        limit = f"{MAX_MEMORY_RESERVE_GB:g}"
+        raise ValueError(f"The memory reserve {reserve:g} is out of range. Use 0 to {limit} GiB.")
+    return reserve
+
+
+def parse_reserve(text: str) -> float | None:
+    """The reserve a surface typed as *text*; blank is unset, ValueError for a non-number."""
+    if not text.strip():
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        raise ValueError(f"The memory reserve {text.strip()!r} is not a number.") from None
+
+
 def _encoded(entries: list[Entry]) -> str | None:
     """The stored value for *entries*; None when there are none, so the key leaves the file."""
     if not entries:
@@ -115,6 +142,8 @@ def _encoded(entries: list[Entry]) -> str | None:
             row["api_key"] = entry.api_key.get_secret_value()
         if entry.rerank_wire is not RerankWire.V1:
             row["rerank_wire"] = entry.rerank_wire.value
+        if entry.memory_reserve_gb is not None:
+            row["memory_reserve_gb"] = entry.memory_reserve_gb
         rows.append(row)
     return json.dumps(rows)
 
@@ -151,7 +180,16 @@ def _view(entry: Entry) -> ServerPreset:
         log.warning("The stored server preset %r is not valid and cannot be used.", entry.name)
         url = ""
     wire = entry.rerank_wire if isinstance(entry, StoredPreset) and url else None
-    return ServerPreset(entry.name or "", url, entry.roles, entry.has_key, bool(url), wire)
+    reserve = entry.memory_reserve_gb if isinstance(entry, StoredPreset) and url else None
+    note = RESERVE_REMOTE_NOTE if reserve is not None and not is_loopback_url(url) else None
+    return ServerPreset(
+        entry.name or "", url, entry.roles, entry.has_key, bool(url), wire, reserve, note
+    )
+
+
+def with_reserve_note(text: str, preset: ServerPreset) -> str:
+    """*text*, followed by the note about the memory reserve of *preset* when it has one."""
+    return text if preset.reserve_note is None else f"{text} {preset.reserve_note}"
 
 
 def _store(change: _ListChange) -> list[Entry]:
@@ -196,6 +234,7 @@ def add_preset(
     roles: Collection[str],
     api_key: str | None = None,
     rerank_wire: str = RerankWire.V1,
+    memory_reserve_gb: float | None = None,
 ) -> ServerPreset:
     """Store a new preset. An empty key is no key."""
     _check_name(name)
@@ -207,6 +246,7 @@ def add_preset(
         roles=checked_roles,
         api_key=checked_key(api_key) if api_key else None,
         rerank_wire=_checked_wire(rerank_wire),
+        memory_reserve_gb=_checked_reserve(memory_reserve_gb),
     )
 
     def change(entries: list[Entry]) -> list[Entry]:
@@ -228,27 +268,17 @@ def _check_edit_shape(given: int, clear_key: bool) -> None:
         raise ValueError(_NOTHING_TO_CHANGE)
 
 
-def edit_preset(
-    name: str,
-    *,
-    url: str | None = None,
-    roles: Collection[str] | None = None,
-    api_key: str | None = None,
-    rerank_wire: str | None = None,
-    clear_key: bool = False,
-) -> ServerPreset:
-    """Change what is passed. An empty or omitted key keeps the stored key.
-
-    With *clear_key* the key is removed and nothing else may change in the same call. A call
-    that names no change is refused.
-
-    A URL with a new scheme, host or port and no new key is refused: the stored key never
-    follows the URL to a new origin. A key change alone checks only that preset's entry.
-    """
-    given = sum(value is not None for value in (url, roles, rerank_wire)) + bool(api_key)
-    _check_edit_shape(given, clear_key)
-    if clear_key:
-        return _clear_key(name)
+def _edit_changes(
+    url: str | None,
+    roles: Collection[str] | None,
+    api_key: str | None,
+    rerank_wire: str | None,
+    memory_reserve_gb: float | None,
+    clear_reserve: bool,
+) -> dict[str, Any]:
+    """The checked fields of an edit, keyed by the stored field they change."""
+    if clear_reserve and memory_reserve_gb is not None:
+        raise ValueError(_RESERVE_CLEAR_OR_SET)
     changes: dict[str, Any] = {}
     if url is not None:
         validate_preset_url(url)
@@ -259,6 +289,43 @@ def edit_preset(
         changes["api_key"] = checked_key(api_key)
     if rerank_wire is not None:
         changes["rerank_wire"] = _checked_wire(rerank_wire)
+    if memory_reserve_gb is not None:
+        changes["memory_reserve_gb"] = _checked_reserve(memory_reserve_gb)
+    if clear_reserve:
+        changes["memory_reserve_gb"] = None
+    return changes
+
+
+def edit_preset(
+    name: str,
+    *,
+    url: str | None = None,
+    roles: Collection[str] | None = None,
+    api_key: str | None = None,
+    rerank_wire: str | None = None,
+    memory_reserve_gb: float | None = None,
+    clear_reserve: bool = False,
+    clear_key: bool = False,
+) -> ServerPreset:
+    """Change what is passed. An empty or omitted key keeps the stored key.
+
+    With *clear_reserve* the stored memory reserve is unset. It may not come with a new reserve.
+
+    With *clear_key* the key is removed and nothing else may change in the same call. A call
+    that names no change is refused.
+
+    A URL with a new scheme, host or port and no new key is refused: the stored key never
+    follows the URL to a new origin. A key change alone checks only that preset's entry.
+    """
+    given = (
+        sum(value is not None for value in (url, roles, rerank_wire, memory_reserve_gb))
+        + bool(api_key)
+        + clear_reserve
+    )
+    _check_edit_shape(given, clear_key)
+    if clear_key:
+        return _clear_key(name)
+    changes = _edit_changes(url, roles, api_key, rerank_wire, memory_reserve_gb, clear_reserve)
 
     def change(entries: list[Entry]) -> list[Entry]:
         target = _named(entries, name)

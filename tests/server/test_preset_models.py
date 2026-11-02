@@ -14,6 +14,8 @@ def test_a_view_dumps_to_plain_json_values_with_no_key_field() -> None:
         True,
         True,
         RerankWire.TEI,
+        8.0,
+        None,
     )
     assert PresetResponse.from_view(view).model_dump(mode="json") == {
         "name": "omlx",
@@ -22,12 +24,15 @@ def test_a_view_dumps_to_plain_json_values_with_no_key_field() -> None:
         "has_key": True,
         "valid": True,
         "rerank_wire": "tei",
+        "memory_reserve_gb": 8.0,
+        "reserve_note": None,
     }
 
 
 def test_an_invalid_entry_has_a_null_wire() -> None:
-    view = ServerPreset("bad", "", (WorkerRole.CHAT,), False, False, None)
-    assert PresetResponse.from_view(view).model_dump(mode="json")["rerank_wire"] is None
+    view = ServerPreset("bad", "", (WorkerRole.CHAT,), False, False, None, None, None)
+    dumped = PresetResponse.from_view(view).model_dump(mode="json")
+    assert (dumped["rerank_wire"], dumped["memory_reserve_gb"]) == (None, None)
 
 
 def test_the_list_and_removed_envelopes() -> None:

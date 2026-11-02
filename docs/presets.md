@@ -1,6 +1,6 @@
 # Server presets
 
-A server preset names an OpenAI-compatible server that you run. A preset holds a name, a base URL, the roles the server serves, an optional API key, and the rerank wire. lilbee stores presets in `config.toml` under `server_presets`.
+A server preset names an OpenAI-compatible server that you run. A preset holds a name, a base URL, the roles the server serves, an optional API key, the rerank wire, and an optional memory reserve. lilbee stores presets in `config.toml` under `server_presets`.
 
 Use a preset to send the embed, rerank, chat or vision work to a server such as oMLX, vMLX, vllm-mlx, mlx-lm, TEI, Lemonade, GenieX, FastFlowLM, mistral.rs or Infinity.
 
@@ -31,6 +31,25 @@ The `rerank_wire` field sets the shape of the rerank request.
 
 The default is `v1`. A wire on a preset without the rerank role is stored. It applies when you add the role.
 
+## The memory reserve
+
+The `memory_reserve_gb` field tells lilbee how much RAM a server on this host keeps. lilbee cannot read the memory of a server it did not start. The field is optional, from 0 to 64 GiB, and unset by default.
+
+The memory plan subtracts the reserve from the budget that admits models. It does not change the budget that sizes the context, because a running server is already missing from the free RAM that lilbee reads.
+
+Only a preset whose URL host is on this host counts. These host forms count:
+
+- `localhost` and `localhost.`
+- Any address in `127.0.0.0/8`: the dotted form (`127.0.0.1`), the short form (`127.1`), the decimal form (`2130706433`) and the hex form (`0x7f000001`)
+- `::1`
+- `::` and `0.0.0.0`
+
+lilbee treats a private LAN address as remote, even when it is an address of this host. A reserve on a remote preset is stored. Every surface shows a note that it has no effect. A preset on a host with a dedicated GPU does not change the plan. The reserves of all loopback presets add up, and the budget stops at zero.
+
+To unset a stored reserve, clear it with `--clear-reserve` on the CLI and the slash command, with `clear_reserve` in the REST body and the MCP tool, or with a blank field in the dialog. An edit without a reserve keeps the stored one. A clear and a new reserve in the same edit are refused.
+
+The `system_memory_reserve_gb` setting is a floor for the operating system. It is not a reserve for one server.
+
 ## Manage presets
 
 Every surface uses the same rules and the same error text. A change on one surface shows on all the others.
@@ -46,11 +65,11 @@ lilbee preset edit tei --clear-key
 lilbee preset remove tei --yes
 ```
 
-`lilbee preset list` prints a table of name, URL, roles, wire and key state. The wire column shows `-` for a preset without the rerank role. The key column shows `set` or `none`. With `--json`, the command prints `has_key` and never a key.
+`lilbee preset list` prints a table of name, URL, roles, wire, reserve and key state. The wire column shows `-` for a preset without the rerank role. The reserve column shows `-` when no reserve is set. The key column shows `set` or `none`. With `--json`, the command prints `has_key` and never a key.
 
-`lilbee preset add` takes a name, a URL and `--roles`. Add `--wire v1` or `--wire tei` to set the rerank wire.
+`lilbee preset add` takes a name, a URL and `--roles`. Add `--wire v1` or `--wire tei` to set the rerank wire. Add `--reserve GIB` to set the memory reserve.
 
-`lilbee preset edit` changes only what you give: `--url`, `--roles`, `--wire`, `--key-stdin` or `--clear-key`. A call with no change is refused. `--clear-key` removes the stored key and must stand alone.
+`lilbee preset edit` changes only what you give: `--url`, `--roles`, `--wire`, `--reserve`, `--clear-reserve`, `--key-stdin` or `--clear-key`. A call with no change is refused. `--clear-key` removes the stored key and must stand alone.
 
 `lilbee preset remove` asks for confirmation. Add `--yes` to skip the question.
 
@@ -64,7 +83,7 @@ If you change the URL to a different scheme, host or port, lilbee refuses the ed
 
 ### Slash command
 
-In the chat, run `/preset list`, `/preset add NAME URL --roles ROLES`, `/preset edit NAME` or `/preset remove NAME`. `/preset add` accepts `--wire`. `/preset edit NAME` with no flag opens a dialog. In the dialog you enter or clear the key. `/preset edit` also accepts `--url`, `--roles`, `--wire` and `--clear-key`.
+In the chat, run `/preset list`, `/preset add NAME URL --roles ROLES`, `/preset edit NAME` or `/preset remove NAME`. `/preset add` accepts `--wire` and `--reserve`. `/preset edit NAME` with no flag opens a dialog. In the dialog you enter or clear the key. `/preset edit` also accepts `--url`, `--roles`, `--wire`, `--reserve`, `--clear-reserve` and `--clear-key`.
 
 The slash command refuses `--key`. Give the key in the dialog. No `/preset` line enters the chat input history, whatever its flags or spacing. The Presets tab in the settings screen shows the same list.
 
@@ -77,7 +96,7 @@ The slash command refuses `--key`. Give the key in the dialog. No `/preset` line
 | `PUT /api/presets/{name}` | Change a preset. |
 | `DELETE /api/presets/{name}` | Remove a preset. |
 
-The body fields are `name`, `url`, `roles`, `api_key` and `rerank_wire`. An edit also takes `clear_key`. The key is write only. The response shows `has_key`.
+The body fields are `name`, `url`, `roles`, `api_key`, `rerank_wire` and `memory_reserve_gb`. An edit also takes `clear_reserve` and `clear_key`. The key is write only. The response shows `has_key`, `memory_reserve_gb` and `reserve_note`. The note is null unless a remote preset has a reserve.
 
 The errors are 404 for an unknown name, 409 for a name that exists, and 422 for any other refusal.
 

@@ -64,6 +64,7 @@ async def presets_add_route(data: PresetAddBody) -> PresetResponse:
             roles=data.roles,
             api_key=data.api_key,
             rerank_wire=data.rerank_wire,
+            memory_reserve_gb=data.memory_reserve_gb,
         )
     )
     return PresetResponse.from_view(preset)
@@ -79,6 +80,8 @@ async def presets_edit_route(name: str, data: PresetEditBody) -> PresetResponse:
             roles=data.roles,
             api_key=data.api_key,
             rerank_wire=data.rerank_wire,
+            memory_reserve_gb=data.memory_reserve_gb,
+            clear_reserve=data.clear_reserve,
             clear_key=data.clear_key,
         )
     )

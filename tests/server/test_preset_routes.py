@@ -77,8 +77,17 @@ class TestAdd:
             "has_key": False,
             "valid": True,
             "rerank_wire": "tei",
+            "memory_reserve_gb": None,
+            "reserve_note": None,
         }
         assert [e["name"] for e in _stored()] == ["omlx"]
+
+    def test_a_reserve_on_a_remote_preset_comes_back_with_the_note(self, client):
+        res = _add(client, url="http://93.184.216.34:8000/v1", memory_reserve_gb=8)
+        assert "no effect" in res.json()["reserve_note"]
+
+    def test_a_reserve_on_this_host_comes_back_without_a_note(self, client):
+        assert _add(client, memory_reserve_gb=8).json()["reserve_note"] is None
 
     def test_key_is_stored_and_not_returned(self, client):
         res = _add(client, api_key=KEY)

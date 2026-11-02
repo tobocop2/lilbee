@@ -133,9 +133,9 @@ These tools register only when the user turns on `mcp_presets_enabled` (off by d
 
 | Tool | Use |
 |---|---|
-| `lilbee_preset_list()` | The stored server presets: name, URL, roles, rerank wire, and `has_key`. A key is never returned. |
-| `lilbee_preset_add(name, url, roles, api_key, rerank_wire)` | Add a preset for the roles `embed`, `rerank`, `chat` or `vision`. `rerank_wire` is `v1` or `tei`. |
-| `lilbee_preset_edit(name, url, roles, api_key, rerank_wire, clear_key)` | Change a preset. Give only what changes. `clear_key` removes the stored key and stands alone. |
+| `lilbee_preset_list()` | The stored server presets: name, URL, roles, rerank wire, memory reserve, a `reserve_note` when a remote preset has a reserve, and `has_key`. A key is never returned. |
+| `lilbee_preset_add(name, url, roles, api_key, rerank_wire, memory_reserve_gb)` | Add a preset for the roles `embed`, `rerank`, `chat` or `vision`. `rerank_wire` is `v1` or `tei`. |
+| `lilbee_preset_edit(name, url, roles, api_key, rerank_wire, memory_reserve_gb, clear_reserve, clear_key)` | Change a preset. Give only what changes. `clear_reserve` unsets the memory reserve. `clear_key` removes the stored key and stands alone. |
 | `lilbee_preset_remove(name)` | Remove a preset. |
 
 On the shared HTTP daemon, `add`/`edit`/`remove` are refused unless the host enables

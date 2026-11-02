@@ -15,6 +15,7 @@ runner = CliRunner()
 KEY = "SENTINEL-cli-key-77a3"
 LOCAL = "http://127.0.0.1:8000/v1"
 OTHER = "http://127.0.0.1:9000/v1"
+REMOTE = "http://93.184.216.34:8000/v1"
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +62,8 @@ class TestJson:
             "has_key": False,
             "valid": True,
             "rerank_wire": "v1",
+            "memory_reserve_gb": None,
+            "reserve_note": None,
         }
         assert _stored() == [{"name": "omlx", "url": LOCAL, "roles": ["chat", "embed"]}]
 
@@ -248,3 +251,59 @@ class TestKeyEntry:
         result = runner.invoke(app, ["preset", "add", "x1"])
         assert result.exit_code == 2
         assert "Missing argument" in result.output
+
+
+class TestReserve:
+    def test_add_and_edit_store_the_reserve_and_list_shows_it(self):
+        runner.invoke(app, ["preset", "add", "omlx", LOCAL, "--roles", "chat", "--reserve", "8"])
+        runner.invoke(app, ["preset", "add", "far", OTHER, "--roles", "chat"])
+        runner.invoke(app, ["preset", "edit", "far", "--reserve", "2.5"])
+        result = runner.invoke(app, ["preset", "list"], terminal_width=140)
+        rows = {
+            line.split("│")[1].strip(): line for line in result.output.splitlines() if "│" in line
+        }
+        assert "8 GiB" in rows["omlx"]
+        assert "2.5 GiB" in rows["far"]
+        assert [e["memory_reserve_gb"] for e in _stored()] == [8, 2.5]
+
+    def test_a_preset_without_a_reserve_shows_a_dash(self):
+        runner.invoke(app, ["preset", "add", "c", LOCAL, "--roles", "chat"])
+        result = runner.invoke(app, ["preset", "list"], terminal_width=140)
+        row = next(line for line in result.output.splitlines() if "│ c " in line)
+        assert "GiB" not in row
+
+    def test_clear_reserve_unsets_it(self):
+        runner.invoke(app, ["preset", "add", "omlx", LOCAL, "--roles", "chat", "--reserve", "8"])
+        result = runner.invoke(app, ["preset", "edit", "omlx", "--clear-reserve"])
+        assert result.exit_code == 0
+        assert "memory_reserve_gb" not in _stored()[0]
+
+    def test_clear_reserve_with_a_reserve_is_refused(self):
+        runner.invoke(app, ["preset", "add", "omlx", LOCAL, "--roles", "chat", "--reserve", "8"])
+        result = runner.invoke(app, ["preset", "edit", "omlx", "--clear-reserve", "--reserve", "2"])
+        assert result.exit_code == 1
+        assert _stored()[0]["memory_reserve_gb"] == 8
+
+    def test_a_reserve_on_a_remote_preset_says_it_has_no_effect_in_list_add_and_edit(self):
+        add = runner.invoke(
+            app, ["preset", "add", "far", REMOTE, "--roles", "chat", "--reserve", "8"]
+        )
+        edit = runner.invoke(app, ["preset", "edit", "far", "--reserve", "4"])
+        listing = runner.invoke(app, ["preset", "list"], terminal_width=200)
+        for output in (add.output, edit.output, listing.output):
+            assert "no effect" in " ".join(output.split())
+
+    def test_a_reserve_on_this_host_has_no_note(self):
+        add = runner.invoke(
+            app, ["preset", "add", "omlx", LOCAL, "--roles", "chat", "--reserve", "8"]
+        )
+        listing = runner.invoke(app, ["preset", "list"], terminal_width=200)
+        assert "no effect" not in add.output + listing.output
+
+    def test_an_out_of_range_reserve_is_refused(self):
+        result = runner.invoke(
+            app, ["preset", "add", "c", LOCAL, "--roles", "chat", "--reserve", "99"]
+        )
+        assert result.exit_code == 1
+        assert "memory reserve" in result.output
+        assert _stored() == []

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
+import re
+import socket
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
@@ -21,6 +25,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 PRESETS_KEY = "server_presets"
+MAX_MEMORY_RESERVE_GB = 64.0
+_BYTES_PER_GIB = 1024**3
+_NUMERIC_HOST = re.compile(r"[0-9a-fA-Fx.]+")
 API_PROVIDERS = frozenset({"openrouter", "gemini", "anthropic", "openai", "mistral", "deepseek"})
 # Prefixes that route a ref away from the local registry; a constant at run time.
 BUILTIN_PREFIXES: frozenset[str] = frozenset(API_PROVIDERS | LOCAL_SERVER_KEYS)
@@ -59,6 +66,7 @@ class StoredPreset(BaseModel):
     roles: Annotated[tuple[WorkerRole, ...], Field(min_length=1)]
     api_key: SecretStr | None = None
     rerank_wire: RerankWire = RerankWire.V1
+    memory_reserve_gb: Annotated[float, Field(ge=0, le=MAX_MEMORY_RESERVE_GB)] | None = None
 
     @field_validator("api_key")
     @classmethod
@@ -120,6 +128,51 @@ def stored_entries() -> list[Entry]:
     from lilbee.core.config import cfg
 
     return decode_entries(settings.load(cfg.data_root).get(PRESETS_KEY))
+
+
+def is_loopback_url(url: str) -> bool:
+    """Whether *url* names this host: localhost, a loopback or the any address; LAN is remote."""
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False
+    if host is None:
+        return False
+    if host.lower().rstrip(".") == "localhost":
+        return True
+    address = _ip_address(host)
+    return address is not None and (address.is_loopback or address.is_unspecified)
+
+
+def _ip_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """The address *host* names, with the short and number forms the OS also accepts."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    if not _NUMERIC_HOST.fullmatch(host):
+        return None
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(host))
+    except OSError:
+        return None
+
+
+def loopback_reserve_bytes() -> int:
+    """Bytes of RAM the loopback presets reserve for their servers; 0 when none is set.
+
+    A store that does not parse reserves nothing; the read has logged the fault.
+    """
+    try:
+        entries = stored_entries()
+    except ValueError:
+        return 0
+    gib = sum(
+        entry.memory_reserve_gb or 0.0
+        for entry in entries
+        if isinstance(entry, StoredPreset) and is_loopback_url(entry.url)
+    )
+    return int(gib * _BYTES_PER_GIB)
 
 
 @dataclass(frozen=True)

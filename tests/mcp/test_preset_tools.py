@@ -86,6 +86,13 @@ def test_list_empty():
     assert mcp_server.preset_list_tool() == {"presets": []}
 
 
+def test_add_of_a_remote_reserve_returns_the_note():
+    out = mcp_server.preset_add_tool(
+        "far", "http://93.184.216.34:8000/v1", ["chat"], memory_reserve_gb=8
+    )
+    assert "no effect" in out["reserve_note"]
+
+
 def test_add_returns_the_view_and_never_the_key():
     out = mcp_server.preset_add_tool("omlx", LOCAL, ["chat"], api_key=KEY)
     assert out == {
@@ -95,6 +102,8 @@ def test_add_returns_the_view_and_never_the_key():
         "has_key": True,
         "valid": True,
         "rerank_wire": "v1",
+        "memory_reserve_gb": None,
+        "reserve_note": None,
     }
     assert KEY not in json.dumps(mcp_server.preset_list_tool())
 
