@@ -20,7 +20,7 @@ from lilbee.providers.fleet import gpu_select, planning
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.gpu_select import IcdChoice, PCIVendorID, VulkanIcdEnvVar
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
-from lilbee.providers.fleet.replicas import gpu_device_count
+from lilbee.providers.fleet.replicas import _probed_gpu_count, gpu_device_count
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.server.models import PlacementResponse
 from tests._fleet_engines import CardEngine, Role, engines_for_all_roles, prepare_host
@@ -113,7 +113,7 @@ class TestAListedIntegratedGpuCanBePinned:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         engine = _host(monkeypatch, tmp_path, [NVIDIA, INTEL])
-        gpu_device_count.cache_clear()
+        _probed_gpu_count.cache_clear()
         assert gpu_device_count(engine) == 1
 
     def test_a_host_of_integrated_gpus_alone_keeps_them_all(
@@ -122,7 +122,7 @@ class TestAListedIntegratedGpuCanBePinned:
         second = FleetDevice("Vulkan", 1, "Intel(R) Arc", 8 * GIB, 8 * GIB, unified=True)
         first = FleetDevice("Vulkan", 0, "Intel(R) UHD", 8 * GIB, 8 * GIB, unified=True)
         engine = _host(monkeypatch, tmp_path, [first, second])
-        gpu_device_count.cache_clear()
+        _probed_gpu_count.cache_clear()
         assert gpu_device_count(engine) == 2
 
     def test_a_launch_with_a_pin_on_the_integrated_gpu_plans_its_capacity_with_the_pinned_card(
