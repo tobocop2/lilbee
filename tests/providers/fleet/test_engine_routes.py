@@ -354,3 +354,51 @@ def test_download_of_a_wheel_with_a_bad_digest_is_refused_and_leaves_no_build(
             store.ensure(lock, lambda pin, dest: fetch_frozen(pin, CELL, dest=dest))
     assert not (store.root / "fx").exists()
     assert scratch_dirs(store) == []
+
+
+def two_cells(second_sha: str, url: str = RELEASE, size: int = 1) -> PinLock:
+    """A pin whose top digest is the first cell's; the second cell holds *second_sha*."""
+    first = PlatformAsset(RELEASE, "f" * 64, 1, None)
+    second = PlatformAsset(url, second_sha, size, None)
+    return PinLock(
+        "fx", "9", "cpu", {CELL: first, "macos-arm64-cpu": second}, ("MIT",), first.sha256
+    )
+
+
+def test_the_second_cell_downloads_its_own_wheel_and_records_its_own_digest(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    with release_server() as server:
+        server.files["/fx.whl"] = path.read_bytes()
+        lock = two_cells(sha, f"{server.url}/fx.whl", path.stat().st_size)
+        built = store.ensure(
+            lock.for_cell("macos-arm64-cpu"),
+            lambda pin, scratch: fetch_frozen(lock, "macos-arm64-cpu", dest=scratch),
+        )
+    assert [found.sha256 for found in store.installed()] == [sha]
+    assert store.complete_build(lock.for_cell("macos-arm64-cpu")) == built
+
+
+def test_the_pack_of_the_second_cell_installs_with_the_digest_of_that_cell(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    lock = two_cells(sha).for_cell("macos-arm64-cpu")
+    store.pack_path(lock).parent.mkdir(parents=True)
+    store.pack_path(lock).write_bytes(path.read_bytes())
+    built = store.ensure(lock, no_network)
+    assert [found.sha256 for found in store.installed()] == [sha]
+    assert built == store.root / "fx" / "9-cpu"
+
+
+def test_the_pack_of_the_second_cell_is_refused_under_the_top_digest(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    lock = two_cells(sha)
+    store.pack_path(lock).parent.mkdir(parents=True)
+    store.pack_path(lock).write_bytes(path.read_bytes())
+    with pytest.raises(ChecksumError):
+        store.ensure(lock, no_network)
+    assert store.installed() == []
