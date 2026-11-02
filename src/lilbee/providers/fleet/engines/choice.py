@@ -279,7 +279,13 @@ def pin_lock(pin: Mapping[str, Any]) -> PinLock:
             for key, row in pin["platforms"].items()
         }
         return PinLock(
-            pin["engine"], pin["version"], pin["backend"], cells, licences, pin["sha256"]
+            pin["engine"],
+            pin["version"],
+            pin["backend"],
+            cells,
+            licences,
+            pin["sha256"],
+            pin.get("tool"),
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise PinError(f"the pin record is not usable ({exc!r})") from exc

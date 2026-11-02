@@ -57,7 +57,7 @@ def hub_online(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def lock_of(sha: str, size: int = 1, url: str = RELEASE) -> PinLock:
     asset = PlatformAsset(url, sha, size, None)
-    return PinLock("fx", "9", "cpu", {CELL: asset}, ("MIT",), sha)
+    return PinLock("fx", "9", "cpu", {CELL: asset}, ("MIT",), sha, "server")
 
 
 def no_network(_lock: PinLock, _dest: Path) -> Path:
@@ -154,7 +154,7 @@ def test_installed_build_of_another_wheel_conflicts_before_any_fetch(
 
 
 def test_licence_outside_the_list_is_refused_before_any_download(store: EngineStore) -> None:
-    lock = PinLock("fx", "9", "cpu", {}, ("GPL-3.0-only",), "a" * 64)
+    lock = PinLock("fx", "9", "cpu", {}, ("GPL-3.0-only",), "a" * 64, "server")
     with pytest.raises(LicenceRefusedError, match=r"GPL-3\.0-only"):
         store.ensure(lock, never_called)
     assert store.installed() == []
@@ -210,7 +210,7 @@ def test_fetch_frozen_for_a_cell_without_a_build_is_refused_before_any_request(
 def test_a_pin_with_no_cells_has_no_download_and_ensure_asks_for_a_pack(
     store: EngineStore,
 ) -> None:
-    lock = PinLock("fx", "9", "cpu", {}, ("MIT",), "a" * 64)
+    lock = PinLock("fx", "9", "cpu", {}, ("MIT",), "a" * 64, "server")
     with pytest.raises(MissingPackError, match=r"Copy fx-9-cpu\.whl"):
         store.ensure(lock, lambda pin, dest: fetch_frozen(pin, CELL, dest=dest))
 
@@ -251,7 +251,7 @@ def test_a_missing_release_file_is_a_missing_pack_after_one_request(store: Engin
 def test_uv_argv_installs_pinned_hashes_into_the_stage_from_the_backend_index(
     tmp_path: Path,
 ) -> None:
-    lock = PinLock("llama.cpp", "1", "cu125", {}, ("MIT",), "A" * 64)
+    lock = PinLock("llama.cpp", "1", "cu125", {}, ("MIT",), "A" * 64, "server")
     argv = pip_install_argv(lock, tmp_path / "stage")
     assert argv[:3] == ["uv", "pip", "install"]
     assert argv[argv.index("--target") + 1] == str(tmp_path / "stage")
@@ -271,7 +271,7 @@ def test_pip_argv_runs_pip_through_the_current_interpreter(tmp_path: Path) -> No
     [("llama.cpp", "lilbee-engine-llama-cpp"), ("mistralrs", "lilbee-engine-mistralrs")],
 )
 def test_package_name_is_the_index_name_of_the_engine(engine: str, name: str) -> None:
-    assert package_name(PinLock(engine, "1", "cpu", {}, ("MIT",), "a" * 64)) == name
+    assert package_name(PinLock(engine, "1", "cpu", {}, ("MIT",), "a" * 64, "server")) == name
 
 
 def scratch_dirs(store: EngineStore) -> list[str]:
@@ -361,7 +361,13 @@ def two_cells(second_sha: str, url: str = RELEASE, size: int = 1) -> PinLock:
     first = PlatformAsset(RELEASE, "f" * 64, 1, None)
     second = PlatformAsset(url, second_sha, size, None)
     return PinLock(
-        "fx", "9", "cpu", {CELL: first, "macos-arm64-cpu": second}, ("MIT",), first.sha256
+        "fx",
+        "9",
+        "cpu",
+        {CELL: first, "macos-arm64-cpu": second},
+        ("MIT",),
+        first.sha256,
+        "server",
     )
 
 

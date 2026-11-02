@@ -22,6 +22,7 @@ from lilbee.providers.fleet.adapters import (
     rerank_spec,
 )
 from lilbee.providers.fleet.binary import (
+    EngineTool,
     engine_binary_identity,
     llama_server_runtime_env,
     resolve_llama_server,
@@ -95,6 +96,7 @@ class LlamaCppAdapter:
             "engine": self.name.value,
             "version": ENGINE_LLAMA_CPP_REF,
             "backend": None,
+            "tool": EngineTool.LLAMA_SERVER.value,
             "launch": _PIN_LAUNCH,
             "platforms": {},
             "memory": {"sizing": _PIN_SIZING, "rule": None},

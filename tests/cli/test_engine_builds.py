@@ -34,7 +34,7 @@ def install(models_dir: Path) -> None:
         archive.writestr("lilbee_engine_fx-1.dist-info/METADATA", "License-Expression: MIT\n")
     sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
     EngineStore(engines_root(models_dir)).install_from_wheel(
-        PinLock("fx", "1", "cpu", {}, ("MIT",), sha), wheel
+        PinLock("fx", "1", "cpu", {}, ("MIT",), sha, "server"), wheel
     )
 
 

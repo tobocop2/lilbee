@@ -118,6 +118,8 @@ class PinLock:
     platforms: Mapping[str, PlatformAsset]
     licences: tuple[str, ...]
     sha256: str
+    tool: str | None = None
+    """The file name of the engine server in the wheel; None takes the first file."""
 
     def __post_init__(self) -> None:
         for part in (self.engine, self.version, self.backend):
@@ -213,7 +215,7 @@ def _check_staged_tree(lock: PinLock, stage: Path) -> str | None:
     tools = sorted(
         path.relative_to(stage).as_posix()
         for path in stage.glob("*/bin/*")
-        if _TOOL_PATH.fullmatch(path.relative_to(stage).as_posix())
+        if _is_server(path.relative_to(stage).as_posix(), lock.tool)
     )
     if tools and (stage / tools[0]).is_symlink():
         raise UnsafeWheelError(
@@ -243,7 +245,7 @@ def _refuse_escaping_entries(lock: PinLock, archive: zipfile.ZipFile) -> None:
 
 
 def _refuse_linked_binary(lock: PinLock, archive: zipfile.ZipFile) -> None:
-    name = _binary_of(archive)
+    name = _binary_of(archive, lock.tool)
     if name is not None and stat.S_ISLNK(archive.getinfo(name).external_attr >> 16):
         raise UnsafeWheelError(
             f"The wheel for engine {lock.engine} {lock.version} holds the tool {name!r} "
@@ -251,10 +253,17 @@ def _refuse_linked_binary(lock: PinLock, archive: zipfile.ZipFile) -> None:
         )
 
 
-def _binary_of(archive: zipfile.ZipFile) -> str | None:
-    """The first ``<package>/bin/<tool>`` file of the wheel, as a POSIX path."""
-    tools = sorted(n for n in archive.namelist() if _TOOL_PATH.fullmatch(n))
-    return tools[0] if tools else None
+def _is_server(path: str, tool: str | None) -> bool:
+    """True for a file of ``<package>/bin/`` named *tool*; with no tool named, for any file."""
+    if _TOOL_PATH.fullmatch(path) is None:
+        return False
+    return tool is None or PurePosixPath(path).name in (tool, f"{tool}.exe")
+
+
+def _binary_of(archive: zipfile.ZipFile, tool: str | None) -> str | None:
+    """The ``<package>/bin/<tool>`` file of the wheel, as a POSIX path; None when it has none."""
+    found = sorted(n for n in archive.namelist() if _is_server(n, tool))
+    return found[0] if found else None
 
 
 def _binary_usable(binary: Path, directory: Path) -> bool:
@@ -377,7 +386,7 @@ class EngineStore:
             try:
                 _unpack(wheel, stage)
                 with zipfile.ZipFile(wheel) as archive:
-                    binary = _binary_of(archive)
+                    binary = _binary_of(archive, lock.tool)
                 self._swap_in(lock, stage, binary)
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
