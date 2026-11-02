@@ -853,7 +853,10 @@ class TestPaneKeyboardAccess:
             last_group = list(screen._pane_groups)[-1]
             tabs.active = last_group
             assert await wait_until(pilot, lambda: bool(screen.query(f"#{last_group}-body > *")))
+            body = screen.query_one(f"#{last_group}-body")
+            last_field = [w for w in body.query("*") if w.focusable][-1]
             screen._focus_pane_edge(last_group, -1)
+            assert await wait_until(pilot, lambda: app.focused is last_field)
             await pilot.press("tab")
             assert await wait_until(pilot, lambda: tabs.active == PRESETS_PANE_ID)
             assert await wait_until(

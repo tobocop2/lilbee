@@ -983,6 +983,8 @@ class SettingsScreen(Screen[None]):
             return
         target_index = (pane_ids.index(active_pane_id) + direction) % len(pane_ids)
         target_pane = pane_ids[target_index]
+        # Drop focus first: a widget focused in the hiding pane gets focus back and reverts the tab.
+        self.set_focus(None)
         tabs.active = target_pane
         self._populate_pane(target_pane)
         # Park focus on the first/last field of the new pane so the next
