@@ -3393,6 +3393,7 @@ def _roles_on_missing_cards(
     if spec is None or all(entry.target is None for entry in spec.roles.values()):
         return {}
     present = {d.index for d in devices}
+    hint = _hidden_device_hint(devices)
     refused: dict[WorkerRole, str] = {}
     for role in roles:
         entry = spec.roles.get(role)
@@ -3400,11 +3401,12 @@ def _roles_on_missing_cards(
             continue
         missing = [str(idx) for idx in entry.devices if idx not in present]
         if missing:
-            refused[role] = (
+            found = (
                 f"{role.value}: GPU {', '.join(missing)} is not on this machine "
-                f"({len(present)} found). Set the {role.value} devices to a GPU "
-                "that exists, or set its target to cpu."
+                f"({len(present)} found)."
             )
+            fix = f"Set the {role.value} devices to a GPU that exists, or set its target to cpu."
+            refused[role] = " ".join(part for part in (found, hint, fix) if part)
     return refused
 
 
@@ -3518,7 +3520,7 @@ def _placement_or_auto(
         log.warning(
             "The saved GPU placement does not fit this hardware (%s); using automatic "
             "placement instead. Set a new placement to replace it.",
-            exc,
+            str(exc).rstrip("."),
         )
     return _resolve_placement(
         None,
