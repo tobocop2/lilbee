@@ -19,6 +19,7 @@ from lilbee.providers.base import (
     ToolCallDelta,
 )
 from lilbee.server.chat_dispatch.canonical import (
+    IMAGES_DROPPED_REASON,
     CanonicalChatRequest,
     CanonicalMessage,
     CanonicalTool,
@@ -563,9 +564,18 @@ class TestConfiguredModelPreflight:
         with caplog.at_level("WARNING"):
             assert preflight_chat_request(_req(dropped_images=2)) == "vendor/model::Q4"
         assert [r.getMessage() for r in caplog.records if "image" in r.getMessage()] == [
-            "Dropped 2 image part(s) from a chat request: "
-            "lilbee cannot pass images to vendor/model::Q4"
+            f"Dropped 2 image part(s) from a chat request to vendor/model::Q4: "
+            f"{IMAGES_DROPPED_REASON}"
         ]
+
+    def test_the_log_line_does_not_say_the_model_cannot_read_images(
+        self, services_with_model, caplog
+    ) -> None:
+        with caplog.at_level("WARNING"):
+            preflight_chat_request(_req(dropped_images=1))
+        assert "cannot pass images" not in caplog.text
+        assert "projector" in caplog.text
+        assert "vision role" in caplog.text
 
     def test_no_log_or_probe_when_no_images_were_dropped(self, services_with_model, caplog) -> None:
         with caplog.at_level("WARNING"):
