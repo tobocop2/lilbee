@@ -29,6 +29,20 @@ uv sync --extra providers    # hosted-provider bridge (Ollama, LM Studio, cloud)
 uv sync --extra graph      # concept-graph search
 ```
 
+To get the real engine (the `engine` extra) in a dev install, run this inside the checkout:
+
+```bash
+uv pip install -e .[engine]
+```
+
+From another folder, add `--no-sources` (or `--project <checkout>`):
+
+```bash
+uv pip install --no-sources -e <checkout>[engine]
+```
+
+Without one of these, `uv` resolves `lilbee-engine` to the 0.0.0 placeholder package in `packaging/engine-wheel`, which has no `llama-server` binary. The `[tool.uv.pip] no-sources` setting in `pyproject.toml` only applies when `uv` runs inside the checkout.
+
 Optionally install the git hooks so lint, format, and type checks run on each commit (the same checks CI enforces):
 
 ```bash
