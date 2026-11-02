@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import shlex
 import sys
 import zipfile
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+import yaml
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "qa" / "assert_engine_bundle.py"
 
@@ -542,12 +544,76 @@ def test_a_library_without_a_tool_is_a_usage_error(
     assert "usage:" in capsys.readouterr().err
 
 
+_WORKFLOWS = _SCRIPT.parents[2] / ".github" / "workflows"
+
+
+def _bundle_check_calls(workflow: Path) -> list[list[str]]:
+    """Return the argument list of each assert_engine_bundle.py call in a workflow's run scripts."""
+    document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    calls: list[list[str]] = []
+    for job in document["jobs"].values():
+        for step in job["steps"]:
+            script = step.get("run", "").replace("\\\n", " ")
+            lexer = shlex.shlex(script, posix=True, punctuation_chars=";&|()\n")
+            lexer.whitespace = " \t\r"
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            words = list(lexer)
+            for index, word in enumerate(words):
+                if word.endswith("assert_engine_bundle.py"):
+                    end = index + 1
+                    while end < len(words) and not set(words[end]) <= set(";&|()\n"):
+                        end += 1
+                    calls.append(words[index + 1 : end])
+    return calls
+
+
+def _flag_values(args: list[str], flag: str) -> list[str]:
+    return [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == flag]
+
+
+def _assert_asks_for_ggml_base(workflow: Path) -> None:
+    calls = _bundle_check_calls(workflow)
+    assert calls
+    for args in calls:
+        assert _flag_values(args, "--tool") == ["llama-server"]
+        assert _flag_values(args, "--library") == ["ggml-base"]
+
+
 @pytest.mark.parametrize("workflow", ["verify-release.yml", "build-multigpu.yml"])
 def test_the_release_workflows_ask_for_ggml_base(workflow: str) -> None:
-    text = (_SCRIPT.parents[2] / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    calls = [line for line in text.splitlines() if "assert_engine_bundle.py" in line]
-    assert calls
-    assert all("--tool llama-server --library ggml-base" in line for line in calls)
+    _assert_asks_for_ggml_base(_WORKFLOWS / workflow)
+
+
+def test_a_comment_holding_the_flags_does_not_count_as_the_call(tmp_path: Path) -> None:
+    workflow = tmp_path / "wf.yml"
+    workflow.write_text(
+        "jobs:\n"
+        "  check:\n"
+        "    steps:\n"
+        "      - run: |\n"
+        "          python tools/qa/assert_engine_bundle.py engine/*.whl"
+        " # --tool llama-server --library ggml-base\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError):
+        _assert_asks_for_ggml_base(workflow)
+    assert _bundle_check_calls(workflow) == [["engine/*.whl"]]
+
+
+def test_a_flag_in_another_command_does_not_count_as_the_call(tmp_path: Path) -> None:
+    workflow = tmp_path / "wf.yml"
+    workflow.write_text(
+        "jobs:\n"
+        "  check:\n"
+        "    steps:\n"
+        "      - run: |\n"
+        "          python tools/qa/assert_engine_bundle.py \\\n"
+        "            engine/*.whl && echo --tool llama-server --library ggml-base\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError):
+        _assert_asks_for_ggml_base(workflow)
 
 
 def _bin_dir(tmp_path: Path, bin_files: tuple[str, ...]) -> Path:
