@@ -1194,10 +1194,15 @@ def _stop_recorded_engine(state: SwapState) -> bool:
 
 
 def _kill_recorded_engine(state: SwapState) -> bool:
-    """SIGKILL a live llama-swap's group and its servers at once; whether any was alive."""
-    servers = _live_children(state.pid)
+    """SIGKILL a live llama-swap's group and its servers at once; whether any was alive.
+
+    The recorded pid's children are read only once it is still llama-swap, as the
+    graceful stop does: a reused pid's children belong to another program.
+    """
+    servers: list[psutil.Process] = []
     swaps: list[psutil.Process] = []
     if _is_live_llama_swap(state):
+        servers = _live_children(state.pid)
         with contextlib.suppress(psutil.NoSuchProcess):
             swaps.append(psutil.Process(state.pid))
         _signal_stale(state, _SIGKILL)

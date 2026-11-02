@@ -2045,3 +2045,24 @@ class TestEstimateReadback:
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
             manager._check_estimates({"ghost-0"})
         assert caplog.text == ""
+
+
+class TestKillRecordedEngine:
+    def test_a_reused_pid_keeps_its_children(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The record names a live process that is no longer llama-swap, so its
+        # children belong to another program and the kill at exit leaves them.
+        killed: list[int] = []
+
+        class _Child:
+            pid = 8888
+
+            def kill(self) -> None:
+                killed.append(self.pid)
+
+        state = sm.SwapState(pid=7777, pgid=None, member_ports=())
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: False)
+        monkeypatch.setattr(sm, "_live_children", lambda _pid: [_Child()])
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda _ports: [])
+        monkeypatch.setattr(sm, "_await_killed", lambda _procs: None)
+        assert sm._kill_recorded_engine(state) is False
+        assert killed == []
