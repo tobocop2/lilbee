@@ -71,7 +71,7 @@ jobs:
       # each one declares its own flavor.
       - name: Every engine wheel carries the backend it claims
         shell: bash
-        run: python3 tools/qa/assert_engine_bundle.py --tool llama-server engine/*.whl
+        run: python3 tools/qa/assert_engine_bundle.py --tool llama-server --library ggml-base engine/*.whl
       - name: Every GPU asset the matrices build is on the release
         shell: bash
         env:

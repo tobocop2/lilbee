@@ -502,3 +502,49 @@ def test_the_tool_flag_reaches_the_check(
     wheel = _server_wheel(tmp_path, mode=0o644)
     assert acb.main(["--backend", "cpu", "--tool", "llama-server", str(wheel)]) == 1
     assert "without the execute bit" in capsys.readouterr().err
+
+
+def test_a_wheel_without_the_named_library_passes_without_the_flag(tmp_path: Path) -> None:
+    wheel = _server_wheel(tmp_path, base=False)
+    assert acb.main(["--tool", "llama-server", str(wheel)]) == 0
+
+
+def test_a_wheel_without_the_named_library_fails_with_the_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wheel = _server_wheel(tmp_path, base=False)
+    args = ["--tool", "llama-server", "--library", "ggml-base", str(wheel)]
+    assert acb.main(args) == 1
+    assert "no library file for 'ggml-base'" in capsys.readouterr().err
+
+
+def test_a_wheel_with_the_named_library_passes_with_the_flag(tmp_path: Path) -> None:
+    wheel = _server_wheel(tmp_path)
+    assert acb.main(["--tool", "llama-server", "--library", "ggml-base", str(wheel)]) == 0
+
+
+def test_every_named_library_is_required(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wheel = _server_wheel(tmp_path)
+    args = ["--tool", "llama-server", "--library", "ggml-base", "--library", "ggml-rpc", str(wheel)]
+    assert acb.main(args) == 1
+    err = capsys.readouterr().err
+    assert "'ggml-rpc'" in err
+    assert "'ggml-base'" not in err
+
+
+def test_a_library_without_a_tool_is_a_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wheel = _server_wheel(tmp_path)
+    assert acb.main(["--library", "ggml-base", str(wheel)]) == 2
+    assert "usage:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("workflow", ["verify-release.yml", "build-multigpu.yml"])
+def test_the_release_workflows_ask_for_ggml_base(workflow: str) -> None:
+    text = (_SCRIPT.parents[2] / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    calls = [line for line in text.splitlines() if "assert_engine_bundle.py" in line]
+    assert calls
+    assert all("--tool llama-server --library ggml-base" in line for line in calls)
