@@ -69,6 +69,7 @@ from lilbee.providers.fleet.swap_manager import (
     engine_record_exists,
     ensure_engine_reaper,
     find_live_state,
+    kill_engine,
     reap_stale,
     state_is_healthy,
     stop_engine,
@@ -1315,25 +1316,31 @@ class FleetProvider:
                 stop_engine(engine_dir)
             # Membership comes first: an exit while the start waits on the engine
             # must still find this engine's hold and stop it as the last user out.
-            fresh = self._take_user_lock(engine_dir)
+            # The hold and the registration are one lock hold, so a shutdown either
+            # releases the hold or leaves it to this start, never both.
             with self._lock:
+                fresh = self._take_user_lock(engine_dir)
                 self._starting_dirs.add(engine_dir)
+            spawned = False
             try:
                 spawned = self._plan_and_spawn(engine_dir)
-            except BaseException:
-                self._drop_user_lock(engine_dir, fresh)
-                raise
             finally:
                 # Cleared before the build lock is freed, so no peer binds an engine
                 # that the shutdown stops as a start.
                 with self._lock:
                     self._starting_dirs.discard(engine_dir)
-            if spawned:
-                self._hold_membership(engine_dir)
-                _watch_bound_engine(engine_dir)
-                return True
-            self._drop_user_lock(engine_dir, fresh)
-            return False
+                    cancelled = self._shut_down
+                if cancelled:
+                    # A cancelled start kills its own engine and drops its own hold.
+                    kill_engine(engine_dir)
+                    self._drop_user_lock(engine_dir, taken=True)
+                elif not spawned:
+                    self._drop_user_lock(engine_dir, fresh)
+            if cancelled or not spawned:
+                return False
+            self._hold_membership(engine_dir)
+            _watch_bound_engine(engine_dir)
+            return True
 
     def _bind_all_in_dir(
         self,
@@ -1417,7 +1424,8 @@ class FleetProvider:
 
     def _drop_user_lock(self, engine_dir: Path, taken: bool) -> None:
         """Release the user lock that a start took and did not keep."""
-        hold = self._engine_holds.pop(engine_dir, None) if taken else None
+        with self._lock:
+            hold = self._engine_holds.pop(engine_dir, None) if taken else None
         if hold is not None:
             hold.release_and_check_last()
 
@@ -1456,6 +1464,10 @@ class FleetProvider:
         if plan is None or not plan.launches:
             # No engine binary, or no installed/configured model: serve nothing.
             return False
+        with self._lock:
+            if self._shut_down:
+                # A shutdown ran while this start planned: spawn nothing for it.
+                return False
         by_group = _launches_by_group(plan)
         started: dict[SwapGroup, SwapManager] = {}
         try:
@@ -1796,10 +1808,10 @@ class FleetProvider:
         with self._lock:
             self._shut_down = True
             work = self._fleet_work
-            # A start holds the build lock that the release below waits on. Stopping
-            # its engine makes the start fail at once and free the lock.
+            # A started engine makes its pending start fail at once when it dies; an
+            # engine whose start never finished holds no state worth a TERM grace.
             for engine_dir in self._starting_dirs:
-                stop_engine(engine_dir)
+                kill_engine(engine_dir)
         # Bounded, because a wedged engine start would hang process exit. At the bound
         # the teardown proceeds: the loop is a daemon thread that exit never joins, and
         # the next start reaps from the engine dir's state files what it leaves behind.
@@ -1841,8 +1853,15 @@ class FleetProvider:
         from lilbee.core.config import cfg
 
         # Taken in one lock hold, so a signal's shutdown and the lifespan's release once.
+        # A pending start keeps its hold: it holds the build lock this release would
+        # wait on, and it drops the hold itself when it returns.
         with self._lock:
-            holds, self._engine_holds = self._engine_holds, {}
+            holds = self._engine_holds
+            self._engine_holds = {
+                engine_dir: holds.pop(engine_dir)
+                for engine_dir in list(self._starting_dirs)
+                if engine_dir in holds
+            }
         for engine_dir, hold in holds.items():
             with build_lock(engine_dir, best_effort=True):
                 last = hold.release_and_check_last()

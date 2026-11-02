@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -1622,6 +1624,127 @@ class TestStopEngine:
         monkeypatch.setattr(sm.psutil, "pid_exists", lambda _pid: False)  # owner dead
         sm.stop_engine(tmp_path)
         assert not dead_config.exists()
+
+
+_TRAPS_SIGTERM = (
+    "import signal, sys, time\n"
+    "signal.signal(signal.SIGTERM, lambda *_a: None)\n"
+    "print('ready', flush=True)\n"
+    "time.sleep(900)\n"
+)
+
+
+class TestKillEngine:
+    """The shutdown's stop of a starting engine: SIGKILL at once, no SIGTERM grace."""
+
+    def test_sigkills_the_recorded_group_without_a_term(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / sm._state_filename(999_999, "chat")
+        path.write_text(
+            json.dumps({"pid": 7777, "pgid": 8888, "member_ports": [4000]}), encoding="utf-8"
+        )
+        swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
+        _patch_psutil_process(monkeypatch, {7777: swap})
+        monkeypatch.setattr(sm.sys, "platform", "linux")
+        monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda _ports: [])
+        signals: list[tuple[int, int]] = []
+        monkeypatch.setattr(
+            sm.os, "killpg", lambda pgid, sig: signals.append((pgid, sig)), raising=False
+        )
+        waits: list[list[object]] = []
+
+        def _wait_procs(procs: list[object], timeout: float) -> tuple[list, list]:
+            waits.append(list(procs))
+            return (list(procs), [])
+
+        monkeypatch.setattr(sm.psutil, "wait_procs", _wait_procs)
+
+        assert sm.kill_engine(tmp_path) == ["chat"]
+
+        assert signals == [(8888, sm._SIGKILL)]
+        assert waits == [[swap]]
+        assert not path.exists()
+
+    def test_kills_surviving_servers_without_a_term(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Server:
+            def __init__(self) -> None:
+                self.terminated = False
+                self.killed = False
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def kill(self) -> None:
+                self.killed = True
+
+        path = tmp_path / sm._state_filename(999_999, "chat")
+        path.write_text(
+            json.dumps({"pid": 999_998, "member_ports": [4000, 4001]}), encoding="utf-8"
+        )
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: False)
+        server = _Server()
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda _ports: [server])
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
+
+        assert sm.kill_engine(tmp_path) == ["chat"]
+
+        assert server.killed and not server.terminated
+        assert not path.exists()
+
+    def test_a_dead_record_reports_nothing_killed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / sm._state_filename(999_999, "chat")
+        path.write_text(json.dumps({"pid": 999_998, "member_ports": []}), encoding="utf-8")
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: False)
+
+        assert sm.kill_engine(tmp_path) == []
+
+        assert not path.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="process groups")
+    def test_ends_a_recorded_process_that_traps_sigterm_at_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real llama-server traps SIGTERM; the kill must not spend the TERM grace on it."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _TRAPS_SIGTERM],
+            stdout=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            assert proc.stdout is not None and proc.stdout.readline() == b"ready\n"
+            path = tmp_path / sm._state_filename(os.getpid(), "chat")
+            path.write_text(
+                json.dumps(
+                    {
+                        "pid": proc.pid,
+                        "pgid": os.getpgid(proc.pid),
+                        "created_at": sm.psutil.Process(proc.pid).create_time(),
+                        "member_ports": [],
+                        "name": sm._LLAMA_SWAP_PROCESS_NAME,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: True)
+
+            begin = time.monotonic()
+            killed = sm.kill_engine(tmp_path)
+            elapsed = time.monotonic() - begin
+
+            assert killed == ["chat"]
+            # The kill reaps the child, so its exit is read from the process table.
+            assert not sm.psutil.pid_exists(proc.pid)
+            assert elapsed < sm._STOP_TIMEOUT_S, f"kill took {elapsed:.2f} s"
+            assert not path.exists()
+        finally:
+            proc.kill()
+            proc.wait(timeout=30)
 
 
 class TestLiveStateHelpers:

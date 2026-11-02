@@ -17,7 +17,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -901,6 +901,22 @@ def stop_engine(data_dir: Path) -> list[str]:
     reap_stale: they may be a sibling's in-flight write. Returns the group tokens
     whose engine was actually alive, so a caller reports only real stops.
     """
+    return _stop_recorded_engines(data_dir, _stop_recorded_engine)
+
+
+def kill_engine(data_dir: Path) -> list[str]:
+    """Kill every engine the dir's state files record, with no SIGTERM grace.
+
+    The exit's stop of an engine whose start never finished: it holds no state
+    worth a graceful stop, and a server that traps SIGTERM would hold the exit
+    for the whole grace. Records and the persistence opt-in go as in
+    ``stop_engine``. Returns the group tokens whose engine was alive.
+    """
+    return _stop_recorded_engines(data_dir, _kill_recorded_engine)
+
+
+def _stop_recorded_engines(data_dir: Path, stop: Callable[[SwapState], bool]) -> list[str]:
+    """Run *stop* on each recorded engine and drop its record; the groups *stop* found alive."""
     _clean_stale_configs(data_dir)
     # The persistence opt-in describes the engine instance being stopped, so it
     # dies with it. Cleared here rather than at each call site so no stop path
@@ -911,7 +927,7 @@ def stop_engine(data_dir: Path) -> list[str]:
         state = _load_state(state_path)
         if state is None:
             continue
-        if _stop_recorded_engine(state):
+        if stop(state):
             group = _state_group(state_path.name)
             if group is not None:
                 stopped.append(group)
@@ -1175,6 +1191,22 @@ def _stop_recorded_engine(state: SwapState) -> bool:
     orphans = _find_orphan_servers(state.member_ports)
     _reap_survivors(orphans)
     return bool(orphans)
+
+
+def _kill_recorded_engine(state: SwapState) -> bool:
+    """SIGKILL a live llama-swap's group and its servers at once; whether any was alive."""
+    servers = _live_children(state.pid)
+    swaps: list[psutil.Process] = []
+    if _is_live_llama_swap(state):
+        with contextlib.suppress(psutil.NoSuchProcess):
+            swaps.append(psutil.Process(state.pid))
+        _signal_stale(state, _SIGKILL)
+    servers.extend(_find_orphan_servers(state.member_ports))
+    for server in servers:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            server.kill()
+    _await_killed(swaps + servers)
+    return bool(swaps or servers)
 
 
 def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
