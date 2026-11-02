@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -16,8 +17,9 @@ from textual.widgets import KeyPanel, OptionList, Static
 from textual.widgets._key_panel import BindingsTable
 
 from lilbee.app import engine_service
+from lilbee.catalog.models import DownloadProgress
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.engine_commands import announce, run_engine_command
+from lilbee.cli.tui.engine_commands import announce, install_name, run_engine_command
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
 from lilbee.cli.tui.screens.model_info import ModelInfoModal
@@ -330,6 +332,43 @@ async def test_a_refused_slash_command_leaves_the_chips_alone() -> None:
         chat._cmd_engine(f"use chat {GGUF_REF} mlx")
         assert await wait_until(pilot, lambda: any("cannot load" in t for t in _toasts(app)))
         assert _text(chat, "#model-bar-engine-chips") == "chat: llama.cpp  embed: llama.cpp"
+
+
+async def test_the_slash_install_shows_its_bytes_in_the_task_bar_and_each_retry_as_a_toast() -> (
+    None
+):
+    seen: list[tuple[str, str, float, str]] = []
+    app = _ChatApp()
+
+    def install(
+        _name: str, _wheel: object = None, *, on_update: Any, on_retry: Any
+    ) -> engine_service.InstalledBuild:
+        on_retry("Transfer failed: timed out. Attempt 1 of 3 failed; trying again.")
+        on_update(DownloadProgress(percent=40.0, detail="4/10 MB", is_cache_hit=False))
+        seen.extend(
+            (t.name, t.task_type, t.progress, t.detail) for t in app.task_bar.queue.active_tasks
+        )
+        return engine_service.InstalledBuild("openvino", "1.0", "cpu", "")
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        with mock.patch.object(engine_service, "install", side_effect=install):
+            chat._cmd_engine("install openvino")
+            assert await wait_until(pilot, lambda: any("Installed" in t for t in _toasts(app)))
+        assert seen == [("Install openvino", "download", 40.0, "openvino: 4/10 MB")]
+        assert any("Attempt 1 of 3 failed; trying again." in t for t in _toasts(app))
+
+
+def test_only_an_install_with_an_engine_name_is_an_install_command() -> None:
+    assert install_name("install openvino") == "openvino"
+    assert install_name("install openvino --yes") == "openvino"
+    assert [install_name(a) for a in ("install", "roles", "prefer openvino", "install 'x")] == [
+        None,
+        None,
+        None,
+        None,
+    ]
 
 
 async def test_the_fleet_body_repaints_after_an_engine_command() -> None:

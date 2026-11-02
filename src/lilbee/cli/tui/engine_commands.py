@@ -14,6 +14,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
 if TYPE_CHECKING:
+    from lilbee.catalog.models import DownloadProgress
     from lilbee.cli.tui.app import LilbeeApp
 
 _ROLES = "roles"
@@ -64,7 +65,11 @@ def _use(role: WorkerRole, model: str, engine: str, confirmed: bool = False) -> 
 
 
 def _store_verb(
-    verb: str, args: list[str], words: list[str], on_retry: Callable[[str], None] | None = None
+    verb: str,
+    args: list[str],
+    words: list[str],
+    on_update: Callable[[DownloadProgress], None] | None = None,
+    on_retry: Callable[[str], None] | None = None,
 ) -> EngineCommandResult | None:
     """Run list, remove or install, the verbs that act on the engine store; None for any other."""
     if verb == _LIST and not args:
@@ -74,7 +79,7 @@ def _store_verb(
         label = engine_service.remove_build(name, version, backend)
         return EngineCommandResult(True, engine_service.REMOVE_DONE.format(build=label))
     if verb == _INSTALL and len(words) == _INSTALL_ARGS:
-        built = engine_service.install(words[0], on_retry=on_retry)
+        built = engine_service.install(words[0], on_update=on_update, on_retry=on_retry)
         label = f"{built.engine} {built.version} ({built.backend})"
         done = msg.ENGINE_INSTALL_DONE.format(build=label)
         return EngineCommandResult(True, f"{done} {built.note}" if built.note else done)
@@ -82,13 +87,16 @@ def _store_verb(
 
 
 def _run(
-    verb: str, args: list[str], on_retry: Callable[[str], None] | None = None
+    verb: str,
+    args: list[str],
+    on_update: Callable[[DownloadProgress], None] | None = None,
+    on_retry: Callable[[str], None] | None = None,
 ) -> EngineCommandResult:
     confirmed = YES_WORD in args
     words = [word for word in args if word != YES_WORD]
     if verb == _ROLES and not words and not confirmed:
         return EngineCommandResult(True, _roles_text())
-    stored = _store_verb(verb, args, words, on_retry)
+    stored = _store_verb(verb, args, words, on_update, on_retry)
     if stored is not None:
         return stored
     if verb == _USE and len(words) == _USE_ARGS:
@@ -126,12 +134,26 @@ def choose_engine_for_role(
         return EngineCommandResult(False, str(exc))
 
 
+def install_name(args: str) -> str | None:
+    """The engine an /engine install command names, or None when *args* is another command."""
+    try:
+        words = [word for word in shlex.split(args) if word != YES_WORD]
+    except ValueError:
+        return None
+    if len(words) == _INSTALL_ARGS + 1 and words[0] == _INSTALL:
+        return words[1]
+    return None
+
+
 def run_engine_command(
-    args: str, on_retry: Callable[[str], None] | None = None
+    args: str,
+    on_update: Callable[[DownloadProgress], None] | None = None,
+    on_retry: Callable[[str], None] | None = None,
 ) -> EngineCommandResult:
     """Run the text after /engine; a refusal comes back as the service's own text.
 
-    *on_retry* hears each failed download attempt of an install."""
+    *on_update* hears the download bytes of an install. *on_retry* hears each failed attempt.
+    """
     try:
         words = shlex.split(args)
     except ValueError:
@@ -139,7 +161,7 @@ def run_engine_command(
     if not words:
         return EngineCommandResult(True, _roles_text())
     try:
-        return _run(words[0], words[1:], on_retry)
+        return _run(words[0], words[1:], on_update, on_retry)
     except engine_service.EmbedConfirmRequiredError as exc:
         text = msg.ENGINE_CONFIRM_REFUSED.format(reason=exc, yes=YES_WORD)
         return EngineCommandResult(False, text)
