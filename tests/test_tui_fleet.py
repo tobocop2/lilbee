@@ -1472,6 +1472,36 @@ async def test_a_refused_spec_shows_the_service_reason_and_not_the_ignored_text(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(60, 24), (140, 44)])
+async def test_a_hidden_gpu_shows_the_line_that_says_how_to_use_it(monkeypatch, size):
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.app.placement import RolePlacementView
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    note = "Intel GPU not used: lilbee runs the engine on the NVIDIA GPU."
+    view = replace(
+        _one_card_view(
+            (RolePlacementView(WorkerRole.CHAT, "c.gguf", (0,), None, 1, "llama.cpp"),),
+            manual=False,
+            spec_json=None,
+        ),
+        hidden_gpus=("Intel",),
+        hidden_note=note,
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        line = app.screen.query_one("#placement-skipped", Static)
+        assert line.display
+        assert str(line.render()) == note
+
+
+@pytest.mark.asyncio
 async def test_a_refused_spec_applies_unedited_and_applies_a_correction(monkeypatch):
     from lilbee.cli.tui.widgets import fleet_body as fbm
     from lilbee.cli.tui.widgets.fleet_body import FleetBody

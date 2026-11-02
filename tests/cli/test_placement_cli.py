@@ -1,6 +1,7 @@
 """Tests for the `lilbee placement` CLI sub-app."""
 
 import json
+from dataclasses import replace
 
 from typer.testing import CliRunner
 
@@ -95,6 +96,39 @@ def test_show_json_includes_skipped_not_installed(monkeypatch: object) -> None:
     assert result.exit_code == 0
     data = json.loads(result.stdout)
     assert data["skipped_not_installed"] == [{"role": "chat", "model": "org/Qwen3-4B.gguf"}]
+
+
+_HIDDEN_NOTE = (
+    "Intel GPU not used: lilbee runs the engine on the NVIDIA GPU. "
+    "To use the Intel GPU, set VK_LOADER_DRIVERS_DISABLE=nomatch* and start lilbee again."
+)
+
+
+def _view_with_hidden_gpu() -> PlacementView:
+    return replace(_view(), hidden_gpus=("Intel",), hidden_note=_HIDDEN_NOTE)
+
+
+def test_show_prints_the_note_for_a_hidden_gpu(monkeypatch: object) -> None:
+    """A GPU the launch hides from the engine gets a line that says how to use it."""
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_hidden_gpu)
+    result = runner.invoke(placement_app, ["show"], terminal_width=300)
+    assert result.exit_code == 0
+    assert _HIDDEN_NOTE in result.stdout
+
+
+def test_show_prints_no_hidden_gpu_note_when_nothing_is_hidden(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view())
+    result = runner.invoke(placement_app, ["show"], terminal_width=300)
+    assert result.exit_code == 0
+    assert "not used" not in result.stdout
+
+
+def test_show_json_names_the_hidden_gpu(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_hidden_gpu)
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["hidden_gpus"] == ["Intel"]
 
 
 def test_show_json_mode_emits_valid_json(monkeypatch: object) -> None:

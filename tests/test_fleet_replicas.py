@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
 from lilbee.providers.roles import WorkerRole
+
+
+def _card(index: int) -> FleetDevice:
+    return FleetDevice("CUDA", index, f"card {index}", 8 << 30, 8 << 30)
 
 
 def test_auto_resolves_to_one_replica_per_gpu(monkeypatch) -> None:
@@ -44,7 +49,7 @@ def test_gpu_device_count_returns_probe_length(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "lilbee.providers.fleet.planning.resolve_devices",
-        lambda _b, engine: [object(), object(), object()],
+        lambda _b, engine: [_card(0), _card(1), _card(2)],
     )
     assert gpu_device_count(LLAMA) == 3
 
@@ -77,9 +82,9 @@ def test_gpu_device_count_is_cached(monkeypatch) -> None:
     gpu_device_count.cache_clear()
     calls = {"n": 0}
 
-    def _probe(_b: object, engine) -> list[object]:
+    def _probe(_b: object, engine) -> list[FleetDevice]:
         calls["n"] += 1
-        return [object(), object()]
+        return [_card(0), _card(1)]
 
     monkeypatch.setattr(
         "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: object()
