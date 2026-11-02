@@ -19,7 +19,7 @@ from email import message_from_string
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from lilbee.catalog.download import disk_shortfall, retry_transfer
+from lilbee.catalog.download import disk_shortfall, download_url, url_filename
 from lilbee.core.security import FileLockUnavailableError, file_lock
 
 log = logging.getLogger(__name__)
@@ -102,9 +102,7 @@ class InstallTool(StrEnum):
 class PlatformAsset:
     """One downloadable wheel of a pin, for one platform."""
 
-    repo: str
-    revision: str
-    filename: str
+    url: str
     sha256: str
     size: int
     min_os: str | None
@@ -171,7 +169,9 @@ def _check_wheel(lock: PinLock, wheel: Path) -> None:
         digest = hashlib.file_digest(handle, "sha256").hexdigest()
     if digest != lock.sha256.lower():
         raise ChecksumError(
-            f"The wheel for engine {lock.engine} {lock.version} does not match its pin."
+            f"The file for engine {lock.engine} {lock.version} ({lock.backend}) does not "
+            f"match its pin, so lilbee did not install it. Run the install again. "
+            f"If this happens again, report it."
         )
     with zipfile.ZipFile(wheel) as archive:
         _refuse_escaping_entries(lock, archive)
@@ -609,53 +609,22 @@ def pip_install_argv(lock: PinLock, stage: Path, tool: InstallTool = InstallTool
     ]
 
 
-def _hub_download(
-    *, repo_id: str, revision: str, filename: str, local_dir: str | None = None
-) -> str:
-    from huggingface_hub import hf_hub_download
+def fetch_frozen(lock: PinLock, platform: str, *, dest: Path) -> Path:
+    """Download the wheel of *lock* for the cell *platform* into *dest*, unchecked.
 
-    return str(
-        hf_hub_download(repo_id=repo_id, revision=revision, filename=filename, local_dir=local_dir)
-    )
-
-
-def fetch_frozen(
-    lock: PinLock,
-    platform: str,
-    *,
-    dest: Path,
-    downloader: Callable[..., str] = _hub_download,
-) -> Path:
-    """Download the wheel of *lock* for *platform* at its pinned commit into *dest*, unchecked."""
-    from huggingface_hub.errors import (
-        EntryNotFoundError,
-        RepositoryNotFoundError,
-        RevisionNotFoundError,
-    )
-
+    A pin with no cells ships as a pack only, so it has nothing to download.
+    """
+    if not lock.platforms:
+        raise FileNotFoundError(f"Engine {lock.engine} {lock.version} has no download.")
     asset = lock.platforms.get(platform)
     if asset is None:
         raise UnsupportedPlatformError(
             f"Engine {lock.engine} {lock.version} has no build for {platform}."
         )
-    shortfall = disk_shortfall(dest, asset.repo, asset.size)
+    shortfall = disk_shortfall(dest, url_filename(asset.url), asset.size)
     if shortfall is not None:
         raise EngineDiskError(shortfall)
-    try:
-        return Path(
-            retry_transfer(
-                lambda: downloader(
-                    repo_id=asset.repo,
-                    revision=asset.revision,
-                    filename=asset.filename,
-                    local_dir=str(dest),
-                )
-            )
-        )
-    except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError) as exc:
-        raise FileNotFoundError(
-            f"The hub has no {asset.filename} at {asset.revision} in {asset.repo}."
-        ) from exc
+    return download_url(asset.url, dest, asset.size)
 
 
 __all__ = [

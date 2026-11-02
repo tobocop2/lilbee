@@ -81,11 +81,13 @@ class FakeAdapter:
                 "linux-x86_64": {
                     "url": "https://example.org/fake-engine-linux.tar.gz",
                     "sha256": _SHA,
+                    "size": 1,
                     "min_os": None,
                 },
                 "macos-arm64": {
                     "url": "https://example.org/fake-engine-mac.tar.gz",
                     "sha256": _SHA,
+                    "size": 1,
                     "min_os": "14.0",
                 },
             },
