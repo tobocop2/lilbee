@@ -1616,7 +1616,7 @@ Defaults suit most machines; these exist for the cases where they don't.
 | Setting | Env var | Default | Description |
 |---------|---------|---------|-------------|
 | `usable_vram_fraction` | `LILBEE_USABLE_VRAM_FRACTION` | `0.9` | Fraction of a card's **free** VRAM the planner may fill. The rest absorbs driver overhead and allocator fragmentation, which the engine's own report does not include. Range 0.5–1.0 |
-| `system_memory_reserve_gb` | `LILBEE_SYSTEM_MEMORY_RESERVE_GB` | `4.0` | Host RAM held back from any model that offloads to system memory, so the OS and everything else keep room. Range 0–64 |
+| `system_memory_reserve_gb` | `LILBEE_SYSTEM_MEMORY_RESERVE_GB` | `4.0` | Host RAM held back from any model that offloads to system memory, so the OS and everything else keep room. It is not a reserve for one server: set `memory_reserve_gb` on a [preset](presets.md#the-memory-reserve) for that. Range 0–64 |
 | `gpu_memory_fraction` | `LILBEE_GPU_MEMORY_FRACTION` | `0.75` | Fraction of the card chat sizes its KV cache against. Keep it at or below `usable_vram_fraction`; raising it past that only shrinks what chat is charged |
 
 Raise `usable_vram_fraction` toward `1.0` on a dedicated box with nothing else

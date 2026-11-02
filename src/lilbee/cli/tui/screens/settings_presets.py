@@ -18,7 +18,9 @@ from lilbee.app.presets import (
     edit_preset,
     failure_text,
     list_presets,
+    parse_reserve,
     remove_preset,
+    with_reserve_note,
 )
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.preset_commands import key_state_text, preset_line
@@ -30,6 +32,13 @@ from lilbee.providers.server_registry import RerankWire
 log = logging.getLogger(__name__)
 
 PRESETS_PANE_ID = "settings-tab-presets"
+
+
+def _reserve_value(preset: ServerPreset | None) -> str:
+    """The reserve as the dialog field shows it; empty when none is set."""
+    if preset is None or preset.memory_reserve_gb is None:
+        return ""
+    return f"{preset.memory_reserve_gb:g}"
 
 
 class PresetDialog(ModalScreen[str | None]):
@@ -76,6 +85,12 @@ class PresetDialog(ModalScreen[str | None]):
                 allow_blank=False,
                 id="preset-wire-select",
             )
+            yield Label(msg.PRESET_DIALOG_RESERVE_LABEL)
+            yield Input(
+                value=_reserve_value(preset),
+                placeholder=msg.PRESET_DIALOG_RESERVE_PLACEHOLDER,
+                id="preset-reserve-input",
+            )
             yield Label(msg.PRESET_DIALOG_KEY_LABEL)
             yield Input(
                 password=True,
@@ -117,6 +132,9 @@ class PresetDialog(ModalScreen[str | None]):
     def _chosen_wire(self) -> str:
         return str(self.query_one("#preset-wire-select", Select).value)
 
+    def _chosen_reserve(self) -> str:
+        return self.query_one("#preset-reserve-input", Input).value
+
     def _set_busy(self, busy: bool) -> None:
         for button in self.query(Button):
             button.disabled = busy
@@ -143,6 +161,7 @@ class PresetDialog(ModalScreen[str | None]):
                 self.query_one("#preset-url-input", Input).value,
                 self._chosen_roles(),
                 self._chosen_wire(),
+                self._chosen_reserve(),
                 self.query_one("#preset-key-input", Input).value,
             )
         else:
@@ -151,6 +170,7 @@ class PresetDialog(ModalScreen[str | None]):
                 self.query_one("#preset-url-input", Input).value,
                 self._chosen_roles(),
                 self._chosen_wire(),
+                self._chosen_reserve(),
                 self.query_one("#preset-key-input", Input).value,
             )
 
@@ -160,18 +180,34 @@ class PresetDialog(ModalScreen[str | None]):
         self._run_edit(str(event.button.name), clear_key=True)
 
     @work(thread=True)
-    def _save_new(self, name: str, url: str, roles: list[str], wire: str, key: str) -> None:
+    def _save_new(
+        self, name: str, url: str, roles: list[str], wire: str, reserve: str, key: str
+    ) -> None:
         try:
-            preset = add_preset(name, url, roles=roles, api_key=key, rerank_wire=wire)
+            preset = add_preset(
+                name,
+                url,
+                roles=roles,
+                api_key=key,
+                rerank_wire=wire,
+                memory_reserve_gb=parse_reserve(reserve),
+            )
         except (ValueError, OSError) as exc:
             call_from_thread(self, self._show_error, failure_text(exc))
             return
-        call_from_thread(self, self._finish, msg.PRESET_ADDED.format(name=preset.name))
+        call_from_thread(
+            self, self._finish, with_reserve_note(msg.PRESET_ADDED.format(name=preset.name), preset)
+        )
 
     def _save_edit(
-        self, preset: ServerPreset, url: str, roles: list[str], wire: str, key: str
+        self, preset: ServerPreset, url: str, roles: list[str], wire: str, reserve: str, key: str
     ) -> None:
         """Send only what differs from the stored preset; the service says when none does."""
+        try:
+            chosen_reserve = parse_reserve(reserve)
+        except ValueError as exc:
+            self._show_error(failure_text(exc))
+            return
         self._run_edit(
             preset.name,
             url=url if url != preset.base_url else None,
@@ -179,6 +215,12 @@ class PresetDialog(ModalScreen[str | None]):
             rerank_wire=(
                 wire if WorkerRole.RERANK.value in roles and wire != preset.rerank_wire else None
             ),
+            memory_reserve_gb=(
+                chosen_reserve
+                if chosen_reserve is not None and chosen_reserve != preset.memory_reserve_gb
+                else None
+            ),
+            clear_reserve=chosen_reserve is None and preset.memory_reserve_gb is not None,
             api_key=key or None,
         )
 
@@ -190,6 +232,8 @@ class PresetDialog(ModalScreen[str | None]):
         url: str | None = None,
         roles: list[str] | None = None,
         rerank_wire: str | None = None,
+        memory_reserve_gb: float | None = None,
+        clear_reserve: bool = False,
         api_key: str | None = None,
         clear_key: bool = False,
     ) -> None:
@@ -200,12 +244,18 @@ class PresetDialog(ModalScreen[str | None]):
                 roles=roles,
                 api_key=api_key,
                 rerank_wire=rerank_wire,
+                memory_reserve_gb=memory_reserve_gb,
+                clear_reserve=clear_reserve,
                 clear_key=clear_key,
             )
         except (ValueError, OSError) as exc:
             call_from_thread(self, self._show_error, failure_text(exc))
             return
-        call_from_thread(self, self._finish, msg.PRESET_UPDATED.format(name=preset.name))
+        call_from_thread(
+            self,
+            self._finish,
+            with_reserve_note(msg.PRESET_UPDATED.format(name=preset.name), preset),
+        )
 
 
 class PresetsPane(VerticalScroll):

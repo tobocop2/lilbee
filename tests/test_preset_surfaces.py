@@ -81,6 +81,9 @@ class Case:
 OMLX_SEED: Args = {"name": "omlx", "url": LOCAL, "roles": ["chat", "embed"], "key": KEY}
 OMLX_STORED = {"name": "omlx", "url": LOCAL, "roles": ["chat", "embed"], "api_key": KEY}
 OMLX_NO_KEY = {"name": "omlx", "url": LOCAL, "roles": ["chat", "embed"]}
+OMLX_RESERVE_SEED: Args = {**OMLX_SEED, "key": None, "reserve": 8}
+REMOTE = "http://93.184.216.34:8000/v1"
+REMOTE_RESERVE_SEED: Args = {**OMLX_RESERVE_SEED, "url": REMOTE}
 ADD: Args = {"name": "omlx", "url": LOCAL, "roles": ["chat", "embed"]}
 
 
@@ -100,6 +103,16 @@ CASES: tuple[Case, ...] = (
         stored=[{"name": "rr", "url": LOCAL, "roles": ["rerank"], "rerank_wire": "tei"}],
     ),
     Case("add-valid-with-key", "add", (), {**ADD, "key": KEY}, ok=True, stored=[OMLX_STORED]),
+    Case(
+        "add-with-reserve",
+        "add",
+        (),
+        {**ADD, "reserve": 8},
+        ok=True,
+        stored=[{**OMLX_NO_KEY, "memory_reserve_gb": 8}],
+    ),
+    _refused_add("add-reserve-negative", reserve=-1),
+    _refused_add("add-reserve-above-cap", reserve=65),
     Case("add-name-taken", "add", (OMLX_SEED,), ADD, ok=False, stored=[OMLX_STORED]),
     _refused_add("add-bad-name", name="Bad Name"),
     _refused_add("add-reserved-name", name="openai"),
@@ -133,6 +146,78 @@ CASES: tuple[Case, ...] = (
         {"name": "omlx", "roles": ["embed", "rerank"], "wire": "tei"},
         ok=True,
         stored=[{**OMLX_STORED, "roles": ["embed", "rerank"], "rerank_wire": "tei"}],
+    ),
+    Case(
+        "edit-reserve",
+        "edit",
+        (OMLX_SEED,),
+        {"name": "omlx", "reserve": 12.5},
+        ok=True,
+        stored=[{**OMLX_STORED, "memory_reserve_gb": 12.5}],
+    ),
+    Case(
+        "edit-reserve-above-cap",
+        "edit",
+        (OMLX_SEED,),
+        {"name": "omlx", "reserve": 65},
+        ok=False,
+        stored=[OMLX_STORED],
+    ),
+    Case(
+        "list-one-with-reserve",
+        "list",
+        (OMLX_RESERVE_SEED,),
+        {},
+        ok=True,
+        stored=[{**OMLX_NO_KEY, "memory_reserve_gb": 8}],
+    ),
+    Case(
+        "edit-clear-reserve",
+        "edit",
+        (OMLX_RESERVE_SEED,),
+        {"name": "omlx", "clear_reserve": True},
+        ok=True,
+        stored=[OMLX_NO_KEY],
+    ),
+    Case(
+        "edit-clear-reserve-with-another-field",
+        "edit",
+        (OMLX_RESERVE_SEED,),
+        {"name": "omlx", "clear_reserve": True, "wire": "tei"},
+        ok=True,
+        stored=[{**OMLX_NO_KEY, "rerank_wire": "tei"}],
+    ),
+    Case(
+        "edit-clear-reserve-with-a-reserve",
+        "edit",
+        (OMLX_RESERVE_SEED,),
+        {"name": "omlx", "clear_reserve": True, "reserve": 4},
+        ok=False,
+        stored=[{**OMLX_NO_KEY, "memory_reserve_gb": 8}],
+    ),
+    Case(
+        "add-remote-with-reserve",
+        "add",
+        (),
+        {**ADD, "url": REMOTE, "reserve": 8},
+        ok=True,
+        stored=[{**OMLX_NO_KEY, "url": REMOTE, "memory_reserve_gb": 8}],
+    ),
+    Case(
+        "edit-remote-reserve",
+        "edit",
+        (REMOTE_RESERVE_SEED,),
+        {"name": "omlx", "reserve": 4},
+        ok=True,
+        stored=[{**OMLX_NO_KEY, "url": REMOTE, "memory_reserve_gb": 4}],
+    ),
+    Case(
+        "list-one-remote-with-reserve",
+        "list",
+        (REMOTE_RESERVE_SEED,),
+        {},
+        ok=True,
+        stored=[{**OMLX_NO_KEY, "url": REMOTE, "memory_reserve_gb": 8}],
     ),
     Case(
         "edit-new-key",
@@ -197,7 +282,13 @@ def _fresh_store(root: Path, seed: tuple[Args, ...], monkeypatch) -> None:
     cfg.data_root = root
     cfg.server_presets = None
     for entry in seed:
-        add_preset(entry["name"], entry["url"], roles=entry["roles"], api_key=entry.get("key"))
+        add_preset(
+            entry["name"],
+            entry["url"],
+            roles=entry["roles"],
+            api_key=entry.get("key"),
+            memory_reserve_gb=entry.get("reserve"),
+        )
 
 
 @pytest.fixture
@@ -225,6 +316,7 @@ def service(op: str, args: Args) -> Outcome:
                         roles=args["roles"],
                         api_key=args.get("key"),
                         rerank_wire=args.get("wire", "v1"),
+                        memory_reserve_gb=args.get("reserve"),
                     )
                 )
             )
@@ -237,6 +329,8 @@ def service(op: str, args: Args) -> Outcome:
                         roles=args.get("roles"),
                         api_key=args.get("key"),
                         rerank_wire=args.get("wire"),
+                        memory_reserve_gb=args.get("reserve"),
+                        clear_reserve=args.get("clear_reserve", False),
                         clear_key=args.get("clear_key", False),
                     )
                 )
@@ -256,7 +350,7 @@ def _cli_argv(op: str, args: Args) -> list[str]:
     if op == "remove":
         return ["remove", args["name"], "--yes"]
     if op == "add":
-        return [
+        argv = [
             "add",
             args["name"],
             args["url"],
@@ -265,14 +359,17 @@ def _cli_argv(op: str, args: Args) -> list[str]:
             "--wire",
             args.get("wire", "v1"),
         ]
+        return argv + (["--reserve", str(args["reserve"])] if "reserve" in args else [])
     argv = ["edit", args["name"]]
-    for flag, field_name in (("--url", "url"), ("--wire", "wire")):
+    for flag, field_name in (("--url", "url"), ("--wire", "wire"), ("--reserve", "reserve")):
         if field_name in args:
-            argv += [flag, args[field_name]]
+            argv += [flag, str(args[field_name])]
     if "roles" in args:
         argv += ["--roles", ",".join(args["roles"])]
     if args.get("clear_key"):
         argv.append("--clear-key")
+    if args.get("clear_reserve"):
+        argv.append("--clear-reserve")
     return argv
 
 
@@ -298,11 +395,13 @@ def rest(client: Any, op: str, args: Args) -> Outcome:
         body = {k: args[k] for k in ("name", "url", "roles") if k in args}
         body.update({"api_key": args["key"]} if "key" in args else {})
         body.update({"rerank_wire": args["wire"]} if "wire" in args else {})
+        body.update({"memory_reserve_gb": args["reserve"]} if "reserve" in args else {})
         res = client.post("/api/presets", json=body)
     elif op == "edit":
-        body = {k: args[k] for k in ("url", "roles", "clear_key") if k in args}
+        body = {k: args[k] for k in ("url", "roles", "clear_key", "clear_reserve") if k in args}
         body.update({"api_key": args["key"]} if "key" in args else {})
         body.update({"rerank_wire": args["wire"]} if "wire" in args else {})
+        body.update({"memory_reserve_gb": args["reserve"]} if "reserve" in args else {})
         res = client.put(f"/api/presets/{args['name']}", json=body)
     else:
         res = client.delete(f"/api/presets/{args['name']}")
@@ -322,6 +421,7 @@ def mcp(op: str, args: Args) -> Outcome:
             args["roles"],
             api_key=args.get("key"),
             rerank_wire=args.get("wire", "v1"),
+            memory_reserve_gb=args.get("reserve"),
         )
     elif op == "edit":
         body = mcp_server.preset_edit_tool(
@@ -330,6 +430,8 @@ def mcp(op: str, args: Args) -> Outcome:
             roles=args.get("roles"),
             api_key=args.get("key"),
             rerank_wire=args.get("wire"),
+            memory_reserve_gb=args.get("reserve"),
+            clear_reserve=args.get("clear_reserve", False),
             clear_key=args.get("clear_key", False),
         )
     else:
@@ -337,6 +439,20 @@ def mcp(op: str, args: Args) -> Outcome:
     if "error" in body:
         return Outcome(False, None, body["error"])
     return Outcome(True, body, "")
+
+
+def _slash_edit_line(args: Args) -> str:
+    q = shlex.quote
+    line = f"edit {q(args['name'])}"
+    for flag, field_name in (("--url", "url"), ("--wire", "wire"), ("--reserve", "reserve")):
+        if field_name in args:
+            line += f" {flag} {q(str(args[field_name]))}"
+    if "roles" in args:
+        line += f" --roles {q(','.join(args['roles']))}"
+    for flag, field_name in (("--clear-key", "clear_key"), ("--clear-reserve", "clear_reserve")):
+        if args.get(field_name):
+            line += f" {flag}"
+    return line
 
 
 def slash(op: str, args: Args) -> Outcome:
@@ -347,21 +463,27 @@ def slash(op: str, args: Args) -> Outcome:
     elif op == "add":
         line = f"add {q(args['name'])} {q(args['url'])} --roles {q(','.join(args['roles']))}"
         line += f" --wire {q(args.get('wire', 'v1'))}"
+        if "reserve" in args:
+            line += f" --reserve {args['reserve']}"
     elif op == "edit":
-        line = f"edit {q(args['name'])}"
-        for flag, field_name in (("--url", "url"), ("--wire", "wire")):
-            if field_name in args:
-                line += f" {flag} {q(args[field_name])}"
-        if "roles" in args:
-            line += f" --roles {q(','.join(args['roles']))}"
-        if args.get("clear_key"):
-            line += " --clear-key"
+        line = _slash_edit_line(args)
     else:
         line = f"remove {q(args['name'])}"
     if "key" in args:
         line += f" --key {q(args['key'])}"
     result = run_preset_command(line)
     return Outcome(result.ok, result.text if result.ok else None, "" if result.ok else result.text)
+
+
+def _slash_reserve(preset: Args) -> str:
+    if preset["memory_reserve_gb"] is None:
+        return msg.PRESET_NO_VALUE
+    text = msg.PRESET_RESERVE_GIB.format(gib=preset["memory_reserve_gb"])
+    return f"{text} ({preset['reserve_note']})" if preset["reserve_note"] else text
+
+
+def _noted(text: str, preset: Args) -> str:
+    return f"{text} {preset['reserve_note']}" if preset["reserve_note"] else text
 
 
 def _slash_line_for(oracle: Outcome, op: str) -> str:
@@ -376,14 +498,15 @@ def _slash_line_for(oracle: Outcome, op: str) -> str:
                 url=p["base_url"] or msg.PRESET_INVALID_URL,
                 roles=", ".join(p["roles"]) or msg.PRESET_NO_VALUE,
                 wire=p["rerank_wire"] if "rerank" in p["roles"] else msg.PRESET_NO_VALUE,
+                reserve=_slash_reserve(p),
                 key=msg.PRESET_KEY_SET if p["has_key"] else msg.PRESET_KEY_NONE,
             )
             for p in presets
         )
     if op == "add":
-        return msg.PRESET_ADDED.format(name=oracle.data["name"])
+        return _noted(msg.PRESET_ADDED.format(name=oracle.data["name"]), oracle.data)
     if op == "edit":
-        return msg.PRESET_UPDATED.format(name=oracle.data["name"])
+        return _noted(msg.PRESET_UPDATED.format(name=oracle.data["name"]), oracle.data)
     return msg.PRESET_REMOVED.format(name=oracle.data["removed"])
 
 
@@ -454,3 +577,15 @@ class TestTheCaseTable:
     def test_key_cases_exist_for_add_and_edit(self):
         keyed = {case.op for case in CASES if case.key_given}
         assert keyed == {"add", "edit"}
+
+    def test_reserve_note_cases_exist_for_add_edit_and_list(self):
+        noted = {case.op for case in CASES if case.id.find("remote") >= 0}
+        assert noted == {"add", "edit", "list"}
+
+    def test_clear_reserve_cases_exist(self):
+        cleared = [case for case in CASES if case.args.get("clear_reserve")]
+        assert {case.ok for case in cleared} == {True, False}
+
+    def test_reserve_cases_exist_for_add_and_edit(self):
+        reserved = {case.op for case in CASES if "reserve" in case.args}
+        assert reserved == {"add", "edit"}

@@ -289,7 +289,7 @@ class TestAdd:
     def test_it_stores_one_json_scalar_with_the_key(self):
         view = presets.add_preset("alpha", URL, roles=["chat", "embed"], api_key=KEY)
         assert view == presets.ServerPreset(
-            "alpha", URL, (WorkerRole.CHAT, WorkerRole.EMBED), True, True, RerankWire.V1
+            "alpha", URL, (WorkerRole.CHAT, WorkerRole.EMBED), True, True, RerankWire.V1, None, None
         )
         assert isinstance(settings.load(cfg.data_root)["server_presets"], str)
         assert _stored() == [
@@ -845,7 +845,7 @@ class TestList:
         presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
         view = presets.list_presets()[0]
         assert view == presets.ServerPreset(
-            "alpha", URL, (WorkerRole.CHAT,), True, True, RerankWire.V1
+            "alpha", URL, (WorkerRole.CHAT,), True, True, RerankWire.V1, None, None
         )
         assert not hasattr(view, "api_key")
         assert KEY not in f"{view!r} {dataclasses.asdict(view)}"
@@ -930,3 +930,129 @@ def test_get_preset_returns_the_stored_view_and_refuses_a_missing_name():
     assert presets.get_preset("omlx").base_url == URL
     with pytest.raises(presets.PresetNotFoundError, match="No server preset is named 'nope'"):
         presets.get_preset("nope")
+
+
+class TestMemoryReserve:
+    def test_it_is_unset_by_default_and_not_stored(self):
+        view = presets.add_preset("alpha", URL, roles=["chat"])
+        assert view.memory_reserve_gb is None
+        assert "memory_reserve_gb" not in _stored()[0]
+
+    def test_it_is_stored_and_shown(self):
+        view = presets.add_preset("alpha", URL, roles=["chat"], memory_reserve_gb=8)
+        assert view.memory_reserve_gb == 8
+        assert _stored()[0]["memory_reserve_gb"] == 8
+
+    @pytest.mark.parametrize("value", [0, 64, 0.5])
+    def test_the_bounds_are_accepted(self, value):
+        presets.add_preset("alpha", URL, roles=["chat"], memory_reserve_gb=value)
+        assert _stored()[0]["memory_reserve_gb"] == value
+
+    @pytest.mark.parametrize("value", [-0.5, 64.5, float("nan"), float("inf")])
+    def test_a_value_out_of_range_is_refused_naming_it(self, value):
+        with pytest.raises(ValueError, match=r"memory reserve .* 0 to 64"):
+            presets.add_preset("alpha", URL, roles=["chat"], memory_reserve_gb=value)
+        assert _stored() == []
+
+    def test_an_edit_sets_it_and_keeps_the_other_fields(self):
+        presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
+        view = presets.edit_preset("alpha", memory_reserve_gb=6)
+        assert view.memory_reserve_gb == 6
+        assert _stored() == [
+            {"name": "alpha", "url": URL, "roles": ["chat"], "api_key": KEY, "memory_reserve_gb": 6}
+        ]
+
+    def test_an_edit_of_another_field_keeps_it(self):
+        presets.add_preset("alpha", URL, roles=["chat"], memory_reserve_gb=6)
+        presets.edit_preset("alpha", roles=["chat", "embed"])
+        assert _stored()[0]["memory_reserve_gb"] == 6
+
+    def test_an_edit_to_zero_is_a_change(self):
+        presets.add_preset("alpha", URL, roles=["chat"], memory_reserve_gb=6)
+        assert presets.edit_preset("alpha", memory_reserve_gb=0).memory_reserve_gb == 0
+
+    def test_an_edit_out_of_range_changes_nothing(self):
+        presets.add_preset("alpha", URL, roles=["chat"], memory_reserve_gb=6)
+        with pytest.raises(ValueError, match="memory reserve"):
+            presets.edit_preset("alpha", memory_reserve_gb=99)
+        assert _stored()[0]["memory_reserve_gb"] == 6
+
+    def test_a_reserve_does_not_join_a_key_clear(self):
+        presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
+        with pytest.raises(ValueError, match="own edit"):
+            presets.edit_preset("alpha", memory_reserve_gb=2, clear_key=True)
+
+    def test_a_stored_row_out_of_range_is_unreadable(self):
+        row = {"name": "alpha", "url": URL, "roles": ["chat"], "memory_reserve_gb": 99}
+        settings.set_value(cfg.data_root, "server_presets", json.dumps([row]))
+        assert presets.list_presets()[0].valid is False
+
+
+class TestClearReserve:
+    def test_it_removes_the_stored_reserve(self):
+        presets.add_preset("alpha", URL, roles=["chat"], memory_reserve_gb=6)
+        view = presets.edit_preset("alpha", clear_reserve=True)
+        assert view.memory_reserve_gb is None
+        assert "memory_reserve_gb" not in _stored()[0]
+
+    def test_it_joins_another_change(self):
+        presets.add_preset("alpha", URL, roles=["chat"], memory_reserve_gb=6)
+        presets.edit_preset("alpha", roles=["chat", "embed"], clear_reserve=True)
+        assert _stored() == [{"name": "alpha", "url": URL, "roles": ["chat", "embed"]}]
+
+    def test_it_is_refused_with_a_new_reserve(self):
+        presets.add_preset("alpha", URL, roles=["chat"], memory_reserve_gb=6)
+        with pytest.raises(ValueError, match="memory reserve"):
+            presets.edit_preset("alpha", memory_reserve_gb=2, clear_reserve=True)
+        assert _stored()[0]["memory_reserve_gb"] == 6
+
+    def test_it_is_refused_with_a_key_clear(self):
+        presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY, memory_reserve_gb=6)
+        with pytest.raises(ValueError, match="own edit"):
+            presets.edit_preset("alpha", clear_reserve=True, clear_key=True)
+
+    def test_a_zero_reserve_is_cleared_to_unset(self):
+        presets.add_preset("alpha", URL, roles=["chat"], memory_reserve_gb=0)
+        assert presets.edit_preset("alpha", clear_reserve=True).memory_reserve_gb is None
+
+
+class TestReserveNote:
+    REMOTE = "http://93.184.216.34:8000/v1"
+    HERE = "http://127.0.0.1:8000/v1"
+
+    def test_a_remote_preset_with_a_reserve_says_it_has_no_effect(self):
+        view = presets.add_preset("far", self.REMOTE, roles=["chat"], memory_reserve_gb=8)
+        assert view.reserve_note is not None
+        assert "no effect" in view.reserve_note
+
+    @pytest.mark.parametrize("url", [HERE, "http://localhost:9000/v1", "http://127.1/v1"])
+    def test_a_preset_on_this_host_has_no_note(self, url):
+        view = presets.add_preset("near", url, roles=["chat"], memory_reserve_gb=8)
+        assert view.reserve_note is None
+
+    def test_a_remote_preset_without_a_reserve_has_no_note(self):
+        assert presets.add_preset("far", self.REMOTE, roles=["chat"]).reserve_note is None
+
+    def test_a_remote_preset_with_a_zero_reserve_has_a_note(self):
+        view = presets.add_preset("far", self.REMOTE, roles=["chat"], memory_reserve_gb=0)
+        assert view.reserve_note is not None
+
+    def test_with_reserve_note_appends_it_to_a_text(self):
+        view = presets.add_preset("far", self.REMOTE, roles=["chat"], memory_reserve_gb=8)
+        assert presets.with_reserve_note("Added.", view) == f"Added. {view.reserve_note}"
+        plain = presets.add_preset("near", self.HERE, roles=["chat"])
+        assert presets.with_reserve_note("Added.", plain) == "Added."
+
+
+class TestParseReserve:
+    @pytest.mark.parametrize(("text", "value"), [("8", 8.0), (" 2.5 ", 2.5), ("0", 0.0)])
+    def test_a_number_is_parsed(self, text, value):
+        assert presets.parse_reserve(text) == value
+
+    @pytest.mark.parametrize("text", ["", "   "])
+    def test_blank_is_unset(self, text):
+        assert presets.parse_reserve(text) is None
+
+    def test_a_word_is_refused_naming_it(self):
+        with pytest.raises(ValueError, match=r"memory reserve 'lots' is not a number"):
+            presets.parse_reserve("lots")

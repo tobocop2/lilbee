@@ -981,6 +981,8 @@ class PresetResponse(BaseModel):
     has_key: bool
     valid: bool
     rerank_wire: RerankWire | None
+    memory_reserve_gb: float | None
+    reserve_note: str | None
 
     @classmethod
     def from_view(cls, view: ServerPreset) -> PresetResponse:
@@ -992,6 +994,8 @@ class PresetResponse(BaseModel):
             has_key=view.has_key,
             valid=view.valid,
             rerank_wire=view.rerank_wire,
+            memory_reserve_gb=view.memory_reserve_gb,
+            reserve_note=view.reserve_note,
         )
 
 
@@ -1015,6 +1019,7 @@ class PresetAddBody(BaseModel):
     roles: list[str]
     api_key: str | None = None
     rerank_wire: str = RerankWire.V1
+    memory_reserve_gb: float | None = None
 
 
 class PresetEditBody(BaseModel):
@@ -1024,6 +1029,8 @@ class PresetEditBody(BaseModel):
     roles: list[str] | None = None
     api_key: str | None = None
     rerank_wire: str | None = None
+    memory_reserve_gb: float | None = None
+    clear_reserve: bool = False
     clear_key: bool = False
 
 

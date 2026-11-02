@@ -20,6 +20,7 @@ from lilbee.app.presets import (
     list_presets,
     remove_preset,
     split_roles,
+    with_reserve_note,
 )
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
@@ -39,6 +40,7 @@ _T = TypeVar("_T")
 _NO_VALUE = "-"
 _roles_help = "Comma-separated roles: embed, rerank, chat, vision."
 _wire_help = "Rerank request shape: v1 or tei."
+_reserve_help = "GiB of RAM a server on this host keeps; the memory plan leaves it free (0 to 64)."
 _key_stdin_help = "Read the API key from one line of stdin, or ask for it on a terminal."
 
 
@@ -76,12 +78,18 @@ def _wire_cell(preset: ServerPreset) -> str:
     return preset.rerank_wire.value
 
 
+def _reserve_cell(preset: ServerPreset) -> str:
+    if preset.memory_reserve_gb is None:
+        return _NO_VALUE
+    return with_reserve_note(f"{preset.memory_reserve_gb:g} GiB", preset)
+
+
 def _render_list(presets: list[ServerPreset]) -> None:
     if not presets:
         console.print("No server presets.", style=theme.MUTED)
         return
     table = Table(title="Server presets")
-    for column in ("Name", "URL", "Roles", "Wire", "Key"):
+    for column in ("Name", "URL", "Roles", "Wire", "Reserve", "Key"):
         table.add_column(column)
     for preset in presets:
         table.add_row(
@@ -89,6 +97,7 @@ def _render_list(presets: list[ServerPreset]) -> None:
             Text(preset.base_url or "(invalid)"),
             Text(", ".join(role.value for role in preset.roles) or _NO_VALUE),
             _wire_cell(preset),
+            _reserve_cell(preset),
             "set" if preset.has_key else "none",
         )
     console.print(table)
@@ -114,6 +123,7 @@ def add_cmd(
     url: str = typer.Argument(..., help="Server base URL."),
     roles: str = typer.Option(..., "--roles", help=_roles_help),
     wire: str = typer.Option(RerankWire.V1.value, "--wire", help=_wire_help),
+    reserve: float | None = typer.Option(None, "--reserve", help=_reserve_help),
     key_stdin: bool = typer.Option(False, "--key-stdin", help=_key_stdin_help),
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -122,11 +132,18 @@ def add_cmd(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     api_key = _read_key() if key_stdin else None
     preset = _guard(
-        lambda: add_preset(name, url, roles=split_roles(roles), api_key=api_key, rerank_wire=wire)
+        lambda: add_preset(
+            name,
+            url,
+            roles=split_roles(roles),
+            api_key=api_key,
+            rerank_wire=wire,
+            memory_reserve_gb=reserve,
+        )
     )
     _emit(
         PresetResponse.from_view(preset),
-        lambda: console.print(Text(f"Added server preset {name!r}.")),
+        lambda: console.print(Text(with_reserve_note(f"Added server preset {name!r}.", preset))),
     )
 
 
@@ -136,6 +153,10 @@ def edit_cmd(
     url: str | None = typer.Option(None, "--url", help="New server base URL."),
     roles: str | None = typer.Option(None, "--roles", help=_roles_help),
     wire: str | None = typer.Option(None, "--wire", help=_wire_help),
+    reserve: float | None = typer.Option(None, "--reserve", help=_reserve_help),
+    clear_reserve: bool = typer.Option(
+        False, "--clear-reserve", help="Unset the stored memory reserve."
+    ),
     key_stdin: bool = typer.Option(False, "--key-stdin", help=_key_stdin_help),
     clear_key: bool = typer.Option(False, "--clear-key", help="Remove the stored API key."),
     data_dir: Path | None = data_dir_option,
@@ -151,12 +172,14 @@ def edit_cmd(
             roles=None if roles is None else split_roles(roles),
             api_key=api_key,
             rerank_wire=wire,
+            memory_reserve_gb=reserve,
+            clear_reserve=clear_reserve,
             clear_key=clear_key,
         )
     )
     _emit(
         PresetResponse.from_view(preset),
-        lambda: console.print(Text(f"Updated server preset {name!r}.")),
+        lambda: console.print(Text(with_reserve_note(f"Updated server preset {name!r}.", preset))),
     )
 
 
