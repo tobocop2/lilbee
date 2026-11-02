@@ -10,7 +10,7 @@ import pytest
 
 from lilbee.catalog import runnable
 from lilbee.providers.fleet import adapters, planning, readback
-from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.devices import EngineDllMissingError, FleetDevice
 from lilbee.providers.fleet.engines import LaunchRequest
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.llama import LLAMA
@@ -697,6 +697,23 @@ class TestSelfCheckRefusesWhatServingRefuses:
                 "Choose a GPU or install the CPU build."
             )
         }
+
+    def test_a_build_that_cannot_load_gives_its_load_error_not_a_target_refusal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A binary that fails at load prints no help, which must not read as no cpu target."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "placement", '{"embed": {"target": "cpu"}}')
+        _help(monkeypatch, "")
+        monkeypatch.setattr(type(LLAMA), "binary", lambda _self: tmp_path / "server")
+
+        def cannot_load(_binary: Path, _engine: object) -> list[FleetDevice]:
+            raise EngineDllMissingError("The engine could not start (status 0xC0000135).")
+
+        monkeypatch.setattr(planning, "_plan_devices", cannot_load)
+        with pytest.raises(EngineDllMissingError, match="0xC0000135"):
+            planning.build_single_role_launch(WorkerRole.EMBED, tmp_path / "m.gguf", engine=LLAMA)
 
 
 class TestAbsentTargetIsNone:
