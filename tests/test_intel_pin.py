@@ -35,6 +35,7 @@ OVERRIDE_SENTENCE = (
     "To use the Intel GPU, set VK_LOADER_DRIVERS_DISABLE=nomatch* and start lilbee again."
 )
 CHAT_ON_INTEL = '{"chat": {"devices": [1]}}'
+CHAT_ON_INTEL_EMBED_AUTO = '{"chat": {"devices": [1]}, "embed": {"target": "auto"}}'
 MIXED = '{"chat": {"devices": [0]}, "embed": {"devices": [1]}}'
 
 
@@ -124,6 +125,20 @@ class TestAListedIntegratedGpuCanBePinned:
         gpu_device_count.cache_clear()
         assert gpu_device_count(engine) == 2
 
+    def test_a_launch_with_a_pin_on_the_integrated_gpu_plans_its_capacity_with_the_pinned_card(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(monkeypatch, tmp_path, [NVIDIA, INTEL], roles=ROLES)
+        monkeypatch.setattr(cfg, "placement", CHAT_ON_INTEL_EMBED_AUTO)
+        plan = planning.plan_launches(
+            None,
+            {NVIDIA.index: NVIDIA, INTEL.index: INTEL},
+            [NVIDIA, INTEL],
+            engines=engines_for_all_roles(engine),
+        )
+        assert {launch.role for launch in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert plan.refused_roles == {}
+
 
 class TestAPinPastTheListSaysWhatTheListHolds:
     def test_one_listed_device(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -174,6 +189,35 @@ class TestAHiddenDeviceIsNamed:
             "embed is pinned to device 1, but this machine lists only device 0. "
             + OVERRIDE_SENTENCE
         )
+
+    def test_a_saved_spec_on_the_hidden_device_gets_the_same_sentence(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _two_vendor_launch(monkeypatch)
+        engine = _host(monkeypatch, tmp_path, [NVIDIA])
+        monkeypatch.setattr(cfg, "placement", '{"chat": {"devices": [1], "target": "gpu"}}')
+        plan = planning.plan_launches(
+            None, {NVIDIA.index: NVIDIA}, [NVIDIA], engines=engines_for_all_roles(engine)
+        )
+        assert plan.refused_roles == {
+            WorkerRole.CHAT: (
+                "chat: GPU 1 is not on this machine (1 found). "
+                + OVERRIDE_SENTENCE
+                + " Set the chat devices to a GPU that exists, or set its target to cpu."
+            )
+        }
+
+    def test_the_fallback_log_for_a_saved_pin_has_no_doubled_punctuation(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _two_vendor_launch(monkeypatch)
+        engine = _host(monkeypatch, tmp_path, [NVIDIA])
+        monkeypatch.setattr(cfg, "placement", CHAT_ON_INTEL)
+        with caplog.at_level(logging.WARNING):
+            planning.plan_launches(
+                None, {NVIDIA.index: NVIDIA}, [NVIDIA], engines=engines_for_all_roles(engine)
+            )
+        assert "start lilbee again); using automatic placement instead." in caplog.text
 
     def test_a_build_the_loader_cannot_change_gets_no_override(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

@@ -974,6 +974,15 @@ what the auto planner would assign (or what a candidate spec would assign)
 including each card's backend+index label, name, and free/total VRAM, without
 touching the running fleet.
 
+The `GET /api/placement` response lists the engine's devices in `gpus`. On a
+Vulkan build, a machine with GPUs from two vendors hides one vendor's GPU from the
+engine at launch, so `gpus` has no row for it and no pin can name it. The
+`hidden_gpus` field lists the vendor names of that hidden hardware, for example
+`["Intel"]`. The field is an empty list when nothing is hidden, and it stays
+empty when `VK_LOADER_DRIVERS_DISABLE` is set before launch, because the engine
+then lists every GPU. `lilbee placement show` prints the same fact as a note
+under the table.
+
 - **Resident tiers and the elastic ingest pool**: placement charges roles in the
   registry's `placement_rank` order. The pinned tier goes first: one embed server
   (`embed-0`), rerank, and one vision server (`vision-0`). Chat is charged last,
