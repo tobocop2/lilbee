@@ -18,6 +18,8 @@ from lilbee.server import auth as _auth_mod
 from lilbee.server.anthropic_api.routes import COUNT_ACCURACY_HEADER, anthropic_router
 from lilbee.server.chat_dispatch.canonical import (
     IMAGES_DROPPED_HEADER,
+    IMAGES_DROPPED_REASON,
+    IMAGES_DROPPED_REASON_HEADER,
     IMAGES_ONLY_MESSAGE,
     TokenCountAccuracy,
 )
@@ -173,6 +175,7 @@ class TestValidation:
             resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
         assert resp.json()["content"] == [{"type": "text", "text": "hello"}]
         sent = services_with_chat_model.provider.chat.call_args.kwargs["messages"]
         assert [m["content"] for m in sent] == ["q"]
@@ -189,6 +192,7 @@ class TestValidation:
             resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "2"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
 
     async def test_text_only_request_has_no_dropped_header(
         self, services_with_chat_model, _auth_token
@@ -197,6 +201,7 @@ class TestValidation:
             resp = await client.post("/v1/messages", json=_body(), headers=_h())
         assert resp.status_code == 200
         assert IMAGES_DROPPED_HEADER.lower() not in resp.headers
+        assert IMAGES_DROPPED_REASON_HEADER.lower() not in resp.headers
 
     async def test_image_only_request_is_400_naming_the_cause(
         self, services_with_chat_model, _auth_token
@@ -218,7 +223,7 @@ class TestValidation:
                 resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 200
         log.warning.assert_called_once()
-        assert log.warning.call_args.args[1:] == (1, INSTALLED_REF)
+        assert log.warning.call_args.args[1:] == (1, INSTALLED_REF, IMAGES_DROPPED_REASON)
 
     async def test_image_to_a_vision_tagged_model_is_dropped_and_reported(
         self, services_with_chat_model, _auth_token
@@ -231,6 +236,7 @@ class TestValidation:
             resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
         services_with_chat_model.provider.chat.assert_called_once()
 
     async def test_unknown_model_is_404_not_found_error(

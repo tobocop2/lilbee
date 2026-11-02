@@ -2130,7 +2130,7 @@ def test_get_capabilities_rerank_ref(monkeypatch) -> None:
     assert FleetProvider().get_capabilities("org/repo/rerank.gguf") == ["rerank"]
 
 
-def test_get_capabilities_vision_when_mmproj_present(monkeypatch) -> None:
+def test_get_capabilities_omits_vision_for_a_model_with_a_projector(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
     monkeypatch.setattr(
         "lilbee.providers.engine_params.resolve_model_path", lambda _m: Path("/m/v.gguf")
@@ -2138,7 +2138,7 @@ def test_get_capabilities_vision_when_mmproj_present(monkeypatch) -> None:
     monkeypatch.setattr(
         "lilbee.providers.gguf_meta.find_mmproj_for_model", lambda _p: Path("/m/mmproj.gguf")
     )
-    assert FleetProvider().get_capabilities("org/repo/v.gguf") == ["completion", "vision"]
+    assert FleetProvider().get_capabilities("org/repo/v.gguf") == ["completion"]
 
 
 def test_get_capabilities_completion_only_without_mmproj(monkeypatch) -> None:

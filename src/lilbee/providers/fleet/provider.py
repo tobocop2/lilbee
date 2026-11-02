@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import contextvars
 import functools
-import json
 import logging
 import re
 import sys
@@ -162,15 +161,6 @@ _VISION_REPEAT_LAST_N = 64
 # unhealthy replica re-admits itself by cool-down expiry, which notifies nobody.
 _DISPATCH_HEALTH_RECHECK_S = 0.5
 _T = TypeVar("_T")
-
-
-def _folder_declares_vision(folder: Path) -> bool:
-    """True when the model folder's ``config.json`` has a ``vision_config`` key."""
-    try:
-        config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    return isinstance(config, dict) and "vision_config" in config
 
 
 def _prewarm_key(shard: Path) -> tuple[str, int, int]:
@@ -2282,31 +2272,17 @@ class FleetProvider:
         return read_gguf_metadata(path)
 
     def get_capabilities(self, model: str) -> list[str]:
-        """Detect capabilities from the local model files.
+        """Return the capabilities of the chat model served from the local files.
 
-        Cross-encoder rerank GGUFs report ``["rerank"]`` (they cannot generate);
-        other models report ``"completion"`` plus ``"vision"`` when an mmproj
-        sidecar is present, or for a folder whose config declares vision.
+        Cross-encoder rerank GGUFs report ``["rerank"]`` (they cannot generate).
+        Every other model reports ``["completion"]``: chat drops image parts, so
+        no chat model reports ``"vision"``.
         """
         from lilbee.catalog import is_rerank_ref
-        from lilbee.providers.engine_params import resolve_model_path
-        from lilbee.providers.gguf_meta import find_mmproj_for_model, needs_sidecar_projector
 
         if model and is_rerank_ref(model):
             return ["rerank"]
-        caps = ["completion"]
-        try:
-            path = resolve_model_path(model)
-        except ProviderError:
-            return caps
-        if not needs_sidecar_projector(path):
-            return [*caps, "vision"] if _folder_declares_vision(path) else caps
-        try:
-            find_mmproj_for_model(path)
-            caps.append("vision")
-        except ProviderError:
-            pass
-        return caps
+        return ["completion"]
 
     def supports_tools(self, model_ref: str) -> bool:
         """True iff *model_ref*'s GGUF chat template references tool tokens.
