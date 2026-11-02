@@ -226,3 +226,4 @@ class TeiAdapter:
 
 
 TEI = TeiAdapter()
+ADAPTER = TEI

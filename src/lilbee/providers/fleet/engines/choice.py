@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
+import pkgutil
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -11,6 +13,7 @@ from typing import Any
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet import engines as engines_package
 from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
     EngineStore,
@@ -18,10 +21,6 @@ from lilbee.providers.fleet.engine_store import (
     engines_root,
 )
 from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
-from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
-from lilbee.providers.fleet.engines.llama import LLAMA
-from lilbee.providers.fleet.engines.mistral import MISTRAL
-from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -32,10 +31,30 @@ _ARM64 = "arm64"
 # The command that shows the installed engines.
 LIST_HINT = "Run lilbee engine list to see the installed engines."
 
+# The module attribute through which a module of the engines package exports its adapter.
+_ADAPTER_ATTR = "ADAPTER"
+
+
+def discover_adapters() -> dict[EngineName, EngineAdapter]:
+    """The adapter that each module of the engines package exports, by engine name.
+
+    The order is the order of ``EngineName``; it fixes how engines list in a hint.
+    """
+    found: dict[EngineName, EngineAdapter] = {}
+    for info in pkgutil.iter_modules(engines_package.__path__):
+        module = importlib.import_module(f"{engines_package.__name__}.{info.name}")
+        adapter = vars(module).get(_ADAPTER_ATTR)
+        if adapter is None:
+            continue
+        name = EngineName(adapter.name)
+        if name in found:
+            raise ValueError(f"The engine {name} is exported by more than one module.")
+        found[name] = adapter
+    return {name: found[name] for name in EngineName if name in found}
+
+
 # The adapters this build ships, by engine name.
-ADAPTERS: Mapping[EngineName, EngineAdapter] = {
-    EngineName(a.name): a for a in (LLAMA, IK_LLAMA, TEI, MISTRAL)
-}
+ADAPTERS: Mapping[EngineName, EngineAdapter] = discover_adapters()
 
 # What each installed engine loads: the ``formats`` of its adapter.
 InstalledEngines = Mapping[EngineName, Collection[str]]
@@ -228,7 +247,7 @@ def pin_lock(pin: Mapping[str, Any]) -> PinLock:
     """
     if "sha256" in pin and pin["sha256"] is None:
         raise NoPublishedPackError(
-            f"No pack of {pin.get('engine')} is published yet. {LLAMA.name} stays in use."
+            f"No pack of {pin.get('engine')} is published yet. {EngineName.LLAMA} stays in use."
         )
     try:
         licences = tuple(pin["licenses"])
