@@ -184,6 +184,20 @@ def _restore_interactive_intent():
 
 
 @pytest.fixture(autouse=True)
+def _restore_server_stop_flag():
+    """Snapshot the flag that says the server is stopping around every test.
+
+    A serve teardown sets it and only the next serve clears it, so a leak makes
+    a later test's cancelled chat stream end with the stop error.
+    """
+    from lilbee.app import services as services_mod
+
+    before = services_mod._server_exit.stopping
+    yield
+    services_mod._server_exit.stopping = before
+
+
+@pytest.fixture(autouse=True)
 def _suppress_model_scan(request, monkeypatch):
     """Prevent ModelBar._scan_models from doing real work in tests.
 
