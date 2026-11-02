@@ -263,6 +263,32 @@ class TestSync:
         assert "Failed: 1" in result.output
         assert "bad.txt" in result.output
 
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(failed=["bad.txt"]),
+    )
+    def test_sync_with_a_failed_file_exits_1(self, mock_sync):
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 1
+        assert "Failed: 1" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(failed=["bad.txt"]),
+    )
+    def test_json_sync_with_a_failed_file_exits_1(self, mock_sync):
+        result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 1
+        assert json.loads(result.output)["failed"] == ["bad.txt"]
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value="not a result")
+    def test_sync_rejects_a_result_that_is_not_a_sync_result(self, mock_sync):
+        result = runner.invoke(app, ["sync"])
+        assert isinstance(result.exception, TypeError)
+        assert "Expected SyncResult, got str" in str(result.exception)
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_sync_max_cpus_sets_ingest_workers(self, mock_sync, isolated_env):
         result = runner.invoke(app, ["sync", "--max-cpus", "3"])

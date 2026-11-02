@@ -515,6 +515,8 @@ def sync_cmd(
     processes: int | None = _processes_option,
 ) -> None:
     """Manually trigger document sync."""
+    from lilbee.data.ingest import SyncResult
+
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
     if max_cpus is not None:
@@ -532,10 +534,14 @@ def sync_cmd(
             raise SystemExit(1) from None
         print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     if cfg.json_mode:
         json_output(sync_result_to_json(result))
-        return
-    console.print(result)
+    else:
+        console.print(result)
+    if result.failed:
+        raise SystemExit(1)
 
 
 def rebuild(
