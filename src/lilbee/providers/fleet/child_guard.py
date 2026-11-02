@@ -94,11 +94,12 @@ def _make_pdeathsig_preexec(parent_pid: int) -> Callable[[], None] | None:
 
 
 class _LifetimeSpawner:
-    """Runs spawns on one daemon thread so PR_SET_PDEATHSIG binds to it.
+    """Runs every spawn on one process-lifetime daemon thread.
 
-    The death signal binds to the forking thread, so one thread forks every child
-    and lives for the process. It is a daemon thread because interpreter shutdown
-    ends executor threads first, which would signal a live child before atexit.
+    The death signal binds to the thread that forks the child, so a single thread
+    forks them all and serves requests from a queue until the process ends. The
+    thread keeps serving through atexit handlers. A spawn made once interpreter
+    teardown has begun raises ``RuntimeError``.
     """
 
     def __init__(self) -> None:
@@ -109,14 +110,16 @@ class _LifetimeSpawner:
         self._lock = threading.Lock()
 
     def spawn(self, *args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        if sys.is_finalizing():
+            raise RuntimeError("cannot schedule new futures after interpreter shutdown")
+        done: Future[subprocess.Popen[Any]] = Future()
         with self._lock:
             if self._thread is None:
                 self._thread = threading.Thread(
                     target=self._serve, name="fleet-spawner", daemon=True
                 )
                 self._thread.start()
-        done: Future[subprocess.Popen[Any]] = Future()
-        self._requests.put((done, functools.partial(subprocess.Popen, *args, **kwargs)))
+            self._requests.put((done, functools.partial(subprocess.Popen, *args, **kwargs)))
         return done.result()
 
     def _serve(self) -> None:
@@ -128,12 +131,12 @@ class _LifetimeSpawner:
                 done.set_exception(exc)
 
     def close(self) -> None:
-        """Stop the spawner thread. Test-only; in production it lives forever."""
+        """Stop the spawner thread after it serves every queued spawn. Test-only."""
         with self._lock:
             thread, self._thread = self._thread, None
-        if thread is not None:
-            self._requests.put(None)
-            thread.join()
+            if thread is not None:
+                self._requests.put(None)
+                thread.join()
 
 
 _spawner = _LifetimeSpawner()
