@@ -1028,3 +1028,23 @@ def test_a_probe_with_the_windows_illegal_instruction_status_names_the_cpu(
     monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("", 0xC000001D))
     with pytest.raises(ProviderError, match="instruction this CPU does not have"):
         probe_devices(Path("llama-server.exe"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and a shell-script fake binary")
+def test_a_probe_killed_by_an_illegal_instruction_after_its_header_keeps_the_probe(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "llama-server"
+    script.write_text("#!/bin/sh\necho 'Available devices:'\nkill -ILL $$\n", encoding="utf-8")
+    script.chmod(0o755)
+    probe = probe_devices(script)
+    assert probe.devices == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and a shell-script fake binary")
+def test_a_probe_killed_by_another_signal_does_not_name_the_cpu(tmp_path: Path) -> None:
+    script = tmp_path / "llama-server"
+    script.write_text("#!/bin/sh\nkill -SEGV $$\n", encoding="utf-8")
+    script.chmod(0o755)
+    probe = probe_devices(script)
+    assert probe.devices == []
