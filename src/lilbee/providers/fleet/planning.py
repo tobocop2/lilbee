@@ -1779,6 +1779,45 @@ def _non_chat_reservation(
     return reserved
 
 
+def _reservation_past_the_card(
+    reserved_after_chat: dict[int, int],
+    instances: Sequence[InstancePlan],
+    charged: Mapping[WorkerRole, int],
+    reserved_by_device: Mapping[int, int],
+    capacity: Mapping[int, int],
+) -> dict[int, int]:
+    """The part of *reserved_after_chat* that sits on a card the whole plan does not fit.
+
+    The engine's free memory at chat launch already excludes a role that loaded
+    first, so on a card that holds chat, every other role and the engine margin,
+    the margin alone leaves the later role its room in either load order. A card
+    short of that room keeps the later role's charge. A chat split over several
+    cards keeps the charge on all of them when any one is short, because the
+    engine moves the overflow of the short card onto its siblings.
+    """
+    chat = next((inst for inst in instances if inst.role is WorkerRole.CHAT), None)
+    if chat is None:
+        return reserved_after_chat
+    split_matches = len(chat.tensor_split) == len(chat.devices) and any(chat.tensor_split)
+    weights = chat.tensor_split if split_matches else (1,) * len(chat.devices)
+    chat_by_device = {
+        device: charged[WorkerRole.CHAT] * weight // sum(weights)
+        for device, weight in zip(chat.devices, weights, strict=True)
+    }
+    margin = ENGINE_FIT_MARGIN_MIB * MIB
+
+    def short(device: int) -> bool:
+        needed = chat_by_device.get(device, 0) + reserved_by_device.get(device, 0) + margin
+        return needed > capacity.get(device, 0)
+
+    chat_card_short = any(short(device) for device in chat_by_device)
+    return {
+        device: held
+        for device, held in reserved_after_chat.items()
+        if short(device) or (chat_card_short and device in chat_by_device)
+    }
+
+
 def _charge_by_device(
     chosen: tuple[FleetDevice, ...], ratio: tuple[int, ...], total: int
 ) -> dict[str, int]:
@@ -3956,12 +3995,18 @@ def _planned_launches(
     )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
-    reserved_after_chat = _non_chat_reservation(
-        [inst for inst in placement.instances if inst.role not in _LOADED_BEFORE_CHAT],
-        inputs,
-        placement.co_tenants,
-    )
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
+    reserved_after_chat = _reservation_past_the_card(
+        _non_chat_reservation(
+            [inst for inst in placement.instances if inst.role not in _LOADED_BEFORE_CHAT],
+            inputs,
+            placement.co_tenants,
+        ),
+        placement.instances,
+        charged,
+        reserved_by_device,
+        capacity,
+    )
     tight_fixed_chat = {
         inp.role
         for inp in inputs

@@ -2035,11 +2035,9 @@ class TestBuildFleetWiring:
         assert "chat, vision" in caplog.text
         assert "only one is resident" in caplog.text
 
-    def test_plan_charges_chat_fit_target_only_for_roles_loading_after_it(
-        self, monkeypatch
-    ) -> None:
-        # Embed and rerank warm before chat on card 0 and vision loads later: the
-        # split headroom holds all three, chat's fit target only vision.
+    @staticmethod
+    def _chat_launch_kwargs(monkeypatch, sizes: dict[WorkerRole, int]) -> dict:
+        """The kwargs plan_all_launches hands chat's launch on a one-card 24 GiB host."""
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 24 * _GB)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.resolve_llama_server",
@@ -2050,13 +2048,7 @@ class TestBuildFleetWiring:
             "probe_devices",
             lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
         )
-        roles = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION)
-        sizes = {
-            WorkerRole.CHAT: 17,
-            WorkerRole.EMBED: 8,
-            WorkerRole.RERANK: 1,
-            WorkerRole.VISION: 3,
-        }
+        roles = tuple(sizes)
         monkeypatch.setattr(
             planning_mod,
             "_server_model_inputs",
@@ -2083,8 +2075,86 @@ class TestBuildFleetWiring:
 
         monkeypatch.setattr(planning_mod, "_launch_for", _launch)
         planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
-        assert seen[WorkerRole.CHAT]["reserved_by_device"] == {0: 12 * _GB}
-        assert seen[WorkerRole.CHAT]["reserved_after_chat"] == {0: 3 * _GB}
+        return seen[WorkerRole.CHAT]
+
+    def test_plan_charges_chat_fit_target_for_a_later_role_on_a_card_short_of_room(
+        self, monkeypatch
+    ) -> None:
+        # Embed and rerank warm before chat on card 0 and vision loads later: the
+        # split headroom holds all three, and the 30 GiB plan (17 + 12 + 1 margin) is
+        # past the 24 GiB card, so chat's fit target still holds back vision.
+        kwargs = self._chat_launch_kwargs(
+            monkeypatch,
+            {
+                WorkerRole.CHAT: 17,
+                WorkerRole.EMBED: 8,
+                WorkerRole.RERANK: 1,
+                WorkerRole.VISION: 3,
+            },
+        )
+        assert kwargs["reserved_by_device"] == {0: 12 * _GB}
+        assert kwargs["reserved_after_chat"] == {0: 3 * _GB}
+
+    def test_plan_charges_chat_fit_target_nothing_when_the_plan_fits_the_card(
+        self, monkeypatch
+    ) -> None:
+        # 10 + 12 GiB and the 1 GiB margin fit the 24 GiB card, so the engine's free
+        # memory leaves vision its room whichever of vision and chat loads first.
+        kwargs = self._chat_launch_kwargs(
+            monkeypatch,
+            {
+                WorkerRole.CHAT: 10,
+                WorkerRole.EMBED: 8,
+                WorkerRole.RERANK: 1,
+                WorkerRole.VISION: 3,
+            },
+        )
+        assert kwargs["reserved_by_device"] == {0: 12 * _GB}
+        assert kwargs["reserved_after_chat"] == {}
+
+    @pytest.mark.parametrize(
+        ("split", "chat_gib", "held"),
+        [
+            # 16 GiB chat split 1:1 puts 8 GiB on card 1, past its 8 GiB with the margin.
+            ((1, 1), 16, {1: 2 * _GB}),
+            # With no split, each card takes an equal 3 GiB share and the card has room.
+            ((), 6, {}),
+            # All-zero weights give equal shares, as no split does.
+            ((0, 0), 6, {}),
+        ],
+    )
+    def test_reservation_past_the_card_charges_a_split_chat_per_card(
+        self, split, chat_gib, held
+    ) -> None:
+        chat = InstancePlan(WorkerRole.CHAT, (0, 1), tensor_split=split)
+        result = planning_mod._reservation_past_the_card(
+            {1: 2 * _GB},
+            (chat,),
+            {WorkerRole.CHAT: chat_gib * _GB},
+            {1: 2 * _GB},
+            {0: 8 * _GB, 1: 8 * _GB},
+        )
+        assert result == held
+
+    def test_reservation_past_the_card_keeps_the_charge_on_every_card_the_chat_spans(
+        self,
+    ) -> None:
+        # A 1:3 split of 16 GiB puts 4 GiB on card 0, which fits, and 12 GiB on card 1,
+        # which does not. The engine moves card 1's overflow onto card 0, so card 0
+        # keeps its vision charge. Card 2 holds no chat and fits, so it drops the charge.
+        chat = InstancePlan(WorkerRole.CHAT, (0, 1), tensor_split=(1, 3))
+        result = planning_mod._reservation_past_the_card(
+            {0: 2 * _GB, 2: 2 * _GB},
+            (chat,),
+            {WorkerRole.CHAT: 16 * _GB},
+            {0: 2 * _GB, 2: 2 * _GB},
+            {0: 8 * _GB, 1: 8 * _GB, 2: 8 * _GB},
+        )
+        assert result == {0: 2 * _GB}
+
+    def test_reservation_past_the_card_keeps_the_charge_without_a_chat_role(self) -> None:
+        after = {0: 2 * _GB}
+        assert planning_mod._reservation_past_the_card(after, (), {}, {}, {0: 24 * _GB}) == after
 
     def test_roles_loaded_before_chat_are_the_ones_the_warm_up_loads_first(self) -> None:
         # The fit target leans on the warm-up order: every role it skips must load
