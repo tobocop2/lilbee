@@ -2072,13 +2072,13 @@ def build_single_role_launch(
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     entry = spec.roles.get(role) if spec is not None else None
     target = entry.device_target if entry is not None else RoleTarget.GPU
-    if spec is not None:
-        refused = _unusable_targets(spec, {role: model_path.as_posix()}, {role: engine})
-        if refused:
-            raise TargetRefusedError(refused)
     binary = engine.binary()
     with _one_engine_per_pass(engine=engine):
         devices = _plan_devices(binary, engine)
+        if spec is not None:
+            refused = _unusable_targets(spec, {role: model_path.as_posix()}, {role: engine})
+            if refused:
+                raise TargetRefusedError(refused)
         by_index = {d.index: d for d in devices}
         # The whole machine, since nothing else is resident during a self-check.
         placed = (min(by_index),) if by_index and target is RoleTarget.GPU else ()
