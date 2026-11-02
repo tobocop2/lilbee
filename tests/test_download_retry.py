@@ -160,7 +160,9 @@ class TestTransientErrorTranslation:
         with pytest.raises(dl._TransientDownloadError, match="Network error"):
             self._download(monkeypatch, httpx.ConnectError("refused"))
 
-    @pytest.mark.parametrize("name", ["ConnectError", "TimeoutException"])
+    @pytest.mark.parametrize(
+        "name", ["ConnectError", "TimeoutException", "ReadError", "RemoteProtocolError"]
+    )
     def test_a_hub_2x_network_error_is_transient(
         self, monkeypatch: pytest.MonkeyPatch, name: str
     ) -> None:
@@ -170,6 +172,16 @@ class TestTransientErrorTranslation:
         with pytest.raises(dl._TransientDownloadError, match="Network error"):
             self._download(monkeypatch, getattr(httpx2, name)("refused"))
 
+    @pytest.mark.parametrize("name", ["ReadError", "RemoteProtocolError"])
+    def test_a_connection_lost_mid_transfer_is_transient(
+        self, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        """A dropped stream is not a timeout or a refused connection."""
+        import httpx
+
+        with pytest.raises(dl._TransientDownloadError, match="Network error"):
+            self._download(monkeypatch, getattr(httpx, name)("lost"))
+
     def test_hub_1x_without_httpx2_lists_only_httpx_errors(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -177,7 +189,7 @@ class TestTransientErrorTranslation:
 
         monkeypatch.setitem(sys.modules, "httpx2", None)
 
-        assert dl._hub_network_errors() == (httpx.TimeoutException, httpx.ConnectError)
+        assert dl._hub_network_errors() == (httpx.TransportError,)
 
     def test_an_io_error_is_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with pytest.raises(dl._TransientDownloadError, match="I/O error"):

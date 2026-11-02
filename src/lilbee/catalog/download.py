@@ -207,17 +207,16 @@ def _retry_transient(work: Callable[[], _T]) -> _T:
 
 
 def _hub_network_errors() -> tuple[type[Exception], ...]:
-    """The timeout and connect errors huggingface_hub lets through.
+    """The transport errors huggingface_hub lets through.
 
     Hub 1.x raises httpx errors. Hub 2.x raises httpx2 errors, which do not
     extend the httpx classes, so both families are listed.
     """
-    errors: tuple[type[Exception], ...] = (httpx.TimeoutException, httpx.ConnectError)
     try:
         import httpx2
     except ImportError:
-        return errors
-    return (*errors, httpx2.TimeoutException, httpx2.ConnectError)
+        return (httpx.TransportError,)
+    return (httpx.TransportError, httpx2.TransportError)
 
 
 def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:

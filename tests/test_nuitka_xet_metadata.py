@@ -36,7 +36,7 @@ def test_declared_name_is_the_one_huggingface_hub_queries() -> None:
 
 def test_trigger_module_is_the_one_that_reads_the_metadata() -> None:
     """Nuitka applies the config only when it compiles the named module, so the
-    trigger has to be the module whose import populates the version table."""
+    trigger has to be the module that reads the version metadata."""
     from huggingface_hub.utils import _runtime
 
     entries = yaml.safe_load(_CONFIG.read_text())
