@@ -84,7 +84,11 @@ MAX_DEFAULT_CHARS = 48
 ENV_ONLY: dict[str, tuple[str, bool]] = {
     "LILBEE_DATA": (
         "Data directory for this library, the same value as `data_root`. The "
-        "older and more common spelling; `--data-dir` overrides it",
+        "older and more common spelling; `--data-dir` overrides it. It moves the "
+        "documents, index, config file and logs. The models folder, the engines "
+        "folder, the machine engine slot and the gguf metadata cache stay outside "
+        "it; set `LILBEE_MODELS_DIR` and `LILBEE_ENGINE_DIR` to move the first "
+        "three",
         False,
     ),
     "LILBEE_LOG_LEVEL": (
