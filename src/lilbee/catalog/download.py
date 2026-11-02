@@ -18,9 +18,7 @@ from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.formats import select_files
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
-    HF_API_URL,
     HfToken,
-    hf_headers,
     hf_token,
 )
 from lilbee.catalog.models import CatalogModel
@@ -48,6 +46,9 @@ LoadCheck = Callable[[str, str], None]
 ProbeCallback = Callable[[str | None], None]
 
 log = logging.getLogger(__name__)
+
+# Seconds the projector check waits on the Hub listing; a hung Hub must not stall a re-pull.
+PROJECTOR_LISTING_TIMEOUT = 3.0
 
 
 class RemoteFile(NamedTuple):
@@ -596,31 +597,28 @@ def _fetch_mmproj(
     return path
 
 
-def _repo_sibling_files(hf_repo: str) -> list[str]:
-    """Every filename the HuggingFace API lists for *hf_repo*.
+def _repo_sibling_files(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+    """Every filename the HuggingFace Hub lists for *hf_repo*.
 
     Raises:
         PermissionError: the repo is gated and needs authentication.
-        RuntimeError: the listing could not be fetched.
+        RuntimeError: the listing could not be fetched, or offline mode is on.
     """
+    from huggingface_hub import HfApi
+    from huggingface_hub.errors import HfHubHTTPError
+
     try:
-        resp = httpx.get(
-            f"{HF_API_URL}/{hf_repo}",
-            timeout=DEFAULT_TIMEOUT,
-            headers=hf_headers(),
-        )
-        if resp.status_code == HTTPStatus.UNAUTHORIZED:
+        info = HfApi().model_info(hf_repo, timeout=timeout, token=hf_token())
+    except HfHubHTTPError as exc:
+        if exc.response.status_code == HTTPStatus.UNAUTHORIZED:
             raise PermissionError(
                 f"{hf_repo} requires HuggingFace authentication. "
                 "Set HF_TOKEN env var or visit the repo page to request access."
-            )
-        resp.raise_for_status()
-        siblings = resp.json().get("siblings", [])
-    except PermissionError:
-        raise
+            ) from exc
+        raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
     except Exception as exc:
         raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
-    return [s.get("rfilename", "") for s in siblings]
+    return [s.rfilename for s in info.siblings or []]
 
 
 def _mmproj_rank(filename: str) -> tuple[bool, str]:
@@ -637,7 +635,7 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
     if WILDCARD not in pattern:
         return pattern
     try:
-        names = _repo_sibling_files(hf_repo)
+        names = _repo_sibling_files(hf_repo, timeout=PROJECTOR_LISTING_TIMEOUT)
     except (PermissionError, RuntimeError) as exc:
         raise ProjectorListingError(
             f"Could not look for the vision projector of {hf_repo}: {exc}. "

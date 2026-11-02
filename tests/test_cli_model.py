@@ -670,6 +670,38 @@ class TestEnsureVisionProjector:
         with pytest.raises(RuntimeError, match=r"mmproj-x\.gguf.*does not find it"):
             model_mod._ensure_vision_projector("acme/SmolVLM2-GGUF", warn_unreadable=False)
 
+    def test_projector_beside_the_model_passes_the_real_launch_judge(self, monkeypatch, tmp_path):
+        # No stand-in for the judge: a projector the fetch leaves beside the model
+        # satisfies the check that launch makes, and one left elsewhere fails it.
+        from lilbee.catalog.types import ModelTask
+
+        models = tmp_path / "models"
+        elsewhere = tmp_path / "elsewhere"
+        models.mkdir()
+        elsewhere.mkdir()
+        model = models / "m-Q4_K_M.gguf"
+        model.write_bytes(b"model")
+        monkeypatch.setattr(
+            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
+        )
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+
+        def _fetch_into(directory):
+            def _fetch(_entry):
+                path = directory / "mmproj-m-f16.gguf"
+                path.write_bytes(b"projector")
+                return path
+
+            return _fetch
+
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", _fetch_into(models))
+        assert model_mod._ensure_vision_projector("acme/m-GGUF", warn_unreadable=False) is None
+
+        (models / "mmproj-m-f16.gguf").unlink()
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", _fetch_into(elsewhere))
+        with pytest.raises(RuntimeError, match=r"mmproj-m-f16\.gguf.*does not find it"):
+            model_mod._ensure_vision_projector("acme/m-GGUF", warn_unreadable=False)
+
     def test_failed_transfer_propagates(self, monkeypatch):
         from lilbee.catalog.types import ModelTask
 

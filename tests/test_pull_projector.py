@@ -6,9 +6,16 @@ The Hub listing says whether a repo ships a projector; the engine launch judge
 
 from __future__ import annotations
 
+import json
+import socket
+import threading
+import time
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from huggingface_hub import constants as hf_constants
 
 from lilbee.catalog import download as dl
 from lilbee.catalog.models import CatalogModel
@@ -55,7 +62,7 @@ class _Hub:
         monkeypatch.setattr(dl, "_require_disk_space", lambda *a: None)
         monkeypatch.setattr(dl, "_download_with_retry", self._transfer)
 
-    def _list(self, hf_repo: str) -> list[str]:
+    def _list(self, hf_repo: str, *, timeout: float = 0.0) -> list[str]:
         self.listing_reads += 1
         if self.listing is None:
             raise RuntimeError(f"Cannot query files for {hf_repo}: 503")
@@ -145,3 +152,98 @@ class TestFreshPull:
         hub.pull(_entry())
         assert hub.listing_reads == reads
         assert hub.fetched == ["mmproj-SmolVLM2-f16.gguf"]
+
+
+class _ListingServer:
+    """A stand-in Hub that answers the repo listing and counts the requests."""
+
+    def __init__(self) -> None:
+        self.requests: list[str] = []
+        owner = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                owner.requests.append(self.path)
+                body = json.dumps(
+                    {
+                        "id": _REPO,
+                        "sha": "a" * 40,
+                        "siblings": [{"rfilename": name} for name in _LISTING],
+                    }
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+@pytest.fixture
+def listing_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[_ListingServer]:
+    server = _ListingServer()
+    monkeypatch.setattr(hf_constants, "ENDPOINT", server.url)
+    monkeypatch.setattr(hf_constants, "HF_HUB_OFFLINE", False)
+    yield server
+    server.close()
+
+
+class TestListingRead:
+    """The projector listing goes through the Hub client, so its offline flag and timeouts apply."""
+
+    def test_online_listing_names_the_projectors(self, listing_server: _ListingServer) -> None:
+        assert dl._repo_sibling_files(_REPO) == _LISTING
+        assert f"/api/models/{_REPO}" in listing_server.requests
+
+    def test_offline_mode_makes_no_listing_request(
+        self, listing_server: _ListingServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(hf_constants, "HF_HUB_OFFLINE", True)
+        with pytest.raises(RuntimeError, match="offline mode is enabled"):
+            dl._repo_sibling_files(_REPO)
+        assert listing_server.requests == []
+
+    def test_offline_repull_of_an_installed_model_fetches_nothing_and_asks_nothing(
+        self,
+        listing_server: _ListingServer,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from lilbee.app import models as model_mod
+
+        monkeypatch.setattr(hf_constants, "HF_HUB_OFFLINE", True)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: _entry())
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
+        monkeypatch.setattr(dl, "_models_dir", lambda: tmp_path)
+        assert model_mod._ensure_vision_projector(_REPO, warn_unreadable=False) is None
+        assert listing_server.requests == []
+        assert list(tmp_path.iterdir()) == []
+
+    def test_hung_hub_gives_up_after_the_projector_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        hung = socket.socket()
+        hung.bind(("127.0.0.1", 0))
+        hung.listen(1)
+        try:
+            monkeypatch.setattr(
+                hf_constants, "ENDPOINT", f"http://127.0.0.1:{hung.getsockname()[1]}"
+            )
+            monkeypatch.setattr(hf_constants, "HF_HUB_OFFLINE", False)
+            monkeypatch.setattr(dl, "PROJECTOR_LISTING_TIMEOUT", 0.3)
+            started = time.monotonic()
+            with pytest.raises(dl.ProjectorListingError, match="Could not look for the vision"):
+                dl._resolve_mmproj_filename(_REPO, dl.DEFAULT_MMPROJ_PATTERN)
+            assert time.monotonic() - started < 5.0
+        finally:
+            hung.close()
