@@ -156,12 +156,12 @@ class MistralAdapter:
 
     def binary(self) -> Path:
         from lilbee.catalog.runnable import session_host
-        from lilbee.providers.fleet.engines.choice import NoPublishedPackError, host_lock
+        from lilbee.providers.fleet.engines.choice import BUILD_UNREADABLE, host_lock
 
         store = EngineStore(engines_root(cfg.models_dir))
         try:
             build = store.complete_build(host_lock(self.pin_record(), session_host()))
-        except NoPublishedPackError:
+        except BUILD_UNREADABLE:
             build = None
         tool = next(iter(build.glob(f"*/bin/{_TOOL}*")), None) if build else None
         if tool is None:

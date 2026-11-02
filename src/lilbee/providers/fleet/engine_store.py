@@ -118,8 +118,8 @@ class PinLock:
     platforms: Mapping[str, PlatformAsset]
     licences: tuple[str, ...]
     sha256: str
-    tool: str | None = None
-    """The file name of the engine server in the wheel; None takes the first file."""
+    tool: str
+    """The file name of the engine server in the wheel."""
 
     def __post_init__(self) -> None:
         for part in (self.engine, self.version, self.backend):
@@ -253,14 +253,14 @@ def _refuse_linked_binary(lock: PinLock, archive: zipfile.ZipFile) -> None:
         )
 
 
-def _is_server(path: str, tool: str | None) -> bool:
-    """True for a file of ``<package>/bin/`` named *tool*; with no tool named, for any file."""
+def _is_server(path: str, tool: str) -> bool:
+    """True for a file of ``<package>/bin/`` named *tool*."""
     if _TOOL_PATH.fullmatch(path) is None:
         return False
-    return tool is None or PurePosixPath(path).name in (tool, f"{tool}.exe")
+    return PurePosixPath(path).name in (tool, f"{tool}.exe")
 
 
-def _binary_of(archive: zipfile.ZipFile, tool: str | None) -> str | None:
+def _binary_of(archive: zipfile.ZipFile, tool: str) -> str | None:
     """The ``<package>/bin/<tool>`` file of the wheel, as a POSIX path; None when it has none."""
     found = sorted(n for n in archive.namelist() if _is_server(n, tool))
     return found[0] if found else None

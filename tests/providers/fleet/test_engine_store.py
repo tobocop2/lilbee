@@ -11,7 +11,6 @@ import sys
 import textwrap
 import time
 import zipfile
-from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -28,6 +27,7 @@ from lilbee.providers.fleet.engine_store import (
     UnsafeWheelError,
     licence_permitted,
 )
+from lilbee.providers.fleet.engines.choice import PinError, pin_lock
 
 
 def make_wheel(path: Path, licence: str | None = "MIT") -> str:
@@ -1044,9 +1044,19 @@ def test_package_route_records_the_server_when_a_helper_sorts_first(
     assert found.binary == store.root / "fx" / "1-cpu" / "p" / "bin" / "server"
 
 
-def test_a_pin_that_names_no_tool_takes_the_first_file(store: EngineStore, tmp_path: Path) -> None:
-    path = tmp_path / "h.whl"
-    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server": stat.S_IFREG})
-    store.install_from_wheel(replace(pin(sha), tool=None), path)
-    [found] = store.installed()
-    assert found.binary == store.root / "fx" / "1-cpu" / "p" / "bin" / "gguf-parser"
+def test_a_pin_with_no_tool_is_refused_when_read() -> None:
+    record = {
+        "engine": "fx",
+        "version": "1",
+        "backend": "cpu",
+        "platforms": {},
+        "licenses": ["MIT"],
+        "sha256": "a" * 64,
+    }
+    with pytest.raises(PinError, match="tool"):
+        pin_lock(record)
+
+
+def test_a_pin_lock_cannot_be_built_without_a_tool() -> None:
+    with pytest.raises(TypeError, match="tool"):
+        PinLock("fx", "1", "cpu", {}, ("MIT",), "a" * 64)  # type: ignore[call-arg]

@@ -18,10 +18,10 @@ from lilbee.providers.fleet.engine_store import (
     EngineStore,
     engines_root,
 )
+from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
     ADAPTERS,
-    host_lock,
     installed_engines,
     pin_lock,
 )
@@ -89,7 +89,7 @@ def test_a_cell_install_stays_in_the_installed_list(mac: Path) -> None:
 
 
 def test_a_cell_install_completes_the_build_of_the_host_lock(mac: Path) -> None:
-    lock = host_lock(ADAPTERS[EngineName.MISTRAL].pin_record(), runnable.session_host())
+    lock = choice.host_lock(ADAPTERS[EngineName.MISTRAL].pin_record(), runnable.session_host())
     assert lock.sha256 != TOP
     assert EngineStore(engines_root(mac)).complete_build(lock) is not None
 
