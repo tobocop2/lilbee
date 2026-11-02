@@ -128,11 +128,20 @@ run_check_step() {
 
 @test "every check step fails when the build left two engine trees" {
   for wf in ${WORKFLOWS}; do
-    run_check_step "${wf}" dist/a.dist/lilbee_engine/bin dist/b.onefile-build/lilbee_engine/bin
+    run_check_step "${wf}" dist/a.dist/lilbee_engine/bin dist/b.dist/lilbee_engine/bin
     [ "$status" -ne 0 ]
     [[ "$output" == *"a.dist/lilbee_engine/bin"* ]]
-    [[ "$output" == *"b.onefile-build/lilbee_engine/bin"* ]]
+    [[ "$output" == *"b.dist/lilbee_engine/bin"* ]]
     [ ! -e "${WORK}/uv.args" ]
+  done
+}
+
+@test "every check step reads the dist tree, not a copy in a build intermediate" {
+  for wf in ${WORKFLOWS}; do
+    run_check_step "${wf}" "dist/__main__.dist/lilbee_engine/bin" \
+      "dist/__main__.onefile-build/lilbee_engine/bin" "dist/__main__.build/lilbee_engine/bin"
+    [ "$status" -eq 0 ]
+    grep -qF -- '--platform Linux dist/__main__.dist/lilbee_engine/bin' "${WORK}/uv.args"
   done
 }
 
