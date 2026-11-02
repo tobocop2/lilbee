@@ -291,8 +291,9 @@ jobs:
       # Linux it takes the .so files through --include-package-data rather than the
       # verbatim --include-data-files path (build_lilbee_binary.sh skips *.so there).
       # If it ever drops them the onefile ships a GPU engine with no GPU runtime, and
-      # a driverless runner can't tell by executing it. Assert against the standalone
-      # tree Nuitka leaves under dist/ before it is packed into the onefile.
+      # a driverless runner can't tell by executing it. Run the wheel gate's check
+      # against the standalone tree Nuitka leaves under dist/ before it is packed
+      # into the onefile.
       - name: The executable bundles the runtime it links
         shell: bash
         env:
@@ -304,22 +305,8 @@ jobs:
           bin_dir=$(find dist -type d -path '*lilbee_engine_llama_cpp/bin' | head -1)
           [ -n "${bin_dir}" ] || { echo "no bundled engine found under dist/" >&2; exit 1; }
           echo "ENGINE_BIN_DIR=${bin_dir}" >> "${GITHUB_ENV}"
-          # rocBLAS also loads Tensile kernels as data, so the directory is required
-          # the same way the libraries are.
-          if [ "${BACKEND}" = "rocm" ]; then
-            required="libamdhip64.so.* librocblas.so.* libhipblas.so.* rocblas/library"
-          elif [ "${RUNNER_OS}" = "Windows" ]; then
-            required="cudart64_*.dll cublas64_*.dll cublasLt64_*.dll"
-          else
-            required="libcudart.so.* libcublas.so.* libcublasLt.so.*"
-          fi
-          for pattern in ${required}; do
-            compgen -G "${bin_dir}/${pattern}" >/dev/null || {
-              echo "${pattern} missing from the engine Nuitka bundled into ${{ matrix.asset_name }}" >&2
-              exit 1
-            }
-          done
-          echo "the bundled engine carries its ${BACKEND} runtime"
+          uv run --no-sync python tools/qa/assert_engine_bundle.py \
+            --backend "${BACKEND}" --platform "${RUNNER_OS}" "${bin_dir}"
 
           # Presence is not resolution. The wheel path caught libamd_comgr => not found
           # on a bundle that passed exactly the checks above, and this tree is what
