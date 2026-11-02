@@ -205,6 +205,20 @@ class TestDeviceReads:
         assert replicas.gpu_device_count(spy) == 1
         replicas._probed_gpu_count.cache_clear()
 
+    def test_gpu_device_count_is_one_when_the_engine_dies_on_an_illegal_instruction(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A build this CPU cannot run sizes as a GPU-less host, as a missing DLL does."""
+        from lilbee.providers.fleet.devices import EngineIllegalInstructionError
+
+        def cannot_run(_binary: Path, _engine: object) -> None:
+            raise EngineIllegalInstructionError("illegal instruction", provider="llama")
+
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr(planning, "resolve_devices", cannot_run)
+        assert replicas.gpu_device_count(spy) == 1
+        replicas._probed_gpu_count.cache_clear()
+
     def test_gpu_device_count_reads_the_cards_again_once_the_runtime_is_installed(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
     ) -> None:

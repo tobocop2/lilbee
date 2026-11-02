@@ -46,11 +46,11 @@ def gpu_device_count(engine: EngineAdapter) -> int:
     start the engine raise on their own. That count is not kept, so a process that
     outlives the fix of the missing DLL counts its cards again.
     """
-    from lilbee.providers.fleet.devices import EngineDllMissingError
+    from lilbee.providers.fleet.devices import EngineDllMissingError, EngineIllegalInstructionError
 
     try:
         return _probed_gpu_count(engine)
-    except EngineDllMissingError:
+    except (EngineDllMissingError, EngineIllegalInstructionError):
         log.debug("engine cannot load; sizing for a GPU-less host")
         return _MIN_REPLICAS
 
