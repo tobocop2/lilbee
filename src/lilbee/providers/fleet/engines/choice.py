@@ -266,10 +266,20 @@ def pin_lock(pin: Mapping[str, Any]) -> PinLock:
             cells,
             licences,
             pin["sha256"],
-            pin.get("tool"),
+            pin["tool"],
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise PinError(f"the pin record is not usable ({exc!r})") from exc
+
+
+BUILD_UNREADABLE = (
+    OSError,
+    EngineConflictError,
+    PinError,
+    UnsupportedPlatformError,
+    UnsupportedOsError,
+)
+"""The errors that leave an engine's installed build unreadable on this host."""
 
 
 def host_lock(pin: Mapping[str, Any], host: HostCaps) -> PinLock:
@@ -295,13 +305,7 @@ def _is_installed(name: EngineName, adapter: EngineAdapter, store: EngineStore) 
         return store.complete_build(lock) is not None
     except NoPublishedPackError:
         return False
-    except (
-        OSError,
-        EngineConflictError,
-        PinError,
-        UnsupportedPlatformError,
-        UnsupportedOsError,
-    ) as exc:
+    except BUILD_UNREADABLE as exc:
         log.warning("Engine %s counts as not installed: %s", name, exc)
         return False
 
