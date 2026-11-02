@@ -2,8 +2,9 @@
 # Print the one lilbee_engine/bin directory under a build output directory.
 #
 # Nuitka names its standalone tree after the entry module, so the tree is found
-# by shape. Fail when there is no match, and when there is more than one: a
-# second copy (an onefile intermediate) would let the check read the wrong tree.
+# by shape inside a *.dist tree, the only tree Nuitka copies data files into.
+# Fail when there is no match, and when there is more than one, so the check
+# never reads a tree by chance.
 #
 # Usage: find_engine_bin.sh <build output dir>
 
@@ -14,7 +15,7 @@ if [ ! -d "${root}" ]; then
   echo "no bundled engine found: ${root}/ does not exist" >&2
   exit 1
 fi
-matches=$(find "${root}" -type d -path '*lilbee_engine/bin')
+matches=$(find "${root}" -type d -path '*.dist/*lilbee_engine/bin')
 
 if [ -z "${matches}" ]; then
   echo "no bundled engine found under ${root}/" >&2
