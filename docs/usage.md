@@ -548,6 +548,11 @@ feature it lacks and installs nothing. Nothing downloads on first use. The same
 action exists as `/engine install ENGINE`, the MCP tool `engine_install` and the
 REST route `POST /api/engines/install`.
 
+During the download, the command line shows a progress bar on stderr, and the
+chat screen shows the bytes in the task bar. Each failed attempt prints its
+cause and its number. The MCP tool and the REST route return one result at the
+end and show no progress.
+
 ## Memory
 
 lilbee can remember durable facts about you and standing preferences for how
