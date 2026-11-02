@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.progress import BarColumn, Progress, TextColumn
 from rich.text import Text
 
 from lilbee.app import engine_service
+from lilbee.catalog.models import DownloadProgress
 from lilbee.cli import theme
 from lilbee.cli.app import console, json_out
 from lilbee.core.config import cfg
@@ -19,6 +21,7 @@ from lilbee.providers.fleet.swap_manager import stop_engine
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.engine_lock import build_lock, machine_engine_dir, private_engine_dir
+from lilbee.runtime.progress.columns import literal_text_column
 
 engine_app = typer.Typer(
     name="engine",
@@ -92,8 +95,24 @@ def install(
             "engine install",
             engine_service.EngineRefusedError(f"{wheel} is not a file. Name a wheel file."),
         )
+    err = PlainConsole(stderr=True)
     try:
-        built = engine_service.install(name, wheel)
+        with Progress(
+            literal_text_column("Downloading {task.description}"),
+            BarColumn(),
+            TextColumn("{task.percentage:>3.0f}%"),
+            literal_text_column("{task.fields[detail]}"),
+            console=err,
+            transient=True,
+        ) as progress:
+            task_id = progress.add_task(name, total=100, detail="")
+
+            def on_update(p: DownloadProgress) -> None:
+                progress.update(task_id, completed=p.percent, detail=p.detail)
+
+            built = engine_service.install(
+                name, wheel, on_update=on_update, on_retry=lambda text: err.print(text)
+            )
     except engine_service.EngineRefusedError as exc:
         raise _refuse("engine install", exc) from exc
     label = f"{built.engine} {built.version} ({built.backend})"

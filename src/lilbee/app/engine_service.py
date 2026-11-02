@@ -12,6 +12,9 @@ from typing import TypeVar
 
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.app.services import peek_services
+from lilbee.catalog.download import RetryCallback
+from lilbee.catalog.download_progress import make_download_callback
+from lilbee.catalog.models import DownloadProgress
 from lilbee.catalog.refs import model_format
 from lilbee.catalog.runnable import refresh_session_host, session_host
 from lilbee.core import settings
@@ -321,6 +324,20 @@ def prefer(name: str, confirmed: bool = False) -> str:
     return setting.value
 
 
+_RETRY_TEXT = "{cause}. Attempt {attempt} of {attempts} failed; trying again."
+
+
+def _retry_reporter(on_retry: Callable[[str], None] | None) -> RetryCallback | None:
+    """Turn each failed attempt into the sentence *on_retry* shows; None when nobody listens."""
+    if on_retry is None:
+        return None
+
+    def report(attempt: int, attempts: int, cause: str) -> None:
+        on_retry(_RETRY_TEXT.format(cause=cause, attempt=attempt, attempts=attempts))
+
+    return report
+
+
 def _installable(name: str) -> EngineAdapter:
     """The adapter of the engine named *name*; refuses a name with no adapter."""
     try:
@@ -335,8 +352,16 @@ def _installable(name: str) -> EngineAdapter:
     return adapter
 
 
-def install(name: str, wheel: Path | None = None) -> InstalledBuild:
+def install(
+    name: str,
+    wheel: Path | None = None,
+    on_update: Callable[[DownloadProgress], None] | None = None,
+    on_retry: Callable[[str], None] | None = None,
+) -> InstalledBuild:
     """Install the pinned build of engine *name* from *wheel*, a pack, or its release URL.
+
+    *on_update* hears the download bytes. *on_retry* hears each failed attempt with its
+    cause and attempt number.
 
     The host gate and the cell for this computer run first. The store checks the digest,
     the licence and the files of the wheel and writes the record.
@@ -365,7 +390,17 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         cell = host_cell(lock, host)
         lock = lock.for_cell(cell)
         if wheel is None:
-            store.ensure(lock, lambda pin, scratch: fetch_frozen(pin, cell, dest=scratch))
+            on_bytes = make_download_callback(on_update) if on_update is not None else None
+            store.ensure(
+                lock,
+                lambda pin, scratch: fetch_frozen(
+                    pin,
+                    cell,
+                    dest=scratch,
+                    on_progress=on_bytes,
+                    on_retry=_retry_reporter(on_retry),
+                ),
+            )
         else:
             store.install_from_wheel(lock, wheel)
     except _STORE_REFUSALS as exc:

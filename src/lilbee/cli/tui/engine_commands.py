@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -62,7 +63,9 @@ def _use(role: WorkerRole, model: str, engine: str, confirmed: bool = False) -> 
     return EngineCommandResult(True, text, CHOICES_KEY)
 
 
-def _store_verb(verb: str, args: list[str], words: list[str]) -> EngineCommandResult | None:
+def _store_verb(
+    verb: str, args: list[str], words: list[str], on_retry: Callable[[str], None] | None = None
+) -> EngineCommandResult | None:
     """Run list, remove or install, the verbs that act on the engine store; None for any other."""
     if verb == _LIST and not args:
         return EngineCommandResult(True, _builds_text())
@@ -71,19 +74,21 @@ def _store_verb(verb: str, args: list[str], words: list[str]) -> EngineCommandRe
         label = engine_service.remove_build(name, version, backend)
         return EngineCommandResult(True, engine_service.REMOVE_DONE.format(build=label))
     if verb == _INSTALL and len(words) == _INSTALL_ARGS:
-        built = engine_service.install(words[0])
+        built = engine_service.install(words[0], on_retry=on_retry)
         label = f"{built.engine} {built.version} ({built.backend})"
         done = msg.ENGINE_INSTALL_DONE.format(build=label)
         return EngineCommandResult(True, f"{done} {built.note}" if built.note else done)
     return None
 
 
-def _run(verb: str, args: list[str]) -> EngineCommandResult:
+def _run(
+    verb: str, args: list[str], on_retry: Callable[[str], None] | None = None
+) -> EngineCommandResult:
     confirmed = YES_WORD in args
     words = [word for word in args if word != YES_WORD]
     if verb == _ROLES and not words and not confirmed:
         return EngineCommandResult(True, _roles_text())
-    stored = _store_verb(verb, args, words)
+    stored = _store_verb(verb, args, words, on_retry)
     if stored is not None:
         return stored
     if verb == _USE and len(words) == _USE_ARGS:
@@ -121,8 +126,12 @@ def choose_engine_for_role(
         return EngineCommandResult(False, str(exc))
 
 
-def run_engine_command(args: str) -> EngineCommandResult:
-    """Run the text after /engine; a refusal comes back as the service's own text."""
+def run_engine_command(
+    args: str, on_retry: Callable[[str], None] | None = None
+) -> EngineCommandResult:
+    """Run the text after /engine; a refusal comes back as the service's own text.
+
+    *on_retry* hears each failed download attempt of an install."""
     try:
         words = shlex.split(args)
     except ValueError:
@@ -130,7 +139,7 @@ def run_engine_command(args: str) -> EngineCommandResult:
     if not words:
         return EngineCommandResult(True, _roles_text())
     try:
-        return _run(words[0], words[1:])
+        return _run(words[0], words[1:], on_retry)
     except engine_service.EmbedConfirmRequiredError as exc:
         text = msg.ENGINE_CONFIRM_REFUSED.format(reason=exc, yes=YES_WORD)
         return EngineCommandResult(False, text)

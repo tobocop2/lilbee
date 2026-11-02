@@ -19,7 +19,13 @@ from email import message_from_string
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from lilbee.catalog.download import disk_shortfall, download_url, url_filename
+from lilbee.catalog.download import (
+    RetryCallback,
+    disk_shortfall,
+    download_url,
+    url_filename,
+)
+from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.core.security import FileLockUnavailableError, file_lock
 from lilbee.providers.fleet.engine_digests import PACKAGES_URL
 from lilbee.providers.fleet.wheel_server import server_entry, server_problems
@@ -678,7 +684,14 @@ def pip_install_argv(lock: PinLock, stage: Path, tool: InstallTool = InstallTool
     ]
 
 
-def fetch_frozen(lock: PinLock, platform: str, *, dest: Path) -> Path:
+def fetch_frozen(
+    lock: PinLock,
+    platform: str,
+    *,
+    dest: Path,
+    on_progress: ProgressCallback | None = None,
+    on_retry: RetryCallback | None = None,
+) -> Path:
     """Download the wheel of *lock* for the cell *platform* into *dest*, unchecked.
 
     A pin with no cells ships as a pack only, so it has nothing to download.
@@ -703,7 +716,7 @@ def fetch_frozen(lock: PinLock, platform: str, *, dest: Path) -> Path:
     shortfall = disk_shortfall(dest, url_filename(asset.url), asset.size)
     if shortfall is not None:
         raise EngineDiskError(shortfall)
-    return download_url(asset.url, dest, asset.size)
+    return download_url(asset.url, dest, asset.size, on_progress=on_progress, on_retry=on_retry)
 
 
 __all__ = [
