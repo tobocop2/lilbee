@@ -601,7 +601,11 @@ class TestNonStreamingCompletion:
                 json={"model": INSTALLED_REF, "messages": [message]},
             )
         assert resp.status_code == 400
-        assert resp.json()["error"]["message"] == IMAGES_ONLY_MESSAGE
+        message = resp.json()["error"]["message"]
+        assert message == IMAGES_ONLY_MESSAGE
+        assert "projector" in message
+        assert "vision role" in message
+        assert "cannot pass images" not in message
 
     async def test_image_to_a_vision_tagged_model_is_dropped_and_reported(
         self, services_with_chat_model, _auth_token

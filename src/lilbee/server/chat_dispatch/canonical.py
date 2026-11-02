@@ -115,12 +115,6 @@ class CanonicalChatRequest:
     dropped_images: int = 0
 
 
-IMAGES_ONLY_MESSAGE = (
-    "The request holds only image content, and lilbee cannot pass images to the model. "
-    "Send text with the request."
-)
-
-
 # Tells the client how many image parts the server dropped from its request.
 IMAGES_DROPPED_HEADER = "X-Lilbee-Images-Dropped"
 
@@ -130,6 +124,10 @@ IMAGES_DROPPED_REASON_HEADER = "X-Lilbee-Images-Dropped-Reason"
 IMAGES_DROPPED_REASON = (
     "Chat does not load the vision projector, so it drops images. "
     "Use the vision role to read images."
+)
+
+IMAGES_ONLY_MESSAGE = (
+    f"The request holds only image content. {IMAGES_DROPPED_REASON} Send text with the request."
 )
 
 
