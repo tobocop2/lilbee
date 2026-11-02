@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -16,19 +17,36 @@ from lilbee.server import handlers
 REF = "acme/Vision-GGUF"
 
 
-async def _pull_events() -> list[str]:
+async def _pull_events(*, installed: bool = False) -> list[tuple[str, dict]]:
     manager = MagicMock()
+    manager.is_installed.return_value = installed
     with patch(
         "lilbee.server.handlers.models.get_services",
         return_value=MagicMock(model_manager=manager),
     ):
-        events = [e async for e in handlers.models_pull(REF, source="native")]
+        frames = [e async for e in handlers.models_pull(REF, source="native")]
     manager.pull.assert_called_once()
-    return [e for e in events if e]
+    events: list[tuple[str, dict]] = []
+    for frame in frames:
+        if not frame:
+            continue
+        lines = frame.splitlines()
+        name = next(ln[7:] for ln in lines if ln.startswith("event: "))
+        data = next(ln[6:] for ln in lines if ln.startswith("data: "))
+        events.append((name, json.loads(data)))
+    return events
 
 
 def _stub_entry(monkeypatch: pytest.MonkeyPatch, task: ModelTask = ModelTask.VISION) -> None:
     monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: SimpleNamespace(task=task))
+
+
+def _stub_listing_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(_entry: object) -> None:
+        raise ProjectorListingError("offline")
+
+    monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: True)
+    monkeypatch.setattr("lilbee.catalog.download_mmproj", _raise)
 
 
 @pytest.mark.asyncio
@@ -42,26 +60,46 @@ async def test_pull_fetches_the_missing_projector(monkeypatch: pytest.MonkeyPatc
     )
     events = await _pull_events()
     assert len(fetched) == 1
-    assert not any("error" in e for e in events)
+    assert events == [("done", {})]
 
 
 @pytest.mark.asyncio
-async def test_unreadable_listing_streams_the_cli_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_unreadable_listing_ends_in_done_with_the_cli_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _stub_entry(monkeypatch)
-    monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: True)
-
-    def _raise(_entry: object) -> None:
-        raise ProjectorListingError("offline")
-
-    monkeypatch.setattr("lilbee.catalog.download_mmproj", _raise)
+    _stub_listing_error(monkeypatch)
     events = await _pull_events()
-    assert any(app_models._unchecked_projector_warning(REF) in e for e in events)
+    assert events == [("done", {"warning": app_models._unchecked_projector_warning(REF)})]
 
 
 @pytest.mark.asyncio
-async def test_repo_without_projector_streams_the_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_installed_model_with_unreadable_listing_stays_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_entry(monkeypatch)
+    _stub_listing_error(monkeypatch)
+    events = await _pull_events(installed=True)
+    assert events == [("done", {})]
+
+
+@pytest.mark.asyncio
+async def test_repo_without_projector_ends_in_done_with_the_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _stub_entry(monkeypatch)
     monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: True)
     monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda _e: None)
     events = await _pull_events()
-    assert any(app_models._no_projector_warning(REF) in e for e in events)
+    assert events == [("done", {"warning": app_models._no_projector_warning(REF)})]
+
+
+@pytest.mark.asyncio
+async def test_fetched_projector_the_engine_misses_is_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_entry(monkeypatch)
+    monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: True)
+    monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda _e: Path("mmproj.gguf"))
+    events = await _pull_events()
+    assert [name for name, _ in events] == ["error"]
