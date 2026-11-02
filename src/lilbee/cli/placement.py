@@ -129,6 +129,9 @@ def _render_view(view: PlacementView) -> None:
             soft_wrap=True,
         )
 
+    if view.hidden_note:
+        console.print(Text(f"  {view.hidden_note}"), style=theme.MUTED, soft_wrap=True)
+
     _render_rejected(view)
 
 

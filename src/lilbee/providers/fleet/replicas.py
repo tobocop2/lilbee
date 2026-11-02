@@ -42,6 +42,9 @@ def resolve_replica_count(role: WorkerRole, device_count: int) -> int:
 def gpu_device_count(engine: EngineAdapter) -> int:
     """Effective GPU count *engine* will use; fixed per engine for the process lifetime (cached).
 
+    Counts the devices auto placement packs, so a shared-memory GPU beside a dedicated
+    card adds no replica.
+
     Resolved the same way planning does (binary ``--list-devices`` view), and
     floored at one so auto means "one replica" on a GPU-less host. Returns one
     when the engine binary is absent so callers that size concurrency (e.g.
@@ -50,7 +53,7 @@ def gpu_device_count(engine: EngineAdapter) -> int:
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.fleet.devices import EngineDllMissingError
-    from lilbee.providers.fleet.planning import resolve_devices
+    from lilbee.providers.fleet.planning import packable_devices, resolve_devices
 
     try:
         binary = engine.binary()
@@ -62,4 +65,4 @@ def gpu_device_count(engine: EngineAdapter) -> int:
     except EngineDllMissingError:
         log.debug("engine cannot load; sizing for a GPU-less host")
         return _MIN_REPLICAS
-    return max(_MIN_REPLICAS, len(devices))
+    return max(_MIN_REPLICAS, len(packable_devices(devices)))

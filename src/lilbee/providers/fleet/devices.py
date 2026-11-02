@@ -291,6 +291,15 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             returncode,
             _probe_tail(output),
         )
+    elif returncode < 0:
+        # A negative status is a signal that stopped the probe, which says
+        # nothing about whether the engine knows the flag.
+        log.warning(
+            "%s --list-devices was stopped by signal %d before it printed its device "
+            "header, so the device list is unknown.",
+            binary.name,
+            -returncode,
+        )
     elif not spoke:
         log.warning(
             "%s --list-devices exited %d without printing its device header, so it "

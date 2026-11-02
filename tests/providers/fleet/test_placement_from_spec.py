@@ -56,7 +56,9 @@ def test_errors_when_active_role_missing_from_spec():
 
 def test_errors_on_nonexistent_device():
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(5,))})
-    with pytest.raises(PlacementError, match="chat pinned to device 5 but only 1 GPU"):
+    with pytest.raises(
+        PlacementError, match=r"chat is pinned to device 5, but this machine lists only device 0\."
+    ):
         placement_from_spec(
             spec, (WorkerRole.CHAT,), {0: 80 * GIB}, estimate_peak=_peak({WorkerRole.CHAT: [4]})
         )
