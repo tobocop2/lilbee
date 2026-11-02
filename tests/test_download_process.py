@@ -324,6 +324,8 @@ def test_a_real_spawned_child_downloads_a_cached_model(
     """A real spawn end to end: offline mode makes the pre-seeded file a cache hit."""
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     (tmp_path / "x.gguf").write_bytes(b"gguf")
+    # A projector beside the model means the child needs no Hub listing.
+    (tmp_path / "mmproj-x.gguf").write_bytes(b"gguf")
     seen: list[tuple[int, int]] = []
 
     path = dp.download_in_subprocess(

@@ -1243,6 +1243,13 @@ class TestSplitShardFilenames:
         ]
 
 
+@pytest.fixture
+def repo_lists_no_projector(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Hub listing names no projector, so a model download stays one file."""
+    monkeypatch.setattr(catalog.download, "_resolve_mmproj_filename", lambda repo, pat: None)
+
+
+@pytest.mark.usefixtures("repo_lists_no_projector")
 class TestSplitShardDownload:
     def test_fetches_all_shards_and_finalizes_once(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1296,6 +1303,7 @@ class TestSplitShardDownload:
         assert probes[-1] == "blob-m-00003-of-00003.gguf"
 
 
+@pytest.mark.usefixtures("repo_lists_no_projector")
 class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
@@ -2250,7 +2258,7 @@ class TestVisionMmprojFiles:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
         monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
-        monkeypatch.setattr(catalog.download, "repo_has_mmproj", lambda _repo: False)
+        monkeypatch.setattr(catalog.download, "_resolve_mmproj_filename", lambda repo, pat: None)
 
         download_calls: list[dict] = []
 
@@ -2271,7 +2279,6 @@ class TestVisionMmprojFiles:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
         monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
-        monkeypatch.setattr(catalog.download, "repo_has_mmproj", lambda _repo: True)
         monkeypatch.setattr(
             catalog.download,
             "_resolve_mmproj_filename",
@@ -2290,10 +2297,10 @@ class TestVisionMmprojFiles:
         filenames = [c["filename"] for c in download_calls]
         assert "mmproj-model-f16.gguf" in filenames
 
-    def test_download_model_vision_mmproj_resolution_fails(
+    def test_download_model_vision_repo_listing_no_projector_still_succeeds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When mmproj resolution fails, model download still succeeds."""
+        """A vision-named repo whose listing names no projector still downloads its model."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
         monkeypatch.setattr(
@@ -2305,6 +2312,25 @@ class TestVisionMmprojFiles:
 
         result = download_model(entry, engine=LLAMA)
         assert result.exists()
+
+    def test_download_model_fails_when_projector_listing_unreadable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable listing is not "no projector": the pull fails and names the repo."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        entry = PICKS_VISION[0]
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+        )
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
+
+        def _listing_down(hf_repo: str) -> list[str]:
+            raise RuntimeError("Cannot query files: 503")
+
+        monkeypatch.setattr(catalog.download, "_repo_sibling_files", _listing_down)
+
+        with pytest.raises(RuntimeError, match=f"vision projector of {entry.hf_repo}"):
+            download_model(entry, engine=LLAMA)
 
     def test_download_mmproj_uses_cache_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2493,13 +2519,25 @@ class TestResolveMmprojFilename:
         # Prefers f16 over f32
         assert result == "model-mmproj-f16.gguf"
 
-    def test_returns_none_on_api_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_raises_on_api_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unreadable listing is not an empty one: the caller must hear of it."""
+
         def raise_error(*a, **kw):
             raise RuntimeError("network error")
 
         monkeypatch.setattr(httpx, "get", raise_error)
-        result = _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
-        assert result is None
+        with pytest.raises(_download.ProjectorListingError, match="vision projector of repo"):
+            _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+
+    def test_gated_repo_listing_raises_projector_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_resp = httpx.Response(
+            401, json={}, request=httpx.Request("GET", "https://example.com")
+        )
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        with pytest.raises(_download.ProjectorListingError, match="authentication"):
+            _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
 
     def test_returns_none_when_no_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
         data = {"siblings": [{"rfilename": "model-Q4_K_M.gguf"}]}
@@ -3151,6 +3189,7 @@ class TestXetDefaultAtImport:
         assert out.stdout.strip() == ("1" if sys.platform == "win32" else "None")
 
 
+@pytest.mark.usefixtures("repo_lists_no_projector")
 class TestRegisterDownloadedModel:
     def _entry(self) -> object:
         from lilbee.catalog import CatalogModel

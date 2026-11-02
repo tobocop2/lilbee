@@ -527,6 +527,22 @@ class TestPullModelData:
         assert result.status == PullStatus.ALREADY_INSTALLED
         assert ensured == [_CHAT_REF]
 
+    def test_already_installed_reports_the_projector_warning(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        monkeypatch.setattr(model_mod, "_ensure_vision_projector", lambda ref: "no projector")
+        result = model_mod.pull_model_data(_CHAT_REF, ModelSource.NATIVE)
+        assert result.warning == "no projector"
+
+    def test_fresh_pull_reports_the_projector_warning(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        monkeypatch.setattr(model_mod, "_fresh_pull_warning", lambda ref: "no projector")
+        result = model_mod.pull_model_data(
+            "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf", ModelSource.NATIVE
+        )
+        assert result.warning == "no projector"
+
     def test_pull_native_invokes_manager_and_callbacks(self, fake_manager, native_manifests):
         events = []
         target = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
@@ -539,46 +555,130 @@ class TestPullModelData:
 
 
 class TestEnsureVisionProjector:
-    def test_non_vision_ref_is_noop(self, monkeypatch):
+    @staticmethod
+    def _entry(task):
         from types import SimpleNamespace
 
+        return SimpleNamespace(task=task)
+
+    def test_chat_classified_install_missing_projector_downloads_mmproj(self, monkeypatch):
+        # A dual-use VL repo (SmolVLM2, Qwen-VL) classifies as chat; the listing,
+        # not the name, decides whether its projector is fetched.
         from lilbee.catalog.types import ModelTask
 
-        monkeypatch.setattr(
-            "lilbee.catalog.resolve_pull_target",
-            lambda _q: SimpleNamespace(task=ModelTask.CHAT),
-        )
-        called: list[object] = []
-        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda entry: called.append(entry))
-        model_mod._ensure_vision_projector("acme/chat/model.gguf")
-        assert called == []
-
-    def test_vision_ref_with_missing_projector_downloads_mmproj(self, monkeypatch):
-        from types import SimpleNamespace
-
-        from lilbee.catalog.types import ModelTask
-
-        entry = SimpleNamespace(task=ModelTask.VISION)
+        entry = self._entry(ModelTask.CHAT)
         monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
         called: list[object] = []
-        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: called.append(e))
-        model_mod._ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF")
+        monkeypatch.setattr(
+            "lilbee.catalog.download_mmproj", lambda e: called.append(e) or Path("p")
+        )
+        assert model_mod._ensure_vision_projector("acme/SmolVLM2-GGUF") is None
         assert called == [entry]
 
-    def test_vision_ref_with_projector_on_disk_skips_network(self, monkeypatch):
-        # A complete install must not resolve filenames over the network.
-        from types import SimpleNamespace
-
+    def test_vision_ref_with_missing_projector_downloads_mmproj(self, monkeypatch):
         from lilbee.catalog.types import ModelTask
 
-        entry = SimpleNamespace(task=ModelTask.VISION)
+        entry = self._entry(ModelTask.VISION)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
+        called: list[object] = []
+        monkeypatch.setattr(
+            "lilbee.catalog.download_mmproj", lambda e: called.append(e) or Path("p")
+        )
+        assert model_mod._ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF") is None
+        assert called == [entry]
+
+    def test_ref_with_projector_on_disk_skips_network(self, monkeypatch):
+        # A complete install must not resolve filenames over the network.
+        from lilbee.catalog.types import ModelTask
+
+        entry = self._entry(ModelTask.VISION)
         monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: False)
         called: list[object] = []
         monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: called.append(e))
-        model_mod._ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF")
+        assert model_mod._ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF") is None
         assert called == []
+
+    def test_unresolvable_ref_is_noop(self, monkeypatch):
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: None)
+        called: list[object] = []
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: called.append(e))
+        assert model_mod._ensure_vision_projector("not a repo") is None
+        assert called == []
+
+    def test_unreadable_listing_stays_quiet(self, monkeypatch):
+        # Offline, a text-only or incomplete install still reports "already installed".
+        from lilbee.catalog.download import ProjectorListingError
+        from lilbee.catalog.types import ModelTask
+
+        monkeypatch.setattr(
+            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.VISION)
+        )
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
+
+        def _offline(_entry):
+            raise ProjectorListingError("hub down")
+
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", _offline)
+        assert model_mod._ensure_vision_projector("acme/llava-GGUF") is None
+
+    def test_failed_transfer_propagates(self, monkeypatch):
+        from lilbee.catalog.types import ModelTask
+
+        monkeypatch.setattr(
+            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
+        )
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
+
+        def _stalled(_entry):
+            raise RuntimeError("download kept stalling")
+
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", _stalled)
+        with pytest.raises(RuntimeError, match="kept stalling"):
+            model_mod._ensure_vision_projector("acme/SmolVLM2-GGUF")
+
+    def test_vision_named_repo_listing_none_warns(self, monkeypatch):
+        from lilbee.catalog.types import ModelTask
+
+        monkeypatch.setattr(
+            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.VISION)
+        )
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: None)
+        warning = model_mod._ensure_vision_projector("acme/llava-lite-GGUF")
+        assert warning is not None
+        assert "acme/llava-lite-GGUF" in warning
+        assert "no projector" in warning
+
+    def test_chat_repo_listing_none_is_silent(self, monkeypatch):
+        from lilbee.catalog.types import ModelTask
+
+        monkeypatch.setattr(
+            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
+        )
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: None)
+        assert model_mod._ensure_vision_projector("acme/plain-chat-GGUF") is None
+
+    def test_fresh_pull_warning_only_for_vision_named_without_projector(self, monkeypatch):
+        from lilbee.catalog.types import ModelTask
+
+        monkeypatch.setattr(
+            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.VISION)
+        )
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
+        assert "no projector" in (model_mod._fresh_pull_warning("acme/llava-lite-GGUF") or "")
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: False)
+        assert model_mod._fresh_pull_warning("acme/llava-lite-GGUF") is None
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
+        monkeypatch.setattr(
+            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
+        )
+        assert model_mod._fresh_pull_warning("acme/plain-chat-GGUF") is None
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: None)
+        assert model_mod._fresh_pull_warning("not a repo") is None
 
     def test_projector_missing_true_when_mmproj_unresolvable(self, monkeypatch):
         from lilbee.providers.base import ProviderError
@@ -685,6 +785,26 @@ class TestPullCmd:
         result = runner.invoke(app, ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"])
         assert result.exit_code == 0, result.output
         assert "Pulled" in result.output
+
+    def test_human_mode_prints_the_projector_warning(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        monkeypatch.setattr(model_mod, "_fresh_pull_warning", lambda ref: "no projector listed")
+        result = runner.invoke(app, ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"])
+        assert result.exit_code == 0, result.output
+        assert "Warning:" in result.output
+        assert "no projector listed" in result.output
+
+    def test_json_final_event_carries_the_projector_warning(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        monkeypatch.setattr(model_mod, "_fresh_pull_warning", lambda ref: "no projector listed")
+        result = runner.invoke(
+            app, ["--json", "model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
+        )
+        assert result.exit_code == 0, result.output
+        final = json.loads(result.output.strip().splitlines()[-1])
+        assert final["warning"] == "no projector listed"
 
     def test_human_already_installed_message(self, fake_manager, native_manifests):
         result = runner.invoke(app, ["model", "pull", _CHAT_REF])
