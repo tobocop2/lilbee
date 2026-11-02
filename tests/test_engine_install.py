@@ -883,7 +883,7 @@ def test_the_slash_command_hands_each_retry_to_the_screen(stalling: ReleaseServe
     stalling.silent_next = 10
     retries: list[str] = []
     with mock.patch.object(download.time, "sleep"):
-        out = run_engine_command(f"install {ENGINE.value}", retries.append)
+        out = run_engine_command(f"install {ENGINE.value}", on_retry=retries.append)
     assert not out.ok
     assert len(retries) == 2
 
