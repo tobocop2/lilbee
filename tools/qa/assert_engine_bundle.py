@@ -316,6 +316,9 @@ def main(argv: list[str]) -> int:
         if bundle.is_dir() and runner_os not in _RUNNER_PLATFORMS:
             problems.append(f"{bundle}: a directory needs --platform Linux, macOS or Windows")
             continue
+        if bundle.is_dir() and backend is None:
+            problems.append(f"{bundle}: a directory needs --backend <flavor>")
+            continue
         if bundle.is_dir() and tool:
             problems.append(f"{bundle}: --tool reads a wheel, not a directory")
             continue

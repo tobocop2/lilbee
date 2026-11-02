@@ -634,6 +634,14 @@ def test_main_refuses_the_tool_check_on_a_directory(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _bin_dir(tmp_path, ("llama-server", "libggml-cpu.so"))
-    args = ["--platform", "Linux", "--tool", "llama-server", str(root)]
+    args = ["--backend", "cpu", "--platform", "Linux", "--tool", "llama-server", str(root)]
     assert acb.main(args) == 1
     assert "--tool reads a wheel, not a directory" in capsys.readouterr().err
+
+
+def test_main_refuses_a_directory_without_a_backend(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-vulkan.so"))
+    assert acb.main(["--platform", "Linux", str(root)]) == 1
+    assert "needs --backend" in capsys.readouterr().err

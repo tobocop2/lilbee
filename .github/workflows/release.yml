@@ -415,8 +415,7 @@ jobs:
           BACKEND: ${{ matrix.backend }}
         run: |
           set -euo pipefail
-          bin_dir=$(find dist -type d -path '*lilbee_engine/bin' | head -1)
-          [ -n "${bin_dir}" ] || { echo "no bundled engine found under dist/" >&2; exit 1; }
+          bin_dir=$(bash tools/qa/find_engine_bin.sh dist)
           uv run --no-sync python tools/qa/assert_engine_bundle.py \
             --backend "${BACKEND}" --platform "${RUNNER_OS}" "${bin_dir}"
 

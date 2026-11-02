@@ -15,7 +15,7 @@ license-check:  ## fail on a GPL or AGPL package in uv.lock (needs the network a
 
 lint-shell:  ## shellcheck the release scripts and actionlint every workflow
 	@if command -v shellcheck >/dev/null; then \
-	  shellcheck -s bash scripts/*.sh tools/ci/*.sh tools/qa/artifact_smoke.sh tests/shell/*.bash tests/shell/stubs/*; \
+	  shellcheck -s bash scripts/*.sh tools/ci/*.sh tools/qa/artifact_smoke.sh tools/qa/find_engine_bin.sh tests/shell/*.bash tests/shell/stubs/*; \
 	else echo "lint-shell: shellcheck is not installed, skipping"; fi
 	# actionlint also shellchecks every inline `run:` block.
 	@if command -v actionlint >/dev/null; then actionlint; \
