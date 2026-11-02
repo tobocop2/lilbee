@@ -504,3 +504,15 @@ def test_rerank_is_refused_for_the_engine_before_its_install_is_read(
     with pytest.raises(engine_service.EngineRefusedError, match="does not serve rerank") as raised:
         engine_service.use_for_role(WorkerRole.RERANK, "org/repo/file.gguf", "mistral.rs")
     assert "chat, embed and vision" in str(raised.value)
+
+
+def test_binary_on_a_host_with_no_cell_says_the_engine_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    row = {"url": "https://example.test/x.whl", "sha256": "b" * 64, "size": 1, "min_os": None}
+    record = {**MISTRAL.pin_record(), "sha256": "a" * 64, "platforms": {"macos-arm64-cpu": row}}
+    monkeypatch.setattr(MISTRAL, "pin_record", lambda: record)
+    monkeypatch.setattr(cfg, "models_dir", tmp_path)
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
+    with pytest.raises(ProviderError, match="not installed"):
+        MISTRAL.binary()
