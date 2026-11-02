@@ -347,12 +347,16 @@ async def test_install_of_a_file_already_on_disk_says_so_and_pulls_nothing(
 
 
 def test_the_download_task_pulls_by_the_format_reference(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lilbee.app.models import PullResult, PullStatus
     from lilbee.cli.tui.widgets.task_bar_controller import _download_target
 
     pulled: list[str] = []
-    monkeypatch.setattr(
-        "lilbee.app.models.pull_model_data", lambda ref, *_a, **_kw: pulled.append(ref)
-    )
+
+    def _pull(ref: str, *_a: object, **_kw: object) -> PullResult:
+        pulled.append(ref)
+        return PullResult(model=ref, source="native", status=PullStatus.OK)
+
+    monkeypatch.setattr("lilbee.app.models.pull_model_data", _pull)
     model = _row("acme/two", frozenset({ModelFormat.GGUF, ModelFormat.MLX}))
     _download_target(object(), replace(model, format=ModelFormat.MLX))  # type: ignore[arg-type]
     _download_target(object(), model)  # type: ignore[arg-type]
