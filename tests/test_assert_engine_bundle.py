@@ -449,3 +449,52 @@ def test_a_wheel_within_the_limit_passes(tmp_path: Path) -> None:
     """The common case must not pay for the check with a false failure."""
     wheel = _wheel(tmp_path, _ROCM_WHEEL, _ROCM_PAYLOAD)
     assert acb.check(wheel) == []
+
+
+def _server_wheel(
+    tmp_path: Path, *, server: str | None = "llama-server", mode: int = 0o755, base: bool = True
+) -> Path:
+    path = tmp_path / "lilbee_engine-1-1.cpu-py3-none-manylinux_2_34_x86_64.whl"
+    with zipfile.ZipFile(path, "w") as zf:
+        if server:
+            info = zipfile.ZipInfo(f"lilbee_engine/bin/{server}")
+            info.external_attr = (0o100000 | mode) << 16
+            zf.writestr(info, b"x")
+        zf.writestr("lilbee_engine/bin/libggml-cpu-x64.so", b"x")
+        zf.writestr("lilbee_engine/bin/libggml-cpu-haswell.so", b"x")
+        if base:
+            zf.writestr("lilbee_engine/bin/libggml-base.so.0.9.5", b"x")
+    return path
+
+
+def test_a_wheel_with_the_pinned_server_passes_the_server_check(tmp_path: Path) -> None:
+    assert acb.check(_server_wheel(tmp_path), "cpu", tool="llama-server") == []
+
+
+@pytest.mark.parametrize(
+    ("server", "mode", "base", "message"),
+    [
+        (None, 0o755, True, "has no llama-server in its bin directory"),
+        ("gguf-parser", 0o755, True, "has no llama-server in its bin directory"),
+        ("llama-server", 0o644, True, "without the execute bit"),
+        ("llama-server", 0o755, False, "no ggml-base library"),
+    ],
+)
+def test_a_wheel_whose_server_cannot_run_fails_the_server_check(
+    tmp_path: Path, server: str | None, mode: int, base: bool, message: str
+) -> None:
+    wheel = _server_wheel(tmp_path, server=server, mode=mode, base=base)
+    problems = acb.check(wheel, "cpu", tool="llama-server")
+    assert [p for p in problems if message in p]
+
+
+def test_a_wheel_with_no_server_passes_when_no_tool_is_named(tmp_path: Path) -> None:
+    assert acb.check(_server_wheel(tmp_path, server=None, base=False), "cpu") == []
+
+
+def test_the_tool_flag_reaches_the_check(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wheel = _server_wheel(tmp_path, mode=0o644)
+    assert acb.main(["--backend", "cpu", "--tool", "llama-server", str(wheel)]) == 1
+    assert "without the execute bit" in capsys.readouterr().err
