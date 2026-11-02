@@ -7,6 +7,7 @@ name to the distribution's canonical "hf-xet", and Nuitka's frozen lookup folds
 case but not '-' against '_'.
 """
 
+import importlib.metadata
 from pathlib import Path
 
 import yaml
@@ -42,7 +43,11 @@ def test_trigger_module_is_the_one_that_reads_the_metadata() -> None:
     modules = {entry["module-name"] for entry in entries}
 
     assert _runtime.__name__ in modules
-    assert _runtime._package_versions["hf_xet"] == _runtime._get_version("hf_xet")
+    # 1.x fills the version table when _runtime is imported; 2.x fills it on the
+    # first lookup. The public getter answers the same way on both.
+    reported = _runtime.get_xet_version()
+    assert reported != "N/A"
+    assert reported == importlib.metadata.version("hf_xet")
 
 
 def test_build_passes_the_config_and_compiles_hf_xet() -> None:

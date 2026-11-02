@@ -206,6 +206,20 @@ def _retry_transient(work: Callable[[], _T]) -> _T:
     ) from last_error
 
 
+def _hub_network_errors() -> tuple[type[Exception], ...]:
+    """The timeout and connect errors huggingface_hub lets through.
+
+    Hub 1.x raises httpx errors. Hub 2.x raises httpx2 errors, which do not
+    extend the httpx classes, so both families are listed.
+    """
+    errors: tuple[type[Exception], ...] = (httpx.TimeoutException, httpx.ConnectError)
+    try:
+        import httpx2
+    except ImportError:
+        return errors
+    return (*errors, httpx2.TimeoutException, httpx2.ConnectError)
+
+
 def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:
     """Run one file's transfer, retrying the faults another attempt can clear."""
     return _retry_transient(lambda: _hf_download_or_translate(entry, config))
@@ -229,7 +243,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
     except EntryNotFoundError:
         raise RuntimeError(_missing_file_message(entry.hf_repo, config.filename)) from None
-    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+    except _hub_network_errors() as exc:
         raise _TransientDownloadError(f"Network error downloading {entry.hf_repo}: {exc}") from None
     except OSError as exc:
         raise _TransientDownloadError(f"I/O error downloading {entry.hf_repo}: {exc}") from None

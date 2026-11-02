@@ -9,6 +9,7 @@ download entry point runs under the retry loop.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -158,6 +159,25 @@ class TestTransientErrorTranslation:
 
         with pytest.raises(dl._TransientDownloadError, match="Network error"):
             self._download(monkeypatch, httpx.ConnectError("refused"))
+
+    @pytest.mark.parametrize("name", ["ConnectError", "TimeoutException"])
+    def test_a_hub_2x_network_error_is_transient(
+        self, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        """Hub 2.x raises httpx2 errors, which are not httpx errors."""
+        httpx2 = pytest.importorskip("httpx2")
+
+        with pytest.raises(dl._TransientDownloadError, match="Network error"):
+            self._download(monkeypatch, getattr(httpx2, name)("refused"))
+
+    def test_hub_1x_without_httpx2_lists_only_httpx_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx
+
+        monkeypatch.setitem(sys.modules, "httpx2", None)
+
+        assert dl._hub_network_errors() == (httpx.TimeoutException, httpx.ConnectError)
 
     def test_an_io_error_is_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with pytest.raises(dl._TransientDownloadError, match="I/O error"):
