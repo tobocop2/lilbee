@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import logging
 import re
+import signal
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -42,6 +43,9 @@ _DEVICE_LIST_HEADER = "Available devices:"
 # Windows status STATUS_DLL_NOT_FOUND: the loader stopped the process before main.
 _STATUS_DLL_NOT_FOUND = 0xC0000135
 DLL_MISSING_LEAD = "The engine could not start because a DLL it needs is missing"
+# Windows status STATUS_ILLEGAL_INSTRUCTION; POSIX reports the same death as SIGILL.
+_STATUS_ILLEGAL_INSTRUCTION = 0xC000001D
+_ILLEGAL_INSTRUCTION_STATUSES = frozenset({-signal.SIGILL, _STATUS_ILLEGAL_INSTRUCTION})
 # nvidia-smi emits SGR escapes (e.g. an underlined header) even when stdout is
 # not a tty; strip them or the header's GPU labels never match.
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -241,6 +245,10 @@ class EngineDllMissingError(ProviderError):
     """The engine binary stopped at load time because a DLL it imports is absent."""
 
 
+class EngineIllegalInstructionError(ProviderError):
+    """The engine binary died on an instruction this CPU does not have."""
+
+
 def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -> DeviceProbe:
     """Parse ``<binary> --list-devices``; empty devices when unavailable/unparseable.
 
@@ -277,6 +285,13 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist.",
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
+        )
+    if returncode in _ILLEGAL_INSTRUCTION_STATUSES and not answered:
+        raise EngineIllegalInstructionError(
+            f"The engine {binary.name} stopped on an instruction this CPU does not have "
+            f"(exit {returncode}). Install a build for an older CPU, or pick another engine.",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.CPU_UNSUPPORTED,
         )
     spoke = returncode == 0 and answered
     if not spoke and answered:
