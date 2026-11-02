@@ -233,11 +233,16 @@ def test_gate_refuses_and_leaves_nothing(
     assert not store.root.exists()
 
 
-def test_checksum_error_names_engine_and_version(
+def test_checksum_error_names_engine_version_and_backend_and_the_next_step(
     store: EngineStore, wheel: tuple[Path, str]
 ) -> None:
-    with pytest.raises(ChecksumError, match="engine fx 1 does not match"):
+    want = (
+        "The file for engine fx 1 (cpu) does not match its pin, so lilbee did not install it. "
+        "Run the install again. If this happens again, report it."
+    )
+    with pytest.raises(ChecksumError) as caught:
         store.install_from_wheel(pin("0" * 64), wheel[0])
+    assert str(caught.value) == want
 
 
 def test_lock_licence_outside_the_list_is_refused_before_the_wheel_is_read(

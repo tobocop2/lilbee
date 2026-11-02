@@ -10,13 +10,8 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
-import httpx
 import pytest
-from huggingface_hub.errors import (
-    EntryNotFoundError,
-    RepositoryNotFoundError,
-    RevisionNotFoundError,
-)
+from huggingface_hub import constants as hub_constants
 
 from lilbee.catalog import download as dl
 from lilbee.providers.fleet.engine_store import (
@@ -36,9 +31,11 @@ from lilbee.providers.fleet.engine_store import (
     pip_install_argv,
     pip_requirement,
 )
+from tests._release_server import release_server
 from tests.providers.fleet.test_engine_store import make_wheel
 
-REVISION = "c" * 40
+RELEASE = "https://github.com/tobocop2/lilbee-engines/releases/download/fx-9-1/fx.whl"
+CELL = "linux-x86_64-cpu"
 
 
 @pytest.fixture
@@ -52,9 +49,15 @@ def store(tmp_path: Path) -> EngineStore:
     return EngineStore(tmp_path / "engines")
 
 
-def lock_of(sha: str, size: int = 1) -> PinLock:
-    asset = PlatformAsset("owner/engines", REVISION, "fx.whl", sha, size, None)
-    return PinLock("fx", "9", "cpu", {"linux-x86_64": asset}, ("MIT",), sha)
+@pytest.fixture(autouse=True)
+def hub_online(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The suite switches the hub's network off; the download tests use a loopback server."""
+    monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
+
+
+def lock_of(sha: str, size: int = 1, url: str = RELEASE) -> PinLock:
+    asset = PlatformAsset(url, sha, size, None)
+    return PinLock("fx", "9", "cpu", {CELL: asset}, ("MIT",), sha)
 
 
 def no_network(_lock: PinLock, _dest: Path) -> Path:
@@ -185,97 +188,64 @@ def test_downloaded_wheel_with_an_escaping_entry_is_refused(
     assert not (tmp_path / "victim").exists()
 
 
-def test_fetch_frozen_downloads_at_the_pinned_commit(tmp_path: Path) -> None:
-    seen: dict[str, str] = {}
-
-    def downloader(**kwargs: str) -> str:
-        seen.update(kwargs)
-        return str(tmp_path / "fx.whl")
-
-    got = fetch_frozen(lock_of("a" * 64), "linux-x86_64", dest=tmp_path, downloader=downloader)
-    assert got == tmp_path / "fx.whl"
-    assert seen == {
-        "repo_id": "owner/engines",
-        "revision": REVISION,
-        "filename": "fx.whl",
-        "local_dir": str(tmp_path),
-    }
+def test_fetch_frozen_downloads_the_url_of_the_cell(tmp_path: Path) -> None:
+    with release_server() as server:
+        server.files["/fx.whl"] = b"wheel bytes"
+        lock = lock_of("a" * 64, size=11, url=f"{server.url}/fx.whl")
+        got = fetch_frozen(lock, CELL, dest=tmp_path / "dl")
+    assert got == tmp_path / "dl" / "fx.whl"
+    assert got.read_bytes() == b"wheel bytes"
 
 
-def test_fetch_frozen_for_a_platform_without_a_build_is_refused() -> None:
-    with pytest.raises(UnsupportedPlatformError, match="no build for macos-arm64"):
-        fetch_frozen(lock_of("a" * 64), "macos-arm64", dest=Path("d"), downloader=mock.Mock())
+def test_fetch_frozen_for_a_cell_without_a_build_is_refused_before_any_request(
+    tmp_path: Path,
+) -> None:
+    with release_server() as server:
+        lock = lock_of("a" * 64, url=f"{server.url}/fx.whl")
+        with pytest.raises(UnsupportedPlatformError, match="no build for macos-arm64-metal"):
+            fetch_frozen(lock, "macos-arm64-metal", dest=tmp_path)
+    assert server.requests == []
+
+
+def test_a_pin_with_no_cells_has_no_download_and_ensure_asks_for_a_pack(
+    store: EngineStore,
+) -> None:
+    lock = PinLock("fx", "9", "cpu", {}, ("MIT",), "a" * 64)
+    with pytest.raises(MissingPackError, match=r"Copy fx-9-cpu\.whl"):
+        store.ensure(lock, lambda pin, dest: fetch_frozen(pin, CELL, dest=dest))
 
 
 def test_fetch_frozen_checks_the_disk_before_the_download(tmp_path: Path) -> None:
-    downloader = mock.Mock()
-    with (
-        mock.patch(
-            "lilbee.providers.fleet.engine_store.disk_shortfall",
-            return_value="Not enough disk space",
-        ) as shortfall,
-        pytest.raises(EngineDiskError, match="Not enough disk space"),
-    ):
-        fetch_frozen(
-            lock_of("a" * 64, size=7), "linux-x86_64", dest=tmp_path, downloader=downloader
-        )
-    shortfall.assert_called_once_with(tmp_path, "owner/engines", 7)
-    downloader.assert_not_called()
+    with release_server() as server:
+        lock = lock_of("a" * 64, size=7, url=f"{server.url}/fx.whl")
+        with (
+            mock.patch(
+                "lilbee.providers.fleet.engine_store.disk_shortfall",
+                return_value="Not enough disk space",
+            ) as shortfall,
+            pytest.raises(EngineDiskError, match="Not enough disk space"),
+        ):
+            fetch_frozen(lock, CELL, dest=tmp_path)
+    shortfall.assert_called_once_with(tmp_path, "fx.whl", 7)
+    assert server.requests == []
 
 
-def test_fetch_frozen_downloads_when_the_disk_has_room(tmp_path: Path) -> None:
-    downloader = mock.Mock(return_value=str(tmp_path / "fx.whl"))
-    got = fetch_frozen(lock_of("a" * 64), "linux-x86_64", dest=tmp_path, downloader=downloader)
-    assert got == tmp_path / "fx.whl"
-    downloader.assert_called_once()
+def test_a_server_that_stays_down_is_a_missing_pack_through_ensure(store: EngineStore) -> None:
+    with release_server() as server, mock.patch.object(dl.time, "sleep"):
+        server.fail_next = 10
+        lock = lock_of("a" * 64, url=f"{server.url}/fx.whl")
+        with pytest.raises(MissingPackError, match=r"Copy fx-9-cpu\.whl"):
+            store.ensure(lock, lambda pin, dest: fetch_frozen(pin, CELL, dest=dest))
+    assert len(server.requests) == 3
 
 
-def test_fetch_frozen_retries_a_dropped_connection(tmp_path: Path) -> None:
-    calls = {"n": 0}
-
-    def flaky(**_kwargs: str) -> str:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise httpx.ConnectError("reset")
-        return str(tmp_path / "fx.whl")
-
-    with mock.patch.object(dl.time, "sleep"):
-        got = fetch_frozen(lock_of("a" * 64), "linux-x86_64", dest=tmp_path, downloader=flaky)
-    assert (got, calls["n"]) == (tmp_path / "fx.whl", 2)
-
-
-def test_fetch_frozen_keeps_failing_as_missing_pack_through_ensure(store: EngineStore) -> None:
-    def always_down(**_kwargs: str) -> str:
-        raise OSError("disk fault")
-
-    lock = lock_of("a" * 64)
-    with (
-        mock.patch.object(dl.time, "sleep"),
-        pytest.raises(MissingPackError, match=r"Copy fx-9-cpu\.whl"),
-    ):
-        store.ensure(
-            lock,
-            lambda lk, dest: fetch_frozen(lk, "linux-x86_64", dest=dest, downloader=always_down),
-        )
-
-
-def test_fetch_frozen_does_not_retry_a_defect(tmp_path: Path) -> None:
-    boom = mock.Mock(side_effect=KeyError("bug"))
-    with pytest.raises(KeyError):
-        fetch_frozen(lock_of("a" * 64), "linux-x86_64", dest=tmp_path, downloader=boom)
-    boom.assert_called_once()
-
-
-def test_default_downloader_is_the_hub_call(tmp_path: Path) -> None:
-    with mock.patch("huggingface_hub.hf_hub_download", return_value=str(tmp_path / "w.whl")) as hub:
-        got = fetch_frozen(lock_of("a" * 64), "linux-x86_64", dest=tmp_path / "dl")
-    hub.assert_called_once_with(
-        repo_id="owner/engines",
-        revision=REVISION,
-        filename="fx.whl",
-        local_dir=str(tmp_path / "dl"),
-    )
-    assert got == tmp_path / "w.whl"
+def test_a_missing_release_file_is_a_missing_pack_after_one_request(store: EngineStore) -> None:
+    with release_server() as server, mock.patch.object(dl.time, "sleep") as slept:
+        lock = lock_of("a" * 64, url=f"{server.url}/gone.whl")
+        with pytest.raises(MissingPackError, match=r"Copy fx-9-cpu\.whl"):
+            store.ensure(lock, lambda pin, dest: fetch_frozen(pin, CELL, dest=dest))
+    assert len(server.requests) == 1
+    slept.assert_not_called()
 
 
 def test_uv_argv_installs_pinned_hashes_into_the_stage_from_the_backend_index(
@@ -354,59 +324,33 @@ def test_failed_download_leaves_no_scratch_folder(store: EngineStore) -> None:
     assert scratch_dirs(store) == []
 
 
-def test_default_download_writes_into_the_scratch_folder_not_the_hub_cache(
+def test_download_from_a_release_url_installs_through_the_store(
     store: EngineStore, wheel: tuple[Path, str]
 ) -> None:
     path, sha = wheel
-    seen: dict[str, str] = {}
+    seen: list[Path] = []
 
-    def hub(**kwargs: str) -> str:
-        seen.update(kwargs)
-        return str(path)
+    def fetch(pin: PinLock, dest: Path) -> Path:
+        seen.append(dest)
+        return fetch_frozen(pin, CELL, dest=dest)
 
-    store.ensure(
-        lock_of(sha), lambda lk, dest: fetch_frozen(lk, "linux-x86_64", dest=dest, downloader=hub)
-    )
-    assert Path(seen["local_dir"]).parent == store.root
-
-
-def permanent(kind: type[Exception]) -> Exception:
-    if kind is EntryNotFoundError:
-        return kind("gone")
-    response = httpx.Response(404, request=httpx.Request("GET", "https://hub.example/x"))
-    return kind("gone", response=response)  # type: ignore[call-arg]
+    with release_server() as server:
+        server.files["/fx.whl"] = path.read_bytes()
+        lock = lock_of(sha, size=path.stat().st_size, url=f"{server.url}/fx.whl")
+        built = store.ensure(lock, fetch)
+    assert built == store.root / "fx" / "9-cpu"
+    assert seen[0].parent == store.root
+    assert scratch_dirs(store) == []
 
 
-@pytest.mark.parametrize(
-    "kind", [EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError]
-)
-def test_a_missing_file_repo_or_revision_is_a_missing_pack_after_one_call(
-    store: EngineStore, kind: type[Exception]
+def test_download_of_a_wheel_with_a_bad_digest_is_refused_and_leaves_no_build(
+    store: EngineStore, wheel: tuple[Path, str]
 ) -> None:
-    calls = {"n": 0}
-
-    def gone(**_kwargs: str) -> str:
-        calls["n"] += 1
-        raise permanent(kind)
-
-    with (
-        mock.patch.object(dl.time, "sleep") as slept,
-        pytest.raises(MissingPackError, match=r"Copy fx-9-cpu\.whl"),
-    ):
-        store.ensure(
-            lock_of("a" * 64),
-            lambda lk, dest: fetch_frozen(lk, "linux-x86_64", dest=dest, downloader=gone),
-        )
-    assert calls["n"] == 1
-    slept.assert_not_called()
-
-
-def test_fetch_frozen_downloads_into_the_destination(tmp_path: Path) -> None:
-    seen: dict[str, str] = {}
-
-    def downloader(**kwargs: str) -> str:
-        seen.update(kwargs)
-        return str(tmp_path / "fx.whl")
-
-    fetch_frozen(lock_of("a" * 64), "linux-x86_64", dest=tmp_path, downloader=downloader)
-    assert seen["local_dir"] == str(tmp_path)
+    path, _sha = wheel
+    with release_server() as server:
+        server.files["/fx.whl"] = path.read_bytes()
+        lock = lock_of("0" * 64, size=path.stat().st_size, url=f"{server.url}/fx.whl")
+        with pytest.raises(ChecksumError, match="does not match its pin"):
+            store.ensure(lock, lambda pin, dest: fetch_frozen(pin, CELL, dest=dest))
+    assert not (store.root / "fx").exists()
+    assert scratch_dirs(store) == []

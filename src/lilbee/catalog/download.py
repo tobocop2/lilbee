@@ -6,8 +6,9 @@ import shutil
 import time
 from collections.abc import Callable, Iterable
 from http import HTTPStatus
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel
@@ -231,6 +232,33 @@ def retry_transfer(work: Callable[[], _T]) -> _T:
             raise _TransientDownloadError(f"Transfer failed: {exc}") from None
 
     return _retry_transient(attempt)
+
+
+def url_filename(url: str) -> str:
+    """The last path segment of *url*."""
+    return PurePosixPath(urlparse(url).path).name
+
+
+def download_url(url: str, dest: Path, size: int) -> Path:
+    """Download *url* into *dest*, resuming a partial file; return the file path."""
+    from huggingface_hub.errors import HfHubHTTPError
+    from huggingface_hub.file_download import http_get
+
+    dest.mkdir(parents=True, exist_ok=True)
+    target = dest / url_filename(url)
+
+    def fetch() -> Path:
+        done = target.stat().st_size if target.exists() else 0
+        try:
+            with target.open("ab") as handle:
+                http_get(url, handle, resume_size=done, expected_size=size)
+        except HfHubHTTPError as exc:
+            if exc.response.status_code == HTTPStatus.NOT_FOUND:
+                raise RuntimeError(f"The server has no file at {url}.") from exc
+            raise
+        return target
+
+    return retry_transfer(fetch)
 
 
 def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:

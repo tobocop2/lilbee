@@ -8,11 +8,12 @@ import re
 import socket
 import stat
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
+from huggingface_hub import constants as hub_constants
 from typer.testing import CliRunner
 
 import lilbee.mcp_server as mcp_server
@@ -22,7 +23,7 @@ from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import run_engine_command
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
-from lilbee.providers.fleet import host_caps
+from lilbee.providers.fleet import engine_manifest, host_caps
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
@@ -31,6 +32,7 @@ from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import collect
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
+from tests._release_server import ReleaseServer, release_server
 from tests.conformance.fake_adapter import FakeAdapter
 from tests.test_engine_service import GGUF_ENGINE
 
@@ -38,7 +40,10 @@ ENGINE = EngineName.IK_LLAMA
 VERSION = "git-0123456789ab"
 NO_AVX2 = "This host has no AVX2. ik_llama.cpp needs it."
 STAYS = "llama.cpp stays in use."
-BAD_PACK = "The wheel for engine ik_llama.cpp git-0123456789ab does not match its pin."
+BAD_PACK = (
+    "The file for engine ik_llama.cpp git-0123456789ab (cpu) does not match its pin, "
+    "so lilbee did not install it. Run the install again. If this happens again, report it."
+)
 ROUTES = [routes.engine_install_route]
 
 
@@ -59,9 +64,14 @@ class StandIn(FakeAdapter):
     formats = frozenset({"gguf"})
 
     def __init__(
-        self, sha: str | None, gate: HostGate = PASS, licences: tuple[str, ...] = ("MIT",)
+        self,
+        sha: str | None,
+        gate: HostGate = PASS,
+        licences: tuple[str, ...] = ("MIT",),
+        cells: Mapping[str, Any] | None = None,
     ):
         self.sha, self.gate, self.licences = sha, gate, licences
+        self.cells = cells or {}
 
     def host_gate(self, host: Any) -> HostGate:
         return self.gate
@@ -71,6 +81,7 @@ class StandIn(FakeAdapter):
             "engine": self.name,
             "version": VERSION,
             "backend": "cpu",
+            "platforms": self.cells,
             "sha256": self.sha,
             "licenses": list(self.licences),
         }
@@ -109,10 +120,25 @@ def _live_host() -> host_caps.HostCaps:
 
 
 @pytest.fixture
-def good(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Register the stand-in with the sha of a good wheel; return that wheel."""
+def release(monkeypatch: pytest.MonkeyPatch) -> Iterator[ReleaseServer]:
+    """A loopback release server; the hub's offline switch is off while it runs."""
+    monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
+    with release_server() as server:
+        yield server
+
+
+def _cell(
+    url: str, sha: str = "a" * 64, min_os: str | None = None, size: int = 1
+) -> dict[str, Any]:
+    return {"linux-x86_64-cpu": {"url": url, "sha256": sha, "size": size, "min_os": min_os}}
+
+
+@pytest.fixture
+def good(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release: ReleaseServer) -> Path:
+    """Register the stand-in with the sha of a good wheel; its cell is a 404 on the server."""
     wheel = tmp_path / "good.whl"
-    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(make_wheel(wheel)))  # type: ignore[arg-type]
+    cells = _cell(f"{release.url}/gone.whl")
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(make_wheel(wheel), cells=cells))  # type: ignore[arg-type]
     return wheel
 
 
@@ -156,6 +182,60 @@ def test_no_pack_and_no_network_gives_the_missing_pack_text(good: Path, root: Pa
         f"Copy {ENGINE}-{VERSION}-cpu.whl into {root / 'packs'} and run the install again."
     )
     assert _builds() == []
+
+
+def test_a_download_from_the_release_url_installs_the_build(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    built = engine_service.install(ENGINE.value)
+    assert (built.engine, built.version, built.backend) == (ENGINE.value, VERSION, "cpu")
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+    assert len(release.requests) == 1
+
+
+def test_a_host_with_no_cell_is_refused_and_no_request_is_sent(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = {"macos-arm64-metal": _cell(f"{release.url}/fx.whl")["linux-x86_64-cpu"]}
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn("a" * 64, cells=other))  # type: ignore[arg-type]
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value)
+    assert str(exc.value) == (
+        f"Engine {ENGINE} has no cpu build for linux-x86_64. Builds for this computer: none."
+    )
+    assert (release.requests, _builds()) == ([], [])
+
+
+@pytest.mark.parametrize("with_wheel", [False, True])
+def test_a_system_below_the_floor_is_refused_on_the_download_and_the_wheel_route(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, with_wheel: bool
+) -> None:
+    cells = _cell(f"{release.url}/fx.whl", min_os="2.34")
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn("a" * 64, cells=cells))  # type: ignore[arg-type]
+    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "2.31")
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value, good if with_wheel else None)
+    head = f"Engine {ENGINE} {VERSION} (cpu) needs glibc 2.34 or later. "
+    tail = "Update the system, or set LILBEE_LLAMA_SERVER_PATH to an engine you built."
+    assert str(exc.value) == f"{head}This computer has glibc 2.31. {tail}"
+    assert (release.requests, _builds()) == ([], [])
+
+
+def test_a_host_the_manifest_cannot_name_is_refused(
+    good: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        runnable,
+        "detect",
+        lambda: host_caps.collect(system="Plan9", machine="x86_64", cpu_info={}, nvml=None),
+    )
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value, good)
+    assert str(exc.value) == f"Engine {ENGINE} has no cpu build for this computer."
 
 
 def test_a_pack_in_the_packs_folder_is_installed_without_a_wheel_argument(

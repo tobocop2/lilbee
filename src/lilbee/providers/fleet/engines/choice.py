@@ -15,6 +15,7 @@ from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
     EngineStore,
     PinLock,
+    PlatformAsset,
     engines_root,
 )
 from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
@@ -252,7 +253,13 @@ def pin_lock(pin: Mapping[str, Any]) -> PinLock:
         )
     try:
         licences = tuple(pin["licenses"])
-        return PinLock(pin["engine"], pin["version"], pin["backend"], {}, licences, pin["sha256"])
+        cells = {
+            key: PlatformAsset(row["url"], row["sha256"], row["size"], row["min_os"])
+            for key, row in pin["platforms"].items()
+        }
+        return PinLock(
+            pin["engine"], pin["version"], pin["backend"], cells, licences, pin["sha256"]
+        )
     except (KeyError, ValueError, TypeError) as exc:
         raise PinError(f"the pin record is not usable ({exc!r})") from exc
 

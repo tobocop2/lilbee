@@ -18,6 +18,7 @@ from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, host_cell
 from lilbee.providers.fleet.engine_store import (
     ChecksumError,
     EngineConflictError,
@@ -26,10 +27,10 @@ from lilbee.providers.fleet.engine_store import (
     LicenceRefusedError,
     MissingPackError,
     PackageInstallError,
-    PinLock,
     UnsafeWheelError,
     UnsupportedPlatformError,
     engines_root,
+    fetch_frozen,
 )
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
@@ -113,6 +114,7 @@ _STORE_REFUSALS = (
     MissingPackError,
     PackageInstallError,
     UnsafeWheelError,
+    UnsupportedOsError,
     UnsupportedPlatformError,
 )
 
@@ -248,16 +250,11 @@ def prefer(name: str, confirmed: bool = False) -> str:
     return setting.value
 
 
-def _no_download(_lock: PinLock, _scratch: Path) -> Path:
-    """The fetch for an install with no wheel: engines have no download route."""
-    raise FileNotFoundError("Engines have no download route.")
-
-
 def install(name: str, wheel: Path | None = None) -> InstalledBuild:
-    """Install the pinned build of engine *name* from *wheel*, else from its pack.
+    """Install the pinned build of engine *name* from *wheel*, a pack, or its release URL.
 
-    The host gate of the engine runs first. The store checks the digest, the licence
-    and the files of the wheel and writes the record.
+    The host gate and the cell for this computer run first. The store checks the digest,
+    the licence and the files of the wheel and writes the record.
     """
     try:
         engine = EngineName(name)
@@ -270,7 +267,8 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         )
     if adapter.bundled:
         raise EngineRefusedError(f"Engine {name} ships with lilbee. There is nothing to install.")
-    gate = adapter.host_gate(refresh_session_host())
+    host = refresh_session_host()
+    gate = adapter.host_gate(host)
     if not gate.ok:
         reason = gate.reason.rstrip(".")
         raise EngineRefusedError(
@@ -284,8 +282,9 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         raise EngineRefusedError(f"Engine {name} cannot be installed: {exc}.") from exc
     store = EngineStore(engines_root(cfg.models_dir))
     try:
+        cell = host_cell(lock, host)
         if wheel is None:
-            store.ensure(lock, _no_download)
+            store.ensure(lock, lambda pin, scratch: fetch_frozen(pin, cell, dest=scratch))
         else:
             store.install_from_wheel(lock, wheel)
     except _STORE_REFUSALS as exc:
