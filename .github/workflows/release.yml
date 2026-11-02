@@ -406,6 +406,20 @@ jobs:
           dnf install -y gh
           gh --version
 
+      # The engine wheel is checked on its own build; the executable rebundles the
+      # engine through Nuitka, so check the standalone tree it leaves under dist/
+      # before the step below deletes it.
+      - name: The executable bundles the engine it links
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          set -euo pipefail
+          bin_dir=$(find dist -type d -path '*lilbee_engine/bin' | head -1)
+          [ -n "${bin_dir}" ] || { echo "no bundled engine found under dist/" >&2; exit 1; }
+          uv run --no-sync python tools/qa/assert_engine_bundle.py \
+            --backend "${BACKEND}" --platform "${RUNNER_OS}" "${bin_dir}"
+
       # The onefile build leaves multi-GB intermediates beside the final binary,
       # and a runner has died of a full disk while restoring the smoke models
       # after a SUCCESSFUL build. Drop them before the models come down; runs

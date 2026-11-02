@@ -548,3 +548,92 @@ def test_the_release_workflows_ask_for_ggml_base(workflow: str) -> None:
     calls = [line for line in text.splitlines() if "assert_engine_bundle.py" in line]
     assert calls
     assert all("--tool llama-server --library ggml-base" in line for line in calls)
+
+
+def _bin_dir(tmp_path: Path, bin_files: tuple[str, ...]) -> Path:
+    root = tmp_path / "dist" / "lilbee.dist" / "lilbee_engine" / "bin"
+    for entry in bin_files:
+        (root / entry).parent.mkdir(parents=True, exist_ok=True)
+        (root / entry).write_bytes(b"x")
+    return root
+
+
+def test_a_directory_with_every_windows_file_passes(tmp_path: Path) -> None:
+    root = _bin_dir(
+        tmp_path, ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_RUNTIME, *_WINDOWS_CRT)
+    )
+    assert acb.check(root, "cu124", "Windows") == []
+
+
+def test_a_directory_without_vcomp140_is_rejected_as_an_executable(tmp_path: Path) -> None:
+    files = ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_RUNTIME, *_WINDOWS_CRT[:-1])
+    problems = acb.check(_bin_dir(tmp_path, files), "cu124", "Windows")
+    assert len(problems) == 1
+    assert "windows executable is missing vcomp140.dll" in problems[0]
+
+
+def test_vcomp140_beside_the_bin_directory_does_not_count(tmp_path: Path) -> None:
+    root = _bin_dir(
+        tmp_path, ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_RUNTIME, *_WINDOWS_CRT[:-1])
+    )
+    (root.parent.parent / "vcomp140.dll").write_bytes(b"x")
+    assert any("vcomp140.dll" in p for p in acb.check(root, "cu124", "Windows"))
+
+
+def test_a_directory_rocm_runtime_is_read_from_nested_kernels(tmp_path: Path) -> None:
+    files = ("libggml-hip.so.0.15.1", *_ROCM_PAYLOAD[1:])
+    root = _bin_dir(tmp_path, files)
+    assert acb.check(root, "rocm", "Linux") == []
+    (root / "rocblas" / "library" / "kernels.dat").unlink()
+    problems = acb.check(root, "rocm", "Linux")
+    assert len(problems) == 1
+    assert "Tensile kernels" in problems[0]
+
+
+def test_a_directory_missing_its_backend_library_is_rejected(tmp_path: Path) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-base.so"))
+    problems = acb.check(root, "vulkan", "Linux")
+    assert any("vulkan executable is missing libggml-vulkan.so" in p for p in problems)
+    assert any("libvulkan.so.1" in p for p in problems)
+
+
+def test_a_directory_has_no_size_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-metal.dylib"))
+    monkeypatch.setattr(acb, "WHEEL_SIZE_LIMIT", 0)
+    assert acb.check(root, "metal", "macOS") == []
+
+
+def test_an_empty_directory_has_no_payload(tmp_path: Path) -> None:
+    root = tmp_path / "bin"
+    root.mkdir()
+    assert "no lilbee_engine/bin/ payload" in acb.check(root, "cpu", "Linux")[0]
+
+
+def test_main_checks_a_directory_with_a_platform(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-cuda.so"))
+    args = ["--backend", "cu125", "--platform", "Linux", str(root)]
+    assert acb.main(args) == 1
+    assert "libcudart.so" in capsys.readouterr().err
+    (root / "libcudart.so.12").write_bytes(b"x")
+    (root / "libcublas.so.12").write_bytes(b"x")
+    (root / "libcublasLt.so.12").write_bytes(b"x")
+    assert acb.main(args) == 0
+
+
+def test_main_refuses_a_directory_without_a_platform(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _bin_dir(tmp_path, ("llama-server",))
+    assert acb.main(["--backend", "cpu", str(root)]) == 1
+    assert "needs --platform" in capsys.readouterr().err
+
+
+def test_main_refuses_the_tool_check_on_a_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-cpu.so"))
+    args = ["--platform", "Linux", "--tool", "llama-server", str(root)]
+    assert acb.main(args) == 1
+    assert "--tool reads a wheel, not a directory" in capsys.readouterr().err
