@@ -128,18 +128,13 @@ def test_binary_skips_a_build_of_another_version_and_one_with_no_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = EngineStore(engines_root(cfg.models_dir))
-    toolless = tmp_path / "toolless.whl"
-    with zipfile.ZipFile(toolless, "w") as archive:
-        archive.writestr("lilbee_engine_ik-1.dist-info/METADATA", "License-Expression: MIT\n")
-    sha = hashlib.sha256(toolless.read_bytes()).hexdigest()
-    store.install_from_wheel(
-        PinLock("ik_llama.cpp", "0+gitaaaaaaaaaaaa", "cpu", {}, ("MIT",), sha, "llama-server"),
-        toolless,
-    )
-    store.install_from_wheel(
-        PinLock("ik_llama.cpp", ik_llama.VERSION, "cpu", {}, ("MIT",), sha, "llama-server"),
-        toolless,
-    )
+    wheel = tmp_path / "ik.whl"
+    sha = _make_wheel(wheel)
+    other = PinLock("ik_llama.cpp", "0+gitaaaaaaaaaaaa", "cpu", {}, ("MIT",), sha, "llama-server")
+    store.install_from_wheel(other, wheel)
+    current = PinLock("ik_llama.cpp", ik_llama.VERSION, "cpu", {}, ("MIT",), sha, "llama-server")
+    for server in store.install_from_wheel(current, wheel).glob("*/bin/llama-server*"):
+        server.unlink()
     with pytest.raises(ProviderError, match="is not installed"):
         IK_LLAMA.binary()
 

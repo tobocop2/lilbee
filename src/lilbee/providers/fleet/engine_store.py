@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from lilbee.catalog.download import disk_shortfall, download_url, url_filename
 from lilbee.core.security import FileLockUnavailableError, file_lock
+from lilbee.providers.fleet.wheel_server import server_entry, server_problems
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +37,6 @@ _NO_WAIT_S = 0.0
 _INSTALL_TIMEOUT_S = 1800.0
 _ENGINES_DIRNAME = "engines"
 _NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
-_TOOL_PATH = re.compile(r"[^/]+/bin/[^/]+")
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
 _PACK_DIR = "packs"
 _PACKAGE_INDEX = "https://lilbee.sh"
@@ -52,7 +52,7 @@ class LicenceRefusedError(Exception):
 
 
 class UnsafeWheelError(Exception):
-    """The wheel holds an entry that would land outside its install directory."""
+    """The wheel holds an entry outside its install directory, or no usable server."""
 
 
 class EngineConflictError(Exception):
@@ -186,7 +186,8 @@ def _check_wheel(lock: PinLock, wheel: Path) -> None:
         _refuse_linked_binary(lock, archive)
         names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
         text = archive.read(names[0]).decode("utf-8") if names else None
-    _check_declared_licence(lock, text)
+        _check_declared_licence(lock, text)
+        _refuse_unusable_server(lock, archive)
 
 
 def _check_declared_licence(lock: PinLock, metadata_text: str | None) -> None:
@@ -253,17 +254,22 @@ def _refuse_linked_binary(lock: PinLock, archive: zipfile.ZipFile) -> None:
         )
 
 
+def _refuse_unusable_server(lock: PinLock, archive: zipfile.ZipFile) -> None:
+    problems = server_problems(archive, lock.tool)
+    if problems:
+        raise UnsafeWheelError(
+            f"The wheel for engine {lock.engine} {lock.version} {'; '.join(problems)}."
+        )
+
+
 def _is_server(path: str, tool: str) -> bool:
     """True for a file of ``<package>/bin/`` named *tool*."""
-    if _TOOL_PATH.fullmatch(path) is None:
-        return False
-    return PurePosixPath(path).name in (tool, f"{tool}.exe")
+    return server_entry([path], tool) is not None
 
 
 def _binary_of(archive: zipfile.ZipFile, tool: str) -> str | None:
     """The ``<package>/bin/<tool>`` file of the wheel, as a POSIX path; None when it has none."""
-    found = sorted(n for n in archive.namelist() if _is_server(n, tool))
-    return found[0] if found else None
+    return server_entry(archive.namelist(), tool)
 
 
 def _binary_usable(binary: Path, directory: Path) -> bool:
