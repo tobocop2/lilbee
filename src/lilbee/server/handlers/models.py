@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from cachetools import TTLCache
 from pydantic import BaseModel
 
-from lilbee.app.models import list_models_data
+from lilbee.app.models import ensure_vision_projector, list_models_data
 from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.catalog import (
@@ -592,6 +592,9 @@ async def models_pull(
                 allow_unsupported=allow_unsupported,
                 cancel=sse.cancel,
             )
+            warning = ensure_vision_projector(model, warn_unreadable=True)
+            if warning is not None:
+                sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(warning))
         except TaskCancelledError:
             log.info("Model pull for %s aborted: client disconnected", model)
         except Exception as exc:

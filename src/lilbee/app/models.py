@@ -370,7 +370,7 @@ def _unchecked_projector_warning(ref: str) -> str:
     )
 
 
-def _ensure_vision_projector(ref: str, *, warn_unreadable: bool) -> str | None:
+def ensure_vision_projector(ref: str, *, warn_unreadable: bool) -> str | None:
     """Fetch the projector a GGUF lacks when its repo lists one; return a warning if unsure.
 
     Runs after a fresh pull and for an installed model. A complete install never
@@ -433,7 +433,7 @@ def pull_model_data(
         # repo lists; without it llama-server can't serve OCR, so ensure it
         # before reporting already-installed.
         warning = (
-            _ensure_vision_projector(ref, warn_unreadable=False)
+            ensure_vision_projector(ref, warn_unreadable=False)
             if source is ModelSource.NATIVE
             else None
         )
@@ -454,7 +454,7 @@ def pull_model_data(
         source=source.value,
         status=PullStatus.OK,
         path=str(path) if path is not None else None,
-        warning=_ensure_vision_projector(ref, warn_unreadable=True),
+        warning=ensure_vision_projector(ref, warn_unreadable=True),
     )
 
 

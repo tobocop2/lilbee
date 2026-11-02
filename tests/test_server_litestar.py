@@ -1178,7 +1178,10 @@ class TestModelsPullByFormat:
             fetched.append((entry.hf_repo, entry.format))
             return tmp_path / "unused"
 
-        with mock.patch("lilbee.catalog.download_model", _download):
+        with (
+            mock.patch("lilbee.catalog.download_model", _download),
+            mock.patch("lilbee.server.handlers.models.ensure_vision_projector", return_value=None),
+        ):
             resp = client.post(
                 "/api/models/pull", json={"model": "acme/two#mlx", "source": "native"}
             )
