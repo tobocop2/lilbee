@@ -189,8 +189,14 @@ class _TransientDownloadError(RuntimeError):
     """A transfer fault another attempt can clear: a network or an I/O error."""
 
 
-def _retry_transient(work: Callable[[], _T]) -> _T:
+RetryCallback = Callable[[int, int, str], None]
+"""Receives (attempt, attempts, cause) when a failed attempt is about to repeat."""
+
+
+def _retry_transient(work: Callable[[], _T], on_retry: RetryCallback | None = None) -> _T:
     """Run *work*, retrying only the faults another attempt can clear.
+
+    *on_retry* hears each failed attempt that another attempt follows.
 
     Every other error propagates on the first attempt, cancellation included,
     so a defect or a configuration error is never hidden behind a retry. A
@@ -205,6 +211,8 @@ def _retry_transient(work: Callable[[], _T]) -> _T:
             last_error = exc
             log.warning("%s (attempt %d/%d)", exc, attempt + 1, _TRANSFER_RETRIES + 1)
         if attempt < _TRANSFER_RETRIES:
+            if on_retry is not None:
+                on_retry(attempt + 1, _TRANSFER_RETRIES + 1, str(last_error))
             time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
     raise RuntimeError(
         f"{last_error}. The transfer failed {_TRANSFER_RETRIES + 1} times. Check the "
@@ -222,23 +230,38 @@ _PERMANENT_STATUSES = frozenset(
 )
 
 
-def download_url(url: str, dest: Path, size: int) -> Path:
+def download_url(
+    url: str,
+    dest: Path,
+    size: int,
+    *,
+    on_progress: ProgressCallback | None = None,
+    on_retry: RetryCallback | None = None,
+) -> Path:
     """Download *url* into *dest*, resuming a partial file; return the file path.
 
     Network and I/O faults retry. A refusal the server will repeat, and the hub's
     offline switch, end the transfer at once.
+    *on_progress* receives byte counts and *on_retry* each failed attempt.
     """
     from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
     from huggingface_hub.file_download import http_get
 
     dest.mkdir(parents=True, exist_ok=True)
     target = dest / url_filename(url)
+    tqdm_class = _ProgressTracker(on_progress).make_tqdm_class() if on_progress else None
 
     def fetch() -> Path:
         done = target.stat().st_size if target.exists() else 0
         try:
             with target.open("ab") as handle:
-                http_get(url, handle, resume_size=done, expected_size=size)
+                http_get(
+                    url,
+                    handle,
+                    resume_size=done,
+                    expected_size=size,
+                    tqdm_class=tqdm_class,
+                )
         except HfHubHTTPError as exc:
             if exc.response.status_code in _PERMANENT_STATUSES:
                 raise RuntimeError(
@@ -251,7 +274,7 @@ def download_url(url: str, dest: Path, size: int) -> Path:
             raise _TransientDownloadError(f"Transfer failed: {exc}") from None
         return target
 
-    return _retry_transient(fetch)
+    return _retry_transient(fetch, on_retry)
 
 
 def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:

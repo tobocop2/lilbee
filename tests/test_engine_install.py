@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
 from lilbee.catalog import download, runnable
+from lilbee.catalog.models import DownloadProgress
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import run_engine_command
 from lilbee.core.config import Config, cfg
@@ -801,3 +802,102 @@ def test_each_refusing_engine_gives_its_reason_and_the_install_sentence(
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(name)
     assert str(exc.value) == f"Engine {name} cannot run on this host. {reason} {STAYS}"
+
+
+STALL_TIMEOUT = 0.3
+
+
+@pytest.fixture
+def stalling(good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch) -> ReleaseServer:
+    """A release whose file the engine's cell points at; the client gives up after 0.3 s."""
+    release.files["/fx.whl"] = good.read_bytes() * 50
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=len(release.files["/fx.whl"]))
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    monkeypatch.setattr(hub_constants, "HF_HUB_DOWNLOAD_TIMEOUT", STALL_TIMEOUT)
+    monkeypatch.setattr(hub_constants, "DOWNLOAD_CHUNK_SIZE", 1024)
+    return release
+
+
+def test_a_silent_server_names_each_failed_attempt_with_its_cause(
+    stalling: ReleaseServer,
+) -> None:
+    stalling.silent_next = 10
+    retries: list[str] = []
+    with (
+        mock.patch.object(download.time, "sleep"),
+        pytest.raises(engine_service.EngineRefusedError, match="cannot be downloaded"),
+    ):
+        engine_service.install(ENGINE.value, on_retry=retries.append)
+    assert len(stalling.requests) == 3
+    assert [t.split(". ")[-1] for t in retries] == [
+        "Attempt 1 of 3 failed; trying again.",
+        "Attempt 2 of 3 failed; trying again.",
+    ]
+    assert all(t.startswith("Transfer failed: ") for t in retries)
+
+
+def test_a_download_that_stops_mid_body_reports_the_bytes_that_arrived(
+    stalling: ReleaseServer,
+) -> None:
+    stalling.stall_next = 10
+    updates: list[tuple[float, str]] = []
+    with (
+        mock.patch.object(download.time, "sleep"),
+        pytest.raises(engine_service.EngineRefusedError),
+    ):
+        engine_service.install(
+            ENGINE.value, on_update=lambda p: updates.append((p.percent, p.detail))
+        )
+    assert 0 < updates[0][0] < 100
+
+
+def test_a_healthy_download_reports_no_retry_and_completes(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    retries: list[str] = []
+    built = engine_service.install(ENGINE.value, on_retry=retries.append)
+    assert (built.engine, retries) == (ENGINE.value, [])
+    assert len(release.requests) == 1
+
+
+@pytest.mark.parametrize("flags", [[], ["--json"]])
+def test_the_cli_tells_the_user_about_each_retry_on_stderr(
+    stalling: ReleaseServer, flags: list[str]
+) -> None:
+    stalling.silent_next = 10
+    with mock.patch.object(download.time, "sleep"):
+        result = CliRunner().invoke(cli_app, [*flags, "engine", "install", ENGINE.value])
+    assert result.exit_code == 1
+    assert result.stderr.count("failed; trying again.") == 2
+    if flags:
+        assert json.loads(result.stdout)["command"] == "engine install"
+    assert "failed; trying again." not in result.stdout
+
+
+def test_the_slash_command_hands_each_retry_to_the_screen(stalling: ReleaseServer) -> None:
+    stalling.silent_next = 10
+    retries: list[str] = []
+    with mock.patch.object(download.time, "sleep"):
+        out = run_engine_command(f"install {ENGINE.value}", retries.append)
+    assert not out.ok
+    assert len(retries) == 2
+
+
+def test_the_cli_shows_download_progress_on_stderr_and_keeps_stdout_clean(
+    good: Path,
+) -> None:
+    def install(
+        _name: str, _wheel: Path | None, on_update: Any, on_retry: Any
+    ) -> engine_service.InstalledBuild:
+        on_update(DownloadProgress(percent=40.0, detail="4/10 MB", is_cache_hit=False))
+        return engine_service.InstalledBuild(ENGINE.value, VERSION, "cpu", "")
+
+    with mock.patch.object(engine_service, "install", side_effect=install):
+        result = CliRunner().invoke(cli_app, ["--json", "engine", "install", ENGINE.value])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["installed"] == f"{ENGINE.value} {VERSION} (cpu)"

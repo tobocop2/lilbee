@@ -1494,7 +1494,10 @@ class ChatScreen(Screen[None]):
     def _run_engine_command(self, args: str) -> None:
         from lilbee.cli.tui.engine_commands import announce, run_engine_command
 
-        result = run_engine_command(args)
+        def on_retry(text: str) -> None:
+            call_from_thread(self, self.notify, text, severity="warning")
+
+        result = run_engine_command(args, on_retry)
         call_from_thread(self, announce, self.app, result)
 
     def _cmd_rebuild(self, _args: str) -> None:
