@@ -191,6 +191,28 @@ class TestDeviceReads:
         replicas._probed_gpu_count.cache_clear()
         assert replicas.gpu_device_count(_binaryless(spy)) == 1
 
+    def test_gpu_device_count_reads_the_cards_again_once_the_binary_is_installed(
+        self, spy: SpyEngine
+    ) -> None:
+        """A count read with no binary is not kept: the engine counts its cards once installed."""
+
+        class LateBinary(SpyEngine):
+            installed = False
+
+            def binary(self) -> Path:
+                if not self.installed:
+                    raise ProviderError("spy binary missing", provider="spy")
+                return super().binary()
+
+        late = LateBinary(
+            spy.binary(), devices=(SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))
+        )
+        replicas._probed_gpu_count.cache_clear()
+        assert replicas.gpu_device_count(late) == 1
+        late.installed = True
+        assert replicas.gpu_device_count(late) == 2
+        replicas._probed_gpu_count.cache_clear()
+
     def test_gpu_device_count_is_one_when_the_engine_cannot_load(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
     ) -> None:
