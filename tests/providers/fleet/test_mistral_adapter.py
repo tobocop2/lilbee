@@ -23,7 +23,6 @@ from lilbee.providers.fleet import devices, host_caps, swap_config
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
-from lilbee.providers.fleet.engines import mistral
 from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.choice import (
     NoPublishedPackError,
@@ -35,6 +34,7 @@ from lilbee.providers.fleet.host_caps import CardMemory
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.roles import WorkerRole
+from tests._published import publish
 
 L4 = ("NVIDIA L4", (8, 9))
 A40 = ("NVIDIA A40", (8, 6))
@@ -373,7 +373,7 @@ def test_the_engine_counts_as_installed_only_with_a_record_and_finds_its_tool(
     with pytest.raises(ProviderError, match=r"engine install mistral\.rs"):
         MISTRAL.binary()
     sha = make_pack(tmp_path / "pack.whl")
-    monkeypatch.setattr(mistral, "PACK_SHA256", sha)
+    publish(monkeypatch, EngineName.MISTRAL, sha)
     pin = MISTRAL.pin_record()
     assert (pin["engine"], pin["backend"]) == ("mistral.rs", "cpu")
     lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha)
@@ -405,7 +405,7 @@ def test_the_reason_for_a_cpu_archive_reaches_the_user_through_install(
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(runnable, "detect", host)
     sha = make_pack(tmp_path / "pack.whl")
-    monkeypatch.setattr(mistral, "PACK_SHA256", sha)
+    publish(monkeypatch, EngineName.MISTRAL, sha)
     built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
     assert (built.backend, reason in built.note) == ("cpu", True)
 
@@ -417,7 +417,7 @@ def test_a_host_with_a_matching_card_adds_no_note_to_the_install(
     host = lambda: caps("Linux", "x86_64", gpus=[L4])  # noqa: E731
     monkeypatch.setattr(runnable, "detect", host)
     sha = make_pack(tmp_path / "pack.whl")
-    monkeypatch.setattr(mistral, "PACK_SHA256", sha)
+    publish(monkeypatch, EngineName.MISTRAL, sha)
     built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
     assert (built.backend, built.note) == ("cuda128-sm89", "")
 
@@ -438,7 +438,7 @@ def test_an_install_reads_the_host_now_and_a_list_reads_the_cached_host(
     runnable.session_host()
     has_gpu[0] = True
     sha = make_pack(tmp_path / "pack.whl")
-    monkeypatch.setattr(mistral, "PACK_SHA256", sha)
+    publish(monkeypatch, EngineName.MISTRAL, sha, "linux-x86_64-cuda128-sm89")
     installed_engines()
     assert reads == [False]
     built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
@@ -464,7 +464,7 @@ def test_a_cold_list_with_nothing_installed_starts_no_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
-    monkeypatch.setattr(mistral, "PACK_SHA256", "a" * 64)
+    publish(monkeypatch, EngineName.MISTRAL, "a" * 64)
     runnable.session_host.cache_clear()
     started = _count_processes(monkeypatch)
     assert runnable.session_host.cache_info().currsize == 0
@@ -489,7 +489,7 @@ def test_a_cold_list_with_a_build_in_the_store_reads_the_host_once(
     monkeypatch.setattr(runnable, "detect", detect_now)
     monkeypatch.setattr(host_caps, "detect", detect_now)
     sha = make_pack(tmp_path / "pack.whl")
-    monkeypatch.setattr(mistral, "PACK_SHA256", sha)
+    publish(monkeypatch, EngineName.MISTRAL, sha)
     engine_service.install("mistral.rs", tmp_path / "pack.whl")
     runnable.session_host.cache_clear()
     reads.clear()

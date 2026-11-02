@@ -12,6 +12,7 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
+from lilbee.providers.fleet.engine_manifest import pack_digest
 from lilbee.providers.fleet.engine_store import (
     EngineNotInstalledError,
     EngineStore,
@@ -30,8 +31,6 @@ from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, Memo
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _VERSION = "1.9.4"
-# The digest of the pack; None until a pack is published, and an install is refused then.
-PACK_SHA256: str | None = None
 _CPU = "cpu"
 _METAL = "metal"
 _CUDA_PREFIX = "cuda-sm"
@@ -152,11 +151,13 @@ class TeiAdapter:
     def pin_record(self) -> Mapping[str, Any]:
         from lilbee.catalog.runnable import session_host
 
+        host = session_host()
+        backend = self.pick_build(host).backend
         return {
             "engine": self.name.value,
             "version": _VERSION,
-            "backend": self.pick_build(session_host()).backend,
-            "sha256": PACK_SHA256,
+            "backend": backend,
+            "sha256": pack_digest(self.name.value, host, backend),
             "launch": _PIN_LAUNCH,
             "platforms": {},
             "memory": {"sizing": None, "rule": f"fixed {_RESERVE_BYTES} bytes"},

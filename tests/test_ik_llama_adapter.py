@@ -26,6 +26,7 @@ from lilbee.providers.fleet.engines.choice import HostFacts, installed_engines
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.roles import WorkerRole
+from tests._published import publish
 
 COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
 runner = CliRunner()
@@ -67,7 +68,7 @@ def build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Install a fixture pack as the pinned build; the pin takes the digest of that pack."""
     wheel = tmp_path / "ik.whl"
     sha = _make_wheel(wheel)
-    monkeypatch.setattr(ik_llama, "PACK_SHA256", sha)
+    publish(monkeypatch, EngineName.IK_LLAMA, sha)
     lock = PinLock(EngineName.IK_LLAMA.value, ik_llama.VERSION, ik_llama.BACKEND, {}, ("MIT",), sha)
     return EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
 
@@ -75,9 +76,9 @@ def build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_the_pin_names_the_commit_by_its_first_twelve_digits() -> None:
     pin = IK_LLAMA.pin_record()
     assert ik_llama.IK_LLAMA_COMMIT == COMMIT
-    assert pin["version"] == f"git-{COMMIT[:12]}"
+    assert pin["version"] == f"0+git{COMMIT[:12]}"
     assert (pin["engine"], pin["backend"], pin["licenses"]) == ("ik_llama.cpp", "cpu", ["MIT"])
-    assert choice.pin_lock({**pin, "sha256": "a" * 64}).version == "git-13cffc006b82"
+    assert choice.pin_lock({**pin, "sha256": "a" * 64}).version == "0+git13cffc006b82"
 
 
 def test_the_engine_is_registered_and_does_not_ship_in_the_package() -> None:
@@ -99,7 +100,7 @@ def test_a_complete_record_makes_the_engine_installed(build: Path) -> None:
 def test_a_record_of_another_wheel_leaves_the_engine_not_installed(
     build: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr(ik_llama, "PACK_SHA256", "1" * 64)
+    publish(monkeypatch, EngineName.IK_LLAMA, "1" * 64)
     with caplog.at_level("WARNING"):
         assert EngineName.IK_LLAMA not in installed_engines()
     assert "different wheel" in caplog.text
@@ -123,7 +124,7 @@ def test_binary_skips_a_build_of_another_version_and_one_with_no_server(
         archive.writestr("lilbee_engine_ik-1.dist-info/METADATA", "License-Expression: MIT\n")
     sha = hashlib.sha256(toolless.read_bytes()).hexdigest()
     store.install_from_wheel(
-        PinLock("ik_llama.cpp", "git-aaaaaaaaaaaa", "cpu", {}, ("MIT",), sha), toolless
+        PinLock("ik_llama.cpp", "0+gitaaaaaaaaaaaa", "cpu", {}, ("MIT",), sha), toolless
     )
     store.install_from_wheel(
         PinLock("ik_llama.cpp", ik_llama.VERSION, "cpu", {}, ("MIT",), sha), toolless
@@ -134,7 +135,7 @@ def test_binary_skips_a_build_of_another_version_and_one_with_no_server(
 
 @pytest.mark.parametrize(
     ("version", "backend"),
-    [("git-aaaaaaaaaaaa", ik_llama.BACKEND), (ik_llama.VERSION, "cuda")],
+    [("0+gitaaaaaaaaaaaa", ik_llama.BACKEND), (ik_llama.VERSION, "cuda")],
 )
 def test_binary_skips_a_build_of_another_version_or_backend_that_has_a_server(
     version: str, backend: str, tmp_path: Path
@@ -189,7 +190,6 @@ def test_install_on_a_host_without_avx2_is_refused_and_writes_nothing(
 
 
 def test_the_adapter_records_no_pack_digest_until_a_pack_is_published() -> None:
-    assert ik_llama.PACK_SHA256 is None
     assert IK_LLAMA.pin_record()["sha256"] is None
 
 
@@ -214,11 +214,11 @@ def test_install_from_a_pack_with_the_pinned_digest_lists_the_engine(
 ) -> None:
     monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
     wheel = tmp_path / "ik.whl"
-    monkeypatch.setattr(ik_llama, "PACK_SHA256", _make_wheel(wheel))
+    publish(monkeypatch, EngineName.IK_LLAMA, _make_wheel(wheel))
     built = engine_service.install("ik_llama.cpp", wheel)
     assert (built.engine, built.version, built.backend) == (
         "ik_llama.cpp",
-        f"git-{COMMIT[:12]}",
+        f"0+git{COMMIT[:12]}",
         "cpu",
     )
     assert EngineName.IK_LLAMA in installed_engines()
@@ -269,7 +269,7 @@ def test_engine_list_json_names_the_engines_that_are_not_installed() -> None:
 
 def test_engine_list_shows_an_installed_build_and_no_not_installed_line(build: Path) -> None:
     result = runner.invoke(cli_app, ["engine", "list"])
-    assert f"ik_llama.cpp git-{COMMIT[:12]} (cpu)" in result.output
+    assert f"ik_llama.cpp 0+git{COMMIT[:12]} (cpu)" in result.output
     assert "ik_llama.cpp not installed" not in result.output
     assert "tei not installed" in result.output
 
