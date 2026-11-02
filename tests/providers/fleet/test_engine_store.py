@@ -475,14 +475,15 @@ def test_build_whose_binary_is_gone_is_not_installed_and_is_replaced(
     assert len(store.installed()) == 1
 
 
-def test_wheel_without_a_bin_tool_records_no_binary(store: EngineStore, tmp_path: Path) -> None:
+def test_wheel_without_a_bin_tool_is_refused(store: EngineStore, tmp_path: Path) -> None:
     path = tmp_path / "lib.whl"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("p/data.txt", "x")
         archive.writestr("p-1.dist-info/METADATA", "Name: p\nLicense-Expression: MIT\n")
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
-    store.install_from_wheel(pin(sha), path)
-    assert store.installed()[0].binary is None
+    with pytest.raises(UnsafeWheelError, match="has no server in its bin directory"):
+        store.install_from_wheel(pin(sha), path)
+    assert store.installed() == []
 
 
 def test_second_wheel_with_another_sha_is_refused_and_keeps_the_build(
@@ -1013,14 +1014,14 @@ def test_the_record_names_the_server_when_a_helper_sorts_first(
     assert found.binary == store.root / "fx" / "1-cpu" / "p" / "bin" / "server"
 
 
-def test_a_wheel_without_the_server_installs_with_no_binary(
+def test_a_wheel_without_the_server_is_refused_beside_a_helper(
     store: EngineStore, tmp_path: Path
 ) -> None:
     path = tmp_path / "h.whl"
     sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server.txt": stat.S_IFREG})
-    store.install_from_wheel(pin(sha), path)
-    [found] = store.installed()
-    assert found.binary is None
+    with pytest.raises(UnsafeWheelError, match="has no server in its bin directory"):
+        store.install_from_wheel(pin(sha), path)
+    assert store.installed() == []
 
 
 def test_a_linked_server_is_refused_beside_a_regular_helper(
@@ -1060,3 +1061,42 @@ def test_a_pin_with_no_tool_is_refused_when_read() -> None:
 def test_a_pin_lock_cannot_be_built_without_a_tool() -> None:
     with pytest.raises(TypeError, match="tool"):
         PinLock("fx", "1", "cpu", {}, ("MIT",), "a" * 64)  # type: ignore[call-arg]
+
+
+def _ggml_wheel(path: Path, *, mode: int = 0o755, files: tuple[str, ...] = ()) -> str:
+    """A wheel whose server has *mode* and whose bin folder also holds *files*."""
+    with zipfile.ZipFile(path, "w") as archive:
+        server = zipfile.ZipInfo("p/bin/server")
+        server.external_attr = (stat.S_IFREG | mode) << 16
+        archive.writestr(server, "#!/bin/sh\n")
+        for name in files:
+            archive.writestr(f"p/bin/{name}", "x")
+        archive.writestr("p-1.dist-info/METADATA", "Name: p\nLicense-Expression: MIT\n")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_a_wheel_with_a_runnable_server_and_ggml_base_installs(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "g.whl"
+    sha = _ggml_wheel(path, files=("libggml-base.so.0.9.5", "libggml-cpu.so"))
+    store.install_from_wheel(pin(sha), path)
+    assert [found.binary for found in store.installed()] == [
+        store.root / "fx" / "1-cpu" / "p" / "bin" / "server"
+    ]
+
+
+def test_a_server_without_the_execute_bit_is_refused(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "g.whl"
+    sha = _ggml_wheel(path, mode=0o644, files=("libggml-base.so.0",))
+    with pytest.raises(UnsafeWheelError, match="without the execute bit"):
+        store.install_from_wheel(pin(sha), path)
+    assert store.installed() == []
+
+
+def test_a_ggml_wheel_without_ggml_base_is_refused(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "g.whl"
+    sha = _ggml_wheel(path, files=("libggml-cpu.so", "libggml.so.0"))
+    with pytest.raises(UnsafeWheelError, match="no ggml-base library"):
+        store.install_from_wheel(pin(sha), path)
+    assert store.installed() == []
