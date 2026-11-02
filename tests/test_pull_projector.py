@@ -225,7 +225,7 @@ class TestListingRead:
         monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: _entry())
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
         monkeypatch.setattr(dl, "_models_dir", lambda: tmp_path)
-        assert model_mod._ensure_vision_projector(_REPO, warn_unreadable=False) is None
+        assert model_mod.ensure_vision_projector(_REPO, warn_unreadable=False) is None
         assert listing_server.requests == []
         assert list(tmp_path.iterdir()) == []
 
