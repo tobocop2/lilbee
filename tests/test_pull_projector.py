@@ -109,11 +109,19 @@ class TestFreshPull:
         assert hub.fetched == []
         assert hub.launch_judge() is None
 
-    def test_unreadable_listing_fails_and_names_the_projector(self, hub: _Hub) -> None:
+    def test_unreadable_listing_keeps_the_model_and_does_not_fail(self, hub: _Hub) -> None:
         hub.listing = None
-        with pytest.raises(RuntimeError, match=f"vision projector of {_REPO}"):
-            hub.pull(_entry())
+        path = hub.pull(_entry())
+        assert path == hub.models_dir / _MODEL
         assert hub.model_fetches == 1
+        assert hub.launch_judge() is None
+
+    def test_offline_repull_of_a_cached_model_does_not_fail(self, hub: _Hub) -> None:
+        (hub.models_dir / _MODEL).write_bytes(b"model")
+        hub.listing = None
+        path = hub.pull(_entry())
+        assert path == hub.models_dir / _MODEL
+        assert hub.model_fetches == 0
 
     def test_failed_projector_transfer_fails_the_pull(self, hub: _Hub) -> None:
         hub.fail_transfer = RuntimeError("projector transfer stalled")
@@ -123,8 +131,7 @@ class TestFreshPull:
 
     def test_next_pull_after_a_failed_listing_fetches_only_the_projector(self, hub: _Hub) -> None:
         hub.listing = None
-        with pytest.raises(RuntimeError, match="vision projector"):
-            hub.pull(_entry())
+        hub.pull(_entry())
         assert (hub.models_dir / _MODEL).exists()
         hub.listing = list(_LISTING)
         hub.pull(_entry())
