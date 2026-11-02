@@ -137,7 +137,6 @@ class TestRetryIsOnEveryTransfer:
         monkeypatch.setattr(dl, "resolve_filename", lambda entry, engine: "f.gguf")
         monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=1, blob="abc"))
         monkeypatch.setattr(dl, "_resolve_mmproj_filename", lambda *a: "mmproj.gguf")
-        monkeypatch.setattr(dl, "repo_has_mmproj", lambda repo: False)
 
         call(_entry())
 
