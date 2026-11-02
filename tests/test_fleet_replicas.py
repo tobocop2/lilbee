@@ -96,7 +96,8 @@ def test_gpu_device_count_is_cached(monkeypatch) -> None:
         return [_card(0), _card(1)]
 
     monkeypatch.setattr(
-        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: object()
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+        lambda: Path("/bin/llama-server"),
     )
     monkeypatch.setattr("lilbee.providers.fleet.planning.resolve_devices", _probe)
     assert gpu_device_count(LLAMA) == 2
