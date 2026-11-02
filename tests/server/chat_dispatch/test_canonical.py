@@ -8,6 +8,7 @@ from lilbee.server.chat_dispatch.canonical import (
     IMAGES_DROPPED_HEADER,
     IMAGES_DROPPED_REASON,
     IMAGES_DROPPED_REASON_HEADER,
+    IMAGES_ONLY_MESSAGE,
     CanonicalChatRequest,
     CanonicalMessage,
     CanonicalResponse,
@@ -164,3 +165,9 @@ def test_the_reason_names_the_cause_and_the_vision_role_in_plain_ascii() -> None
     assert "vision role" in IMAGES_DROPPED_REASON
     assert IMAGES_DROPPED_REASON.isascii()
     assert "\n" not in IMAGES_DROPPED_REASON
+
+
+def test_the_images_only_message_gives_the_log_reason_and_asks_for_text() -> None:
+    assert IMAGES_DROPPED_REASON in IMAGES_ONLY_MESSAGE
+    assert "cannot pass images" not in IMAGES_ONLY_MESSAGE
+    assert IMAGES_ONLY_MESSAGE.endswith("Send text with the request.")

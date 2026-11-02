@@ -180,6 +180,31 @@ class TestValidation:
         sent = services_with_chat_model.provider.chat.call_args.kwargs["messages"]
         assert [m["content"] for m in sent] == ["q"]
 
+    async def test_image_block_with_null_source_is_counted_as_dropped(
+        self, services_with_chat_model, _auth_token
+    ):
+        malformed = {"type": "image", "source": None}
+        body = _body(
+            messages=[{"role": "user", "content": [malformed, {"type": "text", "text": "q"}]}]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=body, headers=_h())
+        assert resp.status_code == 200
+        assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
+
+    async def test_unknown_block_type_is_not_counted_as_an_image(
+        self, services_with_chat_model, _auth_token
+    ):
+        unknown = {"type": "thinking", "thinking": "hm"}
+        body = _body(
+            messages=[{"role": "user", "content": [unknown, {"type": "text", "text": "q"}]}]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=body, headers=_h())
+        assert resp.status_code == 200
+        assert IMAGES_DROPPED_HEADER.lower() not in resp.headers
+
     async def test_streamed_image_request_carries_the_dropped_header(
         self, services_with_chat_model, _auth_token
     ):
@@ -210,7 +235,11 @@ class TestValidation:
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 400
-        assert resp.json()["error"]["message"] == IMAGES_ONLY_MESSAGE
+        message = resp.json()["error"]["message"]
+        assert message == IMAGES_ONLY_MESSAGE
+        assert "projector" in message
+        assert "vision role" in message
+        assert "cannot pass images" not in message
 
     async def test_dropped_image_is_logged_once_by_the_route(
         self, services_with_chat_model, _auth_token
