@@ -534,10 +534,15 @@ def _ensure_projector(
 
     The Hub listing alone says whether the repo ships one, so dual-use VL repos
     (Qwen-VL, InternVL, SmolVLM, gemma-3), which classify as chat, get theirs.
-    An unreadable listing or a failed transfer raises.
+    A failed transfer raises. An unreadable listing is no answer: the pull of
+    the model stands and the caller re-checks the listing and warns.
     """
-    if not _projector_on_disk(model_path):
+    if _projector_on_disk(model_path):
+        return
+    try:
         _fetch_mmproj(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
+    except ProjectorListingError as exc:
+        log.info("Could not check %s for a projector: %s", entry.hf_repo, exc)
 
 
 def download_mmproj(

@@ -2313,10 +2313,10 @@ class TestVisionMmprojFiles:
         result = download_model(entry, engine=LLAMA)
         assert result.exists()
 
-    def test_download_model_fails_when_projector_listing_unreadable(
+    def test_download_model_succeeds_when_projector_listing_unreadable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An unreadable listing is not "no projector": the pull fails and names the repo."""
+        """An unreadable listing is not "no projector" and not a failed pull: the model stays."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
         monkeypatch.setattr(
@@ -2329,8 +2329,9 @@ class TestVisionMmprojFiles:
 
         monkeypatch.setattr(catalog.download, "_repo_sibling_files", _listing_down)
 
-        with pytest.raises(RuntimeError, match=f"vision projector of {entry.hf_repo}"):
-            download_model(entry, engine=LLAMA)
+        result = download_model(entry, engine=LLAMA)
+        assert result.exists()
+        assert not list(tmp_path.rglob("*mmproj*"))
 
     def test_download_mmproj_uses_cache_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -800,6 +800,8 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 // lilbee --json model pull <ref>  (streams events, then a final "done" line)
 {"event": "progress", "model": "...", "bytes": 12345678, "total": 999999999}
 {"event": "done", "model": "...", "installed": true}
+// "warning" is optional: it is a string only when the pull could not confirm a vision projector
+{"event": "done", "model": "...", "installed": true, "warning": "... is named as a vision model, but its repo lists no projector file."}
 ```
 
 **Gaps vs MCP.** The CLI doesn't expose `crawl` (non-blocking URL crawling) or
