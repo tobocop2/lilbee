@@ -56,6 +56,7 @@ _PROFILE = RequestProfile(
     reasoning_field="reasoning_content",
 )
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
+_PIN_LIBRARIES = ["ggml-base"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
 
 
@@ -97,6 +98,7 @@ class LlamaCppAdapter:
             "version": ENGINE_LLAMA_CPP_REF,
             "backend": None,
             "tool": EngineTool.LLAMA_SERVER.value,
+            "libraries": _PIN_LIBRARIES,
             "launch": _PIN_LAUNCH,
             "platforms": {},
             "memory": {"sizing": _PIN_SIZING, "rule": None},

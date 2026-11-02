@@ -267,6 +267,7 @@ def pin_lock(pin: Mapping[str, Any]) -> PinLock:
             licences,
             pin["sha256"],
             pin["tool"],
+            tuple(pin.get("libraries", ())),
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise PinError(f"the pin record is not usable ({exc!r})") from exc
