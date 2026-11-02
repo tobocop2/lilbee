@@ -275,6 +275,24 @@ The step `named` sends one request through the routing provider. It passes when 
 
 The 7 preset recordings in `tests/conformance/fixtures/presets/` are not strict and have no `reasoning` step. The `reasoning` step of a strict recording reads the answer text and the finish reason through the provider. It does not read `reasoning_content` or `reasoning`. A pass of the preset `reasoning` step does not prove that the engine splits reasoning from the answer. Row E6 of the wire harness proves the split.
 
+## CI cost of a cell
+
+These costs come from `.github/workflows/`. No time per fixture is measured: the replay needs the provider extra, and the run that wrote this section did not have it.
+
+A new recording adds no job and no runner. The file is one more parameter of the replay tests, so it runs inside cells that already exist:
+
+| Job | Cells | Runs the recordings | Limit for each cell |
+|---|---|---|---|
+| `integration` in `ci.yml` | 9 (ubuntu, macos, windows, each with Python 3.11, 3.12, 3.13) | yes, through `make test-integration` | 120 minutes |
+| `test` in `ci.yml` | 7 (the same 9, less macos and windows on 3.11) | the recording-strict test only; the replay skips without the extra | 120 minutes |
+
+A recording is a file of captured replies. Replay starts no engine, loads no model and needs no GPU. The cost of a new recording is one more replay in each of the 9 `integration` cells.
+
+A new engine build is a different cost. The matrix in `build-multigpu.yml` has 11 cells (5 ubuntu, 4 windows, 2 macos), each limited to 360 minutes. A new cell there runs on a pull request that changes `engine-versions.env` or the engine build scripts, on a push to `main`, and on the weekly schedule. The workflow files hold no run time for it.
+
+Hardware with no CI runner (Intel NPU, Arc, Apple MLX) has no cell. Its recording comes from a run on the project's own hardware, taken with `record_presets` and kept with its `.log` file next to the `.json` file. CI replays that file like any other.
+
+The engine pin sync in `engine-pin-sync.yml` is one job with a 30 minute limit that runs weekly. It bumps `ENGINE_LLAMA_CPP_REF` only. A pin file for another engine is not part of this workflow.
 
 ## Add an engine
 
