@@ -504,6 +504,14 @@ def _run_sync(
         asyncio.set_event_loop(None)
 
 
+def _exit_if_failed(result: object) -> None:
+    """Exit 1 when *result* is a sync that left a failed file; call it after printing."""
+    from lilbee.data.ingest import SyncResult
+
+    if isinstance(result, SyncResult) and result.failed:
+        raise SystemExit(1)
+
+
 def sync_cmd(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -540,8 +548,7 @@ def sync_cmd(
         json_output(sync_result_to_json(result))
     else:
         console.print(result)
-    if result.failed:
-        raise SystemExit(1)
+    _exit_if_failed(result)
 
 
 def rebuild(
@@ -578,8 +585,9 @@ def rebuild(
                 "ingested": len(result.added),
             }
         )
-        return
-    console.print(f"Rebuilt: {len(result.added)} documents ingested")
+    else:
+        console.print(f"Rebuilt: {len(result.added)} documents ingested")
+    _exit_if_failed(result)
 
 
 def index(
@@ -727,8 +735,12 @@ def _register_and_sync(
     force: bool,
     cancel_event: threading.Event,
     rollback: AddRollback,
+    synced: list[object],
 ) -> dict | None:
-    """Register the files and sync; returns the JSON result, or None after human output."""
+    """Register the files and sync; returns the JSON result, or None after human output.
+
+    Each sync result lands in *synced*, so the caller can set the exit code after output.
+    """
 
     def _sync(registration: RegisterResult) -> object:
         rollback.absorbed_into = registration.absorbed_into
@@ -736,7 +748,9 @@ def _register_and_sync(
         def _sync_starts() -> None:
             rollback.registered(registration.revocable, cancel_event)
 
-        return _run_sync(cancel_event, before_sync=_sync_starts)
+        result = _run_sync(cancel_event, before_sync=_sync_starts)
+        synced.append(result)
+        return result
 
     if cfg.json_mode:
         return _add_json_mode(file_paths, crawled_paths, force=force, run_sync=_sync)
@@ -790,6 +804,7 @@ def add(
     cancel_event = threading.Event()
     rollback = AddRollback(paths=file_paths, at_sync=False)
     outcome = _CrawlOutcome()
+    synced: list[object] = []
     try:
         with _ctrl_c_stops(cancel_event, rollback):
             outcome = _crawl_urls_step(
@@ -807,6 +822,7 @@ def add(
                 force=force,
                 cancel_event=cancel_event,
                 rollback=rollback,
+                synced=synced,
             )
             # An add that ends before its sync under a Ctrl+C still stops; a sync
             # that returned has finished, and its result stands.
@@ -815,6 +831,8 @@ def add(
     except RuntimeError as exc:
         _report_add_error(exc, outcome.failed)
     _report_failed_sources(payload, outcome.failed)
+    for result in synced:
+        _exit_if_failed(result)
 
 
 _chunks_source_argument = typer.Argument(..., help="Source name to inspect chunks for.")

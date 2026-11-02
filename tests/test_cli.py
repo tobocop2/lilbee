@@ -134,7 +134,9 @@ def mock_svc():
     store.canary_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
-    embedder.embed_batch.return_value = []
+    embedder.embed_batch.side_effect = lambda texts, **kw: [
+        np.full(768, 0.1, dtype=np.float32) for _ in texts
+    ]
     services = make_mock_services(searcher=searcher, store=store, embedder=embedder)
     svc_mod.set_services(services)
     yield services
@@ -423,6 +425,47 @@ class TestRebuild:
         assert result.exit_code == 0
         assert "Rebuilt:" in result.output
 
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(added=["ok.txt"], failed=["bad.txt"]),
+    )
+    def test_rebuild_with_a_failed_file_exits_1(self, mock_sync):
+        result = runner.invoke(app, ["rebuild"])
+        assert result.exit_code == 1
+        assert "Rebuilt: 1 documents ingested" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(added=["ok.txt"], failed=["bad.txt"]),
+    )
+    def test_json_rebuild_with_a_failed_file_exits_1(self, mock_sync):
+        result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {"command": "rebuild", "ingested": 1}
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value="not a result")
+    def test_rebuild_rejects_a_result_that_is_not_a_sync_result(self, mock_sync):
+        result = runner.invoke(app, ["rebuild"])
+        assert isinstance(result.exception, TypeError)
+        assert "Expected SyncResult, got str" in str(result.exception)
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_rebuild_max_cpus_sets_ingest_workers(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["rebuild", "--max-cpus", "3"])
+        assert result.exit_code == 0
+        assert cfg.ingest_workers == 3
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(added=["ok.txt"], skipped=["slow.pdf"]),
+    )
+    def test_rebuild_with_a_skipped_file_exits_0(self, mock_sync):
+        result = runner.invoke(app, ["rebuild"])
+        assert result.exit_code == 0
+
     def test_rebuild_error_prints_a_bracketed_path_literally(self):
         with mock.patch(
             "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
@@ -512,6 +555,31 @@ class TestAdd:
         result = runner.invoke(app, ["add", str(f1), str(f2)])
         assert result.exit_code == 0
         assert "Registered 2" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(failed=["doc.txt"]),
+    )
+    def test_add_with_a_failed_file_exits_1(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        result = runner.invoke(app, ["add", str(src)])
+        assert result.exit_code == 1
+        assert "Failed: 1" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(skipped=["doc.txt"]),
+    )
+    def test_add_with_a_skipped_file_exits_0(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        result = runner.invoke(app, ["add", str(src)])
+        assert result.exit_code == 0
 
     def test_add_nonexistent_fails(self, tmp_path):
         """Adding a nonexistent path fails."""
@@ -3071,6 +3139,19 @@ class TestRebuildJson:
 
 
 class TestAddJson:
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(failed=["manual.txt"]),
+    )
+    def test_add_json_with_a_failed_file_exits_1(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "manual.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        result = runner.invoke(app, ["--json", "add", str(src)])
+        assert result.exit_code == 1
+        assert json.loads(result.output.strip())["sync"]["failed"] == ["manual.txt"]
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_json_suppresses_eager_start(self, mock_sync, isolated_env, tmp_path):
         """Headless json add only needs embed; it must not eager-warm every role."""
