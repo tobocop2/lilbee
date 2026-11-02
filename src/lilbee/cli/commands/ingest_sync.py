@@ -531,6 +531,14 @@ def _run_sync(
         asyncio.set_event_loop(None)
 
 
+def _exit_if_failed(result: object) -> None:
+    """Exit 1 when *result* is a sync that left a failed file; call it after printing."""
+    from lilbee.data.ingest import SyncResult
+
+    if isinstance(result, SyncResult) and result.failed:
+        raise SystemExit(1)
+
+
 def sync_cmd(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -569,8 +577,7 @@ def sync_cmd(
         console.print(result)
         if _changed_content(result):
             print_tip_if_shown(cfg.data_root)
-    if result.failed:
-        raise SystemExit(1)
+    _exit_if_failed(result)
 
 
 def _changed_content(result: SyncResult) -> bool:
@@ -644,8 +651,7 @@ def rebuild(
             print_prefixed(
                 console, "Error: ", rebuild_failure_message(result.failed), style=theme.ERROR
             )
-    if result.failed:
-        raise SystemExit(1)
+    _exit_if_failed(result)
 
 
 def index(
@@ -793,8 +799,12 @@ def _register_and_sync(
     force: bool,
     cancel_event: threading.Event,
     rollback: AddRollback,
+    sync_results: list[object],
 ) -> dict | None:
-    """Register the files and sync; returns the JSON result, or None after human output."""
+    """Register the files and sync; returns the JSON result, or None after human output.
+
+    Each sync result lands in *sync_results*, so the caller can set the exit code after output.
+    """
 
     synced = False
 
@@ -807,6 +817,7 @@ def _register_and_sync(
             started_by="lilbee add",
         )
         synced = _changed_content(result)
+        sync_results.append(result)
         return result
 
     if cfg.json_mode:
@@ -867,6 +878,7 @@ def add(
     cancel_event = threading.Event()
     rollback = AddRollback(paths=file_paths, at_sync=False)
     outcome = _CrawlOutcome()
+    sync_results: list[object] = []
     try:
         with _ctrl_c_stops(cancel_event, rollback):
             outcome = _crawl_urls_step(
@@ -884,6 +896,7 @@ def add(
                 force=force,
                 cancel_event=cancel_event,
                 rollback=rollback,
+                sync_results=sync_results,
             )
             # An add that ends before its sync under a Ctrl+C still stops; a sync
             # that returned has finished, and its result stands.
@@ -892,6 +905,8 @@ def add(
     except RuntimeError as exc:
         _report_add_error(exc, outcome.failed)
     _report_failed_sources(payload, outcome.failed)
+    for result in sync_results:
+        _exit_if_failed(result)
 
 
 _chunks_source_argument = typer.Argument(..., help="Source name to inspect chunks for.")
