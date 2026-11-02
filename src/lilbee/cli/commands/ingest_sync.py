@@ -580,13 +580,12 @@ def rebuild(
         raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     if cfg.json_mode:
         json_output(
-            {
-                "command": "rebuild",
-                "ingested": len(result.added),
-            }
+            {**sync_result_to_json(result), "command": "rebuild", "ingested": len(result.added)}
         )
     else:
         console.print(f"Rebuilt: {len(result.added)} documents ingested")
+        if result.failed:
+            console.print(result)
     _exit_if_failed(result)
 
 

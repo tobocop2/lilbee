@@ -434,6 +434,8 @@ class TestRebuild:
         result = runner.invoke(app, ["rebuild"])
         assert result.exit_code == 1
         assert "Rebuilt: 1 documents ingested" in result.output
+        assert "Failed: 1" in result.output
+        assert "bad.txt" in result.output
 
     @mock.patch(
         "lilbee.data.ingest.sync",
@@ -443,7 +445,10 @@ class TestRebuild:
     def test_json_rebuild_with_a_failed_file_exits_1(self, mock_sync):
         result = runner.invoke(app, ["--json", "rebuild"])
         assert result.exit_code == 1
-        assert json.loads(result.output) == {"command": "rebuild", "ingested": 1}
+        data = json.loads(result.output)
+        assert data["command"] == "rebuild"
+        assert data["ingested"] == 1
+        assert data["failed"] == ["bad.txt"]
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value="not a result")
     def test_rebuild_rejects_a_result_that_is_not_a_sync_result(self, mock_sync):
@@ -4824,6 +4829,30 @@ class TestAddWithUrls:
         output = click.unstyle(result.output)
         assert reason in output
         assert output.index(reason) < output.index("Ingest needs an embedding model")
+
+
+class TestPlainAddReportsBeforeExit:
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(failed=["note.txt"]),
+    )
+    def test_plain_add_prints_the_failed_source_report_before_it_exits(
+        self, mock_sync, mock_avail, isolated_env, tmp_path
+    ):
+        note = tmp_path / "source" / "note.txt"
+        note.parent.mkdir()
+        note.write_text("content", encoding="utf-8")
+        url = "http://127.0.0.1/private"
+        reason = f"{url}: address refused"
+        outcome = _CrawlOutcome(failed=[_FailedSource(url, reason)])
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=outcome
+        ):
+            result = runner.invoke(app, ["add", str(note), url])
+        assert result.exit_code == 1
+        assert reason in click.unstyle(result.output)
 
 
 class TestIsUrl:
