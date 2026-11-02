@@ -205,6 +205,17 @@ def _bin_entries(bundle: Path) -> list[str]:
     return [n[len(BIN_DIR) :] for n in names if n.startswith(BIN_DIR) and not n.endswith("/")]
 
 
+def _server_problems(
+    bundle: Path, name: str, tool: str | None, libraries: tuple[str, ...]
+) -> list[str]:
+    """The store's server check on a wheel; a directory or no *tool* has none."""
+    if not tool or bundle.is_dir():
+        return []
+    with zipfile.ZipFile(bundle) as archive:
+        found = wheel_server.server_problems(archive, tool, libraries)
+    return [f"{name}: {p}" for p in found]
+
+
 def check(
     bundle: Path,
     backend: str | None = None,
@@ -232,11 +243,7 @@ def check(
     if not entries:
         return [*problems, f"{name}: no {BIN_DIR} payload at all"]
 
-    if tool and kind == "wheel":
-        with zipfile.ZipFile(bundle) as archive:
-            found = wheel_server.server_problems(archive, tool, libraries)
-        problems.extend(f"{name}: {p}" for p in found)
-
+    problems.extend(_server_problems(bundle, name, tool, libraries))
     backend = backend or _backend_of(name)
     missing = _missing_backend_library(name, backend, platform, entries, kind) if backend else None
     if missing:
@@ -286,20 +293,37 @@ def check(
     return problems
 
 
-def main(argv: list[str]) -> int:
-    backend = runner_os = tool = None
+def _parse(argv: list[str]) -> tuple[dict[str, str], list[str], list[str]]:
+    """Split *argv* into the single-value flags, the ``--library`` names and the paths."""
+    values: dict[str, str] = {}
     libraries: list[str] = []
-    flags = ("--backend", "--platform", "--tool", "--library")
-    while len(argv) >= 2 and argv[0] in flags:
-        if argv[0] == "--backend":
-            backend = argv[1]
-        elif argv[0] == "--platform":
-            runner_os = argv[1]
-        elif argv[0] == "--tool":
-            tool = argv[1]
-        else:
+    while len(argv) >= 2 and argv[0] in ("--backend", "--platform", "--tool", "--library"):
+        if argv[0] == "--library":
             libraries.append(argv[1])
+        else:
+            values[argv[0]] = argv[1]
         argv = argv[2:]
+    return values, libraries, argv
+
+
+def _refusal(bundle: Path, runner_os: str | None, backend: str | None, tool: str | None) -> str:
+    """Why *bundle* cannot be checked with these flags; empty when it can."""
+    if not bundle.is_dir():
+        return "" if bundle.is_file() else f"{bundle}: not a file"
+    if runner_os not in _RUNNER_PLATFORMS:
+        return f"{bundle}: a directory needs --platform Linux, macOS or Windows"
+    if backend is None:
+        return f"{bundle}: a directory needs --backend <flavor>"
+    if tool:
+        return f"{bundle}: --tool reads a wheel, not a directory"
+    return ""
+
+
+def main(argv: list[str]) -> int:
+    values, libraries, argv = _parse(argv)
+    backend = values.get("--backend")
+    runner_os = values.get("--platform")
+    tool = values.get("--tool")
 
     bundles = [Path(a) for a in argv]
     if not bundles or (libraries and not tool):
@@ -313,17 +337,9 @@ def main(argv: list[str]) -> int:
 
     problems: list[str] = []
     for bundle in bundles:
-        if bundle.is_dir() and runner_os not in _RUNNER_PLATFORMS:
-            problems.append(f"{bundle}: a directory needs --platform Linux, macOS or Windows")
-            continue
-        if bundle.is_dir() and backend is None:
-            problems.append(f"{bundle}: a directory needs --backend <flavor>")
-            continue
-        if bundle.is_dir() and tool:
-            problems.append(f"{bundle}: --tool reads a wheel, not a directory")
-            continue
-        if not bundle.is_dir() and not bundle.is_file():
-            problems.append(f"{bundle}: not a file")
+        refusal = _refusal(bundle, runner_os, backend, tool)
+        if refusal:
+            problems.append(refusal)
             continue
         problems.extend(check(bundle, backend, runner_os, tool, tuple(libraries)))
         print(f"checked {bundle if bundle.is_dir() else bundle.name}")
