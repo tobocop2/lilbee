@@ -58,7 +58,9 @@ def test_download_of_a_missing_file_fails_at_once_without_a_retry(tmp_path: Path
     with (
         release_server() as server,
         mock.patch.object(dl.time, "sleep") as slept,
-        pytest.raises(RuntimeError, match=r"The server has no file at .*/gone\."),
+        pytest.raises(
+            RuntimeError, match=r"The server cannot give the file at .*/gone \(HTTP 404\)\."
+        ),
     ):
         download_url(f"{server.url}/gone", tmp_path, 1)
     assert len(server.requests) == 1
@@ -82,3 +84,64 @@ def test_download_gives_up_after_three_server_faults(tmp_path: Path) -> None:
         with pytest.raises(RuntimeError, match="The transfer failed 3 times"):
             download_url(f"{server.url}/f", tmp_path, len(BODY))
     assert len(server.requests) == 3
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 410])
+def test_a_refusal_the_server_will_repeat_is_permanent_after_one_request(
+    tmp_path: Path, status: int
+) -> None:
+    with (
+        release_server() as server,
+        mock.patch.object(dl.time, "sleep") as slept,
+        pytest.raises(RuntimeError, match=rf"\(HTTP {status}\)"),
+    ):
+        server.files["/f"] = BODY
+        server.fail_next = 5
+        server.fail_status = status
+        download_url(f"{server.url}/f", tmp_path, len(BODY))
+    assert len(server.requests) == 1
+    slept.assert_not_called()
+
+
+def test_a_reset_mid_body_is_retried_and_the_file_completes(tmp_path: Path) -> None:
+    with release_server() as server, mock.patch.object(dl.time, "sleep") as slept:
+        server.files["/f"] = BODY
+        server.reset_next = 1
+        got = download_url(f"{server.url}/f", tmp_path, len(BODY))
+    assert got.read_bytes() == BODY
+    assert len(server.requests) == 2
+    slept.assert_called_once()
+
+
+def test_a_connection_closed_before_a_status_line_is_retried(tmp_path: Path) -> None:
+    with release_server() as server, mock.patch.object(dl.time, "sleep") as slept:
+        server.files["/f"] = BODY
+        server.close_next = 1
+        got = download_url(f"{server.url}/f", tmp_path, len(BODY))
+    assert got.read_bytes() == BODY
+    assert len(server.requests) == 2
+    slept.assert_called_once()
+
+
+def test_a_server_that_keeps_resetting_ends_in_the_transfer_failed_text(tmp_path: Path) -> None:
+    with release_server() as server, mock.patch.object(dl.time, "sleep"):
+        server.files["/f"] = BODY
+        server.reset_next = 10
+        with pytest.raises(RuntimeError, match="The transfer failed 3 times"):
+            download_url(f"{server.url}/f", tmp_path, len(BODY))
+    assert len(server.requests) == 3
+
+
+def test_the_hub_offline_switch_ends_the_transfer_with_no_request_and_no_sleep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", True)
+    with (
+        release_server() as server,
+        mock.patch.object(dl.time, "sleep") as slept,
+        pytest.raises(RuntimeError, match="Downloads are switched off"),
+    ):
+        server.files["/f"] = BODY
+        download_url(f"{server.url}/f", tmp_path, len(BODY))
+    assert server.requests == []
+    slept.assert_not_called()

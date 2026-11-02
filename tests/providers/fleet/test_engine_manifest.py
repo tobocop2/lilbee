@@ -17,7 +17,12 @@ from lilbee.providers.fleet.engine_manifest import (
     host_os_version,
     parse_manifest,
 )
-from lilbee.providers.fleet.engine_store import PinLock, PlatformAsset, UnsupportedPlatformError
+from lilbee.providers.fleet.engine_store import (
+    ChecksumError,
+    PinLock,
+    PlatformAsset,
+    UnsupportedPlatformError,
+)
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.host_caps import HostOS, collect
 
@@ -102,6 +107,13 @@ BAD = {
     "http": break_cell(url=BASE.replace("https", "http") + "x.whl"),
     "other-host": break_cell(url="https://example.com/x.whl"),
     "not-a-wheel": break_cell(url=BASE + "x.tar.gz"),
+    "dot-dot": break_cell(url=BASE + "../../../../evil/mal/releases/download/r/x.whl"),
+    "encoded-dot-dot": break_cell(url=BASE + "%2e%2E/x.whl"),
+    "query-hides-suffix": break_cell(url=BASE + "x?u=.whl"),
+    "query-after-suffix": break_cell(url=BASE + "x.whl?u=1"),
+    "empty-query": break_cell(url=BASE + "x.whl?"),
+    "fragment-hides-suffix": break_cell(url=BASE + "x#.whl"),
+    "empty-fragment": break_cell(url=BASE + "x.whl#"),
     "short-sha": break_cell(sha256="a" * 63),
     "non-hex-sha": break_cell(sha256="z" * 64),
     "zero-size": break_cell(size=0),
@@ -126,7 +138,7 @@ def test_a_manifest_that_breaks_the_schema_is_refused(name: str) -> None:
 
 
 def test_the_bad_manifest_table_is_not_empty() -> None:
-    assert len(BAD) >= 19
+    assert len(BAD) >= 26
 
 
 def test_a_row_whose_digest_differs_from_the_pinned_digest_is_refused() -> None:
@@ -289,14 +301,42 @@ def test_a_pin_with_cells_refuses_a_system_below_the_floor() -> None:
         host_cell(lock, linux())
 
 
-def test_a_pin_without_cells_still_names_the_cell_key_for_a_pack_install() -> None:
-    assert host_cell(lock_with({}), linux()) == "linux-x86_64-vulkan"
+def test_a_pin_without_cells_has_no_cell_for_a_pack_install() -> None:
+    assert host_cell(lock_with({}), linux()) == ""
 
 
-def test_a_host_of_unknown_os_has_no_cell() -> None:
+def test_a_pin_without_cells_installs_on_a_host_of_unknown_os_and_architecture() -> None:
+    odd = collect(system="Plan9", machine="riscv64", cpu_info={}, nvml=None)
+    assert (odd.os, odd.arch) == (None, None)
+    assert host_cell(lock_with({}), odd) == ""
+
+
+def test_a_host_of_unknown_os_has_no_cell_in_a_pin_with_cells() -> None:
     host = collect(system="Plan9", machine="x86_64", cpu_info={}, nvml=None)
+    lock = lock_with({"linux-x86_64-vulkan": PlatformAsset(BASE + "x.whl", SHA, 1, None)})
     with pytest.raises(UnsupportedPlatformError, match="has no vulkan build for this computer"):
-        host_cell(lock_with({}), host)
+        host_cell(lock, host)
+
+
+def test_a_cell_digest_that_differs_from_the_pin_digest_is_refused() -> None:
+    lock = lock_with({"linux-x86_64-vulkan": PlatformAsset(BASE + "x.whl", "b" * 64, 1, None)})
+    with pytest.raises(ChecksumError, match="lists two different digests for this computer"):
+        host_cell(lock, linux())
+
+
+def test_a_cell_digest_that_differs_only_in_case_is_accepted() -> None:
+    lock = lock_with({"linux-x86_64-vulkan": PlatformAsset(BASE + "x.whl", SHA.upper(), 1, None)})
+    assert host_cell(lock, linux()) == "linux-x86_64-vulkan"
+
+
+def test_the_floor_text_of_an_engine_that_ignores_the_own_engine_setting_omits_it() -> None:
+    asset = PlatformAsset(BASE + "x.whl", SHA, 1, "2.34")
+    with pytest.raises(UnsupportedOsError) as caught:
+        engine_manifest.require_floor("ik_llama.cpp", "1", "cpu", asset, HostOS.LINUX, "2.31")
+    assert str(caught.value) == (
+        "Engine ik_llama.cpp 1 (cpu) needs glibc 2.34 or later. "
+        "This computer has glibc 2.31. Update the system."
+    )
 
 
 def test_pin_lock_turns_the_cells_of_a_pin_into_assets() -> None:
