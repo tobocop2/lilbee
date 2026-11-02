@@ -147,6 +147,7 @@ from lilbee.sessions import (
 
 if TYPE_CHECKING:
     from lilbee.catalog.models import DownloadProgress
+    from lilbee.cli.tui.engine_commands import EngineCommandResult
     from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 log = logging.getLogger(__name__)
 
@@ -1501,7 +1502,9 @@ class ChatScreen(Screen[None]):
             def on_update(p: DownloadProgress) -> None:
                 reporter.update(p.percent, f"{name}: {p.detail}")
 
-            self._engine_command(args, on_update)
+            result = self._engine_command(args, on_update)
+            if not result.ok:
+                raise RuntimeError(result.text)
 
         self._task_bar.start_task(f"Install {name}", TaskType.DOWNLOAD, target)
 
@@ -1511,8 +1514,8 @@ class ChatScreen(Screen[None]):
 
     def _engine_command(
         self, args: str, on_update: Callable[[DownloadProgress], None] | None = None
-    ) -> None:
-        """Run an /engine command on a worker thread and show its result."""
+    ) -> EngineCommandResult:
+        """Run an /engine command on a worker thread, show its result and return it."""
         from lilbee.cli.tui.engine_commands import announce, run_engine_command
 
         def on_retry(text: str) -> None:
@@ -1520,6 +1523,7 @@ class ChatScreen(Screen[None]):
 
         result = run_engine_command(args, on_update, on_retry)
         call_from_thread(self, announce, self.app, result)
+        return result
 
     def _cmd_rebuild(self, _args: str) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog

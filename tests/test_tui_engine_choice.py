@@ -23,6 +23,7 @@ from lilbee.cli.tui.engine_commands import announce, install_name, run_engine_co
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
 from lilbee.cli.tui.screens.model_info import ModelInfoModal
+from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
 from lilbee.core import settings
@@ -358,6 +359,24 @@ async def test_the_slash_install_shows_its_bytes_in_the_task_bar_and_each_retry_
             assert await wait_until(pilot, lambda: any("Installed" in t for t in _toasts(app)))
         assert seen == [("Install openvino", "download", 40.0, "openvino: 4/10 MB")]
         assert any("Attempt 1 of 3 failed; trying again." in t for t in _toasts(app))
+
+
+async def test_a_refused_slash_install_marks_its_task_failed() -> None:
+    app = _ChatApp()
+
+    def install(_name: str, _wheel: object = None, **_kw: Any) -> engine_service.InstalledBuild:
+        raise engine_service.EngineRefusedError("Engine openvino cannot run on this host.")
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        with mock.patch.object(engine_service, "install", side_effect=install):
+            chat._cmd_engine("install openvino")
+            assert await wait_until(
+                pilot,
+                lambda: [t.status for t in app.task_bar.queue.history] == [TaskStatus.FAILED],
+            )
+        assert any("cannot run on this host" in t for t in _toasts(app))
 
 
 def test_only_an_install_with_an_engine_name_is_an_install_command() -> None:
