@@ -8,31 +8,40 @@
 setup() {
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   WORKFLOWS="release.yml build-gpu-executables.yml flatpak-validate.yml"
-  # The code lines of a step's script: jq drops every line whose first
-  # non-blank character is #.
-  CODE='((.value.run // "") | split("\n") | map(select(test("^\\s*#") | not)) | join("\n"))'
+}
+
+# The code lines of step <index> of workflow <file>: every line whose first
+# non-blank character is # is dropped. Plain yq paths only: the laptop's yq is
+# the jq wrapper, CI's is the Go one (mikefarah v4), and both read these.
+step_code() {
+  yq -r ".jobs.build.steps[$2].run // \"\"" \
+    "${REPO_ROOT}/.github/workflows/$1" | awk '!/^[[:space:]]*#/'
 }
 
 # One line per step: "<index> <kind>", kind is build, check, reclaim or upload, else other.
 step_kinds() {
-  yq -r ".jobs.build.steps | to_entries | .[] | ${CODE} as \$code
-    | (.key | tostring) + \" \" + (
-        if (\$code | contains(\"build_lilbee_binary.sh\")) then \"build\"
-        elif (\$code | contains(\"assert_engine_bundle.py\")) then \"check\"
-        elif (\$code | contains(\"dist/*.dist\")) then \"reclaim\"
-        elif ((.value.uses // \"\") | startswith(\"actions/upload-artifact\")) then \"upload\"
-        else \"other\" end)" \
-    "${REPO_ROOT}/.github/workflows/$1"
+  local file="${REPO_ROOT}/.github/workflows/$1" count i code uses kind
+  count="$(yq -r '.jobs.build.steps | length' "${file}")"
+  for ((i = 0; i < count; i++)); do
+    code="$(step_code "$1" "${i}")"
+    uses="$(yq -r ".jobs.build.steps[${i}].uses // \"\"" "${file}")"
+    if [[ "${code}" == *"build_lilbee_binary.sh"* ]]; then
+      kind=build
+    elif [[ "${code}" == *"assert_engine_bundle.py"* ]]; then
+      kind=check
+    elif [[ "${code}" == *"dist/*.dist"* ]]; then
+      kind=reclaim
+    elif [[ "${uses}" == actions/upload-artifact* ]]; then
+      kind=upload
+    else
+      kind=other
+    fi
+    echo "${i} ${kind}"
+  done
 }
 
 index_of() {
   step_kinds "$1" | awk -v kind="$2" '$2 == kind { print $1 }'
-}
-
-# The code lines of step <index> of workflow <file>.
-step_code() {
-  yq -r ".jobs.build.steps | to_entries | .[] | select(.key == $2) | ${CODE}" \
-    "${REPO_ROOT}/.github/workflows/$1"
 }
 
 # Succeeds when workflow <file> has exactly one check step, after the build and
@@ -92,10 +101,12 @@ run_check_step() {
 @test "the check step has no condition and cannot fail softly" {
   for wf in ${WORKFLOWS}; do
     idx="$(index_of "${wf}" check)"
-    run yq -r ".jobs.build.steps[${idx}] | [.[\"if\"], .[\"continue-on-error\"]] | map(. == null) | all" \
-      "${REPO_ROOT}/.github/workflows/${wf}"
+    run yq -r ".jobs.build.steps[${idx}] | has(\"if\")" "${REPO_ROOT}/.github/workflows/${wf}"
     [ "$status" -eq 0 ]
-    [ "$output" = "true" ]
+    [ "$output" = "false" ]
+    run yq -r ".jobs.build.steps[${idx}] | has(\"continue-on-error\")" "${REPO_ROOT}/.github/workflows/${wf}"
+    [ "$status" -eq 0 ]
+    [ "$output" = "false" ]
   done
 }
 
