@@ -12,8 +12,9 @@ from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
 from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.model_ref import PROVIDER_PREFIXES, is_native_gguf_ref
+from lilbee.providers.model_ref import is_native_gguf_ref
 from lilbee.providers.roles import MODEL_ROLE_FIELDS
+from lilbee.providers.server_registry import BUILTIN_PREFIXES, route_for
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,8 @@ def _is_registry_ref(ref: str) -> bool:
     """Whether *ref* names something the model registry can hold."""
     if not ref or not ref.strip():
         return False
-    return ref.split("/", 1)[0] not in PROVIDER_PREFIXES
+    prefix, slash, _ = ref.partition("/")
+    return prefix not in BUILTIN_PREFIXES and not (slash and route_for(prefix))
 
 
 def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:

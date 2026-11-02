@@ -9,6 +9,7 @@ from lilbee.core.config import Config
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import (
+    ProviderModelRef,
     format_remote_ref,
     is_native_gguf_ref,
     parse_model_ref,
@@ -351,6 +352,38 @@ class TestFormatRemoteRef:
     def test_deepseek_provider(self) -> None:
         ref = format_remote_ref("deepseek-chat", "DeepSeek")
         assert ref == "deepseek/deepseek-chat"
+
+    @pytest.mark.parametrize(
+        ("name", "provider", "expected"),
+        [
+            pytest.param("gpt-4o", "OpenAI", "openai/gpt-4o", id="api-display-label"),
+            pytest.param("gpt-4o", "openai", "openai/gpt-4o", id="api-routing-key"),
+            pytest.param("qwen3:8b", "ollama", "ollama/qwen3:8b", id="ollama-key"),
+            pytest.param("m", "LM Studio", "lm_studio/m", id="lm-studio-label"),
+            pytest.param("m", "lm_studio", "lm_studio/m", id="lm-studio-key"),
+            pytest.param("chat:latest", "Remote", "chat:latest", id="remote-label-bare-name"),
+            pytest.param(
+                "ollama/remote-chat:latest",
+                "Remote",
+                "ollama/remote-chat:latest",
+                id="remote-label-prefixed-name",
+            ),
+            pytest.param("m", "mypreset", "m", id="preset-name-is-no-discovery-label"),
+        ],
+    )
+    def test_prefix_follows_the_built_in_routing_key(
+        self, name: str, provider: str, expected: str
+    ) -> None:
+        assert format_remote_ref(name, provider) == expected
+
+    def test_remote_label_keeps_the_prefix_the_name_carries(self) -> None:
+        """A prefixed name under the ``Remote`` label routes to its own server, once prefixed."""
+        parsed = parse_model_ref(format_remote_ref("ollama/remote-chat:latest", "Remote"))
+        assert (parsed.provider, parsed.name) == ("ollama", "remote-chat:latest")
+
+    def test_a_preset_ref_keeps_its_preset_prefix(self) -> None:
+        ref = ProviderModelRef(raw="wired/m", provider="wired", name="m")
+        assert ref.for_openai_prefix() == "wired/m"
 
 
 class TestTranslateOptions:

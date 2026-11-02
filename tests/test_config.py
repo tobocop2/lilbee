@@ -1,5 +1,6 @@
 """Tests for Config (pydantic-settings BaseSettings) and env var overrides."""
 
+import datetime
 import json
 import os
 import re
@@ -2375,10 +2376,13 @@ class TestValidateModelTaskAssignment:
         from tests.conftest import install_fake_model
 
         ref = install_fake_model(
-            "bartowski/SmolLM2-360M-Instruct-GGUF", "SmolLM2-360M-Q4_K_M.gguf", task="chat"
+            "bartowski/SmolLM2-360M-Instruct-GGUF",  # pragma: allowlist secret
+            "SmolLM2-360M-Q4_K_M.gguf",
+            task="chat",
         )
         result = validate_model_task_assignment(
-            "chat_model", "bartowski/SmolLM2-360M-Instruct-GGUF"
+            "chat_model",
+            "bartowski/SmolLM2-360M-Instruct-GGUF",  # pragma: allowlist secret
         )
         assert result == ref
 
@@ -2509,13 +2513,14 @@ class TestABadValueInConfigTomlKeepsTheRest:
     ):
         toml = (
             f"{key} = {bad}\ntop_k = 7\n"
-            f'vision_model = "{_SAMPLE_VISION_REF}"\ngemini_api_key = "sk-kept"\n'
+            f'vision_model = "{_SAMPLE_VISION_REF}"\n'
+            'gemini_api_key = "sk-kept"\n'  # pragma: allowlist secret
         )
         built, warnings = _build_with(tmp_path, toml)
         assert getattr(built, key) == default
         assert built.top_k == 7
         assert built.vision_model == _SAMPLE_VISION_REF
-        assert built.gemini_api_key == "sk-kept"
+        assert built.gemini_api_key == "sk-kept"  # pragma: allowlist secret
         assert [w for w in warnings if w.startswith(f"config.toml: {key} = ")] == list(warnings)
         assert len(warnings) == 1
 
@@ -2990,6 +2995,47 @@ class TestEnvValue:
         monkeypatch.delenv("LILBEE_TOP_K", raising=False)
         assert env_value("top_k") is None
 
+    def test_a_service_only_field_reads_no_variable(self, monkeypatch):
+        monkeypatch.setenv("LILBEE_SERVER_PRESETS", "[]")
+        assert env_value("server_presets") is None
+
+
+class TestServerPresetFields:
+    """The stored preset list and the flag for its HTTP routes."""
+
+    def test_the_variable_does_not_set_the_list(self, monkeypatch):
+        monkeypatch.setenv("LILBEE_SERVER_PRESETS", '[{"name": "x"}]')
+        assert Config().server_presets is None
+
+    @pytest.mark.parametrize(
+        ("value", "text"),
+        [
+            ("[]", "[]"),
+            (None, None),
+            ([{"api_key": "k"}], '[{"api_key": "k"}]'),
+            (7, "7"),
+        ],
+    )
+    def test_any_toml_type_becomes_text(self, value, text):
+        assert Config(server_presets=value).server_presets == text
+
+    def test_a_toml_date_in_the_list_becomes_text(self):
+        value = [{"name": "x", "since": datetime.date(2026, 1, 2)}]
+        assert (
+            Config(server_presets=value).server_presets == '[{"name": "x", "since": "2026-01-02"}]'
+        )
+
+    def test_no_repr_of_the_config_holds_the_list(self):
+        assert "SENTINEL" not in repr(Config(server_presets="SENTINEL"))
+
+    def test_the_flag_is_off_by_default(self, monkeypatch):
+        monkeypatch.delenv("LILBEE_ALLOW_HTTP_ENGINES", raising=False)
+        assert Config().allow_http_engines is False
+
+    def test_the_variable_turns_the_flag_on(self, monkeypatch):
+        monkeypatch.setenv("LILBEE_ALLOW_HTTP_ENGINES", "1")
+        assert Config().allow_http_engines is True
+
 
 class TestLoadWarningsAreLoggedOncePerProcessTree:
     """A load warning reaches the log once, however many loads and children repeat it."""
@@ -3274,7 +3320,7 @@ class TestCrawlExclusionsMatchWholeSegments:
             "https://example.com/login",
             "https://example.com/my-account/orders",
             "https://shop.example/cart/items",
-            "http://user:secret@shop.example:8080/orders/7",
+            "http://user:secret@shop.example:8080/orders/7",  # pragma: allowlist secret
             "https://shop.example/account#details",
         ],
     )

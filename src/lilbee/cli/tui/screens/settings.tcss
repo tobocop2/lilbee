@@ -156,3 +156,25 @@ SettingsScreen {
         margin-top: 1;
     }
 }
+
+SettingsScreen PresetsPane {
+    height: 1fr;
+    padding: 0 1;
+}
+
+SettingsScreen PresetsPane #presets-rows {
+    height: auto;
+}
+
+SettingsScreen PresetsPane .preset-row {
+    height: auto;
+}
+
+SettingsScreen PresetsPane .preset-line {
+    width: 1fr;
+    height: auto;
+}
+
+SettingsScreen PresetsPane .preset-row Button {
+    margin-left: 1;
+}

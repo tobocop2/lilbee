@@ -25,7 +25,11 @@ from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services, peek_services
-from lilbee.app.settings import SettingsUpdateResult, apply_settings_update
+from lilbee.app.settings import (
+    SettingsUpdateResult,
+    apply_settings_update,
+    config_write_failure_message,
+)
 from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
@@ -42,6 +46,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg, load_warnings
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
@@ -542,7 +547,10 @@ class LilbeeApp(App[None]):
 
     def action_toggle_lilbee_path(self) -> None:
         """Flip the status-bar pill between the friendly name and the data-root path."""
-        self.set_setting("show_lilbee_path", not cfg.show_lilbee_path)
+        try:
+            self.set_setting("show_lilbee_path", not cfg.show_lilbee_path)
+        except FileLockUnavailableError as exc:
+            self.notify_config_not_written(exc)
 
     def set_theme(self, name: str) -> None:
         """Set theme by name (used by /theme command). Persists across sessions."""
@@ -554,7 +562,14 @@ class LilbeeApp(App[None]):
         """Apply *name* live and write it to config.toml."""
 
         self.theme = name
-        apply_settings_update({"theme": name})
+        try:
+            apply_settings_update({"theme": name})
+        except FileLockUnavailableError as exc:
+            self.notify_config_not_written(exc)
+
+    def notify_config_not_written(self, exc: FileLockUnavailableError) -> None:
+        """Toast why a setting was not saved: its config lock could not be taken."""
+        self.notify(config_write_failure_message(exc), severity="error")
 
     def _reject_if_downloading(self, value: object) -> bool:
         """Toast and return True if *value* is a model ref still downloading, so a
@@ -580,6 +595,9 @@ class LilbeeApp(App[None]):
         except ValueError as exc:
             self.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
             return
+        except FileLockUnavailableError as exc:
+            self.notify_config_not_written(exc)
+            return
         self._notify_update_warnings(result)
         self.settings_changed_signal.publish((key, getattr(cfg, key)))
 
@@ -591,7 +609,8 @@ class LilbeeApp(App[None]):
     def set_setting(self, key: str, value: object) -> None:
         """Apply a writable / model-role setting through the boundary, then fan out to the UI.
 
-        Raises ``ValueError`` for keys outside ``WRITABLE_CONFIG_FIELDS | MODEL_ROLE_FIELDS``
+        Raises ``FileLockUnavailableError`` when the config lock cannot be taken, and
+        ``ValueError`` for keys outside ``WRITABLE_CONFIG_FIELDS | MODEL_ROLE_FIELDS``
         or values rejected by pydantic validation. Callers either catch and toast or let it
         propagate.
         """

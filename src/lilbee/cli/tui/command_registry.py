@@ -49,6 +49,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         help_text="Crawl a URL (no arg opens the dialog)",
     ),
     SlashCommand(
+        "/preset",
+        "_cmd_preset",
+        aliases=(),
+        args_hint="<subcommand>",
+        help_text="List, add, edit or remove server presets (edit opens a dialog)",
+    ),
+    SlashCommand(
         "/delete",
         "_cmd_delete",
         aliases=(),

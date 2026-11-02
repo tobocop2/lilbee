@@ -1,0 +1,36 @@
+{
+ "server": "tei-rerank-v1",
+ "version": "1.9.4 BAAI/bge-reranker-base cpu-1.9",
+ "roles": [
+  "rerank"
+ ],
+ "models": {
+  "rerank": "BAAI/bge-reranker-base"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "results": {
+  "rerank": {
+   "ok": false,
+   "detail": "ProviderError: The provider doesn't offer check/BAAI/bge-reranker-base on your account. Pick a different model or check the name."
+  }
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "BAAI/bge-reranker-base",
+    "query": "What is the capital of France?"
+   },
+   "status": 404,
+   "content_type": "text/plain",
+   "body": ""
+  }
+ ]
+}

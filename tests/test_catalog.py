@@ -198,6 +198,11 @@ class TestHfToken:
         """hf_headers returns Authorization header when token is available."""
         assert _hf_client.hf_headers() == {"Authorization": "Bearer test-token-123"}
 
+    def test_valid_token_is_sent_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.setenv("HF_TOKEN", "hf_FakeToken-0123_abc")
+        assert _hf_client.hf_headers() == {"Authorization": "Bearer hf_FakeToken-0123_abc"}
+
 
 class TestFeaturedModels:
     def test_chat_not_empty(self) -> None:
@@ -3526,3 +3531,175 @@ class TestGgufStaysOffTheImportPath:
             check=True,
         )
         assert result.stdout.strip() == "True"
+
+
+_BAD_ENV_VALUES = [
+    "hf_fake\nsecret",
+    "hf_fake\rsecret",
+    "hf_fake\tsecret",
+    "hf_fake secret",
+    "hf_fake\u00e9secret",
+]
+
+
+class TestUnsendableHfToken:
+    """A refused token reaches every library call as False, the library's anonymous marker."""
+
+    @pytest.fixture(autouse=True)
+    def _no_tokens(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.core.config import cfg
+
+        for name in ("LILBEE_HF_TOKEN", "HF_TOKEN"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(cfg, "hf_token", "")
+        monkeypatch.setitem(
+            sys.modules, "huggingface_hub", MagicMock(get_token=MagicMock(return_value=None))
+        )
+        _hf_client._warn_unsendable_token.cache_clear()
+
+    @pytest.mark.parametrize("env_name", ["HF_TOKEN", "LILBEE_HF_TOKEN"])
+    @pytest.mark.parametrize("bad", _BAD_ENV_VALUES)
+    def test_env_token_resolves_to_false_and_warns_once_by_source(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, env_name, bad
+    ) -> None:
+        monkeypatch.setenv(env_name, bad)
+        with caplog.at_level("WARNING"):
+            assert hf_token() is False
+            assert _hf_client.hf_headers() == {}
+        assert "secret" not in caplog.text
+        warned = [r.getMessage() for r in caplog.records if "cannot be sent" in r.getMessage()]
+        assert len(warned) == 1
+        assert env_name in warned[0]
+        assert os.environ[env_name] == bad
+
+    @pytest.mark.parametrize("bad", ["hf_fake\nsecret", "hf_fake\x00secret", "hf_fake secret"])
+    def test_cfg_token_resolves_to_false_and_warns_by_source(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, bad: str
+    ) -> None:
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "hf_token", bad)
+        with caplog.at_level("WARNING"):
+            assert hf_token() is False
+        assert "secret" not in caplog.text
+        assert "hf_token setting" in caplog.text
+
+    def test_hub_file_token_resolves_to_false_and_warns_by_source(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setitem(
+            sys.modules,
+            "huggingface_hub",
+            MagicMock(get_token=MagicMock(return_value="hf_fake\nsecret")),
+        )
+        with caplog.at_level("WARNING"):
+            assert hf_token() is False
+        assert "secret" not in caplog.text
+        assert "token file" in caplog.text
+
+    def test_no_token_stays_none(self) -> None:
+        assert hf_token() is None
+
+    def test_repo_listing_passes_false_to_the_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HF_TOKEN", "hf_fake\nsecret")
+        seen: dict[str, Any] = {}
+
+        class _Api:
+            def __init__(self, token: object = None) -> None:
+                seen["token"] = token
+
+            def model_info(self, _repo: str) -> object:
+                return SimpleNamespace(siblings=[])
+
+        monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+        _hf_client.repo_has_mmproj.cache_clear()
+        _hf_client.repo_has_mmproj("org/some-repo")
+        assert seen["token"] is False
+
+    def test_file_metadata_passes_false_to_the_library(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.catalog import download
+
+        monkeypatch.setenv("HF_TOKEN", "hf_fake\nsecret")
+        fake = MagicMock(return_value=SimpleNamespace(size=1, etag="e"))
+        monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", fake)
+        download._hf_file_metadata("org/repo", "m.gguf")
+        assert fake.call_args.kwargs["token"] is False
+
+    def test_download_config_token_reaches_hf_hub_download(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.catalog import download
+        from lilbee.catalog.download import DownloadConfig
+
+        fake = MagicMock(return_value="/tmp/x.gguf")
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
+        entry = MagicMock(hf_repo="org/repo")
+        download._hf_download_or_translate(
+            entry, DownloadConfig(repo_id="org/repo", filename="m.gguf", token=False, cache_dir="c")
+        )
+        assert fake.call_args.kwargs["token"] is False
+
+    def test_model_pull_hands_false_to_the_download_child(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from lilbee.catalog import download
+
+        monkeypatch.setenv("HF_TOKEN", "hf_fake\nsecret")
+        monkeypatch.setattr(download, "_models_dir", lambda: tmp_path)
+        child = MagicMock(return_value=tmp_path / "m.gguf")
+        monkeypatch.setattr("lilbee.catalog.download_process.download_in_subprocess", child)
+        download.download_model(MagicMock(), LLAMA)
+        assert child.call_args.args[2] is False
+
+    def test_mmproj_download_hands_false_to_the_fetch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from lilbee.catalog import download
+
+        monkeypatch.setenv("HF_TOKEN", "hf_fake\nsecret")
+        monkeypatch.setattr(download, "_models_dir", lambda: tmp_path)
+        fetch = MagicMock(return_value=None)
+        monkeypatch.setattr(download, "_fetch_mmproj", fetch)
+        download.download_mmproj(MagicMock())
+        assert fetch.call_args.args[2] is False
+
+    def test_load_check_gets_false(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from lilbee.modelhub.model_manager import ModelManager
+
+        monkeypatch.setenv("HF_TOKEN", "hf_fake\nsecret")
+        check = MagicMock()
+        monkeypatch.setattr("lilbee.providers.fleet.engines.llama.assert_engine_can_load", check)
+
+        def _resolve(entry: object, engine: object, can_load: Any = None) -> str:
+            can_load("org/repo", "m.gguf")
+            return "m.gguf"
+
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", _resolve)
+        ModelManager(tmp_path, engine=LLAMA)._resolved_entry(PICKS_VISION[0], verify=True)
+        assert check.call_args.args[2] is False
+
+    def test_no_authorization_header_reaches_the_wire(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A real HfApi call with a bad HF_TOKEN sends no Authorization header."""
+        monkeypatch.undo()
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.setenv("HF_TOKEN", "hf_fake\ttoken")
+        import huggingface_hub
+        from huggingface_hub.utils._http import default_client_factory, set_client_factory
+
+        sent: list[httpx.Request] = []
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(200, json={"id": "org/repo", "siblings": []})
+
+        set_client_factory(lambda: httpx.Client(transport=httpx.MockTransport(_handler)))
+        try:
+            huggingface_hub.HfApi(token=hf_token()).model_info("org/repo")
+        finally:
+            set_client_factory(default_client_factory)
+        assert sent
+        assert all("authorization" not in r.headers for r in sent)

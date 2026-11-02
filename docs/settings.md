@@ -43,7 +43,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 ## Three rules that apply only over MCP
 
-**Some settings change the tool list, and the change needs a reconnect.** `wiki`, `memory_enabled` and `mcp_sessions_enabled` decide which tools register. The gate runs once, when the server is built, and MCP sends no `tools/list_changed` notification from here. So `lilbee_settings_set({"wiki": true})` succeeds and persists, and the `lilbee_wiki_*` tools still do not appear until the client reconnects. Ask the user to restart the MCP server. `lilbee_wiki_status` and `lilbee_wiki_wipe` register either way, so a caller can always read the wiki's state and can always delete pages an earlier build wrote.
+**Some settings change the tool list, and the change needs a reconnect.** `wiki`, `memory_enabled`, `mcp_sessions_enabled` and `mcp_presets_enabled` decide which tools register. The gate runs once, when the server is built, and MCP sends no `tools/list_changed` notification from here. So `lilbee_settings_set({"wiki": true})` succeeds and persists, and the `lilbee_wiki_*` tools still do not appear until the client reconnects. Ask the user to restart the MCP server. `lilbee_wiki_status` and `lilbee_wiki_wipe` register either way, so a caller can always read the wiki's state and can always delete pages an earlier build wrote.
 
 **Turning a feature on does not run it.** Setting `wiki` generates no pages. Build them with `lilbee_wiki_index`, then `lilbee_wiki_generate(slug)` for one page on demand, or `lilbee_wiki_build` for the whole corpus, which spends about one LLM call per source document. Set `wiki_auto_update` to regenerate touched pages after each sync.
 
@@ -120,6 +120,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `kv_cache_type` | `LILBEE_KV_CACHE_TYPE` | `str` | `q8_0` | yes | yes | yes | no | KV cache element type for both K and V. q8_0 / q4_0 halve or quarter cache memory and apply only where lilbee sends flash attention on. On Vulkan and SYCL lilbee sends auto, so the cache is f16 there; it is also f16 when flash attention is off. One of `f16`, `f32`, `q8_0`, `q4_0`. |
 | `max_reasoning_chars` | `LILBEE_MAX_REASONING_CHARS` | `int` | `64000` | yes | yes | yes | no | Maximum reasoning characters before lilbee forces the model to answer (0 = unlimited; per-model overrides apply on top). |
 | `max_tokens` | `LILBEE_MAX_TOKENS` | `int|null` | *(none)* | yes | yes | yes | no | Hard cap on generated tokens per response (blank = the model's context window). |
+| `mcp_presets_enabled` | `LILBEE_MCP_PRESETS_ENABLED` | `bool` | `false` | yes | yes | yes | no | Off (default): the server preset tools are not offered over MCP, and a connected agent cannot list or change presets. On: an agent can list, add, edit and remove server presets. A preset decides where requests and API keys go, and the tools cost context on every request, so this stays off unless you want an agent managing presets. **Reconnect MCP** for the tool list to change. |
 | `mcp_sessions_enabled` | `LILBEE_MCP_SESSIONS_ENABLED` | `bool` | `false` | yes | yes | yes | no | Off (default): the session tools are not offered over MCP, and a connected agent cannot create or read agent sessions. On: an agent can keep its own saved conversations, separate from yours. Most agent hosts already track their own history, and the tools cost context on every request, so this stays off unless you want an agent owning conversations. **Reconnect MCP** for the tool list to change. |
 | `messages_reasoning` | `LILBEE_MESSAGES_REASONING` | `str` | `separate` | yes | yes | yes | no | How /v1/messages presents thinking: separate thinking block, inline thinking as plain answer text, or off (ask the model not to think). One of `separate`, `inline`, `off`. |
 | `model_keep_alive` | `LILBEE_MODEL_KEEP_ALIVE` | `int` | `300` | yes | yes | yes | no | Seconds the loaded model stays warm between calls (0 = unload immediately). |
@@ -290,6 +291,7 @@ These settings have no runtime write path. Set them in `config.toml`, or with th
 
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Description |
 |---|---|---|---|---|---|---|---|---|
+| `allow_http_engines` | `LILBEE_ALLOW_HTTP_ENGINES` | `bool` | `false` | no | no | no | no | Let the HTTP server change engines and presets. Off by default because a preset sets where requests and API keys go. Turn it on only for a deployment you alone use. |
 | `allow_http_placement` | `LILBEE_ALLOW_HTTP_PLACEMENT` | `bool` | `false` | no | no | no | no | Let PUT and DELETE /api/placement change model placement over HTTP. Off by default because applying placement restarts the moved roles, which is unsafe with concurrent clients. Turn it on only for a deployment you alone use. |
 | `concept_allowed_ent_types` | `LILBEE_CONCEPT_ALLOWED_ENT_TYPES` | `list` | *(built-in list)* | no | no | no | no | spaCy NER labels the wiki entity extractor keeps. It drops everything else (QUANTITY, CARDINAL, DATE, and so on) before aggregation. |
 | `cors_origin_regex` | `LILBEE_CORS_ORIGIN_REGEX` | `str` | *(built-in text)* | no | no | no | no | Regular expression matching browser origins the HTTP server accepts. |
@@ -313,6 +315,7 @@ These settings have no runtime write path. Set them in `config.toml`, or with th
 | `placement` | `LILBEE_PLACEMENT` | `str|null` | *(none)* | no | write-only | write-only | `lilbee placement set` | Manual multi-GPU placement spec. It fully replaces the automatic planner: each active role pins to the listed device indices. Edit it with the placement commands, not the settings list. Empty uses the VRAM-aware planner. |
 | `server_host` | `LILBEE_SERVER_HOST` | `str` | `127.0.0.1` | no | no | no | no | Address `lilbee serve` binds. Loopback by default; set 0.0.0.0 to accept connections from the network. |
 | `server_port` | `LILBEE_SERVER_PORT` | `int` | `0` | no | no | no | no | Port `lilbee serve` binds. 0 picks a free port and prints it. |
+| `server_presets` | no | `str|null` | *(none)* | no | no | no | no | User-defined OpenAI-compatible servers, with their API keys. Edit them with the preset commands, not the settings list. |
 
 ## Environment-only variables
 

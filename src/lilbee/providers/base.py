@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -43,6 +44,11 @@ CHAT_MESSAGE_OVERHEAD_TOKENS = 8
 # Chars-per-token assumed when BUDGETING context, deliberately harsher than the
 # display estimator's 4: dense OCR/legal text tokenizes at ~2.5-3 chars per token.
 BUDGET_CHARS_PER_TOKEN = 3
+
+
+def is_header_safe(secret: str) -> bool:
+    """True when *secret* can travel in an HTTP header: printable ASCII only."""
+    return secret.isascii() and secret.isprintable()
 
 
 def prompt_token_budget(ctx: int, num_predict: int | None = None) -> int:
@@ -169,6 +175,15 @@ class ProviderError(Exception):
         self.provider = provider
         self.kind = kind
         super().__init__(message)
+
+
+# The 400 message of a server that refuses a prompt longer than its window.
+_PROMPT_LENGTH_OVERFLOW = re.compile(r"Prompt sequence length is greater than \d+")
+
+
+def is_prompt_length_overflow(text: str) -> bool:
+    """Whether *text* is the 400 message of a server refusing a prompt past its window."""
+    return _PROMPT_LENGTH_OVERFLOW.search(text) is not None
 
 
 # Human word per role for the not-configured error ("embedding model", not "embed model").

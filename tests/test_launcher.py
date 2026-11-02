@@ -166,3 +166,37 @@ class TestForceUtf8Stdio:
         monkeypatch.setattr(sys, "stdout", bad)
         monkeypatch.setattr(sys, "stderr", Mock(spec=io.TextIOWrapper))
         launcher._force_utf8_stdio()
+
+
+@pytest.mark.parametrize("argv", [["lilbee", "--version"], ["lilbee", "chat"]])
+def test_a_config_write_without_its_lock_exits_one_with_a_plain_message(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _no_completion_env: None,
+    argv: list[str],
+) -> None:
+    from lilbee.core.security import FileLockUnavailableError
+
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = FileLockUnavailableError("another lilbee process held the lock")
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as exit_info:
+        launcher.main()
+
+    assert exit_info.value.code == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: Could not write config.toml: another lilbee process")
+    assert "Nothing was changed." in err
+    assert "Traceback" not in err
+
+
+def test_another_os_error_still_surfaces_from_the_launcher(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = PermissionError("denied")
+    monkeypatch.setattr(sys, "argv", ["lilbee", "--version"])
+
+    with pytest.raises(PermissionError, match="denied"):
+        launcher.main()

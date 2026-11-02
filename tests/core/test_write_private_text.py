@@ -411,3 +411,64 @@ class TestPrivateDirAndOpener:
             handle.write("x\n")
         assert target.read_text(encoding="utf-8") == "x\n"
         assert file_mode(target) == 0o600
+
+
+class TestFileLock:
+    """``file_lock`` refuses instead of proceeding, and says so with one named error."""
+
+    def test_a_held_lock_raises_and_the_block_does_not_run(self, tmp_path):
+        from filelock import FileLock
+
+        from lilbee.core.security import FileLockUnavailableError, file_lock
+
+        target = tmp_path / "guarded.txt"
+        ran = []
+        held = FileLock(f"{target}.lock")
+        held.acquire()
+        try:
+            with (
+                pytest.raises(FileLockUnavailableError, match=r"held the lock on guarded\.txt"),
+                file_lock(target, timeout_s=0.01),
+            ):
+                ran.append(True)
+        finally:
+            held.release()
+        assert ran == []
+
+    def test_a_free_lock_runs_the_block_and_lets_go_after(self, tmp_path):
+        from filelock import FileLock
+        from filelock import Timeout as FileLockTimeout
+
+        from lilbee.core.security import file_lock
+
+        target = tmp_path / "guarded.txt"
+        with file_lock(target, timeout_s=1.0):
+            inside = FileLock(f"{target}.lock")
+            with pytest.raises(FileLockTimeout, match="could not be acquired"):
+                inside.acquire(timeout=0.01)
+        again = FileLock(f"{target}.lock")
+        again.acquire(timeout=0.01)
+        again.release()
+
+    def test_a_lock_directory_that_cannot_be_made_raises_the_named_error(self, tmp_path):
+        from lilbee.core.security import FileLockUnavailableError, file_lock
+
+        blocker = tmp_path / "file"
+        blocker.write_text("x", encoding="utf-8")
+        with (
+            pytest.raises(FileLockUnavailableError, match="cannot be taken"),
+            file_lock(blocker / "guarded.txt", timeout_s=0.01),
+        ):
+            pass
+
+
+def test_the_failure_message_for_a_lock_that_cannot_be_taken_says_nothing_changed():
+    from lilbee.app.settings import config_write_failure_message
+    from lilbee.core.security import FileLockUnavailableError
+
+    text = config_write_failure_message(FileLockUnavailableError("the lock is busy"))
+
+    assert text == (
+        "Could not write config.toml: the lock is busy. Nothing was changed. "
+        "Close any other lilbee process and try again."
+    )

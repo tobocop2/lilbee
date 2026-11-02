@@ -20,6 +20,8 @@ from typing import Any, Literal, overload
 
 import numpy as np
 
+from lilbee.catalog.types import ModelSource
+from lilbee.core.blocked_networks import check_request_address
 from lilbee.core.config import cfg
 from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
@@ -31,13 +33,14 @@ from lilbee.providers.base import (
     FinishReason,
     LLMProvider,
     ProviderError,
+    ProviderErrorKind,
     StreamFinish,
     ToolCall,
     ToolCallDelta,
     require_role_ref,
 )
 from lilbee.providers.key_check import provider_api_key_in_use
-from lilbee.providers.local_servers import LOCAL_SERVER_KEYS, OLLAMA
+from lilbee.providers.local_servers import OLLAMA, local_server_for_key
 from lilbee.providers.local_servers.config_urls import base_url_for, configured_local_servers
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
 from lilbee.providers.roles import WorkerRole
@@ -47,26 +50,51 @@ from lilbee.providers.sdk_backend import (
     LlmSdkBackend,
     RerankRequest,
 )
+from lilbee.providers.server_registry import RerankWire, ServerRoute, check_role
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.daemon_call import DaemonCall
 
 log = logging.getLogger(__name__)
 
+# Most inputs one embedding request carries. A stock TEI server refuses more than
+# 32 with HTTP 422; OpenAI-style servers allow far more, so this is the lowest limit.
+EMBED_MAX_INPUTS = 32
+
 _VISION_OCR_TIMEOUT_ERROR = "Vision OCR did not finish within {timeout:g} seconds."
 
 
-def _api_base_for(ref: ProviderModelRef) -> str | None:
-    """Endpoint for a local-server ref; ``None`` for hosted APIs (no base needed)."""
-    if ref.provider in LOCAL_SERVER_KEYS:
+def _checked_route(ref: ProviderModelRef, role: WorkerRole) -> ServerRoute | None:
+    """The route of a preset ref, checked for *role* and its address; None for any other ref."""
+    if not ref.is_preset:
+        return None
+    route = check_role(ref, role)
+    try:
+        check_request_address(route.base_url)
+    except ValueError as exc:
+        raise ProviderError(
+            f"The server preset {route.name!r} is refused: {exc}",
+            provider=ModelSource.REMOTE,
+            kind=ProviderErrorKind.BAD_REQUEST,
+        ) from None
+    return route
+
+
+def _api_base_for(ref: ProviderModelRef, route: ServerRoute | None = None) -> str | None:
+    """Endpoint for a preset or local-server ref; ``None`` for hosted APIs (no base needed)."""
+    if route is not None:
+        return route.base_url
+    if local_server_for_key(ref.provider) is not None:
         return base_url_for(ref.provider)
     return None
 
 
-def _api_key_for(ref: ProviderModelRef) -> str | None:
-    """A hosted ref sends only the key the key check tests; Ollama sends none.
+def _api_key_for(ref: ProviderModelRef, route: ServerRoute | None = None) -> str | None:
+    """A preset sends its own key or none; a hosted ref sends only the key the key check tests.
 
-    Other local-server refs send ``llm_api_key``.
+    Ollama sends none. Other local-server refs send ``llm_api_key``.
     """
+    if route is not None:
+        return route.api_key
     if ref.is_api:
         return provider_api_key_in_use(ref.provider)
     if ref.provider == OLLAMA.key:
@@ -92,26 +120,30 @@ class SdkLLMProvider(LLMProvider):
         self._initialized = True
 
     def embed(self, texts: list[str]) -> list[Vector]:
-        """Embed texts via the configured backend, converting its JSON floats to float32."""
+        """Embed texts in requests of at most EMBED_MAX_INPUTS, returning vectors in input order."""
         self._ensure_initialized()
         ref = parse_model_ref(
             require_role_ref(cfg.embedding_model, WorkerRole.EMBED, provider="sdk")
         )
-        request = EmbeddingRequest(
-            ref=ref,
-            inputs=texts,
-            api_base=_api_base_for(ref),
-            api_key=_api_key_for(ref),
-        )
-        try:
-            result = self._backend.embed(request)
-        except ProviderError:
-            raise
-        except Exception as exc:
-            raise ProviderError(
-                f"Embedding failed: {exc}", provider=self._backend.provider_name
-            ) from exc
-        return [np.asarray(vec, dtype=np.float32) for vec in result.vectors]
+        route = _checked_route(ref, WorkerRole.EMBED)
+        vectors: list[Vector] = []
+        for start in range(0, len(texts), EMBED_MAX_INPUTS):
+            request = EmbeddingRequest(
+                ref=ref,
+                inputs=texts[start : start + EMBED_MAX_INPUTS],
+                api_base=_api_base_for(ref, route),
+                api_key=_api_key_for(ref, route),
+            )
+            try:
+                result = self._backend.embed(request)
+            except ProviderError:
+                raise
+            except Exception as exc:
+                raise ProviderError(
+                    f"Embedding failed: {exc}", provider=self._backend.provider_name
+                ) from exc
+            vectors.extend(np.asarray(vec, dtype=np.float32) for vec in result.vectors)
+        return vectors
 
     def count_tokens(self, text: str) -> int:
         """Cloud SDK backends expose no local tokenizer, so chunk sizing falls back
@@ -140,6 +172,7 @@ class SdkLLMProvider(LLMProvider):
         model: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        role: WorkerRole = WorkerRole.CHAT,
     ) -> ChatResult: ...
 
     @overload
@@ -152,6 +185,7 @@ class SdkLLMProvider(LLMProvider):
         model: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        role: WorkerRole = WorkerRole.CHAT,
     ) -> ClosableIterator[ChatStreamItem]: ...
 
     def chat(
@@ -163,18 +197,18 @@ class SdkLLMProvider(LLMProvider):
         model: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        role: WorkerRole = WorkerRole.CHAT,
     ) -> ChatResult | ClosableIterator[ChatStreamItem]:
         """Chat completion via the configured backend.
 
         Non-streaming returns a :class:`ChatResult` carrying the assistant
         text, any tool-call frames the model emitted, and a finish reason.
         Streaming yields :data:`ChatStreamItem` frames (text tokens and
-        tool-call deltas).
+        tool-call deltas). *role* is the role a server preset must serve: vision for OCR.
         """
         self._ensure_initialized()
-        ref = parse_model_ref(
-            require_role_ref(model or cfg.chat_model, WorkerRole.CHAT, provider="sdk")
-        )
+        ref = parse_model_ref(require_role_ref(model or cfg.chat_model, role, provider="sdk"))
+        route = _checked_route(ref, role)
         if tools and not self.supports_tools(model or cfg.chat_model):
             chosen = model or cfg.chat_model
             raise ProviderError(
@@ -192,8 +226,8 @@ class SdkLLMProvider(LLMProvider):
             ref=ref,
             messages=list(messages),
             options=translated,
-            api_base=_api_base_for(ref),
-            api_key=_api_key_for(ref),
+            api_base=_api_base_for(ref, route),
+            api_key=_api_key_for(ref, route),
         )
         if stream:
             return self._chat_stream(request)
@@ -297,13 +331,14 @@ class SdkLLMProvider(LLMProvider):
             # The caller is freed at the deadline; a wedged call's thread lives until
             # the backend httpx timeout, and exit does not wait for it.
             call = DaemonCall(
-                lambda: self.chat(messages, stream=False, model=model), name="vision-ocr"
+                lambda: self.chat(messages, stream=False, model=model, role=WorkerRole.VISION),
+                name="vision-ocr",
             )
             if not call.wait(timeout):
                 raise TimeoutError(_VISION_OCR_TIMEOUT_ERROR.format(timeout=timeout))
             result = call.result()
         else:
-            result = self.chat(messages, stream=False, model=model)
+            result = self.chat(messages, stream=False, model=model, role=WorkerRole.VISION)
         if not isinstance(result, ChatResult):
             raise ProviderError(
                 f"Vision OCR returned non-text response ({type(result).__name__}).",
@@ -398,12 +433,14 @@ class SdkLLMProvider(LLMProvider):
         ref = parse_model_ref(
             require_role_ref(cfg.reranker_model, WorkerRole.RERANK, provider="sdk")
         )
+        route = _checked_route(ref, WorkerRole.RERANK)
         request = RerankRequest(
             ref=ref,
             query=query,
             candidates=candidates,
-            api_base=_api_base_for(ref),
-            api_key=_api_key_for(ref),
+            api_base=_api_base_for(ref, route),
+            api_key=_api_key_for(ref, route),
+            rerank_wire=RerankWire.V1 if route is None else route.rerank_wire,
         )
         try:
             result = self._backend.rerank(request)

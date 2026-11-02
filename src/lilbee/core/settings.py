@@ -15,7 +15,12 @@ import tomli_w
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.core.config.model import env_value, toml_value, toml_values
-from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
+from lilbee.core.security import (
+    file_lock,
+    file_lock_or_warn,
+    harden_private_file,
+    write_private_text,
+)
 
 _settings_lock = threading.Lock()
 
@@ -35,9 +40,22 @@ def _config_path(data_root: Path) -> Path:
 def _config_write_lock(data_root: Path) -> Generator[None, None, None]:
     """Serialize a config read-modify-write across threads and processes.
 
-    A lock timeout falls through to the write rather than failing the caller:
-    losing a settings update to a stale lock file is worse than the interleave
-    the lock exists to prevent, which is already rare.
+    Raises ``FileLockUnavailableError`` without running the block when the file
+    lock cannot be taken. A write without the lock can drop another writer's
+    update, and the OS releases the lock when its holder exits, so a stale lock
+    file cannot cause the wait.
+    """
+    path = _config_path(data_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _settings_lock, file_lock(path, _CONFIG_LOCK_TIMEOUT_S):
+        yield
+
+
+@contextmanager
+def _config_read_lock(data_root: Path) -> Generator[None, None, None]:
+    """Keep a writer out of a read of config.toml; a lock that is busy only logs a warning.
+
+    A reader sees a whole file either way, because a writer replaces it atomically.
     """
     path = _config_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,7 +301,7 @@ def _read_roots(config: Config, accept: Callable[[Any], None]) -> None:
     if path is None:
         accept(None)
         return
-    with _config_write_lock(config.data_root):
+    with _config_read_lock(config.data_root):
         accept(toml_value(path, "linked_roots"))
 
 

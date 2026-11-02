@@ -6560,6 +6560,32 @@ class TestLoginCommand:
             assert "Logged in" in result.output
             mock_hf_login.assert_called_once()
 
+    @pytest.mark.parametrize("bad", ["hf_fake\nsecret", "hf_fake\x00secret"])
+    def test_login_refuses_a_token_that_cannot_be_a_header_value(self, bad):
+        with (
+            mock.patch("huggingface_hub.login") as mock_hf_login,
+            mock.patch("huggingface_hub.get_token", return_value=None),
+            mock.patch("webbrowser.open"),
+            mock.patch("typer.prompt", return_value=bad),
+        ):
+            result = runner.invoke(app, ["login"])
+        assert result.exit_code == 1
+        assert "cannot be sent" in result.output
+        assert "secret" not in result.output
+        mock_hf_login.assert_not_called()
+
+    def test_login_failure_prints_no_library_text(self):
+        echo = ValueError("Illegal header value b'Bearer hf_fakesecret'")
+        with (
+            mock.patch("huggingface_hub.login", side_effect=echo),
+            mock.patch("huggingface_hub.get_token", return_value=None),
+            mock.patch("webbrowser.open"),
+        ):
+            result = runner.invoke(app, ["login"], input="hf_fakesecret\n")
+        assert result.exit_code == 1
+        assert "Login failed" in result.output
+        assert "fakesecret" not in result.output
+
     def test_login_empty_token(self):
         """Login with empty token exits with error."""
         with (

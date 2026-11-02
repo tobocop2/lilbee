@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.base import ProviderError, ProviderErrorKind, is_prompt_length_overflow
 
 _PROVIDER_NAME = "remote"
 
@@ -70,8 +70,15 @@ _RERANK_FAILED = "Rerank failed"
 
 
 def _classify_error(exc: BaseException) -> ProviderErrorKind:
-    """Map a liter-llm exception to a ``ProviderErrorKind`` by type, never by message."""
-    return _ERROR_KINDS.get(type(exc).__name__, ProviderErrorKind.UNKNOWN)
+    """Map a liter-llm exception to a ``ProviderErrorKind`` by type.
+
+    One bad request is read by message: a server that refuses a prompt past its
+    window answers a plain 400 with no overflow type.
+    """
+    kind = _ERROR_KINDS.get(type(exc).__name__, ProviderErrorKind.UNKNOWN)
+    if kind is ProviderErrorKind.BAD_REQUEST and is_prompt_length_overflow(str(exc)):
+        return ProviderErrorKind.CONTEXT_OVERFLOW
+    return kind
 
 
 def _provider_error(fallback: str, exc: Exception, model: str) -> ProviderError:

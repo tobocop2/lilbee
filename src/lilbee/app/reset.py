@@ -62,16 +62,17 @@ def perform_reset() -> ResetResult:
     """
     skipped: list[str] = []
     with library_held_for_reset(cfg):
-        deleted_docs = _clear_dir(cfg.documents_dir, skipped)
-        deleted_data = _clear_dir(cfg.data_dir, skipped)
-
         # config.toml lives at data_root, next to (not inside) the two cleared
         # dirs. Without un-registering the roots here, in the file AND in this
         # process, the next sync walks every linked root and re-indexes it, so
         # content reappears after a "factory reset". Other settings survive:
-        # reset deletes data, not configuration.
+        # reset deletes data, not configuration. The file is written first: a
+        # config lock that cannot be taken then refuses the reset before it
+        # deletes anything.
         settings.delete_value(cfg.data_root, "linked_roots")
         cfg.linked_roots = {}
+        deleted_docs = _clear_dir(cfg.documents_dir, skipped)
+        deleted_data = _clear_dir(cfg.data_dir, skipped)
         # The held-out record files of an older lilbee sit at data_root too; left
         # there, the next open would import them into the emptied index.
         remove_legacy_files(cfg.data_root)

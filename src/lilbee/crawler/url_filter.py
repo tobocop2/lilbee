@@ -8,29 +8,25 @@ import socket
 from typing import TYPE_CHECKING
 from urllib.parse import ParseResult, urlparse
 
+from lilbee.core.blocked_networks import (
+    ALWAYS_BLOCKED_NETWORKS,
+    IPV4_MULTICAST,
+    PRIVATE_NETWORKS,
+    IpNetwork,
+    blocked_form,
+)
+
 # ada-url is in the optional ``crawler`` extra, so each function that needs it imports it on call.
 if TYPE_CHECKING:
     import ada_url
 
-_BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
-    ipaddress.ip_network("0.0.0.0/8"),  # "this host" range; 0.0.0.0 routes to localhost
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("100.64.0.0/10"),  # RFC 6598 shared / CGNAT
-    ipaddress.ip_network("240.0.0.0/4"),  # RFC 1112 reserved; holds broadcast 255.255.255.255
-    ipaddress.ip_network("::/128"),  # IPv6 unspecified
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
-    ipaddress.ip_network("fc00::/7"),  # IPv6 unique-local (ULA)
-    ipaddress.ip_network("ff00::/8"),  # IPv6 multicast
-    ipaddress.ip_network("64:ff9b::/96"),  # NAT64 well-known prefix
+# Both shared sets, less the IPv4 multicast range a crawl admits.
+_BLOCKED_NETWORKS: tuple[IpNetwork, ...] = tuple(
+    network
+    for network in (*ALWAYS_BLOCKED_NETWORKS, *PRIVATE_NETWORKS)
+    if network != IPV4_MULTICAST
 )
 
-_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
-_IPV4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")  # RFC 6052 SIIT
 # The mark that ends a username and password in the host part of an address.
 _USERINFO_END = "@"
 # A WHATWG parser escapes a raw "^" in a path; the url crate 2.5.8 crawlberg 1.12.3 uses keeps it.
@@ -44,30 +40,9 @@ UNPARSED_ADDRESS = "(an address that does not parse)"
 INVALID_PORT_MESSAGE = "URL has an invalid port"
 
 
-def get_blocked_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+def get_blocked_networks() -> tuple[IpNetwork, ...]:
     """Return blocked network list. Override in tests via monkeypatch."""
     return _BLOCKED_NETWORKS
-
-
-def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
-    """Return the IPv4 an IPv6 address embeds, if any.
-
-    Covers IPv4-mapped (``::ffff:a.b.c.d``), 6to4 (``2002::``), the NAT64
-    well-known prefix, the IPv4-translated/SIIT prefix (``::ffff:0:a.b.c.d``),
-    and the deprecated IPv4-compatible (``::a.b.c.d``) form. Each can reach the
-    same host as its bare IPv4, so the embedded address must face the blocklist.
-    """
-    if ip.ipv4_mapped is not None:
-        return ip.ipv4_mapped
-    if ip.sixtofour is not None:
-        return ip.sixtofour
-    low32 = int(ip) & 0xFFFFFFFF
-    if ip in _NAT64_PREFIX or ip in _IPV4_TRANSLATED:
-        return ipaddress.IPv4Address(low32)
-    # IPv4-compatible ::a.b.c.d: top 96 bits zero, excluding :: and ::1.
-    if int(ip) >> 32 == 0 and low32 > 1:
-        return ipaddress.IPv4Address(low32)
-    return None
 
 
 def is_url(value: str) -> bool:
@@ -141,18 +116,9 @@ def validate_crawl_url(url: str) -> None:
     networks = get_blocked_networks()
     for _family, _type, _proto, _canonname, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        # An IPv6 address can embed an IPv4 (mapped, 6to4, NAT64, compatible)
-        # that reaches the same host but would slip past the IPv4 checks, so
-        # test both the address and any embedded IPv4 against the blocklist.
-        candidates: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [ip]
-        if isinstance(ip, ipaddress.IPv6Address):
-            embedded = _embedded_ipv4(ip)
-            if embedded is not None:
-                candidates.append(embedded)
-        for candidate in candidates:
-            for network in networks:
-                if candidate in network:
-                    raise ValueError(f"Crawling private/reserved IP {candidate} is not allowed")
+        blocked = blocked_form(ip, networks)
+        if blocked is not None:
+            raise ValueError(f"Crawling private/reserved IP {blocked} is not allowed")
 
 
 def require_valid_crawl_url(url: str) -> None:

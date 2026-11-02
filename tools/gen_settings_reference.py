@@ -37,6 +37,7 @@ from lilbee.config_meta import (  # noqa: E402
     ENV_UNSETTABLE_FIELDS,
     PUBLIC_CONFIG_FIELDS,
     REINDEX_FIELDS,
+    SERVICE_ONLY_FIELDS,
     WRITABLE_CONFIG_FIELDS,
 )
 from lilbee.core.config import Config  # noqa: E402
@@ -212,7 +213,7 @@ def _tui_cell(key: str) -> str:
 def _mcp_cell(key: str) -> str:
     if key in MODEL_ROLE_FIELDS:
         return "yes"
-    if key not in WRITABLE_CONFIG_FIELDS:
+    if key not in WRITABLE_CONFIG_FIELDS or key in SERVICE_ONLY_FIELDS:
         return "no"
     return "yes" if key in PUBLIC_CONFIG_FIELDS else "write-only"
 
@@ -220,7 +221,7 @@ def _mcp_cell(key: str) -> str:
 def _http_cell(key: str) -> str:
     if key in MODEL_ROLE_FIELDS:
         return "role API"
-    if key not in WRITABLE_CONFIG_FIELDS:
+    if key not in WRITABLE_CONFIG_FIELDS or key in SERVICE_ONLY_FIELDS:
         return "no"
     if key in PROVIDER_SWITCHING_KEYS:
         return "refused"

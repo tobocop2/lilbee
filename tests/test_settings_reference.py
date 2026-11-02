@@ -18,6 +18,7 @@ import pytest
 from lilbee.config_meta import (
     ENV_UNSETTABLE_FIELDS,
     PUBLIC_CONFIG_FIELDS,
+    SERVICE_ONLY_FIELDS,
     WRITABLE_CONFIG_FIELDS,
 )
 from lilbee.core.config import Config, cfg
@@ -152,7 +153,7 @@ class TestSurfaceColumns:
             default = str(info.get_default(call_default_factory=True))
             if all(_refusals(Config, {key: text}) for text in (*_ENV_CANDIDATES, default)):
                 unsettable.add(key)
-        assert unsettable == ENV_UNSETTABLE_FIELDS == {"linked_roots"}
+        assert unsettable == ENV_UNSETTABLE_FIELDS - SERVICE_ONLY_FIELDS == {"linked_roots"}
 
     def test_a_setting_no_variable_sets_shows_no_variable(self, generator):
         text = REFERENCE.read_text(encoding="utf-8")
@@ -172,10 +173,18 @@ class TestSurfaceColumns:
         assert generator._mcp_cell(key) == "yes"
 
     def test_write_only_keys_are_settable_but_not_listed(self, generator):
-        write_only = sorted(set(WRITABLE_CONFIG_FIELDS) - PUBLIC_CONFIG_FIELDS)
+        write_only = sorted(
+            set(WRITABLE_CONFIG_FIELDS) - PUBLIC_CONFIG_FIELDS - SERVICE_ONLY_FIELDS
+        )
         assert write_only, "expected the API keys to be write-only"
         for key in write_only:
             assert generator._mcp_cell(key) == "write-only"
+
+    @pytest.mark.parametrize("key", sorted(SERVICE_ONLY_FIELDS))
+    def test_a_service_only_field_has_no_general_write_path(self, generator, key):
+        assert key in WRITABLE_CONFIG_FIELDS
+        assert generator._mcp_cell(key) == "no"
+        assert generator._http_cell(key) == "no"
 
     def test_fields_with_no_write_path_say_no(self, generator):
         unwritable = set(Config.model_fields) - set(WRITABLE_CONFIG_FIELDS) - MODEL_ROLE_FIELDS

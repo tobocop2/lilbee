@@ -19,29 +19,14 @@ from lilbee.providers.base import (
     filter_options,
     normalize_generation_options,
 )
-from lilbee.providers.local_servers import (
-    LOCAL_SERVER_KEYS,
-    local_server_for_key,
-    local_server_for_label,
+from lilbee.providers.local_servers import local_server_for_key, local_server_for_label
+from lilbee.providers.server_registry import (
+    API_PROVIDERS,
+    BUILTIN_PREFIXES,
+    LOCAL_PROVIDER,
+    route_for,
 )
 
-_API_PROVIDERS = frozenset(
-    {
-        "openrouter",
-        "gemini",
-        "anthropic",
-        "openai",
-        "mistral",
-        "deepseek",
-    }
-)
-
-# All provider prefixes that route a ref away from the local registry:
-# API providers plus the local OpenAI-compatible servers (ollama, lm_studio).
-PROVIDER_PREFIXES: frozenset[str] = frozenset(_API_PROVIDERS | LOCAL_SERVER_KEYS)
-
-# Provider value for refs served from the local registry (native GGUF).
-LOCAL_PROVIDER = "local"
 OLLAMA_NO_THINKING = "none"
 
 
@@ -80,7 +65,7 @@ def routes_to_native_gguf(raw: str) -> bool:
     GGUF paths, so the prefix wins over the shape.
     """
     first_segment = raw.split("/", 1)[0]
-    return first_segment not in LOCAL_SERVER_KEYS and is_native_gguf_ref(raw)
+    return local_server_for_key(first_segment) is None and is_native_gguf_ref(raw)
 
 
 @dataclass(frozen=True)
@@ -88,16 +73,21 @@ class ProviderModelRef:
     """Parsed model reference with provider routing information."""
 
     raw: str
-    provider: str  # LOCAL_PROVIDER or any value in PROVIDER_PREFIXES
+    provider: str  # LOCAL_PROVIDER, a built-in prefix or the name of a server preset
     name: str  # provider-specific name with tag normalization applied
 
     @property
     def is_api(self) -> bool:
-        return self.provider in _API_PROVIDERS
+        return self.provider in API_PROVIDERS
 
     @property
     def is_local(self) -> bool:
         return self.provider == LOCAL_PROVIDER
+
+    @property
+    def is_preset(self) -> bool:
+        """True when the provider is a stored server preset rather than a built-in prefix."""
+        return self.is_remote and not self.is_api and local_server_for_key(self.provider) is None
 
     @property
     def is_remote(self) -> bool:
@@ -109,7 +99,7 @@ class ProviderModelRef:
         spec = local_server_for_key(self.provider)
         if spec is not None:
             return spec.qualify(self.name)
-        if self.is_api:
+        if self.is_remote:
             return f"{self.provider}/{self.name}"
         return self.name
 
@@ -129,11 +119,23 @@ def format_remote_ref(name: str, provider: str) -> str:
     *provider* may be a routing key (``"ollama"``) or a backend display
     name (``"LM Studio"``); local-server labels are normalised to the
     routing key so the prefix survives. API providers fall through to
-    their lowercase key unchanged.
+    their lowercase key unchanged. A label that is no built-in routing key
+    (``"Remote"``) adds no prefix: the name stays as the server reported it.
     """
     spec = local_server_for_label(provider)
     key = spec.key if spec is not None else provider.lower()
+    if key not in BUILTIN_PREFIXES:
+        return name
     return ProviderModelRef(raw=name, provider=key, name=name).for_openai_prefix()
+
+
+def canonical_model_ref(raw: str) -> str:
+    """The canonical text of a model ref, decided from the text alone.
+
+    A ref that names a stored server preset and a ref that names none both keep
+    the text as written, so this reads no stored preset. The config validators call it.
+    """
+    return _classify(raw, read_presets=False).for_openai_prefix()
 
 
 def parse_model_ref(raw: str) -> ProviderModelRef:
@@ -145,22 +147,30 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     prefixes (``ollama/``, ``lm_studio/``) are exempt from the shape rule:
     those servers report model ids that can themselves look like GGUF paths
     (LM Studio 0.2.x uses full relative GGUF paths), so the prefix wins there.
-    Remote providers use prefixes from :data:`PROVIDER_PREFIXES`.
+    Remote providers use a built-in prefix or the name of a stored server preset.
     """
+    return _classify(raw, read_presets=True)
+
+
+def _classify(raw: str, *, read_presets: bool) -> ProviderModelRef:
     if routes_to_native_gguf(raw):
         return ProviderModelRef(raw=raw, provider=LOCAL_PROVIDER, name=raw)
     if "/" not in raw:
-        known = ", ".join(f"{p}/" for p in sorted(PROVIDER_PREFIXES))
+        known = ", ".join(f"{p}/" for p in sorted(BUILTIN_PREFIXES))
         raise ValueError(
             f"Model ref {raw!r} must be a HuggingFace ref "
-            f"('<org>/<repo>/<filename>.gguf') or carry a known provider prefix ({known})."
+            f"('<org>/<repo>/<filename>.gguf') or carry a known provider prefix ({known}) "
+            "or the name of a server preset."
         )
     prefix, rest = raw.split("/", 1)
-    if prefix in _API_PROVIDERS:
+    if prefix in API_PROVIDERS:
         return ProviderModelRef(raw=raw, provider=prefix, name=rest)
     spec = local_server_for_key(prefix)
     if spec is not None:
         return ProviderModelRef(raw=raw, provider=spec.key, name=spec.normalize_name(rest))
+    route = route_for(prefix) if read_presets else None
+    if route is not None:
+        return ProviderModelRef(raw=raw, provider=route.name, name=rest)
     return ProviderModelRef(raw=raw, provider=LOCAL_PROVIDER, name=raw)
 
 
