@@ -302,8 +302,7 @@ jobs:
           set -euo pipefail
           # Nuitka names the standalone tree after the entry module (__main__.dist);
           # find it by shape rather than by that name.
-          bin_dir=$(find dist -type d -path '*lilbee_engine_llama_cpp/bin' | head -1)
-          [ -n "${bin_dir}" ] || { echo "no bundled engine found under dist/" >&2; exit 1; }
+          bin_dir=$(bash tools/qa/find_engine_bin.sh dist)
           echo "ENGINE_BIN_DIR=${bin_dir}" >> "${GITHUB_ENV}"
           uv run --no-sync python tools/qa/assert_engine_bundle.py \
             --backend "${BACKEND}" --platform "${RUNNER_OS}" "${bin_dir}"
