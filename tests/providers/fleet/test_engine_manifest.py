@@ -241,7 +241,7 @@ def test_the_host_version_is_read_from_the_platform_module(
 
 
 def lock_with(cells: dict[str, PlatformAsset]) -> PinLock:
-    return PinLock("llama.cpp", "b12032", "vulkan", cells, ("MIT",), SHA)
+    return PinLock("llama.cpp", "b12032", "vulkan", cells, ("MIT",), SHA, "server")
 
 
 def linux() -> Any:
@@ -319,6 +319,7 @@ def test_pin_lock_turns_the_cells_of_a_pin_into_assets() -> None:
         "backend": "vulkan",
         "sha256": SHA,
         "licenses": ["MIT"],
+        "tool": "llama-server",
         "platforms": {"linux-x86_64-vulkan": row("linux", "x86_64", "vulkan", "2.34")},
     }
     lock = choice.pin_lock(pin)

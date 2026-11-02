@@ -147,6 +147,7 @@ class MistralAdapter:
             "version": _VERSION,
             "backend": backend,
             "sha256": PACK_SHA256,
+            "tool": _TOOL,
             "launch": [_TOOL, "serve"],
             "platforms": {},
             "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},

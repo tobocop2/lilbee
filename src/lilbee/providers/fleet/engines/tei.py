@@ -60,6 +60,7 @@ _PROFILE = RequestProfile(
     batch_limit=_BATCH_LIMIT,
     batch_count_refusal=re.compile(r"maximum allowed batch size"),
 )
+_TOOL = "text-embeddings-router"
 _PIN_LAUNCH = ["{binary}", "--model-id", "{model}", "--hostname", "127.0.0.1", "--port", "{port}"]
 
 
@@ -159,6 +160,7 @@ class TeiAdapter:
             "version": _VERSION,
             "backend": self.pick_build(session_host()).backend,
             "sha256": PACK_SHA256,
+            "tool": _TOOL,
             "launch": _PIN_LAUNCH,
             "platforms": {},
             "memory": {"sizing": None, "rule": f"fixed {_RESERVE_BYTES} bytes"},

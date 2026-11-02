@@ -374,7 +374,7 @@ def test_the_engine_counts_as_installed_only_with_a_record_and_finds_its_tool(
     monkeypatch.setattr(mistral, "PACK_SHA256", sha)
     pin = MISTRAL.pin_record()
     assert (pin["engine"], pin["backend"]) == ("mistral.rs", "cpu")
-    lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha)
+    lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha, "mistralrs")
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, tmp_path / "pack.whl")
     assert EngineName.MISTRAL in installed_engines()
     assert MISTRAL.binary().parts[-3:] == ("pkg", "bin", "mistralrs")
