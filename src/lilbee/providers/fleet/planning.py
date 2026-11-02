@@ -4119,8 +4119,9 @@ def _distinct_engines(engines: Mapping[WorkerRole, EngineAdapter]) -> list[Engin
 def _engine_read_error(engine: EngineAdapter, exc: Exception) -> ProviderError:
     """The error for an engine whose device read failed beside other engines."""
     return ProviderError(
-        f"Cannot read the GPUs of the {engine.name} engine: {exc}. "
-        "Check that the engine is installed and works, or pick another engine."
+        f"Cannot read the GPUs of the {engine.name} engine. "
+        "Check that the engine is installed and works, or pick another engine. "
+        f"The error was: {exc}"
     )
 
 

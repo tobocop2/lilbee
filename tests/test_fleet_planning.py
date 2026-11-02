@@ -4895,6 +4895,30 @@ class TestSnapshotEngineWithMixedReadings:
         with pytest.raises(ProviderError, match=f"Cannot read the GPUs of the {FAKE.name} engine"):
             planning_mod.snapshot_engine(engines)
 
+    def test_an_engine_error_that_ends_in_a_period_leaves_no_double_period(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.providers.base import ProviderError
+        from tests.conformance.fake_adapter import FAKE
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+
+        def _read(_binary, engine):
+            if engine is FAKE:
+                raise ProviderError("The runtime is missing. Install it from https://x/redist.")
+            return [_card(8 * _GB)]
+
+        monkeypatch.setattr(planning_mod, "_plan_devices", _read)
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        with pytest.raises(ProviderError) as caught:
+            planning_mod.snapshot_engine(engines)
+        assert ".." not in str(caught.value)
+        assert "https://x/redist." in str(caught.value)
+        assert "Check that the engine is installed and works" in str(caught.value)
+
     def test_an_empty_mapping_is_refused_in_plain_words(self) -> None:
         from lilbee.providers.base import ProviderError
 

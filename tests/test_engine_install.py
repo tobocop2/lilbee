@@ -30,7 +30,7 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
-from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS, collect
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
 from tests._release_server import ReleaseServer, release_server
@@ -759,3 +759,45 @@ def test_a_pack_url_outside_the_index_is_refused_and_no_request_is_sent(
         engine_service.install(ENGINE.value)
     assert "https://index.test/packs/" in str(exc.value)
     assert (release.requests, _builds()) == ([], [])
+
+
+def _refusing_host(os: HostOS, arch: HostArch, avx2: Feature | None = None) -> HostCaps:
+    return HostCaps(
+        os=os,
+        arch=arch,
+        avx2=avx2 or Feature(True),
+        neon=Feature(False, "not an ARM CPU"),
+        gpus=(),
+        nvidia_driver_cuda=None,
+        nvidia_reason="",
+        nvidia_known=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "host", "reason"),
+    [
+        (
+            "ik_llama.cpp",
+            _refusing_host(HostOS.LINUX, HostArch.X86_64, Feature(False, "Xeon lacks AVX2")),
+            "Xeon lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON.",
+        ),
+        (
+            "tei",
+            _refusing_host(HostOS.WINDOWS, HostArch.X86_64),
+            "No build exists for Windows.",
+        ),
+        (
+            "mistral.rs",
+            _refusing_host(HostOS.MACOS, HostArch.X86_64),
+            "mistral.rs is not offered on macos x86_64.",
+        ),
+    ],
+)
+def test_each_refusing_engine_gives_its_reason_and_the_install_sentence(
+    name: str, host: HostCaps, reason: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(name)
+    assert str(exc.value) == f"Engine {name} cannot run on this host. {reason} {STAYS}"
