@@ -5181,6 +5181,55 @@ def test_an_exit_while_the_engine_starts_stops_that_engine(monkeypatch, tmp_path
     assert stopped == [machine]
 
 
+def test_a_shutdown_during_a_stuck_start_stops_its_engine_without_waiting(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The start fails once its engine is stopped, so the exit waits on neither work nor lock."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.runtime.engine_lock import live_users_exist
+
+    work_wait_s = 3.0
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", work_wait_s)
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    started = threading.Event()
+    engine_gone = threading.Event()
+    stopped: list[Path] = []
+
+    def _stop(engine_dir: Path) -> None:
+        stopped.append(Path(engine_dir))
+        engine_gone.set()
+
+    def _start_until_the_engine_exits(launches: list, **_kwargs: object) -> None:
+        started.set()
+        engine_gone.wait(30)
+        raise ProviderError("The local model engine exited before it was ready.", provider="fleet")
+
+    monkeypatch.setattr(prov_mod, "stop_engine", _stop)
+    monkeypatch.setattr(swap, "start", _start_until_the_engine_exits)
+    p = FleetProvider()
+    outcome: list[BaseException] = []
+
+    def _build() -> None:
+        try:
+            p._ensure_fleet(bounded=False)
+        except ProviderError as exc:
+            outcome.append(exc)
+
+    builder = threading.Thread(target=_build, daemon=True)
+    builder.start()
+    assert started.wait(5)
+
+    begin = time.monotonic()
+    p.shutdown()
+    elapsed = time.monotonic() - begin
+    builder.join(5)
+
+    assert elapsed < work_wait_s, f"shutdown took {elapsed:.2f} s with a start stuck"
+    assert stopped == [machine]
+    assert [str(exc) for exc in outcome] == ["The local model engine exited before it was ready."]
+    assert not live_users_exist(machine)
+
+
 def test_a_start_that_serves_nothing_leaves_no_membership(monkeypatch, tmp_path: Path) -> None:
     _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
     p = FleetProvider()
@@ -5196,8 +5245,11 @@ def test_a_failed_start_leaves_no_membership(monkeypatch, tmp_path: Path) -> Non
     from lilbee.runtime.engine_lock import live_users_exist
 
     swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    # A reference keeps the hold alive, so only a release frees the lock, not collection.
+    held: list[object] = []
 
     def _fail(launches: list, **_kwargs: object) -> None:
+        held.append(p._engine_holds[machine])
         raise ProviderError("engine did not come up", provider="fleet")
 
     monkeypatch.setattr(swap, "start", _fail)
@@ -5206,6 +5258,7 @@ def test_a_failed_start_leaves_no_membership(monkeypatch, tmp_path: Path) -> Non
     with pytest.raises(ProviderError, match="engine did not come up"):
         p._ensure_fleet()
 
+    assert len(held) == 1
     assert p._engine_holds == {}
     assert not live_users_exist(machine)
 

@@ -963,6 +963,8 @@ class FleetProvider:
         # Engine dirs this provider holds membership in (machine slot and/or
         # the private overflow), and the dir each running group lives in.
         self._engine_holds: dict[Path, UserLockHold] = {}
+        # Engine dirs whose start runs now under this process's build lock.
+        self._starting_dirs: set[Path] = set()
         self._group_dirs: dict[SwapGroup, Path] = {}
         # Latched once shutdown runs. A discarded provider (reset_services swaps
         # in a new one) can still have an in-flight warm-up or reload daemon
@@ -1314,11 +1316,18 @@ class FleetProvider:
             # Membership comes first: an exit while the start waits on the engine
             # must still find this engine's hold and stop it as the last user out.
             fresh = self._take_user_lock(engine_dir)
+            with self._lock:
+                self._starting_dirs.add(engine_dir)
             try:
                 spawned = self._plan_and_spawn(engine_dir)
             except BaseException:
                 self._drop_user_lock(engine_dir, fresh)
                 raise
+            finally:
+                # Cleared before the build lock is freed, so no peer binds an engine
+                # that the shutdown stops as a start.
+                with self._lock:
+                    self._starting_dirs.discard(engine_dir)
             if spawned:
                 self._hold_membership(engine_dir)
                 _watch_bound_engine(engine_dir)
@@ -1787,6 +1796,10 @@ class FleetProvider:
         with self._lock:
             self._shut_down = True
             work = self._fleet_work
+            # A start holds the build lock that the release below waits on. Stopping
+            # its engine makes the start fail at once and free the lock.
+            for engine_dir in self._starting_dirs:
+                stop_engine(engine_dir)
         # Bounded, because a wedged engine start would hang process exit. At the bound
         # the teardown proceeds: the loop is a daemon thread that exit never joins, and
         # the next start reaps from the engine dir's state files what it leaves behind.
