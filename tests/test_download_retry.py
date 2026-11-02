@@ -9,7 +9,6 @@ download entry point runs under the retry loop.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -154,42 +153,17 @@ class TestTransientErrorTranslation:
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _raise)
         dl._hf_download_or_translate(_entry(), _config())
 
-    def test_a_network_timeout_is_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import httpx
-
-        with pytest.raises(dl._TransientDownloadError, match="Network error"):
-            self._download(monkeypatch, httpx.ConnectError("refused"))
-
     @pytest.mark.parametrize(
         "name", ["ConnectError", "TimeoutException", "ReadError", "RemoteProtocolError"]
     )
-    def test_a_hub_2x_network_error_is_transient(
+    def test_a_network_error_from_hub_is_transient(
         self, monkeypatch: pytest.MonkeyPatch, name: str
     ) -> None:
-        """Hub 2.x raises httpx2 errors, which are not httpx errors."""
-        httpx2 = pytest.importorskip("httpx2")
+        """Hub raises httpx2 errors, which are not httpx errors."""
+        import httpx2
 
         with pytest.raises(dl._TransientDownloadError, match="Network error"):
             self._download(monkeypatch, getattr(httpx2, name)("refused"))
-
-    @pytest.mark.parametrize("name", ["ReadError", "RemoteProtocolError"])
-    def test_a_connection_lost_mid_transfer_is_transient(
-        self, monkeypatch: pytest.MonkeyPatch, name: str
-    ) -> None:
-        """A dropped stream is not a timeout or a refused connection."""
-        import httpx
-
-        with pytest.raises(dl._TransientDownloadError, match="Network error"):
-            self._download(monkeypatch, getattr(httpx, name)("lost"))
-
-    def test_hub_1x_without_httpx2_lists_only_httpx_errors(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import httpx
-
-        monkeypatch.setitem(sys.modules, "httpx2", None)
-
-        assert dl._hub_network_errors() == (httpx.TransportError,)
 
     def test_an_io_error_is_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with pytest.raises(dl._TransientDownloadError, match="I/O error"):

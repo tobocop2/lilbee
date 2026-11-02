@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
 
 import httpx
+import httpx2
 from pydantic import BaseModel
 
 from lilbee.catalog.compat import UnsupportedQuantError, classify, file_header
@@ -206,19 +207,6 @@ def _retry_transient(work: Callable[[], _T]) -> _T:
     ) from last_error
 
 
-def _hub_network_errors() -> tuple[type[Exception], ...]:
-    """The transport errors huggingface_hub lets through.
-
-    Hub 1.x raises httpx errors. Hub 2.x raises httpx2 errors, which do not
-    extend the httpx classes, so both families are listed.
-    """
-    try:
-        import httpx2
-    except ImportError:
-        return (httpx.TransportError,)
-    return (httpx.TransportError, httpx2.TransportError)
-
-
 def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:
     """Run one file's transfer, retrying the faults another attempt can clear."""
     return _retry_transient(lambda: _hf_download_or_translate(entry, config))
@@ -242,7 +230,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
     except EntryNotFoundError:
         raise RuntimeError(_missing_file_message(entry.hf_repo, config.filename)) from None
-    except _hub_network_errors() as exc:
+    except httpx2.TransportError as exc:
         raise _TransientDownloadError(f"Network error downloading {entry.hf_repo}: {exc}") from None
     except OSError as exc:
         raise _TransientDownloadError(f"I/O error downloading {entry.hf_repo}: {exc}") from None

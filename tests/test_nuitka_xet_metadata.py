@@ -43,8 +43,7 @@ def test_trigger_module_is_the_one_that_reads_the_metadata() -> None:
     modules = {entry["module-name"] for entry in entries}
 
     assert _runtime.__name__ in modules
-    # 1.x fills the version table when _runtime is imported; 2.x fills it on the
-    # first lookup. The public getter answers the same way on both.
+    # Hub fills the version table on the first lookup, so ask the public getter.
     reported = _runtime.get_xet_version()
     assert reported != "N/A"
     assert reported == importlib.metadata.version("hf_xet")
