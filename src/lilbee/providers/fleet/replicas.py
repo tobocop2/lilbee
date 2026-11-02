@@ -38,21 +38,32 @@ def resolve_replica_count(role: WorkerRole, device_count: int) -> int:
     return getattr(cfg, knob) or max(_MIN_REPLICAS, device_count)
 
 
-@functools.cache
 def gpu_device_count(engine: EngineAdapter) -> int:
-    """Effective GPU count *engine* will use; fixed per engine for the process lifetime (cached).
+    """Effective GPU count *engine* will use, floored at one.
 
     Counts the devices auto placement packs, so a shared-memory GPU beside a dedicated
-    card adds no replica.
+    card adds no replica. A binary that cannot load sizes as GPU-less: the paths that
+    start the engine raise on their own. That count is not kept, so a process that
+    outlives the fix of the missing DLL counts its cards again.
+    """
+    from lilbee.providers.fleet.devices import EngineDllMissingError
 
-    Resolved the same way planning does (binary ``--list-devices`` view), and
-    floored at one so auto means "one replica" on a GPU-less host. Returns one
-    when the engine binary is absent so callers that size concurrency (e.g.
-    ingest) degrade gracefully instead of raising. A binary that cannot load
-    sizes as GPU-less too: the paths that start the engine raise on their own.
+    try:
+        return _probed_gpu_count(engine)
+    except EngineDllMissingError:
+        log.debug("engine cannot load; sizing for a GPU-less host")
+        return _MIN_REPLICAS
+
+
+@functools.cache
+def _probed_gpu_count(engine: EngineAdapter) -> int:
+    """Count *engine*'s packable devices once per process (cached); a missing DLL raises uncached.
+
+    Resolved the same way planning does (binary ``--list-devices`` view). Returns
+    one when the engine binary is absent so callers that size concurrency (e.g.
+    ingest) degrade gracefully instead of raising.
     """
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.fleet.devices import EngineDllMissingError
     from lilbee.providers.fleet.planning import packable_devices, resolve_devices
 
     try:
@@ -60,9 +71,4 @@ def gpu_device_count(engine: EngineAdapter) -> int:
     except ProviderError:
         log.debug("engine binary not found; treating host as GPU-less for replica sizing")
         return _MIN_REPLICAS
-    try:
-        devices = resolve_devices(binary, engine)
-    except EngineDllMissingError:
-        log.debug("engine cannot load; sizing for a GPU-less host")
-        return _MIN_REPLICAS
-    return max(_MIN_REPLICAS, len(packable_devices(devices)))
+    return max(_MIN_REPLICAS, len(packable_devices(resolve_devices(binary, engine))))
