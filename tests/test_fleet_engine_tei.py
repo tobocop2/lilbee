@@ -209,14 +209,15 @@ def test_binary_comes_from_the_store_record_of_the_pin(
         TEI.binary()
     wheel = tmp_path / "tei.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
-        tool = zipfile.ZipInfo("tei_fx/bin/router")
+        tool = zipfile.ZipInfo("tei_fx/bin/text-embeddings-router")
         tool.external_attr = (stat.S_IFREG | 0o755) << 16
         archive.writestr(tool, "#!/bin/sh\n")
         archive.writestr("tei_fx-1.dist-info/METADATA", "License-Expression: Apache-2.0\n")
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-    lock = PinLock("tei", "1.9.4", "cpu", {}, ("Apache-2.0",), digest)
+    lock = PinLock("tei", "1.9.4", "cpu", {}, ("Apache-2.0",), digest, "text-embeddings-router")
     EngineStore(tmp_path / "engines").install_from_wheel(lock, wheel)
-    assert TEI.binary() == tmp_path / "engines" / "tei" / "1.9.4-cpu" / "tei_fx" / "bin" / "router"
+    want = tmp_path / "engines" / "tei" / "1.9.4-cpu" / "tei_fx" / "bin"
+    assert TEI.binary() == want / "text-embeddings-router"
 
 
 def test_other_probes_of_the_adapter_answer_without_a_server(tmp_path: Path) -> None:

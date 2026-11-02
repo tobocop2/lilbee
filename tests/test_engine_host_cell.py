@@ -53,6 +53,7 @@ def _pin(cell_sha: str) -> dict[str, Any]:
         "sha256": TOP,
         "platforms": {CELL: row},
         "licenses": ["MIT"],
+        "tool": "mistralrs",
         "launch": ["mistralrs"],
         "memory": {"sizing": None, "rule": None},
     }

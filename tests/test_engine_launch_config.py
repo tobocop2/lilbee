@@ -112,7 +112,7 @@ def _install_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: EngineN
     sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
     publish(monkeypatch, name, sha)
     pin = ADAPTERS[name].pin_record()
-    lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha)
+    lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha, tool)
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
     return ADAPTERS[name].binary()
 

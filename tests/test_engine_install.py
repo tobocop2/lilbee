@@ -85,6 +85,7 @@ class StandIn(FakeAdapter):
             "platforms": self.cells,
             "sha256": self.sha,
             "licenses": list(self.licences),
+            "tool": "server",
         }
 
 

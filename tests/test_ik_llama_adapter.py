@@ -70,7 +70,15 @@ def build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     wheel = tmp_path / "ik.whl"
     sha = _make_wheel(wheel)
     publish(monkeypatch, EngineName.IK_LLAMA, sha)
-    lock = PinLock(EngineName.IK_LLAMA.value, ik_llama.VERSION, ik_llama.BACKEND, {}, ("MIT",), sha)
+    lock = PinLock(
+        EngineName.IK_LLAMA.value,
+        ik_llama.VERSION,
+        ik_llama.BACKEND,
+        {},
+        ("MIT",),
+        sha,
+        "llama-server",
+    )
     return EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
 
 
@@ -125,10 +133,12 @@ def test_binary_skips_a_build_of_another_version_and_one_with_no_server(
         archive.writestr("lilbee_engine_ik-1.dist-info/METADATA", "License-Expression: MIT\n")
     sha = hashlib.sha256(toolless.read_bytes()).hexdigest()
     store.install_from_wheel(
-        PinLock("ik_llama.cpp", "0+gitaaaaaaaaaaaa", "cpu", {}, ("MIT",), sha), toolless
+        PinLock("ik_llama.cpp", "0+gitaaaaaaaaaaaa", "cpu", {}, ("MIT",), sha, "llama-server"),
+        toolless,
     )
     store.install_from_wheel(
-        PinLock("ik_llama.cpp", ik_llama.VERSION, "cpu", {}, ("MIT",), sha), toolless
+        PinLock("ik_llama.cpp", ik_llama.VERSION, "cpu", {}, ("MIT",), sha, "llama-server"),
+        toolless,
     )
     with pytest.raises(ProviderError, match="is not installed"):
         IK_LLAMA.binary()
@@ -143,7 +153,7 @@ def test_binary_skips_a_build_of_another_version_or_backend_that_has_a_server(
 ) -> None:
     wheel = tmp_path / "ik.whl"
     sha = _make_wheel(wheel)
-    lock = PinLock("ik_llama.cpp", version, backend, {}, ("MIT",), sha)
+    lock = PinLock("ik_llama.cpp", version, backend, {}, ("MIT",), sha, "llama-server")
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
     with pytest.raises(ProviderError, match="is not installed"):
         IK_LLAMA.binary()

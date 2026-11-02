@@ -167,7 +167,7 @@ def _install_build(models_dir: Path, version: str = "1.2.3") -> str:
         archive.writestr(tool, "#!/bin/sh\n")
         archive.writestr("pkg-1.dist-info/METADATA", "License-Expression: MIT\n")
     sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
-    lock = PinLock("mistral.rs", version, "cpu", {}, ("MIT",), sha)
+    lock = PinLock("mistral.rs", version, "cpu", {}, ("MIT",), sha, "server")
     EngineStore(engines_root(models_dir)).install_from_wheel(lock, wheel)
     return sha
 

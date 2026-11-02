@@ -93,6 +93,7 @@ class FakeAdapter:
             },
             "memory": {"sizing": ["{binary}", "--estimate", "{model}"], "rule": None},
             "licenses": ["MIT"],
+            "tool": "server",
         }
 
     def role_spec(

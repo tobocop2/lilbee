@@ -11,6 +11,7 @@ import sys
 import textwrap
 import time
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -45,7 +46,7 @@ def make_wheel(path: Path, licence: str | None = "MIT") -> str:
 
 
 def pin(sha: str, version: str = "1", licences: tuple[str, ...] = ("MIT",)) -> PinLock:
-    return PinLock("fx", version, "cpu", {}, licences, sha)
+    return PinLock("fx", version, "cpu", {}, licences, sha, "server")
 
 
 @pytest.fixture
@@ -91,7 +92,7 @@ def test_builds_of_one_engine_list_side_by_side(
     path, sha = wheel
     store.install_from_wheel(pin(sha, "1"), path)
     store.install_from_wheel(pin(sha, "2"), path)
-    other = PinLock("fx", "1", "cu125", {}, ("MIT",), sha)
+    other = PinLock("fx", "1", "cu125", {}, ("MIT",), sha, "server")
     store.install_from_wheel(other, path)
     assert [(e.version, e.backend) for e in store.installed()] == [
         ("1", "cpu"),
@@ -147,7 +148,7 @@ _CHILD = textwrap.dedent(
     es._unpack, es._check_wheel = unpack, check
     while time.time() < float(start):
         time.sleep(0.01)
-    pin = es.PinLock("fx", "1", "cpu", {}, ("MIT",), sha)
+    pin = es.PinLock("fx", "1", "cpu", {}, ("MIT",), sha, "server")
     es.EngineStore(Path(root)).install_from_wheel(pin, Path(wheel))
     """
 )
@@ -283,9 +284,9 @@ def test_licence_permitted(expression: str, ok: bool) -> None:
 @pytest.mark.parametrize("bad", ["../x", "a/b", ".hidden", "", "a b"])
 def test_pin_names_cannot_leave_the_engine_directory(bad: str) -> None:
     with pytest.raises(ValueError, match="cannot name an engine directory"):
-        PinLock(bad, "1", "cpu", {}, ("MIT",), "a")
+        PinLock(bad, "1", "cpu", {}, ("MIT",), "a", "server")
     with pytest.raises(ValueError, match="cannot name an engine directory"):
-        PinLock("fx", bad, "cpu", {}, ("MIT",), "a")
+        PinLock("fx", bad, "cpu", {}, ("MIT",), "a", "server")
 
 
 # Crash steps. A raise runs the cleanup; a kill does not, so each step is tested both ways.
@@ -525,7 +526,7 @@ def test_recorded_binary_outside_the_build_is_not_installed(
 def test_wheel_whose_tool_is_a_symlink_is_refused(store: EngineStore, tmp_path: Path) -> None:
     path = tmp_path / "link.whl"
     with zipfile.ZipFile(path, "w") as archive:
-        info = zipfile.ZipInfo("p/bin/tool")
+        info = zipfile.ZipInfo("p/bin/server")
         info.external_attr = (stat.S_IFLNK | 0o755) << 16
         archive.writestr(info, "/bin/sh")
         archive.writestr("p-1.dist-info/METADATA", "Name: p\nLicense-Expression: MIT\n")
@@ -989,3 +990,63 @@ def test_prune_also_clears_a_damaged_build(store: EngineStore, tmp_path: Path) -
 
 def test_prune_with_no_root_removes_nothing(store: EngineStore) -> None:
     assert store.prune(keep={("fx", "1", "cpu")}, in_use=lambda *_: False) == []
+
+
+def helper_wheel(path: Path, members: dict[str, int]) -> str:
+    """A wheel holding each name of *members* under ``p/bin/`` with that file mode."""
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, kind in members.items():
+            info = zipfile.ZipInfo(f"p/bin/{name}")
+            info.external_attr = (kind | 0o755) << 16
+            archive.writestr(info, "#!/bin/sh\n")
+        archive.writestr("p-1.dist-info/METADATA", "Name: p\nLicense-Expression: MIT\n")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_the_record_names_the_server_when_a_helper_sorts_first(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "h.whl"
+    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server": stat.S_IFREG})
+    store.install_from_wheel(pin(sha), path)
+    [found] = store.installed()
+    assert found.binary == store.root / "fx" / "1-cpu" / "p" / "bin" / "server"
+
+
+def test_a_wheel_without_the_server_installs_with_no_binary(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "h.whl"
+    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server.txt": stat.S_IFREG})
+    store.install_from_wheel(pin(sha), path)
+    [found] = store.installed()
+    assert found.binary is None
+
+
+def test_a_linked_server_is_refused_beside_a_regular_helper(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "h.whl"
+    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server": stat.S_IFLNK})
+    with pytest.raises(UnsafeWheelError, match="as a symbolic link"):
+        store.install_from_wheel(pin(sha), path)
+    assert not store.root.exists()
+
+
+def test_package_route_records_the_server_when_a_helper_sorts_first(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "h.whl"
+    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server": stat.S_IFREG})
+    run, _ = extract_into_target(path)
+    store.install_via_package(pin(sha), run=run)
+    [found] = store.installed()
+    assert found.binary == store.root / "fx" / "1-cpu" / "p" / "bin" / "server"
+
+
+def test_a_pin_that_names_no_tool_takes_the_first_file(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "h.whl"
+    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server": stat.S_IFREG})
+    store.install_from_wheel(replace(pin(sha), tool=None), path)
+    [found] = store.installed()
+    assert found.binary == store.root / "fx" / "1-cpu" / "p" / "bin" / "gguf-parser"
