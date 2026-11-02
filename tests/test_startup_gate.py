@@ -597,7 +597,7 @@ async def test_text_pasted_at_the_gate_is_kept_like_typed_keys(monkeypatch):
         assert "".join(gate._typed) == "abc d"
 
 
-def test_the_sync_key_is_not_a_binding_while_the_gate_shows():
+async def test_pressing_the_sync_key_at_the_gate_starts_no_sync(monkeypatch, tmp_path):
     """S is a priority binding: left live, it swaps chat in under the gate.
 
     The gate then finds another screen on top and skips its handover. With the
@@ -606,12 +606,25 @@ def test_the_sync_key_is_not_a_binding_while_the_gate_shows():
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
-    app = mock.MagicMock()
-    app.screen = StartupGate()
-    app._gate_is_showing = lambda: LilbeeApp._gate_is_showing(app)
-    assert LilbeeApp.check_action(app, "run_sync", ()) is False
-    app.screen = mock.MagicMock()
-    assert LilbeeApp._gate_is_showing(app) is False
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+    monkeypatch.setattr("lilbee.cli.tui.app.chat_ready", lambda: False)
+    monkeypatch.setattr("lilbee.cli.tui.app.embedding_ready", lambda: False)
+    monkeypatch.setattr(LilbeeApp, "adopt_services", lambda self: None)
+    syncs: list[str] = []
+    monkeypatch.setattr(LilbeeApp, "action_run_sync", lambda self: syncs.append("sync"))
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, StartupGate)
+        await pilot.press("a", "S", "b")
+        await pilot.pause()
+        gate = app.screen
+        assert isinstance(gate, StartupGate)
+        assert syncs == []
+        assert gate._typed == ["a", "S", "b"]
 
 
 async def test_gate_release_hands_the_typed_keys_to_the_app():
