@@ -212,36 +212,23 @@ def _retry_transient(work: Callable[[], _T]) -> _T:
     ) from last_error
 
 
-def retry_transfer(work: Callable[[], _T]) -> _T:
-    """Run *work* with the model download's retry rule: network and I/O faults retry.
-
-    A repository, revision or file the hub does not have is permanent and propagates at once.
-    """
-    from huggingface_hub.errors import (
-        EntryNotFoundError,
-        RepositoryNotFoundError,
-        RevisionNotFoundError,
-    )
-
-    def attempt() -> _T:
-        try:
-            return work()
-        except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError):
-            raise
-        except (httpx.TimeoutException, httpx.ConnectError, OSError) as exc:
-            raise _TransientDownloadError(f"Transfer failed: {exc}") from None
-
-    return _retry_transient(attempt)
-
-
 def url_filename(url: str) -> str:
     """The last path segment of *url*."""
     return PurePosixPath(urlparse(url).path).name
 
 
+_PERMANENT_STATUSES = frozenset(
+    {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND, HTTPStatus.GONE}
+)
+
+
 def download_url(url: str, dest: Path, size: int) -> Path:
-    """Download *url* into *dest*, resuming a partial file; return the file path."""
-    from huggingface_hub.errors import HfHubHTTPError
+    """Download *url* into *dest*, resuming a partial file; return the file path.
+
+    Network and I/O faults retry. A refusal the server will repeat, and the hub's
+    offline switch, end the transfer at once.
+    """
+    from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
     from huggingface_hub.file_download import http_get
 
     dest.mkdir(parents=True, exist_ok=True)
@@ -253,12 +240,18 @@ def download_url(url: str, dest: Path, size: int) -> Path:
             with target.open("ab") as handle:
                 http_get(url, handle, resume_size=done, expected_size=size)
         except HfHubHTTPError as exc:
-            if exc.response.status_code == HTTPStatus.NOT_FOUND:
-                raise RuntimeError(f"The server has no file at {url}.") from exc
-            raise
+            if exc.response.status_code in _PERMANENT_STATUSES:
+                raise RuntimeError(
+                    f"The server cannot give the file at {url} (HTTP {exc.response.status_code})."
+                ) from exc
+            raise _TransientDownloadError(f"Transfer failed: {exc}") from None
+        except OfflineModeIsEnabled as exc:
+            raise RuntimeError(f"Downloads are switched off, so {url} was not fetched.") from exc
+        except (httpx.RequestError, OSError) as exc:
+            raise _TransientDownloadError(f"Transfer failed: {exc}") from None
         return target
 
-    return retry_transfer(fetch)
+    return _retry_transient(fetch)
 
 
 def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:

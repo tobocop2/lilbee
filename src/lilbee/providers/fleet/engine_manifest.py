@@ -7,13 +7,16 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, TypeVar
+from urllib.parse import unquote, urlsplit
 
 from lilbee.providers.fleet.engine_store import (
+    ChecksumError,
     PinLock,
     PlatformAsset,
     UnsupportedPlatformError,
     licence_permitted,
 )
+from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.host_caps import HostCaps, HostOS
 
 SCHEMA = 1
@@ -27,7 +30,7 @@ _FLOOR_LABELS = {
     HostOS.LINUX: ("glibc", "Update the system"),
     HostOS.WINDOWS: ("Windows", "Update Windows"),
 }
-_OWN_ENGINE_HINT = "set LILBEE_LLAMA_SERVER_PATH to an engine you built"
+_OWN_ENGINE_HINT = ", or set LILBEE_LLAMA_SERVER_PATH to an engine you built"
 
 _T = TypeVar("_T")
 
@@ -140,7 +143,7 @@ def require_floor(
     raise UnsupportedOsError(
         f"Engine {engine} {version} ({backend}) needs {label} {asset.min_os} or later. "
         f"This computer has {_computer_has(host_os, label, host_version)}. "
-        f"{update}, or {_OWN_ENGINE_HINT}."
+        f"{update}{_OWN_ENGINE_HINT if engine == EngineName.LLAMA else ''}."
     )
 
 
@@ -155,15 +158,24 @@ def host_os_version(host_os: HostOS) -> str:
 
 
 def host_cell(lock: PinLock, host: HostCaps) -> str:
-    """The cell key of *lock* for *host*; a pin with cells refuses a missing cell or a low OS."""
+    """The cell key of *lock* for *host*; empty for a pin with no cells.
+
+    A pin with cells refuses a computer with no cell, a low OS, or a cell whose digest
+    differs from the digest of the pin.
+    """
+    if not lock.platforms:
+        return ""
     if host.os is None or host.arch is None:
         raise UnsupportedPlatformError(
             f"Engine {lock.engine} has no {lock.backend} build for this computer."
         )
-    if lock.platforms:
-        asset = find_cell(lock.engine, lock.platforms, host.os, host.arch, lock.backend)
-        require_floor(
-            lock.engine, lock.version, lock.backend, asset, host.os, host_os_version(host.os)
+    asset = find_cell(lock.engine, lock.platforms, host.os, host.arch, lock.backend)
+    require_floor(lock.engine, lock.version, lock.backend, asset, host.os, host_os_version(host.os))
+    if asset.sha256.lower() != lock.sha256.lower():
+        raise ChecksumError(
+            f"The pin of engine {lock.engine} {lock.version} ({lock.backend}) lists two "
+            f"different digests for this computer, so lilbee did not install it. "
+            f"Report this."
         )
     return _join(host.os, host.arch, lock.backend)
 
@@ -177,7 +189,15 @@ def _text(row: Mapping[str, Any], name: str) -> str:
 
 def _url(row: Mapping[str, Any]) -> str:
     url = _text(row, "url")
-    if not url.startswith(RELEASE_URL_PREFIX) or not url.endswith(_WHEEL_SUFFIX):
+    path = urlsplit(url).path
+    climbs = any(unquote(part) == ".." for part in path.split("/"))
+    if (
+        not url.startswith(RELEASE_URL_PREFIX)
+        or not path.endswith(_WHEEL_SUFFIX)
+        or "?" in url
+        or "#" in url
+        or climbs
+    ):
         raise ManifestError(f"The manifest url {url!r} is not a wheel of an engine release.")
     return url
 
