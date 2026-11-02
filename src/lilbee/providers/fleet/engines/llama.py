@@ -165,3 +165,4 @@ class LlamaCppAdapter:
 
 
 LLAMA = LlamaCppAdapter()
+ADAPTER = LLAMA

@@ -128,3 +128,4 @@ class IkLlamaAdapter:
 
 
 IK_LLAMA = IkLlamaAdapter()
+ADAPTER = IK_LLAMA

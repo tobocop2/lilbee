@@ -264,7 +264,7 @@ def test_engine_list_json_names_the_engines_that_are_not_installed() -> None:
     result = runner.invoke(cli_app, ["--json", "engine", "list"])
     body = json.loads(result.output)
     assert body["builds"] == []
-    assert body["not_installed"] == ["ik_llama.cpp", "tei", "mistral.rs"]
+    assert body["not_installed"] == ["ik_llama.cpp", "mistral.rs", "tei"]
 
 
 def test_engine_list_shows_an_installed_build_and_no_not_installed_line(build: Path) -> None:

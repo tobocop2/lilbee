@@ -249,3 +249,4 @@ class MistralAdapter:
 
 
 MISTRAL = MistralAdapter()
+ADAPTER = MISTRAL
