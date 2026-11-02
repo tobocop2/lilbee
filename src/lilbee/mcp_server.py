@@ -296,7 +296,9 @@ ENGINES_DISABLED_ERROR = (
     "true, /set mcp_engines_enabled true in the TUI, or mcp_engines_enabled = true in "
     "config.toml."
 )
-_ENGINE_TOOL_NAMES: frozenset[str] = frozenset({"engine_roles", "engine_use", "engine_prefer"})
+_ENGINE_TOOL_NAMES: frozenset[str] = frozenset(
+    {"engine_list", "engine_remove", "engine_roles", "engine_use", "engine_prefer"}
+)
 
 PRESETS_DISABLED_ERROR = (
     "Server presets are off over MCP. Turn them on with settings_set mcp_presets_enabled "
@@ -2289,6 +2291,35 @@ def _engine_write_refused() -> dict[str, Any] | None:
     if _transport.http_mounted and not cfg.allow_http_engines:
         return _error(engine_service.http_refused_message())
     return None
+
+
+@_tool_named("engine_list")
+def engine_list_tool() -> dict[str, Any]:
+    """List the engine builds installed beside the models."""
+    from lilbee.server.models import EngineBuildResponse, EngineBuildsResponse
+
+    if (refused := _engine_read_refused()) is not None:
+        return refused
+    return _engine_result(
+        lambda: EngineBuildsResponse(
+            builds=[
+                EngineBuildResponse(engine=v.engine, version=v.version, backend=v.backend)
+                for v in engine_service.builds()
+            ]
+        )
+    )
+
+
+@_tool_named("engine_remove")
+def engine_remove_tool(engine: str, version: str, backend: str) -> dict[str, Any]:
+    """Remove one installed engine build, as ``engine_list`` shows it."""
+    from lilbee.server.models import EngineRemovedResponse
+
+    if (refused := _engine_write_refused()) is not None:
+        return refused
+    return _engine_result(
+        lambda: EngineRemovedResponse(removed=engine_service.remove_build(engine, version, backend))
+    )
 
 
 @_tool_named("engine_roles")

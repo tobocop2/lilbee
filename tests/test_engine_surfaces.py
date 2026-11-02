@@ -256,7 +256,13 @@ def test_the_tools_and_routes_are_registered() -> None:
     assert {"engine_roles", "engine_use", "engine_prefer"} <= tools
 
 
-ENGINE_TOOLS = {"engine_roles", "engine_use", "engine_prefer"}
+ENGINE_TOOLS = {
+    "engine_list",
+    "engine_remove",
+    "engine_roles",
+    "engine_use",
+    "engine_prefer",
+}
 
 
 def _wire_names() -> set[str]:
@@ -271,7 +277,7 @@ def test_the_engine_tools_are_off_the_wire_by_default() -> None:
     assert names.isdisjoint(ENGINE_TOOLS)
 
 
-def test_the_setting_on_registers_exactly_the_three_engine_tools() -> None:
+def test_the_setting_on_registers_exactly_the_engine_tools() -> None:
     cfg.mcp_engines_enabled = False
     before = _wire_names()
     cfg.mcp_engines_enabled = True

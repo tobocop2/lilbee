@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 from typing import TypeVar
 
-from litestar import get, put
+from litestar import delete, get, put
 from litestar.connection import ASGIConnection
 from litestar.exceptions import HTTPException
 from litestar.handlers.base import BaseRouteHandler
@@ -15,8 +15,11 @@ from litestar.params import FromPath
 import lilbee.app.engine_service as service
 from lilbee.core.config import cfg
 from lilbee.server.models import (
+    EngineBuildResponse,
+    EngineBuildsResponse,
     EngineChosenResponse,
     EnginePreferBody,
+    EngineRemovedResponse,
     EngineRoleResponse,
     EngineRolesResponse,
     EngineUseBody,
@@ -59,6 +62,31 @@ def _require_engines_enabled(_connection: ASGIConnection, _handler: BaseRouteHan
     """Refuse a write while allow_http_engines is off. A guard runs before the body is parsed."""
     if not cfg.allow_http_engines:
         raise HTTPException(status_code=_HTTP_CONFLICT, detail=service.http_refused_message())
+
+
+@get("/api/engines")
+async def engine_builds_route() -> EngineBuildsResponse:
+    """The engine builds installed beside the models."""
+    views = await _call(service.builds)
+    return EngineBuildsResponse(
+        builds=[
+            EngineBuildResponse(engine=v.engine, version=v.version, backend=v.backend)
+            for v in views
+        ]
+    )
+
+
+@delete(
+    "/api/engines/{engine:str}/{version:str}/{backend:str}",
+    status_code=200,
+    guards=[_require_engines_enabled],
+)
+async def engine_remove_route(
+    engine: FromPath[str], version: FromPath[str], backend: FromPath[str]
+) -> EngineRemovedResponse:
+    """Remove one installed engine build. Refused unless allow_http_engines is enabled."""
+    removed = await _call(lambda: service.remove_build(engine, version, backend))
+    return EngineRemovedResponse(removed=removed)
 
 
 @get("/api/engines/roles")

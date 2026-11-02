@@ -473,6 +473,8 @@ def create_app() -> Litestar:
             placement_clear_route,
             gpus_route,
             gpu_stats_stream_route,
+            engine_routes.engine_builds_route,
+            engine_routes.engine_remove_route,
             engine_routes.engine_roles_route,
             engine_routes.engine_use_route,
             engine_routes.engine_prefer_route,
