@@ -181,14 +181,14 @@ class TestDeviceReads:
         assert spy.probed == [spy.binary()]
 
     def test_gpu_device_count_counts_the_engine_devices(self, spy: SpyEngine) -> None:
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
         two = SpyEngine(
             spy.binary(), devices=(SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))
         )
         assert replicas.gpu_device_count(two) == 2
 
     def test_gpu_device_count_is_one_without_an_engine_binary(self, spy: SpyEngine) -> None:
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
         assert replicas.gpu_device_count(_binaryless(spy)) == 1
 
     def test_gpu_device_count_is_one_when_the_engine_cannot_load(
@@ -200,10 +200,27 @@ class TestDeviceReads:
         def cannot_load(_binary: Path, _engine: object) -> None:
             raise EngineDllMissingError("DLL missing", provider="llama")
 
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
         monkeypatch.setattr(planning, "resolve_devices", cannot_load)
         assert replicas.gpu_device_count(spy) == 1
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_gpu_device_count_reads_the_cards_again_once_the_runtime_is_installed(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A count read while the DLL was missing is not kept: a live process sees both cards."""
+        from lilbee.providers.fleet.devices import EngineDllMissingError
+
+        def cannot_load(_binary: Path, _engine: object) -> None:
+            raise EngineDllMissingError("DLL missing", provider="llama")
+
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr(planning, "resolve_devices", cannot_load)
+        assert replicas.gpu_device_count(spy) == 1
+        two_cards = [SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4)]
+        monkeypatch.setattr(planning, "resolve_devices", lambda _binary, _engine: two_cards)
+        assert replicas.gpu_device_count(spy) == 2
+        replicas._probed_gpu_count.cache_clear()
 
     def test_a_sync_that_needs_no_engine_plans_with_an_engine_that_cannot_load(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
@@ -218,11 +235,11 @@ class TestDeviceReads:
         services = SimpleNamespace(
             engines=SimpleNamespace(for_role=lambda _role: SimpleNamespace(adapter=spy))
         )
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
         monkeypatch.setattr("lilbee.app.services._state.singleton", services)
         monkeypatch.setattr(planning, "resolve_devices", cannot_load)
         assert fanout.plan_fanout() == []
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
 
     def test_gpu_device_count_still_raises_a_wedged_probe(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
@@ -230,11 +247,11 @@ class TestDeviceReads:
         def wedged(_binary: Path, _engine: object) -> None:
             raise ProviderError("probe timed out", provider="llama")
 
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
         monkeypatch.setattr(planning, "resolve_devices", wedged)
         with pytest.raises(ProviderError, match="probe timed out"):
             replicas.gpu_device_count(spy)
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
 
     def test_probed_devices_and_backend_come_from_the_engine(self, spy: SpyEngine) -> None:
         assert planning.probed_devices(spy) == (SPY_DEVICE,)
