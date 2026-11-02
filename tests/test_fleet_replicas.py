@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from lilbee.core.config import cfg
+from lilbee.providers.fleet import devices
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.replicas import (
@@ -97,4 +102,18 @@ def test_gpu_device_count_is_cached(monkeypatch) -> None:
     assert gpu_device_count(LLAMA) == 2
     assert gpu_device_count(LLAMA) == 2
     assert calls["n"] == 1  # cached: probed once, not per call
+    _probed_gpu_count.cache_clear()
+
+
+def test_gpu_device_count_sizes_a_gpu_less_host_when_the_probe_hits_a_missing_dll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe's own missing-DLL error, not a stand-in, reaches the catch that sizes the host."""
+    _probed_gpu_count.cache_clear()
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+        lambda: Path("/bin/llama-server"),
+    )
+    monkeypatch.setattr(devices, "_run_list_devices", lambda _binary, _timeout: ("", 0xC0000135))
+    assert gpu_device_count(LLAMA) == 1
     _probed_gpu_count.cache_clear()
