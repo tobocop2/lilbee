@@ -12,10 +12,15 @@ checked the other way, that no copy step quietly bloated them.
 
 ``--tool`` names the engine server of the pin. With it, the wheel must also hold that
 server with the execute bit. The rule is the one the engine store applies when it
-installs a wheel; the libraries that each engine pins are checked by the store only.
+installs a wheel.
+
+``--library`` names a library the server needs, and may be given more than once. Each
+one must be a shared library in the package of the server, by the store's own rule.
+It needs ``--tool``.
 
 Usage:
-    assert_engine_bundle.py [--backend <flavor>] [--tool <server>] <wheel> [<wheel> ...]
+    assert_engine_bundle.py [--backend <flavor>] [--tool <server> [--library <name> ...]]
+        <wheel> [<wheel> ...]
 """
 
 from __future__ import annotations
@@ -189,12 +194,17 @@ def _bin_entries(wheel: Path) -> list[str]:
     return [n[len(BIN_DIR) :] for n in names if n.startswith(BIN_DIR) and not n.endswith("/")]
 
 
-def check(wheel: Path, backend: str | None = None, tool: str | None = None) -> list[str]:
+def check(
+    wheel: Path,
+    backend: str | None = None,
+    tool: str | None = None,
+    libraries: tuple[str, ...] = (),
+) -> list[str]:
     """Return a list of problems with *wheel*; empty means it is correct.
 
     *backend* names the flavor the wheel was built as. Pass it at build time, when
     the wheel has no build tag to read it from yet. *tool* names the engine server
-    of the pin; the wheel must then hold a runnable server.
+    of the pin; the wheel must then hold a runnable server and each of *libraries*.
     """
     name = wheel.name
     oversized = _oversized(wheel)
@@ -205,7 +215,8 @@ def check(wheel: Path, backend: str | None = None, tool: str | None = None) -> l
 
     if tool:
         with zipfile.ZipFile(wheel) as archive:
-            problems.extend(f"{name}: {p}" for p in wheel_server.server_problems(archive, tool))
+            found = wheel_server.server_problems(archive, tool, libraries)
+        problems.extend(f"{name}: {p}" for p in found)
 
     platform = _platform_of(name)
     backend = backend or _backend_of(name)
@@ -260,18 +271,21 @@ def check(wheel: Path, backend: str | None = None, tool: str | None = None) -> l
 def main(argv: list[str]) -> int:
     backend = None
     tool = None
-    while len(argv) >= 2 and argv[0] in ("--backend", "--tool"):
+    libraries: list[str] = []
+    while len(argv) >= 2 and argv[0] in ("--backend", "--tool", "--library"):
         if argv[0] == "--backend":
             backend = argv[1]
-        else:
+        elif argv[0] == "--tool":
             tool = argv[1]
+        else:
+            libraries.append(argv[1])
         argv = argv[2:]
 
     wheels = [Path(a) for a in argv]
-    if not wheels:
+    if not wheels or (libraries and not tool):
         print(
-            "usage: assert_engine_bundle.py [--backend <flavor>] [--tool <server>] "
-            "<wheel> [<wheel> ...]",
+            "usage: assert_engine_bundle.py [--backend <flavor>] "
+            "[--tool <server> [--library <name> ...]] <wheel> [<wheel> ...]",
             file=sys.stderr,
         )
         return 2
@@ -281,7 +295,7 @@ def main(argv: list[str]) -> int:
         if not wheel.is_file():
             problems.append(f"{wheel}: not a file")
             continue
-        problems.extend(check(wheel, backend, tool))
+        problems.extend(check(wheel, backend, tool, tuple(libraries)))
         print(f"checked {wheel.name}")
 
     for problem in problems:
