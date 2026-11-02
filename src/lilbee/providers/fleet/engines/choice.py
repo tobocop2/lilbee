@@ -14,11 +14,13 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import engines as engines_package
+from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, host_cell
 from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
     EngineStore,
     PinLock,
     PlatformAsset,
+    UnsupportedPlatformError,
     engines_root,
 )
 from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
@@ -283,6 +285,12 @@ def pin_lock(pin: Mapping[str, Any]) -> PinLock:
         raise PinError(f"the pin record is not usable ({exc!r})") from exc
 
 
+def host_lock(pin: Mapping[str, Any], host: HostCaps) -> PinLock:
+    """The lock for *pin* with the digest of the cell of *host*, as an install records it."""
+    lock = pin_lock(pin)
+    return lock.for_cell(host_cell(lock, host))
+
+
 def _is_installed(name: EngineName, adapter: EngineAdapter, store: EngineStore) -> bool:
     """True for the engine in the package, or an adapter whose pin has a complete build.
 
@@ -291,14 +299,22 @@ def _is_installed(name: EngineName, adapter: EngineAdapter, store: EngineStore) 
     """
     if adapter.bundled:
         return True
+    from lilbee.catalog.runnable import session_host
+
     try:
         if not (store.root / name.value).is_dir():
             return False
-        lock = pin_lock(adapter.pin_record())
+        lock = host_lock(adapter.pin_record(), session_host())
         return store.complete_build(lock) is not None
     except NoPublishedPackError:
         return False
-    except (OSError, EngineConflictError, PinError) as exc:
+    except (
+        OSError,
+        EngineConflictError,
+        PinError,
+        UnsupportedPlatformError,
+        UnsupportedOsError,
+    ) as exc:
         log.warning("Engine %s counts as not installed: %s", name, exc)
         return False
 

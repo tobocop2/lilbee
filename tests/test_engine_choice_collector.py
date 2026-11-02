@@ -156,7 +156,7 @@ class _StoreEngine(FakeAdapter):
     sha = ""
 
     def pin_record(self) -> Mapping[str, Any]:
-        return {**super().pin_record(), "sha256": self.sha}
+        return {**super().pin_record(), "sha256": self.sha, "platforms": {}}
 
 
 def _install_build(models_dir: Path, version: str = "1.2.3") -> str:
