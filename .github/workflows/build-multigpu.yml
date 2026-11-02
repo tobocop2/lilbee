@@ -248,7 +248,7 @@ jobs:
       # `python`, not `python3`: setup-python leaves no python3 on PATH on Windows.
       - name: The wheel carries the backend it claims
         shell: bash
-        run: python tools/qa/assert_engine_bundle.py --backend "${{ matrix.backend }}" "${PKG_DIR}"/dist/*.whl
+        run: python tools/qa/assert_engine_bundle.py --backend "${{ matrix.backend }}" --tool llama-server "${PKG_DIR}"/dist/*.whl
 
       # Hard gate: a lib-less bundle fails at exec with a loader error. This
       # step swallowing failures (continue-on-error) is how a broken metal

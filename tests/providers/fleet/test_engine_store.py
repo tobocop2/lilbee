@@ -45,8 +45,13 @@ def make_wheel(path: Path, licence: str | None = "MIT") -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def pin(sha: str, version: str = "1", licences: tuple[str, ...] = ("MIT",)) -> PinLock:
-    return PinLock("fx", version, "cpu", {}, licences, sha, "server")
+def pin(
+    sha: str,
+    version: str = "1",
+    licences: tuple[str, ...] = ("MIT",),
+    libraries: tuple[str, ...] = (),
+) -> PinLock:
+    return PinLock("fx", version, "cpu", {}, licences, sha, "server", libraries)
 
 
 @pytest.fixture
@@ -1064,23 +1069,23 @@ def test_a_pin_lock_cannot_be_built_without_a_tool() -> None:
 
 
 def _ggml_wheel(path: Path, *, mode: int = 0o755, files: tuple[str, ...] = ()) -> str:
-    """A wheel whose server has *mode* and whose bin folder also holds *files*."""
+    """A wheel whose server has *mode*; *files* sit in bin, or in the folder they name."""
     with zipfile.ZipFile(path, "w") as archive:
         server = zipfile.ZipInfo("p/bin/server")
         server.external_attr = (stat.S_IFREG | mode) << 16
         archive.writestr(server, "#!/bin/sh\n")
         for name in files:
-            archive.writestr(f"p/bin/{name}", "x")
+            archive.writestr(f"p/{name}" if "/" in name else f"p/bin/{name}", "x")
         archive.writestr("p-1.dist-info/METADATA", "Name: p\nLicense-Expression: MIT\n")
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_a_wheel_with_a_runnable_server_and_ggml_base_installs(
+def test_a_wheel_with_a_runnable_server_and_its_pinned_library_installs(
     store: EngineStore, tmp_path: Path
 ) -> None:
     path = tmp_path / "g.whl"
-    sha = _ggml_wheel(path, files=("libggml-base.so.0.9.5", "libggml-cpu.so"))
-    store.install_from_wheel(pin(sha), path)
+    sha = _ggml_wheel(path, files=("libcore.so.0.9.5", "libextra.so"))
+    store.install_from_wheel(pin(sha, libraries=("core",)), path)
     assert [found.binary for found in store.installed()] == [
         store.root / "fx" / "1-cpu" / "p" / "bin" / "server"
     ]
@@ -1094,9 +1099,29 @@ def test_a_server_without_the_execute_bit_is_refused(store: EngineStore, tmp_pat
     assert store.installed() == []
 
 
-def test_a_ggml_wheel_without_ggml_base_is_refused(store: EngineStore, tmp_path: Path) -> None:
+def test_a_wheel_without_a_pinned_library_is_refused_by_name(
+    store: EngineStore, tmp_path: Path
+) -> None:
     path = tmp_path / "g.whl"
-    sha = _ggml_wheel(path, files=("libggml-cpu.so", "libggml.so.0"))
-    with pytest.raises(UnsafeWheelError, match="no ggml-base library"):
-        store.install_from_wheel(pin(sha), path)
+    sha = _ggml_wheel(path, files=("libextra.so", "libcore-extra.so"))
+    with pytest.raises(UnsafeWheelError, match="no library file for 'core' in its p folder"):
+        store.install_from_wheel(pin(sha, libraries=("core",)), path)
     assert store.installed() == []
+
+
+def test_a_library_outside_bin_counts_for_the_pinned_library(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "g.whl"
+    sha = _ggml_wheel(path, files=("lib/libcore.so.1",))
+    store.install_from_wheel(pin(sha, libraries=("core",)), path)
+    assert len(store.installed()) == 1
+
+
+def test_a_wheel_with_no_pinned_libraries_installs_without_any(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "g.whl"
+    sha = _ggml_wheel(path)
+    store.install_from_wheel(pin(sha), path)
+    assert len(store.installed()) == 1

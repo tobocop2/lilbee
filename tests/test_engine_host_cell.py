@@ -13,6 +13,7 @@ import pytest
 
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
     EngineStore,
@@ -96,6 +97,14 @@ def test_a_cell_install_completes_the_build_of_the_host_lock(mac: Path) -> None:
 
 def test_the_engine_binary_resolves_for_a_cell_install(mac: Path) -> None:
     assert MISTRAL.binary().name == "mistralrs"
+
+
+def test_the_engine_binary_keeps_the_conflict_text_for_a_build_of_another_wheel(
+    mac: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ADAPTERS[EngineName.MISTRAL], "cell_sha", TOP)
+    with pytest.raises(ProviderError, match="installed from a different wheel than its pin"):
+        MISTRAL.binary()
 
 
 def test_the_top_digest_still_conflicts_with_a_cell_record(mac: Path) -> None:

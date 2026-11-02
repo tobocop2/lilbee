@@ -9,11 +9,11 @@ from __future__ import annotations
 import re
 import stat
 import zipfile
+from collections.abc import Iterable
 from pathlib import PurePosixPath
 
 _BIN_FILE = re.compile(r"[^/]+/bin/[^/]+")
-_GGML_FILE = re.compile(r"(lib)?ggml.*")
-_GGML_BASE = re.compile(r"(lib)?ggml-base(\.[\d.]+)?\.(so|dylib|dll)(\.[\d.]+)?")
+_LIBRARY_SUFFIX = r"(\.[\d.]+)?\.(so|dylib|dll)(\.[\d.]+)?"
 
 
 def server_entry(names: list[str], tool: str) -> str | None:
@@ -26,11 +26,21 @@ def server_entry(names: list[str], tool: str) -> str | None:
     return found[0] if found else None
 
 
-def server_problems(archive: zipfile.ZipFile, tool: str) -> list[str]:
+def _holds_library(package: str, names: list[str], library: str) -> bool:
+    """True when a file of the *package* folder is the shared library *library*."""
+    pattern = re.compile(rf"(lib)?{re.escape(library)}{_LIBRARY_SUFFIX}")
+    return any(
+        n.startswith(f"{package}/") and pattern.fullmatch(PurePosixPath(n).name) for n in names
+    )
+
+
+def server_problems(
+    archive: zipfile.ZipFile, tool: str, libraries: Iterable[str] = ()
+) -> list[str]:
     """What stops the server *tool* of *archive* from running; empty when nothing does.
 
-    The server must be present, must carry the owner execute bit unless it is an
-    ``.exe``, and a wheel that ships ggml libraries must ship ``ggml-base`` with them.
+    The server must be present and carry the owner execute bit unless it is an ``.exe``.
+    Each of *libraries* must be a shared library somewhere in the package of the server.
     """
     names = archive.namelist()
     server = server_entry(names, tool)
@@ -40,14 +50,10 @@ def server_problems(archive: zipfile.ZipFile, tool: str) -> list[str]:
     mode = archive.getinfo(server).external_attr >> 16
     if not server.endswith(".exe") and not mode & stat.S_IXUSR:
         problems.append(f"holds {server!r} without the execute bit")
-    folder = server.rsplit("/", 1)[0]
-    siblings = [
-        PurePosixPath(n).name
-        for n in names
-        if n.startswith(f"{folder}/") and _BIN_FILE.fullmatch(n)
-    ]
-    if any(_GGML_FILE.fullmatch(n) for n in siblings) and not any(
-        _GGML_BASE.fullmatch(n) for n in siblings
-    ):
-        problems.append("ships ggml libraries but no ggml-base library")
+    package = server.split("/", 1)[0]
+    problems.extend(
+        f"has no library file for {library!r} in its {package} folder"
+        for library in libraries
+        if not _holds_library(package, names, library)
+    )
     return problems

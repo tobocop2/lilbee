@@ -14,7 +14,7 @@ from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
 from lilbee.providers.fleet.engine_manifest import pack_digest
-from lilbee.providers.fleet.engine_store import EngineStore, engines_root
+from lilbee.providers.fleet.engine_store import EngineConflictError, EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
     EngineName,
@@ -161,6 +161,8 @@ class MistralAdapter:
         store = EngineStore(engines_root(cfg.models_dir))
         try:
             build = store.complete_build(host_lock(self.pin_record(), session_host()))
+        except EngineConflictError as exc:
+            raise ProviderError(str(exc)) from exc
         except BUILD_UNREADABLE:
             build = None
         tool = next(iter(build.glob(f"*/bin/{_TOOL}*")), None) if build else None

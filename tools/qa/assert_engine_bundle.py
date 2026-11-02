@@ -11,8 +11,8 @@ checked the other way, that no copy step quietly bloated them.
 ``--backend`` at build time, where the wheel has no ``-1.<backend>-`` tag yet.
 
 ``--tool`` names the engine server of the pin. With it, the wheel must also hold that
-server with the execute bit, and ggml-base beside any ggml library. The rule is the one
-the engine store applies when it installs a wheel.
+server with the execute bit. The rule is the one the engine store applies when it
+installs a wheel; the libraries that each engine pins are checked by the store only.
 
 Usage:
     assert_engine_bundle.py [--backend <flavor>] [--tool <server>] <wheel> [<wheel> ...]

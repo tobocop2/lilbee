@@ -120,6 +120,8 @@ class PinLock:
     sha256: str
     tool: str
     """The file name of the engine server in the wheel."""
+    libraries: tuple[str, ...] = ()
+    """The shared libraries, by name without prefix or suffix, that the wheel must hold."""
 
     def __post_init__(self) -> None:
         for part in (self.engine, self.version, self.backend):
@@ -255,7 +257,7 @@ def _refuse_linked_binary(lock: PinLock, archive: zipfile.ZipFile) -> None:
 
 
 def _refuse_unusable_server(lock: PinLock, archive: zipfile.ZipFile) -> None:
-    problems = server_problems(archive, lock.tool)
+    problems = server_problems(archive, lock.tool, lock.libraries)
     if problems:
         raise UnsafeWheelError(
             f"The wheel for engine {lock.engine} {lock.version} {'; '.join(problems)}."

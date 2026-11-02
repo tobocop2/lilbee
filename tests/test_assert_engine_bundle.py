@@ -472,24 +472,28 @@ def test_a_wheel_with_the_pinned_server_passes_the_server_check(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    ("server", "mode", "base", "message"),
+    ("server", "mode", "message"),
     [
-        (None, 0o755, True, "has no llama-server in its bin directory"),
-        ("gguf-parser", 0o755, True, "has no llama-server in its bin directory"),
-        ("llama-server", 0o644, True, "without the execute bit"),
-        ("llama-server", 0o755, False, "no ggml-base library"),
+        (None, 0o755, "has no llama-server in its bin directory"),
+        ("gguf-parser", 0o755, "has no llama-server in its bin directory"),
+        ("llama-server", 0o644, "without the execute bit"),
     ],
 )
 def test_a_wheel_whose_server_cannot_run_fails_the_server_check(
-    tmp_path: Path, server: str | None, mode: int, base: bool, message: str
+    tmp_path: Path, server: str | None, mode: int, message: str
 ) -> None:
-    wheel = _server_wheel(tmp_path, server=server, mode=mode, base=base)
+    wheel = _server_wheel(tmp_path, server=server, mode=mode)
     problems = acb.check(wheel, "cpu", tool="llama-server")
     assert [p for p in problems if message in p]
 
 
+def test_the_server_check_asks_for_no_library_of_one_engine(tmp_path: Path) -> None:
+    wheel = _server_wheel(tmp_path, base=False)
+    assert acb.check(wheel, "cpu", tool="llama-server") == []
+
+
 def test_a_wheel_with_no_server_passes_when_no_tool_is_named(tmp_path: Path) -> None:
-    assert acb.check(_server_wheel(tmp_path, server=None, base=False), "cpu") == []
+    assert acb.check(_server_wheel(tmp_path, server=None), "cpu") == []
 
 
 def test_the_tool_flag_reaches_the_check(
