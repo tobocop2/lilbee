@@ -351,9 +351,8 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
     host = refresh_session_host()
     gate = adapter.host_gate(host)
     if not gate.ok:
-        reason = gate.reason.rstrip(".")
         raise EngineRefusedError(
-            f"Engine {name} cannot run on this host. {reason}. {LLAMA.name} stays in use."
+            f"Engine {name} cannot run on this host. {gate.reason} {LLAMA.name} stays in use."
         )
     try:
         lock = choice.pin_lock(adapter.pin_record())
