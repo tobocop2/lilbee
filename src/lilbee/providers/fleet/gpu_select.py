@@ -139,6 +139,11 @@ class PCIVendorID(IntEnum):
     AMD = 0x1002  # Advanced Micro Devices, Inc. [AMD/ATI]
     INTEL = 0x8086  # Intel Corporation
 
+    @property
+    def label(self) -> str:
+        """The vendor as a user writes it: NVIDIA, AMD, Intel."""
+        return self.name.title() if self is PCIVendorID.INTEL else self.name
+
 
 # Vulkan loader manifest filename globs, per vendor. The loader matches these
 # against the JSON manifest filename in its known-drivers list (see
@@ -961,6 +966,9 @@ def _device_local_vram(mem_props: _VkPhysicalDeviceMemoryProperties) -> int:
 # no cross-vendor collision possible.
 _MIN_VENDORS_FOR_CONFLICT = 2
 
+# The loader setting that shows the engine every installed driver.
+LOADER_OVERRIDE = "VK_LOADER_DRIVERS_DISABLE=nomatch*"
+
 # Pin priority on dual-vendor hosts. NVIDIA wins because the documented
 # crash signature is AMDVLK alongside NVIDIA (Khronos forum,
 # SHARK-Studio#1636) and NVIDIA is the more common dGPU on those boxes.
@@ -1069,16 +1077,58 @@ def _icd_pin_is_ours_to_make() -> bool:
     return not cfg.gpu_devices
 
 
-def disable_conflicting_vulkan_icds() -> str | None:
-    """Manifest-filename glob list of non-preferred ICDs to disable, or ``None``.
+@dataclass(frozen=True)
+class IcdChoice:
+    """The vendor whose Vulkan driver the engine keeps, and what that hides."""
+
+    kept: PCIVendorID
+    installed: frozenset[PCIVendorID]
+    present: frozenset[PCIVendorID]
+
+    @property
+    def disable(self) -> str:
+        """The loader glob list that disables every installed driver but the kept one."""
+        return ",".join(_icds_to_disable(self.kept, set(self.installed)))
+
+    @property
+    def hidden(self) -> tuple[PCIVendorID, ...]:
+        """Vendors whose hardware is in this host and whose driver the engine does not see."""
+        return tuple(sorted(self.present - {self.kept}, key=int))
+
+    def _hidden_gpus(self) -> tuple[str, str]:
+        """The hidden vendors as a noun phrase, and the pronoun for them."""
+        names = " and ".join(v.label for v in self.hidden)
+        if len(self.hidden) > 1:
+            return f"{names} GPUs", "them"
+        return f"{names} GPU", f"the {names} GPU"
+
+    def hidden_sentence(self) -> str:
+        """Why the engine lists no device for the hidden hardware, and how to get it back."""
+        noun, pronoun = self._hidden_gpus()
+        return (
+            f"lilbee hides the {noun} from the engine because an {self.kept.label} GPU is "
+            f"present. To use {pronoun}, set {LOADER_OVERRIDE} and start lilbee again."
+        )
+
+    def note(self) -> str:
+        """The line a placement view shows for the hidden hardware."""
+        noun, pronoun = self._hidden_gpus()
+        return (
+            f"{noun} not used: lilbee runs the engine on the {self.kept.label} GPU. "
+            f"To use {pronoun}, set {LOADER_OVERRIDE} and start lilbee again."
+        )
+
+
+def vulkan_icd_choice() -> IcdChoice | None:
+    """The driver choice for this launch, or ``None`` when lilbee makes none.
 
     Preferred-vendor order is NVIDIA > AMD > Intel, applied to the vendors whose
     hardware this host actually has, so the survivor is always a driver for a card
-    that is present. Returns ``None`` when the user has pinned a GPU, when fewer
-    than two vendors are installed, or when the platform has no documented
-    dual-vendor crash class. Discovery reads manifests from disk (registry on
-    Windows, XDG on Linux) and the device tree from the OS; enumerating via
-    ``vkCreateInstance`` would pre-load every vendor's ICD before the disable lands.
+    that is present. ``None`` when the user has pinned a GPU, when fewer than two
+    vendors are installed, or when the platform has no documented dual-vendor
+    crash class. Discovery reads manifests from disk (registry on Windows, XDG on
+    Linux) and the device tree from the OS; enumerating via ``vkCreateInstance``
+    would pre-load every vendor's ICD before the disable lands.
     """
     if not _icd_pin_is_ours_to_make():
         return None
@@ -1103,4 +1153,10 @@ def disable_conflicting_vulkan_icds() -> str | None:
     best = _select_best_vendor(with_hardware)
     if best is None:  # pragma: no cover - invariant: with_hardware is non-empty here
         return None
-    return ",".join(_icds_to_disable(best, vendors))
+    return IcdChoice(kept=best, installed=frozenset(vendors), present=frozenset(with_hardware))
+
+
+def disable_conflicting_vulkan_icds() -> str | None:
+    """Manifest-filename glob list of non-preferred ICDs to disable, or ``None``."""
+    choice = vulkan_icd_choice()
+    return choice.disable if choice else None

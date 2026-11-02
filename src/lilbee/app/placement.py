@@ -119,6 +119,11 @@ class PlacementView:
     # Why the saved spec cannot run here, in words a user can act on. The spec
     # itself is in ``rejected_spec_json`` so it can be corrected.
     refusal: str | None = None
+    # Vendors whose hardware is in this machine but hidden from the engine by the
+    # launch, so no row in ``gpus`` is a pin target for them, and the line that
+    # says how to get them back.
+    hidden_gpus: tuple[str, ...] = ()
+    hidden_note: str | None = None
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -184,6 +189,8 @@ def _view(
         rejected_spec_json=rejected_spec_json,
         engine_backend=resolved.engine_backend,
         refusal=refusal,
+        hidden_gpus=tuple(v.label for v in resolved.hidden.hidden) if resolved.hidden else (),
+        hidden_note=resolved.hidden.note() if resolved.hidden else None,
     )
 
 

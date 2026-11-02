@@ -877,6 +877,9 @@ class PlacementResponse(BaseModel):
     # being empty does not mean ``cpu``: a host whose device probe never answered
     # reports ``unknown``, so a client never mislabels a GPU box as a CPU one.
     engine_backend: EngineBackend = EngineBackend.UNKNOWN
+    # Vendors whose GPU is in this machine but hidden from the engine at launch, so
+    # ``gpus`` has no row for them and no pin can name them. Empty when none is hidden.
+    hidden_gpus: list[str] = []
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -909,6 +912,7 @@ class PlacementResponse(BaseModel):
             rejected_spec_json=view.rejected_spec_json,
             refusal=view.refusal,
             engine_backend=view.engine_backend,
+            hidden_gpus=list(view.hidden_gpus),
         )
 
 

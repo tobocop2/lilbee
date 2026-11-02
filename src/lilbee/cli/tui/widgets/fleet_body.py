@@ -332,7 +332,7 @@ class FleetBody(Widget):
             self.notify(msg.FLEET_SAVED_PLACEMENT_IGNORED, severity="warning")
 
     def _render_skipped(self, view: PlacementView) -> None:
-        """Show a line per role skipped, and why a saved spec is refused."""
+        """Show a line per role skipped, why a saved spec is refused, and any hidden GPU."""
         widget = self.query_one(_SKIPPED_ID, Static)
         lines = [
             msg.FLEET_MODEL_NOT_DOWNLOADED.format(
@@ -346,6 +346,8 @@ class FleetBody(Widget):
         )
         if view.refusal:
             lines.append(view.refusal)
+        if view.hidden_note:
+            lines.append(view.hidden_note)
         widget.display = bool(lines)
         widget.update("\n".join(lines))
 

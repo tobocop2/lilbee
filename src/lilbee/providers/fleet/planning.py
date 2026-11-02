@@ -72,7 +72,9 @@ from lilbee.runtime.progress.types import OcrBackendUsed
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+
+    from lilbee.providers.fleet.gpu_select import IcdChoice
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
@@ -2078,9 +2080,7 @@ def _warn_gpu_present_but_unenumerated(binary: Path) -> None:
     from lilbee.providers.fleet.gpu_select import PCIVendorID
 
     present = installed_gpu_vendor_ids()
-    names = sorted(
-        v.name.title() if v.name == "INTEL" else v.name for v in PCIVendorID if v in present
-    )
+    names = sorted(v.label for v in PCIVendorID if v in present)
     if not names:
         return
     hints = sorted(
@@ -3050,6 +3050,8 @@ def _capped_by_device_memory(budget: int, devices: Sequence[FleetDevice]) -> int
 def _device_capacity(devices: list[FleetDevice], charge_against_free: bool) -> dict[int, int]:
     """Per-device memory placement may charge against, keyed by device index.
 
+    Every listed device is here: a row in the device list is a device a pin can name.
+
     A card's total is what it holds, not what is going spare. A compositor, a
     browser, or a training job sitting on VRAM is invisible in the total, and the
     usable fraction placement applies covers fragmentation and driver overhead
@@ -3066,13 +3068,28 @@ def _device_capacity(devices: list[FleetDevice], charge_against_free: bool) -> d
     with a tenant keeps a proportional margin rather than being packed to its
     last free byte, where fragmentation is worst.
     """
-    packable = _packable_devices(devices)
     if not charge_against_free:
-        return {d.index: d.total_bytes for d in packable}
-    return {d.index: min(d.total_bytes, d.free_bytes) for d in packable}
+        return {d.index: d.total_bytes for d in devices}
+    return {d.index: min(d.total_bytes, d.free_bytes) for d in devices}
 
 
-def _packable_devices(devices: list[FleetDevice]) -> list[FleetDevice]:
+def _auto_capacity(
+    devices: list[FleetDevice], charge_against_free: bool, named: Collection[int] = ()
+) -> dict[int, int]:
+    """The capacity the auto planner may pack, plus the cards a pin names.
+
+    A pin names any listed device, so :func:`_device_capacity` holds them all. The
+    auto planner keeps to the devices :func:`packable_devices` allows.
+    """
+    packable = {d.index for d in packable_devices(devices)} | set(named)
+    return {
+        index: total
+        for index, total in _device_capacity(devices, charge_against_free).items()
+        if index in packable
+    }
+
+
+def packable_devices(devices: list[FleetDevice]) -> list[FleetDevice]:
     """The devices bin-packing may charge against.
 
     An integrated GPU's memory is the host's. Packing it beside a dedicated card
@@ -3103,6 +3120,7 @@ def _resolve_placement(
     """Resolve a Placement from the manual spec when set, else the auto planner."""
     estimate_peak = _peak_estimator(model_refs, engines)
     capacity = _device_capacity(devices, charge_against_free)
+    auto_cards = _auto_capacity(devices, charge_against_free)
     unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
     if placement is not None:
         refused = _unusable_targets(placement, model_refs, engines)
@@ -3124,7 +3142,7 @@ def _resolve_placement(
             budget = None if unified_budget is None else max(0, unified_budget - charged)
             placed = _auto_placement(
                 [model for model in inputs if model.role in auto_roles],
-                cards,
+                {index: room for index, room in cards.items() if index in auto_cards},
                 devices,
                 model_refs,
                 engines=engines,
@@ -3146,6 +3164,7 @@ def _resolve_placement(
             estimate_peak=estimate_peak,
             plan_auto=plan_auto,
             model_refs=model_refs,
+            absent_hint=lambda: _hidden_device_hint(devices),
         )
         if _cpu_roles(placement).isdisjoint(model_refs):
             return placed
@@ -3161,7 +3180,7 @@ def _resolve_placement(
         return placed
     return _auto_placement(
         inputs,
-        capacity,
+        auto_cards,
         devices,
         model_refs,
         engines=engines,
@@ -3170,6 +3189,22 @@ def _resolve_placement(
         unpinnable=unpinnable,
         refuse_oversize=_is_mixed(engines),
     )
+
+
+def _hidden_choice(devices: Sequence[FleetDevice]) -> IcdChoice | None:
+    """The driver choice that hides hardware from a Vulkan engine, or ``None``."""
+    from lilbee.providers.fleet.gpu_select import vulkan_icd_choice
+
+    if not any(d.backend == VULKAN_BACKEND for d in devices):
+        return None
+    choice = vulkan_icd_choice()
+    return choice if choice and choice.hidden else None
+
+
+def _hidden_device_hint(devices: Sequence[FleetDevice]) -> str:
+    """The sentence that explains a pin to hardware the launch hides, or empty."""
+    choice = _hidden_choice(devices)
+    return choice.hidden_sentence() if choice else ""
 
 
 def _auto_roles_past_named(
@@ -3570,6 +3605,9 @@ class ResolvedPlacement:
     engine_backend: EngineBackend = EngineBackend.UNKNOWN
     # Configured roles with no engine, left out of the plan (role -> model and notice).
     skipped_no_engine: dict[WorkerRole, NoEngineRole] = field(default_factory=dict)
+    # The hardware the launch hides from the engine, so no row names it. ``None``
+    # when nothing present is hidden.
+    hidden: IcdChoice | None = None
 
 
 def resolve_placement_plan(
@@ -3624,6 +3662,7 @@ def resolve_placement_plan(
         refused_roles=refused_roles,
         tight_roles=dict(resolved.tight_roles),
         engine_backend=reading.backend,
+        hidden=_hidden_choice(devices),
         skipped_no_engine={
             role: NoEngineRole(ref, (no_engine_notices or {}).get(role, ""))
             for role, ref in _roles_without_engine(None, engines).items()
@@ -3893,7 +3932,8 @@ def _planned_launches(
     # Only the clean-box snapshot's free bytes mean "what other tenants hold";
     # a live probe here would also be missing the fleet's own residency.
     charge_against_free = _current_plan_probe(snapshot_engine) is not None
-    capacity = _device_capacity(devices, charge_against_free)
+    named = {index for entry in (spec.roles.values() if spec else ()) for index in entry.devices}
+    capacity = _auto_capacity(devices, charge_against_free, named)
     placement, _spec_applied, refused_roles = _placement_that_runs(
         spec,
         inputs,
