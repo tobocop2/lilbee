@@ -24,22 +24,23 @@ from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import devices, planning, swap_config, swap_manager
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
-from lilbee.providers.fleet.engines import ik_llama, llama, mistral, tei
+from lilbee.providers.fleet.engines import llama, mistral, tei
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS
 from lilbee.providers.fleet.host_caps import CardMemory, HostCaps
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests._fleet_engines import ROLE_FIELDS, Role, cards_of, prepare_host
+from tests._published import publish
 from tests.providers.fleet.test_mistral_adapter import caps
 
 _GIB = 24
 _CARD = ("NVIDIA L4", (8, 9))
 _BUNDLED = "llama-server"
 _STORE_TOOLS = {
-    EngineName.MISTRAL: (mistral, "mistralrs"),
-    EngineName.TEI: (tei, "text-embeddings-router"),
-    EngineName.IK_LLAMA: (ik_llama, "llama-server"),
+    EngineName.MISTRAL: "mistralrs",
+    EngineName.TEI: "text-embeddings-router",
+    EngineName.IK_LLAMA: "llama-server",
 }
 
 
@@ -101,7 +102,7 @@ def _ref(role: WorkerRole, engine: EngineName) -> str:
 
 def _install_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: EngineName) -> Path:
     """Install a pack of *name* through the real store and return its tool's path."""
-    module, tool = _STORE_TOOLS[name]
+    tool = _STORE_TOOLS[name]
     wheel = tmp_path / f"{name.value}.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         info = zipfile.ZipInfo(f"pkg/bin/{tool}")
@@ -109,7 +110,7 @@ def _install_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: EngineN
         archive.writestr(info, "#!/bin/sh\n")
         archive.writestr("pkg-1.dist-info/METADATA", "License-Expression: MIT\n")
     sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
-    monkeypatch.setattr(module, "PACK_SHA256", sha)
+    publish(monkeypatch, name, sha)
     pin = ADAPTERS[name].pin_record()
     lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha)
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)

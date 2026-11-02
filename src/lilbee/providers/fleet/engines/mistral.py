@@ -13,6 +13,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
+from lilbee.providers.fleet.engine_manifest import pack_digest
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
@@ -31,8 +32,6 @@ _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
 _LICENCES = ["MIT"]
-# The digest of the pack; None until a pack is published, and an install is refused then.
-PACK_SHA256: str | None = None
 _CPU = "cpu"
 # The one id the engine serves a model under; it answers 400 to any other.
 _SERVED_NAME = "default"
@@ -143,12 +142,13 @@ class MistralAdapter:
     def pin_record(self) -> Mapping[str, Any]:
         from lilbee.catalog.runnable import session_host
 
-        backend = self.pick_build(session_host()).backend or _CPU
+        host = session_host()
+        backend = self.pick_build(host).backend or _CPU
         return {
             "engine": self.name.value,
             "version": _VERSION,
             "backend": backend,
-            "sha256": PACK_SHA256,
+            "sha256": pack_digest(self.name.value, host, backend),
             "launch": [_TOOL, "serve"],
             "platforms": {},
             "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},

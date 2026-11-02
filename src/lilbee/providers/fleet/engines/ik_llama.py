@@ -12,6 +12,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
+from lilbee.providers.fleet.engine_manifest import pack_digest
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest, RequestProfile
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
@@ -24,10 +25,10 @@ from lilbee.providers.roles import RerankMode, WorkerRole
 # A commit of the upstream main branch, never "latest": a bump follows a passing harness run.
 IK_LLAMA_COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
 _VERSION_HEX_DIGITS = 12
-VERSION = f"git-{IK_LLAMA_COMMIT[:_VERSION_HEX_DIGITS]}"
+VERSION = f"0+git{IK_LLAMA_COMMIT[:_VERSION_HEX_DIGITS]}"
 BACKEND = "cpu"
-# The digest of the CPU pack; None until a pack is published, and an install is refused then.
-PACK_SHA256: str | None = None
+_PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
+_PIN_SIZING = ["gguf-parser", "--model", "{model}"]
 _REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON. llama.cpp stays in use."
 _PROFILE = dataclasses.replace(
     LLAMA.request_profile(WorkerRole.CHAT),
@@ -74,12 +75,17 @@ class IkLlamaAdapter:
         return LLAMA.identity(binary)
 
     def pin_record(self) -> Mapping[str, Any]:
+        from lilbee.catalog.runnable import session_host
+
         return {
-            **LLAMA.pin_record(),
             "engine": self.name.value,
             "version": VERSION,
             "backend": BACKEND,
-            "sha256": PACK_SHA256,
+            "sha256": pack_digest(self.name.value, session_host(), BACKEND),
+            "launch": _PIN_LAUNCH,
+            "platforms": {},
+            "memory": {"sizing": _PIN_SIZING, "rule": None},
+            "licenses": ["MIT"],
         }
 
     def role_spec(
