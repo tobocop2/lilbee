@@ -17,13 +17,17 @@ if TYPE_CHECKING:
 
 _ROLES = "roles"
 ENGINE_SETTING_KEYS = frozenset({CHOICES_KEY, engine_service.PREFERRED_KEY})
+_LIST = "list"
+_REMOVE = "remove"
+_REMOVE_ARGS = 3
 _USE = "use"
 _PREFER = "prefer"
 _USE_ARGS = 3
 _PREFER_ARGS = 1
 YES_WORD = "--yes"
 USAGE = (
-    "Use /engine roles, /engine use ROLE MODEL ENGINE [--yes], or /engine prefer ENGINE [--yes]."
+    "Use /engine roles, /engine list, /engine remove NAME VERSION BACKEND, "
+    "/engine use ROLE MODEL ENGINE [--yes], or /engine prefer ENGINE [--yes]."
 )
 
 
@@ -45,6 +49,10 @@ def _roles_text() -> str:
     return "\n".join(lines)
 
 
+def _builds_text() -> str:
+    return "\n".join(view.label for view in engine_service.builds()) or engine_service.NO_BUILDS
+
+
 def _use(role: WorkerRole, model: str, engine: str, confirmed: bool = False) -> EngineCommandResult:
     chosen = engine_service.use_for_role(role, model, engine, confirmed=confirmed)
     text = msg.ENGINE_USE_DONE.format(role=role, model=model, engine=chosen)
@@ -56,6 +64,12 @@ def _run(verb: str, args: list[str]) -> EngineCommandResult:
     words = [word for word in args if word != YES_WORD]
     if verb == _ROLES and not words and not confirmed:
         return EngineCommandResult(True, _roles_text())
+    if verb == _LIST and not args:
+        return EngineCommandResult(True, _builds_text())
+    if verb == _REMOVE and len(args) == _REMOVE_ARGS:
+        name, version, backend = args
+        label = engine_service.remove_build(name, version, backend)
+        return EngineCommandResult(True, engine_service.REMOVE_DONE.format(build=label))
     if verb == _USE and len(words) == _USE_ARGS:
         role, model, engine = words
         return _use(engine_service.parse_role(role), model, engine, confirmed)

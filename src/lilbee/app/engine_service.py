@@ -15,6 +15,15 @@ from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engine_store import (
+    BundledEngineError,
+    EngineInUseError,
+    EngineNotInstalledError,
+    EngineStore,
+    StorePathError,
+    engines_root,
+    launch_uses_engine,
+)
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
     AUTO,
@@ -29,6 +38,9 @@ from lilbee.retrieval.canary_probe import embedder_trigger
 log = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
+STORE_REFUSALS = (BundledEngineError, EngineInUseError, EngineNotInstalledError, StorePathError)
+NO_BUILDS = "No engine builds are installed."
+REMOVE_DONE = "Removed engine {build}."
 PREFERRED_KEY = "preferred_engine"
 NOT_APPLIED_CODE = "engine_not_applied"
 
@@ -136,6 +148,36 @@ def _check_embed_identity(candidate: Config, confirmed: bool) -> None:
     registry = services.registry
     if embedder_trigger(cfg, registry) != embedder_trigger(candidate, registry):
         raise EmbedConfirmRequiredError(cfg.data_root.name, documents)
+
+
+@dataclass(frozen=True)
+class BuildView:
+    """What a surface shows of one installed engine build."""
+
+    engine: str
+    version: str
+    backend: str
+
+    @property
+    def label(self) -> str:
+        """The build as one line: ``name version (backend)``."""
+        return f"{self.engine} {self.version} ({self.backend})"
+
+
+def builds(config: Config = cfg) -> list[BuildView]:
+    """Every engine build installed beside the models."""
+    store = EngineStore(engines_root(config.models_dir))
+    return [BuildView(b.engine, b.version, b.backend) for b in store.installed()]
+
+
+def remove_build(engine: str, version: str, backend: str, config: Config = cfg) -> str:
+    """Remove one installed build and return its label; refuses a bundled, missing or busy one."""
+    store = EngineStore(engines_root(config.models_dir))
+    try:
+        store.remove(engine, version, backend, in_use=launch_uses_engine)
+    except STORE_REFUSALS as exc:
+        raise EngineRefusedError(str(exc)) from exc
+    return BuildView(engine, version, backend).label
 
 
 def roles(config: Config = cfg) -> list[RoleView]:

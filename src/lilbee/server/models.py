@@ -963,6 +963,26 @@ class EngineRolesResponse(BaseModel):
     roles: list[EngineRoleResponse]
 
 
+class EngineBuildResponse(BaseModel):
+    """One installed engine build."""
+
+    engine: str
+    version: str
+    backend: str
+
+
+class EngineBuildsResponse(BaseModel):
+    """Response for the installed engine builds."""
+
+    builds: list[EngineBuildResponse]
+
+
+class EngineRemovedResponse(BaseModel):
+    """Response for a build removal: the build as one line."""
+
+    removed: str
+
+
 class EngineUseBody(BaseModel):
     """Request body that chooses the engine for the model of one role."""
 

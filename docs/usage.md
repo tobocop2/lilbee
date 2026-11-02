@@ -199,7 +199,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/models` | `/m`, `/catalog` | Browse the full model catalog |
 | `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
-| `/engine [subcommand]` | | Show the engine of each role (`roles`), or choose it (`use ROLE MODEL ENGINE`, `prefer ENGINE`); add `--yes` to confirm a change that can make the index vectors unusable |
+| `/engine [subcommand]` | | Show the engine of each role (`roles`), list the installed builds (`list`), remove one (`remove NAME VERSION BACKEND`), or choose it (`use ROLE MODEL ENGINE`, `prefer ENGINE`); add `--yes` to confirm a change that can make the index vectors unusable |
 | `/preset <subcommand>` | | List, add, edit or remove server presets (edit opens a dialog) |
 | `/delete <name>` | | Remove a document from the index |
 | `/prune-ignored` | | Drop indexed documents a `.lilbeeignore` now excludes |
@@ -443,7 +443,7 @@ back to another engine. `engine use` sets the engine for the model of one role.
 `/engine` chat command, the MCP tools `engine_roles`, `engine_use` and
 `engine_prefer`, and the REST routes `GET /api/engines/roles`,
 `PUT /api/engines/roles/{role}` and `PUT /api/engines/preferred`. On the HTTP
-server the two writes need `allow_http_engines`. The three MCP tools need the
+server the two writes need `allow_http_engines`. The MCP engine tools need the
 setting `mcp_engines_enabled`. It is off by default. Turn it on, then restart the
 MCP server.
 
@@ -461,7 +461,11 @@ the request again with `confirm_embed_change` set to `true` to write the change.
 Run `lilbee engine list` to see the engine builds installed beside the models.
 If none is installed, it prints `No engine builds are installed.` Run
 `lilbee engine remove <engine> <version> <backend>` to delete one build. Use
-the three values that `engine list` shows.
+the three values that `engine list` shows. The `/engine list` and
+`/engine remove` chat commands, the MCP tools `engine_list` and `engine_remove`,
+and the REST routes `GET /api/engines` and
+`DELETE /api/engines/{engine}/{version}/{backend}` do the same. On the HTTP
+server the removal needs `allow_http_engines`.
 
 #### The saved choice
 

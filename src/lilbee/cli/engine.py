@@ -26,7 +26,6 @@ engine_app = typer.Typer(
 
 _STOPPED = "Stopped the engine and freed its memory."
 _NOTHING_RUNNING = "No engine is running."
-_NO_BUILDS = "No engine builds are installed."
 
 
 @engine_app.command("stop")
@@ -53,9 +52,7 @@ def stop() -> None:
 @engine_app.command("list")
 def list_builds() -> None:
     """List the engine builds installed beside the models."""
-    from lilbee.providers.fleet.engine_store import EngineStore, engines_root
-
-    builds = EngineStore(engines_root(cfg.models_dir)).installed()
+    builds = engine_service.builds()
     if cfg.json_mode:
         json_out(
             {
@@ -67,9 +64,9 @@ def list_builds() -> None:
         )
         return
     if not builds:
-        console.print(_NO_BUILDS)
+        console.print(engine_service.NO_BUILDS)
     for build in builds:
-        console.print(f"{build.engine} {build.version} ({build.backend})")
+        console.print(build.label)
 
 
 @engine_app.command("remove")
@@ -79,34 +76,14 @@ def remove(
     backend: str = typer.Argument(help="Build backend."),
 ) -> None:
     """Remove one installed engine build."""
-    from lilbee.providers.fleet.engine_store import (
-        BundledEngineError,
-        EngineInUseError,
-        EngineNotInstalledError,
-        EngineStore,
-        StorePathError,
-        engines_root,
-        launch_uses_engine,
-    )
-
-    store = EngineStore(engines_root(cfg.models_dir))
     try:
-        store.remove(engine, version, backend, in_use=launch_uses_engine)
-    except (
-        BundledEngineError,
-        EngineInUseError,
-        EngineNotInstalledError,
-        StorePathError,
-    ) as exc:
-        if cfg.json_mode:
-            json_out({"command": "engine remove", "error": str(exc)})
-        else:
-            PlainConsole(stderr=True).print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
-        raise typer.Exit(1) from exc
+        label = engine_service.remove_build(engine, version, backend)
+    except engine_service.EngineRefusedError as exc:
+        raise _refuse("engine remove", exc) from exc
     if cfg.json_mode:
-        json_out({"command": "engine remove", "removed": f"{engine} {version} ({backend})"})
+        json_out({"command": "engine remove", "removed": label})
         return
-    console.print(f"Removed engine {engine} {version} ({backend}).")
+    console.print(engine_service.REMOVE_DONE.format(build=label))
 
 
 def _refuse(command: str, exc: Exception) -> typer.Exit:
