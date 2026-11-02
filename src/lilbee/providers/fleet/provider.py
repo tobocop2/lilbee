@@ -2275,8 +2275,7 @@ class FleetProvider:
         """Return the capabilities of the chat model served from the local files.
 
         Cross-encoder rerank GGUFs report ``["rerank"]`` (they cannot generate).
-        Every other model reports ``["completion"]``: chat drops image parts, so
-        no chat model reports ``"vision"``.
+        Every other model reports ``["completion"]``.
         """
         from lilbee.catalog import is_rerank_ref
 

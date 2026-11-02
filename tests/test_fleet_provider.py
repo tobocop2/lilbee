@@ -2130,30 +2130,10 @@ def test_get_capabilities_rerank_ref(monkeypatch) -> None:
     assert FleetProvider().get_capabilities("org/repo/rerank.gguf") == ["rerank"]
 
 
-def test_get_capabilities_omits_vision_for_a_model_with_a_projector(monkeypatch) -> None:
+@pytest.mark.parametrize("ref", ["org/repo/v.gguf", "org/repo/folder", "missing/model.gguf"])
+def test_get_capabilities_of_a_chat_model_is_completion_only(monkeypatch, ref) -> None:
     monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
-    monkeypatch.setattr(
-        "lilbee.providers.engine_params.resolve_model_path", lambda _m: Path("/m/v.gguf")
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.find_mmproj_for_model", lambda _p: Path("/m/mmproj.gguf")
-    )
-    assert FleetProvider().get_capabilities("org/repo/v.gguf") == ["completion"]
-
-
-def test_get_capabilities_completion_only_without_mmproj(monkeypatch) -> None:
-    from lilbee.providers.base import ProviderError
-
-    monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
-    monkeypatch.setattr(
-        "lilbee.providers.engine_params.resolve_model_path", lambda _m: Path("/m/c.gguf")
-    )
-
-    def _no_mmproj(_p: Path) -> Path:
-        raise ProviderError("no mmproj")
-
-    monkeypatch.setattr("lilbee.providers.gguf_meta.find_mmproj_for_model", _no_mmproj)
-    assert FleetProvider().get_capabilities("org/repo/c.gguf") == ["completion"]
+    assert FleetProvider().get_capabilities(ref) == ["completion"]
 
 
 _TOOL_AWARE_TEMPLATE = "{% if tools %}{{ tool_calls }}{% endif %}"
@@ -3631,17 +3611,6 @@ def test_routing_provider_local_engine_is_fleet() -> None:
     from lilbee.providers.routing_provider import RoutingProvider
 
     assert isinstance(RoutingProvider()._get_local(), FleetProvider)
-
-
-def test_get_capabilities_unresolved_model_returns_completion(monkeypatch) -> None:
-    from lilbee.providers.base import ProviderError
-
-    def _raise(_m: str):
-        raise ProviderError("not found")
-
-    monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _raise)
-    assert FleetProvider().get_capabilities("missing/model.gguf") == ["completion"]
 
 
 class TestLifecycleMethods:

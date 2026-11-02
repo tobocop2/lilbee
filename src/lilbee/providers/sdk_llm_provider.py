@@ -25,6 +25,7 @@ from lilbee.core.blocked_networks import check_request_address
 from lilbee.core.config import cfg
 from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
+    VISION_CAPABILITY,
     ChatMessage,
     ChatResult,
     ChatStreamItem,
@@ -419,12 +420,17 @@ class SdkLLMProvider(LLMProvider):
             ) from exc
 
     def get_capabilities(self, model: str) -> list[str]:
-        """Return capability tags from ``show_model`` output, or ``[]``."""
+        """Return capability tags from ``show_model`` output, or ``[]``.
+
+        The ``vision`` tag is left out: chat drops every image part.
+        """
         info = self.show_model(model)
         if info is None:
             return []
         caps = info.get("capabilities", [])
-        return caps if isinstance(caps, list) else []
+        if not isinstance(caps, list):
+            return []
+        return [cap for cap in caps if cap != VISION_CAPABILITY]
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Rerank candidates via the SDK backend using ``cfg.reranker_model``."""

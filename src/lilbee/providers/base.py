@@ -193,6 +193,9 @@ def is_prompt_length_overflow(text: str) -> bool:
     return _PROMPT_LENGTH_OVERFLOW.search(text) is not None
 
 
+# Capability tag for image input. Chat drops every image part, so no chat model reports it.
+VISION_CAPABILITY = "vision"
+
 # Human word per role for the not-configured error ("embedding model", not "embed model").
 _ROLE_WORDS: dict[WorkerRole, str] = {
     WorkerRole.CHAT: "chat",
