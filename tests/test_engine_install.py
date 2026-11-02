@@ -702,3 +702,45 @@ def test_a_note_from_the_host_gate_reaches_every_install_surface(
     assert _rest({"engine": ENGINE.value})[1]["note"] == NOTE
     assert mcp_server.engine_install_tool(ENGINE.value)["note"] == NOTE
     assert NOTE in run_engine_command(f"install {ENGINE.value}").text
+
+
+def _two_digest_pin(
+    monkeypatch: pytest.MonkeyPatch, url: str, cell_sha: str, top_sha: str, size: int = 1
+) -> None:
+    cells = _cell(url, cell_sha, size=size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(top_sha, cells=cells))  # type: ignore[arg-type]
+
+
+def test_a_pin_whose_top_digest_is_another_cells_installs_a_wheel_of_this_cell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "cell.whl"
+    cell_sha = make_wheel(wheel)
+    _two_digest_pin(monkeypatch, "https://example.invalid/x.whl", cell_sha, "b" * 64)
+    engine_service.install(ENGINE.value, wheel)
+    (installed,) = EngineStore(engines_root(cfg.models_dir)).installed()
+    assert installed.sha256 == cell_sha
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_a_pin_whose_top_digest_is_another_cells_installs_the_download_of_this_cell(
+    release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wheel = tmp_path / "cell.whl"
+    cell_sha = make_wheel(wheel)
+    release.files["/fx.whl"] = wheel.read_bytes()
+    _two_digest_pin(monkeypatch, f"{release.url}/fx.whl", cell_sha, "b" * 64, wheel.stat().st_size)
+    engine_service.install(ENGINE.value)
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_a_wheel_of_the_top_digest_is_refused_when_the_cell_digest_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "top.whl"
+    top_sha = make_wheel(wheel)
+    _two_digest_pin(monkeypatch, "https://example.invalid/x.whl", "b" * 64, top_sha)
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value, wheel)
+    assert str(exc.value) == BAD_PACK
+    assert _builds() == []

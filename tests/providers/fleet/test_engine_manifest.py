@@ -18,7 +18,6 @@ from lilbee.providers.fleet.engine_manifest import (
     parse_manifest,
 )
 from lilbee.providers.fleet.engine_store import (
-    ChecksumError,
     PinLock,
     PlatformAsset,
     UnsupportedPlatformError,
@@ -286,10 +285,16 @@ def test_a_host_of_unknown_os_has_no_cell_in_a_pin_with_cells() -> None:
         host_cell(lock, host)
 
 
-def test_a_cell_digest_that_differs_from_the_pin_digest_is_refused() -> None:
-    lock = lock_with({"linux-x86_64-vulkan": PlatformAsset(BASE + "x.whl", "b" * 64, 1, None)})
-    with pytest.raises(ChecksumError, match="lists two different digests for this computer"):
-        host_cell(lock, linux())
+def test_a_cell_digest_that_differs_from_the_pin_digest_is_the_digest_of_the_lock() -> None:
+    cell = "linux-x86_64-vulkan"
+    lock = lock_with({cell: PlatformAsset(BASE + "x.whl", "b" * 64, 1, None)})
+    assert host_cell(lock, linux()) == cell
+    assert lock.for_cell(cell).sha256 == "b" * 64
+
+
+def test_a_pin_without_cells_keeps_its_top_digest() -> None:
+    lock = lock_with({})
+    assert lock.for_cell(host_cell(lock, linux())).sha256 == SHA
 
 
 def test_a_cell_digest_that_differs_only_in_case_is_accepted() -> None:

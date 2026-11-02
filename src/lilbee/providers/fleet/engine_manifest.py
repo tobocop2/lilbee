@@ -10,7 +10,6 @@ from typing import Any, TypeVar
 from urllib.parse import unquote, urlsplit
 
 from lilbee.providers.fleet.engine_store import (
-    ChecksumError,
     PinLock,
     PlatformAsset,
     UnsupportedPlatformError,
@@ -129,8 +128,7 @@ def host_os_version(host_os: HostOS) -> str:
 def host_cell(lock: PinLock, host: HostCaps) -> str:
     """The cell key of *lock* for *host*; empty for a pin with no cells.
 
-    A pin with cells refuses a computer with no cell, a low OS, or a cell whose digest
-    differs from the digest of the pin.
+    A pin with cells refuses a computer with no cell or a low OS.
     """
     if not lock.platforms:
         return ""
@@ -140,12 +138,6 @@ def host_cell(lock: PinLock, host: HostCaps) -> str:
         )
     asset = find_cell(lock.engine, lock.platforms, host.os, host.arch, lock.backend)
     require_floor(lock.engine, lock.version, lock.backend, asset, host.os, host_os_version(host.os))
-    if asset.sha256.lower() != lock.sha256.lower():
-        raise ChecksumError(
-            f"The pin of engine {lock.engine} {lock.version} ({lock.backend}) lists two "
-            f"different digests for this computer, so lilbee did not install it. "
-            f"Report this."
-        )
     return cell_key(host.os, host.arch, lock.backend)
 
 

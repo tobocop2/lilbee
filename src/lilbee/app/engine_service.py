@@ -283,6 +283,7 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
     store = EngineStore(engines_root(cfg.models_dir))
     try:
         cell = host_cell(lock, host)
+        lock = lock.for_cell(cell)
         if wheel is None:
             store.ensure(lock, lambda pin, scratch: fetch_frozen(pin, cell, dest=scratch))
         else:

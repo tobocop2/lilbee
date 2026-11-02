@@ -13,7 +13,7 @@ import sys
 import uuid
 import zipfile
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email import message_from_string
 from enum import StrEnum
@@ -123,6 +123,12 @@ class PinLock:
         for part in (self.engine, self.version, self.backend):
             if not _NAME_PATTERN.fullmatch(part):
                 raise ValueError(f"{part!r} cannot name an engine directory")
+
+    def for_cell(self, cell: str) -> PinLock:
+        """This pin with the digest of the cell *cell*; a pin with no cell is unchanged."""
+        if not cell:
+            return self
+        return replace(self, sha256=self.platforms[cell].sha256)
 
 
 @dataclass(frozen=True)
