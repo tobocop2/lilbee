@@ -411,7 +411,7 @@ def _join_fleet_background_threads():
     fire-and-forget daemon threads that end on their own once joined; on a host
     without the engine binary they fail fast, and joining keeps that warning
     inside the test that started them. The child-guard spawner is different: its
-    ``fleet-spawner`` worker is a process-lifetime executor thread that a join
+    ``fleet-spawner`` thread is a process-lifetime daemon that a join
     never ends (it parks waiting for the next spawn), so any test that ran a real
     probe or launch must close it, or the leak guard flags it against whatever
     test happens to run next.

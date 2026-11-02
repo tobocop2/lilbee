@@ -13,19 +13,21 @@ a spawn:
   :func:`_watch_via_death_pipe`).
 
 ``processfamily`` covers only prctl+job (needs pywin32, skips macOS), so the
-syscalls stay custom; the executor is the stdlib's.
+syscalls stay custom; the thread and queue are the stdlib's.
 """
 
 from __future__ import annotations
 
 import contextlib
 import ctypes
+import functools
 import logging
 import os
+import queue
 import subprocess
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -92,32 +94,46 @@ def _make_pdeathsig_preexec(parent_pid: int) -> Callable[[], None] | None:
 
 
 class _LifetimeSpawner:
-    """Runs spawns on one process-lifetime thread so PR_SET_PDEATHSIG binds to it.
+    """Runs spawns on one daemon thread so PR_SET_PDEATHSIG binds to it.
 
-    The death signal binds to the forking thread, so a one-worker
-    ``ThreadPoolExecutor`` (reused for every spawn, stopped only at exit or the
-    test-only ``close``) keeps that thread alive for the process.
+    The death signal binds to the forking thread, so one thread forks every child
+    and lives for the process. It is a daemon thread because interpreter shutdown
+    ends executor threads first, which would signal a live child before atexit.
     """
 
     def __init__(self) -> None:
-        self._executor: ThreadPoolExecutor | None = None
+        self._requests: queue.SimpleQueue[
+            tuple[Future[subprocess.Popen[Any]], Callable[[], subprocess.Popen[Any]]] | None
+        ] = queue.SimpleQueue()
+        self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
 
     def spawn(self, *args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
         with self._lock:
-            if self._executor is None:
-                self._executor = ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix="fleet-spawner"
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._serve, name="fleet-spawner", daemon=True
                 )
-            executor = self._executor
-        return executor.submit(subprocess.Popen, *args, **kwargs).result()
+                self._thread.start()
+        done: Future[subprocess.Popen[Any]] = Future()
+        self._requests.put((done, functools.partial(subprocess.Popen, *args, **kwargs)))
+        return done.result()
+
+    def _serve(self) -> None:
+        while (request := self._requests.get()) is not None:
+            done, start = request
+            try:
+                done.set_result(start())
+            except BaseException as exc:
+                done.set_exception(exc)
 
     def close(self) -> None:
         """Stop the spawner thread. Test-only; in production it lives forever."""
         with self._lock:
-            executor, self._executor = self._executor, None
-        if executor is not None:
-            executor.shutdown(wait=True)
+            thread, self._thread = self._thread, None
+        if thread is not None:
+            self._requests.put(None)
+            thread.join()
 
 
 _spawner = _LifetimeSpawner()

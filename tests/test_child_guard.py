@@ -32,7 +32,7 @@ def _pin_libc(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _close_module_spawner():
-    """Stop any executor the module singleton lazily started, so no worker lingers."""
+    """Stop any thread the module singleton lazily started, so no worker lingers."""
     yield
     child_guard._spawner.close()
 
@@ -235,18 +235,78 @@ class TestTheLifetimeSpawner:
     def test_the_worker_is_created_once_and_reused(self, spawner):
         with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
             spawner.spawn(["/x"])
-            first = spawner._executor
+            first = spawner._thread
             spawner.spawn(["/x"])
 
-        assert first is spawner._executor and first is not None
+        assert first is spawner._thread and first is not None
+
+    def test_the_worker_is_a_daemon_thread(self, spawner):
+        with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
+            spawner.spawn(["/x"])
+
+        assert spawner._thread is not None
+        assert spawner._thread.daemon is True
+        assert spawner._thread.name == "fleet-spawner"
 
     def test_close_stops_the_worker_and_is_safe_when_never_started(self, spawner):
         spawner.close()  # never started: no-op
         with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
             spawner.spawn(["/x"])
-        assert spawner._executor is not None
+        assert spawner._thread is not None
         spawner.close()
-        assert spawner._executor is None
+        assert spawner._thread is None
+
+
+_SPAWNS_AT_EXIT = """
+import atexit, subprocess, sys
+from lilbee.providers.fleet import child_guard
+
+child_guard._spawner.spawn([sys.executable, "-c", "pass"]).wait()
+
+def _late():
+    argv = [sys.executable, "-c", "print('spoke')"]
+    proc = child_guard._spawner.spawn(argv, stdout=subprocess.PIPE)
+    print("atexit", proc.communicate()[0].decode().strip())
+
+atexit.register(_late)
+"""
+
+_LIVE_PROBE_AT_RETURN = """
+import subprocess, sys, threading
+from lilbee.providers.fleet import child_guard
+
+def _probe():
+    proc = child_guard.spawn_bound_child(
+        [sys.executable, "-c", "import time; time.sleep(1.5); print('spoke')"],
+        stdout=subprocess.PIPE,
+    )
+    print("probe", proc.communicate()[0].decode().strip(), proc.returncode)
+
+threading.Thread(target=_probe).start()
+"""
+
+
+def _run_in_fresh_interpreter(code: str) -> str:
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=True,
+    )
+    return out.stdout
+
+
+class TestTheSpawnerAcrossInterpreterShutdown:
+    def test_an_atexit_handler_can_still_spawn(self):
+        assert "atexit spoke" in _run_in_fresh_interpreter(_SPAWNS_AT_EXIT)
+
+    @pytest.mark.skipif(
+        not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG is Linux-only"
+    )
+    def test_a_probe_a_non_daemon_thread_awaits_is_not_signalled_at_return(self):
+        assert "probe spoke 0" in _run_in_fresh_interpreter(_LIVE_PROBE_AT_RETURN)
 
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="spawns a real /bin/sh watcher")
