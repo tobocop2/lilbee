@@ -29,7 +29,7 @@ async def _tokens() -> AsyncGenerator[str, None]:
 
 
 async def _cut_after_first_token() -> list[str]:
-    """Cancel the response task as uvicorn does once its graceful wait ends."""
+    """Cancel the response task as the web server does once its graceful wait ends."""
     frames: list[str] = []
 
     async def consume() -> None:
