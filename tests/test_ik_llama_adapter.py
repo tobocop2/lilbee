@@ -19,7 +19,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import adapters as fleet_adapters
 from lilbee.providers.fleet import host_caps
-from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
+from lilbee.providers.fleet.engine_store import EngineStore, PinLock, UnsafeWheelError, engines_root
 from lilbee.providers.fleet.engines import choice, ik_llama
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.choice import installed_engines
@@ -48,6 +48,8 @@ def _make_wheel(path: Path) -> str:
         tool = zipfile.ZipInfo("lilbee_engine_ik/bin/llama-server")
         tool.external_attr = (stat.S_IFREG | 0o755) << 16
         archive.writestr(tool, "#!/bin/sh\n")
+        archive.writestr("lilbee_engine_ik/bin/libggml.so", "x")
+        archive.writestr("lilbee_engine_ik/bin/libllama.so", "x")
         archive.writestr("lilbee_engine_ik-1.dist-info/METADATA", "License-Expression: MIT\n")
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -88,6 +90,25 @@ def test_the_pin_names_the_commit_by_its_first_twelve_digits() -> None:
     assert pin["version"] == f"0+git{COMMIT[:12]}"
     assert (pin["engine"], pin["backend"], pin["licenses"]) == ("ik_llama.cpp", "cpu", ["MIT"])
     assert choice.pin_lock({**pin, "sha256": "a" * 64}).version == "0+git13cffc006b82"
+
+
+def test_the_pinned_wheel_layout_of_one_ggml_library_installs_from_the_pin(
+    tmp_path: Path,
+) -> None:
+    wheel = tmp_path / "ik.whl"
+    sha = _make_wheel(wheel)
+    lock = choice.pin_lock({**IK_LLAMA.pin_record(), "sha256": sha})
+    root = EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
+    assert lock.libraries == ("ggml",)
+    assert (root / "lilbee_engine_ik" / "bin" / "libggml.so").is_file()
+
+
+def test_the_llama_cpp_pin_refuses_the_one_ggml_library_layout(tmp_path: Path) -> None:
+    wheel = tmp_path / "ik.whl"
+    sha = _make_wheel(wheel)
+    lock = choice.pin_lock({**LLAMA.pin_record(), "backend": "cpu", "sha256": sha})
+    with pytest.raises(UnsafeWheelError, match="no library file for 'ggml-base'"):
+        EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
 
 
 def test_the_engine_is_registered_and_does_not_ship_in_the_package() -> None:

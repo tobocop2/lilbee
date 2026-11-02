@@ -11,6 +11,7 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import RoleServerSpec
+from lilbee.providers.fleet.binary import EngineTool
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engine_manifest import pack_digest
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
@@ -29,6 +30,7 @@ VERSION = f"0+git{IK_LLAMA_COMMIT[:_VERSION_HEX_DIGITS]}"
 BACKEND = "cpu"
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
+_PIN_LIBRARIES = ["ggml"]
 _REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON."
 _PROFILE = dataclasses.replace(
     LLAMA.request_profile(WorkerRole.CHAT),
@@ -82,6 +84,8 @@ class IkLlamaAdapter:
             "version": VERSION,
             "backend": BACKEND,
             "sha256": pack_digest(self.name.value, session_host(), BACKEND),
+            "tool": EngineTool.LLAMA_SERVER.value,
+            "libraries": _PIN_LIBRARIES,
             "launch": _PIN_LAUNCH,
             "platforms": {},
             "memory": {"sizing": _PIN_SIZING, "rule": None},
