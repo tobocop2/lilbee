@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 
 from lilbee.app.engine_choice import BookReading, EngineBook
-from lilbee.app.services import peek_services
+from lilbee.app.services import Services, peek_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.planning import (
@@ -19,6 +21,8 @@ from lilbee.providers.fleet.planning import (
 )
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress, is_active_warm
+
+log = logging.getLogger(__name__)
 
 _PLACEMENT_KEY = "placement"
 
@@ -238,6 +242,19 @@ def placement_refused_message() -> str:
     )
 
 
+def _apply_to_running(services: Services) -> None:
+    """Apply a saved placement to the fleet; a failure says that the placement is saved."""
+    try:
+        services.provider.reload_placement(wait=True)
+    except (ProviderError, OSError) as exc:
+        log.warning("The running server did not apply the placement: %s", exc)
+        raise ProviderError(
+            "The placement is saved, but the running server could not apply it: "
+            f"{str(exc).rstrip('.')}. Restart lilbee to use the placement.",
+            kind=exc.kind if isinstance(exc, ProviderError) else ProviderErrorKind.UNKNOWN,
+        ) from exc
+
+
 def set_placement(spec: PlacementSpec | None) -> PlacementView:
     """Validate, persist to config.toml, apply to the live fleet, and return the new view.
 
@@ -263,7 +280,7 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     if services is None:
         clear_read_device_cache()  # nothing running; let the next boot probe fresh
     else:
-        services.provider.reload_placement(wait=True)
+        _apply_to_running(services)
     return _view(
         resolved,
         reading.adapters,

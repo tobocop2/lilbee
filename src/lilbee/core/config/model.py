@@ -879,7 +879,7 @@ class Config(BaseSettings):
     # schema on every request. REST, the CLI and the slash command are unchanged.
     mcp_presets_enabled: bool = ConfigField(default=False, writable=True)
 
-    # The three engine tools, off by default: the default tool list has a byte
+    # The engine tools, off by default: the default tool list has a byte
     # budget. REST, the CLI and the slash command are unchanged.
     mcp_engines_enabled: bool = ConfigField(default=False, writable=True)
 
@@ -978,7 +978,8 @@ class Config(BaseSettings):
         public=False,
         from_env=False,
         description=(
-            "The engine for every model that has no engine of its own. auto picks one "
+            "The engine for every model that has no engine of its own: "
+            f"{', '.join(EngineSetting)}. auto picks one "
             "from the model format and the host. Change it with the engine commands, "
             "not the settings list"
         ),

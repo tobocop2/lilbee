@@ -335,3 +335,32 @@ def test_serve_console_prints_info_lines_from_lilbee_loggers(
     logging.getLogger("lilbee.server.app").info("startup line")
 
     assert "startup line" in capsys.readouterr().err
+
+
+class _Exited(BaseException):
+    """Stands in for the process end, so the deadline runs inside the test."""
+
+
+def test_the_deadline_writes_the_held_threads_and_exits_with_status_1(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from lilbee.cli.commands import serve_logging
+
+    statuses: list[int] = []
+
+    def fake_exit(status: int) -> None:
+        statuses.append(status)
+        raise _Exited
+
+    monkeypatch.setattr(serve_logging.cfg, "data_root", tmp_path)
+    monkeypatch.setattr(serve_logging.os, "_exit", fake_exit)
+    started: list[object] = []
+    monkeypatch.setattr(
+        serve_logging.threading.Thread, "start", lambda thread: started.append(thread)
+    )
+    serve_logging.arm_exit_deadline(0)
+    assert len(started) == 1
+    with pytest.raises(_Exited):
+        serve_logging._exit_at_the_deadline(0)
+    assert statuses == [1]
+    assert "Timeout (0 s)!" in (tmp_path / "logs" / "server-fault.log").read_text(encoding="utf-8")

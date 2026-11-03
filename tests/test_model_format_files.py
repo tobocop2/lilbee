@@ -20,6 +20,31 @@ from lilbee.modelhub.registry import ModelRegistry, register_downloaded_model
 _TOKENIZER = ["merges.txt", "tokenizer.json", "tokenizer_config.json", "vocab.json"]
 _JUNK = [".gitattributes", "README.md", "LICENSE"]
 _REV = "0" * 40
+_QWEN3_EMBEDDING_LISTING = [
+    ".gitattributes",
+    "1_Pooling/config.json",
+    "LICENSE",
+    "README.md",
+    "config.json",
+    "config_sentence_transformers.json",
+    "generation_config.json",
+    "merges.txt",
+    "model.safetensors",
+    "modules.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+]
+_DENSE_LISTING = [
+    *_QWEN3_EMBEDDING_LISTING,
+    "2_Dense/config.json",
+    "2_Dense/model.safetensors",
+    "2_Dense/pytorch_model.bin",
+    "3_Normalize/config.json",
+    "docs/config.json",
+    "9_x/other.json",
+]
+_MODULE_FILES = {"modules.json", "1_Pooling/config.json"}
 
 
 class TestFormatsFromTags:
@@ -82,6 +107,31 @@ class TestSelectFiles:
             "config.json",
             "generation_config.json",
         ]
+
+    def test_an_embedding_repo_takes_the_module_files(self) -> None:
+        got = select_files(ModelFormat.SAFETENSORS, _QWEN3_EMBEDDING_LISTING)
+        assert got[0] == "model.safetensors"
+        assert set(got) >= _MODULE_FILES
+        assert "config_sentence_transformers.json" not in got
+        assert "README.md" not in got
+
+    def test_each_module_folder_gives_its_config_and_weights_and_no_other_format(self) -> None:
+        got = set(select_files(ModelFormat.SAFETENSORS, _DENSE_LISTING))
+        assert got >= {*_MODULE_FILES, "2_Dense/config.json", "2_Dense/model.safetensors"}
+        assert "3_Normalize/config.json" in got
+        assert not got & {"2_Dense/pytorch_model.bin", "docs/config.json", "9_x/other.json"}
+
+    def test_a_numbered_folder_without_modules_json_is_not_taken(self) -> None:
+        names = ["model.safetensors", "config.json", "2_Dense/config.json"]
+        assert select_files(ModelFormat.SAFETENSORS, names) == ["model.safetensors", "config.json"]
+
+    def test_a_gguf_pull_never_takes_the_module_files(self) -> None:
+        names = [*_DENSE_LISTING, "Qwen3-Embedding-0.6B-Q8_0.gguf"]
+        assert select_files(ModelFormat.GGUF, names) == ["Qwen3-Embedding-0.6B-Q8_0.gguf"]
+
+    def test_an_mlx_pull_does_not_take_the_module_files(self) -> None:
+        got = select_files(ModelFormat.MLX, _DENSE_LISTING)
+        assert not (_MODULE_FILES | {"2_Dense/config.json"}) & set(got)
 
     def test_four_of_five_shards_is_refused_naming_the_fifth(self) -> None:
         names = [f"model-0000{i}-of-00005.safetensors" for i in (1, 2, 3, 4)]
@@ -232,6 +282,48 @@ class TestDownloadRouting:
             )
         assert fetched == [["model.safetensors", "config.json", "tokenizer.json"]]
         assert path == tmp_path / "model.safetensors"
+
+    def test_an_embedding_pull_fetches_the_module_files(self, tmp_path: Path) -> None:
+        fetched: list[list[str]] = []
+
+        def fake_fetch(_entry, _dir, _token, files, _progress, _probe, _cached) -> list[Path]:
+            fetched.append(files)
+            return [tmp_path / name for name in files]
+
+        with (
+            mock.patch.object(
+                download, "_repo_sibling_files", return_value=_QWEN3_EMBEDDING_LISTING
+            ),
+            mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
+        ):
+            download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)
+        assert set(fetched[0]) >= _MODULE_FILES
+
+    def test_a_model_pulled_before_the_fix_fetches_only_the_missing_files(
+        self, tmp_path: Path
+    ) -> None:
+        old = ["model.safetensors", "config.json", "merges.txt"]
+        old += ["tokenizer.json", "tokenizer_config.json", "vocab.json", "generation_config.json"]
+        seen: list[tuple[list[str], frozenset[str]]] = []
+
+        def fake_fetch(_entry, _dir, _token, files, _progress, _probe, cached) -> list[Path]:
+            seen.append((files, cached))
+            return [tmp_path / name for name in files]
+
+        with (
+            mock.patch.object(
+                download, "_repo_sibling_files", return_value=_QWEN3_EMBEDDING_LISTING
+            ),
+            mock.patch.object(
+                download,
+                "_cached_path",
+                side_effect=lambda _repo, name, _dir: tmp_path / name if name in old else None,
+            ),
+            mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
+        ):
+            download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)
+        assert seen[0][1] == frozenset(old)
+        assert set(seen[0][0]) - seen[0][1] == _MODULE_FILES
 
     def test_a_repo_without_the_format_is_refused_by_name(self, tmp_path: Path) -> None:
         with (
@@ -393,3 +485,105 @@ class TestNonGgufManifest:
             register_downloaded_model(entry, paths["m-Q4_K_M.gguf"])
         (manifest,) = ModelRegistry(tmp_path).list_installed()
         assert (manifest.format, manifest.total_size_bytes) == (ModelFormat.GGUF, None)
+
+
+class _PullingManager:
+    """An installed manager whose pull runs the real file-set fetch over a recorded listing."""
+
+    def __init__(self, tmp_path: Path, cached: set[str]) -> None:
+        self.tmp_path = tmp_path
+        self.cached = cached
+        self.fetched: list[list[str]] = []
+
+    def is_installed(self, _ref: str, _source: object = None) -> bool:
+        return True
+
+    def pull(self, _ref: str, _source: object, *, cancel: object = None) -> None:
+        def fake_fetch(_entry, _dir, _token, files, _progress, _probe, _cached) -> list[Path]:
+            self.fetched.append(files)
+            return [self.tmp_path / name for name in files]
+
+        with (
+            mock.patch.object(download, "_repo_sibling_files", return_value=_DENSE_LISTING),
+            mock.patch.object(
+                download,
+                "_cached_path",
+                side_effect=lambda _r, name, _d: (
+                    self.tmp_path / name if name in self.cached else None
+                ),
+            ),
+            mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
+            mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)),
+        ):
+            download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), self.tmp_path, None)
+
+
+class TestPullOfAnInstalledModel:
+    _REF = "org/repo#safetensors"
+
+    def _pull(self, manager: _PullingManager):
+        from lilbee.app import models as models_mod
+        from lilbee.catalog.types import ModelSource
+
+        with mock.patch.object(
+            models_mod, "get_services", return_value=mock.Mock(model_manager=manager)
+        ):
+            return models_mod.pull_model_data(self._REF, ModelSource.NATIVE)
+
+    def test_a_model_pulled_before_the_fix_gets_its_module_files(self, tmp_path: Path) -> None:
+        old = {"model.safetensors", "config.json", "merges.txt", "tokenizer.json"}
+        manager = _PullingManager(tmp_path, old | {"tokenizer_config.json", "vocab.json"})
+        from lilbee.app.models import PullStatus
+
+        assert self._pull(manager).status == PullStatus.ALREADY_INSTALLED
+        assert len(manager.fetched) == 1
+        assert {"modules.json", "2_Dense/model.safetensors"} <= set(manager.fetched[0])
+
+    @staticmethod
+    def _pull_offline(ref: str, error: Exception) -> tuple[str, int]:
+        from lilbee.app import models as models_mod
+        from lilbee.catalog.types import ModelSource
+
+        manager = mock.Mock()
+        manager.is_installed.return_value = True
+        manager.pull.side_effect = error
+        with (
+            mock.patch.object(
+                models_mod, "get_services", return_value=mock.Mock(model_manager=manager)
+            ),
+            mock.patch.object(models_mod, "_ensure_vision_projector"),
+        ):
+            result = models_mod.pull_model_data(ref, ModelSource.NATIVE)
+        return result.status, manager.pull.call_count
+
+    @pytest.mark.parametrize(
+        ("ref", "calls"),
+        [
+            ("org/repo#safetensors", 1),
+            ("org/repo#mlx", 0),
+            ("org/repo#openvino", 0),
+            ("org/repo/model.gguf", 0),
+            ("org/repo", 0),
+        ],
+    )
+    def test_every_ref_kind_stays_installed_offline(self, ref: str, calls: int) -> None:
+        from lilbee.app.models import PullStatus
+
+        error = RuntimeError("Cannot query files for org/repo: offline")
+        assert self._pull_offline(ref, error) == (PullStatus.ALREADY_INSTALLED, calls)
+
+    def test_a_safetensors_pull_without_an_engine_stays_installed(self) -> None:
+        from lilbee.app.models import PullStatus
+        from lilbee.providers.fleet.engines.choice import NoEngineError
+
+        status, calls = self._pull_offline("org/repo#safetensors", NoEngineError("none"))
+        assert (status, calls) == (PullStatus.ALREADY_INSTALLED, 1)
+
+    def test_a_bug_in_the_fetch_still_surfaces(self) -> None:
+        with pytest.raises(KeyError, match="bug"):
+            self._pull_offline("org/repo#safetensors", KeyError("bug"))
+
+    def test_a_complete_model_downloads_nothing(self, tmp_path: Path) -> None:
+        manager = _PullingManager(tmp_path, set(_DENSE_LISTING))
+        self._pull(manager)
+        assert manager.fetched == []

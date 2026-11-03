@@ -1160,9 +1160,9 @@ class TestModelsPullByFormat:
         from lilbee.providers.fleet.engines import choice
         from lilbee.providers.fleet.engines.base import EngineName
         from lilbee.providers.fleet.engines.choice import HostFacts
-        from tests.conformance.fake_adapter import FakeAdapter
+        from tests.conformance.fake_adapter import BundledFakeAdapter
 
-        class _MlxEngine(FakeAdapter):
+        class _MlxEngine(BundledFakeAdapter):
             name = "mlx"
             formats = frozenset({"mlx"})
 
@@ -2152,17 +2152,21 @@ class TestLifespan:
         assert "Embedding model validated" not in caplog.text
         assert "embedding" in caplog.text.lower()
 
-    @mock.patch("lilbee.server.app.peek_services")
-    @mock.patch("lilbee.server.app.get_services")
-    async def test_shuts_down_worker_pool_on_exit(self, mock_get_svc, mock_peek):
-        mock_get_svc.return_value = mock.MagicMock()
-        svc = mock.MagicMock()
-        mock_peek.return_value = svc
+    async def test_clears_the_container_and_shuts_down_once_on_exit(self):
+        from lilbee.app.services import peek_services, reset_services_on_exit, set_services
         from lilbee.server.app import _lifespan
 
-        async with _lifespan(mock.MagicMock()):
-            svc.provider.shutdown.assert_not_called()
-        svc.provider.shutdown.assert_called_once()
+        svc = mock.MagicMock()
+        set_services(svc)
+        try:
+            async with _lifespan(mock.MagicMock()):
+                svc.provider.shutdown.assert_not_called()
+            assert peek_services() is None
+            reset_services_on_exit()
+            svc.provider.shutdown.assert_called_once_with()
+            svc.store.close.assert_called_once_with()
+        finally:
+            set_services(None)
 
 
 class TestSessionManagerPersistence:

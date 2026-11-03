@@ -21,18 +21,18 @@ from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import HostFacts
 from lilbee.server import handlers
 from tests._lilbee_app_test_host import LilbeeAppHost
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 REF = "org/repo/file.gguf"
 
 
-class _GlobalEngine(FakeAdapter):
+class _GlobalEngine(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf"})
     architectures = frozenset({"global_arch"})
 
 
-class _LibraryEngine(FakeAdapter):
+class _LibraryEngine(BundledFakeAdapter):
     name = "openvino"
     formats = frozenset({"gguf"})
     architectures = frozenset({"library_arch"})

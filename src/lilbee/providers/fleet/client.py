@@ -284,7 +284,7 @@ def _classify_error(status_code: int, body: str, profile: RequestProfile) -> Pro
     momentarily-unreachable upstream -- restarting, OOM-killed, mid-swap -- so
     it is SERVER, which the gateway retry treats as transient.
     """
-    if profile.batch_overflow.search(body):
+    if profile.batch_overflow is not None and profile.batch_overflow.search(body):
         return ProviderErrorKind.CONTEXT_OVERFLOW
     if _UPSTREAM_DIED_MARKER in body:
         return ProviderErrorKind.CONNECTION
@@ -581,6 +581,14 @@ class LlamaServerClient:
                 "The model is busy with too many requests. Try again in a moment.",
                 provider=self._profile.label,
                 kind=ProviderErrorKind.RATE_LIMIT,
+            )
+        refusal = self._profile.batch_count_refusal
+        if refusal is not None and refusal.search(body):
+            raise ProviderError(
+                f"{self._profile.label} refused the request for holding too many inputs. "
+                "Send fewer inputs in one request.",
+                provider=self._profile.label,
+                kind=ProviderErrorKind.BAD_REQUEST,
             )
         kind = _classify_error(resp.status_code, body, self._profile)
         # llama-swap masks a dead server as "exited prematurely". The server's own
@@ -1074,6 +1082,8 @@ class LlamaServerClient:
         """
         if not candidates:
             return []
+        if self._profile.rerank_path is not None:
+            return self._rerank_route(self._profile.rerank_path, query, candidates)
         if self._rerank_mode is RerankMode.LLM:
             return self._rerank_llm(query, candidates)
         pairs = [
@@ -1081,10 +1091,47 @@ class LlamaServerClient:
             for candidate in candidates
         ]
         scores: list[float] = []
-        for start in range(0, len(pairs), _EMBED_N_SEQ_MAX):
-            data = self._rerank_batch(pairs[start : start + _EMBED_N_SEQ_MAX])
+        step = self._batch_limit or _EMBED_N_SEQ_MAX
+        for start in range(0, len(pairs), step):
+            data = self._rerank_batch(pairs[start : start + step])
             scores.extend(_rerank_score(item, self._profile) for item in data)
         return scores
+
+    def _rerank_route(self, path: str, query: str, candidates: list[str]) -> list[float]:
+        """Scores from the engine's rerank route, in candidate order.
+
+        The route goes through the native path of llama-swap, which finds the model
+        there. Candidates go out in requests of at most the profile's ``batch_limit``.
+        """
+        step = self._batch_limit or len(candidates)
+        scores: list[float] = []
+        for start in range(0, len(candidates), step):
+            scores.extend(self._rerank_route_batch(path, query, candidates[start : start + step]))
+        return scores
+
+    def _rerank_route_batch(self, path: str, query: str, texts: list[str]) -> list[float]:
+        def _call() -> list[dict[str, Any]]:
+            with self._track():
+                resp = self._http.post(
+                    self._native_route(path), json={"query": query, "texts": texts}
+                )
+                self._raise_for_status(resp)
+                return list(resp.json())
+
+        by_index = {
+            int(item["index"]): float(item["score"]) for item in retry_on_gateway_error(_call)
+        }
+        if sorted(by_index) != list(range(len(texts))):
+            raise ProviderError(
+                f"The reranker did not return one score for each of the {len(texts)} candidates.",
+                provider=self._profile.label,
+            )
+        return [by_index[i] for i in range(len(texts))]
+
+    @property
+    def _batch_limit(self) -> int | None:
+        """The most inputs one embed or rerank request holds, from the engine's profile."""
+        return self._profile.batch_limit
 
     def _fit_estimated(self, text: str) -> str:
         """Truncate *text* to the token cap only when its char estimate exceeds it."""
@@ -1176,9 +1223,10 @@ class LlamaServerClient:
         An input longer than ``token_cap`` (the server's per-slot context /
         n_batch) is truncated to it via the server's tokenizer, since the server
         cannot split a pooled embedding sequence. Inputs are then grouped so each
-        request stays within both the token budget and ``_EMBED_N_SEQ_MAX``
-        sequences, bounding per-request size and the gateway-retry window. No cap
-        (chat/vision) sends a single batch untouched.
+        request stays within both the token budget and the sequence limit (the
+        profile's ``batch_limit``, else ``_EMBED_N_SEQ_MAX``), bounding per-request
+        size and the gateway-retry window. No cap (chat/vision) sends a single
+        batch untouched, unless the profile sets a ``batch_limit``.
 
         When ``estimate`` is set the per-input token count comes from
         :func:`_estimate_tokens`, and ``/tokenize`` is consulted only for the
@@ -1186,15 +1234,19 @@ class LlamaServerClient:
         chunk during bulk ingest. ``estimate=False`` (the overflow redo) tokenizes
         every input exactly.
         """
+        limit = self._batch_limit
         if self._token_cap is None:
-            return [texts]
+            if limit is None:
+                return [texts]
+            return [texts[start : start + limit] for start in range(0, len(texts), limit)]
         cap = self._token_cap
+        limit = limit or _EMBED_N_SEQ_MAX
         batches: list[list[str]] = []
         current: list[str] = []
         current_tokens = 0
         for text in texts:
             item, item_tokens = self._fit_input(text, cap, estimate=estimate)
-            if current and (current_tokens + item_tokens > cap or len(current) >= _EMBED_N_SEQ_MAX):
+            if current and (current_tokens + item_tokens > cap or len(current) >= limit):
                 batches.append(current)
                 current = []
                 current_tokens = 0
@@ -1211,10 +1263,13 @@ class LlamaServerClient:
         trusted (no ``/tokenize``); only an over-cap estimate is confirmed against
         the server tokenizer and truncated if it really exceeds the cap.
         """
-        if estimate:
+        if estimate or self._profile.tokenize_path is None:
             est = _estimate_tokens(text)
             if est <= cap:
                 return text, est
+            if self._profile.tokenize_path is None:
+                log.warning("Truncating oversize embed input: ~%d tokens > cap %d", est, cap)
+                return text[: cap * _EMBED_EST_CHARS_PER_TOKEN], cap
         tokens = self._tokenize(text)
         if len(tokens) > cap:
             log.warning("Truncating oversize embed input: %d tokens > cap %d", len(tokens), cap)
@@ -1232,9 +1287,11 @@ class LlamaServerClient:
     def _tokenize(self, text: str, *, parse_special: bool = _TOKENIZE_PARSE_SPECIAL) -> list[int]:
         """Token ids for *text*; a gateway error is retried like an embedding."""
 
+        path = self._require_route(self._profile.tokenize_path, "tokenize")
+
         def _call() -> list[int]:
             resp = self._http.post(
-                self._native_route(self._profile.tokenize_path),
+                self._native_route(path),
                 json={
                     "content": text,
                     "add_special": _TOKENIZE_ADD_SPECIAL,
@@ -1247,8 +1304,17 @@ class LlamaServerClient:
         return retry_on_gateway_error(_call)
 
     def count_tokens(self, text: str) -> int:
-        """Number of tokens *text* encodes to under the server's tokenizer."""
+        """Tokens in *text* under the server's tokenizer, or a character estimate with no route."""
+        if self._profile.tokenize_path is None:
+            return _estimate_tokens(text)
         return len(self._tokenize(text))
+
+    @staticmethod
+    def _require_route(path: str | None, route: str) -> str:
+        """*path*, or ``NotImplementedError`` when the engine has no such route."""
+        if path is None:
+            raise NotImplementedError(f"This inference engine has no {route} route.")
+        return path
 
     def count_chat_prompt_tokens(
         self,
@@ -1265,6 +1331,7 @@ class LlamaServerClient:
         Special-token strings in the rendered text are parsed, matching how the
         server tokenizes its own prompt.
         """
+        self._require_route(self._profile.tokenize_path, "tokenize")
         rendered = self._render_chat_prompt(messages, tools, tool_choice, options)
         return len(self._tokenize(rendered, parse_special=True))
 
@@ -1302,9 +1369,8 @@ class LlamaServerClient:
         return retry_on_gateway_error(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
-        resp = self._http.post(
-            self._native_route(self._profile.detokenize_path), json={"tokens": tokens}
-        )
+        path = self._require_route(self._profile.detokenize_path, "detokenize")
+        resp = self._http.post(self._native_route(path), json={"tokens": tokens})
         self._raise_for_status(resp)
         return str(resp.json()["content"])
 

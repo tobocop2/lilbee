@@ -92,7 +92,8 @@ def test_every_surface_lists_the_same_builds() -> None:
     install(cfg.models_dir)
     views = engine_service.builds()
     assert [(v.engine, v.version, v.backend) for v in views] == [("fx", "1", "cpu")]
-    assert _cli("list") == (0, {"command": "engine list", "builds": [BUILD]})
+    code, listed = _cli("list")
+    assert (code, listed["command"], listed["builds"]) == (0, "engine list", [BUILD])
     assert _rest("GET", "/api/engines") == (200, {"builds": [BUILD]})
     assert mcp_server.engine_list_tool() == {"builds": [BUILD]}
     assert run_engine_command("list").text == "fx 1 (cpu)"

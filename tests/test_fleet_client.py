@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import json
 import threading
 import time
@@ -17,6 +18,7 @@ import pytest
 
 from lilbee.providers.base import ProviderError, TokenUsage
 from lilbee.providers.fleet.client import (
+    _RERANK_PAIR_SEPARATOR,
     ChatDeadlineError,
     LlamaServerClient,
     _first_token_top_logprobs,
@@ -2885,3 +2887,131 @@ def test_chat_abortable_stops_reading_once_the_run_is_cancelled() -> None:
         client.chat_abortable([{"role": "user", "content": "hi"}], deadline_s=5.0, cancel=cancel)
     assert time.monotonic() - started < 2.0
     assert client.in_flight == 0
+
+
+def _no_route_client(handler, cap: int | None = None, **changes) -> LlamaServerClient:
+    """A client whose engine has no tokenize or detokenize route, plus any other profile changes."""
+    profile = dataclasses.replace(
+        LLAMA.request_profile(WorkerRole.EMBED), tokenize_path=None, detokenize_path=None, **changes
+    )
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    return LlamaServerClient("http://gpu0", "m", http=http, token_cap=cap, profile=profile)
+
+
+def test_embed_without_tokenize_route_truncates_by_characters() -> None:
+    posts: list[str] = []
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request.url.path)
+        sent.extend(json.loads(request.content)["input"])
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    out = _no_route_client(handler, cap=4).embed(["x" * 100])
+    assert _as_lists(out) == [[0.5]]
+    assert posts == ["/v1/embeddings"]
+    assert sent == ["x" * 12]
+
+
+def test_embed_without_tokenize_route_keeps_input_within_cap() -> None:
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.extend(json.loads(request.content)["input"])
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    _no_route_client(handler, cap=4).embed(["x" * 12])
+    assert sent == ["x" * 12]
+
+
+def test_embed_without_tokenize_route_truncates_again_on_context_overflow() -> None:
+    calls: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content)["input"])
+        if len(calls) == 1:
+            return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    out = _no_route_client(handler, cap=4).embed(["x" * 12])
+    assert _as_lists(out) == [[0.5]]
+    assert calls == [["x" * 12], ["x" * 12]]
+
+
+def test_count_tokens_without_tokenize_route_estimates_by_characters() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no request expected, got {request.url.path}")
+
+    client = _no_route_client(handler)
+    assert client.count_tokens("x" * 10) == 4
+
+
+def test_count_chat_prompt_tokens_without_tokenize_route_asks_for_an_estimate() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no request expected, got {request.url.path}")
+
+    with pytest.raises(NotImplementedError, match="no tokenize route"):
+        _no_route_client(handler).count_chat_prompt_tokens([{"role": "user", "content": "hi"}])
+
+
+def test_rerank_with_route_posts_query_and_texts_and_orders_scores_by_index() -> None:
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json=[{"index": 1, "score": 0.9}, {"index": 0, "score": 0.1}])
+
+    scores = _no_route_client(handler, rerank_path="/rerank").rerank("q", ["alpha", "beta"])
+    assert scores == [0.1, 0.9]
+    assert seen == [("/upstream/m/rerank", {"query": "q", "texts": ["alpha", "beta"]})]
+
+
+def test_rerank_with_route_splits_candidates_at_the_batch_limit() -> None:
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        texts = json.loads(request.content)["texts"]
+        sizes.append(len(texts))
+        return httpx.Response(
+            200, json=[{"index": i, "score": float(text)} for i, text in enumerate(texts)]
+        )
+
+    candidates = [str(i) for i in range(5)]
+    scores = _no_route_client(handler, rerank_path="/rerank", batch_limit=2).rerank("q", candidates)
+    assert sizes == [2, 2, 1]
+    assert scores == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+def test_rerank_through_embeddings_splits_pairs_at_the_batch_limit() -> None:
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        inputs = json.loads(request.content)["input"]
+        sizes.append(len(inputs))
+        return httpx.Response(200, json=_embed_body([[float(len(text))] for text in inputs]))
+
+    candidates = ["a" * n for n in range(1, 6)]
+    scores = _no_route_client(handler, batch_limit=2).rerank("", candidates)
+    assert sizes == [2, 2, 1]
+    assert scores == [float(len(f"{_RERANK_PAIR_SEPARATOR}{c}")) for c in candidates]
+
+
+def test_rerank_with_route_refuses_an_answer_missing_a_candidate() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"index": 0, "score": 0.1}, {"index": 0, "score": 0.2}])
+
+    with pytest.raises(ProviderError, match="one score for each of the 2 candidates"):
+        _no_route_client(handler, rerank_path="/rerank").rerank("q", ["alpha", "beta"])
+
+
+def test_rerank_with_route_and_no_candidates_sends_nothing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request expected")
+
+    assert _no_route_client(handler, rerank_path="/rerank").rerank("q", []) == []
+
+
+def test_llama_profile_keeps_tokenize_routes_and_has_no_rerank_route() -> None:
+    profile = LLAMA.request_profile(WorkerRole.RERANK)
+    assert (profile.tokenize_path, profile.detokenize_path) == ("/tokenize", "/detokenize")
+    assert profile.rerank_path is None

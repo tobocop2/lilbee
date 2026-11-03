@@ -161,6 +161,44 @@ def nvml_device_totals() -> list[tuple[str, int]] | None:
     return found or None
 
 
+@dataclass(frozen=True)
+class CardMemory:
+    """The memory of one NVIDIA card, as the driver reports it now."""
+
+    uuid: str
+    name: str
+    total_bytes: int
+    free_bytes: int
+
+
+def read_card_memory() -> list[CardMemory]:
+    """Each NVIDIA card in driver order, in this process; empty on any NVML failure."""
+    try:
+        nvml = _open_nvml()
+    except Exception:
+        return []
+    if nvml is None:
+        return []
+    try:
+        cards = []
+        for i in range(nvml.nvmlDeviceGetCount()):
+            handle = nvml.nvmlDeviceGetHandleByIndex(i)
+            memory = nvml.nvmlDeviceGetMemoryInfo(handle)
+            cards.append(
+                CardMemory(
+                    uuid=_decoded(nvml.nvmlDeviceGetUUID(handle)),
+                    name=_decoded(nvml.nvmlDeviceGetName(handle)),
+                    total_bytes=int(memory.total),
+                    free_bytes=int(memory.free),
+                )
+            )
+    except Exception:
+        return []
+    finally:
+        _close_nvml(nvml)
+    return cards
+
+
 def _read_or_none(read: Callable[[], T]) -> T | None:
     """The value ``read`` returns, or ``None`` when the driver or binding fails the call."""
     try:

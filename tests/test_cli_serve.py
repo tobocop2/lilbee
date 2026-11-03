@@ -34,6 +34,12 @@ def _no_locks_available() -> OSError:
 
 
 @pytest.fixture(autouse=True)
+def _no_exit_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop an in-process server run from ending this process 60 s later."""
+    monkeypatch.setattr("lilbee.cli.commands.servers.arm_exit_deadline", lambda _seconds: None)
+
+
+@pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
     # CI sets LILBEE_DATA at workflow level; clear it so the token command's
     # apply_overrides() does not clobber cfg.data_dir during invocation.
@@ -259,7 +265,7 @@ class TestRunServer:
     def test_registers_exit_hook_while_serving(self):
         """The shutdown route stops this loop; the hook clears on the way out."""
         from lilbee.app.services import request_server_exit
-        from lilbee.cli.commands.servers import _run_server
+        from lilbee.cli.commands.servers import _HARD_EXIT_GRACE_S, _run_server
 
         fake_server_obj = mock.MagicMock()
         fake_server_obj.servers = []
@@ -272,8 +278,8 @@ class TestRunServer:
             seen.append(request_server_exit())
 
         fake_server_obj.main_loop = capture_hook
-        in_flight = mock.MagicMock()
-        fake_server_obj.server_state.tasks = {in_flight}
+        full_grace = _HARD_EXIT_GRACE_S + 1
+        fake_server_obj.config.timeout_graceful_shutdown = full_grace
         fake_config = mock.MagicMock()
 
         status = asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
@@ -282,19 +288,17 @@ class TestRunServer:
         assert fake_server_obj.should_exit is True
         assert request_server_exit() is False
         assert status == 0
-        in_flight.cancel.assert_not_called()
+        assert fake_server_obj.config.timeout_graceful_shutdown == full_grace
 
-    def test_a_hard_exit_ends_the_responses_in_flight_and_returns_its_status(self):
+    def test_a_hard_exit_cuts_the_wait_for_responses_and_returns_its_status(self):
         """The twin of the test above, where a plain request waits for them and returns 0."""
         from lilbee.app.services import request_server_exit
-        from lilbee.cli.commands.servers import _run_server
+        from lilbee.cli.commands.servers import _HARD_EXIT_GRACE_S, _run_server
 
         fake_server_obj = mock.MagicMock()
         fake_server_obj.servers = []
         fake_server_obj.startup = mock.AsyncMock()
         fake_server_obj.shutdown = mock.AsyncMock()
-        in_flight = mock.MagicMock()
-        fake_server_obj.server_state.tasks = {in_flight}
 
         async def hard_exit() -> None:
             assert request_server_exit(143) is True
@@ -306,7 +310,7 @@ class TestRunServer:
 
         assert status == 143
         assert fake_server_obj.should_exit is True
-        in_flight.cancel.assert_called_once_with()
+        assert fake_server_obj.config.timeout_graceful_shutdown == _HARD_EXIT_GRACE_S
         fake_server_obj.shutdown.assert_awaited_once()
 
     def test_loads_config_when_not_loaded(self):
@@ -694,3 +698,17 @@ class TestServeHoldsLocksThroughTeardown:
         reacquired = acquire_server_lock(cfg.data_dir, timeout=0.05)
         assert reacquired is not None
         reacquired.release()
+
+
+def test_the_shutdown_answers_the_callers_that_wait_on_the_provider() -> None:
+    from lilbee.cli.commands.servers import _run_server
+
+    fake_server = mock.MagicMock()
+    fake_server.servers = []
+    fake_server.startup = mock.AsyncMock()
+    fake_server.main_loop = mock.AsyncMock()
+    fake_server.shutdown = mock.AsyncMock()
+    services = mock.MagicMock()
+    with mock.patch("lilbee.app.services.peek_services", return_value=services):
+        asyncio.run(_run_server(fake_server, mock.MagicMock(), "127.0.0.1"))
+    services.provider.stop_waiting.assert_called_once_with()

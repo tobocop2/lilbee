@@ -155,6 +155,7 @@ class ProviderErrorKind(StrEnum):
     SERVER = "server"
     CAPACITY = "capacity"
     PORT_CONFLICT = "port_conflict"
+    STARTING = "starting"
     UNKNOWN = "unknown"
 
 
@@ -520,6 +521,10 @@ class LLMProvider(Protocol):
     def shutdown(self) -> None:
         """Release resources (e.g. background threads). No-op if nothing to clean up."""
         ...
+
+    def stop_waiting(self) -> None:
+        """Answer the callers that wait on this provider's work now. No-op default."""
+        return
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """Drop loaded-model state; ``None`` evicts all, else only that path. No-op default."""

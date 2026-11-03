@@ -6,12 +6,14 @@ import asyncio
 import contextlib
 import logging
 import os
+import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
 from lilbee.app.services import (
+    answer_provider_waiters,
     exit_after_signal,
     report_library_upgrade,
     set_server_exit_hook,
@@ -24,6 +26,7 @@ from lilbee.cli.app import (
     global_option,
 )
 from lilbee.cli.commands.serve_logging import (
+    arm_exit_deadline,
     install_health_access_filter,
     setup_server_logging,
 )
@@ -52,6 +55,15 @@ Distinct from a generic failure so a supervisor can tell "another server owns
 this" apart from a crash without parsing output.
 """
 
+_EXIT_DEADLINE_S = 60.0
+"""Seconds from the start of shutdown until the process ends, whatever holds it."""
+
+_GRACEFUL_SHUTDOWN_S = 10
+"""Seconds open requests get before uvicorn cancels them and runs the lifespan teardown."""
+
+_HARD_EXIT_GRACE_S = 1
+"""The same wait on SIGTERM or SIGHUP: long enough for a woken write to send its answer."""
+
 
 def port_file() -> Path:
     """Path to the running server's port file under ``cfg.data_dir``."""
@@ -68,23 +80,17 @@ def _log_loop_exception(_loop: asyncio.AbstractEventLoop, context: dict[str, obj
 
 
 class _ExitRequest:
-    """The exit a serving loop was asked for; a nonzero status ends the responses in flight."""
+    """The exit a serving loop was asked for; a nonzero status cuts the wait for responses."""
 
-    def __init__(self, server: uvicorn.Server, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, server: uvicorn.Server) -> None:
         self.status = 0
         self._server = server
-        self._loop = loop
-
-    def _cancel_responses(self) -> None:
-        for task in self._server.server_state.tasks:
-            task.cancel()
 
     def __call__(self, status: int) -> None:
         self.status = status
-        self._server.should_exit = True
         if status:
-            # A signal handler calls this, so the loop runs the cancel itself.
-            self._loop.call_soon_threadsafe(self._cancel_responses)
+            self._server.config.timeout_graceful_shutdown = _HARD_EXIT_GRACE_S
+        self._server.should_exit = True
 
 
 async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str) -> int:
@@ -101,7 +107,7 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     def _cleanup_port_file() -> None:
         port_path.unlink(missing_ok=True)
 
-    exit_request = _ExitRequest(server, loop)
+    exit_request = _ExitRequest(server)
 
     if not config.loaded:
         config.load()
@@ -134,6 +140,8 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
             console.print(f"Listening on http://{host}:{actual_port}")
         await server.main_loop()
     finally:
+        arm_exit_deadline(_EXIT_DEADLINE_S)
+        answer_provider_waiters()
         set_server_exit_hook(None)
         if parent_watcher is not None and not parent_watcher.done():
             parent_watcher.cancel()
@@ -217,8 +225,15 @@ def serve(
     try:
         app = create_app()
         install_health_access_filter()
-        config = uvicorn.Config(app, host=cfg.server_host, port=cfg.server_port)
+        config = uvicorn.Config(
+            app,
+            host=cfg.server_host,
+            port=cfg.server_port,
+            timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_S,
+        )
         server = uvicorn.Server(config)
+        # asyncio takes over Ctrl-C only from this handler; a launch may have set an ignore.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
         raise typer.Exit(asyncio.run(_run_server(server, config, cfg.server_host)))
     finally:
         # A signal-driven shutdown stops the fleet on its own thread; hold the

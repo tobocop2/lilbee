@@ -36,7 +36,7 @@ from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from tests._fleet_engines import engines_for_all_roles
-from tests.conformance.fake_adapter import FakeAdapter
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 SPY_META = {"architecture": "spyarch", "context_length": "4096", "expert_count": "8"}
 SPY_ENV = {"SPY_RUNTIME": "1"}
@@ -50,7 +50,7 @@ def _mixed_book(spy: Any) -> dict[WorkerRole, Any]:
     return {**engines_for_all_roles(LLAMA), WorkerRole.CHAT: spy}
 
 
-class SpyEngine(FakeAdapter):
+class SpyEngine(BundledFakeAdapter):
     """An engine that answers every member with a value llama.cpp never returns."""
 
     name = "spy-engine"
@@ -255,7 +255,6 @@ class TestPlansAskTheEngine:
         monkeypatch.setattr(cfg, "chat_model", "org/repo/spy.gguf")
         plan = planning.plan_launches(
             (WorkerRole.CHAT,),
-            spy.binary(),
             {SPY_DEVICE.index: SPY_DEVICE},
             [SPY_DEVICE],
             engines=engines_for_all_roles(spy),
@@ -624,7 +623,7 @@ class TestProvider:
         seen = self._record_engine_use(monkeypatch, spy, model_file, tmp_path)
         provider = FleetProvider()
         assert provider._plan_and_spawn(tmp_path)
-        assert seen["probe"] == [spy]
+        assert seen["probe"] == [_mixed_book(spy)]
         assert seen["plan"] == [_mixed_book(spy)]
         assert seen["swap"] == [_mixed_book(spy)]
 
@@ -636,8 +635,10 @@ class TestProvider:
         monkeypatch.setattr(provider, "_reload_dir", lambda: tmp_path)
         monkeypatch.setattr(provider, "_preload_restarted", lambda restarted: None)
         provider._reload_pass()
-        assert seen["refresh"] == [spy]
-        assert seen["probe"] == [spy]  # nothing was running, so the reload re-captures the box
+        assert seen["refresh"] == [_mixed_book(spy)]
+        assert seen["probe"] == [
+            _mixed_book(spy)
+        ]  # nothing was running, so the reload re-captures the box
         assert seen["plan"] == [_mixed_book(spy)]
         assert seen["swap"] == [_mixed_book(spy)]
 
