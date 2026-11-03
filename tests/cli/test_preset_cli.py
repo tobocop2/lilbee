@@ -168,7 +168,7 @@ class TestHuman:
     def test_the_list_table_shows_name_url_roles_wire_and_key_state(self):
         _seed()
         runner.invoke(app, ["preset", "add", "rr", OTHER, "--roles", "rerank", "--wire", "tei"])
-        result = runner.invoke(app, ["preset", "list"], terminal_width=120)
+        result = runner.invoke(app, ["preset", "list"], env={"COLUMNS": "120"})
         assert result.exit_code == 0
         rows = {
             line.split("│")[1].strip(): line for line in result.output.splitlines() if "│" in line
@@ -182,7 +182,7 @@ class TestHuman:
 
     def test_the_wire_shows_a_dash_without_the_rerank_role(self):
         runner.invoke(app, ["preset", "add", "c", LOCAL, "--roles", "chat", "--wire", "tei"])
-        result = runner.invoke(app, ["preset", "list"], terminal_width=120)
+        result = runner.invoke(app, ["preset", "list"], env={"COLUMNS": "120"})
         row = next(line for line in result.output.splitlines() if "│ c " in line)
         assert "tei" not in row
 
@@ -192,7 +192,7 @@ class TestHuman:
             "server_presets",
             json.dumps([{"name": "bad", "url": "ftp://x.test/", "roles": ["chat"]}]),
         )
-        result = runner.invoke(app, ["preset", "list"], terminal_width=120)
+        result = runner.invoke(app, ["preset", "list"], env={"COLUMNS": "120"})
         assert "(invalid)" in result.output
 
     def test_add_edit_and_remove_say_what_they_did(self):
@@ -258,7 +258,7 @@ class TestReserve:
         runner.invoke(app, ["preset", "add", "omlx", LOCAL, "--roles", "chat", "--reserve", "8"])
         runner.invoke(app, ["preset", "add", "far", OTHER, "--roles", "chat"])
         runner.invoke(app, ["preset", "edit", "far", "--reserve", "2.5"])
-        result = runner.invoke(app, ["preset", "list"], terminal_width=140)
+        result = runner.invoke(app, ["preset", "list"], env={"COLUMNS": "140"})
         rows = {
             line.split("│")[1].strip(): line for line in result.output.splitlines() if "│" in line
         }
@@ -268,7 +268,7 @@ class TestReserve:
 
     def test_a_preset_without_a_reserve_shows_a_dash(self):
         runner.invoke(app, ["preset", "add", "c", LOCAL, "--roles", "chat"])
-        result = runner.invoke(app, ["preset", "list"], terminal_width=140)
+        result = runner.invoke(app, ["preset", "list"], env={"COLUMNS": "140"})
         row = next(line for line in result.output.splitlines() if "│ c " in line)
         assert "GiB" not in row
 
@@ -289,7 +289,7 @@ class TestReserve:
             app, ["preset", "add", "far", REMOTE, "--roles", "chat", "--reserve", "8"]
         )
         edit = runner.invoke(app, ["preset", "edit", "far", "--reserve", "4"])
-        listing = runner.invoke(app, ["preset", "list"], terminal_width=200)
+        listing = runner.invoke(app, ["preset", "list"], env={"COLUMNS": "200"})
         for output in (add.output, edit.output, listing.output):
             assert "no effect" in " ".join(output.split())
 
@@ -297,7 +297,7 @@ class TestReserve:
         add = runner.invoke(
             app, ["preset", "add", "omlx", LOCAL, "--roles", "chat", "--reserve", "8"]
         )
-        listing = runner.invoke(app, ["preset", "list"], terminal_width=200)
+        listing = runner.invoke(app, ["preset", "list"], env={"COLUMNS": "200"})
         assert "no effect" not in add.output + listing.output
 
     def test_an_out_of_range_reserve_is_refused(self):

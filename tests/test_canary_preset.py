@@ -105,7 +105,7 @@ class TestPresetTrigger:
     def test_a_login_and_a_query_in_the_url_stay_out_of_the_trigger(self, registry):
         entry = {
             "name": "srv",
-            "url": "http://user:hunter2@10.0.0.7:9000/v1?token=abc#frag",
+            "url": "http://user:hunter2@10.0.0.7:9000/v1?token=querysecret#frag",
             "roles": ["embed"],
         }
         settings.set_value(cfg.data_root, "server_presets", json.dumps([entry]))
@@ -115,7 +115,7 @@ class TestPresetTrigger:
         assert trigger is not None
         assert trigger.endswith(f":srv@{URL_A}:{MODEL}")
         assert "hunter2" not in trigger
-        assert "abc" not in trigger
+        assert "querysecret" not in trigger
 
     def test_a_preset_removed_between_the_parse_and_the_read_names_no_embedder(self, registry):
         presets.add_preset("srv", URL_A, roles=["embed"])
