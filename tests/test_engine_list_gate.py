@@ -56,6 +56,7 @@ def _install_mlx_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     mac = mac_host("Darwin", "arm64", "15.2")
+    monkeypatch.setattr(engine_service, "session_host", lambda: mac)
     monkeypatch.setattr(runnable, "session_host", lambda: mac)
     sha = make_pack(tmp_path / "pack.whl")
     publish(monkeypatch, EngineName.MLX, sha)
