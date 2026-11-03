@@ -188,7 +188,7 @@ def test_skills_installs_are_global(doc):
 
 @pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
 def test_install_docs_name_the_node_version_skills_needs(doc):
-    assert "Node 22 or later" in doc.read_text(encoding="utf-8")
+    assert "The `npx skills` commands need Node 22.20 or later." in doc.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
