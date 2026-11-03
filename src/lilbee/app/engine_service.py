@@ -374,7 +374,7 @@ def install(
             raise EngineRefusedError(
                 f"Engine {name} ships with lilbee. There is nothing to install."
             )
-        return _install_llama_pack(wheel)
+        return _install_llama_pack(wheel, on_update, on_retry, cancel)
     host = refresh_session_host()
     gate = adapter.host_gate(host)
     if not gate.ok:
@@ -424,13 +424,23 @@ def _pack_installable() -> bool:
     return False
 
 
-def _install_llama_pack(wheel: Path | None) -> InstalledBuild:
+def _install_llama_pack(
+    wheel: Path | None,
+    on_update: Callable[[DownloadProgress], None] | None,
+    on_retry: Callable[[str], None] | None,
+    cancel: CancelSignal | None,
+) -> InstalledBuild:
     """Install the llama.cpp pack through the store, as a first use does."""
     from lilbee.providers.fleet import first_use
 
     refresh_session_host()
     try:
-        lock = first_use.install_pack(wheel)
+        lock = first_use.install_pack(
+            wheel,
+            on_progress=make_download_callback(on_update) if on_update is not None else None,
+            on_retry=_retry_reporter(on_retry),
+            cancel=cancel,
+        )
     except first_use.INSTALL_REFUSALS as exc:
         raise EngineRefusedError(str(exc)) from exc
     except _UNREADABLE_WHEEL as exc:

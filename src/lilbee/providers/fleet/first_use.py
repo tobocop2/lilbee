@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lilbee.catalog.download import RetryCallback
+from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.catalog.runnable import session_host
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError, file_lock
@@ -25,6 +27,7 @@ from lilbee.providers.fleet.engine_store import (
 )
 from lilbee.providers.fleet.engines.choice import pin_lock
 from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.runtime.cancellation import CancelSignal
 
 _FIRST_USE_LOCK_S = 1800.0
 _TOOL_SUFFIXES = ("", ".exe")
@@ -86,11 +89,18 @@ def installed_tool(tool: str) -> Path | None:
     return None
 
 
-def install_pack(wheel: Path | None = None) -> PinLock:
+def install_pack(
+    wheel: Path | None = None,
+    *,
+    on_progress: ProgressCallback | None = None,
+    on_retry: RetryCallback | None = None,
+    cancel: CancelSignal | None = None,
+) -> PinLock:
     """Install the llama.cpp pack once; a second caller waits and finds it installed.
 
     The download runs under one lock per engine, so two first uses fetch the wheel once.
-    A pack copied into the packs folder by hand is used with no download.
+    A pack copied into the packs folder by hand is used with no download. *on_progress*
+    hears the bytes, *on_retry* each failed attempt, and a set *cancel* ends the download.
     """
     lock, cell = pack_lock()
     store = _store()
@@ -98,7 +108,17 @@ def install_pack(wheel: Path | None = None) -> PinLock:
         if wheel is not None:
             store.install_from_wheel(lock, wheel)
         else:
-            store.ensure(lock, lambda pin, scratch: fetch_frozen(pin, cell, dest=scratch))
+            store.ensure(
+                lock,
+                lambda pin, scratch: fetch_frozen(
+                    pin,
+                    cell,
+                    dest=scratch,
+                    on_progress=on_progress,
+                    on_retry=on_retry,
+                    cancel=cancel,
+                ),
+            )
     return lock
 
 
