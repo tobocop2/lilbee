@@ -15,6 +15,7 @@ from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress.columns import literal_text_column
 
@@ -290,10 +291,11 @@ def list_installed_models() -> list[str]:
     tree never reads as "no chat model is installed". An unusable remote
     server only drops its own names.
     """
-    names: list[str] = []
     registry = ModelRegistry(cfg.models_dir)
-    for manifest in registry.list_installed():
-        if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT:
-            names.append(manifest.ref)
+    names = loadable_refs(
+        manifest.ref
+        for manifest in registry.list_installed()
+        if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT
+    )
     names.extend(_remote_chat_model_names())
     return sorted(set(names))

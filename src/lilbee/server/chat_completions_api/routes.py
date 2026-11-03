@@ -20,6 +20,7 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ReasoningMode
+from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.model_ref import default_first
 from lilbee.retrieval.reasoning import effective_reasoning_cap
 from lilbee.server.auth import auth_checked_in_handler, session_manager
@@ -84,7 +85,8 @@ def _build_models_list_payload() -> ModelsListResponse:
     # concurrency instead of assuming the configured target.
     served_ctx = services.provider.served_chat_ctx()
     served_slots = services.provider.served_chat_slots()
-    installed = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
+    chat = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
+    installed = {ref: chat[ref] for ref in loadable_refs(chat)}
     # A remote or path-configured chat model has no registry entry but is still
     # listed, configured model first (the launcher's picker order).
     listed = with_configured_chat(sorted(installed), cfg.chat_model)
