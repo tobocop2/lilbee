@@ -1437,7 +1437,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        help_text="Path to a llama-server binary (empty: bundled wheel or PATH)",
+        help_text="llama-server path (empty: bundled wheel, PATH, then the engine pack)",
     ),
     "wiki_summary_max_tokens": SettingDef(
         int,

@@ -310,7 +310,10 @@ def test_an_engine_with_no_adapter_is_refused(monkeypatch: pytest.MonkeyPatch) -
         engine_service.install(ENGINE.value)
 
 
-def test_the_engine_in_the_package_is_refused() -> None:
+def test_the_engine_in_the_package_is_refused(tmp_path: Path) -> None:
+    server = tmp_path / "llama-server"
+    server.write_text("#!/bin/sh\n", encoding="utf-8")
+    cfg.llama_server_path = str(server)
     with pytest.raises(engine_service.EngineRefusedError, match="ships with lilbee"):
         engine_service.install(EngineName.LLAMA.value)
 

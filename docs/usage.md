@@ -1279,20 +1279,42 @@ Extras exist only on a `pip` or `uv` install. If you installed a bundled build
 (standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap, Scoop) all four
 are already inside it and none of this applies to you.
 
-`[engine]` is the `llama-server` that runs your models, and it is the one extra
-that is not really optional. `[graph]`, `[crawler]` and `[providers]` add
-capabilities you can happily live without.
+Run `lilbee engine install` to get the CPU `llama-server` that runs your models,
+or let lilbee install it the first time a model needs it. Engine packs publish
+with a later release; until then the `[engine]` extra is the route. For a GPU
+build, use the `[engine]` extra with the index for your hardware. `[graph]`,
+`[crawler]` and `[providers]` add capabilities you can happily live without.
 
 <details>
-<summary><strong>pip / uv: installing the engine extra</strong></summary>
+<summary><strong>pip / uv: installing the engine</strong></summary>
 
-`[engine]` is not on PyPI. The CUDA and ROCm wheels run 444 MiB to 863 MiB each,
+Install the engine with the `[engine]` extra, which works today. The index below
+is the CPU build; the other indexes are listed further down.
+
+```bash
+pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/
+```
+
+Packs publish with a later release. After that, the pack route is:
+
+```bash
+pip install --pre lilbee
+lilbee engine install
+```
+
+The command downloads the CPU pack into lilbee's engine cache and checks its
+digest. It installs no GPU build. Until a pack is published, it reports that the
+pack is not published. If you skip it, lilbee runs the same install the
+first time a model needs an engine. A computer with no network needs the pack
+copied into the `packs` folder of the engine cache by hand. The error from a
+failed download names the file to copy.
+
+**The `[engine]` extra.** It is the route until packs publish, and the route for GPU builds. It is not on PyPI. The CUDA and ROCm wheels
+run 444 MiB to 863 MiB each,
 several times [PyPI's default 100 MiB per-file limit](https://pypi.org/help/#file-size-limit),
 so every backend is published from lilbee's own
 [PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh`. That
-is what `--extra-index-url` is for. Install without it and lilbee still starts,
-but the first call that needs a model fails with an error naming the engine and
-repeating the command for your hardware.
+is what `--extra-index-url` is for.
 
 The builds are not interchangeable, so pick the index for your hardware: `cpu` is
 built with every GPU backend off, `metal` ships only a macOS arm64 wheel, and
@@ -1306,7 +1328,7 @@ pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/  
 pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/      # no GPU
 ```
 
-Use the `uv` form that matches how you installed lilbee. The error message picks it for you.
+Use the `uv` form that matches how you installed lilbee.
 Swap the index the same way as above.
 
 ```bash
@@ -1334,7 +1356,7 @@ uv tool install --prerelease=allow 'lilbee[crawler]'
 uv tool install --prerelease=allow 'lilbee[providers]'
 ```
 
-Install several at once, engine included:
+Install several at once, with the engine extra:
 
 ```bash
 # uv tool

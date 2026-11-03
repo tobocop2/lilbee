@@ -115,6 +115,19 @@ class LlamaCppAdapter:
             "licenses": ["MIT"],
         }
 
+    def pack_pin(self) -> Mapping[str, Any]:
+        """The pin of the llama.cpp pack for the first-use install; it names a cpu build."""
+        from lilbee.catalog.runnable import session_host
+        from lilbee.providers.fleet.engine_manifest import pack_digest
+
+        pin = dict(self.pin_record())
+        pin.update(
+            version=_WHEEL_VERSION,
+            backend=_PIN_WHEEL_BACKEND,
+            sha256=pack_digest(self.name.value, _WHEEL_VERSION, session_host(), _PIN_WHEEL_BACKEND),
+        )
+        return pin
+
     def role_spec(
         self, role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None
     ) -> RoleServerSpec:

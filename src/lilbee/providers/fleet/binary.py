@@ -27,6 +27,12 @@ class EngineTool(StrEnum):
     GGUF_PARSER = "gguf-parser"
 
 
+_HELPER_INSTALL = {
+    EngineTool.LLAMA_SWAP: "go install github.com/mostlygeek/llama-swap@latest",
+    EngineTool.GGUF_PARSER: "go install github.com/gpustack/gguf-parser-go/cmd/gguf-parser@latest",
+}
+"""The command that installs a helper tool next to a llama-server the user supplies."""
+
 _BUNDLED_ACCESSORS = {
     EngineTool.LLAMA_SERVER: "get_llama_server_path",
     EngineTool.LLAMA_SWAP: "get_llama_swap_path",
@@ -91,7 +97,21 @@ def engine_build_id() -> str:
     found = shutil.which(EngineTool.LLAMA_SERVER.value)
     if found is not None:
         return f"path:{found}@{_binary_signature(Path(found))}"
+    packed = _installed_pack_server()
+    if packed is not None:
+        return f"pack:{packed}@{_binary_signature(packed)}"
     return "unpinned"
+
+
+def _installed_pack_server() -> Path | None:
+    """The llama-server of the installed pack; total, because the pin runs on every state write."""
+    # circular: first_use -> engines.llama -> binary
+    from lilbee.providers.fleet import first_use
+
+    try:
+        return first_use.installed_tool(EngineTool.LLAMA_SERVER.value)
+    except (OSError, ValueError):
+        return None
 
 
 def _engine_wheel_version() -> str:
@@ -168,13 +188,15 @@ def _load_config_signature() -> str:
     return ";".join(f"{key}={getattr(cfg, key, None)}" for key in sorted(keys))
 
 
-def resolve_engine_tool(tool: EngineTool) -> Path:
-    """Resolve *tool*: configured llama-server path, then bundled wheel, then PATH.
+def resolve_engine_tool(tool: EngineTool, *, install: bool = True) -> Path:
+    """Resolve *tool*: configured llama-server path, then bundled wheel, then PATH, then the pack.
 
-    Never downloads anything; the binaries arrive via the bundled ``lilbee-engine-llama-cpp``
-    wheel or bring-your-own. Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH``
-    (an explicit setting beats the bundled wheel); the other tools resolve from the
-    wheel, then ``PATH``.
+    When none of those has the tool, the llama.cpp pack installs on first use (unless
+    *install* is false). A user who set their own llama-server (a configured path or one
+    on PATH) never gets a pack: a missing helper raises an error that names the helper and
+    the command that installs it. Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH``
+    (an explicit setting beats the bundled wheel); the other tools resolve from the wheel,
+    then ``PATH``.
     """
     if tool is EngineTool.LLAMA_SERVER:
         from lilbee.core.config import cfg
@@ -193,6 +215,18 @@ def resolve_engine_tool(tool: EngineTool) -> Path:
     if found is not None:
         return Path(found)
 
+    if tool is not EngineTool.LLAMA_SERVER and _uses_own_server():
+        raise ProviderError(
+            f"{tool.value} binary not found. lilbee uses your own llama-server, so it "
+            f"installs no engine pack. Install {tool.value} with '{_HELPER_INSTALL[tool]}' "
+            f"and put it on PATH.",
+            kind=ProviderErrorKind.UNKNOWN,
+        )
+
+    packed = _first_use_tool(tool) if install else None
+    if packed is not None:
+        return packed
+
     # Only llama-server carries NOT_FOUND: it marks the engine-less host that
     # legitimately serves nothing. A missing sibling tool (gguf-parser) must not
     # take that kind, or the sizing fallback would misreport it as a model that
@@ -203,6 +237,35 @@ def resolve_engine_tool(tool: EngineTool) -> Path:
         else ProviderErrorKind.UNKNOWN
     )
     raise ProviderError(f"{tool.value} binary not found. {engine_install_hint()}", kind=kind)
+
+
+def _uses_own_server() -> bool:
+    """True when the user set their own llama-server: a configured path or one on PATH."""
+    from lilbee.core.config import cfg
+
+    return bool(cfg.llama_server_path) or shutil.which(EngineTool.LLAMA_SERVER.value) is not None
+
+
+def _first_use_tool(tool: EngineTool) -> Path | None:
+    """The tool from the llama.cpp pack, installed on first use; raises when it cannot be.
+
+    Nothing is installed when the pack is not published, or when the install fails: the
+    error names the pack and the fix, and carries the kind of a missing engine.
+    """
+    # circular: first_use -> engines.llama -> binary
+    from lilbee.providers.fleet import first_use
+
+    try:
+        return first_use.first_use_tool(tool.value)
+    except first_use.INSTALL_REFUSALS as exc:
+        kind = (
+            ProviderErrorKind.NOT_FOUND
+            if tool is EngineTool.LLAMA_SERVER
+            else ProviderErrorKind.UNKNOWN
+        )
+        raise ProviderError(
+            f"{tool.value} binary not found. {exc} {engine_install_hint()}", kind=kind
+        ) from exc
 
 
 def resolve_llama_server() -> Path:

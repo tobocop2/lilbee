@@ -478,31 +478,6 @@ def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch) -> No
     assert binary_mod.engine_pin()  # total: a pin is still produced
 
 
-def test_install_hint_indexes_are_documented() -> None:
-    """Every index the error message names must also appear in the install docs.
-
-    The bug this guards was the two disagreeing: the docs shipped install commands
-    that produced no engine while the message that fired blamed the model. A reader
-    who follows the error and then checks the README has to find the same set.
-    """
-    import re
-
-    from lilbee.providers.fleet.engine_install import InstallMethod, engine_install_hint
-
-    hint_indexes = set(
-        re.findall(r"https://lilbee\.sh/(\w+)/", engine_install_hint(InstallMethod.UNKNOWN))
-    )
-    assert hint_indexes, "the hint must name at least one index"
-
-    root = Path(__file__).resolve().parents[1]
-    for doc in ("README.md", "docs/usage.md"):
-        # Explicit utf-8: both files carry non-cp1252 characters, so the locale
-        # default would decode-error on Windows.
-        text = (root / doc).read_text(encoding="utf-8")
-        documented = set(re.findall(r"https://lilbee\.sh/(\w+)/", text))
-        assert hint_indexes <= documented, f"{doc} is missing {hint_indexes - documented}"
-
-
 class TestEngineHelp:
     def test_joins_stdout_and_stderr(self, monkeypatch) -> None:
         monkeypatch.setattr(

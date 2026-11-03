@@ -1004,7 +1004,7 @@ def test_missing_engine_is_reported_as_a_missing_engine() -> None:
 
     message = str(caught.value)
     assert "llama-server" in message
-    assert "lilbee[engine]" in message
+    assert "lilbee engine install" in message
     assert "Make sure the embed model is installed" not in message
 
 
@@ -3021,7 +3021,7 @@ def test_warm_up_blocking_fails_with_the_engine_when_no_engine_resolves(monkeypa
     assert snap is not None
     assert snap.phase is WarmPhase.ERROR
     assert "llama-server binary not found" in (snap.error or "")
-    assert "lilbee[engine]" in (snap.error or "")
+    assert "lilbee engine install" in (snap.error or "")
 
 
 def test_a_chat_load_failure_warm_text_carries_the_clients_plain_line(monkeypatch) -> None:

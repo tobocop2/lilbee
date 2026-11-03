@@ -39,7 +39,7 @@ from lilbee.providers.fleet.engine_store import (
     launch_uses_engine,
 )
 from lilbee.providers.fleet.engines import choice
-from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
 from lilbee.providers.fleet.engines.choice import (
     AUTO,
     LIST_HINT,
@@ -313,12 +313,8 @@ def prefer(name: str, confirmed: bool = False) -> str:
     return setting.value
 
 
-def install(name: str, wheel: Path | None = None) -> InstalledBuild:
-    """Install the pinned build of engine *name* from *wheel*, a pack, or its release URL.
-
-    The host gate and the cell for this computer run first. The store checks the digest,
-    the licence and the files of the wheel and writes the record.
-    """
+def _installable(name: str) -> EngineAdapter:
+    """The adapter of the engine named *name*; refuses a name with no adapter."""
     try:
         engine = EngineName(name)
     except ValueError:
@@ -328,8 +324,22 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         raise EngineRefusedError(
             f"Engine {name} has no build to install in this version of lilbee."
         )
+    return adapter
+
+
+def install(name: str, wheel: Path | None = None) -> InstalledBuild:
+    """Install the pinned build of engine *name* from *wheel*, a pack, or its release URL.
+
+    The host gate and the cell for this computer run first. The store checks the digest,
+    the licence and the files of the wheel and writes the record.
+    """
+    adapter = _installable(name)
     if adapter.bundled:
-        raise EngineRefusedError(f"Engine {name} ships with lilbee. There is nothing to install.")
+        if not _pack_installable():
+            raise EngineRefusedError(
+                f"Engine {name} ships with lilbee. There is nothing to install."
+            )
+        return _install_llama_pack(wheel)
     host = refresh_session_host()
     gate = adapter.host_gate(host)
     if not gate.ok:
@@ -356,6 +366,31 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
     except _UNREADABLE_WHEEL as exc:
         raise EngineRefusedError(f"Engine {name} was not installed: {exc}") from exc
     return InstalledBuild(lock.engine, lock.version, lock.backend, gate.reason)
+
+
+def _pack_installable() -> bool:
+    """True on a computer where no wheel, path or PATH entry supplies llama.cpp."""
+    from lilbee.providers.fleet.binary import EngineTool, resolve_engine_tool
+
+    try:
+        resolve_engine_tool(EngineTool.LLAMA_SERVER, install=False)
+    except ProviderError:
+        return True
+    return False
+
+
+def _install_llama_pack(wheel: Path | None) -> InstalledBuild:
+    """Install the llama.cpp pack through the store, as a first use does."""
+    from lilbee.providers.fleet import first_use
+
+    refresh_session_host()
+    try:
+        lock = first_use.install_pack(wheel)
+    except first_use.INSTALL_REFUSALS as exc:
+        raise EngineRefusedError(str(exc)) from exc
+    except _UNREADABLE_WHEEL as exc:
+        raise EngineRefusedError(f"Engine {EngineName.LLAMA} was not installed: {exc}") from exc
+    return InstalledBuild(lock.engine, lock.version, lock.backend, "")
 
 
 def http_refused_message() -> str:
