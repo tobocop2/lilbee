@@ -78,6 +78,7 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
     # Passes through: the text names the model and the fix, and holds no engine path.
     ProviderErrorKind.MODEL_FILE_BROKEN: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.CPU_UNSUPPORTED: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.MISSING_LIBRARY: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.STARTING: (503, CompletionsErrorCode.INTERNAL_ERROR),
 }
 
@@ -93,6 +94,7 @@ _INFRASTRUCTURE_KINDS = frozenset(
         ProviderErrorKind.CAPACITY,
         ProviderErrorKind.PORT_CONFLICT,
         ProviderErrorKind.CPU_UNSUPPORTED,
+        ProviderErrorKind.MISSING_LIBRARY,
     }
 )
 

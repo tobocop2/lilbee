@@ -170,6 +170,7 @@ class ProviderErrorKind(StrEnum):
     PORT_CONFLICT = "port_conflict"
     MODEL_FILE_BROKEN = "model_file_broken"
     CPU_UNSUPPORTED = "cpu_unsupported"
+    MISSING_LIBRARY = "missing_library"
     STARTING = "starting"
     UNKNOWN = "unknown"
 
