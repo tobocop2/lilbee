@@ -60,6 +60,7 @@ class LaunchRequest:
     fit_target_mib: tuple[int, ...] = ()
     kv_unified_per_slot: int | None = None
     target: RoleTarget = RoleTarget.GPU
+    replica: int = 0
 
 
 @dataclass(frozen=True)
