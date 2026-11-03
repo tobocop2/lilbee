@@ -294,6 +294,15 @@ def _offered(adapter: EngineAdapter) -> bool:
     return adapter.bundled or choice.install_answer(adapter, session_host()).ok
 
 
+def offered_engines() -> choice.InstalledEngines:
+    """The installed engines that the host gate lets this host run: the ones a surface may offer."""
+    return {
+        name: formats
+        for name, formats in installed_engines().items()
+        if choice.host_answer(name, session_host).ok
+    }
+
+
 def not_installed() -> list[str]:
     """The names of the engines with no installed build that the host gate lets this host run."""
     installed = installed_engines()
@@ -313,7 +322,7 @@ def not_installed() -> list[str]:
 
 def engine_names(model: str) -> list[str]:
     """The names a surface may offer for *model*: ``auto`` and each engine that loads it."""
-    return [AUTO, *engines_loading(model_format(model), installed_engines())]
+    return [AUTO, *engines_loading(model_format(model), offered_engines())]
 
 
 def prefer(name: str, confirmed: bool = False) -> str:
@@ -323,7 +332,7 @@ def prefer(name: str, confirmed: bool = False) -> str:
     except ValueError:
         raise _unknown(name) from None
     if setting is not EngineSetting.AUTO:
-        _require_installed(EngineName(setting.value), installed_engines())
+        _require_installed(EngineName(setting.value), offered_engines())
     _check_embed_identity(cfg.model_copy(update={"preferred_engine": setting}), confirmed)
 
     def apply(_raw: object) -> tuple[str, str]:
@@ -510,7 +519,7 @@ def use(model: str, name: str, confirmed: bool = False) -> str:
         raise EngineRefusedError("Give the model to choose an engine for.")
     if name != AUTO:
         engine = _engine_name(name)
-        installed = installed_engines()
+        installed = offered_engines()
         _require_installed(engine, installed)
         fmt = model_format(model)
         if engine not in engines_loading(fmt, installed):

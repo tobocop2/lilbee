@@ -131,3 +131,43 @@ def test_an_installed_engine_leaves_the_not_installed_list(
 ) -> None:
     _install_mlx_build(monkeypatch, tmp_path)
     assert "mlx" not in engine_service.engine_list().not_installed
+
+
+def _installed_ik_llama(monkeypatch: pytest.MonkeyPatch, *, avx2: bool) -> None:
+    """An installed ik_llama.cpp build on a Linux x86_64 CPU with or without AVX2."""
+    from lilbee.providers.fleet.engines.base import EngineName
+    from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
+
+    flags = ["avx2"] if avx2 else ["sse4_2"]
+    host = collect(system="Linux", machine="x86_64", cpu_info={"flags": flags}, nvml=None)
+    monkeypatch.setattr(engine_service, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    monkeypatch.setattr(
+        engine_service, "installed_engines", lambda: {EngineName.IK_LLAMA: IK_LLAMA.formats}
+    )
+
+
+def test_the_picker_names_an_installed_engine_the_cpu_can_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _installed_ik_llama(monkeypatch, avx2=True)
+    assert "ik_llama.cpp" in engine_service.engine_names("org/repo.gguf")
+
+
+def test_the_picker_hides_an_installed_engine_the_cpu_cannot_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _installed_ik_llama(monkeypatch, avx2=False)
+    assert "ik_llama.cpp" not in engine_service.engine_names("org/repo.gguf")
+
+
+@pytest.mark.parametrize("choose", [engine_service.prefer, None], ids=["prefer", "use"])
+def test_an_engine_the_cpu_cannot_run_cannot_be_chosen(
+    monkeypatch: pytest.MonkeyPatch, choose: object
+) -> None:
+    _installed_ik_llama(monkeypatch, avx2=False)
+    with pytest.raises(engine_service.EngineRefusedError, match="not installed"):
+        if choose is None:
+            engine_service.use("org/repo.gguf", "ik_llama.cpp")
+        else:
+            engine_service.prefer("ik_llama.cpp")
