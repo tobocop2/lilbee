@@ -53,10 +53,33 @@ async def profiles_save_route(data: ProfileSaveRequest) -> ProfileSaveResponse:
     return await handlers.save_profile(data)
 
 
-@post("/api/profiles/discard", status_code=HTTP_200_OK)
-async def profiles_discard_route() -> ProfileDiscardResponse:
-    """Remove your settings of profile keys so the profile's values show through."""
-    return await handlers.discard_changes()
+@post(
+    "/api/profiles/discard",
+    status_code=HTTP_200_OK,
+    media_type=SSE_MEDIA_TYPE,
+    responses={
+        HTTP_200_OK: ResponseSpec(
+            data_container=ProfileDiscardResponse,
+            media_type=MediaType.JSON,
+            description="The discard; with ?reindex=true, the /api/sync SSE events instead",
+            generate_examples=False,
+        )
+    },
+)
+async def profiles_discard_route(
+    reindex: FromQuery[bool] = False,
+) -> Response[ProfileDiscardResponse] | Stream:
+    """Remove your settings of profile keys so the profile's values show through.
+
+    ``?reindex=true`` also rebuilds the index when the discard needs it, as
+    ``lilbee profile discard --reindex`` does, and answers with the ``/api/sync``
+    SSE events. The done event carries the discard and ``rebuild``, the sync
+    result or null when no rebuild was needed.
+    """
+    discarded = await handlers.discard_changes()
+    if not reindex:
+        return Response(discarded, media_type=MediaType.JSON)
+    return Stream(handlers.rebuild_after_discard_stream(discarded))
 
 
 @post("/api/profiles/new", status_code=HTTP_200_OK)

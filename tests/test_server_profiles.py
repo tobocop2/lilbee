@@ -263,6 +263,44 @@ def test_discard_of_a_setting_that_needs_no_rebuild_reports_no_reindex(client):
     }
 
 
+def test_discard_with_reindex_discards_then_streams_the_rebuild_to_its_result(client, monkeypatch):
+    cfg.data_root.mkdir(parents=True)
+    (cfg.data_root / "config.toml").write_text("chunk_size = 700\n", encoding="utf-8")
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    resp = client.post("/api/profiles/discard?reindex=true")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert _stored() == {}
+    assert [(c["force_rebuild"], c["started_by"]) for c in calls] == [(True, "lilbee serve")]
+    event, done = _frames(resp.text)[-1]
+    assert event == "done"
+    assert (done["dropped"], done["reindex_required"]) == (["chunk_size"], True)
+    assert done["rebuild"]["added"] == ["filing.pdf"]
+
+
+def test_discard_with_reindex_skips_the_rebuild_when_nothing_needs_it(client, monkeypatch):
+    cfg.data_root.mkdir(parents=True)
+    (cfg.data_root / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    resp = client.post("/api/profiles/discard?reindex=true")
+    assert calls == []
+    [(event, done)] = _frames(resp.text)
+    assert (event, done["dropped"], done["rebuild"]) == ("done", ["top_k"], None)
+
+
+def test_discard_without_reindex_only_discards_and_answers_json(client, monkeypatch):
+    cfg.data_root.mkdir(parents=True)
+    (cfg.data_root / "config.toml").write_text("chunk_size = 700\n", encoding="utf-8")
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    resp = client.post("/api/profiles/discard")
+    assert resp.headers["content-type"].startswith("application/json")
+    assert "rebuild" not in resp.json()
+    assert calls == []
+
+
 def test_discard_warns_when_it_leaves_ocr_off_with_a_vision_model(client):
     cfg.data_root.mkdir(parents=True)
     (cfg.data_root / "config.toml").write_text(

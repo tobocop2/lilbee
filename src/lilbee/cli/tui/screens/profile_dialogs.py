@@ -218,7 +218,7 @@ def run_profile_op(
 def switch_plan(profile: ProfileFile, diff: ProfileDiff) -> SwitchPlan:
     """The Apply dialog's plan for *profile*: its diff, your kept values, the files to rebuild."""
     reindex = any(row.effect is ProfileEffect.REINDEX for row in diff.changes)
-    rebuild = profiles.rebuild_reason(profile, reindex)
+    rebuild = profiles.rebuild_reason(profile.values, reindex)
     files = len(get_services().store.get_sources()) if reindex else 0
     kept = tuple((key, getattr(cfg, key)) for key in diff.kept)
     reapply = profile_key(profile.name) == profile_key(profiles.active(ProfileStore()).name)

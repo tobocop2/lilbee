@@ -18,7 +18,16 @@ from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Checkbox, DataTable, Footer, Input, Select, Static, TabbedContent
+from textual.widgets import (
+    Checkbox,
+    DataTable,
+    Footer,
+    Input,
+    Label,
+    Select,
+    Static,
+    TabbedContent,
+)
 
 from lilbee.app import profiles
 from lilbee.app.services import get_services
@@ -854,6 +863,25 @@ async def test_discarding_settings_that_need_no_rebuild_offers_none() -> None:
     rebuild.assert_not_called()
 
 
+async def test_discarding_with_a_held_out_file_offers_the_rebuild_and_says_why() -> None:
+    _write_global("legal-discovery", _LEGAL)
+    profiles.apply(ProfileStore(), "legal-discovery")
+    _set_yours("max_chunks_per_file = 2000\n")
+    held = {"long.md": HeldRecord(HeldOut.FAILED, "hash", "14 chunks exceed the limit")}
+    get_services().store.held_records.return_value = held
+    app = _SettingsApp()
+    with mock.patch.object(LilbeeAppHost, "start_rebuild") as rebuild:
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = await _loaded(app, pilot, "legal-discovery")
+            await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
+            dialog = await _dialog(app, pilot, ConfirmDialog)
+            message = dialog.query_one("#confirm-message", Label)
+            assert msg.PROFILE_APPLY_HELD_OUT in str(message.render())
+            await _press(pilot, dialog.query_one("#confirm-yes", ConfirmPill))
+            assert await _until(pilot, lambda: app.screen is screen)
+    assert rebuild.call_count == 1
+
+
 async def test_discard_toasts_the_warning_it_leaves_behind() -> None:
     _write_global("ocr-off", "[values]\nocr = 'off'\n")
     profiles.apply(ProfileStore(), "ocr-off")
@@ -1281,3 +1309,18 @@ def test_the_profile_pill_shows_its_enter_hint_in_the_footer() -> None:
 
     shown = {b.key: b.show for b in ProfileLinePill.BINDINGS if isinstance(b, Binding)}
     assert shown == {"enter": True, "space": False}
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (profiles.RebuildReason.HELD_OUT, msg.PROFILE_APPLY_HELD_OUT),
+        (profiles.RebuildReason.SETS_REINDEX, msg.PROFILE_APPLY_SETS_REINDEX),
+        (
+            profiles.RebuildReason.CHANGES,
+            msg.PROFILE_DISCARD_REINDEX_MESSAGE.format(name="mine"),
+        ),
+    ],
+)
+def test_the_discard_rebuild_question_says_why_for_each_reason(reason, expected):
+    assert msg.profile_discard_rebuild_text(reason, "mine") == expected

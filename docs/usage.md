@@ -1133,7 +1133,8 @@ document lifecycle, crawling, model management, memory
 profiles (`/api/profiles`: list, show, the active profile, diff, apply,
 and every profile file operation; `POST /api/profiles/{name}/apply?reindex=true`
 also rebuilds the index when the profile needs it, like
-`lilbee profile apply --reindex`, and streams the `/api/sync` events),
+`lilbee profile apply --reindex`, and streams the `/api/sync` events;
+`POST /api/profiles/discard?reindex=true` does the same for a discard),
 saved conversations (`/api/sessions`: list, read, create, append, fork,
 rename, delete, the compaction summary, and `GET /api/sessions/{id}/markdown`
 for a markdown export whose `Content-Disposition` header names the file),

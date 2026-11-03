@@ -387,8 +387,12 @@ def profile_discard(
     reindexed: int | None = None
     reindex_failed = 0
     reindex_error: str | None = None
-    if reindex and result.reindex_required:
-        reindexed, reindex_failed, reindex_error = _reindex()
+    if reindex:
+        # The store read below is the first services init of this command, and a
+        # rebuild never needs the chat model that init would warm.
+        cfg.worker_pool_eager_start = False
+        if profiles.rebuild_reason(result.dropped, result.reindex_required) is not None:
+            reindexed, reindex_failed, reindex_error = _reindex()
     if cfg.json_mode and reindex:
         json_output(_rebuild_json(result, reindexed, reindex_error, reindex_failed))
     else:

@@ -1396,15 +1396,28 @@ async def profile_apply(name: str, reindex: bool = False) -> dict[str, Any]:
 
 async def _rebuild_after_apply(applied: dict[str, Any]) -> dict[str, Any]:
     """The ``rebuild`` result an apply needs, with ``rebuild_error`` when it is refused."""
-    from lilbee.app.ingest import LIBRARY_REFUSALS
-    from lilbee.data.ingest import sync as run_sync
-
     needed = await asyncio.to_thread(
         profiles.apply_needs_rebuild,
         _profile_store(),
         applied["name"],
         applied["reindex_required"],
     )
+    return await _rebuild_when(needed)
+
+
+async def _rebuild_after_discard(discarded: dict[str, Any]) -> dict[str, Any]:
+    """The ``rebuild`` result a discard needs, with ``rebuild_error`` when it is refused."""
+    reason = await asyncio.to_thread(
+        profiles.rebuild_reason, discarded["dropped"], discarded["reindex_required"]
+    )
+    return await _rebuild_when(reason is not None)
+
+
+async def _rebuild_when(needed: bool) -> dict[str, Any]:
+    """A forced sync's ``rebuild`` result when *needed*, else null; ``rebuild_error`` if refused."""
+    from lilbee.app.ingest import LIBRARY_REFUSALS
+    from lilbee.data.ingest import sync as run_sync
+
     if not needed:
         return {"rebuild": None}
     with _cancel_token() as cancel:
@@ -1418,7 +1431,7 @@ async def _rebuild_after_apply(applied: dict[str, Any]) -> dict[str, Any]:
 
 
 @_tool_if(_profiles_enabled)
-def profile_manage(
+async def profile_manage(
     action: _ProfileActionChoice = "",
     name: str = "",
     new_name: str = "",
@@ -1427,10 +1440,12 @@ def profile_manage(
     filename: str = "",
     from_profile: str = "",
     overwrite: bool = False,
+    reindex: bool = False,
 ) -> dict[str, Any]:
     """Profile files: new, save (as name), update, discard, duplicate/rename (to new_name),
     delete, export (returns its content), import/validate (a file's content and its name).
-    ``folder``: global or project."""
+    ``folder``: global or project. ``reindex`` (discard only) also rebuilds the index when
+    the discard needs it and blocks until done: ``rebuild`` is the sync result, or null."""
     try:
         chosen = ProfileAction(action)
     except ValueError:
@@ -1439,7 +1454,12 @@ def profile_manage(
     args = _ManageArgs(name, new_name, folder, content, filename, from_profile, overwrite)
     if missing := _missing_manage_parameters(chosen, args):
         return _error(f"Action {chosen.value!r} needs: {', '.join(missing)}.")
-    return _profile_call(lambda: _MANAGE_ACTIONS[chosen](_profile_store(), args))
+    managed = await asyncio.to_thread(
+        _profile_call, lambda: _MANAGE_ACTIONS[chosen](_profile_store(), args)
+    )
+    if not reindex or chosen is not ProfileAction.DISCARD or "error" in managed:
+        return managed
+    return {**managed, **await _rebuild_after_discard(managed)}
 
 
 @_tool_if(_profiles_enabled)

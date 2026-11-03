@@ -166,62 +166,120 @@ async def test_show_of_the_active_profile_after_its_file_is_deleted_says_how_to_
 
 async def test_a_refusal_returns_the_core_message():
     assert await profile_apply("nope") == {"error": "No profile named 'nope'"}
-    assert profile_manage(ProfileAction.DELETE, name="Scanned archive") == {
+    assert await profile_manage(ProfileAction.DELETE, name="Scanned archive") == {
         "error": "Scanned archive ships with lilbee and cannot be changed; duplicate it instead"
     }
 
 
-def test_a_failed_file_write_returns_the_shared_message(monkeypatch):
+async def test_a_failed_file_write_returns_the_shared_message(monkeypatch):
     def fail(*_args, **_kwargs):
         raise PermissionError(13, "Permission denied", "/x/mine.toml")
 
     monkeypatch.setattr("lilbee.app.profiles.delete", fail)
-    assert profile_manage(ProfileAction.DELETE, name="mine") == {
+    assert await profile_manage(ProfileAction.DELETE, name="mine") == {
         "error": "Could not save the change: [Errno 13] Permission denied: '/x/mine.toml'"
     }
 
 
-def test_manage_new_save_update_and_discard():
-    wrote = profile_manage(ProfileAction.NEW, name="Short notes", from_profile="notes-and-markdown")
+async def test_manage_new_save_update_and_discard():
+    wrote = await profile_manage(
+        ProfileAction.NEW, name="Short notes", from_profile="notes-and-markdown"
+    )
     assert Path(wrote["path"]) == _global_dir() / "short-notes.toml"
     cfg.data_root.mkdir(parents=True, exist_ok=True)
     (cfg.data_root / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
-    saved = profile_manage(ProfileAction.SAVE, name="Mine", folder=ProfileFolder.PROJECT)
+    saved = await profile_manage(ProfileAction.SAVE, name="Mine", folder=ProfileFolder.PROJECT)
     assert (saved["folder"], saved["absorbed"]) == ("project", ["chunk_size"])
     config = cfg.data_root / "config.toml"
     config.write_text("top_k = 13\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
-    assert profile_manage(ProfileAction.UPDATE)["absorbed"] == ["top_k"]
+    assert (await profile_manage(ProfileAction.UPDATE))["absorbed"] == ["top_k"]
     config.write_text("top_k = 14\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
-    assert profile_manage(ProfileAction.DISCARD) == {
+    assert await profile_manage(ProfileAction.DISCARD) == {
         "dropped": ["top_k"],
         "reindex_required": False,
         "warnings": [],
     }
 
 
-def test_manage_update_refuses_a_name_that_is_not_the_active_profile():
-    result = profile_manage(ProfileAction.UPDATE, name="research-papers")
+async def test_manage_update_refuses_a_name_that_is_not_the_active_profile():
+    result = await profile_manage(ProfileAction.UPDATE, name="research-papers")
     assert "research-papers is not this project's profile" in result["error"]
 
 
-def test_manage_discard_of_a_reindex_setting_reports_the_reindex():
+async def test_manage_discard_of_a_reindex_setting_reports_the_reindex():
     cfg.data_root.mkdir(parents=True, exist_ok=True)
     (cfg.data_root / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
-    assert profile_manage(ProfileAction.DISCARD) == {
+    assert await profile_manage(ProfileAction.DISCARD) == {
         "dropped": ["chunk_size"],
         "reindex_required": True,
         "warnings": [],
     }
 
 
-def test_manage_discard_warns_when_it_leaves_ocr_off_with_a_vision_model():
+async def test_manage_discard_with_reindex_discards_then_returns_the_rebuild_result(monkeypatch):
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    (cfg.data_root / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    result = await profile_manage(ProfileAction.DISCARD, reindex=True)
+    assert "chunk_size" not in _stored()
+    assert [(c["force_rebuild"], c["started_by"]) for c in calls] == [(True, "lilbee mcp")]
+    assert (result["dropped"], result["reindex_required"]) == (["chunk_size"], True)
+    assert result["rebuild"]["added"] == ["filing.pdf"]
+
+
+async def test_manage_discard_with_reindex_skips_the_rebuild_when_nothing_needs_it(monkeypatch):
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    (cfg.data_root / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    result = await profile_manage(ProfileAction.DISCARD, reindex=True)
+    assert calls == []
+    assert (result["dropped"], result["rebuild"]) == (["top_k"], None)
+
+
+async def test_manage_discard_without_reindex_only_discards(monkeypatch):
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    (cfg.data_root / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    result = await profile_manage(ProfileAction.DISCARD)
+    assert result == {"dropped": ["chunk_size"], "reindex_required": True, "warnings": []}
+    assert calls == []
+
+
+async def test_manage_discard_with_reindex_reports_a_refused_rebuild(monkeypatch):
+    from lilbee.runtime.lock import LibraryUnlockableError
+
+    async def _refused(**_kwargs: Any) -> SyncResult:
+        raise LibraryUnlockableError("The library is locked.")
+
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    (cfg.data_root / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    monkeypatch.setattr("lilbee.data.ingest.sync", _refused)
+    result = await profile_manage(ProfileAction.DISCARD, reindex=True)
+    assert "chunk_size" not in _stored()
+    assert (result["rebuild"], result["rebuild_error"]) == (None, "The library is locked.")
+
+
+async def test_reindex_is_ignored_by_actions_other_than_discard(monkeypatch):
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    result = await profile_manage(
+        ProfileAction.DUPLICATE, name="Scanned archive", new_name="Copy", reindex=True
+    )
+    assert "rebuild" not in result
+    assert calls == []
+
+
+async def test_manage_discard_warns_when_it_leaves_ocr_off_with_a_vision_model():
     cfg.data_root.mkdir(parents=True, exist_ok=True)
     (cfg.data_root / "config.toml").write_text(
         "ocr = 'all'\n[profile.values]\nocr = 'off'\n", encoding="utf-8"
     )
     cfg.ocr = OcrMode.ALL
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-    result = profile_manage(ProfileAction.DISCARD)
+    result = await profile_manage(ProfileAction.DISCARD)
     assert len(result["warnings"]) == 1
     assert "ocr" in result["warnings"][0]
     assert cfg.ocr is OcrMode.OFF
@@ -235,16 +293,16 @@ async def test_apply_warns_when_it_leaves_ocr_off_with_a_vision_model():
     assert cfg.ocr is OcrMode.OFF
 
 
-def test_manage_save_and_update_warn_when_they_leave_ocr_off_with_a_vision_model():
+async def test_manage_save_and_update_warn_when_they_leave_ocr_off_with_a_vision_model():
     cfg.data_root.mkdir(parents=True, exist_ok=True)
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     (cfg.data_root / "config.toml").write_text("ocr = 'off'\n", encoding="utf-8")
-    saved = profile_manage(ProfileAction.SAVE, name="Mine", folder=ProfileFolder.PROJECT)
+    saved = await profile_manage(ProfileAction.SAVE, name="Mine", folder=ProfileFolder.PROJECT)
     assert len(saved["warnings"]) == 1
     assert "ocr" in saved["warnings"][0]
     config = cfg.data_root / "config.toml"
     config.write_text("top_k = 3\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
-    updated = profile_manage(ProfileAction.UPDATE)
+    updated = await profile_manage(ProfileAction.UPDATE)
     assert len(updated["warnings"]) == 1
     assert "ocr" in updated["warnings"][0]
 
@@ -263,30 +321,30 @@ def test_list_carries_your_changes_on_the_active_profile():
     ]
 
 
-def test_manage_duplicate_rename_and_delete():
-    dup = profile_manage(ProfileAction.DUPLICATE, name="Scanned archive", new_name="My scans")
+async def test_manage_duplicate_rename_and_delete():
+    dup = await profile_manage(ProfileAction.DUPLICATE, name="Scanned archive", new_name="My scans")
     assert Path(dup["path"]) == _global_dir() / "my-scans.toml"
-    renamed = profile_manage(ProfileAction.RENAME, name="my scans", new_name="Old scans")
+    renamed = await profile_manage(ProfileAction.RENAME, name="my scans", new_name="Old scans")
     assert Path(renamed["path"]) == _global_dir() / "old-scans.toml"
-    deleted = profile_manage(ProfileAction.DELETE, name="old scans")
+    deleted = await profile_manage(ProfileAction.DELETE, name="old scans")
     assert deleted["name"] == "Old scans"
     assert not (_global_dir() / "old-scans.toml").exists()
 
 
-def test_manage_export_import_and_validate_use_content_not_a_path():
+async def test_manage_export_import_and_validate_use_content_not_a_path():
     _write(_global_dir(), "court-filings", CREDITED)
-    exported = profile_manage(ProfileAction.EXPORT, name="Court filings")
+    exported = await profile_manage(ProfileAction.EXPORT, name="Court filings")
     assert exported["name"] == "Court filings"
     assert exported["folder"] == "global"
     assert exported["filename"] == "court-filings.toml"
-    imported = profile_manage(
+    imported = await profile_manage(
         ProfileAction.IMPORT,
         content=exported["content"],
         filename=exported["filename"],
         folder=ProfileFolder.PROJECT,
     )
     assert Path(imported["path"]) == cfg.data_root / PROFILES_DIRNAME / "court-filings.toml"
-    checked = profile_manage(
+    checked = await profile_manage(
         ProfileAction.VALIDATE,
         content=exported["content"],
         filename=exported["filename"],
@@ -295,10 +353,10 @@ def test_manage_export_import_and_validate_use_content_not_a_path():
     assert checked == {"name": "Court filings", "valid": True, "problems": []}
 
 
-def test_import_and_validate_never_read_a_filename_that_looks_like_a_host_path(tmp_path):
+async def test_import_and_validate_never_read_a_filename_that_looks_like_a_host_path(tmp_path):
     outside = tmp_path / "outside.toml"
     outside.write_text('[profile]\nname = "Not this"\n[values]\ntop_k = 99\n', encoding="utf-8")
-    imported = profile_manage(
+    imported = await profile_manage(
         ProfileAction.IMPORT,
         content="[values]\nchunk_size = 640\n",
         filename=str(outside),
@@ -309,24 +367,26 @@ def test_import_and_validate_never_read_a_filename_that_looks_like_a_host_path(t
     assert tomllib.loads(Path(imported["path"]).read_text(encoding="utf-8"))["values"] == {
         "chunk_size": 640
     }
-    checked = profile_manage(ProfileAction.VALIDATE, content="[values]\n", filename="/etc/passwd")
+    checked = await profile_manage(
+        ProfileAction.VALIDATE, content="[values]\n", filename="/etc/passwd"
+    )
     assert checked == {"name": "passwd", "valid": True, "problems": []}
     assert outside.read_text(encoding="utf-8").startswith('[profile]\nname = "Not this"')
 
 
-def test_import_without_content_is_refused():
-    result = profile_manage(ProfileAction.IMPORT, filename="fine.toml")
+async def test_import_without_content_is_refused():
+    result = await profile_manage(ProfileAction.IMPORT, filename="fine.toml")
     assert result == {"error": "Action 'import' needs: content."}
 
 
-def test_validate_without_content_names_the_missing_parameter():
-    result = profile_manage(ProfileAction.VALIDATE, filename="fine.toml")
+async def test_validate_without_content_names_the_missing_parameter():
+    result = await profile_manage(ProfileAction.VALIDATE, filename="fine.toml")
     assert result == {"error": "Action 'validate' needs: content."}
 
 
 @pytest.mark.parametrize("action", ["", "frobnicate"])
-def test_manage_refuses_a_missing_or_unknown_action_with_the_allowed_list(action):
-    result = profile_manage(action)
+async def test_manage_refuses_a_missing_or_unknown_action_with_the_allowed_list(action):
+    result = await profile_manage(action)
     assert result["error"].startswith(f"Unknown profile action {action!r}. Use one of: new, save,")
     assert result["error"].endswith("import, validate.")
     assert "validation error" not in result["error"]
@@ -343,7 +403,7 @@ _CALLS = {
     "profile_list": lambda: profile_list(),
     "profile_show": lambda: profile_show("Scanned archive"),
     "profile_apply": lambda: asyncio.run(profile_apply("Scanned archive", reindex=True)),
-    "profile_manage": lambda: profile_manage(ProfileAction.DISCARD),
+    "profile_manage": lambda: asyncio.run(profile_manage(ProfileAction.DISCARD, reindex=True)),
 }
 
 
@@ -369,8 +429,8 @@ async def test_the_tools_are_off_the_wire_by_default_and_on_when_enabled():
     assert sorted(actions) == sorted(a.value for a in ProfileAction)
 
 
-def test_manage_duplicate_writes_to_the_folder_it_names():
-    dup = profile_manage(
+async def test_manage_duplicate_writes_to_the_folder_it_names():
+    dup = await profile_manage(
         ProfileAction.DUPLICATE,
         name="Scanned archive",
         new_name="My scans",
@@ -393,6 +453,6 @@ def test_manage_duplicate_writes_to_the_folder_it_names():
         (ProfileAction.VALIDATE, {}, "content"),
     ],
 )
-def test_a_missing_parameter_is_named_in_the_refusal(action, args, missing):
-    result = profile_manage(action, **args)
+async def test_a_missing_parameter_is_named_in_the_refusal(action, args, missing):
+    result = await profile_manage(action, **args)
     assert result == {"error": f"Action {action.value!r} needs: {missing}."}
