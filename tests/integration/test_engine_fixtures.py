@@ -14,9 +14,9 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.factory import sdk_library
 from tests.conformance.preset_check import (
-    ENGINE_FIXTURES,
     Exchange,
     configured,
+    harness_recordings,
     load_fixture,
     replaying,
     run_steps,
@@ -26,7 +26,7 @@ from tests.conformance.preset_check import (
 # The replay drives the real provider; a missing library fails the import.
 importlib.import_module(sdk_library().module)
 
-_FILES = sorted(ENGINE_FIXTURES.glob("**/*.json"))
+_FILES = harness_recordings()
 
 
 @pytest.mark.parametrize("path", _FILES, ids=lambda path: path.stem)

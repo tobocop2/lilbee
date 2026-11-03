@@ -1,0 +1,43 @@
+{
+ "exchanges": [
+  {
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Rome.\",\"reasoning_content\":\"Okay, the user first asked about the capital of France, and I correctly replied with Paris. Now they're asking about Italy. I need to make sure my answer is accurate and concise. The capital of Italy is Rome. I should double-check that to avoid any mistakes. Since the user is likely looking for a quick answer, keeping it simple and direct is best. No need for extra details. Just state Rome.\\n\"}}],\"created\":1793741750,\"model\":\"/home/tobias/f3/models/Qwen3-0.6B-Q8_0.gguf\",\"system_fingerprint\":\"b12020-0ec4027a2\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":92,\"prompt_tokens\":43,\"total_tokens\":135,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"id\":\"chatcmpl-SCW2xi9m5SVeswgjJa5vpEdwwAsbFheo\",\"__verbose\":{\"index\":0,\"content\":\"<think>\\nOkay, the user first asked about the capital of France, and I correctly replied with Paris. Now they're asking about Italy. I need to make sure my answer is accurate and concise. The capital of Italy is Rome. I should double-check that to avoid any mistakes. Since the user is likely looking for a quick answer, keeping it simple and direct is best. No need for extra details. Just state Rome.\\n</think>\\n\\nRome.\",\"tokens\":[],\"id_slot\":0,\"stop\":true,\"model\":\"/home/tobias/f3/models/Qwen3-0.6B-Q8_0.gguf\",\"tokens_predicted\":92,\"tokens_evaluated\":43,\"generation_settings\":{\"seed\":4294967295,\"temperature\":0.800000011920929,\"dynatemp_range\":0.0,\"dynatemp_exponent\":1.0,\"top_k\":40,\"top_p\":0.949999988079071,\"min_p\":0.05000000074505806,\"top_n_sigma\":-1.0,\"xtc_probability\":0.0,\"xtc_threshold\":0.10000000149011612,\"typical_p\":1.0,\"repeat_last_n\":64,\"repeat_penalty\":1.0,\"presence_penalty\":0.0,\"frequency_penalty\":0.0,\"dry_multiplier\":0.0,\"dry_base\":1.75,\"dry_allowed_length\":2,\"dry_penalty_last_n\":64,\"dry_sequence_breakers\":[\"\\n\",\":\",\"\\\"\",\"*\"],\"mirostat\":0,\"mirostat_tau\":5.0,\"mirostat_eta\":0.10000000149011612,\"adaptive_target\":-1.0,\"adaptive_decay\":0.8999999761581421,\"stop\":[],\"max_tokens\":-1,\"n_predict\":-1,\"n_keep\":0,\"n_discard\":0,\"ignore_eos\":false,\"stream\":false,\"logit_bias\":[],\"n_probs\":0,\"min_keep\":0,\"grammar\":\"\",\"grammar_lazy\":false,\"grammar_triggers\":[],\"preserved_tokens\":[151657,151658,151667,151668],\"chat_format\":\"peg-native\",\"reasoning_format\":\"deepseek\",\"reasoning_in_content\":false,\"generation_prompt\":\"<|im_start|>assistant\\n\",\"samplers\":[\"penalties\",\"dry\",\"top_n_sigma\",\"top_k\",\"typ_p\",\"top_p\",\"min_p\",\"xtc\",\"temperature\"],\"speculative.types\":\"none\",\"timings_per_token\":false,\"post_sampling_probs\":false,\"backend_sampling\":false,\"lora\":[]},\"prompt\":\"<|im_start|>system\\nYou answer in one short sentence.<|im_end|>\\n<|im_start|>user\\nWhat is the capital of France?<|im_end|>\\n<|im_start|>assistant\\nParis.<|im_end|>\\n<|im_start|>user\\nAnd of Italy?<|im_end|>\\n<|im_start|>assistant\\n\",\"has_new_line\":true,\"truncated\":false,\"stop_type\":\"eos\",\"stopping_word\":\"\",\"tokens_cached\":134,\"timings\":{\"cache_n\":0,\"prompt_n\":43,\"prompt_ms\":256.736,\"prompt_per_token_ms\":5.97060465116279,\"prompt_per_second\":167.4872242303378,\"predicted_n\":92,\"predicted_ms\":8937.353,\"predicted_per_token_ms\":98.21267032967032,\"predicted_per_second\":10.181985650561192}},\"timings\":{\"cache_n\":0,\"prompt_n\":43,\"prompt_ms\":256.736,\"prompt_per_token_ms\":5.97060465116279,\"prompt_per_second\":167.4872242303378,\"predicted_n\":92,\"predicted_ms\":8937.353,\"predicted_per_token_ms\":98.21267032967032,\"predicted_per_second\":10.181985650561192}}",
+   "content_type": "application/json",
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "You answer in one short sentence.",
+      "role": "system"
+     },
+     {
+      "content": "What is the capital of France?",
+      "role": "user"
+     },
+     {
+      "content": "Paris.",
+      "role": "assistant"
+     },
+     {
+      "content": "And of Italy?",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen3-0.6B",
+    "stream": false
+   },
+   "status": 200
+  }
+ ],
+ "models": {
+  "chat": "Qwen3-0.6B-Q8_0.gguf"
+ },
+ "roles": [
+  "chat"
+ ],
+ "server": "openvino-cpu",
+ "source": "machine: thinkpad (nuclearwork), Intel i7-10750H, UHD 630 iGPU, GTX 1650 Ti, no NPU; OS: Manjaro Linux kernel 5.10.205; recorded 2026-11-03; llama.cpp release b12020 ubuntu-openvino-2026.4.1-x64; GGML_OPENVINO_DEVICE=CPU",
+ "tokens_per_second": 10.181985650561192,
+ "version": "llama-server 0.8.0-dev (build 12020, commit 0ec4027a2) openvino 2026.4.1"
+}

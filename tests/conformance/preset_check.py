@@ -39,6 +39,14 @@ from tests.conformance.harness import (
 PRESET = "check"
 FIXTURES = Path(__file__).with_name("fixtures") / "presets"
 ENGINE_FIXTURES = Path(__file__).with_name("fixtures") / "engines"
+
+
+def harness_recordings() -> list[Path]:
+    """The engine recordings made by the harness; a hand run has exchanges but no results."""
+    found = sorted(ENGINE_FIXTURES.glob("**/*.json"))
+    return [p for p in found if "results" in json.loads(p.read_text(encoding="utf-8"))]
+
+
 _TIMEOUT_S = 600.0
 _EMBED_PATH = "/v1/embeddings"
 _IMAGE_PART = b'"image_url"'
