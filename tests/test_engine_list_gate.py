@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -178,7 +179,8 @@ def test_an_engine_the_cpu_cannot_run_cannot_be_chosen(
     message = str(_refuse(choose, "org/repo.gguf", "ik_llama.cpp"))
     assert "is not installed" not in message
     assert message.startswith("Engine ik_llama.cpp is installed, but this computer cannot run it.")
-    assert "this CPU lacks AVX2" in message
+    assert "This CPU lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON." in message
+    assert not re.search(r"\. (?!mlx|ik_llama)[a-z]", message)
 
 
 @pytest.mark.parametrize("choose", [engine_service.prefer, None], ids=["prefer", "use"])
@@ -211,12 +213,31 @@ def test_an_installed_engine_the_host_refuses_cannot_be_chosen(
     assert message.startswith(f"Engine {engine} is installed, but this computer cannot run it.")
     assert reason in message
     assert "is not installed" not in message
+    assert not re.search(r"\. (?!mlx|ik_llama)[a-z]", message)
 
 
-def test_an_engine_with_no_build_is_still_reported_not_installed(
+def test_an_engine_with_no_build_that_the_host_passes_points_to_the_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _use_host(monkeypatch, "Linux", "x86_64")
     monkeypatch.setattr(engine_service, "installed_engines", lambda: {})
-    with pytest.raises(engine_service.EngineRefusedError, match="Engine mlx is not installed"):
-        engine_service.prefer("mlx")
+    assert "tei" in engine_service.not_installed()
+    with pytest.raises(engine_service.EngineRefusedError) as raised:
+        engine_service.prefer("tei")
+    assert str(raised.value) == (
+        "Engine tei is not installed. Run lilbee engine list to see the installed engines."
+    )
+
+
+@pytest.mark.parametrize("choose", [engine_service.prefer, None], ids=["prefer", "use"])
+def test_a_host_refused_engine_with_no_build_gives_the_reason_not_the_list(
+    monkeypatch: pytest.MonkeyPatch, choose: object
+) -> None:
+    _use_host(monkeypatch, "Linux", "x86_64")
+    monkeypatch.setattr(engine_service, "installed_engines", lambda: {})
+    assert "mlx" not in engine_service.not_installed()
+    message = str(_refuse(choose, "org/repo#mlx", "mlx"))
+    assert message.startswith("Engine mlx is not installed, and this computer cannot run it.")
+    assert "not offered on linux x86_64" in message
+    assert "engine list" not in message
+    assert not re.search(r"\. (?!mlx|ik_llama)[a-z]", message)

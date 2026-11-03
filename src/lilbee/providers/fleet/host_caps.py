@@ -238,25 +238,27 @@ def _gpus(raw: Any) -> tuple[NvidiaGpu, ...] | None:
 
 def _avx2(arch: HostArch | None, cpu_info: dict[str, Any]) -> Feature:
     if arch is None:
-        return Feature(False, "the CPU architecture could not be read", known=False)
+        return Feature(False, "The CPU architecture could not be read.", known=False)
     if arch is not HostArch.X86_64:
-        return Feature(False, "not an x86 CPU")
+        return Feature(False, "This is not an x86 CPU.")
     flags = cpu_info.get("flags")
-    brand = cpu_info.get("brand_raw") or "this CPU"
+    brand = cpu_info.get("brand_raw")
     if not isinstance(flags, Collection) or isinstance(flags, str):
-        return Feature(False, f"the CPU flags of {brand} could not be read", known=False)
+        return Feature(
+            False, f"The CPU flags of {brand or 'this CPU'} could not be read.", known=False
+        )
     if "avx2" in flags:
         return Feature(True)
-    return Feature(False, f"{brand} lacks AVX2")
+    return Feature(False, f"{brand or 'This CPU'} lacks AVX2.")
 
 
 def _neon(arch: HostArch | None) -> Feature:
     """NEON is part of every 64-bit ARM CPU; Apple Silicon reports no flags to read."""
     if arch is None:
-        return Feature(False, "the CPU architecture could not be read", known=False)
+        return Feature(False, "The CPU architecture could not be read.", known=False)
     if arch is HostArch.ARM64:
         return Feature(True)
-    return Feature(False, "not an ARM CPU")
+    return Feature(False, "This is not an ARM CPU.")
 
 
 _NUMBER = re.compile(r"\d+")
