@@ -10,7 +10,7 @@ A verdict is `pass`, `fallback`, `fail` or `skip`. `fallback` means the engine l
 
 Llama-server extras are not requirements. These are `/tokenize`, `/detokenize`, `/apply-template`, `/memory`, `/props`, prompt-progress frames and `embd_normalize`. If lilbee needs one, the need is an L requirement.
 
-A "row" is a numbered observation from the engine spike, which measured four engines: mlx_lm.server, TEI, Lemonade and mistral.rs. Each Evidence line states what the rows showed, so no other file is needed.
+A "row" is a numbered observation from the engine spike, which measured five engines: mlx_lm.server, TEI, Lemonade, mistral.rs and oMLX. Rows 56 to 91 come from a macOS 15 runner with Metal. Each Evidence line states what the rows showed, so no other file is needed.
 
 ## Run the suite
 
@@ -37,19 +37,19 @@ Tier 1 is a server that lilbee does not start. The user runs it.
 
 The engine answers 200 on its health path, which is `/health` unless the run gives `--health-path`. Lilbee has no health path setting today; the option names the path for the E1 probe only. If the path does not answer, `GET /v1/models` with 200 gives `fallback`.
 
-Evidence: row 1, row 12, row 22, row 38. Lemonade answers 404 on `/health` and 200 on `/live` (row 22). The caller is `src/lilbee/providers/fleet/swap_manager.py`.
+Evidence: row 1, row 12, row 22, row 38, row 57, row 70, row 80. Lemonade answers 404 on `/health` and 200 on `/live` (row 22). mistral.rs, mlx_lm.server and oMLX answer 200 on Metal (rows 57, 70, 80). The caller is `src/lilbee/providers/fleet/swap_manager.py`.
 
 ### E2 Ready means served
 
 For each claimed role, one request that asks for one token gets 200 with the shape of that role. A health answer alone is not ready.
 
-Evidence: row 36, row 37. The CUDA mistral.rs answered health 200 and chat 503.
+Evidence: row 36, row 37, row 91. The CUDA mistral.rs answered health 200 and chat 503. oMLX answered 507 on rerank when its memory guard refused the model while chat and embed models were loaded (row 91). The same call passed with the guard off.
 
 ### E3 Model list
 
 `GET /v1/models` lists every claimed model id. A 404 gives `fallback`: the id comes from the preset, and every surface says the list is unavailable.
 
-Evidence: row 13, row 34, row 38. The callers are `src/lilbee/providers/backends/liter_llm/backend.py` and `src/lilbee/providers/local_servers/registry.py`.
+Evidence: row 13, row 34, row 38, row 79. The callers are `src/lilbee/providers/backends/liter_llm/backend.py` and `src/lilbee/providers/local_servers/registry.py`.
 
 ### E4 Chat
 
@@ -61,31 +61,31 @@ Evidence: row 6, row 26, row 36. The caller is `src/lilbee/providers/fleet/clien
 
 A stream sends `data:` frames with `choices[0].delta` and ends with `data: [DONE]`. It sends no `error` frame. At least one frame carries text in `content`. Text in `reasoning_content` or `reasoning` alone counts only when the stream ends with `finish_reason` `length`: the request allows 32 tokens, and a reasoning model can spend them all on thinking.
 
-Evidence: row 36. The CUDA mistral.rs sent an error frame and then `[DONE]`.
+Evidence: row 36, row 71. The CUDA mistral.rs sent an error frame and then `[DONE]`. A Metal mlx_lm.server stream spent all 200 tokens on reasoning and sent no text, only the finish and usage frames (row 71).
 
 ### E6 Reasoning
 
 An engine that claims reasoning puts the reasoning text in `message.reasoning_content` or `message.reasoning`, or inline in `content` between `<think>` tags.
 
-Evidence: row 6, row 26, row 48, row 50, row 51. mlx_lm.server names the field `reasoning` (row 6). mistral.rs on CPU uses `reasoning_content` (row 50). Rows 50 and 51 close row 48.
+Evidence: row 6, row 26, row 48, row 50, row 51, row 59, row 61, row 71, row 81, row 84. mlx_lm.server names the field `reasoning` (rows 6, 71). mistral.rs on CPU and Metal and oMLX use `reasoning_content` (rows 50, 61, 84). mistral.rs and oMLX on Metal also send the reasoning inline between `<think>` tags (rows 59, 81). Rows 50 and 51 close row 48.
 
 ### E7 Tool calls
 
 The engine returns native `message.tool_calls` with a function name and JSON arguments, also in the stream form. Bare JSON in `content` gives `fallback`, because the client recovers it.
 
-Evidence: row 9, row 29, row 48, row 55. Row 55 is the real mistral.rs CPU run of the golden request. The fake checks the shape. Only a real engine proves that a model emits a tool call.
+Evidence: row 9, row 29, row 48, row 55, row 73, row 77, row 83. Row 55 is the real mistral.rs CPU run of the golden request. Rows 73, 77 and 83 are the same call on Metal for mlx_lm.server, mistral.rs and oMLX. Row 77 gives the result that an earlier Metal probe cut off. The fake checks the shape. Only a real engine proves that a model emits a tool call.
 
 ### E8 Embeddings
 
 `POST /v1/embeddings` returns N vectors in input order, as float and as base64. The suite checks the order at batches of 3, 9 and 33 texts: vector i of a batch must match the vector of text i embedded alone. All vectors have one dimension, hold finite numbers, are not all zero, and differ for different inputs. A normalized or a raw vector both pass.
 
-Evidence: row 10, row 17, row 30, row 32, row 44, row 46, row 54. Row 32 and row 46 answered 200 with zeros or a vector that is not a score. Row 17 is not a defect for embeddings. Row 10 was not probed.
+Evidence: row 10, row 17, row 30, row 32, row 44, row 46, row 54, row 67, row 87. Row 32 and row 46 answered 200 with zeros or a vector that is not a score. Row 17 is not a defect for embeddings. Row 10 was not probed.
 
 ### E9 Rerank
 
 `POST /v1/rerank` with `{model, query, documents}` returns `{"results": [{"index": int, "relevance_score": float}]}`. Each `index` is an integer, and the indexes are exactly 0 to N-1 for N documents, because lilbee reads the score of document i at `index` i. The scores are finite and not all equal. The relevant document scores higher.
 
-Evidence: row 10, row 19, row 20, row 21, row 32, row 33, row 46, row 47. Lemonade serves the route (row 33). TEI serves `/rerank` with other field names (row 20) and not `/v1/rerank` (row 21). mistral.rs serves no route (row 47).
+Evidence: row 10, row 19, row 20, row 21, row 32, row 33, row 46, row 47, row 76, row 78, row 89. Lemonade serves the route (row 33). oMLX serves `/v1/rerank` with a reranker model and no `/rerank` (row 89). TEI serves `/rerank` with other field names (row 20) and not `/v1/rerank` (row 21). mistral.rs serves no route (rows 47, 78). mlx_lm.server serves no embed or rerank route (row 76).
 
 ### E10 Vision
 
@@ -103,13 +103,13 @@ Evidence: no spike row. The golden comparison of the next engine items needs it.
 
 A prompt longer than the context gets a 4xx answer within the timeout (default 60 s). The engine does not hang and does not answer 5xx.
 
-Evidence: row 8, row 28, row 43, row 52. mlx_lm.server hung until the client timeout (row 8). The wording of the 400 differs by engine (row 43, row 52). The caller is `src/lilbee/providers/fleet/client.py`.
+Evidence: row 8, row 28, row 43, row 52, row 66, row 75, row 86. mlx_lm.server hung until the client timeout (rows 8, 75). The wording of the 400 differs by engine (rows 43, 52, 66, 86). The caller is `src/lilbee/providers/fleet/client.py`.
 
 ### E13 Route not served
 
 A role the engine does not claim answers 400, 404, 405 or 501, or answers with a valid body of that role. A 200 with a degenerate body fails. Every other status fails, including 401, 403, 429 and 5xx. An embedding server that answers a chat call with 400 "model not found" passes.
 
-Evidence: row 32, row 33, row 46, row 47. Row 33 is a chat model that answers 501 on rerank.
+Evidence: row 32, row 33, row 46, row 47, row 76, row 78. Row 33 is a chat model that answers 501 on rerank. Rows 76 and 78 are 404 answers on Metal.
 
 ### E14 Response format and JSON schema
 
@@ -119,27 +119,27 @@ Evidence: no spike row. Issue 1190 lists the field.
 
 ### L1 No tokenize route
 
-Without `/tokenize` or `/detokenize` the client estimates the token count. Embed and rerank do not fail.
+Without a working `/tokenize` or `/detokenize` the client estimates the token count. A route that refuses the request body counts as not working. Embed and rerank do not fail.
 
-Evidence: row 2, row 14, row 15, row 23, row 31, row 39, row 45, row 53. The code is in `src/lilbee/providers/fleet/client.py`. The test is a strict expected failure until the client item lands.
+Evidence: row 2, row 14, row 15, row 23, row 31, row 39, row 45, row 53, row 64, row 68, row 69, row 74, row 85, row 88, row 90. oMLX has the route and answers 422 to the body with `content` (row 85). That 422 broke the oversize embed and the rank-pooling rerank (rows 88, 90). The mistral.rs profile answers on Metal (rows 64, 68). The code is in `src/lilbee/providers/fleet/client.py`. The tests are strict expected failures until the client item lands.
 
 ### L2 No apply-template route
 
 A 404 with a JSON error envelope on `/apply-template` falls back to an estimate.
 
-Evidence: row 3, row 16, row 24, row 40. Lemonade answers with an envelope that the client does not treat as an absent route (row 24).
+Evidence: row 3, row 16, row 24, row 40, row 65, row 74, row 85. Lemonade answers with an envelope that the client does not treat as an absent route (row 24).
 
 ### L3 Reasoning field name
 
 The client reads `reasoning` as well as `reasoning_content`.
 
-Evidence: row 6.
+Evidence: row 6, row 71. Row 71 is mlx_lm.server on Metal.
 
 ### L4 Overflow wording
 
 The overflow classifier knows the code `context_length_exceeded` and the text "sequence length is greater than".
 
-Evidence: row 43, row 52.
+Evidence: row 43, row 52, row 66, row 86. oMLX sends the code in its 400 (row 86), and the client does not yet classify that answer as an overflow.
 
 ### L5 Error-only stream
 
@@ -151,7 +151,7 @@ Evidence: row 36.
 
 An engine that claims rerank gets `/v1/rerank`. Rank pooling over embeddings stays for the managed llama engine only.
 
-Evidence: row 19, row 20, row 32, row 33, row 46, row 47. TEI refuses rank pooling (row 19).
+Evidence: row 19, row 20, row 32, row 33, row 46, row 47, row 78, row 89, row 90. TEI refuses rank pooling (row 19). oMLX serves `/v1/rerank` and refuses rank pooling (rows 89, 90).
 
 ### L7 Unavailable role
 
@@ -173,25 +173,25 @@ Tier 2 is a managed engine. It meets all of tier 1 and the requirements below.
 
 The engine has a launch template with `{port}`. Its `--help` exits 0 and prints text. Lilbee passes only the flags that the help text lists.
 
-Evidence: row 5, row 16, row 25. The help text of mlx_lm.server, TEI and Lemonade lacks `--memory`. The code is in `src/lilbee/providers/fleet/adapters.py` and `src/lilbee/providers/fleet/swap_config.py`. The test runs against the fake binary.
+Evidence: row 5, row 16, row 25, row 57, row 70. The help text of mlx_lm.server, TEI, Lemonade and mistral.rs on Metal lacks `--memory`. The code is in `src/lilbee/providers/fleet/adapters.py` and `src/lilbee/providers/fleet/swap_config.py`. The test runs against the fake binary.
 
 ### M2 Device list
 
 `--list-devices` prints the llama-server line format, or the pin declares `backend` and the verdict is `fallback`. Devices then come from host detection. An engine with neither fails.
 
-Evidence: row 5, row 16, row 25, row 42. The CUDA device was not found and the backend was unknown (row 42). The code is in `src/lilbee/providers/fleet/devices.py`.
+Evidence: row 5, row 16, row 25, row 42, row 58, row 70, row 80. The CUDA device was not found and the backend was unknown (row 42). On Metal, mistral.rs, mlx_lm.server and oMLX reject `--list-devices` with exit 2 and the backend is unknown (rows 58, 70, 80). The code is in `src/lilbee/providers/fleet/devices.py`.
 
 ### M3 Memory estimate
 
 The engine has a memory estimate before launch: a sizing command that prints bytes, or a declared rule (`file_size`, verdict `fallback`). A readback after launch is optional.
 
-Evidence: row 4, row 16, row 25, row 37, row 41. No engine in the spike served a readback (row 41). The CUDA engine sized its KV cache and then had no room (row 37). The code is in `src/lilbee/providers/fleet/vram.py` and `src/lilbee/providers/fleet/readback.py`.
+Evidence: row 4, row 16, row 25, row 37, row 41, row 57, row 80. No engine in the spike served a readback (rows 41, 57, 80). The CUDA engine sized its KV cache and then had no room (row 37). The code is in `src/lilbee/providers/fleet/vram.py` and `src/lilbee/providers/fleet/readback.py`.
 
 ### M4 Pin
 
 A pin has a version. Each platform has an https URL, a 64-character sha256, a size and `min_os`. The OS floor `min_os` comes from the platform tag of the wheel file name: a Windows wheel has none. `tools/gen_engine_digests.py` writes these values into `src/lilbee/providers/fleet/engine_digests.py` from the `packages.json` and `sizes.json` of the engines index. The table has one row for each engine, version and cell. The adapter copies the row of its pinned version and of the host cell into the `platforms` field of the pin record. A version that the table does not list has no pack. The generator refuses a packages url that does not start with `https://`, and it writes the url as `PACKAGES_URL` in the table. If a pack pin has no local wheel, lilbee downloads the wheel from the url of its table row. The download refuses a url that does not start with `PACKAGES_URL`.
 
-Evidence: row 11. The Metal archive of mistral.rs panicked on macOS 14.6.1. The pins are in `engine-versions.env` and `sources.json`.
+Evidence: row 11, row 56. The Metal archive of mistral.rs panicked on macOS 14.6.1 (row 11) and started on macOS 15.8.2 (row 56), so the pin needs `min_os` 15 for that archive. The pins are in `engine-versions.env` and `sources.json`.
 
 ### M5 Licences
 
@@ -207,7 +207,7 @@ Evidence: row 8. The serial server stayed busy. The code is in `src/lilbee/provi
 
 ## Failure rows and requirements
 
-Every spike row maps to a requirement or has a reason. Rows 7 and 49 are an llama-server extra. Row 18 breaks nothing. Rows 27 and 35 work.
+Every spike row maps to a requirement or has a reason. Rows 7, 49, 60 and 72 are an llama-server extra. Row 18 breaks nothing. Rows 27, 35, 63 and 82 work.
 
 | Row | Requirement | Note |
 |---|---|---|
@@ -266,6 +266,42 @@ Every spike row maps to a requirement or has a reason. Rows 7 and 49 are an llam
 | 53 | L1 | |
 | 54 | E8 | works |
 | 55 | E7 | real run, see E7 |
+| 56 | M4 | macOS 15 floor for the Metal archive |
+| 57 | E1, M1, M3 | works |
+| 58 | M2 | |
+| 59 | E6 | works, inline `<think>` |
+| 60 | none | prompt-progress frames are an llama-server extra; the client works without them |
+| 61 | E6 | works |
+| 62 | E7 | not determined; closed by row 77 |
+| 63 | none | works |
+| 64 | L1 | works |
+| 65 | L2 | handled fallback |
+| 66 | E12, L4 | works |
+| 67 | E8 | works |
+| 68 | L1 | works |
+| 69 | L1 | the estimate covers it |
+| 70 | E1, M1, M2 | |
+| 71 | E5, E6, L3 | |
+| 72 | none | prompt-progress frames are an llama-server extra; the client works without them |
+| 73 | E7 | works |
+| 74 | L1, L2 | |
+| 75 | E12 | as row 8 |
+| 76 | E9, E13 | route absent |
+| 77 | E7 | works |
+| 78 | E9, E13, L6 | route absent |
+| 79 | E3 | works |
+| 80 | E1, M2, M3 | |
+| 81 | E6 | works |
+| 82 | none | works |
+| 83 | E7 | works |
+| 84 | E6 | works |
+| 85 | L1, L2 | |
+| 86 | E12, L4 | |
+| 87 | E8 | works |
+| 88 | L1 | |
+| 89 | E9, L6 | works, native route |
+| 90 | L1, L6 | |
+| 91 | E2 | memory guard; passes with the guard off |
 
 ## Recordings of a real engine
 

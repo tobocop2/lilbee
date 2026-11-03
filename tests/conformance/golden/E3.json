@@ -3,7 +3,8 @@
   "rows": [
     13,
     34,
-    38
+    38,
+    79
   ],
   "request": null,
   "assert": "GET /v1/models lists every claimed model id. A 404 gives fallback."
