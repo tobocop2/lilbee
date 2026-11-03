@@ -207,7 +207,8 @@ def validate_disk_and_pull(
 
 
 def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> None:
-    """Pull a model via model_manager, showing a Rich progress bar."""
+    """Pull a model via model_manager with a progress bar, then check its vision projector."""
+    from lilbee.app.models import ensure_vision_projector
     from lilbee.app.services import get_services
     from lilbee.catalog.types import ModelSource
 
@@ -231,6 +232,9 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
                 progress.update(ptask, total=total, completed=downloaded)
 
         manager.pull(model, ModelSource.NATIVE, on_bytes=_on_bytes)
+    warning = ensure_vision_projector(model, warn_unreadable=True)
+    if warning is not None:
+        console.print(f"Warning: {warning}", soft_wrap=True)
     console.print(f"Model '{model}' ready.", soft_wrap=True)
 
 
