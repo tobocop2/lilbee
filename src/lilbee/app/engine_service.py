@@ -231,6 +231,29 @@ def builds(config: Config = cfg) -> list[BuildView]:
     return [BuildView(b.engine, b.version, b.backend) for b in store.installed()]
 
 
+@dataclass(frozen=True)
+class EngineListView:
+    """What every surface returns for the engine list: the builds and the missing engines."""
+
+    builds: list[BuildView]
+    not_installed: list[str]
+
+    def payload(self) -> dict[str, list[dict[str, str]] | list[str]]:
+        """The list as plain data, the same on the CLI, REST and MCP."""
+        return {
+            "builds": [
+                {"engine": b.engine, "version": b.version, "backend": b.backend}
+                for b in self.builds
+            ],
+            "not_installed": self.not_installed,
+        }
+
+
+def engine_list(config: Config = cfg) -> EngineListView:
+    """The installed builds and the engines with no installed build."""
+    return EngineListView(builds(config), not_installed())
+
+
 def remove_build(engine: str, version: str, backend: str, config: Config = cfg) -> str:
     """Remove one installed build and return its label; refuses a bundled, missing or busy one."""
     store = EngineStore(engines_root(config.models_dir))

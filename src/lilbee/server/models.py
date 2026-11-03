@@ -1083,6 +1083,7 @@ class EngineBuildsResponse(BaseModel):
     """Response for the installed engine builds."""
 
     builds: list[EngineBuildResponse]
+    not_installed: list[str]
 
 
 class EngineRemovedResponse(BaseModel):

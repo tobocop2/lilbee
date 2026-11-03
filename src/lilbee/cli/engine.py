@@ -53,18 +53,10 @@ def stop() -> None:
 @engine_app.command("list")
 def list_builds() -> None:
     """List the engine builds installed beside the models."""
-    builds = engine_service.builds()
-    absent = engine_service.not_installed()
+    view = engine_service.engine_list()
+    builds, absent = view.builds, view.not_installed
     if cfg.json_mode:
-        json_out(
-            {
-                "command": "engine list",
-                "builds": [
-                    {"engine": b.engine, "version": b.version, "backend": b.backend} for b in builds
-                ],
-                "not_installed": absent,
-            }
-        )
+        json_out({"command": "engine list", **view.payload()})
         return
     if not builds:
         console.print(engine_service.NO_BUILDS)

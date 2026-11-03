@@ -15,7 +15,6 @@ from litestar.params import FromPath
 import lilbee.app.engine_service as service
 from lilbee.core.config import cfg
 from lilbee.server.models import (
-    EngineBuildResponse,
     EngineBuildsResponse,
     EngineChosenResponse,
     EngineInstallBody,
@@ -69,13 +68,8 @@ def _require_engines_enabled(_connection: ASGIConnection, _handler: BaseRouteHan
 @get("/api/engines")
 async def engine_builds_route() -> EngineBuildsResponse:
     """The engine builds installed beside the models."""
-    views = await _call(service.builds)
-    return EngineBuildsResponse(
-        builds=[
-            EngineBuildResponse(engine=v.engine, version=v.version, backend=v.backend)
-            for v in views
-        ]
-    )
+    view = await _call(service.engine_list)
+    return EngineBuildsResponse.model_validate(view.payload())
 
 
 @delete(
