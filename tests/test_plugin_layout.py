@@ -40,11 +40,30 @@ def test_wheel_maps_the_plugin_skill_to_the_installed_skill_path():
     assert (ROOT / next(iter(force_include)) / "SKILL.md").is_file()
 
 
+def _live_shell_code(script: Path) -> str:
+    """The script text without whole-line comments and trailing comments."""
+    lines = script.read_text(encoding="utf-8").splitlines()
+    code = [re.sub(r"\s#.*$", "", line) for line in lines if not line.lstrip().startswith("#")]
+    return "\n".join(code)
+
+
+def test_a_comment_in_the_build_script_is_not_live_code(tmp_path):
+    script = tmp_path / "build.sh"
+    script.write_text(
+        "# --include-data-dir=a=b\n"
+        "  --include-data-dir=real=dest \\ # --include-data-dir=a=b\n"
+        "echo done # --include-data-dir=c=d\n",
+        encoding="utf-8",
+    )
+    found = re.findall(r"--include-data-dir=(\S+)=(\S+)", _live_shell_code(script))
+    assert found == [("real", "dest")]
+
+
 def test_launcher_wheel_and_binary_agree_on_the_skill_location():
     """The launcher reads the skill where the wheel and the frozen binary put it."""
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     wheel = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
-    script = (ROOT / "tools" / "wheel-build" / "build_lilbee_binary.sh").read_text(encoding="utf-8")
+    script = _live_shell_code(ROOT / "tools" / "wheel-build" / "build_lilbee_binary.sh")
     binary = dict(re.findall(r"--include-data-dir=(\S+)=(\S+)", script))
     installed = skill_install._PACKAGED_SKILL.relative_to(ROOT / "src").as_posix()
     checkout = skill_install._CHECKOUT_SKILL.relative_to(ROOT).as_posix()

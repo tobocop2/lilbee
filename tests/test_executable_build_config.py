@@ -2,6 +2,7 @@
 
 import importlib.util
 import re
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -129,6 +130,59 @@ def test_the_smoke_test_reads_the_skill_from_the_frozen_binary() -> None:
 
     assert len(smoke) == 1
     assert "lilbee.cli.launchers.skill_install import bundled_skill_dir" in smoke[0]["run"]
+
+
+def _skill_check_script(run: str) -> str:
+    """The skill check of the smoke step: from its SK=$(mktemp) line to the closing fi."""
+    lines = run.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("SK=$(mktemp)"))
+    end = next(i for i in range(start, len(lines)) if lines[i].strip() == "fi")
+    return "\n".join(lines[start : end + 1]) + "\n"
+
+
+def _run_skill_check(tmp_path: Path, frozen_output: str) -> subprocess.CompletedProcess[str]:
+    """Run the real skill check against a fake frozen binary that prints `frozen_output`."""
+    steps = _load(_WORKFLOWS / "release.yml")["jobs"]["build"]["steps"]
+    run = next(step["run"] for step in steps if step.get("name") == "Smoke test")
+    fake = tmp_path / "fake-lilbee"
+    fake.write_text(f"#!/bin/sh\ncat <<'OUT'\n{frozen_output}\nOUT\n", encoding="utf-8")
+    fake.chmod(0o755)
+    script = tmp_path / "check.sh"
+    script.write_text(f'set -eu\nEXE="{fake}"\n{_skill_check_script(run)}', encoding="utf-8")
+    return subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the smoke step is a bash script")
+def test_the_skill_check_passes_a_binary_that_carries_the_skill(tmp_path: Path) -> None:
+    result = _run_skill_check(tmp_path, "/opt/lilbee/lilbee/skills/lilbee_mcp\nname: lilbee-mcp")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the smoke step is a bash script")
+@pytest.mark.parametrize(
+    "frozen_output",
+    [
+        "/src/plugins/lilbee/skills/lilbee-mcp\nname: lilbee-mcp",
+        "/opt/lilbee/lilbee/skills/lilbee_mcp\nname: other",
+        "Traceback (most recent call last):\nFileNotFoundError",
+    ],
+    ids=["source-checkout-path", "wrong-skill-name", "binary-error"],
+)
+def test_the_skill_check_fails_a_binary_without_the_skill(
+    tmp_path: Path, frozen_output: str
+) -> None:
+    result = _run_skill_check(tmp_path, frozen_output)
+
+    assert result.returncode == 1
+    assert "FAIL: the lilbee-mcp skill is not bundled in the frozen binary" in result.stdout
 
 
 def test_the_engine_mirror_is_skipped_when_its_release_tag_is_empty() -> None:

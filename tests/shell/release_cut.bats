@@ -112,3 +112,31 @@ promote() {
   [ -z "$(git -C "${WORK}" status --porcelain)" ]
   [ -z "$(git -C "${WORK}" tag -l)" ]
 }
+
+detect() {  # tag: run detect_promotion.sh at the checked-out release commit
+  cd "${WORK}" && bash "${REPO_ROOT}/scripts/detect_promotion.sh" "$1"
+}
+
+@test "two releases in a row are not a promotion" {
+  make_repo false
+  run cut
+  [ "$status" -eq 0 ]
+  run cut
+  [ "$status" -eq 0 ]
+  [ "$(git -C "${WORK}" rev-parse HEAD^)" = "$(git -C "${WORK}" rev-parse v1.2.3b8^{commit})" ]
+  run detect v1.2.3b9
+  [ "$status" -eq 0 ]
+  [ "$output" = "promoted_from=" ]
+}
+
+@test "a promoted tag is detected as a promotion of its source tag" {
+  make_repo false
+  seed_source_tag
+  run promote
+  [ "$status" -eq 0 ]
+  git -C "${WORK}" fetch -q origin tag v1.2.3b8
+  git -C "${WORK}" checkout -q --detach v1.2.3b8
+  run detect v1.2.3b8
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"promoted_from=v1.2.3b7" ]]
+}
