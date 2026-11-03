@@ -76,6 +76,7 @@ def test_registry_step_runs_the_script_on_server_json_with_oidc() -> None:
     step = steps[registry]
     assert step["run"].split() == ["bash", PUBLISH_SCRIPT, "server.json"]
     assert step["if"] == "vars.NPM_TRUSTED_PUBLISHING == 'enabled'"
+    assert 0 < step["timeout-minutes"] < job["timeout-minutes"]
     installer = [s for s in steps if s.get("uses", "").startswith("sigstore/cosign-installer@")]
     assert len(installer) == 1
     assert steps.index(installer[0]) < registry

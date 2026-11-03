@@ -15,7 +15,8 @@ setup() {
   chmod +x "${FIXTURE}/payload/mcp-publisher"
   tar czf "${FIXTURE}/archive.tar.gz" -C "${FIXTURE}/payload" mcp-publisher
 
-  # curl answers the registry lookup with REGISTRY_CODE and serves the archive.
+  # curl answers the registry lookup with REGISTRY_CODE, the npm version document
+  # with the next code of NPM_CODES (the last one repeats), and serves the archive.
   cat > "${BIN}/curl" <<'STUB'
 #!/bin/sh
 all_args="$*"
@@ -30,9 +31,24 @@ while [ $# -gt 0 ]; do
 done
 echo "curl ${url}" >> "${FAKE_CALLS}"
 echo "curl-args ${all_args}" >> "${FAKE_ARGS}"
-if [ -n "${CURL_RC:-}" ]; then exit "${CURL_RC}"; fi
 case "${url}" in
-  */v0.1/servers/*) printf '%s' "${REGISTRY_CODE}" ;;
+  */v0.1/servers/*)
+    if [ -n "${CURL_RC:-}" ]; then exit "${CURL_RC}"; fi
+    printf '%s' "${REGISTRY_CODE}"
+    ;;
+  https://registry.npmjs.org/*)
+    if [ -n "${NPM_CURL_RC:-}" ]; then exit "${NPM_CURL_RC}"; fi
+    n=$(($(cat "${FAKE_NPM_COUNT}" 2>/dev/null || echo 0) + 1))
+    echo "${n}" > "${FAKE_NPM_COUNT}"
+    code=$(echo "${NPM_CODES}" | cut -d' ' -f"${n}")
+    [ -n "${code}" ] || code=$(echo "${NPM_CODES}" | awk '{print $NF}')
+    if [ -n "${NPM_MCPNAME}" ]; then
+      printf '{"name":"thing-pkg","mcpName":"%s"}' "${NPM_MCPNAME}" > "${out}"
+    else
+      printf '{"name":"thing-pkg"}' > "${out}"
+    fi
+    printf '%s' "${code}"
+    ;;
   *.tar.gz) cp "${FAKE_ARCHIVE}" "${out}" ;;
   *) echo '{}' > "${out}" ;;
 esac
@@ -43,14 +59,20 @@ STUB
 echo "cosign $*" >> "${FAKE_CALLS}"
 [ "${COSIGN_RC:-0}" -eq 0 ]
 STUB
-  # npm view answers with the mcpName of the published package, or fails.
+  # npm must never be asked: the script reads the version document with curl.
   cat > "${BIN}/npm" <<'STUB'
 #!/bin/sh
 echo "npm $*" >> "${FAKE_CALLS}"
-printf '%s\n' "${NPM_MCPNAME}"
-[ "${NPM_RC:-0}" -eq 0 ]
+exit 1
 STUB
-  chmod +x "${BIN}/curl" "${BIN}/cosign" "${BIN}/npm"
+  # sleep records the wait and returns at once.
+  cat > "${BIN}/sleep" <<'STUB'
+#!/bin/sh
+echo "$1" >> "${SLEEP_LOG}"
+STUB
+  chmod +x "${BIN}/curl" "${BIN}/cosign" "${BIN}/npm" "${BIN}/sleep"
+  SLEEP_LOG="${FIXTURE}/sleeps"
+  : > "${SLEEP_LOG}"
 
   SERVER_JSON="${FIXTURE}/server.json"
   printf '{"name": "io.github.example/thing", "version": "1.2.3", "packages": [{"registryType": "npm", "identifier": "thing-pkg", "version": "1.2.3"}]}\n' > "${SERVER_JSON}"
@@ -58,8 +80,9 @@ STUB
 
 publish() {
   FAKE_CALLS="${CALLS}" FAKE_ARGS="${FIXTURE}/args" FAKE_ARCHIVE="${FIXTURE}/archive.tar.gz" \
+  FAKE_NPM_COUNT="${FIXTURE}/npm-count" SLEEP_LOG="${SLEEP_LOG}" MCP_NPM_RETRY_WAIT="${MCP_NPM_RETRY_WAIT:-10}" \
   REGISTRY_CODE="${REGISTRY_CODE:-404}" PATH="${BIN}:${PATH}" \
-  NPM_MCPNAME="${NPM_MCPNAME-io.github.example/thing}" \
+  NPM_CODES="${NPM_CODES:-200}" NPM_MCPNAME="${NPM_MCPNAME-io.github.example/thing}" \
   bash "${SCRIPT}" "$@"
 }
 
@@ -120,40 +143,117 @@ publish() {
   ! grep -q "^publisher" "${CALLS}"
 }
 
-@test "the registry lookup has a time limit" {
+@test "the registry lookup has a positive time limit" {
   REGISTRY_CODE=200 run publish "${SERVER_JSON}"
   [ "$status" -eq 0 ]
-  grep -q -- "^curl-args .*--max-time [0-9]* .*/v0.1/servers/" "${FIXTURE}/args"
+  grep -q -- "^curl-args .*--max-time [1-9][0-9]* .*/v0.1/servers/" "${FIXTURE}/args"
 }
 
-@test "the npm package for this version is asked for its mcpName" {
+@test "npm is asked for the version document of packages[].version, not the packument" {
+  printf '{"name": "io.github.example/thing", "version": "1.2.3", "packages": [{"registryType": "npm", "identifier": "@scope/thing", "version": "1.2.4"}]}\n' > "${SERVER_JSON}"
   REGISTRY_CODE=404 run publish "${SERVER_JSON}"
   [ "$status" -eq 0 ]
-  grep -qx "npm view thing-pkg@1.2.3 mcpName" "${CALLS}"
+  grep -qx "curl https://registry.npmjs.org/@scope%2Fthing/1.2.4" "${CALLS}"
+  ! grep -q "^npm" "${CALLS}"
 }
 
-@test "a published package without mcpName is skipped with the reason" {
-  NPM_MCPNAME="" REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+@test "the registry lookup is limited to 30 seconds and the npm lookup to 15" {
+  REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+  [ "$status" -eq 0 ]
+  grep -q -- "^curl-args .*--max-time 30 .*/v0.1/servers/" "${FIXTURE}/args"
+  grep -q -- "^curl-args .*--max-time 15 .*registry.npmjs.org/" "${FIXTURE}/args"
+}
+
+@test "a registry lookup that times out says so and exits non-zero" {
+  CURL_RC=28 run publish "${SERVER_JSON}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Could not reach the MCP Registry"* ]]
+  [[ "$output" == *"curl exit 28"* ]]
+  ! grep -q "^publisher" "${CALLS}"
+}
+
+@test "a registry code other than 200 and 404 stops before npm is asked" {
+  REGISTRY_CODE=429 run publish "${SERVER_JSON}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"answered 429"* ]]
+  ! grep -q "registry.npmjs.org" "${CALLS}"
+}
+
+@test "a listed version is skipped without asking npm and is written to the job summary" {
+  GITHUB_STEP_SUMMARY="${FIXTURE}/summary" REGISTRY_CODE=200 run publish "${SERVER_JSON}"
+  [ "$status" -eq 0 ]
+  ! grep -q "registry.npmjs.org" "${CALLS}"
+  grep -q "io.github.example/thing 1.2.3 is already in the MCP Registry" "${FIXTURE}/summary"
+}
+
+@test "a skip works when the runner gives no job summary file" {
+  run env -u GITHUB_STEP_SUMMARY FAKE_CALLS="${CALLS}" FAKE_ARGS="${FIXTURE}/args" FAKE_ARCHIVE="${FIXTURE}/archive.tar.gz" \
+    FAKE_NPM_COUNT="${FIXTURE}/npm-count" REGISTRY_CODE=200 PATH="${BIN}:${PATH}" bash "${SCRIPT}" "${SERVER_JSON}"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already in the MCP Registry"* ]]
+}
+
+@test "a published package without mcpName is skipped with the reason in log and summary" {
+  GITHUB_STEP_SUMMARY="${FIXTURE}/summary" NPM_MCPNAME="" REGISTRY_CODE=404 run publish "${SERVER_JSON}"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Skipped the MCP Registry listing"* ]]
   [[ "$output" == *"thing-pkg@1.2.3 has no mcpName"* ]]
+  grep -q "thing-pkg@1.2.3 has no mcpName" "${FIXTURE}/summary"
   ! grep -q "^publisher" "${CALLS}"
   ! grep -q "^cosign" "${CALLS}"
 }
 
-@test "a published package with another mcpName is skipped with the reason" {
+@test "a published package with another mcpName goes to the publisher, which owns the refusal" {
   NPM_MCPNAME="io.github.other/thing" REGISTRY_CODE=404 run publish "${SERVER_JSON}"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Skipped the MCP Registry listing"* ]]
-  [[ "$output" == *"io.github.other/thing"* ]]
+  grep -qx "publisher publish ${SERVER_JSON}" "${CALLS}"
+}
+
+@test "an npm version that appears after two 404s is published after two waits" {
+  NPM_CODES="404 404 200" REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c "registry.npmjs.org" "${CALLS}")" -eq 3 ]
+  [ "$(cat "${SLEEP_LOG}")" = "$(printf '10\n10')" ]
+  grep -qx "publisher publish ${SERVER_JSON}" "${CALLS}"
+}
+
+@test "an npm version that stays 404 fails after seven lookups and 60 seconds of waits" {
+  NPM_CODES="404" REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"npm has no thing-pkg@1.2.3 after 60 seconds; publish it to npm before listing it"* ]]
+  [ "$(grep -c "registry.npmjs.org" "${CALLS}")" -eq 7 ]
+  [ "$(wc -l < "${SLEEP_LOG}")" -eq 6 ]
   ! grep -q "^publisher" "${CALLS}"
 }
 
-@test "a failed npm lookup stops the script instead of skipping" {
-  NPM_RC=1 REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+@test "the wait between npm lookups is set by MCP_NPM_RETRY_WAIT" {
+  NPM_CODES="404 200" REGISTRY_CODE=404 MCP_NPM_RETRY_WAIT=3 run publish "${SERVER_JSON}"
+  [ "$status" -eq 0 ]
+  [ "$(cat "${SLEEP_LOG}")" = "3" ]
+}
+
+@test "an npm answer other than 200 and 404 fails at once without waiting" {
+  NPM_CODES="503" REGISTRY_CODE=404 run publish "${SERVER_JSON}"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"Could not read mcpName from npm"* ]]
+  [[ "$output" == *"npm answered 503"* ]]
+  [ ! -s "${SLEEP_LOG}" ]
   ! grep -q "^publisher" "${CALLS}"
+}
+
+@test "an npm transport failure fails at once without waiting" {
+  NPM_CURL_RC=7 REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Could not reach npm"* ]]
+  [[ "$output" == *"curl exit 7"* ]]
+  [ ! -s "${SLEEP_LOG}" ]
+}
+
+@test "an npm lookup that times out fails at once without waiting" {
+  NPM_CURL_RC=28 REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Could not reach npm"* ]]
+  [[ "$output" == *"curl exit 28"* ]]
+  [ ! -s "${SLEEP_LOG}" ]
 }
 
 @test "a server.json with no npm package is refused" {
