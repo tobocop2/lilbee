@@ -34,7 +34,7 @@ from lilbee.runtime.cancellation import CancelSignal
 log = logging.getLogger(__name__)
 
 RECORD_NAME = "ENGINE-RECORD.json"
-PERMISSIVE_LICENCES = frozenset({"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause"})
+PERMISSIVE_LICENCES = frozenset({"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0"})
 _LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
 _STAGE_PREFIX = ".stage-"
