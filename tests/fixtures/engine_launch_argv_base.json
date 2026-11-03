@@ -122,6 +122,7 @@
       "127.0.0.1",
       "--port",
       "{port}",
+      "text",
       "--paged-attn",
       "off",
       "-m",
@@ -151,6 +152,7 @@
       "127.0.0.1",
       "--port",
       "{port}",
+      "multimodal",
       "--paged-attn",
       "off",
       "-m",
@@ -180,7 +182,9 @@
       "--hostname",
       "127.0.0.1",
       "--max-client-batch-size",
-      "64"
+      "64",
+      "--max-batch-tokens",
+      "2176"
     ],
     "rerank": [
       "/engines/bin/server",
@@ -189,7 +193,9 @@
       "--hostname",
       "127.0.0.1",
       "--max-client-batch-size",
-      "64"
+      "64",
+      "--max-batch-tokens",
+      "2176"
     ]
   }
 }

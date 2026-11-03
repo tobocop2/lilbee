@@ -28,6 +28,7 @@ from lilbee.providers.fleet.engines.host_gate import PLATFORM_UNREAD, HostGate, 
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS, NpuVendor
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "2026.44.1"
@@ -104,7 +105,6 @@ def _place_model(link: Path, target: Path) -> None:
     if _links_to(link, target):
         return
     link.parent.mkdir(parents=True, exist_ok=True)
-    link.unlink(missing_ok=True)
     tmp = link.with_name(link.name + _TMP_SUFFIX)
     tmp.unlink(missing_ok=True)
     for make in (os.symlink, os.link, shutil.copyfile):
@@ -115,6 +115,20 @@ def _place_model(link: Path, target: Path) -> None:
         os.replace(tmp, link)
         return
     raise ProviderError(f"Lemonade cannot link the model {target} into {link.parent}.")
+
+
+def _recipe_ctx(role: WorkerRole, request: LaunchRequest) -> int:
+    """The context for the recipe: for embed, the one ``lemond`` serves, else the one asked.
+
+    ``lemond`` ignores ``ctx_size`` for an embed model and serves the trained
+    context (8192 for a 4096 ask on bge-m3, recorded in run p4). Chat and rerank
+    keep the figure. With several embed slots the per-slot share is not measured.
+    """
+    asked = request.ctx_per_slot * request.slots
+    if role is not WorkerRole.EMBED:
+        return asked
+    meta = read_gguf_metadata(request.model_path)
+    return max(asked, train_ctx_from_meta(meta, fallback=asked, model_path=request.model_path))
 
 
 def _prepare(spec: RoleServerSpec, request: LaunchRequest) -> Path:
@@ -130,7 +144,7 @@ def _prepare(spec: RoleServerSpec, request: LaunchRequest) -> Path:
     }
     recipe = {
         f"extra.{model_name(spec.role)}": {
-            "ctx_size": request.ctx_per_slot * request.slots,
+            "ctx_size": _recipe_ctx(spec.role, request),
             "llamacpp_args": f"--parallel {request.slots}",
         }
     }
