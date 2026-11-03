@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import sys
@@ -16,6 +17,22 @@ POSIX_DENIES_READS = pytest.mark.skipif(
     sys.platform == "win32" or os.geteuid() == 0,
     reason="needs POSIX mode bits and a non-root user to deny a read",
 )
+
+
+def deny_listing(monkeypatch: pytest.MonkeyPatch, folder: Path) -> None:
+    """Make listing *folder* fail with the error a denied read raises, on every platform.
+
+    ``os.walk`` lists each folder through ``os.scandir``, so the stub sits at the call
+    the product code makes and needs no mode bits.
+    """
+    real_scandir = os.scandir
+
+    def scandir(path: str | os.PathLike[str] = ".") -> object:
+        if Path(path) == folder:
+            raise PermissionError(errno.EACCES, "Permission denied", str(folder))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
 
 
 @contextmanager

@@ -315,7 +315,7 @@ class TestTheOpenStoresLocations:
 
 class TestTheRegistryIsReadAgain:
     @pytest.fixture(autouse=True)
-    def _reads_config_toml(self, overlay_reads_config_toml):
+    def _reads_config_toml(self):
         """The store reads config.toml, as a real process does."""
 
     def test_a_root_another_process_registered_is_shown_by_its_label(self, config, tmp_path):
@@ -628,7 +628,7 @@ class TestAResolverInALongRunningProcess:
     """A server that ran no store call still names a root another process registered."""
 
     @pytest.fixture()
-    def server(self, config, overlay_reads_config_toml):
+    def server(self, config):
         from lilbee.core.config import config_scope
 
         with config_scope(config):

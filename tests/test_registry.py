@@ -1002,6 +1002,23 @@ class TestRegisterDownloadedModel:
             assert registry.resolve(ref) == blob
 
 
+class TestModelRegistryHasManifest:
+    def test_manifest_present(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        registry.install(_REPO, _FILENAME, _write_source(tmp_path), _make_manifest())
+        assert registry.has_manifest(_REF)
+        assert registry.has_manifest(_REPO)
+
+    def test_cache_only_model_is_installed_without_a_manifest(self, tmp_path: Path) -> None:
+        _seed_hf_cache(tmp_path)
+        registry = ModelRegistry(tmp_path)
+        assert not registry.has_manifest(_REF)
+        assert not registry.has_manifest(_REPO)
+
+    def test_unparseable_ref(self, tmp_path: Path) -> None:
+        assert not ModelRegistry(tmp_path).has_manifest("not a ref")
+
+
 class TestModelRegistryIsInstalled:
     def test_is_installed_true(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)

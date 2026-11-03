@@ -23,6 +23,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
 )
 from lilbee.cli.tui.widgets.model_bar import ModelOption
+from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from tests._crafted_titles import (
     CONTROL_TITLES,
@@ -1273,7 +1274,10 @@ class TestModelPickerButton:
             btn = app.query_one("#model-pick-chat", ModelPickerButton)
             new_ref = "ollama/new-chat:latest"
             with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
+                ),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 btn._on_picker_dismissed(new_ref)
@@ -1328,7 +1332,10 @@ class TestModelPickerButton:
             services_mock = mock.MagicMock(store=store_mock)
             set_services(services_mock)
             with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
+                ),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
@@ -1356,126 +1363,187 @@ class TestModelPickerButton:
                 await pilot.pause()
             write_tracker.assert_not_called()
 
-    async def test_embed_picker_dismiss_against_populated_store_pushes_confirm(self) -> None:
-        """Picking a new embedder against a populated store shows the warning modal.
+    async def _pick_embedder(
+        self, app, new_ref: str, *, has_chunks: bool, index_matches: bool = False
+    ):
+        """Pick *new_ref* in the embed picker; return the services mock.
 
-        Without the modal, the next search raises EmbeddingModelMismatchError and
-        the user sees the failure only after the fact. The modal makes the
-        rebuild contract explicit before cfg is mutated.
+        The index came from another embedder, so the settings boundary reports that a
+        swap needs a rebuild; *has_chunks* says whether the index holds anything.
+        *index_matches* says the index was built by *new_ref*: no verdict of a mismatch.
         """
-        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+        from lilbee.app.services import set_services
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        store_mock = mock.MagicMock()
+        store_mock.has_chunks.return_value = has_chunks
+        store_mock.index_mismatch.return_value = (
+            "built under another embedder" if has_chunks and not index_matches else None
+        )
+        services_mock = mock.MagicMock(store=store_mock)
+        set_services(services_mock)
+        btn = app.query_one("#model-pick-embed", ModelPickerButton)
+        with (
+            mock.patch(
+                "lilbee.app.settings.persistent_settings.update_values",
+                wraps=persistent_settings.update_values,
+            ),
+            mock.patch(
+                "lilbee.cli.tui.widgets.model_pick.get_services", return_value=services_mock
+            ),
+        ):
+            btn._on_picker_dismissed(new_ref)
+        return services_mock
+
+    @staticmethod
+    def _count_dialogs(app) -> list[Any]:
+        """Wrap push_screen; the returned list collects every ConfirmDialog the app pushes."""
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        pushed: list[Any] = []
+        real_push = app.push_screen
+
+        def _push(screen, *args, **kwargs):
+            if isinstance(screen, ConfirmDialog):
+                pushed.append(screen)
+            return real_push(screen, *args, **kwargs)
+
+        app.push_screen = _push
+        return pushed
+
+    async def test_embed_picker_populated_store_no_keeps_old_embedder_and_asks_once(self) -> None:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+        from tests._lilbee_app_test_host import pump_until
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
-        store_mock = mock.MagicMock()
-        store_mock.has_chunks.return_value = True
-        services_mock = mock.MagicMock(store=store_mock)
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#model-pick-embed", ModelPickerButton)
-            with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
-                mock.patch(
-                    "lilbee.cli.tui.widgets.model_pick.get_services",
-                    return_value=services_mock,
-                ),
-            ):
-                btn._on_picker_dismissed("ollama/new-embed:latest")
-                await pilot.pause()
-                assert isinstance(app.screen, ConfirmDialog)
-            # cfg must NOT have been mutated yet -- waiting on the confirm.
-            assert cfg.embedding_model == TEST_EMBED_REF
-
-    async def test_embed_picker_dismiss_confirm_yes_applies(self) -> None:
-        """Pressing Yes on the confirm modal applies the swap and reloads embed."""
-        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
-        from lilbee.providers.roles import WorkerRole
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        store_mock = mock.MagicMock()
-        store_mock.has_chunks.return_value = True
-        services_mock = mock.MagicMock(store=store_mock)
-        new_ref = "ollama/new-embed:latest"
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            btn = app.query_one("#model-pick-embed", ModelPickerButton)
-            with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
-                mock.patch(
-                    "lilbee.cli.tui.widgets.model_pick.get_services",
-                    return_value=services_mock,
-                ),
-            ):
-                btn._on_picker_dismissed(new_ref)
-                await pilot.pause()
-                assert isinstance(app.screen, ConfirmDialog)
-                await pilot.press("y")
-                await pilot.pause()
-                await app.workers.wait_for_complete()
-            assert cfg.embedding_model == new_ref
-            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=True)
-
-    async def test_embed_picker_dismiss_confirm_no_keeps_old_ref(self) -> None:
-        """Pressing No on the confirm modal leaves cfg untouched and notifies cancel."""
-        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        store_mock = mock.MagicMock()
-        store_mock.has_chunks.return_value = True
-        services_mock = mock.MagicMock(store=store_mock)
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            btn = app.query_one("#model-pick-embed", ModelPickerButton)
-            with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
-                mock.patch(
-                    "lilbee.cli.tui.widgets.model_pick.get_services",
-                    return_value=services_mock,
-                ),
-            ):
-                btn._on_picker_dismissed("ollama/new-embed:latest")
-                await pilot.pause()
-                assert isinstance(app.screen, ConfirmDialog)
+            pushed = self._count_dialogs(app)
+            with mock.patch.object(app, "start_rebuild") as start:
+                services_mock = await self._pick_embedder(
+                    app, "ollama/new-embed:latest", has_chunks=True
+                )
+                assert await pump_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+                assert app.screen._message == msg.EMBED_SWAP_REBUILD_MESSAGE
+                assert cfg.embedding_model == TEST_EMBED_REF
                 await pilot.press("n")
+                assert await pump_until(pilot, lambda: not isinstance(app.screen, ConfirmDialog))
+                await app.workers.wait_for_complete()
                 await pilot.pause()
             assert cfg.embedding_model == TEST_EMBED_REF
             services_mock.reload_role.assert_not_called()
+            start.assert_not_called()
+            assert len(pushed) == 1
 
-    async def test_embed_picker_dismiss_empty_store_skips_confirm(self) -> None:
-        """A store with no chunks (fresh install) swaps without the confirm modal."""
-        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+    async def test_embed_picker_populated_store_yes_swaps_rebuilds_and_asks_once(self) -> None:
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
         from lilbee.providers.roles import WorkerRole
+        from tests._lilbee_app_test_host import pump_until
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
-        store_mock = mock.MagicMock()
-        store_mock.has_chunks.return_value = False
-        services_mock = mock.MagicMock(store=store_mock)
         new_ref = "ollama/new-embed:latest"
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#model-pick-embed", ModelPickerButton)
-            with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
-                mock.patch(
-                    "lilbee.cli.tui.widgets.model_pick.get_services",
-                    return_value=services_mock,
-                ),
-            ):
-                btn._on_picker_dismissed(new_ref)
+            pushed = self._count_dialogs(app)
+            with mock.patch.object(app, "start_rebuild") as start:
+                services_mock = await self._pick_embedder(app, new_ref, has_chunks=True)
+                assert await pump_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+                assert cfg.embedding_model == TEST_EMBED_REF
+                await pilot.press("y")
+                assert await pump_until(pilot, lambda: start.call_count == 1)
                 await app.workers.wait_for_complete()
                 await pilot.pause()
             assert cfg.embedding_model == new_ref
-            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=True)
+            assert mock.call(WorkerRole.EMBED, wait=True) in services_mock.reload_role.mock_calls
+            start.assert_called_once_with()
+            assert len(pushed) == 1
+            assert not isinstance(app.screen, ConfirmDialog)
+
+    async def test_embed_picker_index_matches_pick_swaps_with_no_question_and_no_rebuild(
+        self,
+    ) -> None:
+        """The index was built by the pick; cfg names another model. Nothing to rebuild."""
+        from lilbee.providers.roles import WorkerRole
+        from tests._lilbee_app_test_host import pump_until
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        new_ref = "ollama/new-embed:latest"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pushed = self._count_dialogs(app)
+            with mock.patch.object(app, "start_rebuild") as start:
+                services_mock = await self._pick_embedder(
+                    app, new_ref, has_chunks=True, index_matches=True
+                )
+                assert await pump_until(pilot, lambda: cfg.embedding_model == new_ref)
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+            assert mock.call(WorkerRole.EMBED, wait=True) in services_mock.reload_role.mock_calls
+            start.assert_not_called()
+            assert pushed == []
+
+    async def test_embed_picker_failed_reload_leaves_config_unchanged_and_rebuilds_nothing(
+        self,
+    ) -> None:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+        from tests._lilbee_app_test_host import pump_until
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        new_ref = "ollama/new-embed:latest"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                mock.patch.object(app, "start_rebuild") as start,
+                mock.patch.object(app, "notify", wraps=app.notify) as notify,
+            ):
+                services_mock = await self._pick_embedder(app, new_ref, has_chunks=True)
+
+                def _fail_the_waited_reload(role, *, wait: bool = False) -> None:
+                    if wait:
+                        raise RuntimeError("boom")
+
+                services_mock.reload_role.side_effect = _fail_the_waited_reload
+                assert await pump_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+                await pilot.press("y")
+                failed = msg.MODEL_SWAP_FAILED.format(error="boom")
+                assert await pump_until(
+                    pilot, lambda: any(c.args[0] == failed for c in notify.call_args_list)
+                )
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+            assert cfg.embedding_model == TEST_EMBED_REF
+            start.assert_not_called()
+
+    async def test_embed_picker_empty_store_swaps_with_no_question(self) -> None:
+        """A store with no chunks (fresh install) swaps and asks nothing."""
+        from lilbee.providers.roles import WorkerRole
+        from tests._lilbee_app_test_host import pump_until
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        new_ref = "ollama/new-embed:latest"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pushed = self._count_dialogs(app)
+            with mock.patch.object(app, "start_rebuild") as start:
+                services_mock = await self._pick_embedder(app, new_ref, has_chunks=False)
+                assert await pump_until(pilot, lambda: cfg.embedding_model == new_ref)
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+            assert mock.call(WorkerRole.EMBED, wait=True) in services_mock.reload_role.mock_calls
+            start.assert_not_called()
+            assert pushed == []
 
     async def test_embed_picker_dismiss_reloads_only_embed_role(self) -> None:
         """Embed swap respawns just the embed worker. Chat stream stays untouched.
@@ -2632,6 +2700,180 @@ class TestClassifyInstalledModels:
         embed_refs = [ref for _, ref in embed]
         assert bogus.ref not in chat_refs
         assert bogus.ref not in embed_refs
+
+
+class TestSlashSuggester:
+    async def test_empty_returns_none(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        assert await s.get_suggestion("") is None
+
+    def test_setting_names_exclude_non_settable(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
+
+        names = ARG_SOURCES["/set"]()
+        assert "wiki_dir" not in names  # read-only: would be refused by /set
+        assert "chat_model" in names
+
+    def test_model_and_document_lookups_log_and_return_empty_on_error(self) -> None:
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
+
+        with patch(
+            "lilbee.modelhub.models.list_installed_models", side_effect=RuntimeError("boom")
+        ):
+            assert ARG_SOURCES["/model"]() == []
+        with patch("lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=RuntimeError):
+            assert ARG_SOURCES["/delete"]() == []
+
+    async def test_slash_prefix_suggests_command(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        r = await s.get_suggestion("/he")
+        assert r == "/help"
+
+    async def test_exact_command_returns_none(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        assert await s.get_suggestion("/help") is None
+
+    async def test_plain_text_with_space_returns_none(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        # Has space but doesn't start with /: hits _suggest_argument which returns None
+        assert await s.get_suggestion("hello world") is None
+
+    async def test_plain_text_no_space_returns_none(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        # No space, doesn't start with /: hits line 43 return None
+        assert await s.get_suggestion("hello") is None
+
+    async def test_no_match_returns_none(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        assert await s.get_suggestion("/zzzz") is None
+
+    async def test_delete_suggests_document_filenames(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``/delete`` completes against indexed source filenames."""
+        from types import SimpleNamespace
+
+        from lilbee.cli.tui.widgets import autocomplete as autocomplete_mod
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        fake = SimpleNamespace(
+            store=SimpleNamespace(
+                get_sources=lambda: [{"filename": "notes.md"}, {"source": "todo.txt"}]
+            )
+        )
+        monkeypatch.setattr(autocomplete_mod, "get_services", lambda: fake)
+
+        s = SlashSuggester(use_cache=False)
+        assert await s.get_suggestion("/delete no") == "/delete notes.md"
+
+    async def test_delete_suggests_a_held_out_source(
+        self, monkeypatch: pytest.MonkeyPatch, held_store
+    ) -> None:
+        """``/delete`` completes a file that ingestion held out, beside an indexed one."""
+        from types import SimpleNamespace
+
+        from lilbee.cli.tui.widgets import autocomplete as autocomplete_mod
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+        from tests._held import hold_failed
+
+        hold_failed({"scan.pdf": "h1"}, store=held_store)
+        fake = SimpleNamespace(
+            store=SimpleNamespace(get_sources=lambda: [{"filename": "notes.md"}])
+        )
+        monkeypatch.setattr(autocomplete_mod, "get_services", lambda: fake)
+
+        s = SlashSuggester(use_cache=False)
+        assert await s.get_suggestion("/delete no") == "/delete notes.md"
+        assert await s.get_suggestion("/delete sc") == "/delete scan.pdf"
+
+    async def test_suggest_model_arg(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        with mock.patch.dict(ARG_SOURCES, {"/model": lambda: ["qwen3:8b", "mistral:7b"]}):
+            r = await s.get_suggestion("/model qw")
+        assert r is not None
+        assert "qwen3:8b" in r
+
+    async def test_suggest_set_arg(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        r = await s.get_suggestion("/set chat")
+        assert r is not None
+        assert "chat_model" in r
+
+    async def test_suggest_delete_arg(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        with mock.patch.dict(ARG_SOURCES, {"/delete": lambda: ["readme.md", "notes.txt"]}):
+            r = await s.get_suggestion("/delete rea")
+        assert r is not None
+        assert "readme.md" in r
+
+    async def test_suggest_theme_arg(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        r = await s.get_suggestion("/theme dra")
+        assert r is not None
+        assert "dracula" in r
+
+    async def test_unknown_command_with_space_returns_none(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        assert await s.get_suggestion("/foobar xyz") is None
+
+    async def test_suggest_from_list_no_match(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        r = s._suggest_from_list("/model zzz", "zzz", ["alpha", "beta"])
+        assert r is None
+
+    async def test_suggest_from_list_exact_match_returns_none(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        r = s._suggest_from_list("/model alpha", "alpha", ["alpha"])
+        assert r is None
+
+    async def test_model_lookup_error_suggests_nothing(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        with mock.patch(
+            "lilbee.modelhub.models.list_installed_models", side_effect=Exception("err")
+        ):
+            assert await s.get_suggestion("/model qw") is None
+
+    async def test_path_commands_get_no_inline_suggestion(self, tmp_path, monkeypatch) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        (tmp_path / "srcnotes.md").write_text("x", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        assert ARG_SOURCES["/add"]() == ["srcnotes.md"]
+        s = SlashSuggester(use_cache=False)
+        assert await s.get_suggestion("/add sr") is None
 
 
 class TestGetCompletions:
@@ -5452,7 +5694,7 @@ class TestConfirmDialog:
             await pilot.pause()
             assert yes.has_focus
 
-    async def test_longest_message_leaves_room_for_the_pills(self) -> None:
+    async def test_rebuild_offer_leaves_room_for_the_pills(self) -> None:
         """The dialog grows with its message; the pill row must stay inside it."""
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
@@ -5460,7 +5702,7 @@ class TestConfirmDialog:
         class _App(LilbeeAppHost):
             def on_mount(self):
                 self.push_screen(
-                    ConfirmDialog(msg.EMBED_SWAP_CONFIRM_TITLE, msg.EMBED_SWAP_CONFIRM_MESSAGE)
+                    ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, msg.SETTINGS_REINDEX_MESSAGE)
                 )
 
         app = _App()

@@ -91,8 +91,8 @@ async def sync_stream(
 ) -> AsyncGenerator[str, None]:
     """Trigger sync, yield SSE progress events, then done event.
 
-    When ``force_rebuild`` is true, the underlying sync drops every table and
-    re-ingests from ``cfg.documents_dir`` (the REST equivalent of ``lilbee rebuild``).
+    When ``force_rebuild`` is true, the underlying sync re-ingests every file from
+    ``cfg.documents_dir`` over the index (the REST equivalent of ``lilbee rebuild``).
     When ``retry_skipped`` is true, it clears the failed-file markers so files
     that were skipped on a previous sync get another attempt, without dropping
     the store. When ``prune_ignored`` is true, it also drops sources a

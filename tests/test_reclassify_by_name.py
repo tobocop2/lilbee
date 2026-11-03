@@ -45,6 +45,22 @@ def test_overrides_to_vision_when_name_contains_moondream() -> None:
     assert reclassify_by_name("moondream2", "chat") == ModelTask.VISION
 
 
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "ggml-org/SmolVLM-256M-Instruct-GGUF",
+        "ggml-org/SmolVLM2-2.2B-Instruct-GGUF/SmolVLM2-2.2B-Instruct-Q4_K_M.gguf",
+    ],
+)
+def test_overrides_to_vision_when_name_contains_smolvlm(ref: str) -> None:
+    # The hub tags these repos with no pipeline_tag and no config, so the name is the signal.
+    assert reclassify_by_name(ref, "chat") == ModelTask.VISION
+
+
+def test_a_smollm_text_model_stays_chat() -> None:
+    assert reclassify_by_name("bartowski/SmolLM2-360M-Instruct-GGUF", "chat") == ModelTask.CHAT
+
+
 def test_passes_through_embedding() -> None:
     assert reclassify_by_name("nomic-embed-text-v1.5", "embedding") == "embedding"
 

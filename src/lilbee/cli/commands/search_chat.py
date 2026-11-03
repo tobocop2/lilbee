@@ -29,7 +29,7 @@ from lilbee.cli.app import (
     top_k_sampling_option,
     top_p_option,
 )
-from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
+from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN, REBUILD_HINT
 from lilbee.cli.commands.ingest_sync import run_sync_with_signal_cancel
 from lilbee.cli.helpers import (
     announce_cold_start,
@@ -382,12 +382,19 @@ def use_embedder(
 
     if cfg.json_mode:
         json_output(
-            {"command": "use-embedder", "model": result.model, "status": result.status.value}
+            {
+                "command": "use-embedder",
+                "model": result.model,
+                "status": result.status.value,
+                "reindex_required": result.reindex_required,
+            }
         )
         return
     console.print(
         Text.assemble("Now embedding with ", (result.model, theme.ACCENT), "."), soft_wrap=True
     )
+    if result.reindex_required:
+        console.print(Text(REBUILD_HINT, style=theme.WARNING), soft_wrap=True)
 
 
 def chat(

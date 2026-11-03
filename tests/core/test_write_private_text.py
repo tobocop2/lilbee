@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 from tests._private_mode import file_mode, posix_only
@@ -67,6 +68,21 @@ class TestWritePrivateText:
         with pytest.raises(RuntimeError):
             write_private_text(target, "s3cret")
         assert list(tmp_path.iterdir()) == []
+
+    def test_a_failed_cleanup_does_not_replace_the_write_error(self, tmp_path, monkeypatch):
+        def refuse_replace(*_args, **_kwargs):
+            raise OSError(28, "No space left on device")
+
+        def refuse_unlink(*_args, **_kwargs):
+            raise PermissionError(13, "denied")
+
+        target = tmp_path / "secret.txt"
+        monkeypatch.setattr(os, "replace", refuse_replace)
+        monkeypatch.setattr(Path, "unlink", refuse_unlink)
+        with pytest.raises(OSError) as raised:
+            write_private_text(target, "s3cret")
+        assert raised.value.errno == 28
+        assert raised.value.filename == str(target)
 
 
 @posix_only
@@ -285,6 +301,17 @@ class TestPersistedSettingsAreHardenedOnLoad:
     ever being rewritten, so a file that arrived world-readable must be
     narrowed on load, not only when something happens to save it."""
 
+    @posix_only
+    def test_a_read_only_config_stays_read_only_on_read(self, tmp_path):
+        from lilbee.core import settings
+
+        settings.set_value(tmp_path, "api_key", "sk-secret")
+        path = tmp_path / "config.toml"
+        path.chmod(0o444)
+
+        assert settings.load(tmp_path) == {"api_key": "sk-secret"}
+        assert file_mode(path) == 0o400
+
     def test_a_world_readable_config_is_narrowed_on_read(self, tmp_path):
         from lilbee.core import settings
 
@@ -411,3 +438,21 @@ class TestPrivateDirAndOpener:
             handle.write("x\n")
         assert target.read_text(encoding="utf-8") == "x\n"
         assert file_mode(target) == 0o600
+
+
+def test_a_failed_write_names_the_target_not_the_hidden_temp_file(tmp_path, monkeypatch):
+    def refuse(src, dst):
+        raise PermissionError(13, "Permission denied", str(src), None, str(dst))
+
+    monkeypatch.setattr(os, "replace", refuse)
+    target = tmp_path / "mine.toml"
+    with pytest.raises(PermissionError) as caught:
+        write_private_text(target, "x = 1\n")
+    assert str(caught.value) == f"[Errno 13] Permission denied: {str(target)!r}"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_write_that_fails_for_another_reason_keeps_its_error(tmp_path):
+    with pytest.raises(UnicodeEncodeError):
+        write_private_text(tmp_path / "mine.toml", "\ud800")
+    assert list(tmp_path.iterdir()) == []

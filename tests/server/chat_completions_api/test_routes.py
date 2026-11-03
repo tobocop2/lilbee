@@ -2010,16 +2010,6 @@ class TestReasoningModeOnRoute:
 class TestReasoningCapOnRoute:
     """The reasoning cap bounds thinking on /v1/chat/completions, both paths."""
 
-    @pytest.fixture(autouse=True)
-    def _no_model_defaults(self):
-        """A per-model override would beat the cap these tests set."""
-        from lilbee.core.config import cfg
-
-        previous = cfg.model_defaults
-        cfg.clear_model_defaults()
-        yield
-        cfg.apply_model_defaults(previous)
-
     def _cap(self, monkeypatch, chars: int) -> None:
         from lilbee.core.config import cfg
 

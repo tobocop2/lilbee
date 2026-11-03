@@ -655,7 +655,10 @@ class TestServeExitStatus:
                     server.kill()
                     server.wait()
         stderr = (tmp_path / "err.txt").read_text(encoding="utf-8")
-        assert status == 128 + signal.SIGTERM
+        fault_log = tmp_path / "logs" / "server-fault.log"
+        faults = fault_log.read_text(encoding="utf-8") if fault_log.exists() else ""
+        # A native abort leaves its reason only here, so a failure prints both.
+        assert status == 128 + signal.SIGTERM, f"stderr:\n{stderr}\nfault log:\n{faults}"
         assert "Traceback" not in stderr
         assert "Application shutdown complete." in stderr
 

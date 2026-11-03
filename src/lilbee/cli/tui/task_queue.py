@@ -10,7 +10,7 @@ import logging
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -39,6 +39,7 @@ class TaskType(StrEnum):
     SETUP = "setup"
     IMPORT = "import"
     EXPORT = "export"
+    ANALYZE = "analyze"
 
 
 class CancelOrigin(StrEnum):
@@ -48,6 +49,7 @@ class CancelOrigin(StrEnum):
     EXIT = "exit"
 
 
+PERCENT = 100
 TERMINAL_STATUSES = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
 
 
@@ -273,7 +275,7 @@ class TaskQueue:
             task = self._tasks.get(task_id)
             if task and task.status not in TERMINAL_STATUSES:
                 task.status = TaskStatus.DONE
-                task.progress = 100
+                task.progress = PERCENT
                 task.indeterminate = False
                 task.completed_at = time.monotonic()
                 self._history.append(task)
@@ -385,20 +387,21 @@ class TaskQueue:
             self._history = [t for t in self._history if t.task_id != task_id]
         self._notify()
 
-    def clear_history(self) -> int:
-        """Drop all DONE/FAILED/CANCELLED entries from history.
+    def clear_history(self, keep: Collection[str] = ()) -> int:
+        """Drop all DONE/FAILED/CANCELLED entries from history, except the ids in ``keep``.
 
         Returns the number of rows cleared. The Task Center binds this
         to ``C`` so the user can tidy up once they're done inspecting.
         """
         with self._lock:
-            cleared = len(self._history)
-            self._history = []
+            kept = [t for t in self._history if t.task_id in keep]
+            cleared = len(self._history) - len(kept)
+            self._history = kept
             # Also drop the backing task records so memory is actually freed.
             self._tasks = {
                 tid: t
                 for tid, t in self._tasks.items()
-                if t.status in (TaskStatus.QUEUED, TaskStatus.ACTIVE)
+                if t.status in (TaskStatus.QUEUED, TaskStatus.ACTIVE) or tid in keep
             }
         if cleared:
             self._notify()

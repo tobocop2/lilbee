@@ -48,6 +48,7 @@ from lilbee.retrieval.query.compaction import (
 from lilbee.retrieval.query.dedup import (
     _greedy_cover,
     _relevance_weight,
+    diversify_sources,
     filter_results,
     order_by_fusion,
     prepare_results,
@@ -59,6 +60,7 @@ from lilbee.retrieval.query.expansion import (
     EXPANSION_MAX_TOKENS,
     EXPANSION_PROMPT,
     HYDE_MAX_TOKENS,
+    SEARCH_SEED,
 )
 from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
@@ -340,6 +342,18 @@ class Searcher:
             log.debug("Concept query expansion failed", exc_info=True)
             return []
 
+    def _repeatable_options(self, num_predict: int, **extra: Any) -> dict[str, Any]:
+        """Options for an LLM step of a search, so a repeated search samples alike.
+
+        A seed alone does not repeat a reply on a local engine: a cached prompt
+        leaves the logits to the state of the slot that served it, and that state
+        follows from the requests before it. So the step does not use the cache.
+        """
+        seed = self._config.seed
+        return aux_options(
+            num_predict, seed=SEARCH_SEED if seed is None else seed, cache_prompt=False, **extra
+        )
+
     def _llm_expand(self, question: str, count: int) -> list[str]:
         """Call the LLM to produce ``count`` alternative phrasings.
 
@@ -352,7 +366,7 @@ class Searcher:
         prompt = EXPANSION_PROMPT.format(count=count, question=question)
         messages = [{"role": "user", "content": prompt}]
         response = self._provider.chat(
-            messages, stream=False, options=aux_options(EXPANSION_MAX_TOKENS)
+            messages, stream=False, options=self._repeatable_options(EXPANSION_MAX_TOKENS)
         )
         text = strip_reasoning(response.text).strip()
         variants = [_strip_list_marker(line.strip()) for line in text.split("\n") if line.strip()]
@@ -460,7 +474,7 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
                 stream=False,
-                options=aux_options(HYDE_MAX_TOKENS),
+                options=self._repeatable_options(HYDE_MAX_TOKENS),
             )
             # Reasoning models front-load deliberation; embedding it instead
             # of the passage would search for the model's thought process.
@@ -610,8 +624,31 @@ class Searcher:
         *,
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
+        """The search result every surface shows: at most ``top_k`` rows.
+
+        The relevance floor, the per-source cap and ``top_k`` apply last, after
+        every step that adds rows. A query that names one document returns that
+        document's head: the name is the relevance, and the per-source cap would
+        cut the document the caller asked for.
+        """
+        if top_k == 0:
+            top_k = self._config.top_k
+        if self._config.intent_routing and self._parse_structured_query(question).mode is None:
+            known_item = self._known_item_results(question, self._retrieval_scope(chunk_type))
+            if known_item:
+                return known_item[:top_k]
+        kept = filter_results(
+            self._candidates(question, top_k, chunk_type),
+            self._config.max_distance,
+            self._config.min_relevance_score,
+        )
+        return diversify_sources(kept, self._config.diversity_max_per_source)[:top_k]
+
+    def _candidates(
+        self, question: str, top_k: int, chunk_type: ChunkType | None
+    ) -> list[SearchChunk]:
         """Embed question and search with expansion, HyDE, and concept boost.
-        Returns up to top_k*2 candidates for downstream filtering.
+        Returns up to top_k*2 candidates for the caller to filter and cut.
 
         When *chunk_type* is set (``"raw"`` or ``"wiki"``), only chunks of
         that type are returned. An explicit ``chunk_type`` always wins
@@ -629,8 +666,6 @@ class Searcher:
         a filter, not a re-ranking, and a "recent" query must be honored in any
         mode.
         """
-        if top_k == 0:
-            top_k = self._config.top_k
         mode, clean_query = self._parse_structured_query(question)
         if mode is not None:
             structured = self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
@@ -638,15 +673,6 @@ class Searcher:
         if self._refuse_wiki_scope(chunk_type):
             return []
         chunk_type = self._retrieval_scope(chunk_type)
-        if self._config.intent_routing:
-            # A query naming one document wants that document on every
-            # retrieval surface, not just ask: without this, bare search
-            # (HTTP /api/search, MCP) returns similarity neighbors of the
-            # question's wording. The document's head, in document order,
-            # fills the standard return budget.
-            known_item = self._known_item_results(question, chunk_type)
-            if known_item:
-                return known_item[: top_k * 2]
         query_vec = self._embedder.embed_query(question)
         # Retrieve the reranker's candidate depth when one is loaded, else top_k.
         retrieve_k = (
@@ -706,7 +732,7 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options=aux_options(CONDENSE_MAX_TOKENS),
+                options=self._repeatable_options(CONDENSE_MAX_TOKENS),
             )
             rewritten = strip_reasoning(response.text).strip().splitlines()
             first_line = rewritten[0].strip() if rewritten else ""
@@ -991,14 +1017,14 @@ class Searcher:
             # trims to the context window, keeping the document's head.
             results = known_item
         else:
-            # search() reranks internally now, so the ask path no longer reranks
+            # _candidates() reranks internally, so the ask path does not rerank
             # again. It still requests the reranker's candidate depth so context
             # assembly (prepare_results, select_context) works from a deep
             # reranked pool rather than only top_k*2.
             retrieve_k = top_k or self._config.top_k
             if self._config.reranker_model:
                 retrieve_k = max(retrieve_k, self._config.rerank_candidates)
-            results = self.search(retrieval_query, top_k=retrieve_k, chunk_type=chunk_type)
+            results = self._candidates(retrieval_query, retrieve_k, chunk_type)
             if rewrite is not None:
                 typed_results = self._search_typed_arm(question, retrieve_k, chunk_type)
                 results = fuse_ranked_lists([results, typed_results])
@@ -1326,7 +1352,7 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
-                options=aux_options(
+                options=self._repeatable_options(
                     INTENT_CLASSIFY_MAX_TOKENS, response_format=json_reply_format()
                 ),
             )

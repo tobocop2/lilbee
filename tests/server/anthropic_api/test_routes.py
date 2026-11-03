@@ -653,16 +653,6 @@ class TestThinkingControlOnRoute:
 class TestReasoningCapOnRoute:
     """The reasoning cap bounds thinking on /v1/messages, both paths."""
 
-    @pytest.fixture(autouse=True)
-    def _no_model_defaults(self):
-        """A per-model override would beat the cap these tests set."""
-        from lilbee.core.config import cfg
-
-        previous = cfg.model_defaults
-        cfg.clear_model_defaults()
-        yield
-        cfg.apply_model_defaults(previous)
-
     def _cap(self, monkeypatch, chars: int) -> None:
         from lilbee.core.config import cfg
 
@@ -829,33 +819,6 @@ class TestReasoningCapOnRoute:
         )
         assert text == "forced answer"
         assert services_with_chat_model.provider.chat.call_count == 2
-
-    async def test_per_model_override_flows_through_the_cap(
-        self, services_with_chat_model, _auth_token, monkeypatch
-    ):
-        """ModelDefaults beats the global setting, as effective_reasoning_cap says."""
-        from lilbee.core.config import cfg
-        from lilbee.providers.model_defaults import ModelDefaults
-
-        monkeypatch.setattr(cfg, "max_reasoning_chars", 64_000)
-        cfg.apply_model_defaults(ModelDefaults(max_reasoning_chars=10))
-        services_with_chat_model.provider.chat.side_effect = [
-            FakeProviderStream(["<think>", "x" * 40, "</think>", "ignored"]),
-            FakeProviderStream(["forced answer"]),
-        ]
-        async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post(
-                "/v1/messages",
-                json=_body(stream=True, thinking={"type": "enabled"}),
-                headers=_h(),
-            )
-        events = _sse_events(resp.content)
-        text = "".join(
-            p["delta"]["text"]
-            for t, p in events
-            if t == "content_block_delta" and p["delta"]["type"] == "text_delta"
-        )
-        assert text == "forced answer"
 
     async def test_uncapped_setting_leaves_long_reasoning_alone(
         self, services_with_chat_model, _auth_token, monkeypatch

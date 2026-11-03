@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeVar, runtime_checkable
 
 from textual.await_remove import AwaitRemove
 from textual.containers import Vertical
@@ -66,3 +66,11 @@ def drawer_holding(widget: Widget | None) -> Drawer | None:
     if widget is None:
         return None
     return next((node for node in widget.ancestors_with_self if isinstance(node, Drawer)), None)
+
+
+_ChildT = TypeVar("_ChildT", bound=Widget)
+
+
+def first_direct_child(node: Widget, widget_type: type[_ChildT]) -> _ChildT | None:
+    """The first immediate child of *node* that is a *widget_type*, or None."""
+    return next(iter(node.query_children(widget_type)), None)

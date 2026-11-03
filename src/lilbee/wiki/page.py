@@ -26,7 +26,7 @@ from lilbee.data.store import (
     SearchChunk,
     Store,
 )
-from lilbee.providers.base import LLMProvider
+from lilbee.providers.base import ChosenSeed, LLMProvider
 from lilbee.retrieval.reasoning import strip_reasoning
 from lilbee.wiki.citations import (
     ParsedCitation,
@@ -76,7 +76,7 @@ _CHUNK_SEPARATOR = "\n\n"
 
 # Seed used for wiki generation when the user set none, so an unchanged
 # corpus regenerates identically at the low wiki sampling temperature.
-WIKI_DEFAULT_SEED = 1
+WIKI_DEFAULT_SEED = ChosenSeed(1)
 
 # Directive recognized by chat templates that support a reasoning mode
 # (Qwen3, DeepSeek-R1, etc.). Wiki generation is a summarization task

@@ -153,7 +153,7 @@ def repo_has_mmproj(hf_repo: str) -> bool:
 
     A projector sibling marks the repo's model as a vision loader regardless of
     its text architecture or name; mainstream VL repos (Qwen-VL, InternVL,
-    SmolVLM, gemma-3) match no vision name pattern. Fails open to False (any
+    gemma-3) match no vision name pattern. Fails open to False (any
     error: the probe is advisory) so an offline pull degrades to name-based
     classification.
     """

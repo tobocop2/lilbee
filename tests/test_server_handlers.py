@@ -535,12 +535,25 @@ class TestSearch:
     async def test_chunk_type_passed_to_searcher(self, mock_svc):
         mock_svc.searcher.search.return_value = []
         await handlers.search("test", chunk_type="wiki")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=5, chunk_type="wiki")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=cfg.top_k, chunk_type="wiki")
 
     async def test_chunk_type_defaults_to_none(self, mock_svc):
         mock_svc.searcher.search.return_value = []
         await handlers.search("test")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=5, chunk_type=None)
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=cfg.top_k, chunk_type=None)
+
+    async def test_omitted_top_k_uses_configured_value(self, mock_svc):
+        """Omitting top_k resolves to cfg.top_k read at call time, not a hardcoded default."""
+        mock_svc.searcher.search.return_value = []
+        cfg.top_k = 7
+        await handlers.search("test")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=7, chunk_type=None)
+
+    async def test_explicit_top_k_wins_over_configured_value(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        cfg.top_k = 7
+        await handlers.search("test", top_k=3)
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=3, chunk_type=None)
 
 
 class TestAsk:
@@ -2419,6 +2432,16 @@ class TestSseEventQueue:
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
         assert phase in drained
 
+    async def test_analyze_progress_sheds_under_backpressure(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        for i in range(10):
+            queue.put_event_nowait(f'event: analyze\ndata: {{"done": {i}}}\n\n', EventType.ANALYZE)
+        assert queue.qsize() == 2
+        assert queue.dropped_events == 8
+
     @pytest.mark.parametrize(
         "event_type",
         ["SYNC_DONE", "CRAWL_DONE", "WIKI_PHASE"],
@@ -3912,6 +3935,40 @@ class TestModelHandlersRunBlockingWorkOffLoop:
 
         assert threads and threads[0] != loop_tid
 
+    async def test_set_chat_model_runs_apply_settings_update_off_the_loop(self, tmp_path, mock_svc):
+        """The config.toml write behind PUT /api/models/chat must not stall the loop."""
+        import threading
+
+        from lilbee.app.settings import SettingsUpdateResult
+
+        loop_tid = threading.get_ident()
+        mock_svc.provider.list_models.return_value = [_CHAT_REF]
+        threads, stub = _thread_recorder(
+            SettingsUpdateResult(updated=["chat_model"], reindex_required=False)
+        )
+        with patch("lilbee.server.handlers.models.apply_settings_update", side_effect=stub):
+            await handlers.set_chat_model(_CHAT_REF)
+
+        assert threads and all(tid != loop_tid for tid in threads)
+
+    async def test_set_embedding_model_runs_apply_settings_update_off_the_loop(
+        self, tmp_path, mock_svc
+    ):
+        """Embedding has its own inline apply_settings_update call, unlike the shared helper."""
+        import threading
+
+        from lilbee.app.settings import SettingsUpdateResult
+
+        loop_tid = threading.get_ident()
+        mock_svc.provider.list_models.return_value = [_EMBED_REF]
+        threads, stub = _thread_recorder(
+            SettingsUpdateResult(updated=["embedding_model"], reindex_required=False)
+        )
+        with patch("lilbee.server.handlers.models.apply_settings_update", side_effect=stub):
+            await handlers.set_embedding_model(_EMBED_REF)
+
+        assert threads and all(tid != loop_tid for tid in threads)
+
 
 class TestPlacementHandlersRunOffTheLoop:
     """Placement actions and the Intel util notice shell out to GPU probes,
@@ -4171,8 +4228,17 @@ class TestUpdateConfig:
     async def test_update_config_sets_the_ocr_mode(self, tmp_path):
         cfg.vision_model = _VISION_REF
         result = await handlers.update_config({"ocr": "off"})
-        assert result.model_dump() == {"updated": ["ocr"], "reindex_required": False}
+        assert result.model_dump() == {
+            "updated": ["ocr"],
+            "reindex_required": False,
+            "warnings": [],
+        }
         assert cfg.ocr is OcrMode.OFF
+
+    async def test_update_config_returns_the_warnings_of_the_update(self, tmp_path):
+        with patch("lilbee.app.settings._update_warnings", return_value=("Mind the gap.",)):
+            result = await handlers.update_config({"temperature": 0.7})
+        assert result.warnings == ["Mind the gap."]
 
     async def test_update_config_reindex(self, tmp_path):
         result = await handlers.update_config({"chunk_size": 1024})
@@ -4183,12 +4249,45 @@ class TestUpdateConfig:
         cfg.temperature = 0.5
         result = await handlers.update_config({"temperature": None})
         assert result.updated == ["temperature"]
-        assert cfg.temperature is None
+        assert cfg.temperature == 0.1  # the built-in, as a fresh Config() gives
         # Verify delete_value was called (file should not contain temperature)
         from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
         assert "temperature" not in stored
+
+    async def test_update_config_null_over_invalid_profile_value_is_refused(self, tmp_path):
+        from lilbee.core import settings as s
+
+        s.update_values(tmp_path, {"rerank_min_score": 0.4})
+        s.write_profile_table(tmp_path, "scanned", {"rerank_min_score": "banana"})
+        cfg.rerank_min_score = 0.4
+        with pytest.raises(ValueError, match="Cannot apply 'rerank_min_score'"):
+            await handlers.update_config({"rerank_min_score": None})
+        assert cfg.rerank_min_score == 0.4
+        assert s.load(cfg.data_root)["rerank_min_score"] == 0.4
+
+    async def test_config_schema_reads_settings_off_the_event_loop(self):
+        from lilbee.server.handlers import config as config_handlers
+
+        with patch.object(asyncio, "to_thread", wraps=asyncio.to_thread) as spy:
+            result = await config_handlers.get_config_schema()
+        spy.assert_called_once_with(config_handlers.list_settings)
+        assert any(entry.key == "top_k" for entry in result.fields)
+
+    async def test_update_config_writes_settings_off_the_event_loop(self, tmp_path):
+        """The config.toml write behind PATCH /api/config must not stall the loop."""
+        from lilbee.server.handlers import config as config_handlers
+
+        with patch.object(asyncio, "to_thread", wraps=asyncio.to_thread) as spy:
+            result = await config_handlers.update_config({"temperature": 0.7})
+        spy.assert_called_once_with(
+            config_handlers.apply_settings_update,
+            {"temperature": 0.7},
+            allow_model_roles=False,
+        )
+        assert result.updated == ["temperature"]
+        assert cfg.temperature == 0.7
 
     async def test_update_config_unknown_field(self):
         with pytest.raises(ValueError, match="Unknown or read-only setting"):
@@ -4204,10 +4303,10 @@ class TestUpdateConfig:
         assert result.reindex_required is False
 
     async def test_invalid_type_raises(self):
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError) as caught:
             await handlers.update_config({"chunk_size": "not_a_number"})
+        assert "validation error" not in str(caught.value)
+        assert str(caught.value).startswith("chunk_size = 'not_a_number' is not ")
 
     async def test_chunk_size_below_minimum_rejected(self):
         with pytest.raises(ValueError, match="chunk_size must be >= 64"):
@@ -4622,6 +4721,19 @@ class TestGetConfigDefaults:
         assert "chunk_size" in dumped
         assert "temperature" in dumped
 
+    async def test_a_profile_value_replaces_the_built_in_default(self, tmp_path):
+        """The default matches ``settings list``: what a reset falls back to."""
+        from lilbee.core import settings as s
+
+        cfg.data_root = tmp_path
+        s.write_profile_table(tmp_path, "notes", {"chunk_size": 384, "ocr": "off"})
+        dumped = (await handlers.get_config_defaults()).model_dump()
+        assert dumped["chunk_size"] == 384
+        assert dumped["ocr"] == "off"
+        assert dumped["top_k"] == 12
+        s.write_profile_table(tmp_path, "notes", {})
+        assert (await handlers.get_config_defaults()).model_dump()["chunk_size"] == 512
+
 
 _VISION_REF = "vision/Test-VL-GGUF/test-vl-Q4_K_M.gguf"
 
@@ -4987,6 +5099,15 @@ class TestClassifyStreamError:
         code, msg = _classify_stream_error(exc)
         assert code == "context_length_exceeded"
         assert "9000" in msg
+
+    def test_cut_stream_sends_its_plain_message(self):
+        """A stream that broke after its first frame tells the client to send again."""
+        from lilbee.providers.fleet.client import StreamInterruptedError
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        _, msg = _classify_stream_error(StreamInterruptedError())
+        assert "stopped answering" in msg
+        assert "Send your message again" in msg
 
     def test_other_exception_falls_back_to_load_error_classifier(self):
         """Non-typed errors delegate to ``classify_load_error`` for OOM detection."""

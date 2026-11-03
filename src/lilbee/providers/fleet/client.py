@@ -42,6 +42,10 @@ from lilbee.providers.roles import RerankMode
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 _PROVIDER_NAME = "llama-server"
+# Shown when a stream breaks after its first frame. The client cannot know why.
+_STREAM_INTERRUPTED_MESSAGE = (
+    "The model server stopped answering and the answer is cut. Send your message again."
+)
 
 # Fleet clients only ever talk to a loopback llama-server over plain HTTP, so TLS is
 # never negotiated. httpx still builds a default SSL context per client (loads the
@@ -189,6 +193,19 @@ _UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
     ProviderErrorKind.PORT_CONFLICT: "The engine could not start {model}: its port was taken",
 }
 _UPSTREAM_DEATH_DEFAULT = "The engine for {model} stopped before it could answer"
+_BROKEN_MODEL_FILE_MESSAGE = (
+    "The model file for {model} is incomplete or damaged. "
+    "Run 'lilbee model rm {model}', then 'lilbee model pull {model}'."
+)
+_BROKEN_UNNAMED_MODEL_FILE_MESSAGE = (
+    "The model file is incomplete or damaged. "
+    "Run 'lilbee model list', remove that model with 'lilbee model rm', then pull it again."
+)
+# What llama.cpp prints when a GGUF ends before its tensor data does.
+_BROKEN_FILE_MARKERS: tuple[str, ...] = (
+    "model is corrupted or incomplete",
+    "is not within the file bounds",
+)
 
 
 def _upstream_death_message(
@@ -196,6 +213,10 @@ def _upstream_death_message(
 ) -> str:
     """One plain line for a model server that exited, built from what lilbee knows."""
     subject = model if model is not None else "the model"
+    if kind is ProviderErrorKind.MODEL_FILE_BROKEN:
+        if model is None:
+            return _BROKEN_UNNAMED_MODEL_FILE_MESSAGE
+        return _BROKEN_MODEL_FILE_MESSAGE.format(model=model)
     cause = _UPSTREAM_DEATH_MESSAGES.get(kind, _UPSTREAM_DEATH_DEFAULT).format(model=subject)
     message = f"{cause} (HTTP {status_code})."
     if engine_log is None:
@@ -250,6 +271,9 @@ def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
         for line in tail.lower().splitlines()
         if not any(marker in line for marker in _SURVIVABLE_LINE_MARKERS)
     ]
+    # A damaged file is checked first: no memory or port change makes it load.
+    if any(marker in line for line in fatal for marker in _BROKEN_FILE_MARKERS):
+        return ProviderErrorKind.MODEL_FILE_BROKEN
     if any(marker in line for line in fatal for marker in _OOM_MARKERS):
         return ProviderErrorKind.CAPACITY
     if _BIND_FAILURE_MARKER in tail:
@@ -454,6 +478,13 @@ class ChatDeadlineError(ProviderError):
     OCR) can word its own timeout message and skip failover without matching
     error strings. Its ``UNKNOWN`` kind keeps it out of ``is_connection_failure``.
     """
+
+
+class StreamInterruptedError(ProviderError):
+    """A chat stream broke after it had sent frames, so its answer is cut."""
+
+    def __init__(self) -> None:
+        super().__init__(_STREAM_INTERRUPTED_MESSAGE, provider=_PROVIDER_NAME)
 
 
 def retry_on_gateway_error(
@@ -911,6 +942,8 @@ class LlamaServerClient:
         inliner = _ThinkInliner(enabled=self._inline_reasoning)
         on_prefill = self._on_prefill
         prefilling = False
+        started = False
+        ended = False
         try:
             with (
                 self._track(),
@@ -929,10 +962,18 @@ class LlamaServerClient:
                                 # The first real frame proves prefill is over.
                                 prefilling = False
                                 on_prefill(None)
+                            started = True
+                            ended |= isinstance(item, StreamFinish)
                             yield item
+                        ended |= _is_done_line(line)
                 tail = inliner.finish()
                 if tail:
                     yield tail
+                _raise_if_cut(started=started, ended=ended)
+        except httpx.TransportError as exc:
+            if not started:
+                raise
+            raise StreamInterruptedError from exc
         finally:
             # A stream that dies or is closed mid-prefill must not leave a
             # stale in-progress reading on the status surface.
@@ -1559,6 +1600,28 @@ def _prefill_progress(line: str) -> tuple[int, int] | None:
         return None
 
 
+def _raise_if_cut(*, started: bool, ended: bool) -> None:
+    """Raise when a started stream's body ended with neither a finish frame nor ``[DONE]``.
+
+    The engine died but its proxy closed the body cleanly, so no transport error
+    was raised. A stream with no frame at all is left to the caller's retry path.
+    """
+    if started and not ended:
+        raise StreamInterruptedError
+
+
+def _is_done_line(line: str) -> bool:
+    """Whether *line* is the SSE ``data: [DONE]`` sentinel that closes a stream."""
+    return _sse_data_body(line) == _DONE_SENTINEL
+
+
+def _sse_data_body(line: str) -> str | None:
+    """The stripped payload of an SSE ``data:`` line, or ``None`` for any other line."""
+    if not line.startswith(_DATA_PREFIX):
+        return None
+    return line[len(_DATA_PREFIX) :].strip()
+
+
 def _parse_sse_stream_items(
     line: str, inliner: _ThinkInliner
 ) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
@@ -1570,9 +1633,7 @@ def _parse_sse_stream_items(
     ``choices[0].finish_reason``, surfaced as a :class:`StreamFinish` so the
     dispatch reports ``length`` (and friends), not just the default end-of-turn.
     """
-    if not line.startswith(_DATA_PREFIX):
-        return
-    body = line[len(_DATA_PREFIX) :].strip()
+    body = _sse_data_body(line)
     if not body or body == _DONE_SENTINEL:
         return
     try:

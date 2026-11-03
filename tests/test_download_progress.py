@@ -415,6 +415,42 @@ class TestDownloadModelProgressChain:
         download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
         assert calls and calls[-1][0] == calls[-1][1]
 
+    def test_a_model_in_the_hub_cache_layout_is_reused_on_a_full_disk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A model the Hub cache holds is reused with no space check and no fetch.
+
+        The cache keeps files under models--<repo>/snapshots/<revision>, so a
+        flat lookup misses it and a full disk then refuses a pull that needs
+        no bytes.
+        """
+        from lilbee.catalog import download as download_mod
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            download_mod,
+            "fetch_remote_file",
+            lambda repo, name: download_mod.RemoteFile(size=1000, blob="abc123"),
+        )
+        monkeypatch.setattr(download_mod, "_free_bytes", lambda path: 0)
+        entry = _test_entry()
+        repo_dir = tmp_path / f"models--{entry.hf_repo.replace('/', '--')}"
+        (repo_dir / "refs").mkdir(parents=True)
+        (repo_dir / "refs" / "main").write_text("rev1", encoding="utf-8")
+        snapshot = repo_dir / "snapshots" / "rev1" / entry.gguf_filename
+        snapshot.parent.mkdir(parents=True)
+        snapshot.write_bytes(b"x" * 1000)
+
+        def fail_download(**kwargs: Any) -> str:
+            raise AssertionError("a cached model must not be fetched")
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fail_download)
+        calls: list[tuple[int, int]] = []
+        result = download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
+        assert result == snapshot
+        assert calls and calls[-1] == (1000, 1000)
+
     def test_hf_cache_hit_detected(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """When hf_hub_download returns instantly (HF cache hit), progress still reports."""
         import hashlib

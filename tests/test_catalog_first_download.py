@@ -8,6 +8,7 @@ from unittest.mock import patch
 from textual.app import ComposeResult
 from textual.widgets import Static
 
+from lilbee.app.settings import SettingsUpdateResult
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui import messages as msg
@@ -65,7 +66,11 @@ async def test_first_chat_download_becomes_active_and_toasts() -> None:
             assert on_success is not None
 
             with (
-                patch.object(LilbeeApp, "set_active_model") as set_active,
+                patch.object(
+                    LilbeeApp,
+                    "set_active_model",
+                    return_value=SettingsUpdateResult(updated=[], reindex_required=False),
+                ) as set_active,
                 patch.object(pilot.app, "notify") as notify,
             ):
                 # on_success runs on the download worker thread, as in production.

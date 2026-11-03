@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import threading
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from lilbee.app.services import get_services
@@ -288,16 +287,6 @@ class RoutingProvider(LLMProvider):
         if self._sdk_provider is not None:
             self._sdk_provider.shutdown()
 
-    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """Forward to the native side only; the SDK side has no local cache."""
-        if self._local is not None:
-            self._local.invalidate_load_cache(model_path)
-
-    def drop_loaded_models_async(self) -> None:
-        """Forward the off-thread fleet drop to the native side; SDK has no cache."""
-        if self._local is not None:
-            self._local.drop_loaded_models_async()
-
     def warm_up_pool(self) -> None:
         """Forward to the native side; the SDK side has no servers to warm.
 
@@ -317,10 +306,10 @@ class RoutingProvider(LLMProvider):
         if self._local is not None:
             self._local.reload_role(role, wait=wait)
 
-    def reload_placement(self, *, wait: bool = False) -> None:
+    def replan_fleet(self, *, wait: bool = False) -> None:
         """Forward to the native engine; the SDK side has no GPU placement."""
         if self._local is not None:
-            self._local.reload_placement(wait=wait)
+            self._local.replan_fleet(wait=wait)
 
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether *role* can serve a request right now.

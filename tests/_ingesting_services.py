@@ -39,6 +39,7 @@ def ingesting_services() -> tuple[Services, dict[str, dict[str, Any]]]:
     store.index_mismatch.return_value = None
     store.crawl_pages.titles.return_value = {}
     store.get_meta.return_value = None
+    store.count_chunks.return_value = 0
     store.search.return_value = []
     store.bm25_probe.return_value = []
     embedder = MagicMock()

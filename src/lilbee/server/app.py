@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import anyio.to_thread
 from litestar import Litestar, MediaType, Request, Response
 from litestar.config.cors import CORSConfig
-from litestar.exceptions import HTTPException
+from litestar.exceptions import HTTPException, ValidationException
 from litestar.exceptions.responses import create_exception_response
 from litestar.middleware import ASGIMiddleware
 from litestar.middleware.base import DefineMiddleware
@@ -33,6 +33,7 @@ from lilbee.server.routes.agent_config import (
     agent_config_index_route,
     agent_config_route,
 )
+from lilbee.server.routes.analyze import analyze_router
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
     add_route,
@@ -45,8 +46,10 @@ from lilbee.server.routes.documents import (
 )
 from lilbee.server.routes.general import (
     config_defaults_route,
+    config_reset_route,
     config_route,
     config_schema_route,
+    config_sources_route,
     config_update_route,
     health_route,
     shutdown_route,
@@ -81,6 +84,7 @@ from lilbee.server.routes.placement import (
     placement_route,
     placement_set_route,
 )
+from lilbee.server.routes.profiles import profiles_router
 from lilbee.server.routes.search import (
     ask_route,
     ask_stream_route,
@@ -104,6 +108,7 @@ from lilbee.server.routes.setup import (
     setup_crawler_route,
     setup_crawler_status_route,
 )
+from lilbee.server.validation_format import plain_validation
 from lilbee.server.wiki import (
     wiki_build_route,
     wiki_citations_reverse_route,
@@ -321,6 +326,11 @@ def _json_error_response(request: Request, exc: Exception) -> Response:
     return response
 
 
+def _validation_error_response(request: Request, exc: ValidationException) -> Response:
+    """Answer a body that fails validation as the JSON 400, with no internal class name."""
+    return _json_error_response(request, plain_validation(exc))
+
+
 def _unhandled_error_response(request: Request, exc: Exception) -> Response:
     """Log an unmapped failure, then answer it as the same JSON 500.
 
@@ -346,6 +356,7 @@ def create_app() -> Litestar:
         middleware=[DefineMiddleware(AuthMiddleware), _LibraryOpenWait()],
         exception_handlers={
             HTTPException: _json_error_response,
+            ValidationException: _validation_error_response,
             Exception: _unhandled_error_response,
         },
         route_handlers=[
@@ -356,7 +367,9 @@ def create_app() -> Litestar:
             shutdown_route,
             config_route,
             config_defaults_route,
+            config_reset_route,
             config_schema_route,
+            config_sources_route,
             config_update_route,
             source_content_route,
             search_route,
@@ -398,6 +411,8 @@ def create_app() -> Litestar:
             session_delete_route,
             export_route,
             import_route,
+            profiles_router,
+            analyze_router,
             placement_route,
             placement_preview_route,
             placement_set_route,

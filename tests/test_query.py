@@ -689,16 +689,17 @@ class TestSearchContext:
         """The filter drops structural chunks from the candidate list before the
         top_k*2 slice, so a real passage past the window backfills into it. If the
         filter ran after the slice, the deeper real passage would be lost."""
-        cfg.top_k = 1  # window is top_k*2 = 2
+        cfg.top_k = 2  # window is top_k*2 = 4
         cfg.filter_structural_chunks = True
         real0 = _make_result(source="a.pdf", distance=0.1, chunk="Answer prose one.")
-        toc1 = _make_result(source="toc1.pdf", distance=0.2, chunk=self._TOC_CHUNK)
-        toc2 = _make_result(source="toc2.pdf", distance=0.3, chunk=self._TOC_CHUNK)
-        real3 = _make_result(source="b.pdf", distance=0.4, chunk="Answer prose two.")
-        mock_svc.store.search.return_value = [real0, toc1, toc2, real3]
+        tocs = [
+            _make_result(source=f"toc{n}.pdf", distance=0.2 + n / 100, chunk=self._TOC_CHUNK)
+            for n in range(1, 4)
+        ]
+        real4 = _make_result(source="b.pdf", distance=0.4, chunk="Answer prose two.")
+        mock_svc.store.search.return_value = [real0, *tocs, real4]
         sources = [r.source for r in get_services().searcher.search("q")]
-        assert "b.pdf" in sources  # backfilled from past the pre-filter window
-        assert "toc1.pdf" not in sources and "toc2.pdf" not in sources
+        assert sources == ["a.pdf", "b.pdf"]  # b.pdf backfilled from past the window
 
     def test_structural_filter_keeps_query_matched_page(self, mock_svc):
         """A page the query lexically hit is never dropped, whatever its shape:
@@ -766,6 +767,26 @@ class TestExpandQuery:
         for text, vec in variants:
             assert isinstance(text, str)
             assert len(vec) == 768
+
+    def test_seeds_the_variants_with_the_search_seed(self, mock_svc):
+        from lilbee.retrieval.query.expansion import SEARCH_SEED
+
+        mock_svc.provider.chat.return_value = _text_result("explain how X works")
+        get_services().searcher._llm_expand("explain X", 1)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["seed"] == SEARCH_SEED
+
+    def test_the_variants_skip_the_prompt_cache_of_the_engine(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("explain how X works")
+        get_services().searcher._llm_expand("explain X", 1)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["cache_prompt"] is False
+
+    def test_a_seed_the_user_set_wins_over_the_search_seed(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("explain how X works")
+        searcher = get_services().searcher
+        seeded = searcher._config.model_copy(update={"seed": 7})
+        with mock.patch.object(searcher, "_config", seeded):
+            searcher._llm_expand("explain X", 1)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["seed"] == 7
 
     def test_caps_at_three(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("A\nB\nC\nD\nE")
@@ -2096,6 +2117,20 @@ class TestHydeSearch:
         get_services().searcher._hyde_search("explain X", top_k=5)
         mock_svc.embedder.embed_query.assert_called_once_with("hypothetical passage")
 
+    def test_seeds_the_passage_with_the_search_seed(self, mock_svc):
+        from lilbee.retrieval.query.expansion import SEARCH_SEED
+
+        mock_svc.provider.chat.return_value = _text_result("hypothetical passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["seed"] == SEARCH_SEED
+
+    def test_the_passage_skips_the_prompt_cache_of_the_engine(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("hypothetical passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["cache_prompt"] is False
+
     def test_spends_its_own_token_budget(self, mock_svc):
         """A generated answer passage and a list of query variants are not the
         same length of output, so they must not share one cap: retuning either
@@ -2367,6 +2402,22 @@ class TestLlmIntentRouting:
             assert answer is not None
             assert "5 documents" in answer
             mock_svc.provider.chat.assert_called_once()
+        finally:
+            cfg.intent_llm = False
+
+    def test_llm_route_repeats_with_a_seed_and_no_prompt_cache(self, mock_svc):
+        """An unseeded, cached classification can pick another route on a second run."""
+        from lilbee.retrieval.query.expansion import SEARCH_SEED
+
+        cfg.intent_llm = True
+        try:
+            mock_svc.provider.chat.return_value = _text_result(self._CLASSIFY_JSON)
+            mock_svc.store.count_term_mentions.return_value = (12, 5)
+            get_services().searcher.route_direct_answer("how many tomes mention blood?")
+            options = mock_svc.provider.chat.call_args.kwargs["options"]
+            assert options["seed"] == SEARCH_SEED
+            assert options["cache_prompt"] is False
+            assert "response_format" in options
         finally:
             cfg.intent_llm = False
 
@@ -2686,16 +2737,15 @@ class TestKnownItemRoute:
         mock_svc.embedder.embed_query.assert_not_called()
 
     def test_bare_search_route_caps_at_return_budget(self, mock_svc):
-        """A huge named document fills the standard search return budget
-        (top_k*2) with its head, not the whole document."""
+        """A huge named document fills top_k with its head, past the per-source cap."""
+        cfg.diversity_max_per_source = 1
         mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
         mock_svc.store.get_chunks_by_source.return_value = [
             _make_result(source="survey_report.pdf", chunk=f"c{i}", chunk_index=i)
             for i in range(100)
         ]
         results = get_services().searcher.search("summarize survey_report.pdf", top_k=5)
-        assert len(results) == 10
-        assert [r.chunk_index for r in results] == list(range(10))
+        assert [r.chunk_index for r in results] == list(range(5))
 
     def test_bare_search_skips_route_when_intent_routing_off(self, mock_svc):
         mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
@@ -3390,6 +3440,16 @@ class TestHistoryCondensation:
         )
         assert rewritten == "standalone question"
         assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
+
+    def test_repeats_the_rewrite_with_a_seed_and_no_prompt_cache(self, mock_svc):
+        """An unseeded, cached rewrite gives other words, and so other rows, on a second run."""
+        from lilbee.retrieval.query.expansion import SEARCH_SEED
+
+        mock_svc.provider.chat.return_value = _text_result("standalone question")
+        get_services().searcher._condense_question("and when was it written?", list(self._HISTORY))
+        options = mock_svc.provider.chat.call_args.kwargs["options"]
+        assert options["seed"] == SEARCH_SEED
+        assert options["cache_prompt"] is False
 
 
 class TestTypedRewriteFusion:

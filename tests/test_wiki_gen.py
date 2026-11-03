@@ -275,6 +275,23 @@ class TestWikiGenerationOptions:
         cfg.seed = 99
         assert wiki_generation_options(cfg)["seed"] == 99
 
+    def test_the_default_seed_is_marked_as_lilbees_choice(self):
+        """An Anthropic model has no seed field; the seed lilbee picked must not be refused."""
+        from lilbee.providers.base import ChosenSeed
+        from lilbee.providers.model_ref import parse_model_ref, translate_options
+
+        cfg.seed = None
+        options = wiki_generation_options(cfg)
+        assert isinstance(options["seed"], ChosenSeed)
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        assert "seed" not in translate_options(options, ref)
+
+    def test_a_user_seed_is_not_marked_as_lilbees_choice(self):
+        from lilbee.providers.base import ChosenSeed
+
+        cfg.seed = 99
+        assert not isinstance(wiki_generation_options(cfg)["seed"], ChosenSeed)
+
     def test_applies_the_wiki_temperature_and_output_cap(self):
         """Set the two temperatures apart first: they share the 0.1 default, so
         asserting against cfg.wiki_temperature alone passes even if generation

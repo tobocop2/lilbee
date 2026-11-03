@@ -1,0 +1,60 @@
+ApplyProfileDialog, SaveProfileDialog, ProfilePathDialog {
+    align: center middle;
+}
+
+#apply-body {
+    width: 90%;
+    max-width: 100;
+    max-height: 90%;
+}
+
+#path-fields {
+    height: auto;
+    max-height: 14;
+}
+
+#apply-scroll {
+    height: auto;
+    max-height: 100%;
+}
+
+#apply-untouched {
+    margin-top: 1;
+}
+
+#save-body {
+    width: 90%;
+    max-width: 72;
+    max-height: 20;
+}
+
+#path-body {
+    width: 90%;
+    max-width: 72;
+    max-height: 90%;
+}
+
+#apply-changes {
+    height: auto;
+    max-height: 8;
+}
+
+#apply-summary {
+    text-style: bold;
+    margin-top: 1;
+}
+
+#apply-actions {
+    height: 1;
+    width: 100%;
+    margin-top: 1;
+    align-horizontal: center;
+}
+
+#save-actions, #path-actions {
+    dock: bottom;
+    height: 1;
+    width: 100%;
+    margin-top: 1;
+    align-horizontal: center;
+}

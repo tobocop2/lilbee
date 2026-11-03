@@ -11,7 +11,7 @@ from lilbee.cli.tui.widgets.model_pick import (
     config_key_for_scope,
 )
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, WorkerRole
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, patch_model_write
 
 
 def test_config_key_for_scope_round_trips_and_rejects_unknown() -> None:
@@ -56,7 +56,7 @@ async def test_apply_model_pick_persists_and_reloads_vision() -> None:
     app = LilbeeAppHost()
     async with app.run_test(size=(80, 24)) as pilot:
         with (
-            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
+            patch_model_write() as mock_apply,
             patch(
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
@@ -81,7 +81,7 @@ async def test_apply_model_pick_reload_failure_shows_error_toast() -> None:
     app = LilbeeAppHost()
     async with app.run_test(size=(80, 24)) as pilot:
         with (
-            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"),
+            patch_model_write(),
             patch(
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
@@ -103,7 +103,7 @@ async def test_apply_model_pick_none_is_cancel() -> None:
     app = LilbeeAppHost()
     async with app.run_test(size=(80, 24)) as _pilot:
         done = MagicMock()
-        with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
+        with patch_model_write() as mock_apply:
             apply_model_pick(app.screen, key="vision_model", ref=None, on_done=done)
         mock_apply.assert_not_called()
         done.assert_not_called()
@@ -116,7 +116,7 @@ async def test_apply_model_pick_empty_clears_nullable_field() -> None:
     app = LilbeeAppHost()
     async with app.run_test(size=(80, 24)) as pilot:
         with (
-            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
+            patch_model_write() as mock_apply,
             patch(
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
@@ -133,7 +133,7 @@ async def test_apply_model_pick_empty_ignored_for_non_nullable() -> None:
     """``ref=""`` for a non-nullable field (chat) is treated as an invalid no-op."""
     app = LilbeeAppHost()
     async with app.run_test(size=(80, 24)) as _pilot:
-        with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
+        with patch_model_write() as mock_apply:
             apply_model_pick(app.screen, key="chat_model", ref="", on_done=lambda: None)
         mock_apply.assert_not_called()
 
@@ -165,7 +165,7 @@ async def test_apply_model_pick_browse_ref_opens_catalog_for_vision() -> None:
     app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         done = MagicMock()
-        with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
+        with patch_model_write() as mock_apply:
             apply_model_pick(app.screen, key="vision_model", ref=BROWSE_CATALOG_REF, on_done=done)
             await pilot.pause()
             await pilot.pause()
@@ -354,7 +354,7 @@ async def test_bar_active_optional_picker_offers_turn_off(monkeypatch) -> None:
 
         services_mock = MagicMock()
         with (
-            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
+            patch_model_write() as mock_apply,
             patch("lilbee.cli.tui.widgets.model_pick.get_services", return_value=services_mock),
         ):
             vision_btn._on_picker_dismissed("")
@@ -408,7 +408,7 @@ async def test_bar_pill_click_disables_active_optional(monkeypatch) -> None:
         vision_row = next(r for r in app.screen.query(RoleRow) if r.scope == "vision")
         assert vision_row.is_active
         with (
-            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
+            patch_model_write() as mock_apply,
             patch("lilbee.cli.tui.widgets.model_pick.get_services", return_value=services_mock),
         ):
             await pilot.click(vision_row.query_one(".model-bar-pill"))
@@ -495,10 +495,14 @@ async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:
     app = LilbeeAppHost()
     async with app.run_test(size=(80, 24)) as pilot:
         with (
-            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
+            patch_model_write() as mock_apply,
             patch(
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
+            ),
+            patch(
+                "lilbee.cli.tui.widgets.model_pick.embed_pick_needs_rebuild",
+                return_value=True,
             ),
         ):
             apply_model_pick(

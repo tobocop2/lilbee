@@ -95,6 +95,7 @@ class ShardOptions:
     """What every worker of one fan-out is told about the run it belongs to."""
 
     parent_pid: int
+    rebuild: bool = False
 
 
 @dataclass(frozen=True)
@@ -429,6 +430,10 @@ def aggregate_results(verdicts: list[ShardDone]) -> SyncResult:
         held_out=[held for r in results for held in r.held_out],
         unchanged=sum(r.unchanged for r in results),
         truncated=sum(r.truncated for r in results),
+        # Each worker walks the same tree, so each one meets the same folders.
+        unreadable_folders=list(
+            dict.fromkeys(folder for r in results for folder in r.unreadable_folders)
+        ),
     )
 
 
@@ -453,6 +458,7 @@ def run_shard(
                     on_progress=reporter,
                     cancel=stop,
                     shard=spec.shard,
+                    force_rebuild=options.rebuild,
                 )
             )
         reporter.flush()

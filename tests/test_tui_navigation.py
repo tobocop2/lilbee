@@ -793,6 +793,31 @@ async def test_capital_s_and_m_type_into_chat_input():
         assert chat_input.value == "Sm"
 
 
+async def test_failed_sync_toast_steps_work_with_the_prompt_focused():
+    """The toast says to press Esc, then t, then S: each works from a focused prompt."""
+    assert "Press Esc to leave the prompt" in msg.SYNC_FAILED_TOAST
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        chat_input = app.screen.query_one("#chat-input", ChatInput)
+        assert chat_input.has_focus
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not chat_input.has_focus
+        assert chat_input.value == ""
+
+        with mock.patch.object(LilbeeApp, "action_run_sync") as run_sync:
+            await pilot.press("S")
+            await pilot.pause()
+            assert run_sync.call_count == 1
+        assert chat_input.value == ""
+
+        await pilot.press("t")
+        await pump_until(pilot, lambda: isinstance(app.screen, TaskCenter))
+
+
 async def test_settings_editor_accepts_angle_brackets():
     """< and > must type into a focused settings editor, not switch panes."""
     from textual.widgets import TabbedContent
@@ -1910,8 +1935,13 @@ async def test_footer_key_characters_type_into_a_settings_editor():
         await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         app.switch_view("Settings")
         assert await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        app.screen.query_one("#settings-tabs", TabbedContent).active = "settings-tab-models"
 
-        editors = [w for w in app.screen.query(Input).results() if w.display]
+        def _editors() -> list[Input]:
+            return [w for w in app.screen.query(Input).results() if w.display]
+
+        await pump_until(pilot, lambda: bool(_editors()))
+        editors = _editors()
         assert editors, "Settings rendered no text field to type into"
         editor = editors[0]
         editor.focus()
@@ -2000,8 +2030,13 @@ async def test_every_bound_character_types_into_a_settings_editor():
         await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         app.switch_view("Settings")
         assert await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        app.screen.query_one("#settings-tabs", TabbedContent).active = "settings-tab-models"
 
-        editors = [w for w in app.screen.query(Input).results() if w.display]
+        def _editors() -> list[Input]:
+            return [w for w in app.screen.query(Input).results() if w.display]
+
+        await pump_until(pilot, lambda: bool(_editors()))
+        editors = _editors()
         assert editors, "Settings rendered no text field to type into"
         editor = editors[0]
         app.screen.set_focus(editor)

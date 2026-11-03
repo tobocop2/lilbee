@@ -14,6 +14,13 @@ BROWSER_FLAGS_REFUSED_MESSAGE = (
 EXCLUDE_PATTERN_REFUSED_MESSAGE = (
     "The crawl_exclude_patterns setting holds a pattern that crawlberg refuses: {reason}"
 )
+# ``{library}`` is the file the dynamic loader could not find; ``{command}`` is the shell command
+# that installs it; ``{reason}`` is crawlberg's own text.
+CHROMIUM_LIBRARY_MISSING_MESSAGE = (
+    "Chromium cannot start because the system library {library} is missing. "
+    "Run this command with administrator rights to install the libraries Chromium needs: "
+    "{command} ({reason})"
+)
 ROBOTS_REFUSED_MESSAGE = (
     "The site's robots.txt does not allow crawlers to fetch this page. "
     "Set crawl_respect_robots_txt to false to crawl it."
