@@ -16,7 +16,13 @@ def _mac(mac_ver: str) -> host_caps.HostCaps:
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [("13.6", (13, 6)), ("14.0", (14, 0)), ("15.2", (15, 2)), ("14", (14,)), ("26.0.1", (26, 0, 1))],
+    [
+        ("13.6", (13, 6)),
+        ("14.0", (14, 0)),
+        ("15.2", (15, 2)),
+        ("14", (14,)),
+        ("26.0.1", (26, 0, 1)),
+    ],
 )
 def test_a_readable_macos_version_is_parsed(raw: str, expected: tuple[int, ...]) -> None:
     caps = _mac(raw)

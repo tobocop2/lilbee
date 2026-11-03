@@ -16,6 +16,7 @@ from lilbee.providers.base import ProviderErrorKind
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
+    ADAPTERS,
     LIST_HINT,
     EngineChoice,
     NoEngineError,
@@ -66,6 +67,18 @@ def _default(host, fmt, installed):
         order.append(M)
     order.append(L)
     return next((e for e in order if e in installed and fmt in installed[e]), None)
+
+
+@pytest.fixture(autouse=True)
+def _mlx_without_its_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rule is crossed with every host, so the real macOS gate of mlx stays out of it.
+
+    The gate has its own rows in test_mlx_adapter.
+    """
+    open_mlx = SimpleNamespace(
+        bundled=False, served_roles=frozenset(WorkerRole), host_gate=lambda _host: HostGate(True)
+    )
+    monkeypatch.setitem(ADAPTERS, M, open_mlx)  # type: ignore[arg-type]
 
 
 def _oracle(host, fmt, installed, preferred, override):

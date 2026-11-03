@@ -28,6 +28,7 @@ _SLUGS = {
     EngineName.TEI: "tei",
     EngineName.IK_LLAMA: "ik_llama_cpp",
     EngineName.LLAMA: "llama_cpp",
+    EngineName.MLX: "mlx",
 }
 
 
