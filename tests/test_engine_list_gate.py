@@ -161,13 +161,62 @@ def test_the_picker_hides_an_installed_engine_the_cpu_cannot_run(
     assert "ik_llama.cpp" not in engine_service.engine_names("org/repo.gguf")
 
 
+def _refuse(choose: object, model: str, name: str) -> engine_service.EngineRefusedError:
+    with pytest.raises(engine_service.EngineRefusedError) as raised:
+        if choose is None:
+            engine_service.use(model, name)
+        else:
+            engine_service.prefer(name)
+    return raised.value
+
+
 @pytest.mark.parametrize("choose", [engine_service.prefer, None], ids=["prefer", "use"])
 def test_an_engine_the_cpu_cannot_run_cannot_be_chosen(
     monkeypatch: pytest.MonkeyPatch, choose: object
 ) -> None:
     _installed_ik_llama(monkeypatch, avx2=False)
-    with pytest.raises(engine_service.EngineRefusedError, match="not installed"):
-        if choose is None:
-            engine_service.use("org/repo.gguf", "ik_llama.cpp")
-        else:
-            engine_service.prefer("ik_llama.cpp")
+    message = str(_refuse(choose, "org/repo.gguf", "ik_llama.cpp"))
+    assert "is not installed" not in message
+    assert message.startswith("Engine ik_llama.cpp is installed, but this computer cannot run it.")
+    assert "this CPU lacks AVX2" in message
+
+
+@pytest.mark.parametrize("choose", [engine_service.prefer, None], ids=["prefer", "use"])
+@pytest.mark.parametrize(
+    ("engine", "system", "machine", "model", "reason"),
+    [
+        ("mlx", "Linux", "x86_64", "org/repo#mlx", "not offered on linux x86_64"),
+        ("tei", "Windows", "AMD64", "org/repo#safetensors", "No build exists for Windows"),
+    ],
+    ids=["mlx-on-linux", "tei-on-windows"],
+)
+def test_an_installed_engine_the_host_refuses_cannot_be_chosen(
+    monkeypatch: pytest.MonkeyPatch,
+    choose: object,
+    engine: str,
+    system: str,
+    machine: str,
+    model: str,
+    reason: str,
+) -> None:
+    from lilbee.providers.fleet.engines.base import EngineName
+
+    _use_host(monkeypatch, system, machine)
+    adapter = engine_service.choice.ADAPTERS[EngineName(engine)]
+    monkeypatch.setattr(
+        engine_service, "installed_engines", lambda: {EngineName(engine): adapter.formats}
+    )
+    assert engine not in engine_service.offered_engines()
+    message = str(_refuse(choose, model, engine))
+    assert message.startswith(f"Engine {engine} is installed, but this computer cannot run it.")
+    assert reason in message
+    assert "is not installed" not in message
+
+
+def test_an_engine_with_no_build_is_still_reported_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_host(monkeypatch, "Linux", "x86_64")
+    monkeypatch.setattr(engine_service, "installed_engines", lambda: {})
+    with pytest.raises(engine_service.EngineRefusedError, match="Engine mlx is not installed"):
+        engine_service.prefer("mlx")

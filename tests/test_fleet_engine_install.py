@@ -22,6 +22,7 @@ def test_a_bundled_build_is_told_to_reinstall_not_to_use_pip() -> None:
     assert "brew reinstall lilbee" in hint
     assert "npm install -g lilbee" in hint
     assert "pip" not in hint
+    assert "lilbee engine install" not in hint
 
 
 @pytest.mark.parametrize("frozen", [True, False])

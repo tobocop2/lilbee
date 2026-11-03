@@ -566,3 +566,19 @@ def test_the_install_command_retries_after_a_failed_first_use(
     monkeypatch.setattr(first_use, "fetch_frozen", good)
     first_use.install_pack()
     assert first_use.first_use_tool("llama-server").is_file()
+
+
+def test_the_install_command_clears_a_refusal_the_pack_then_outlives(
+    fetched, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet.engine_store import PackUrlError
+
+    good = first_use.fetch_frozen
+    monkeypatch.setattr(
+        first_use, "fetch_frozen", lambda *_a, **_k: (_ for _ in ()).throw(PackUrlError("down"))
+    )
+    with pytest.raises(PackUrlError):
+        first_use.first_use_tool("llama-server")
+    monkeypatch.setattr(first_use, "fetch_frozen", good)
+    first_use.install_pack()
+    assert first_use.first_use_tool("a-tool-the-pack-lacks") is None
