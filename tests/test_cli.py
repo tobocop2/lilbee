@@ -3805,6 +3805,52 @@ class TestEnsureChatModelWiring:
         mock_pull.assert_not_called()
 
 
+class TestAskJsonModelPicker:
+    """With --json and no chat model, the picker prints on stderr and stdout stays JSON."""
+
+    @staticmethod
+    def _run(stdin_text: str, mock_svc):
+        import sys
+
+        from lilbee.modelhub import models as models_mod
+        from lilbee.retrieval.query import AskResult
+
+        def fake_input(prompt: str = "") -> str:
+            # builtins.input writes its prompt to sys.stdout, as the real one does.
+            sys.stdout.write(prompt)
+            line = sys.stdin.readline()
+            if not line:
+                raise EOFError
+            return line.rstrip("\n")
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="a", sources=[])
+        with (
+            mock.patch("lilbee.modelhub.models.ensure_chat_model", _real_ensure_chat_model),
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+            mock.patch("typer.testing._NamedTextIOWrapper.isatty", return_value=True),
+            mock.patch("builtins.input", fake_input),
+            mock.patch.object(models_mod, "get_free_disk_gb", return_value=100.0),
+            mock.patch.object(models_mod, "pull_with_progress"),
+            mock.patch("lilbee.app.settings.apply_settings_update"),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            return runner.invoke(app, ["--json", "ask", "test"], input=stdin_text)
+
+    def test_unanswered_picker_leaves_one_json_error_on_stdout(self, mock_svc):
+        result = self._run("", mock_svc)
+        assert result.exit_code == 1
+        assert "lilbee model pull" in json.loads(result.stdout)["error"]
+        assert "Choice [" in result.stderr
+        assert "Choice [" not in result.stdout
+        assert "Available Models" in result.stderr
+
+    def test_answered_picker_leaves_one_json_answer_on_stdout(self, mock_svc):
+        result = self._run("1\n", mock_svc)
+        assert result.exit_code == 0
+        assert json.loads(result.stdout)["answer"] == "a"
+        assert "Choice [" in result.stderr
+
+
 class TestAskWithoutEmbedder:
     """Ask that cannot ground an answer exits non-zero with the guidance text."""
 
