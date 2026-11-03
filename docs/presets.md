@@ -18,7 +18,7 @@ A preset serves one or more of these roles: `embed`, `rerank`, `chat`, `vision`.
 
 A preset works with a server that offers the OpenAI-compatible routes for the roles you give it. These servers are the targets for presets: oMLX, vMLX, vllm-mlx, mlx-lm, TEI, Lemonade, GenieX, FastFlowLM, mistral.rs and Infinity.
 
-lilbee ran its output check against TEI, Lemonade and mistral.rs. The other servers are not run or not verified yet. See [Preset results](preset-results.md) for each server, role and result. Check which routes your server offers before you give it a role. Use `tei` as the rerank wire for TEI. For every other server, use the default `v1` only if the server documents `POST /v1/rerank`.
+lilbee ran its output check against TEI, Lemonade, mistral.rs, mlx-lm, oMLX, vMLX and vllm-mlx. On the MLX servers, context overflow fails on mlx-lm, vMLX and vllm-mlx, and vMLX rerank fails with the original checkpoint and with the MLX conversion `flaglow/BAAI-bge-reranker-v2-m3-mlx-fp16`. mlx-lm vision fails for `mlx-community/Qwen3-VL-2B-Instruct-4bit`: the server reads images only for Muse Spark. GenieX is not verified. See [Preset results](preset-results.md) for each server, role and result. Check which routes your server offers before you give it a role. Use `tei` as the rerank wire for TEI. For every other server, use the default `v1` only if the server documents `POST /v1/rerank`.
 
 ## The rerank wire
 

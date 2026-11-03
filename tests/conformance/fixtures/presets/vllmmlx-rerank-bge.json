@@ -1,0 +1,37 @@
+{
+ "server": "vllmmlx-rerank-bge",
+ "version": "vllm-mlx 0.4.1 metal",
+ "roles": [
+  "rerank"
+ ],
+ "models": {
+  "rerank": "BAAI/bge-reranker-v2-m3"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "rerank": {
+   "ok": true,
+   "detail": "best=1"
+  }
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "BAAI/bge-reranker-v2-m3",
+    "query": "What is the capital of France?"
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"model\":\"BAAI/bge-reranker-v2-m3\",\"results\":[{\"index\":1,\"relevance_score\":0.9998465260182107,\"document\":{\"text\":\"Paris is the capital of France.\"}},{\"index\":0,\"relevance_score\":0.00001670698145363712,\"document\":{\"text\":\"Bananas are yellow.\"}},{\"index\":2,\"relevance_score\":0.000016467508326760496,\"document\":{\"text\":\"Dogs bark.\"}}],\"usage\":{\"total_tokens\":50}}"
+  }
+ ]
+}

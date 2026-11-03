@@ -1,0 +1,147 @@
+{
+ "server": "vllmmlx-chat",
+ "version": "vllm-mlx 0.4.1 metal",
+ "roles": [
+  "chat"
+ ],
+ "models": {
+  "chat": "mlx-community/Qwen3-0.6B-4bit"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "template": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "tool": {
+   "ok": true,
+   "detail": "tool_calls=['get_weather']"
+  },
+  "overflow": {
+   "ok": false,
+   "detail": "kind=server"
+  }
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "You answer in one short sentence.",
+      "role": "system"
+     },
+     {
+      "content": "What is the capital of France?",
+      "role": "user"
+     },
+     {
+      "content": "Paris.",
+      "role": "assistant"
+     },
+     {
+      "content": "And of Italy?",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"chatcmpl-78eb9f82\",\"object\":\"chat.completion\",\"created\":1793715164,\"model\":\"mlx-community/Qwen3-0.6B-4bit\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<think>\\nOkay, the user is asking about the capital of Italy and the capital of France. Let me start by recalling what I know. France's capital is Paris, and Italy's capital is Rome. But wait, are these correct? I should double-check. France's capital is indeed Paris, and Italy's capital is Rome. Yes, that's right. So the answer for both questions is Paris and Rome. The user might be testing if I can answer both capitals in one sentence, but the initial response provided only one sentence. Wait, the user just asked for the capital of France and Italy, so I need to answer both. But in the first question, the assistant answered \\\"Paris.\\\" Then the user asked \\\"And of Italy?\\\" So the user wants both capitals. So the correct answer is Paris and Rome. So the final answer would be Paris and Rome. But the initial response was just one sentence. So I need to make sure. Let me confirm once more. Yes, France's capital is Paris, Italy's capital is Rome. So the answer is both capitals. So the final answer is Paris and Rome.\\n</think>\\n\\nThe capital of France is Paris, and the capital of Italy is Rome.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":43,\"completion_tokens\":245,\"total_tokens\":288},\"generation_metadata\":null}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "What is the weather in Paris? Use the tool.",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "function": {
+       "description": "Get the weather for a city.",
+       "name": "get_weather",
+       "parameters": {
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"chatcmpl-dfd12834\",\"object\":\"chat.completion\",\"created\":1793715211,\"model\":\"mlx-community/Qwen3-0.6B-4bit\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<think>\\nOkay, the user is asking for the weather in Paris. I need to use the get_weather function. But wait, the tool only takes a city parameter. I should call get_weather with \\\"Paris\\\" as the argument. Let me make sure I structure the tool call correctly. The function requires the city name, so the JSON should have \\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"Paris\\\"}.\\n\\nI think that's all. No other parameters needed. Let me double-check the function's required parameters to confirm. Yep, \\\"city\\\" is required. So the tool call is valid.\\n</think>\",\"tool_calls\":[{\"id\":\"call_368dccc8\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":157,\"completion_tokens\":147,\"total_tokens\":304},\"generation_metadata\":null}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 504,
+   "content_type": "application/json",
+   "body": "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 504,
+   "content_type": "application/json",
+   "body": "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 504,
+   "content_type": "application/json",
+   "body": "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  }
+ ]
+}
