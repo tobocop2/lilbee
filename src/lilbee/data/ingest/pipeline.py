@@ -121,7 +121,13 @@ from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
-from lilbee.runtime.lock import LockTimeoutError, sync_running
+from lilbee.runtime.lock import (
+    LockTimeoutError,
+    SyncTurnOwner,
+    sync_running,
+    sync_turn,
+    sync_wait_message,
+)
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -135,6 +141,7 @@ from lilbee.runtime.progress import (
     OcrStartEvent,
     ProgressEvent,
     SyncDoneEvent,
+    SyncWaitEvent,
     noop_callback,
 )
 from lilbee.runtime.progress.columns import literal_text_column
@@ -1416,29 +1423,68 @@ async def _sync_across_workers(
 
 
 _SyncParams = ParamSpec("_SyncParams")
+# What a sync that names no starter is called in the message of a sync that waits for it.
+DEFAULT_SYNC_STARTER = "lilbee"
 
 
 def _marks_sync_running(
     run: Callable[_SyncParams, Coroutine[Any, Any, SyncResult]],
 ) -> Callable[_SyncParams, Coroutine[Any, Any, SyncResult]]:
-    """Hold the data root's sync mark for the whole run, so a reset refuses meanwhile."""
+    """Hold the data root's sync mark for the whole run, so a reset refuses meanwhile.
+
+    Under the mark, the sync also takes the data root's sync turn before it plans, so
+    syncs run one after another and none syncs the files of another that runs. A
+    fan-out worker runs under its parent's turn, and a data root that cannot hold the
+    mark cannot hold the turn either; neither takes it.
+    """
 
     @functools.wraps(run)
     async def _marked(*args: _SyncParams.args, **kwargs: _SyncParams.kwargs) -> SyncResult:
         data_root = active_config().data_root
-        # ``cancel`` is keyword-only on a sync, so it is never in *args*.
+        # ``cancel``, ``shard``, ``on_progress`` and ``started_by`` are keyword-only on a
+        # sync, so they are never in *args*.
         cancel = cast("CancelSignal | None", kwargs.get("cancel"))
+        worker = kwargs.get("shard") is not None
         # The services come before the mark.
         store = (await asyncio.to_thread(get_services)).store
-        async with sync_running(data_root, cancel):
+
+        async def _run() -> SyncResult:
             # The sync walks and names sources by the registry config.toml holds at its
             # start; a worker keeps its parent's.
-            if kwargs.get("shard") is None:
+            if not worker:
                 await asyncio.to_thread(settings.overlay_persisted_roots, active_config())
             with store.registry_pinned():
                 return await run(*args, **kwargs)
 
+        async with sync_running(data_root, cancel) as marked:
+            if not marked or worker:
+                return await _run()
+            async with _sync_turn_for(data_root, cancel, kwargs):
+                return await _run()
+
     return _marked
+
+
+def _sync_turn_for(
+    data_root: Path, cancel: CancelSignal | None, kwargs: dict[str, Any]
+) -> contextlib.AbstractAsyncContextManager[None]:
+    """The sync turn of *data_root* for the sync called with *kwargs*; a wait is reported."""
+    on_progress = cast("DetailedProgressCallback", kwargs.get("on_progress", noop_callback))
+    started_by = cast("str", kwargs.get("started_by", DEFAULT_SYNC_STARTER))
+
+    def _report_wait(owner: SyncTurnOwner | None) -> None:
+        message = sync_wait_message(owner)
+        log.info(message)
+        on_progress(
+            EventType.SYNC_WAIT,
+            SyncWaitEvent(
+                message=message,
+                holder=owner.started_by if owner else None,
+                pid=owner.pid if owner else None,
+            ),
+        )
+
+    return sync_turn(data_root, cancel, started_by=started_by, on_wait=_report_wait)
 
 
 @_marks_sync_running
@@ -1452,6 +1498,7 @@ async def sync(
     retry_skipped: bool = False,
     prune_ignored: bool = False,
     shard: ShardId | None = None,
+    started_by: str = DEFAULT_SYNC_STARTER,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
     Returns a SyncResult with the added/updated/removed/unchanged/failed/skipped lists.
@@ -1465,6 +1512,8 @@ async def sync(
     in, and removing what a past sync already indexed is the caller's decision.
     A *shard* runs this sync as one worker of a multi-GPU fan-out: it writes its
     slice of the corpus to the index and leaves the corpus-wide passes to the parent.
+    *started_by* names what started this sync, for the message a sync that waits for
+    it shows; ``_marks_sync_running`` reads it.
     """
     config = active_config()
     _store = get_services().store

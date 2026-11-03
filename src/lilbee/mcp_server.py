@@ -127,6 +127,8 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
 log = logging.getLogger(__name__)
+# What a sync of this server is called in the notice of a sync that waits for it.
+_SYNC_STARTER = "lilbee mcp"
 
 _INSTRUCTIONS = (
     "Local search engine over the user's files, code, and crawled pages. "
@@ -396,6 +398,7 @@ async def sync(
                 retry_skipped=retry_skipped,
                 prune_ignored=prune_ignored,
                 cancel=cancel,
+                started_by=_SYNC_STARTER,
             )
         except LIBRARY_REFUSALS as exc:
             return _error(str(exc))
@@ -412,7 +415,7 @@ async def _sync_after_add(
     if not reached_corpus:
         return None
     with temporary_ocr_config(ocr, ocr_timeout), _cancel_token() as cancel:
-        return (await run_sync(quiet=True, cancel=cancel)).model_dump()
+        return (await run_sync(quiet=True, cancel=cancel, started_by=_SYNC_STARTER)).model_dump()
 
 
 async def _crawl_add_urls(

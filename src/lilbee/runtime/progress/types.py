@@ -19,6 +19,7 @@ class EventType(StrEnum):
     FILE_DONE = "file_done"
     BATCH_PROGRESS = "batch_progress"
     SYNC_DONE = "sync_done"
+    SYNC_WAIT = "sync_wait"
     EMBED = "embed"
     EXTRACT = "extract"
     OCR_START = "ocr_start"
@@ -211,6 +212,17 @@ class SyncDoneEvent(BaseModel):
     failed: int
     skipped: int = 0
     relocated: int = 0
+
+
+class SyncWaitEvent(BaseModel):
+    """Emitted once when a sync starts to wait for another sync on the same library.
+
+    *holder* and *pid* name the running sync; both are None when it cannot be read.
+    """
+
+    message: str
+    holder: str | None = None
+    pid: int | None = None
 
 
 class SetupStartEvent(BaseModel):

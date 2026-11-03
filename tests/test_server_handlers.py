@@ -1812,6 +1812,7 @@ class TestSyncStream:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             if on_progress:
                 from lilbee.runtime.progress import EventType, FileDoneEvent, SyncDoneEvent
@@ -1843,6 +1844,7 @@ class TestSyncStream:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             if on_progress:
                 from lilbee.runtime.progress import (
@@ -1883,6 +1885,7 @@ class TestSyncStream:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             await asyncio.sleep(0.2)  # force at least one timeout iteration
             return sync_result
@@ -1908,6 +1911,7 @@ class TestSyncStream:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             captured_cancel.append(cancel)
             if on_progress:
@@ -2005,6 +2009,7 @@ class TestSyncStreamDoneDelivery:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             if on_progress:
                 from lilbee.runtime.progress import EventType, SyncDoneEvent
@@ -2049,6 +2054,7 @@ class TestSyncStreamDoneDelivery:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             if on_progress:
                 from lilbee.runtime.progress import EventType, SyncDoneEvent
@@ -2139,6 +2145,7 @@ class TestSyncStreamDoneDelivery:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             raise RuntimeError("boom")
 
@@ -2165,6 +2172,7 @@ class TestSyncStreamDoneDelivery:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             observed["force_rebuild"] = force_rebuild
             return sync_result
@@ -2187,6 +2195,7 @@ class TestSyncStreamDoneDelivery:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             observed["force_rebuild"] = force_rebuild
             return sync_result
@@ -2209,6 +2218,7 @@ class TestSyncStreamDoneDelivery:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             observed["retry_skipped"] = retry_skipped
             return sync_result
@@ -2231,6 +2241,7 @@ class TestSyncStreamDoneDelivery:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             observed["prune_ignored"] = prune_ignored
             return sync_result
@@ -2255,6 +2266,7 @@ class TestSyncStreamDoneDelivery:
             *,
             on_progress=None,
             cancel=None,
+            started_by=None,
         ):
             observed["ocr_timeout"] = _effective_ocr_timeout()
             return sync_result

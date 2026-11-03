@@ -437,6 +437,7 @@ def run_sync_with_signal_cancel(
     retry_skipped: bool = False,
     prune_ignored: bool = False,
     on_progress: DetailedProgressCallback | None = None,
+    started_by: str = "lilbee sync",
 ) -> SyncResult:
     """Run ``sync`` under Ctrl+C; a sync it stops ends the command with exit status 130."""
     cancel_event = threading.Event()
@@ -447,7 +448,26 @@ def run_sync_with_signal_cancel(
             retry_skipped=retry_skipped,
             prune_ignored=prune_ignored,
             on_progress=on_progress,
+            started_by=started_by,
         )
+
+
+def _wait_shown_on_stderr(chain: DetailedProgressCallback) -> DetailedProgressCallback:
+    """Wrap *chain* so the notice of a sync that waits for another prints to stderr.
+
+    stderr keeps stdout to the one JSON document in JSON mode.
+    """
+    from lilbee.runtime.console import PlainConsole
+    from lilbee.runtime.progress import EventType, ProgressEvent, SyncWaitEvent
+
+    err = PlainConsole(stderr=True)
+
+    def _callback(event_type: EventType, data: ProgressEvent) -> None:
+        if event_type == EventType.SYNC_WAIT and isinstance(data, SyncWaitEvent):
+            err.print(data.message, style=theme.MUTED, soft_wrap=True)
+        chain(event_type, data)
+
+    return _callback
 
 
 def _default_progress() -> DetailedProgressCallback:
@@ -471,10 +491,12 @@ def _run_sync(
     prune_ignored: bool = False,
     on_progress: DetailedProgressCallback | None = None,
     before_sync: Callable[[], None] | None = None,
+    started_by: str,
 ) -> SyncResult:
     """Run ``sync`` on its own event loop; it polls *cancel_event* between files and pages.
 
-    *before_sync* runs once the eager warm is off, before the sync starts.
+    *before_sync* runs once the eager warm is off, before the sync starts. *started_by*
+    names the command for the notice of a sync that waits for this one.
     """
     from lilbee.data.ingest import sync
 
@@ -486,7 +508,9 @@ def _run_sync(
     if before_sync is not None:
         before_sync()
 
-    callback = _cancellable_progress(cancel_event, on_progress or _default_progress())
+    callback = _cancellable_progress(
+        cancel_event, _wait_shown_on_stderr(on_progress or _default_progress())
+    )
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
@@ -498,6 +522,7 @@ def _run_sync(
                 cancel=cancel_event,
                 retry_skipped=retry_skipped,
                 prune_ignored=prune_ignored,
+                started_by=started_by,
             )
         )
     finally:
@@ -525,7 +550,7 @@ def sync_cmd(
 
     try:
         result = run_sync_with_signal_cancel(
-            retry_skipped=retry_skipped, prune_ignored=prune_ignored
+            retry_skipped=retry_skipped, prune_ignored=prune_ignored, started_by="lilbee sync"
         )
     except RuntimeError as exc:
         if cfg.json_mode:
@@ -562,7 +587,7 @@ def rebuild_or_raise() -> SyncResult:
     """Re-ingest every document in place; raises RuntimeError on a refused rebuild."""
     from lilbee.data.ingest import SyncResult
 
-    result = run_sync_with_signal_cancel(force_rebuild=True)
+    result = run_sync_with_signal_cancel(force_rebuild=True, started_by="lilbee rebuild")
     # untyped return: run_sync_with_signal_cancel returns object to avoid a heavy top-level import
     if not isinstance(result, SyncResult):
         raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
@@ -772,6 +797,7 @@ def _register_and_sync(
         result = _run_sync(
             cancel_event,
             before_sync=lambda: rollback.registered(registration.revocable, cancel_event),
+            started_by="lilbee add",
         )
         synced = _changed_content(result)
         return result

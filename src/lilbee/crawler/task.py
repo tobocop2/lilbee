@@ -149,7 +149,7 @@ async def run_crawl(task: CrawlTask) -> None:
         try:
             from lilbee.data.ingest import sync
 
-            await sync(quiet=True, cancel=task.cancel)
+            await sync(quiet=True, cancel=task.cancel, started_by="a crawl")
         except LIBRARY_REFUSALS as exc:
             # A refusal says what to do; a traceback adds nothing to it.
             log.warning("Post-crawl sync failed for %s: %s", task.shown_url, exc)

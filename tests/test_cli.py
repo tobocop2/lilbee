@@ -8045,12 +8045,14 @@ class TestSyncCancelledExit:
             yield
 
         def _library() -> list[str]:
-            """Every path of the data root but the files of the sync lock itself."""
+            """Every path of the data root but the files of the sync lock and the sync turn."""
             paths = (
                 path.relative_to(cfg.data_root).as_posix() for path in cfg.data_root.rglob("*")
             )
             return sorted(
-                path for path in paths if not path.startswith(("sync.lock", ".filelock-"))
+                path
+                for path in paths
+                if not path.startswith(("sync.lock", "sync.turn.", ".filelock-"))
             )
 
         # The reset holds until this block ends; its own limit only ends a test that hangs.

@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from lilbee.data.ingest import SyncResult
 
 log = logging.getLogger(__name__)
+# What a sync of this server is called in the notice of a sync that waits for it.
+_SYNC_STARTER = "lilbee serve"
 
 # Payload carried alongside each source key through _ingest_stream: a server
 # path (str) for /api/add, or an (filename, content) pair for /api/add/upload.
@@ -76,6 +78,7 @@ async def _run_sync_with_sentinel(
                 force_rebuild=force_rebuild,
                 retry_skipped=retry_skipped,
                 prune_ignored=prune_ignored,
+                started_by=_SYNC_STARTER,
             )
     finally:
         sse.queue.put_nowait(None)
@@ -151,7 +154,9 @@ async def _run_add(
             return AddSummary(copied=[], name_taken=reg_result.name_taken, errors=errors)
 
         with temporary_ocr_config(ocr, ocr_timeout):
-            sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+            sync_result = await sync(
+                quiet=True, on_progress=sse.callback, cancel=sse.cancel, started_by=_SYNC_STARTER
+            )
 
         return AddSummary(
             copied=reg_result.registered,
@@ -357,7 +362,9 @@ async def _run_upload(
                 dest.write_bytes(content)
             written.append(name)
         with temporary_ocr_config(ocr, ocr_timeout):
-            sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+            sync_result = await sync(
+                quiet=True, on_progress=sse.callback, cancel=sse.cancel, started_by=_SYNC_STARTER
+            )
         return AddSummary(
             copied=written,
             errors=[],
