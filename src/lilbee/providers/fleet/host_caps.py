@@ -35,6 +35,9 @@ class HostOS(StrEnum):
     WINDOWS = "windows"
 
 
+_OS_DISPLAY = {HostOS.LINUX: "Linux", HostOS.MACOS: "macOS", HostOS.WINDOWS: "Windows"}
+
+
 class HostArch(StrEnum):
     """CPU architectures an engine archive targets."""
 
@@ -51,7 +54,9 @@ class NpuVendor(StrEnum):
 
 
 # PCI vendor id of an accelerator, as sysfs writes it. Vendor ids are public PCI data. A
-# Qualcomm id on Linux names any Qualcomm accelerator, a data-centre card among them.
+# Qualcomm id on Linux names any Qualcomm accelerator, a data-centre card among them. The
+# vendor id alone makes an NPU, so an AMD or Intel accelerator that is not an NPU reads as
+# one; that errs toward a refused engine, not a false pass.
 _NPU_VENDOR_BY_PCI = {
     "0x8086": NpuVendor.INTEL,
     "0x1022": NpuVendor.AMD,
@@ -331,7 +336,7 @@ def _npus(
 ) -> tuple[tuple[Npu, ...], bool, str]:
     """The NPUs, whether the list was read, and why not. Only Linux lists accelerators."""
     if host_os is not HostOS.LINUX:
-        where = host_os.value if host_os else "this OS"
+        where = _OS_DISPLAY[host_os] if host_os else "this OS"
         return (), False, f"lilbee cannot read the NPU list on {where}."
     if accel is None:
         return (), False, NPU_UNREAD

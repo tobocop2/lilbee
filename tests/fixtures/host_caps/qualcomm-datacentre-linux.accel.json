@@ -1,6 +1,6 @@
 {
   "source": "doc",
-  "note": "Written from PCI id tables, not recorded on a machine.",
+  "note": "Written from PCI id tables, not recorded on a machine. The device ids are unverified.",
   "system": "Linux",
   "machine": "x86_64",
   "accel": [
