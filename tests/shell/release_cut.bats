@@ -30,7 +30,9 @@ make_repo() {  # tag.gpgsign value
   git -C "${WORK}" config tag.gpgsign "$1"
   printf 'version = "1.2.3b7"\n' > "${WORK}/pyproject.toml"
   printf 'version = "1.2.3b7"\n' > "${WORK}/uv.lock"
-  git -C "${WORK}" add pyproject.toml uv.lock
+  mkdir -p "${WORK}/plugins/lilbee/.claude-plugin"
+  printf '{\n  "name": "lilbee",\n  "version": "1.2.3b7",\n  "license": "MIT"\n}\n' > "${WORK}/plugins/lilbee/.claude-plugin/plugin.json"
+  git -C "${WORK}" add pyproject.toml uv.lock plugins/lilbee/.claude-plugin/plugin.json
   git -C "${WORK}" commit -q -m "Initial"
   git -C "${WORK}" remote add origin "${ORIGIN}"
   git -C "${WORK}" push -q -u origin main
@@ -87,4 +89,26 @@ promote() {
   [ ! -s "${EDITOR_LOG}" ]
   [ "$(git -C "${ORIGIN}" tag -l v1.2.3b8)" = "v1.2.3b8" ]
   [ "$(git -C "${ORIGIN}" cat-file -t v1.2.3b8)" = "commit" ]
+}
+
+@test "cutting a release moves the plugin version with the lilbee version" {
+  make_repo false
+  run cut
+  [ "$status" -eq 0 ]
+  grep -q '"version": "1.2.3b8"' "${WORK}/plugins/lilbee/.claude-plugin/plugin.json"
+  [ -z "$(git -C "${WORK}" status --porcelain)" ]
+  run git -C "${WORK}" show --stat --format= HEAD
+  [[ "$output" == *"plugins/lilbee/.claude-plugin/plugin.json"* ]]
+}
+
+@test "a release stops when the plugin version does not follow the lilbee version" {
+  make_repo false
+  printf '{\n  "version": "9.9.9"\n}\n' > "${WORK}/plugins/lilbee/.claude-plugin/plugin.json"
+  git -C "${WORK}" commit -q -a -m "Drift"
+  git -C "${WORK}" push -q origin main
+  run cut
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"plugin.json did not take version 1.2.3b8"* ]]
+  [ -z "$(git -C "${WORK}" status --porcelain)" ]
+  [ -z "$(git -C "${WORK}" tag -l)" ]
 }

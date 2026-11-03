@@ -1,6 +1,6 @@
 {
   "name": "lilbee",
-  "version": "0.6.102",
+  "version": "0.6.90b691",
   "description": "Search and manage a local lilbee knowledge base over MCP, with a worker agent for long operations.",
   "author": {
     "name": "tobocop2",

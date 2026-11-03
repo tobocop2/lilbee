@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
+
+from lilbee.cli.launchers import skill_install
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "lilbee"
@@ -37,17 +40,37 @@ def test_wheel_maps_the_plugin_skill_to_the_installed_skill_path():
     assert (ROOT / next(iter(force_include)) / "SKILL.md").is_file()
 
 
+def test_launcher_wheel_and_binary_agree_on_the_skill_location():
+    """The launcher reads the skill where the wheel and the frozen binary put it."""
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    wheel = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    script = (ROOT / "tools" / "wheel-build" / "build_lilbee_binary.sh").read_text(encoding="utf-8")
+    binary = dict(re.findall(r"--include-data-dir=(\S+)=(\S+)", script))
+    installed = skill_install._PACKAGED_SKILL.relative_to(ROOT / "src").as_posix()
+    checkout = skill_install._CHECKOUT_SKILL.relative_to(ROOT).as_posix()
+    expected = {checkout: installed}
+    assert wheel == expected
+    assert {k: v for k, v in binary.items() if k.startswith("plugins/")} == expected
+
+
+def test_plugin_version_follows_the_lilbee_release_version():
+    manifest = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert manifest["version"] == pyproject["project"]["version"]
+
+
+def test_claude_plugin_ci_job_pins_the_cli_version():
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    runs = [step.get("run", "") for step in ci["jobs"]["claude-plugin"]["steps"]]
+    installs = [run for run in runs if "@anthropic-ai/claude-code" in run]
+    assert len(installs) == 1
+    assert re.search(r"@anthropic-ai/claude-code@\d+\.\d+\.\d+(\s|$)", installs[0])
+
+
 def test_manifest_and_marketplace_agree():
     manifest = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "lilbee"
-    assert manifest["version"]
-    assert (
-        manifest["version"]
-        == json.loads((ROOT / "packages" / "lilbee" / "package.json").read_text(encoding="utf-8"))[
-            "version"
-        ]
-    )
     entry = next(p for p in market["plugins"] if p["name"] == manifest["name"])
     assert entry["source"] == "./plugins/lilbee"
     assert (ROOT / entry["source"]).resolve() == PLUGIN
