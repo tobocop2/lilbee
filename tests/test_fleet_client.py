@@ -3040,3 +3040,103 @@ def test_an_allocation_failure_beside_an_illegal_instruction_stays_capacity() ->
 
     tail = "cudaMalloc failed\nsignal: illegal instruction"
     assert classify_upstream_death(tail) is ProviderErrorKind.CAPACITY
+
+
+_LOADER_LINE = (
+    "/engine/llama-server: error while loading shared libraries: {lib}: "
+    "cannot open shared object file: No such file or directory\n"
+)
+
+
+def _log_stream_returning(monkeypatch, chunks: list[str]) -> None:
+    import lilbee.providers.fleet.client as client_mod
+
+    class _FakeStream:
+        def __enter__(self) -> _FakeStream:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def iter_text(self):
+            yield from chunks
+
+    monkeypatch.setattr(client_mod.httpx, "stream", lambda method, url, timeout: _FakeStream())
+
+
+def test_a_missing_libgomp_is_named_with_its_install_hint_and_no_log_path(monkeypatch) -> None:
+    from pathlib import Path
+
+    from lilbee.providers.base import ProviderErrorKind
+
+    _log_stream_returning(monkeypatch, [_LOADER_LINE.format(lib="libgomp.so.1")])
+    client = _unprobed_client()
+    client.engine_log = Path("/logs/embed-0.log")
+    with pytest.raises(ProviderError) as excinfo:
+        client._raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.MISSING_LIBRARY
+    assert str(excinfo.value) == (
+        "The engine needs the library libgomp.so.1. "
+        "Install libgomp1 (Debian, Ubuntu) or libgomp (Fedora)."
+    )
+
+
+def test_another_missing_library_is_named_without_a_package_hint(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    _log_stream_returning(monkeypatch, [_LOADER_LINE.format(lib="libfoo.so.3")])
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.MISSING_LIBRARY
+    assert str(excinfo.value) == "The engine needs the library libfoo.so.3."
+
+
+def test_a_death_without_the_loader_line_keeps_the_generic_message(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    _log_stream_returning(monkeypatch, ["error while loading model file\n"])
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+    assert (
+        str(excinfo.value) == "The engine for the model stopped before it could answer (HTTP 500)."
+    )
+
+
+def test_the_loader_line_survives_the_log_tail_window(monkeypatch) -> None:
+    # The fetched tail is the last 2000 characters of the replayed ring; the
+    # loader line is the engine's last output when it dies at load.
+    from lilbee.providers.base import ProviderErrorKind
+
+    _log_stream_returning(
+        monkeypatch, ["x" * 70000, _LOADER_LINE.format(lib="libgomp.so.1") + "proxy: exited\n"]
+    )
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.MISSING_LIBRARY
+    assert "libgomp.so.1" in str(excinfo.value)
+
+
+def test_the_loader_line_is_the_only_missing_library_signal() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import classify_upstream_death, missing_library
+
+    tail = _LOADER_LINE.format(lib="libgomp.so.1")
+    assert classify_upstream_death(tail) is ProviderErrorKind.MISSING_LIBRARY
+    assert missing_library(tail) == "libgomp.so.1"
+    assert classify_upstream_death("cannot open shared object file") is None
+    assert missing_library("cannot open shared object file") is None
+
+
+def test_a_missing_library_is_not_retried_or_rebuilt() -> None:
+    # Only an install fixes it: a retry or a rebuilt role dies the same way.
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+
+    kind = ProviderErrorKind.MISSING_LIBRARY
+    error = ProviderError("The engine needs the library libfoo.so.3.", kind=kind)
+    assert kind not in client_mod._RETRY_KINDS
+    assert kind not in client_mod._TRANSIENT_KINDS
+    assert kind not in client_mod._REBUILDABLE_KINDS
+    assert not client_mod.is_rebuildable_failure(error)
+    assert not client_mod.is_load_capacity_failure(error)
