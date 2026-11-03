@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.providers.fleet import adapters
+from lilbee.providers.fleet import swap_config as swap_config_mod
 from lilbee.providers.fleet.engines.base import LaunchRequest
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -44,7 +45,7 @@ def _launches() -> list[InstanceLaunch]:
 @pytest.fixture(autouse=True)
 def _fixed_host_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(adapters, "engine_thread_count", lambda: THREADS)
-    monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", str(INGEST_WORKERS))
+    monkeypatch.setattr(swap_config_mod, "max_workers", lambda: INGEST_WORKERS)
 
 
 def test_the_model_set_covers_every_role_and_a_replica() -> None:
