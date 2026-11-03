@@ -366,37 +366,17 @@ jobs:
         working-directory: packages/lilbee
 
       # Lists the package in the MCP Registry, using the job's OIDC token (the
-      # io.github.tobocop2 namespace is verified by GitHub login). It runs only
-      # when this run published to npm, and the registry reads `mcpName` from
-      # the published package.
+      # io.github.tobocop2 namespace is verified by GitHub login). The script
+      # asks the registry whether it holds this version, so a re-run after a
+      # failed listing lists it. The registry reads `mcpName` from the
+      # published package, so this runs after the npm publish.
       - name: Install cosign
-        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled' && steps.check.outputs.skip != 'true'
+        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
         uses: sigstore/cosign-installer@v4.1.2
 
-      - name: Download and verify mcp-publisher
-        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled' && steps.check.outputs.skip != 'true'
-        env:
-          MCP_PUBLISHER_VERSION: v1.8.7
-        run: |
-          set -euo pipefail
-          archive="mcp-publisher_linux_amd64.tar.gz"
-          base_url="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
-          curl --fail --location --silent --show-error --retry 3 --output "${archive}" "${base_url}/${archive}"
-          curl --fail --location --silent --show-error --retry 3 --output "${archive}.sigstore.json" "${base_url}/${archive}.sigstore.json"
-          cosign verify-blob \
-            --bundle "${archive}.sigstore.json" \
-            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/${MCP_PUBLISHER_VERSION}" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${archive}"
-          tar xzf "${archive}" mcp-publisher
-
-      - name: Log in to the MCP Registry
-        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled' && steps.check.outputs.skip != 'true'
-        run: ./mcp-publisher login github-oidc
-
-      - name: Publish lilbee to the MCP Registry
-        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled' && steps.check.outputs.skip != 'true'
-        run: ./mcp-publisher publish server.json
+      - name: List lilbee in the MCP Registry
+        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
+        run: bash scripts/publish_mcp_registry.sh server.json
 
       - name: Say why nothing published
         if: vars.NPM_TRUSTED_PUBLISHING != 'enabled' || steps.check.outputs.skip == 'true'
