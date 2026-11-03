@@ -1015,6 +1015,8 @@ def _registry_refreshed() -> bool:
 
 def adopt_external_changes(
     last: ConfigReading,
+    *,
+    hold: frozenset[str] = frozenset(),
 ) -> tuple[ConfigReading, SettingsUpdateResult | None]:
     """Set on cfg each key another process changed in config.toml since *last*.
 
@@ -1026,7 +1028,8 @@ def adopt_external_changes(
     startup value. The source registry is read by ``refresh_registry``: while a sync
     holds it, it keeps its folders, and a later check takes the change. The keys go
     through the same settle step as an update made here. A file that does not parse
-    changes nothing and keeps *last*, as at startup.
+    changes nothing and keeps *last*, as at startup. A key in *hold* is never taken: a
+    warning says the process takes it at its next start.
     Returns the new reading and the update result, or None when no key changed.
     """
     roots_changed = _registry_refreshed()
@@ -1044,6 +1047,9 @@ def adopt_external_changes(
                 value = last.held.get(key, _ABSENT)
             if value is not _ABSENT and value != getattr(cfg, key):
                 targets[key] = value
+        for key in sorted(targets.keys() & hold):
+            del targets[key]
+            log.warning("config.toml now sets %s; restart this process to use it.", key)
         if not targets and not roots_changed:
             return now, None
         txn.needs_provider_reset = bool(targets.keys() & PROVIDER_SWITCHING_KEYS)
