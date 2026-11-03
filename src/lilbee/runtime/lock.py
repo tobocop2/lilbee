@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn, Self, overload
 
+import psutil
 from filelock import AsyncFileLock, AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
@@ -492,12 +493,18 @@ def sync_wait_message(owner: SyncTurnOwner | None) -> str:
 
 
 def read_sync_turn_owner(data_root: Path) -> SyncTurnOwner | None:
-    """The recorded holder of *data_root*'s sync turn, or None when absent or unreadable."""
+    """The recorded holder of *data_root*'s sync turn, or None when absent, unreadable or dead.
+
+    A holder killed with SIGKILL leaves its record, and the next holder replaces it only
+    after it takes the turn. A record whose process is gone is not the holder, so it reads
+    as no owner. ``psutil.pid_exists`` does the check on POSIX and on Windows.
+    """
     try:
         payload = json.loads((data_root / _SYNC_TURN_OWNER_NAME).read_text(encoding="utf-8"))
-        return SyncTurnOwner(started_by=str(payload["started_by"]), pid=int(payload["pid"]))
+        owner = SyncTurnOwner(started_by=str(payload["started_by"]), pid=int(payload["pid"]))
     except (OSError, ValueError, KeyError, TypeError):
         return None
+    return owner if psutil.pid_exists(owner.pid) else None
 
 
 def _record_turn_owner(data_root: Path, started_by: str) -> None:

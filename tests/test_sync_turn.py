@@ -169,6 +169,50 @@ async def test_a_waiting_sync_with_no_readable_owner_says_another_sync_runs(
     ]
 
 
+def _dead_pid() -> int:
+    """The pid of a process that ran and was reaped, so no process holds it."""
+    import subprocess
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+async def test_a_waiting_sync_does_not_name_a_holder_that_is_dead(
+    library: _Library, turn_held_by_another_add: FileLock
+) -> None:
+    (cfg.data_root / _TURN_OWNER).write_text(
+        json.dumps({"started_by": "lilbee add", "pid": _dead_pid()}), encoding="utf-8"
+    )
+    seen: list[ProgressEvent] = []
+    waiting = asyncio.Event()
+    task = asyncio.create_task(_sync(library)(on_progress=_waits(seen, waiting)))
+    await asyncio.wait_for(waiting.wait(), _HANG_LIMIT_S)
+    turn_held_by_another_add.release()
+    await asyncio.wait_for(task, _HANG_LIMIT_S)
+    assert seen == [
+        SyncWaitEvent(
+            message=(
+                "Another sync is running on this library. "
+                "Waiting for it to finish. Press Ctrl-C to stop waiting."
+            )
+        )
+    ]
+
+
+def test_the_owner_record_of_a_dead_process_reads_as_no_owner() -> None:
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    record = cfg.data_root / _TURN_OWNER
+    dead = {"started_by": "lilbee add", "pid": _dead_pid()}
+    record.write_text(json.dumps(dead), encoding="utf-8")
+    assert read_sync_turn_owner(cfg.data_root) is None
+    live = {"started_by": "lilbee add", "pid": os.getpid()}
+    record.write_text(json.dumps(live), encoding="utf-8")
+    assert read_sync_turn_owner(cfg.data_root) == SyncTurnOwner(
+        started_by="lilbee add", pid=os.getpid()
+    )
+
+
 async def test_the_sync_that_holds_the_turn_names_itself_and_clears_the_record_after(
     library: _Library,
 ) -> None:
