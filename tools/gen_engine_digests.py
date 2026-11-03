@@ -88,6 +88,11 @@ def _literal(value: Any, depth: int) -> str:
 
 def render(packages: list[dict[str, str]], sizes: dict[str, int], packages_url: str) -> str:
     """The text of the generated module: a row per engine, version and cell."""
+    if not packages_url.startswith("https://"):
+        raise DigestError(
+            f"The packages url {packages_url!r} must start with https://. "
+            "The table downloads engine wheels from it."
+        )
     prefix = packages_url if packages_url.endswith("/") else packages_url + "/"
     table: dict[str, dict[str, dict[str, Any]]] = {}
     for entry in packages:
@@ -103,7 +108,7 @@ def render(packages: list[dict[str, str]], sizes: dict[str, int], packages_url: 
         }
         for engine, versions in sorted(table.items())
     }
-    return f"{_HEADER}MANIFESTS = {_literal(ordered, 0)}\n"
+    return f"{_HEADER}MANIFESTS = {_literal(ordered, 0)}\nPACKAGES_URL = {json.dumps(prefix)}\n"
 
 
 def main() -> int:

@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from lilbee.catalog.download import disk_shortfall, download_url, url_filename
 from lilbee.core.security import FileLockUnavailableError, file_lock
+from lilbee.providers.fleet.engine_digests import PACKAGES_URL
 from lilbee.providers.fleet.wheel_server import server_entry, server_problems
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,10 @@ class EngineConflictError(Exception):
 
 class MissingPackError(Exception):
     """The build is not installed, has no pack on disk, and cannot be downloaded."""
+
+
+class PackUrlError(Exception):
+    """The pin names a download url outside the pack index."""
 
 
 class UnsupportedPlatformError(Exception):
@@ -685,6 +690,16 @@ def fetch_frozen(lock: PinLock, platform: str, *, dest: Path) -> Path:
         raise UnsupportedPlatformError(
             f"Engine {lock.engine} {lock.version} has no build for {platform}."
         )
+    if not PACKAGES_URL:
+        raise PackUrlError(
+            f"Engine {lock.engine} {lock.version} cannot download: this build of lilbee "
+            "lists no pack index."
+        )
+    if not asset.url.startswith(PACKAGES_URL):
+        raise PackUrlError(
+            f"Engine {lock.engine} {lock.version} points at {asset.url}, which is not on "
+            f"the pack index {PACKAGES_URL}. lilbee downloads packs from the index only."
+        )
     shortfall = disk_shortfall(dest, url_filename(asset.url), asset.size)
     if shortfall is not None:
         raise EngineDiskError(shortfall)
@@ -704,6 +719,7 @@ __all__ = [
     "InstalledEngine",
     "LicenceRefusedError",
     "MissingPackError",
+    "PackUrlError",
     "PackageInstallError",
     "PinLock",
     "PlatformAsset",

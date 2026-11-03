@@ -717,6 +717,19 @@ wheels = [
 ]
 
 [[package]]
+name = "dumb-pypi"
+version = "1.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/65/31/30c7b420d45a5bbe5b75bde3507fd172e9d3454e251992f77fa977139c75/dumb_pypi-1.15.0.tar.gz", hash = "sha256:9509047c9c7e0ea1a035c982abfcdec4e23c2d187df5812c2a9cb52782439f75", size = 18397, upload-time = "2023-10-03T17:08:17.884Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0a/2b/ccb283f0c92adead4803ee80ba359ee43f730003907132ba12c12842074e/dumb_pypi-1.15.0-py2.py3-none-any.whl", hash = "sha256:050e0ea9b72cf8d229331601df90173b196452df74e2a9dfa44476f6f8afc52a", size = 16429, upload-time = "2023-10-03T17:08:16.154Z" },
+]
+
+[[package]]
 name = "execnet"
 version = "2.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1343,6 +1356,7 @@ release = [
 dev = [
     { name = "ada-url" },
     { name = "cryptography" },
+    { name = "dumb-pypi" },
     { name = "httpx" },
     { name = "hypothesis" },
     { name = "lilbee-engine-llama-cpp" },
@@ -1360,6 +1374,9 @@ dev = [
     { name = "ruff" },
     { name = "types-cachetools" },
     { name = "types-pyyaml" },
+]
+index = [
+    { name = "dumb-pypi" },
 ]
 license-check = [
     { name = "licensecheck", marker = "python_full_version >= '3.12'" },
@@ -1412,6 +1429,7 @@ provides-extras = ["engine", "providers", "graph", "crawler", "cuda12", "release
 dev = [
     { name = "ada-url", specifier = ">=4.0.0" },
     { name = "cryptography", specifier = ">=44" },
+    { name = "dumb-pypi", specifier = "==1.15.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "lilbee-engine-llama-cpp", directory = "packaging/engine-wheel" },
@@ -1430,6 +1448,7 @@ dev = [
     { name = "types-cachetools", specifier = ">=7.0.0.20260713" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
+index = [{ name = "dumb-pypi", specifier = "==1.15.0" }]
 license-check = [{ name = "licensecheck", marker = "python_full_version >= '3.12'", specifier = ">=2026.0.8" }]
 
 [[package]]

@@ -24,7 +24,7 @@ from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import run_engine_command
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
-from lilbee.providers.fleet import engine_manifest, host_caps
+from lilbee.providers.fleet import engine_manifest, engine_store, host_caps
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
@@ -125,6 +125,7 @@ def _live_host() -> host_caps.HostCaps:
 def release(monkeypatch: pytest.MonkeyPatch) -> Iterator[ReleaseServer]:
     """A loopback release server; the hub's offline switch is off while it runs."""
     monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
+    monkeypatch.setattr(engine_store, "PACKAGES_URL", "http://127.0.0.1:")
     with release_server() as server:
         yield server
 
@@ -745,3 +746,13 @@ def test_a_wheel_of_the_top_digest_is_refused_when_the_cell_digest_differs(
         engine_service.install(ENGINE.value, wheel)
     assert str(exc.value) == BAD_PACK
     assert _builds() == []
+
+
+def test_a_pack_url_outside_the_index_is_refused_and_no_request_is_sent(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_store, "PACKAGES_URL", "https://index.test/packs/")
+    with pytest.raises(engine_service.EngineRefusedError, match="not on the pack index") as exc:
+        engine_service.install(ENGINE.value)
+    assert "https://index.test/packs/" in str(exc.value)
+    assert (release.requests, _builds()) == ([], [])

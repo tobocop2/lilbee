@@ -152,7 +152,10 @@ lilbee-engine-llama-cpp = { path = "packaging/engine-wheel" }
 no-sources = true
 
 [dependency-groups]
+# Builds the PEP 503 indexes behind lilbee.sh (tools/build_wheel_indexes.py).
+index = ["dumb-pypi==1.15.0"]
 dev = [
+    {include-group = "index"},
     # The bundled engine is an optional extra for users, because the wheel is
     # published on lilbee.sh rather than PyPI and a hard reference to a name
     # PyPI answers 404 for breaks the documented install. Development and CI
@@ -311,7 +314,7 @@ extend-immutable-calls = ["litestar.params.Body"]
     "N802", "N806", "N818", "N817",
 ]
 # Invokes the trusted `gh` CLI with controlled args to build the compat index.
-"tools/build_compat_index.py" = ["S603", "S607"]
+"tools/build_wheel_indexes.py" = ["S603", "S607"]
 "conftest.py" = ["S101"]
 
 [tool.mypy]
