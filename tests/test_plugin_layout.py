@@ -157,30 +157,50 @@ def _install_commands(doc: Path) -> list[str]:
     return re.findall(r"`([^`]+)`", table)
 
 
-def _manifest_names() -> tuple[str, str, str]:
+def _manifest_names() -> tuple[str, str, str, str]:
     marketplace_file = ROOT / ".claude-plugin" / "marketplace.json"
     marketplace = json.loads(marketplace_file.read_text(encoding="utf-8"))
     package = json.loads((NPM_PACKAGE / "package.json").read_text(encoding="utf-8"))
     slug = re.search(r"github\.com/(.+?)\.git$", package["repository"]["url"]).group(1)
-    return marketplace["name"], slug, package["name"]
+    return marketplace["name"], marketplace["plugins"][0]["name"], slug, package["name"]
 
 
 @pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
 def test_install_table_commands_use_the_manifest_names(doc):
-    marketplace, slug, npm_name = _manifest_names()
+    marketplace, plugin, slug, npm_name = _manifest_names()
     commands = _install_commands(doc)
     assert f"claude plugin marketplace add {slug}" in commands
-    assert f"claude plugin install {marketplace}@{marketplace}" in commands
+    assert f"claude plugin install {plugin}@{marketplace}" in commands
     assert f"opencode plugin add {npm_name}" in commands
     assert f"pi install npm:{npm_name}" in commands
-    assert f"npx skills add {slug} -a hermes-agent" in commands
-    assert f"npx skills add {slug}" in commands
+    assert f"npx skills add {slug} -g -a hermes-agent" in commands
+    assert f"npx skills add {slug} -g" in commands
     assert "lilbee mcp" in commands
 
 
 @pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
-def test_install_table_agrees_between_readme_and_usage(doc):
-    assert _install_commands(doc) == _install_commands(ROOT / "README.md")
+def test_skills_installs_are_global(doc):
+    installs = [c for c in _install_commands(doc) if c.startswith("npx skills add")]
+    assert len(installs) == 2
+    for command in installs:
+        assert "-g" in command.split(), f"{command} installs into the current project"
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_docs_name_the_node_version_skills_needs(doc):
+    assert "Node 22 or later" in doc.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_hermes_snippet_registers_the_mcp_command(doc):
+    text = doc.read_text(encoding="utf-8")
+    snippet = re.search(r"```yaml\n(mcp_servers:\n.*?)```", text, re.S).group(1)
+    entry = {"command": "lilbee", "args": ["mcp"]}
+    assert yaml.safe_load(snippet) == {"mcp_servers": {"lilbee": entry}}
+
+
+def test_install_table_agrees_between_readme_and_usage():
+    assert _install_commands(ROOT / "docs" / "usage.md") == _install_commands(ROOT / "README.md")
 
 
 @pytest.mark.parametrize(

@@ -493,17 +493,17 @@ fallback](#json-cli-fallback) below.
 
 ### Install in your agent
 
-One command per agent installs the skill and the MCP server:
+Each agent gets the skills and the MCP server from the commands in its row:
 
 | Agent | Install |
 | --- | --- |
 | Claude Code | `claude plugin marketplace add tobocop2/lilbee`, then `claude plugin install lilbee@lilbee`. Adds the skills, the worker agent, and the MCP server. |
 | opencode | `opencode plugin add lilbee-agent`. Adds the skills and the MCP server. |
 | pi | `pi install npm:lilbee-agent`. Adds the skills and the MCP server. |
-| Hermes | `npx skills add tobocop2/lilbee -a hermes-agent` for the skills, then add the MCP server to `~/.hermes/config.yaml` (below). |
-| Any other agent | `npx skills add tobocop2/lilbee` for the skills. Register the MCP server with the command `lilbee mcp`. |
+| Hermes | `npx skills add tobocop2/lilbee -g -a hermes-agent` for the skills, then add the MCP server to `~/.hermes/config.yaml` (below). |
+| Any other agent | `npx skills add tobocop2/lilbee -g` for the skills. Register the MCP server with the command `lilbee mcp`. |
 
-Install lilbee first: every row starts the MCP server with `lilbee mcp`, which needs `lilbee` on your PATH. These installs add lilbee to the agent you already run; `lilbee launch` stays the route for running the agent on local models. The `lilbee-agent` npm package and the registry listing arrive with the next release.
+[Install lilbee](../README.md#install) first: every row starts the MCP server with `lilbee mcp`, which needs `lilbee` on your PATH. If you installed with npm, run `lilbee prepare` so the first agent start does not wait on the download. The `npx skills` commands need Node 22 or later, and `-g` installs the skills in your home folder so the agent reads them in every project. These installs add lilbee to the agent you already run; `lilbee launch` stays the route for running the agent on local models. The `lilbee-agent` npm package and the registry listing arrive with the next release.
 
 Hermes plugins cannot bundle an MCP server, so Hermes takes this entry in `~/.hermes/config.yaml`:
 
