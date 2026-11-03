@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import struct
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -193,6 +196,152 @@ class TestMetadataDiskCache:
         gguf_meta._METADATA_CACHE.clear()
         assert gguf_meta.read_gguf_metadata(model) == {"context_length": "4096"}
         assert len(calls) == 2  # nothing persisted, so the second read re-parses
+
+
+class TestParserAbsenceIsNotCached:
+    """A read the parser never answered must not become "this file has no metadata"."""
+
+    _PAYLOAD = json.dumps(
+        {
+            "header": {
+                "metadataKV": [
+                    {"key": "general.architecture", "valueType": 8, "value": "bert"},
+                    {"key": "bert.embedding_length", "valueType": 4, "value": 1024},
+                ]
+            }
+        }
+    )
+
+    def _model(self, monkeypatch, tmp_path):
+        from lilbee.providers import gguf_meta
+
+        monkeypatch.setattr("lilbee.core.system.default_cache_dir", lambda: tmp_path / "cache")
+        self._new_process(gguf_meta)
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 32)
+        return gguf_meta, model
+
+    @staticmethod
+    def _new_process(gguf_meta) -> None:
+        """Empty every in-memory record, as a fresh process starts with."""
+        gguf_meta._METADATA_CACHE.clear()
+        gguf_meta._UNANSWERED.clear()
+
+    @staticmethod
+    def _no_parser(monkeypatch) -> None:
+        def missing():
+            raise FileNotFoundError("no gguf-parser")
+
+        monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_gguf_parser", missing)
+
+    def _parser(self, monkeypatch, runner) -> list[object]:
+        spawns: list[object] = []
+
+        def run(*args, **kwargs):
+            spawns.append(args)
+            return runner()
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: Path("/fake/gguf-parser")
+        )
+        monkeypatch.setattr("lilbee.providers.fleet.proc.run_bounded", run)
+        return spawns
+
+    def test_a_new_process_reads_a_file_the_last_one_found_no_parser_for(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        gguf_meta, model = self._model(monkeypatch, tmp_path)
+        self._no_parser(monkeypatch)
+        assert gguf_meta.read_gguf_metadata(model) is None
+        self._parser(monkeypatch, lambda: (self._PAYLOAD, 0))
+        # A new process: nothing may have been written to disk.
+        self._new_process(gguf_meta)
+        assert gguf_meta.read_gguf_metadata(model) == {
+            "architecture": "bert",
+            "embedding_length": "1024",
+        }
+
+    def test_one_lookup_per_process_until_an_install_and_no_disk_entry(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        gguf_meta, model = self._model(monkeypatch, tmp_path)
+        lookups: list[int] = []
+
+        def missing():
+            lookups.append(1)
+            raise FileNotFoundError("no gguf-parser")
+
+        monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_gguf_parser", missing)
+        assert gguf_meta.read_gguf_metadata(model) is None
+        assert gguf_meta.read_gguf_metadata(model) is None
+        assert len(lookups) == 1
+        assert list((tmp_path / "cache").rglob("*.json")) == []
+
+    def test_forgetting_unanswered_reads_keeps_the_parser_answers(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        gguf_meta, model = self._model(monkeypatch, tmp_path)
+        other = tmp_path / "other.gguf"
+        other.write_bytes(b"y" * 32)
+        spawns = self._parser(monkeypatch, lambda: ("", 1))
+        assert gguf_meta.read_gguf_metadata(model) is None  # the parser's own answer
+        self._no_parser(monkeypatch)
+        assert gguf_meta.read_gguf_metadata(other) is None  # no parser to ask
+        gguf_meta.forget_unanswered_reads()
+        self._parser(monkeypatch, lambda: (self._PAYLOAD, 0))
+        assert gguf_meta.read_gguf_metadata(other) == {
+            "architecture": "bert",
+            "embedding_length": "1024",
+        }
+        assert gguf_meta.read_gguf_metadata(model) is None  # still the cached answer
+        assert len(spawns) == 1
+
+    def test_parser_that_times_out_is_asked_again(self, monkeypatch, tmp_path) -> None:
+        gguf_meta, model = self._model(monkeypatch, tmp_path)
+
+        def timeout():
+            raise subprocess.TimeoutExpired("gguf-parser", 60)
+
+        spawns = self._parser(monkeypatch, timeout)
+        assert gguf_meta.read_gguf_metadata(model) is None
+        self._new_process(gguf_meta)
+        self._parser(monkeypatch, lambda: (self._PAYLOAD, 0))
+        assert gguf_meta.read_gguf_metadata(model) == {
+            "architecture": "bert",
+            "embedding_length": "1024",
+        }
+        assert len(spawns) == 1
+
+    def test_parser_exit_with_an_error_is_cached(self, monkeypatch, tmp_path) -> None:
+        gguf_meta, model = self._model(monkeypatch, tmp_path)
+        spawns = self._parser(monkeypatch, lambda: ("", 1))
+        assert gguf_meta.read_gguf_metadata(model) is None
+        gguf_meta._METADATA_CACHE.clear()
+        assert gguf_meta.read_gguf_metadata(model) is None
+        assert len(spawns) == 1
+
+    def test_unreadable_parser_output_is_cached(self, monkeypatch, tmp_path) -> None:
+        gguf_meta, model = self._model(monkeypatch, tmp_path)
+        spawns = self._parser(monkeypatch, lambda: ("not json", 0))
+        assert gguf_meta.read_gguf_metadata(model) is None
+        assert gguf_meta.read_gguf_metadata(model) is None
+        assert len(spawns) == 1
+
+    def test_disk_entries_from_an_older_reader_are_ignored(self, monkeypatch, tmp_path) -> None:
+        gguf_meta, model = self._model(monkeypatch, tmp_path)
+        stat = model.stat()
+        key = (str(model), stat.st_mtime_ns, stat.st_size)
+        stale = gguf_meta._disk_cache_file(key)
+        assert stale is not None
+        # Version 2 is the last reader that cached a no-parser read as "no metadata".
+        digest = hashlib.sha256("\0".join(str(p) for p in (2, *key)).encode()).hexdigest()
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        (stale.parent / f"{digest}.json").write_text('{"metadata": null}', encoding="utf-8")
+        self._parser(monkeypatch, lambda: (self._PAYLOAD, 0))
+        assert gguf_meta.read_gguf_metadata(model) == {
+            "architecture": "bert",
+            "embedding_length": "1024",
+        }
 
 
 @pytest.mark.real_engine_resolution
