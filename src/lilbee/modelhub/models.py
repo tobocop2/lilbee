@@ -173,14 +173,17 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
     """Prompt the user to pick a model by number. Returns the chosen ModelInfo.
 
     Raises ``RuntimeError`` when input ends or is interrupted: no one chose.
+    The prompt goes to stderr with the catalog table, so stdout keeps only output.
     """
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
     recommended = display_model_picker(ram_gb, free_disk_gb)
     default_idx = list(_get_model_catalog()).index(recommended) + 1
 
     while True:
+        sys.stderr.write(f"Choice [{default_idx}]: ")
+        sys.stderr.flush()
         try:
-            raw = input(f"Choice [{default_idx}]: ").strip()
+            raw = input().strip()
         except (EOFError, KeyboardInterrupt):
             raise RuntimeError(NO_CHAT_MODEL_GUIDANCE) from None
 
