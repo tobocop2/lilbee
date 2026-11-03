@@ -446,6 +446,27 @@ class TestMixedPlanAcrossCards:
         assert sorted(cards, key=str) == sorted([(E, 0, ()), (E, 1, ()), (C, 0, (0,))], key=str)
         assert placement.unplaceable_roles == ()
 
+    def test_the_refusing_search_sizes_each_role_and_split_once(self) -> None:
+        asked: list[tuple[WorkerRole, tuple[int, ...]]] = []
+
+        def estimate(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
+            asked.append((role, ratio))
+            return tuple(6 * _GIB for _ in ratio)
+
+        placement = plan_placement(
+            [
+                ModelPlacementInput(role=C, est_vram_bytes=12 * _GIB),
+                ModelPlacementInput(role=E, est_vram_bytes=12 * _GIB),
+                ModelPlacementInput(role=WorkerRole.VISION, est_vram_bytes=12 * _GIB),
+            ],
+            [(0, 8 * _GIB), (1, 8 * _GIB)],
+            estimate_peak=estimate,
+            refuse_oversize=True,
+        )
+        assert placement.unplaceable_roles
+        assert len(asked) > 0
+        assert len(asked) == len(set(asked))
+
 
 @dataclass(frozen=True)
 class PinRow:
