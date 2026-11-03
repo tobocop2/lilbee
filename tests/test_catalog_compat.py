@@ -1,15 +1,17 @@
-"""Unit tests for catalog.compat: classify(), SUPPORTED_ARCHS, UnsupportedArchError."""
+"""Unit tests for catalog.compat: classify(), the architecture set, UnsupportedArchError."""
 
 from __future__ import annotations
 
 import pytest
 
 from lilbee.catalog.compat import (
-    SUPPORTED_ARCHS,
     UnsupportedArchError,
     classify,
 )
 from lilbee.catalog.types import ModelCompat
+from lilbee.providers.fleet.engines import LLAMA
+
+SUPPORTED_ARCHS = LLAMA.architectures
 
 
 def test_supported_archs_includes_llama() -> None:
@@ -25,15 +27,15 @@ def test_supported_archs_nonempty() -> None:
 
 
 def test_classify_known_supported() -> None:
-    assert classify("llama") is ModelCompat.SUPPORTED
+    assert classify("llama", engine=LLAMA) is ModelCompat.SUPPORTED
 
 
 def test_classify_unknown_string_is_unsupported() -> None:
-    assert classify("this-arch-will-never-exist") is ModelCompat.UNSUPPORTED
+    assert classify("this-arch-will-never-exist", engine=LLAMA) is ModelCompat.UNSUPPORTED
 
 
 def test_classify_empty_is_unknown() -> None:
-    assert classify("") is ModelCompat.UNKNOWN
+    assert classify("", engine=LLAMA) is ModelCompat.UNKNOWN
 
 
 def test_unsupported_arch_error_carries_fields() -> None:

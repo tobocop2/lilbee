@@ -13,6 +13,7 @@ import pytest
 
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.roles import WorkerRole
 
@@ -28,11 +29,13 @@ def _launch_ctx(tmp_path, monkeypatch, role: WorkerRole) -> int:
     monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
     # The role's own resolver is a pure function of model and config: it is the
     # thing that never hears about the downshift.
-    monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: _LAUNCH_CTX)
+    monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: _LAUNCH_CTX)
     monkeypatch.setattr(planning_mod, "_slots_for", lambda *_a, **_k: 1)
     device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
     plan = InstancePlan(role=role, devices=(0,))
-    launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+    launch = planning_mod._launch_for(
+        plan, "ref", Path("/bin/llama-server"), {0: device}, engine=LLAMA
+    )
     argv = launch.argv
     return int(argv[argv.index("--ctx-size") + 1])
 

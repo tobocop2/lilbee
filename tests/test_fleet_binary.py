@@ -519,8 +519,25 @@ class TestEngineHelp:
         ("        (with --load-mode none the load is slower)", "--load-mode", False),
         ("--load-mode-extra   a longer flag", "--load-mode", False),
         ("", "--load-mode", False),
+        ("  -t,    --threads N        threads", "--threads", True),
+        ("         --jinja            use the template", "--jinja", True),
+        ("                                  --jinja is quoted here", "--jinja", False),
+        ("         --embedding(s)     embeddings only", "--embeddings", True),
+        ("         --embedding(s)     embeddings only", "--embedding", True),
     ],
-    ids=["short-and-long", "pair", "in-description", "continuation", "longer-flag", "empty"],
+    ids=[
+        "short-and-long",
+        "pair",
+        "in-description",
+        "continuation",
+        "longer-flag",
+        "empty",
+        "indented-short-and-long",
+        "indented-long-only",
+        "indented-description",
+        "plural-spelling-plural",
+        "plural-spelling-singular",
+    ],
 )
 def test_help_lists_option_reads_option_names_only(help_text: str, flag: str, listed: bool) -> None:
     assert binary_mod.help_lists_option(help_text, flag) is listed

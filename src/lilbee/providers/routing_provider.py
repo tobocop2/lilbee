@@ -29,6 +29,7 @@ from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
     from lilbee.providers.warm_progress import WarmProgress
 
@@ -43,7 +44,8 @@ class RoutingProvider(LLMProvider):
     unchanged, rather than silently falling through to a remote backend.
     """
 
-    def __init__(self, *, hold_warm: bool = False) -> None:
+    def __init__(self, *, engine: EngineAdapter, hold_warm: bool = False) -> None:
+        self._engine = engine
         self._local: LLMProvider | None = None
         self._sdk_provider: SdkLLMProvider | None = None
         # Carried until the local fleet is lazily built, so a provider created for
@@ -65,7 +67,7 @@ class RoutingProvider(LLMProvider):
                 if self._local is None:
                     from lilbee.providers.fleet.provider import FleetProvider
 
-                    self._local = FleetProvider(hold_warm=self._hold_warm)
+                    self._local = FleetProvider(engine=self._engine, hold_warm=self._hold_warm)
         return self._local
 
     def _get_sdk_provider(self) -> SdkLLMProvider:
@@ -253,7 +255,7 @@ class RoutingProvider(LLMProvider):
         """
         if not cfg.reranker_model:
             raise ProviderError("No reranker configured. Set cfg.reranker_model first.")
-        if _is_native_rerank_ref(cfg.reranker_model):
+        if _is_native_rerank_ref(cfg.reranker_model, self._engine):
             return self._get_local().rerank(query, candidates)
         sdk = self._get_sdk_provider()
         if not sdk.supports_rerank():
@@ -277,7 +279,7 @@ class RoutingProvider(LLMProvider):
         model = cfg.reranker_model
         if not model:
             return True
-        if _is_native_rerank_ref(model):
+        if _is_native_rerank_ref(model, self._engine):
             return self._get_local().supports_rerank()
         return self._get_sdk_provider().supports_rerank()
 
@@ -417,8 +419,8 @@ class RoutingProvider(LLMProvider):
         self._get_local().add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
 
 
-def _is_native_rerank_ref(model: str) -> bool:
-    """Return True iff *model* should route to the native llama-server rerank path.
+def _is_native_rerank_ref(model: str, engine: EngineAdapter) -> bool:
+    """Return True iff *model* should route to the native rerank path of *engine*.
 
     Two acceptance paths:
 
@@ -436,7 +438,7 @@ def _is_native_rerank_ref(model: str) -> bool:
     An empty registry reports nothing installed; a registry that cannot be read
     raises, and the fault surfaces to the caller.
     """
-    if not model:
+    if not model or WorkerRole.RERANK not in engine.served_roles:
         return False
     if routes_to_native_gguf(model):
         return True

@@ -42,7 +42,12 @@ from lilbee.cli.helpers import (
 from lilbee.cli.log_routing import route_diagnostics_to_log_file
 from lilbee.core.config import cfg
 from lilbee.core.text import strip_control_characters
-from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to_chunk_type
+from lilbee.data.store import (
+    EmbeddingEngineChangedError,
+    EmbeddingModelMismatchError,
+    SearchScope,
+    scope_to_chunk_type,
+)
 from lilbee.providers.base import ProviderError
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.formatting import FILE_LINK_RE, terminal_sources_text
@@ -66,8 +71,15 @@ def _exit_embedding_mismatch(exc: EmbeddingModelMismatchError) -> NoReturn:
     """Print a surface-appropriate mismatch error and exit non-zero.
 
     Headless: never switches embedder silently. Names the index's embedder and,
-    when adoptable (same dim), the one command that makes it searchable.
+    when adoptable (same dim), the one command that makes it searchable. An
+    engine change carries its fix in the message.
     """
+    if isinstance(exc, EmbeddingEngineChangedError):
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+            raise SystemExit(1)
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+        raise SystemExit(1)
     hint = (
         _EMBED_MISMATCH_ADOPT_HINT.format(model=exc.persisted_model)
         if exc.dims_match

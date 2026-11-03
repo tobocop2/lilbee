@@ -61,6 +61,7 @@ from tests._crafted_titles import (
 )
 from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
+from tests._gguf_fixture import GGUF_MAGIC
 from tests._held import held_kinds, hold_failed
 from tests._mock_effects import repeat_last
 from tests.conftest import (
@@ -129,6 +130,8 @@ def mock_svc():
     # No index identity persisted unless a test writes one.
     store.get_meta.return_value = None
     store.index_mismatch.return_value = None
+    store.embedding_mismatch.return_value = None
+    store.canary_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.return_value = []
@@ -402,6 +405,38 @@ class TestRebuild:
             result = runner.invoke(app, ["rebuild"])
         assert result.exit_code != 0
         assert "Error: locked: notes[draft].txt" in result.output
+
+    def test_rebuild_provider_error_prints_the_message_not_a_traceback(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError(
+            "The embedding model is not available. Nothing was rebuilt.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=refused
+        ):
+            result = runner.invoke(app, ["rebuild"])
+        assert result.exit_code == 1
+        assert "Error: The embedding model is not available" in result.output
+        assert "Traceback" not in result.output
+        assert isinstance(result.exception, SystemExit)
+
+    def test_rebuild_provider_error_json_carries_the_message(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError(
+            "The embedding model is not available. Nothing was rebuilt.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=refused
+        ):
+            result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {
+            "error": "The embedding model is not available. Nothing was rebuilt."
+        }
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_rebuild_processes_sets_ingest_processes(self, mock_sync, isolated_env):
@@ -873,6 +908,48 @@ class TestEmbeddingMismatchCli:
         assert result.exit_code == 1
         payload = json.loads(result.output)
         assert payload["persisted_model"] == "orgA/repoA/built.gguf"
+
+
+def _engine_changed_error():
+    from lilbee.data.store import EmbeddingEngineChangedError
+
+    return EmbeddingEngineChangedError(
+        model="orgA/repoA/built.gguf", dim=768, distance=0.2, verified=True
+    )
+
+
+class TestEngineChangedCli:
+    """An engine change names the rebuild and the earlier engine, and no adopt command."""
+
+    def test_search_prints_the_stop_message(self, mock_svc):
+        mock_svc.searcher.search.side_effect = _engine_changed_error()
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 1
+        assert "lilbee rebuild" in result.output
+        assert "use-embedder" not in result.output
+
+    def test_search_json_carries_the_message_only(self, mock_svc):
+        mock_svc.searcher.search.side_effect = _engine_changed_error()
+        result = runner.invoke(app, ["--json", "search", "q"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert "different vectors" in payload["error"]
+        assert "persisted_model" not in payload
+
+    def test_status_shows_the_mismatch_line(self):
+        from lilbee.cli.helpers import render_status_result
+
+        status = MagicMock()
+        status.index.engine_mismatch = "the engine changed"
+        status.index.embedding_model = "m"
+        status.index.embedding_dim = 8
+        status.config.vision_model = ""
+        status.config.reranker_model = ""
+        status.skipped = []
+        status.skipped_total = 0
+        rendered = " ".join(str(r) for r in render_status_result(status))
+        assert "Index mismatch" in rendered
+        assert "the engine changed" in rendered
 
 
 class TestUseEmbedderCommand:
@@ -6895,14 +6972,15 @@ class TestSelfCheck:
         # The llama-server binary isn't present in CI; stub the resolver so the
         # function reaches the swap.start cleanup path under test.
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/fake/llama-server")
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/fake/llama-server"),
         )
         monkeypatch.setattr(
-            "lilbee.providers.fleet.planning.resolve_llama_server",
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
             lambda: Path("/fake/llama-server"),
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
+        monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b, engine: [])
         # The Vulkan adapter probe runs in a child that gets 10 seconds, and on a
         # loaded Windows runner it does not always start inside them. The sizing
         # device read asks that probe, so stub the probe itself.
@@ -6973,7 +7051,7 @@ class TestSelfCheck:
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
-        monkeypatch.setattr(planning, "_fleet_backend", lambda: "Vulkan")
+        monkeypatch.setattr(planning, "_fleet_backend", lambda engine: "Vulkan")
         monkeypatch.setattr(cfg, "flash_attention", True)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
         chat_patch, embed_patch = self._patch_self_check()
@@ -7003,7 +7081,7 @@ class TestSelfCheck:
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
-        monkeypatch.setattr(planning, "_fleet_backend", lambda: "CUDA")
+        monkeypatch.setattr(planning, "_fleet_backend", lambda engine: "CUDA")
         monkeypatch.setattr(cfg, "flash_attention", None)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
         chat_patch, embed_patch = self._patch_self_check()
@@ -7365,7 +7443,7 @@ class TestSelfCheckHelpers:
         """
         from lilbee.providers.fleet.launch import InstanceLaunch
 
-        def _launch(role, model_path):
+        def _launch(role, model_path, *, engine):
             return InstanceLaunch(
                 role=role,
                 argv=["/bin/llama-server"],
@@ -7376,7 +7454,9 @@ class TestSelfCheckHelpers:
 
         monkeypatch.setattr("lilbee.providers.fleet.planning.build_single_role_launch", _launch)
         swap.endpoint.return_value = "http://127.0.0.1:5800"
-        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g, engine: swap
+        )
         monkeypatch.setattr(
             "lilbee.providers.fleet.client.LlamaServerClient",
             lambda _endpoint, _model, **_kw: client,
@@ -7467,25 +7547,29 @@ class TestSelfCheckHelpers:
         from lilbee.providers.roles import WorkerRole
 
         model = tmp_path / "embed.gguf"
-        model.write_bytes(b"x" * 1024)
+        model.write_bytes(GGUF_MAGIC + b"x" * 1024)
         swap = mock.MagicMock()
         swap.endpoint.return_value = "http://127.0.0.1:5800"
-        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g, engine: swap
+        )
         monkeypatch.setattr(
             "lilbee.providers.fleet.client.LlamaServerClient",
             lambda _e, _m, **_k: mock.MagicMock(),
         )
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/bin/llama-server")
-        )
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.planning.resolve_llama_server",
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
             lambda: Path("/bin/llama-server"),
         )
         monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
         )
-        monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
+            lambda _p: {"architecture": "qwen3"},
+        )
+        monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b, engine: [])
         setup._self_check_server(WorkerRole.EMBED, model)
         argv = swap.start.call_args[0][0][0].argv
         assert argv[argv.index("--pooling") + 1] == "last"
@@ -7784,28 +7868,29 @@ def test_self_check_applies_expert_offload_to_embed_like_the_fleet(monkeypatch, 
 
     # planning binds this name at import, so patching the adapters module alone
     # would leave the real one in the call path.
-    monkeypatch.setattr("lilbee.providers.fleet.planning.build_server_argv", _spy)
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.build_server_argv", _spy)
     monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.read_gguf_metadata",
+        "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
         lambda _p: {"architecture": "qwen3moe", "expert_count": "128"},
     )
     monkeypatch.setattr(
-        "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/fake/llama-server")
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+        lambda: Path("/fake/llama-server"),
     )
     monkeypatch.setattr(
-        "lilbee.providers.fleet.planning.resolve_llama_server",
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
         lambda: Path("/fake/llama-server"),
     )
     # The launch now comes from the planner, which probes for devices first; the
     # suppress below would otherwise swallow that and the spy would never fire.
-    monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
+    monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b, engine: [])
     from lilbee.core.config import cfg as real_cfg
 
     monkeypatch.setattr(real_cfg, "cpu_moe", True, raising=False)
     monkeypatch.setattr(real_cfg, "n_cpu_moe", None, raising=False)
 
     model = tmp_path / "embed.gguf"
-    model.write_bytes(b"")
+    model.write_bytes(GGUF_MAGIC)
     with contextlib.suppress(Exception):  # spawning the server is not under test
         setup_mod._self_check_server(WorkerRole.EMBED, model)
 

@@ -14,7 +14,7 @@ from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
-from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
+from lilbee.data.store import ChunkType, EmbeddingEngineChangedError, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.compaction import (
@@ -873,9 +873,14 @@ def _resolve_stream_context(
         )
     except EmbeddingModelMismatchError as mismatch:
         # detail carries the index's embedder so the client can offer to adopt it.
+        engine_changed = isinstance(mismatch, EmbeddingEngineChangedError)
         frame = sse_error(
             str(mismatch),
-            code=SseErrorCode.INDEX_EMBEDDER_MISMATCH,
+            code=(
+                SseErrorCode.EMBEDDING_MISMATCH
+                if engine_changed
+                else SseErrorCode.INDEX_EMBEDDER_MISMATCH
+            ),
             detail=_mismatch_detail(mismatch),
         )
         return _StreamResolution([], None, [frame])

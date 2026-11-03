@@ -60,12 +60,11 @@ _RAW_COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
 def _probe_real_devices() -> list[FleetDevice]:
     """Probe the engine's devices, or [] when no engine binary resolves."""
     try:
-        from lilbee.providers.fleet.binary import resolve_llama_server
-        from lilbee.providers.fleet.devices import probe_devices
+        from lilbee.providers.fleet.engines import LLAMA
     except ImportError:
         return []
     try:
-        return list(probe_devices(resolve_llama_server()))
+        return LLAMA.discover_devices(LLAMA.binary()).devices
     except Exception as exc:
         print(f"  device probe unavailable ({exc}); use --backend/--indices")
         return []

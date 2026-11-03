@@ -37,7 +37,7 @@ from lilbee.providers.base import (
     prompt_token_budget,
 )
 from lilbee.providers.fleet import planning
-from lilbee.providers.fleet.binary import engine_pin, resolve_llama_server
+from lilbee.providers.fleet.binary import engine_pin
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
@@ -53,6 +53,8 @@ from lilbee.providers.fleet.contract import (
     served_pairs,
     vision_slots_cover,
 )
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -284,12 +286,12 @@ def _bindable_group(
 
 
 def _log_adopted_launches(
-    candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]],
+    candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]], engine: EngineAdapter
 ) -> None:
     """Name the engine every bound instance now runs on, and the pid that owns it."""
     for _group, state, launches in candidates:
         for launch in launches:
-            planning.log_engine_launch(launch, owner_pid=state.pid)
+            planning.log_engine_launch(launch, engine=engine, owner_pid=state.pid)
 
 
 class _PrimedStream:
@@ -709,21 +711,6 @@ def _configured_model_for(role: WorkerRole) -> str:
     return getattr(cfg, field) or "" if field else ""
 
 
-def _unusable_engine_reason() -> str | None:
-    """Why no server can start on this host, or None once an engine resolves.
-
-    Planning drops an engine-less host to serving nothing and says so only at
-    debug, so by the time a surface has an empty pool the engine is the one cause
-    it cannot see. Re-resolving here is also what keeps an engine installed
-    mid-session from being reported as still missing.
-    """
-    try:
-        resolve_llama_server()
-    except ProviderError as exc:
-        return str(exc)
-    return None
-
-
 def _chat_needs_local_engine() -> bool:
     """Whether the configured chat model is one this host has to serve itself.
 
@@ -734,14 +721,13 @@ def _chat_needs_local_engine() -> bool:
     return bool(ref) and not parse_model_ref(ref).is_remote
 
 
-def _no_server_message(role: WorkerRole) -> str:
+def _no_server_message(role: WorkerRole, reason: str | None) -> str:
     """User-facing reason *role* has no server, engine state first.
 
     A missing engine and a model that never placed both arrive as an empty pool,
     and reading the second onto the first sends the reader to a model
     configuration that is already correct.
     """
-    reason = _unusable_engine_reason()
     if reason is not None:
         return f"No {role.value} model server is running: {reason}"
     return (
@@ -768,7 +754,7 @@ class _EngineDemand(NamedTuple):
     vision_slots: int = 0
 
 
-def _placeable_demand() -> _EngineDemand:
+def _placeable_demand(engine: EngineAdapter) -> _EngineDemand:
     """Configured (role, model) pairs a fresh plan would serve, and the chat window.
 
     A configured role is wanted only when the planner would place it. The plan
@@ -786,19 +772,19 @@ def _placeable_demand() -> _EngineDemand:
     )
 
     try:
-        plan = plan_all_launches()
+        plan = plan_all_launches(engine=engine)
     except ProviderError as exc:
         if exc.kind is ProviderErrorKind.NOT_FOUND:
             return _EngineDemand(set(), 0, {}, {})
         raise
     placed = {launch.role for launch in plan.launches}
-    total_vram = placeable_total_vram()
+    total_vram = placeable_total_vram(engine)
     pairs = {
         (role, model)
         for role in WorkerRole
         if role in placed
         and (model := _configured_model_for(role))
-        and role_model_placeable(role, model, total_vram)
+        and role_model_placeable(role, model, total_vram, engine=engine)
     }
     return _EngineDemand(
         pairs,
@@ -844,7 +830,7 @@ def _demanded_chat_ctx(
     return target if split else min(target, planned)
 
 
-def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
+def _can_build_engine(wanted: set[tuple[WorkerRole, str]], engine: EngineAdapter) -> bool:
     """Preconditions for a viable build, checked before stopping a warm engine.
 
     A process that can serve nothing (no placeable model, an unresolvable engine
@@ -862,7 +848,7 @@ def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
     if not wanted:
         return False
     try:
-        planning.assert_engine_probeable()
+        planning.assert_engine_probeable(engine)
     except ProviderError as exc:
         # A genuinely-missing engine binary keeps the quiet serve-nothing path;
         # every other probe failure must propagate (fail loud) rather than be read
@@ -939,7 +925,8 @@ def _reaper_unloads_weights(engine_dir: Path) -> bool:
 class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
-    def __init__(self, *, hold_warm: bool = False) -> None:
+    def __init__(self, *, engine: EngineAdapter = LLAMA, hold_warm: bool = False) -> None:
+        self.engine = engine
         # An interactive session (the TUI) owns this process for its whole
         # lifetime, so a fleet bound to it stays resident instead of idle-unloading
         # under a user who is still in the app; closing lilbee releases it. A
@@ -1033,6 +1020,20 @@ class FleetProvider:
         # run its pending pass) has finished.
         self._reload_done = threading.Condition(self._lock)
 
+    def _unusable_engine_reason(self) -> str | None:
+        """Why no server can start on this host, or None once the engine resolves.
+
+        Planning drops an engine-less host to serving nothing and says so only at
+        debug, so by the time a surface has an empty pool the engine is the one cause
+        it cannot see. Re-resolving here is also what keeps an engine installed
+        mid-session from being reported as still missing.
+        """
+        try:
+            self.engine.binary()
+        except ProviderError as exc:
+            return str(exc)
+        return None
+
     def _ensure_fleet(self) -> bool:
         """Start one llama-swap per placed role exactly once across concurrent callers.
 
@@ -1075,7 +1076,7 @@ class FleetProvider:
         races an arrival.
         """
         pin = engine_pin()
-        demand = _placeable_demand()
+        demand = _placeable_demand(self.engine)
         # Record the demand plan's skips before walking the ladder: a bind or an
         # early serve-nothing exit never reaches _plan_and_spawn, and the warm
         # tracker must still be able to say "chat model X is not installed"
@@ -1141,7 +1142,7 @@ class FleetProvider:
                 # than kill the incumbent or load a second fleet's weights beside it
                 # (an OOM on a small-VRAM box).
                 return None if not is_overflow else False
-            if not _can_build_engine(wanted):
+            if not _can_build_engine(wanted, self.engine):
                 return False
             # No live user holds this dir now (or it is ours to rebuild): reap dead
             # leftovers and stop any recorded engine so planning sees true free VRAM
@@ -1189,7 +1190,7 @@ class FleetProvider:
             return False
         bound: dict[SwapGroup, tuple[SwapManager, list[InstanceLaunch]]] = {}
         for group, state, launches in candidates:
-            swap = SwapManager(engine_dir, group)
+            swap = SwapManager(engine_dir, group, self.engine)
             if not swap.bind(state):
                 for prior, _launches in bound.values():
                     prior.shutdown()
@@ -1200,7 +1201,7 @@ class FleetProvider:
                 self._adopt_group(group, swap, launches)
                 self._group_dirs[group] = engine_dir
         log.info("Bound to the running engine at %s", engine_dir)
-        _log_adopted_launches(candidates)
+        _log_adopted_launches(candidates, self.engine)
         return True
 
     def _reload_dir(self) -> Path:
@@ -1244,8 +1245,8 @@ class FleetProvider:
             # (a wedged GPU probe, an unusable CUDA runtime) propagates so the
             # warm tracker and the caller report the real reason instead of a
             # silent never-ready fleet.
-            planning.capture_plan_probe()
-            plan = planning.plan_all_launches()
+            planning.capture_plan_probe(self.engine)
+            plan = planning.plan_all_launches(engine=self.engine)
         except ProviderError as exc:
             # Only a genuinely-missing engine binary keeps the quiet no-fleet path;
             # any other planning failure (a wedged GPU probe, an unusable CUDA
@@ -1271,7 +1272,7 @@ class FleetProvider:
                 lifetime, data_dir, hold_warm_for_session=self._hold_warm_for_session
             )
             for group, group_launches in by_group.items():
-                swap = SwapManager(data_dir, group)
+                swap = SwapManager(data_dir, group, self.engine)
                 swap.start(list(group_launches), ttl_seconds=ttl_seconds, lifetime=lifetime)
                 started[group] = swap
         except BaseException:
@@ -1316,6 +1317,7 @@ class FleetProvider:
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
                     engine_log=_engine_log_of(launch, swap.log_path.parent),
                     model_ref=launch.model,
+                    profile=self.engine.request_profile(role),
                 )
                 for launch in role_launches
             ]
@@ -1415,7 +1417,9 @@ class FleetProvider:
                 raise ProviderError(
                     reason, provider=_PROVIDER_NAME, kind=ProviderErrorKind.BAD_REQUEST
                 )
-            raise ProviderError(_no_server_message(role), provider=_PROVIDER_NAME)
+            raise ProviderError(
+                _no_server_message(role, self._unusable_engine_reason()), provider=_PROVIDER_NAME
+            )
         return list(clients)
 
     def _with_rediscover(self, call: Callable[[], _T], *, role: WorkerRole | None = None) -> _T:
@@ -1524,7 +1528,7 @@ class FleetProvider:
             launches = self._role_launches(WorkerRole.EMBED)
         if launches:
             return launches[0].token_cap
-        return planning.planned_embed_token_cap(cfg.embedding_model)
+        return planning.planned_embed_token_cap(cfg.embedding_model, engine=self.engine)
 
     def health_warnings(self) -> list[HealthWarning]:
         """Serving degradations: the embed window and any placement divergences."""
@@ -2024,8 +2028,8 @@ class FleetProvider:
     # --- model management: registry / GGUF reads, no running server needed ---
 
     def supports_rerank(self) -> bool:
-        """Serve a cross-encoder (rank pooling) or an LLM reranker (yes/no logprob)."""
-        return True
+        """Report whether the engine serves the rerank role."""
+        return WorkerRole.RERANK in self.engine.served_roles
 
     def list_models(self) -> list[str]:
         """List installed models from the registry."""
@@ -2212,7 +2216,7 @@ class FleetProvider:
         if unusable is not None:
             self._warm_tracker.fail(unusable)
             return
-        if _chat_needs_local_engine() and (reason := _unusable_engine_reason()) is not None:
+        if _chat_needs_local_engine() and (reason := self._unusable_engine_reason()) is not None:
             self._warm_tracker.fail(reason)
             return
         self._warm_tracker.clear()
@@ -2589,7 +2593,7 @@ class FleetProvider:
             # figures beside it are deliberately not re-taken: this fleet is
             # resident, and charging it against itself is what the snapshot exists
             # to prevent.
-            planning.refresh_plan_devices()
+            planning.refresh_plan_devices(self.engine)
             with self._lock:
                 if self._shut_down:
                     # Terminal shutdown landed while this reload was queued; a
@@ -2619,8 +2623,8 @@ class FleetProvider:
                     if not running:
                         # Nothing loaded (a resurrect after a failed pass): the box is
                         # clean, so refresh the plan snapshot like a first build would.
-                        planning.capture_plan_probe()
-                    plan = planning.plan_all_launches()
+                        planning.capture_plan_probe(self.engine)
+                    plan = planning.plan_all_launches(engine=self.engine)
                 except ProviderError as exc:
                     # Same policy as the initial build: a genuinely-missing engine
                     # binary aborts the reload quietly (nothing to serve), while any
@@ -2655,7 +2659,7 @@ class FleetProvider:
                 # Start phase: spawn the changed groups present in the new plan.
                 for group in sorted(changed & set(new), key=lambda g: g.value):
                     group_launches = list(new[group])
-                    swap = SwapManager(reload_dir, group)
+                    swap = SwapManager(reload_dir, group, self.engine)
                     lifetime = _engine_lifetime(reload_dir)
                     swap.start(
                         group_launches,

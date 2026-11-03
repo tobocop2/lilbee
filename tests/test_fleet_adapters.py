@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -507,3 +508,282 @@ def test_build_argv_emits_the_device_names_it_is_given() -> None:
         device_names=("Vulkan0", "Vulkan2"),
     )
     assert argv[argv.index("--device") + 1] == "Vulkan0,Vulkan2"
+
+
+def _help_listing(flags, *, indent: str = "") -> str:
+    return "\n".join(f"{indent}{flag} X    what it does" for flag in flags) + "\n"
+
+
+def _every_optional_flag_argv(
+    monkeypatch, help_text: str | None, *, cpu_moe_only: bool = False
+) -> list[str]:
+    """A chat argv that carries every optional flag, built against a binary printing *help_text*."""
+
+    def _run(*_a, **_k):
+        if help_text is None:
+            raise OSError("no such file")
+        return SimpleNamespace(stdout=help_text, stderr="")
+
+    binary_mod.engine_help.cache_clear()
+    monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+    monkeypatch.setattr(adapters, "engine_thread_count", lambda: 4)
+    spec = replace(
+        ROLE_SPECS[WorkerRole.CHAT],
+        extra_args=(*ROLE_SPECS[WorkerRole.CHAT].extra_args, "--pooling", "rank"),
+    )
+    return build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=spec,
+        model_path=Path("/models/chat.gguf"),
+        devices=(0, 1),
+        device_names=("CUDA0", "CUDA1"),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+        tensor_split=(1, 1),
+        mmproj=Path("/models/mmproj.gguf"),
+        flash_attn="on",
+        cache_type="q8_0",
+        batch_size=512,
+        cpu_moe=cpu_moe_only,
+        n_cpu_moe=None if cpu_moe_only else 3,
+        kv_unified_per_slot=4096,
+    )
+
+
+_OPTIONAL = sorted(adapters._OPTIONAL_FLAGS)
+_ALWAYS_WRITTEN = [
+    "--device",
+    "--tensor-split",
+    "--embeddings",
+    "--fit-target",
+    "--kv-unified-per-slot",
+]
+
+
+# Literal argv, written by hand from the engine's flag grammar: each flag and its values
+# leave together. They do not read the width from the flag table under test.
+def _argv(text: str) -> list[str]:
+    # A path token renders with the platform separator (backslash on Windows), as str(Path) does.
+    return [str(Path(token)) if token.startswith("/") else token for token in text.split()]
+
+
+_FULL_ARGV = _argv(
+    "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 --n-gpu-layers "
+    "-1 --parallel 1 --cont-batching --ctx-size 4096 --threads 4 --flash-attn on "
+    "--cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
+    "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+    "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+    "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+)
+_FULL_ARGV_CPU_MOE = _argv(
+    "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 --n-gpu-layers "
+    "-1 --parallel 1 --cont-batching --ctx-size 4096 --threads 4 --flash-attn on "
+    "--cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
+    "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+    "--cpu-moe --kv-unified --kv-unified-per-slot 4096 --jinja --reasoning-format "
+    "deepseek --no-prefill-assistant --pooling rank"
+)
+_ARGV_WITHOUT = {
+    "--flash-attn": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size "
+        "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--cache-type-k": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
+        "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--cache-type-v": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --batch-size 512 --ubatch-size 512 "
+        "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--batch-size": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --ubatch-size "
+        "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--ubatch-size": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--mmproj": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--n-cpu-moe": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--cpu-moe": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --kv-unified --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--threads": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 "
+        "--flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 "
+        "--ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--jinja --reasoning-format deepseek --no-prefill-assistant --pooling "
+        "rank"
+    ),
+    "--jinja": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--reasoning-format": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--jinja --no-prefill-assistant --pooling rank"
+    ),
+    "--no-prefill-assistant": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--jinja --reasoning-format deepseek --pooling rank"
+    ),
+    "--pooling": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--jinja --reasoning-format deepseek --no-prefill-assistant"
+    ),
+    "--kv-unified": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified-per-slot 4096 --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+}
+
+
+def test_the_optional_flag_table_is_not_empty() -> None:
+    assert len(_OPTIONAL) == 14
+
+
+def test_the_literal_argv_table_names_every_optional_flag() -> None:
+    assert sorted(_ARGV_WITHOUT) == _OPTIONAL
+
+
+def test_a_build_that_lists_every_flag_gets_the_literal_full_argv(monkeypatch) -> None:
+    listed = _help_listing(_OPTIONAL + _ALWAYS_WRITTEN)
+    assert _every_optional_flag_argv(monkeypatch, listed) == _FULL_ARGV
+    cpu_moe = _every_optional_flag_argv(monkeypatch, listed, cpu_moe_only=True)
+    assert cpu_moe == _FULL_ARGV_CPU_MOE
+
+
+@pytest.mark.parametrize("flag", _OPTIONAL)
+def test_a_flag_the_build_does_not_list_is_dropped_with_its_value(
+    monkeypatch, caplog, flag: str
+) -> None:
+    cpu_moe_only = flag == "--cpu-moe"
+    listed = [f for f in _OPTIONAL + _ALWAYS_WRITTEN if f != flag]
+    with caplog.at_level("WARNING"):
+        argv = _every_optional_flag_argv(
+            monkeypatch, _help_listing(listed), cpu_moe_only=cpu_moe_only
+        )
+    assert argv == _ARGV_WITHOUT[flag]
+    lines = [r.getMessage() for r in caplog.records if f"list {flag};" in r.getMessage()]
+    assert len(lines) == 1
+    assert adapters._OPTIONAL_FLAGS[flag].effect in lines[0]
+
+
+def test_a_build_that_lists_every_flag_gets_the_full_argv(monkeypatch, caplog) -> None:
+    full = _every_optional_flag_argv(monkeypatch, None)
+    with caplog.at_level("WARNING"):
+        argv = _every_optional_flag_argv(monkeypatch, _help_listing(_OPTIONAL + _ALWAYS_WRITTEN))
+    assert argv == full
+    assert not [r for r in caplog.records if "does not list" in r.getMessage()]
+
+
+def test_option_lines_indented_as_in_ik_layout_count_as_listed(monkeypatch) -> None:
+    full = _every_optional_flag_argv(monkeypatch, None)
+    help_text = _help_listing(_OPTIONAL[:7], indent="  ") + _help_listing(
+        _OPTIONAL[7:], indent="         "
+    )
+    assert _every_optional_flag_argv(monkeypatch, help_text) == full
+
+
+def test_a_flag_quoted_in_a_description_does_not_count_as_listed(monkeypatch) -> None:
+    help_text = _help_listing([f for f in _OPTIONAL if f != "--jinja"])
+    help_text += "-x, --other X                 see --jinja for details\n"
+    assert "--jinja" not in _every_optional_flag_argv(monkeypatch, help_text)
+
+
+def test_placement_and_embedding_flags_are_written_whatever_the_help_says(monkeypatch) -> None:
+    argv = _every_optional_flag_argv(monkeypatch, _help_listing(["--model"]))
+    assert "--device" in argv
+    assert "--tensor-split" in argv
+    embed = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.EMBED],
+        model_path=Path("/models/embed.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=512,
+    )
+    assert "--embeddings" in embed
+
+
+def test_a_build_with_no_help_text_keeps_every_flag_and_warns_once(monkeypatch, caplog) -> None:
+    full = _every_optional_flag_argv(monkeypatch, None)
+    with caplog.at_level("WARNING"):
+        first = _every_optional_flag_argv(monkeypatch, "")
+        second = _every_optional_flag_argv(monkeypatch, "")
+    assert first == second == full
+    blind = [r for r in caplog.records if "printed no --help text" in r.getMessage()]
+    assert len(blind) == 1
+
+
+def test_a_dropped_flag_is_logged_once_per_binary(monkeypatch, caplog) -> None:
+    help_text = _help_listing([f for f in _OPTIONAL if f != "--jinja"])
+    with caplog.at_level("WARNING"):
+        _every_optional_flag_argv(monkeypatch, help_text)
+        _every_optional_flag_argv(monkeypatch, help_text)
+    lines = [r for r in caplog.records if "list --jinja;" in r.getMessage()]
+    assert len(lines) == 1
