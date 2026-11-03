@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import math
+import socket
 import ssl
 import threading
 import time
@@ -566,7 +567,7 @@ class LlamaServerClient:
         self._in_flight_lock = threading.Lock()
         # Live SSE responses, so a cancel can sever the transport from another
         # thread: a reader blocked in iter_lines cannot see a cooperative
-        # cancel flag, but closing its response unblocks it with an error.
+        # cancel flag, but a shutdown of its socket unblocks it with an error.
         self._active_streams: set[httpx.Response] = set()
         # Whether this server's chat template needs OpenAI tool exchanges reshaped
         # into strict user/assistant alternation. Determined lazily by a one-time
@@ -751,11 +752,11 @@ class LlamaServerClient:
             ) as resp,
         ):
             self._raise_for_status(resp)
-            with self._abortable(resp):
-                for line in resp.iter_lines():
-                    delta = inliner.feed(*_parse_sse_deltas(line))
-                    if delta:
-                        yield delta
+            self._abortable(resp)
+            for line in resp.iter_lines():
+                delta = inliner.feed(*_parse_sse_deltas(line))
+                if delta:
+                    yield delta
             tail = inliner.finish()
             if tail:
                 yield tail
@@ -950,22 +951,22 @@ class LlamaServerClient:
                 self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
             ):
                 self._raise_for_status(resp)
-                with self._abortable(resp):
-                    for line in resp.iter_lines():
-                        if on_prefill is not None:
-                            progress = _prefill_progress(line)
-                            if progress is not None:
-                                prefilling = True
-                                on_prefill(progress)
-                        for item in _parse_sse_stream_items(line, inliner):
-                            if prefilling and on_prefill is not None:
-                                # The first real frame proves prefill is over.
-                                prefilling = False
-                                on_prefill(None)
-                            started = True
-                            ended |= isinstance(item, StreamFinish)
-                            yield item
-                        ended |= _is_done_line(line)
+                self._abortable(resp)
+                for line in resp.iter_lines():
+                    if on_prefill is not None:
+                        progress = _prefill_progress(line)
+                        if progress is not None:
+                            prefilling = True
+                            on_prefill(progress)
+                    for item in _parse_sse_stream_items(line, inliner):
+                        if prefilling and on_prefill is not None:
+                            # The first real frame proves prefill is over.
+                            prefilling = False
+                            on_prefill(None)
+                        started = True
+                        ended |= isinstance(item, StreamFinish)
+                        yield item
+                    ended |= _is_done_line(line)
                 tail = inliner.finish()
                 if tail:
                     yield tail
@@ -1349,27 +1350,38 @@ class LlamaServerClient:
         self._raise_for_status(resp)
         return str(resp.json()["content"])
 
-    @contextlib.contextmanager
-    def _abortable(self, resp: httpx.Response) -> Generator[None]:
-        """Expose *resp* to ``abort_streams`` for the duration of its read loop."""
+    def _abortable(self, resp: httpx.Response) -> None:
+        """Expose *resp* to ``abort_streams`` until the response closes."""
+        # A response read whole on arrival has no connection left and no close
+        # to come; httpx types the body sync-or-async, and a sync client's is sync.
+        if resp.is_closed or not isinstance(resp.stream, httpx.SyncByteStream):
+            return
+        resp.stream = _AbortableStream(resp.stream, resp, self)
         with self._in_flight_lock:
             self._active_streams.add(resp)
-        try:
-            yield
-        finally:
-            with self._in_flight_lock:
-                self._active_streams.discard(resp)
 
     def abort_streams(self) -> None:
         """Sever every in-flight SSE response on this replica.
 
-        Closing the response from another thread unblocks a reader stuck in
-        ``iter_lines`` with a stream error, which unwinds its worker;
-        llama-server stops generating when the connection drops.
+        A socket shutdown sends the server a FIN and makes a reader blocked in
+        ``iter_lines`` read end-of-stream at once, so it raises a stream error
+        and closes its own response; llama-server stops generating when the
+        connection drops. Closing the socket from another thread does neither.
+        A response with no socket (a mock transport), or whose shutdown fails
+        because the peer is gone, is closed instead.
+
+        The shutdowns run under the registry lock, and a response leaves the
+        registry under that lock before its close returns the connection to
+        the pool, so a shutdown never reaches a pooled socket. The fallback
+        closes run after the lock is released, because a close takes it.
         """
+        unsevered: list[httpx.Response] = []
         with self._in_flight_lock:
-            streams = list(self._active_streams)
-        for resp in streams:
+            for resp in self._active_streams:
+                with contextlib.suppress(Exception):
+                    if not _shut_down_socket(resp):
+                        unsevered.append(resp)
+        for resp in unsevered:
             with contextlib.suppress(Exception):
                 resp.close()
 
@@ -1399,6 +1411,58 @@ class _InFlight:
     def __exit__(self, *_exc: object) -> None:
         with self._client._in_flight_lock:
             self._client.in_flight -= 1
+
+
+class _AbortableStream(httpx.SyncByteStream):
+    """A response body that leaves the abort registry before it releases its connection.
+
+    httpx closes a response from inside ``iter_raw`` at the last chunk, and the
+    close of httpcore's pool stream hands the connection to the next request.
+    Deregistering in this close, ahead of the inner close, keeps a late
+    ``abort_streams`` off a connection another request may now use.
+    """
+
+    def __init__(
+        self, inner: httpx.SyncByteStream, resp: httpx.Response, client: LlamaServerClient
+    ) -> None:
+        self._inner = inner
+        self._resp = resp
+        self._client = client
+        self._closed = False
+
+    def __iter__(self) -> Iterator[bytes]:
+        # httpcore's iterators release the connection when they are finalized.
+        # The local keeps the inner iterator alive until this close has run:
+        # an exception at the yield pops a ``for`` loop's iterator before the
+        # except body, and ``yield from`` closes it first on GeneratorExit.
+        chunks = iter(self._inner)
+        try:
+            while (chunk := next(chunks, None)) is not None:
+                yield chunk
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        with self._client._in_flight_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._client._active_streams.discard(self._resp)
+        self._inner.close()
+
+
+def _shut_down_socket(resp: httpx.Response) -> bool:
+    """Shut down *resp*'s socket; False when it has no socket or the shutdown fails."""
+    network_stream = resp.extensions.get("network_stream")
+    sock = network_stream.get_extra_info("socket") if network_stream else None
+    if sock is None:
+        return False
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        return False
+    return True
 
 
 def _embedding_vector(item: dict[str, Any]) -> npt.NDArray[np.float32]:
