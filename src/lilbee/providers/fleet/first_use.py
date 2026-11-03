@@ -27,6 +27,7 @@ from lilbee.providers.fleet.engine_store import (
 )
 from lilbee.providers.fleet.engines.choice import pin_lock
 from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.gguf_meta import forget_unanswered_reads
 from lilbee.runtime.cancellation import CancelSignal
 
 _FIRST_USE_LOCK_S = 1800.0
@@ -119,6 +120,7 @@ def install_pack(
                     cancel=cancel,
                 ),
             )
+    forget_unanswered_reads()
     return lock
 
 
