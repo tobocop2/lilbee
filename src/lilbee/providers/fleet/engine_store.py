@@ -218,7 +218,8 @@ def _check_staged_tree(lock: PinLock, stage: Path) -> str | None:
     tools = sorted(
         path.relative_to(stage).as_posix()
         for path in stage.glob("*/bin/*")
-        if _is_server(path.relative_to(stage).as_posix(), lock.tool)
+        if (path.is_file() or path.is_symlink())
+        and _is_server(path.relative_to(stage).as_posix(), lock.tool)
     )
     if tools and (stage / tools[0]).is_symlink():
         raise UnsafeWheelError(
