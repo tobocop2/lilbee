@@ -268,18 +268,32 @@ def diff(store: ProfileStore, name: str) -> ProfileDiff:
     return _diff(usable(store, name))
 
 
-def sets_reindex_field(store: ProfileStore, name: str) -> bool:
-    """Whether profile *name* sets a setting that only a rebuild applies."""
-    return any(key in REINDEX_FIELDS for key in usable(store, name).values)
+class RebuildReason(StrEnum):
+    """Why a rebuild after applying a profile changes the index."""
+
+    CHANGES = "changes"
+    SETS_REINDEX = "sets_reindex"
+    HELD_OUT = "held_out"
 
 
-def apply_needs_rebuild(store: ProfileStore, name: str, reindex_required: bool) -> bool:
-    """Whether a rebuild after applying profile *name* changes the index.
+def rebuild_reason(profile: ProfileFile, reindex_required: bool) -> RebuildReason | None:
+    """Why a rebuild after applying *profile* changes the index; None when it changes nothing.
 
     A rebuild also retries each held-out file, the only way a raised limit reaches
     them: a limit is not a setting that requires a rebuild.
     """
-    return reindex_required or sets_reindex_field(store, name) or held_out_sources()[1] > 0
+    if reindex_required:
+        return RebuildReason.CHANGES
+    if any(key in REINDEX_FIELDS for key in profile.values):
+        return RebuildReason.SETS_REINDEX
+    if held_out_sources()[1] > 0:
+        return RebuildReason.HELD_OUT
+    return None
+
+
+def apply_needs_rebuild(store: ProfileStore, name: str, reindex_required: bool) -> bool:
+    """Whether a rebuild after applying profile *name* changes the index."""
+    return rebuild_reason(usable(store, name), reindex_required) is not None
 
 
 def apply(store: ProfileStore, name: str) -> ApplyResult:

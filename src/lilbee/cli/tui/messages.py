@@ -12,7 +12,7 @@ from functools import lru_cache
 from importlib.util import find_spec
 from pathlib import Path
 
-from lilbee.app.profiles import ProfileEffect, ProfileStatus
+from lilbee.app.profiles import ProfileEffect, ProfileStatus, RebuildReason
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import NameProblem, ProfileFolder
 from lilbee.data.types import SyncResult
@@ -884,6 +884,8 @@ PROFILE_APPLY_UNTOUCHED = "Models, hardware and API keys stay as they are."
 PROFILE_APPLY_NOTHING = "Nothing changes; lilbee records the profile's name."
 PROFILE_APPLY_REINDEX_ONE = "One change rebuilds the index of {files} files."
 PROFILE_APPLY_REINDEX_MANY = "{count} changes rebuild the index of {files} files."
+PROFILE_APPLY_SETS_REINDEX = "A rebuild applies the profile's settings that change the index."
+PROFILE_APPLY_HELD_OUT = "A rebuild retries the files that lilbee holds out."
 PROFILE_APPLY_REINDEX_LABEL = "Apply and reindex"
 PROFILE_APPLY_LABEL = "Apply"
 PROFILE_CANCEL_LABEL = "Cancel"
@@ -1066,6 +1068,15 @@ def profile_count_text(count: int) -> str:
     if count == 0:
         return ""
     return PROFILE_LINE_COUNT_ONE if count == 1 else PROFILE_LINE_COUNT.format(count=count)
+
+
+def profile_rebuild_reason_text(reason: RebuildReason, count: int, files: int) -> str:
+    """The Apply dialog's line on why it offers a rebuild; empty when there is nothing to say."""
+    if reason is RebuildReason.HELD_OUT:
+        return PROFILE_APPLY_HELD_OUT
+    if reason is RebuildReason.SETS_REINDEX:
+        return PROFILE_APPLY_SETS_REINDEX
+    return profile_reindex_text(count, files) if files else ""
 
 
 def profile_reindex_text(count: int, files: int) -> str:

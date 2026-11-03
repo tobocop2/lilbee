@@ -71,6 +71,7 @@ class SwitchPlan:
     diff: ProfileDiff
     kept: tuple[tuple[str, Any], ...]
     file_count: int
+    rebuild: profiles.RebuildReason | None
     reapply: bool = False
 
 
@@ -217,10 +218,11 @@ def run_profile_op(
 def switch_plan(profile: ProfileFile, diff: ProfileDiff) -> SwitchPlan:
     """The Apply dialog's plan for *profile*: its diff, your kept values, the files to rebuild."""
     reindex = any(row.effect is ProfileEffect.REINDEX for row in diff.changes)
+    rebuild = profiles.rebuild_reason(profile, reindex)
     files = len(get_services().store.get_sources()) if reindex else 0
     kept = tuple((key, getattr(cfg, key)) for key in diff.kept)
     reapply = profile_key(profile.name) == profile_key(profiles.active(ProfileStore()).name)
-    return SwitchPlan(profile, diff, kept, files, reapply)
+    return SwitchPlan(profile, diff, kept, files, rebuild, reapply)
 
 
 def _switch_plan(name: str) -> SwitchPlan:
@@ -350,14 +352,16 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
         yield Static(Content.assemble(kept, "  ", user_pill()), id="apply-kept")
 
     def _summary(self) -> str:
+        if self._plan.rebuild is not None:
+            return msg.profile_rebuild_reason_text(
+                self._plan.rebuild, len(self._reindex_rows), self._plan.file_count
+            )
         if not self._plan.diff.changes:
             return msg.PROFILE_APPLY_NOTHING
-        if not self._reindex_rows or not self._plan.file_count:
-            return ""
-        return msg.profile_reindex_text(len(self._reindex_rows), self._plan.file_count)
+        return ""
 
     def _action_pills(self) -> ComposeResult:
-        if self._reindex_rows:
+        if self._plan.rebuild is not None:
             yield ConfirmPill(
                 msg.PROFILE_APPLY_REINDEX_LABEL,
                 pill_id="apply-reindex",
