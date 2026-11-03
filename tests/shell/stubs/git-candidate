@@ -17,5 +17,9 @@ case "$1" in
     # $FIXTURE/diff_rc holds the exit status: 0 means version-only change.
     exit "$(cat "${FIXTURE}/diff_rc")"
     ;;
+  log)
+    # $FIXTURE/subject holds the HEAD commit subject; a promotion starts with "Promote ".
+    cat "${FIXTURE}/subject"
+    ;;
   *) echo "stub git: unhandled $1" >&2; exit 1 ;;
 esac
