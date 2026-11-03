@@ -591,12 +591,12 @@ Each agent gets the skills and the MCP server from the commands in its row:
 | Agent | Install |
 | --- | --- |
 | Claude Code | `claude plugin marketplace add tobocop2/lilbee`, then `claude plugin install lilbee@lilbee`. Adds the skills, the worker agent, and the MCP server. |
-| opencode | `opencode plugin add lilbee-agent`. Adds the skills and the MCP server. |
-| pi | `pi install npm:lilbee-agent`. Adds the skills and the MCP server. |
+| opencode | `opencode plugin add lilbee`. Adds the skills and the MCP server. |
+| pi | `pi install npm:lilbee`. Adds the skills and the MCP server. |
 | Hermes | `npx skills add tobocop2/lilbee -g -a hermes-agent` for the skills, then add the MCP server to `~/.hermes/config.yaml` (below). |
 | Any other agent | `npx skills add tobocop2/lilbee -g` for the skills. Register the MCP server with the command `lilbee mcp`. |
 
-[Install lilbee](#install) first: every row starts the MCP server with `lilbee mcp`, which needs `lilbee` on your PATH. If you installed with npm, run `lilbee prepare` so the first agent start does not wait on the download. The `npx skills` commands need Node 22.20 or later. The `-g` flag installs the skills globally, so the agent reads them in every project; without `-a`, the skills go to every agent the installer detects. These installs add lilbee to the agent you already run; `lilbee launch` stays the route for running the agent on local models. The `lilbee-agent` npm package and the registry listing arrive with the next release.
+[Install lilbee](#install) first: every row starts the MCP server with `lilbee mcp`, which needs `lilbee` on your PATH. If you installed with npm, run `lilbee prepare` so the first agent start does not wait on the download. The `npx skills` commands need Node 22.20 or later. The `-g` flag installs the skills globally, so the agent reads them in every project; without `-a`, the skills go to every agent the installer detects. These installs add lilbee to the agent you already run; `lilbee launch` stays the route for running the agent on local models. The opencode and pi plugin in the `lilbee` npm package and the registry listing arrive with the next release.
 
 Hermes plugins cannot bundle an MCP server, so Hermes takes this entry in `~/.hermes/config.yaml`:
 
