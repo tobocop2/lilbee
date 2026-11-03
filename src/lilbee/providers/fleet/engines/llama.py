@@ -58,6 +58,10 @@ _PROFILE = RequestProfile(
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_LIBRARIES = ["ggml-base"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
+_PIN_WHEEL_BACKEND = "cpu"
+# The engines repo names the wheel 1.<N>.<build> for the upstream tag b<N> in
+# engines/llama.cpp.toml (b12032, release build 1). Move it with that tag.
+_WHEEL_VERSION = "1.12032.1"
 
 
 def _starts_with_gguf_magic(path: Path) -> bool:
@@ -93,6 +97,12 @@ class LlamaCppAdapter:
         return engine_binary_identity(binary)
 
     def pin_record(self) -> Mapping[str, Any]:
+        from lilbee.catalog.runnable import session_host
+        from lilbee.providers.fleet.engine_manifest import pack_platforms
+
+        platforms = pack_platforms(
+            self.name.value, _WHEEL_VERSION, session_host(), _PIN_WHEEL_BACKEND
+        )
         return {
             "engine": self.name.value,
             "version": ENGINE_LLAMA_CPP_REF,
@@ -100,7 +110,7 @@ class LlamaCppAdapter:
             "tool": EngineTool.LLAMA_SERVER.value,
             "libraries": _PIN_LIBRARIES,
             "launch": _PIN_LAUNCH,
-            "platforms": {},
+            "platforms": platforms,
             "memory": {"sizing": _PIN_SIZING, "rule": None},
             "licenses": ["MIT"],
         }
