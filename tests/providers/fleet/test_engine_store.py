@@ -1125,3 +1125,52 @@ def test_a_wheel_with_no_pinned_libraries_installs_without_any(
     sha = _ggml_wheel(path)
     store.install_from_wheel(pin(sha), path)
     assert len(store.installed()) == 1
+
+
+# --- the tool is a regular file directly under bin/ ---------------------------------------
+
+
+def make_pack_wheel(path: Path) -> str:
+    """A wheel with bin/lib/libx.so.1 beside bin/server, as a cuda pack lays it out."""
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("lilbee_engine_fx/bin/lib/libx.so.1", "lib")
+        info = zipfile.ZipInfo("lilbee_engine_fx/bin/server")
+        info.external_attr = (stat.S_IFREG | 0o755) << 16
+        archive.writestr(info, "#!/bin/sh\n")
+        archive.writestr("lilbee_engine_fx-1.dist-info/METADATA", "License-Expression: MIT\n")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_zip_route_records_bin_server_beside_a_bin_lib_folder(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "pack.whl"
+    sha = make_pack_wheel(path)
+    build = store.install_from_wheel(pin(sha), path)
+    assert [b.binary for b in store.installed()] == [build / "lilbee_engine_fx" / "bin" / "server"]
+
+
+def test_package_route_records_bin_server_beside_a_bin_lib_folder(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "pack.whl"
+    sha = make_pack_wheel(path)
+    run, _ = extract_into_target(path)
+    build = store.install_via_package(pin(sha), run=run)
+    assert [b.binary for b in store.installed()] == [build / "lilbee_engine_fx" / "bin" / "server"]
+
+
+def test_package_route_does_not_take_a_folder_named_like_the_tool(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    inner, _ = extract_into_target(path)
+
+    def run(argv: list[str], requirements: str) -> None:
+        inner(argv, requirements)
+        tool = Path(argv[argv.index("--target") + 1]) / "lilbee_engine_fx" / "bin" / "server"
+        tool.unlink()
+        tool.mkdir()
+
+    store.install_via_package(pin(sha), run=run)
+    assert [b.binary for b in store.installed()] == [None]
