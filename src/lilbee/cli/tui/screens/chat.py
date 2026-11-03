@@ -2741,10 +2741,20 @@ class ChatScreen(Screen[None]):
         if not self._insert_mode or not inp.has_focus:
             self._tab_into_fleet_or_next()
             return
-        overlay = self._completion_overlay
-        if not overlay.is_visible and not self._open_completions():
-            inp.insert("\t")
+        if self._completion_overlay.is_visible:
+            self._complete_from_overlay()
             return
+        self._open_completions(self._complete_after_open)
+
+    def _complete_after_open(self, opened: bool) -> None:
+        """Tab, once the dropdown listing is in: complete from it, else type a tab."""
+        if opened:
+            self._complete_from_overlay()
+        else:
+            self._chat_input.insert("\t")
+
+    def _complete_from_overlay(self) -> None:
+        """Fill the shared prefix of the open dropdown, else preview the next match."""
         if self._fill_common_prefix():
             return
         self._preview_next()
@@ -2790,14 +2800,26 @@ class ChatScreen(Screen[None]):
             # Not a completion here; skip so an open overlay (e.g. the sessions
             # drawer) can bind Ctrl+N instead of this priority binding eating it.
             raise SkipAction()
-        if self._completion_overlay.is_visible or self._open_completions():
+        if self._completion_overlay.is_visible:
             self._preview_next()
+        else:
+            self._open_completions(self._preview_next_if_opened)
 
     def action_complete_prev(self) -> None:
         """Ctrl+P: preview the previous match, opening the dropdown if it is closed."""
         if not self._chat_input.has_focus:
             return
-        if self._completion_overlay.is_visible or self._open_completions():
+        if self._completion_overlay.is_visible:
+            self._preview_prev()
+        else:
+            self._open_completions(self._preview_prev_if_opened)
+
+    def _preview_next_if_opened(self, opened: bool) -> None:
+        if opened:
+            self._preview_next()
+
+    def _preview_prev_if_opened(self, opened: bool) -> None:
+        if opened:
             self._preview_prev()
 
     def _preview_next(self) -> None:
@@ -2816,14 +2838,26 @@ class ChatScreen(Screen[None]):
         if display is not None:
             self._preview_completion(display)
 
-    def _open_completions(self) -> bool:
-        """Show the dropdown for the current input and remember it as the origin."""
-        options = get_completions(self._chat_input.value)
-        if not options:
-            return False
-        self._completion_origin = self._chat_input.value
-        self._completion_overlay.show_completions(options)
-        return True
+    def _open_completions(self, then: Callable[[bool], None]) -> None:
+        """Show the dropdown for the current input, then call *then* with whether it opened.
+
+        A path argument is listed on the exclusive worker, so *then* runs after the
+        listing and only if the input text did not change meanwhile.
+        """
+        text = self._chat_input.value
+        if reads_a_folder(text):
+            self._list_path_completions(text, then)
+            return
+        self._show_opened(text, get_completions(text), then)
+
+    def _show_opened(self, text: str, options: list[str], then: Callable[[bool], None]) -> None:
+        """Show *options* as the dropdown for *text* and report whether any rows opened."""
+        if text != self._chat_input.value:
+            return
+        if options:
+            self._completion_origin = text
+            self._completion_overlay.show_completions(options)
+        then(bool(options))
 
     def _completion_value(self, display: str) -> str:
         """Full input text produced by accepting ``display``, keeping the typed prefix.
@@ -2940,11 +2974,19 @@ class ChatScreen(Screen[None]):
         self._show_completions_for(text, get_completions(text))
 
     @work(thread=True, exclusive=True, group="path_completions", exit_on_error=False)
-    def _list_path_completions(self, text: str) -> None:
-        """List the typed path's folder off the event loop; a newer key cancels this listing."""
+    def _list_path_completions(self, text: str, then: Callable[[bool], None] | None = None) -> None:
+        """List the typed path's folder off the event loop; a newer request cancels this listing.
+
+        With *then* (a Tab press) the rows open the dropdown and *then* runs; without it
+        (a key press) the rows refresh the dropdown.
+        """
         options = get_completions(text)
-        if not _get_worker().is_cancelled:
+        if _get_worker().is_cancelled:
+            return
+        if then is None:
             call_from_thread(self, self._show_completions_for, text, options)
+        else:
+            call_from_thread(self, self._show_opened, text, options, then)
 
     def _show_completions_for(self, text: str, options: list[str]) -> None:
         """Apply *options* if *text* is still the input; a stale listing is dropped."""

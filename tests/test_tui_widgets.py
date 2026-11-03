@@ -3307,6 +3307,17 @@ class TestPathOptions:
         r = _path_options(str(tmp_path / "KEEP"))
         assert r == [f"keep{i:02d}" for i in range(20)]
 
+    def test_mixed_case_names_keep_the_case_folded_order_of_a_case_folding_platform(self, tmp_path):
+        """On Windows normcase folds case; the 20 rows and their order follow the folded names."""
+        from lilbee.cli.tui.widgets.autocomplete import _path_options
+
+        for i in range(15):
+            (tmp_path / f"U{i:02d}").touch()
+            (tmp_path / f"l{i:02d}").touch()
+        with mock.patch("os.path.normcase", new=str.lower):
+            r = _path_options(str(tmp_path) + "/")
+        assert r == [f"l{i:02d}" for i in range(15)] + [f"U{i:02d}" for i in range(5)]
+
     def test_limits_results_to_20(self, tmp_path):
         from lilbee.cli.tui.widgets.autocomplete import _path_options
 
