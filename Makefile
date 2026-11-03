@@ -61,9 +61,10 @@ imports-check:
 	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data.extract import chunk, code_chunker; from lilbee.data import store, ingest; from lilbee.retrieval import embedder, query"
 
 # The hosted-key tests need the providers extra, which only this job installs.
-# So do the real-types tests, which run the adapter on the library's own response types.
+# Every test that needs the library lives in tests/integration/ and imports it plainly,
+# so a job without the extra fails here and the plain test job never collects them.
 test-integration:
-	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py tests/providers/test_sdk_real_types.py tests/conformance/test_preset_fixtures.py tests/conformance/test_engine_fixtures.py -v
+	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py -v
 
 fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
 	uv run python scripts/qa/tui_fuzz.py smoke

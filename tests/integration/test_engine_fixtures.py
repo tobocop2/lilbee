@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -22,9 +23,8 @@ from tests.conformance.preset_check import (
     steps_for,
 )
 
-# The replay drives the real provider, so it runs where the extra is installed:
-# the integration job names this directory's tests in `make test-integration`.
-pytest.importorskip(sdk_library().module)
+# The replay drives the real provider; a missing library fails the import.
+importlib.import_module(sdk_library().module)
 
 _FILES = sorted(ENGINE_FIXTURES.glob("**/*.json"))
 
