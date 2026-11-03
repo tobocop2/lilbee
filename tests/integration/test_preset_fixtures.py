@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 import pytest
@@ -16,9 +17,8 @@ from tests.conformance.preset_check import (
     steps_for,
 )
 
-# The replay drives the real provider, so it runs where the extra is installed:
-# the integration job names this file in `make test-integration`.
-pytest.importorskip(sdk_library().module)
+# The replay drives the real provider; a missing library fails the import.
+importlib.import_module(sdk_library().module)
 
 _FILES = sorted(FIXTURES.glob("*.json"))
 
