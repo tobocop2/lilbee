@@ -192,7 +192,7 @@ def resolve_engine_tool(tool: EngineTool, *, install: bool = True) -> Path:
     """Resolve *tool*: configured llama-server path, then bundled wheel, then PATH, then the pack.
 
     When none of those has the tool, the llama.cpp pack installs on first use (unless
-    *install* is false). A user who set their own llama-server (a configured path or one
+    *install* is false). A user who has a llama-server (a configured path, the bundled wheel or one
     on PATH) never gets a pack: a missing helper raises an error that names the helper and
     the command that installs it. Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH``
     (an explicit setting beats the bundled wheel); the other tools resolve from the wheel,
@@ -215,9 +215,9 @@ def resolve_engine_tool(tool: EngineTool, *, install: bool = True) -> Path:
     if found is not None:
         return Path(found)
 
-    if tool is not EngineTool.LLAMA_SERVER and _uses_own_server():
+    if tool is not EngineTool.LLAMA_SERVER and _has_server():
         raise ProviderError(
-            f"{tool.value} binary not found. lilbee uses your own llama-server, so it "
+            f"{tool.value} binary not found. lilbee already has a llama-server, so it "
             f"installs no engine pack. Install {tool.value} with '{_HELPER_INSTALL[tool]}' "
             f"and put it on PATH.",
             kind=ProviderErrorKind.UNKNOWN,
@@ -239,11 +239,15 @@ def resolve_engine_tool(tool: EngineTool, *, install: bool = True) -> Path:
     raise ProviderError(f"{tool.value} binary not found. {engine_install_hint()}", kind=kind)
 
 
-def _uses_own_server() -> bool:
-    """True when the user set their own llama-server: a configured path or one on PATH."""
+def _has_server() -> bool:
+    """True when a llama-server is at hand: a configured path, the bundled wheel, or PATH."""
     from lilbee.core.config import cfg
 
-    return bool(cfg.llama_server_path) or shutil.which(EngineTool.LLAMA_SERVER.value) is not None
+    return (
+        bool(cfg.llama_server_path)
+        or _bundled_tool(EngineTool.LLAMA_SERVER) is not None
+        or shutil.which(EngineTool.LLAMA_SERVER.value) is not None
+    )
 
 
 def _first_use_tool(tool: EngineTool) -> Path | None:

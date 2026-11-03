@@ -146,16 +146,31 @@ def install_pack(
         else:
             store.ensure(lock, download)
     forget_unanswered_reads()
+    _REFUSED.pop((str(store.root), lock.version, cell), None)
     return lock
+
+
+_REFUSED: dict[tuple[str, str, str], Exception] = {}
+"""The refusal of each first-use install this process made, so a lookup does not retry it."""
 
 
 def first_use_tool(tool: str) -> Path | None:
     """The path of *tool* from the pack, installing the pack when it is absent.
 
     Raises ``PackNotPublishedError`` or a store refusal when the pack cannot be installed.
+    A refused install is remembered for the rest of the process: each later lookup raises
+    the same refusal and fetches nothing. ``install_pack`` always tries again.
     """
     found = installed_tool(tool)
     if found is not None:
         return found
-    install_pack()
+    lock, cell = pack_lock()
+    key = (str(_store().root), lock.version, cell)
+    if key in _REFUSED:
+        raise _REFUSED[key]
+    try:
+        install_pack()
+    except INSTALL_REFUSALS as exc:
+        _REFUSED[key] = exc
+        raise
     return installed_tool(tool)
