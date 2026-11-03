@@ -22,7 +22,10 @@ from lilbee.server.routes.placement import placement_route
 from tests._async_wait import wait_until
 from tests._fleet_engines import CardEngine, Role, cards_of, engines_for_all_roles, prepare_host
 from tests._litestar_test_client import create_test_client
+from tests._stated_sizes import state_size
 from tests.test_tui_fleet_drawer import _DrawerApp
+
+pytestmark = pytest.mark.usefixtures("stated_sizes")
 
 GIB = 1024**3
 CHAT_REF = "org/repo/chat.gguf"
@@ -62,8 +65,7 @@ def plan_real_sizes(
         monkeypatch, tmp_path, (Role(WorkerRole.CHAT, 1), Role(WorkerRole.EMBED, 1)), 64 * GIB
     )
     for name, size in (("chat.gguf", chat), ("embed.gguf", embed)):
-        with (tmp_path / name).open("r+b") as model:
-            model.truncate(size)
+        state_size(tmp_path / name, size)
     monkeypatch.setattr(cfg, "placement", spec)
     binary = tmp_path / "engine-server"
     binary.write_text("", encoding="utf-8")

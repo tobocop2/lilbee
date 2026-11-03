@@ -32,6 +32,7 @@ from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import EngineBackend, RerankMode, WorkerRole
 from tests._fleet_engines import Role, cards_of, engines_for_all_roles, prepare_host
 from tests._gguf_fixture import GGUF_MAGIC
+from tests._stated_sizes import state_size
 
 _GB = 1024**3
 
@@ -4912,11 +4913,8 @@ def _plan_folder_chat(
     prepare_host(monkeypatch, tmp_path, (Role(WorkerRole.CHAT, gib),), 256 * _GB)
     folder = tmp_path / "chat-folder"
     folder.mkdir()
-    (folder / "model.safetensors").write_bytes(b"")
     # Windows fills a truncated file with real zeros (20 GiB), so state the size instead.
-    monkeypatch.setattr(
-        model_memory_mod, "_installed_sizes", lambda _path: {"model.safetensors": gib * _GB}
-    )
+    state_size(folder / "model.safetensors", gib * _GB)
     (folder / "config.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
     monkeypatch.setattr(cfg, "gpu_memory_fraction", fraction)
@@ -4926,6 +4924,7 @@ def _plan_folder_chat(
     return planning_mod.plan_all_launches(engines=engines_for_all_roles(engine))
 
 
+@pytest.mark.usefixtures("stated_sizes")
 class TestAFolderFitsByTheUsableShareOfItsCard:
     """The window target of gpu_memory_fraction has no bearing on a fixed reserve."""
 

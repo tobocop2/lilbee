@@ -20,6 +20,7 @@ from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
 from tests._fleet_engines import Role, prepare_host
+from tests._stated_sizes import state_size
 from tests.test_refusal_names_holder import _RealSizeEngine
 
 GIB = 1024**3
@@ -30,10 +31,11 @@ _VISION_CONFIG = {"architectures": ["Idefics3ForConditionalGeneration"], "vision
 _TEXT_CONFIG = {"architectures": ["Qwen3ForCausalLM"]}
 
 
+pytestmark = pytest.mark.usefixtures("stated_sizes")
+
+
 def _sparse(path: Path, size: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as handle:
-        handle.truncate(size)
+    state_size(path, size)
 
 
 def _flat_folder(root: Path, config: dict, size: int = GIB) -> Path:
@@ -217,8 +219,7 @@ class TestAVisionFolderInAPlan:
         )
         monkeypatch.setattr(planning, "_vision_mmproj", real_mmproj)
         chat_file = tmp_path / "chat.gguf"
-        with chat_file.open("r+b") as model:
-            model.truncate(chat)
+        state_size(chat_file, chat)
         folder = _flat_folder(tmp_path, _VISION_CONFIG, vision)
         monkeypatch.setattr(
             engine_params,

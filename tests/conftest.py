@@ -20,6 +20,7 @@ from filelock import Timeout as FileLockTimeout
 from PIL import Image, ImageDraw
 
 import tests._suite_data_root  # noqa: F401  # must run before lilbee and huggingface_hub load
+from tests import _stated_sizes as stated_sizes_module
 
 # Opt tests out of the per-role catalog-task validator at import time so
 # the many ``cfg.chat_model = "test-model"``-style fixtures don't trip
@@ -134,6 +135,14 @@ def pytest_configure(config: pytest.Config) -> None:
         "filterwarnings",
         "ignore::pytest.PytestUnraisableExceptionWarning",
     )
+
+
+@pytest.fixture
+def stated_sizes(monkeypatch) -> Generator[None]:
+    """Switch on ``tests._stated_sizes.state_size`` for one test."""
+    stated_sizes_module.install(monkeypatch)
+    yield
+    stated_sizes_module.uninstall()
 
 
 @pytest.fixture(autouse=True)
