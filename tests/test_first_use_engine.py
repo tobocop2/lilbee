@@ -198,11 +198,11 @@ def test_an_engine_on_the_path_wins_over_the_pack(fetched, monkeypatch) -> None:
 
 
 def test_the_install_hint_does_not_name_the_engine_extra() -> None:
-    from lilbee.providers.fleet.engine_install import InstallMethod, engine_install_hint
+    from lilbee.providers.fleet.engine_install import engine_install_hint
 
-    for method in InstallMethod:
-        assert "[engine]" not in engine_install_hint(method)
-    assert "lilbee engine install" in engine_install_hint(InstallMethod.PIP)
+    for bundled in (True, False):
+        assert "[engine]" not in engine_install_hint(bundled=bundled)
+    assert "lilbee engine install" in engine_install_hint(bundled=False)
 
 
 def test_the_engine_pin_follows_the_installed_pack(fetched, monkeypatch) -> None:
