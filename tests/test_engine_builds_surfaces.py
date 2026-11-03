@@ -94,16 +94,32 @@ def test_every_surface_lists_the_same_builds() -> None:
     assert [(v.engine, v.version, v.backend) for v in views] == [("fx", "1", "cpu")]
     code, listed = _cli("list")
     assert (code, listed["command"], listed["builds"]) == (0, "engine list", [BUILD])
-    assert _rest("GET", "/api/engines") == (200, {"builds": [BUILD]})
-    assert mcp_server.engine_list_tool() == {"builds": [BUILD]}
+    absent = engine_service.not_installed()
+    assert _rest("GET", "/api/engines") == (200, {"builds": [BUILD], "not_installed": absent})
+    assert mcp_server.engine_list_tool() == {"builds": [BUILD], "not_installed": absent}
     assert run_engine_command("list").text == "fx 1 (cpu)"
+
+
+def test_cli_rest_and_mcp_return_the_same_list_fields() -> None:
+    install(cfg.models_dir)
+    absent = engine_service.not_installed()
+    assert absent
+    code, cli_body = _cli("list")
+    assert code == 0
+    cli_body.pop("command")
+    rest_body = _rest("GET", "/api/engines")[1]
+    mcp_body = mcp_server.engine_list_tool()
+    assert cli_body == rest_body == mcp_body
+    assert set(cli_body) == {"builds", "not_installed"}
+    assert cli_body["not_installed"] == absent
 
 
 def test_every_surface_lists_nothing_the_same_way() -> None:
     assert engine_service.builds() == []
     assert _cli("list")[1]["builds"] == []
-    assert _rest("GET", "/api/engines") == (200, {"builds": []})
-    assert mcp_server.engine_list_tool() == {"builds": []}
+    absent = engine_service.not_installed()
+    assert _rest("GET", "/api/engines") == (200, {"builds": [], "not_installed": absent})
+    assert mcp_server.engine_list_tool() == {"builds": [], "not_installed": absent}
     assert run_engine_command("list").text == "No engine builds are installed."
 
 
@@ -185,7 +201,10 @@ def test_rest_remove_is_refused_while_allow_http_engines_is_off() -> None:
 def test_rest_list_stays_open_while_the_flag_is_off() -> None:
     install(cfg.models_dir)
     cfg.allow_http_engines = False
-    assert _rest("GET", "/api/engines") == (200, {"builds": [BUILD]})
+    assert _rest("GET", "/api/engines") == (
+        200,
+        {"builds": [BUILD], "not_installed": engine_service.not_installed()},
+    )
 
 
 def test_mcp_remove_on_the_http_mount_is_refused_while_the_flag_is_off() -> None:
@@ -195,7 +214,10 @@ def test_mcp_remove_on_the_http_mount_is_refused_while_the_flag_is_off() -> None
     assert mcp_server.engine_remove_tool("fx", "1", "cpu") == {
         "error": engine_service.http_refused_message()
     }
-    assert mcp_server.engine_list_tool() == {"builds": [BUILD]}
+    assert mcp_server.engine_list_tool() == {
+        "builds": [BUILD],
+        "not_installed": engine_service.not_installed(),
+    }
     assert len(_installed()) == 1
 
 

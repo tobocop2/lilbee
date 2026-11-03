@@ -464,7 +464,9 @@ If none is installed, it prints `No engine builds are installed.` Run
 the three values that `engine list` shows. The `/engine list` and
 `/engine remove` chat commands, the MCP tools `engine_list` and `engine_remove`,
 and the REST routes `GET /api/engines` and
-`DELETE /api/engines/{engine}/{version}/{backend}` do the same. On the HTTP
+`DELETE /api/engines/{engine}/{version}/{backend}` do the same. With `--json`, the
+CLI, the MCP tool and the REST route return the same two fields: `builds` and
+`not_installed`, the engines with no installed build. On the HTTP
 server the removal needs `allow_http_engines`.
 
 If the build of an engine differs from the pin, `engine list` prints one line:
