@@ -436,9 +436,18 @@ class EngineStore:
         return path
 
     def remove(
-        self, engine: str, version: str, backend: str, in_use: Callable[[str, str, str], bool]
+        self,
+        engine: str,
+        version: str,
+        backend: str,
+        in_use: Callable[[str, str, str], bool],
+        *,
+        wait_s: float = _LOCK_TIMEOUT_S,
     ) -> RemoveResult:
-        """Delete one build; refuse while *in_use* says a launch uses it."""
+        """Delete one build; refuse while *in_use* says a launch uses it.
+
+        The install lock of the engine is awaited for *wait_s* seconds.
+        """
         if _BUNDLED in (version, backend):
             raise BundledEngineError(
                 f"The {engine} engine inside the executable is not an installed build "
@@ -448,7 +457,7 @@ class EngineStore:
             if not _NAME_PATTERN.fullmatch(part):
                 raise StorePathError(f"{part!r} cannot name an engine build.")
         build = self.root / engine / f"{version}-{backend}"
-        with file_lock(self.root / _LOCK_DIR / engine, _LOCK_TIMEOUT_S):
+        with file_lock(self.root / _LOCK_DIR / engine, wait_s):
             if not build.is_dir():
                 raise EngineNotInstalledError(
                     f"Engine {engine} {version} ({backend}) is not installed."
@@ -474,18 +483,25 @@ class EngineStore:
         if not keep:
             raise ValueError("Prune needs at least one build to keep.")
         gone: list[Path] = []
-        for engine, version, backend, path in self._build_dirs():
+        for engine, version, backend, path in self.build_dirs():
             if (engine, version, backend) in keep:
                 continue
             try:
-                self.remove(engine, version, backend, in_use=in_use)
-            except (EngineInUseError, StorePathError, EngineNotInstalledError, OSError) as exc:
+                self.remove(engine, version, backend, in_use=in_use, wait_s=_NO_WAIT_S)
+            except (
+                BundledEngineError,
+                EngineInUseError,
+                StorePathError,
+                EngineNotInstalledError,
+                FileLockUnavailableError,
+                OSError,
+            ) as exc:
                 log.debug("Kept the engine build %s: %s", path, exc)
                 continue
             gone.append(path)
         return gone
 
-    def _build_dirs(self) -> list[tuple[str, str, str, Path]]:
+    def build_dirs(self) -> list[tuple[str, str, str, Path]]:
         """Every build folder by name, damaged ones too: (engine, version, backend, path)."""
         if not self.root.is_dir():
             return []
@@ -605,6 +621,30 @@ def sweep_engines(models_dir: Path) -> list[Path]:
     return EngineStore(engines_root(models_dir)).sweep()
 
 
+def prune_engines(models_dir: Path) -> list[Path]:
+    """Startup hook: remove builds no shipped pin names and no live process uses."""
+    if not models_dir.is_absolute():
+        return []
+    store = EngineStore(engines_root(models_dir))
+    try:
+        builds = store.build_dirs()
+    except OSError as exc:
+        log.warning("Skipped the engine prune of %s: %s", store.root, exc)
+        return []
+    if not builds:
+        return []
+    from lilbee.providers.fleet.engines.choice import release_pins
+
+    keep = release_pins(builds)
+    if not keep:
+        return []
+    try:
+        return store.prune(keep, in_use=launch_uses_engine)
+    except OSError as exc:
+        log.warning("Skipped the engine prune of %s: %s", store.root, exc)
+        return []
+
+
 def package_name(lock: PinLock) -> str:
     """The name of the engine's wheel on the package index."""
     return _PACKAGE_PREFIX + re.sub(r"[^a-z0-9]+", "-", lock.engine.lower()).strip("-")
@@ -679,5 +719,6 @@ __all__ = [
     "package_name",
     "pip_install_argv",
     "pip_requirement",
+    "prune_engines",
     "sweep_engines",
 ]

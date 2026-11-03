@@ -1174,3 +1174,231 @@ def test_package_route_does_not_take_a_folder_named_like_the_tool(
 
     store.install_via_package(pin(sha), run=run)
     assert [b.binary for b in store.installed()] == [None]
+
+
+class _PinnedAdapter:
+    """A stand-in adapter that is not bundled and pins one build."""
+
+    bundled = False
+
+    def __init__(self, version: str, backend: object) -> None:
+        self._pin = {"engine": "fx", "version": version, "backend": backend}
+
+    def pin_record(self) -> dict[str, object]:
+        return self._pin
+
+
+def _pruned_models(tmp_path: Path, monkeypatch, adapter: object, versions: tuple[str, ...]) -> Path:
+    """A models folder with an engines folder beside it holding fx builds of *versions*."""
+    from lilbee.providers.fleet.engines import choice
+    from lilbee.providers.fleet.engines.base import EngineName
+
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.MISTRAL, adapter)
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
+    for var in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+        monkeypatch.setenv(var, str(tmp_path / "xdg"))
+    installed_store(EngineStore(tmp_path / "engines"), tmp_path, versions)
+    return tmp_path / "models"
+
+
+def _versions(tmp_path: Path) -> list[str]:
+    return [b.version for b in EngineStore(tmp_path / "engines").installed()]
+
+
+def test_prune_engines_removes_a_build_no_release_pins(tmp_path: Path, monkeypatch) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1", "3"))
+    gone = engine_store.prune_engines(models)
+    assert [p.name for p in gone] == ["1-cpu"]
+    assert _versions(tmp_path) == ["3"]
+
+
+def test_prune_engines_keeps_a_build_a_live_process_uses(tmp_path: Path, monkeypatch) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1", "3"))
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        assert engine_store.prune_engines(models) == []
+    finally:
+        hold.release_and_check_last()
+    assert _versions(tmp_path) == ["1", "3"]
+
+
+def test_prune_engines_keeps_every_build_of_an_engine_whose_pin_names_no_backend(
+    tmp_path: Path, monkeypatch
+) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", None), ("1", "3"))
+    assert engine_store.prune_engines(models) == []
+    assert _versions(tmp_path) == ["1", "3"]
+
+
+def test_prune_engines_removes_nothing_when_no_adapter_needs_a_build(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lilbee.providers.fleet.engines import choice
+
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    monkeypatch.setattr(choice, "ADAPTERS", {})
+    assert engine_store.prune_engines(models) == []
+    assert _versions(tmp_path) == ["1"]
+
+
+def test_prune_engines_ignores_a_relative_models_dir(tmp_path: Path, monkeypatch) -> None:
+    _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    monkeypatch.chdir(tmp_path)
+    assert engine_store.prune_engines(Path("models")) == []
+    assert _versions(tmp_path) == ["1"]
+
+
+def test_prune_engines_reads_no_pin_with_nothing_installed(tmp_path: Path, monkeypatch) -> None:
+    from lilbee.providers.fleet.engines import choice
+
+    probe = mock.Mock(side_effect=AssertionError("pin read"))
+    monkeypatch.setattr(choice, "ADAPTERS", {"x": mock.Mock(bundled=False, pin_record=probe)})
+    assert engine_store.prune_engines(tmp_path / "models") == []
+    probe.assert_not_called()
+
+
+def test_prune_keeps_a_build_an_installer_holds_locked(store: EngineStore, tmp_path: Path) -> None:
+    from lilbee.core.security import FileLockUnavailableError
+
+    installed_store(store, tmp_path, ("1",))
+    with mock.patch.object(engine_store, "file_lock", side_effect=FileLockUnavailableError("held")):
+        assert store.prune(keep={("fx", "9", "cpu")}, in_use=lambda *_: False) == []
+    assert [b.version for b in store.installed()] == ["1"]
+
+
+def test_prune_engines_sweeps_nothing_itself(tmp_path: Path, monkeypatch) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("1", "cpu"), ("1",))
+    (tmp_path / "engines" / "fx" / ".stage-x").mkdir()
+    assert engine_store.prune_engines(models) == []
+    assert (tmp_path / "engines" / "fx" / ".stage-x").is_dir()
+
+
+def test_every_shipped_pin_names_a_build_or_no_backend() -> None:
+    from lilbee.providers.fleet.engines.choice import ADAPTERS
+
+    pinned = [a.pin_record() for a in ADAPTERS.values() if not a.bundled]
+    assert pinned
+    for record in pinned:
+        assert isinstance(record["engine"], str) and record["engine"]
+        assert isinstance(record["version"], str) and record["version"]
+        assert record["backend"] is None or isinstance(record["backend"], str)
+
+
+def test_the_startup_hook_sweeps_a_stage_and_prunes_a_stale_build(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from lilbee.cli.app import app
+    from lilbee.core.config import cfg
+
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1", "3"))
+    (tmp_path / "engines" / "fx" / ".stage-x").mkdir()
+    monkeypatch.setattr(cfg, "models_dir", models)
+    CliRunner().invoke(app, ["version"])
+    assert not (tmp_path / "engines" / "fx" / ".stage-x").exists()
+    assert _versions(tmp_path) == ["3"]
+
+
+def test_prune_engines_keeps_every_installed_backend_of_the_current_pin(
+    tmp_path: Path, monkeypatch
+) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1", "3"))
+    store = EngineStore(tmp_path / "engines")
+    wheel_path = tmp_path / "fx.whl"
+    sha = make_wheel(wheel_path)
+    store.install_from_wheel(PinLock("fx", "3", "cuda", {}, ("MIT",), sha, "server"), wheel_path)
+    gone = engine_store.prune_engines(models)
+    assert [p.name for p in gone] == ["1-cpu"]
+    assert sorted(p.name for p in (tmp_path / "engines" / "fx").iterdir()) == ["3-cpu", "3-cuda"]
+
+
+def test_prune_does_not_wait_for_an_install_lock(store: EngineStore, tmp_path: Path) -> None:
+    installed_store(store, tmp_path, ("1",))
+    seen: list[float] = []
+    real = engine_store.file_lock
+
+    def spy(path, timeout):
+        seen.append(timeout)
+        return real(path, timeout)
+
+    with mock.patch.object(engine_store, "file_lock", spy):
+        store.prune(keep={("fx", "9", "cpu")}, in_use=lambda *_: False)
+    assert seen == [0.0]
+
+
+def test_prune_engines_survives_an_unreadable_engines_root(tmp_path: Path, monkeypatch) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    with mock.patch.object(EngineStore, "build_dirs", side_effect=PermissionError("denied")):
+        assert engine_store.prune_engines(models) == []
+    assert _versions(tmp_path) == ["1"]
+
+
+def test_prune_leaves_a_folder_named_bundled_alone(store: EngineStore, tmp_path: Path) -> None:
+    (store.root / "fx" / "1-bundled").mkdir(parents=True)
+    assert store.prune({("fx", "9", "cpu")}, in_use=lambda *_: False) == []
+    assert (store.root / "fx" / "1-bundled").is_dir()
+
+
+def test_prune_engines_never_prunes_a_build_of_a_bundled_adapter(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lilbee.providers.fleet.engines import choice
+    from lilbee.providers.fleet.engines.base import EngineName
+
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    shipped = mock.Mock(bundled=True)
+    shipped.name = "fx"
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.MISTRAL, shipped)
+    other = _PinnedAdapter("9", "cpu")
+    other._pin["engine"] = "other"
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, other)
+    (tmp_path / "engines" / "other" / "1-cpu").mkdir(parents=True)
+    gone = engine_store.prune_engines(models)
+    assert [p.parent.name for p in gone] == ["other"]
+    assert _versions(tmp_path) == ["1"]
+
+
+def test_prune_engines_removes_a_store_holding_only_an_old_pin(tmp_path: Path, monkeypatch) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    gone = engine_store.prune_engines(models)
+    assert [p.name for p in gone] == ["1-cpu"]
+    assert _versions(tmp_path) == []
+
+
+def test_prune_engines_lets_a_probe_error_reach_the_caller(tmp_path: Path, monkeypatch) -> None:
+    class Probing(_PinnedAdapter):
+        def pin_record(self) -> dict[str, object]:
+            raise OSError("host probe failed")
+
+    models = _pruned_models(tmp_path, monkeypatch, Probing("3", "cpu"), ("1",))
+    with pytest.raises(OSError, match="host probe failed"):
+        engine_store.prune_engines(models)
+    assert _versions(tmp_path) == ["1"]
+
+
+def test_prune_engines_lets_an_error_other_than_oserror_reach_the_caller(
+    tmp_path: Path, monkeypatch
+) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    with (
+        mock.patch.object(EngineStore, "prune", side_effect=RuntimeError("bug")),
+        pytest.raises(RuntimeError, match="bug"),
+    ):
+        engine_store.prune_engines(models)
+
+
+def test_prune_engines_survives_an_oserror_while_pruning(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    with (
+        mock.patch.object(EngineStore, "prune", side_effect=PermissionError("denied")),
+        caplog.at_level("WARNING"),
+    ):
+        assert engine_store.prune_engines(models) == []
+    assert str(tmp_path / "engines") in caplog.text
+    assert _versions(tmp_path) == ["1"]

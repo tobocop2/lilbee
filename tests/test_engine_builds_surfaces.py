@@ -40,6 +40,8 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     snapshot = cfg.model_copy()
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
     monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    # These tests install an fx build that no shipped pin names; the startup prune would remove it.
+    monkeypatch.setattr("lilbee.providers.fleet.engine_store.prune_engines", lambda _models: [])
     cfg.data_root = tmp_path
     cfg.models_dir = tmp_path / "models"
     cfg.allow_http_engines = True
@@ -163,6 +165,24 @@ def test_the_bundled_engine_is_refused_on_every_surface() -> None:
     assert (code, body["detail"]) == (422, text)
     assert mcp_server.engine_remove_tool("llama.cpp", "bundled", "bundled") == {"error": text}
     assert run_engine_command("remove llama.cpp bundled bundled").text == text
+
+
+def test_a_user_remove_waits_the_full_install_lock_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lilbee.providers.fleet import engine_store
+
+    install(cfg.models_dir)
+    waits: list[float] = []
+    real = engine_store.file_lock
+
+    def spy(path: Path, timeout: float):
+        waits.append(timeout)
+        return real(path, timeout)
+
+    monkeypatch.setattr(engine_store, "file_lock", spy)
+    engine_service.remove_build("fx", "1", "cpu")
+    assert waits == [300.0]
 
 
 def test_a_build_in_use_is_refused_and_kept_on_every_surface(

@@ -5,9 +5,10 @@ from __future__ import annotations
 import importlib
 import logging
 import pkgutil
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from lilbee.catalog.refs import model_format
@@ -313,6 +314,29 @@ def host_lock(pin: Mapping[str, Any], host: HostCaps) -> PinLock:
     """The lock for *pin* with the digest of the cell of *host*, as an install records it."""
     lock = pin_lock(pin)
     return lock.for_cell(host_cell(lock, host))
+
+
+def release_pins(builds: Sequence[tuple[str, str, str, Path]]) -> set[tuple[str, str, str]]:
+    """The builds to keep, as (engine, version, backend), for the installed *builds*.
+
+    A build stays when its engine ships in the package, when it has the version
+    of the current pin in any backend, or when the pin names no backend. The pin
+    itself is always in the set, so a store with only older builds still prunes.
+    """
+    keep: set[tuple[str, str, str]] = set()
+    for adapter in ADAPTERS.values():
+        if adapter.bundled:
+            keep.update((e, v, b) for e, v, b, _ in builds if e == adapter.name)
+            continue
+        pin = adapter.pin_record()
+        named = isinstance(pin["backend"], str)
+        keep.add((pin["engine"], pin["version"], pin["backend"] if named else ""))
+        keep.update(
+            (e, v, b)
+            for e, v, b, _ in builds
+            if e == pin["engine"] and (not named or v == pin["version"])
+        )
+    return keep
 
 
 def _is_installed(name: EngineName, adapter: EngineAdapter, store: EngineStore) -> bool:
