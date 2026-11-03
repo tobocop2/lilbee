@@ -175,17 +175,16 @@ async def warm_stream() -> AsyncGenerator[str, None]:
     provider = get_services().provider
     deadline = time.monotonic() + _WARM_STREAM_TIMEOUT_S
     while time.monotonic() < deadline:
+        # Same first question as /api/health: a served role is ready whatever the
+        # local tracker last recorded (a remote chat role leaves a stale local error).
+        if provider.role_ready(WorkerRole.CHAT):
+            yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.READY).model_dump())
+            break
         snapshot = provider.warm_progress()
         if snapshot is None:
-            if provider.role_ready(WorkerRole.CHAT):
-                yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.READY).model_dump())
-                break
             yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.STARTING).model_dump())
         else:
             yield sse_event(SseEvent.WARM, snapshot.model_dump())
-            # A stale READY after eviction must not short-circuit; wait for the role.
-            if snapshot.phase is WarmPhase.READY and provider.role_ready(WorkerRole.CHAT):
-                break
             if snapshot.phase is WarmPhase.ERROR:
                 break
         await asyncio.sleep(_WARM_POLL_INTERVAL_S)

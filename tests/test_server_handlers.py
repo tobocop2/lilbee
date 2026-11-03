@@ -292,8 +292,8 @@ class TestWarmStream:
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
         reading = WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=1, bytes_total=2)
-        ready = WarmProgress(phase=WarmPhase.READY, bytes_total=2)
-        mock_svc.provider.warm_progress.side_effect = [reading, ready]
+        mock_svc.provider.warm_progress.side_effect = [reading, None]
+        mock_svc.provider.role_ready.side_effect = [False, True]
         with patch("lilbee.server.handlers._WARM_POLL_INTERVAL_S", 0):
             chunks = [chunk async for chunk in handlers.warm_stream()]
         phases = [e["phase"] for e in _parse_warm_events(chunks)]
@@ -305,6 +305,7 @@ class TestWarmStream:
         mock_svc.provider.warm_progress.return_value = WarmProgress(
             phase=WarmPhase.ERROR, error="no vram"
         )
+        mock_svc.provider.role_ready.return_value = False
         chunks = [chunk async for chunk in handlers.warm_stream()]
         events = _parse_warm_events(chunks)
         assert events[-1]["phase"] == WarmPhase.ERROR
@@ -365,6 +366,52 @@ class TestWarmStream:
         events = _parse_warm_events(chunks)
         warm_count = sum(1 for e in events if e["phase"] == WarmPhase.READY)
         assert warm_count > 1, "stale READY must not end the stream at once"
+
+
+class TestWarmStreamAfterSwap:
+    """The warm stream and /api/health read one readiness answer across a swap."""
+
+    @staticmethod
+    def _routing_with_stale_local_error():
+        from lilbee.providers.routing_provider import RoutingProvider
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        routing = RoutingProvider()
+        local = MagicMock()
+        local.warm_progress.return_value = WarmProgress(
+            phase=WarmPhase.ERROR, error="chat model Qwen3 4B is not installed"
+        )
+        local.role_ready.return_value = False
+        routing._local = local
+        return routing
+
+    async def test_local_to_remote_chat_swap_reports_ready(self, mock_svc):
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.warm_progress import WarmPhase
+
+        routing = self._routing_with_stale_local_error()
+        set_services(replace(mock_svc, provider=routing))
+        with patch.object(cfg, "chat_model", "openai/gpt-4o"):
+            health = await handlers.health()
+            chunks = [chunk async for chunk in handlers.warm_stream()]
+            assert routing.role_ready(WorkerRole.CHAT) is True
+        events = _parse_warm_events(chunks)
+        assert health.chat_status == "ready"
+        assert [e["phase"] for e in events] == [WarmPhase.READY]
+        assert events[-1]["error"] is None
+
+    async def test_remote_to_local_chat_swap_reports_local_error(self, mock_svc):
+        from lilbee.providers.warm_progress import WarmPhase
+
+        routing = self._routing_with_stale_local_error()
+        set_services(replace(mock_svc, provider=routing))
+        with patch.object(cfg, "chat_model", "Qwen/Qwen3-4B-GGUF/qwen3-4b-q4_k_m.gguf"):
+            health = await handlers.health()
+            chunks = [chunk async for chunk in handlers.warm_stream()]
+        events = _parse_warm_events(chunks)
+        assert health.chat_status == "error"
+        assert [e["phase"] for e in events] == [WarmPhase.ERROR]
+        assert events[-1]["error"] == "chat model Qwen3 4B is not installed"
 
 
 class TestStatus:
