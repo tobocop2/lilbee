@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from litestar import Response, Router, delete, get, patch, post, put
-from litestar.params import FromPath
+from litestar import MediaType, Response, Router, delete, get, patch, post, put
+from litestar.openapi import ResponseSpec
+from litestar.params import FromPath, FromQuery
+from litestar.response import Stream
 from litestar.status_codes import HTTP_200_OK
 
 from lilbee.core.profile_files import MAX_PROFILE_BYTES
 from lilbee.server.content_disposition import CONTENT_DISPOSITION, attachment_disposition
 from lilbee.server.handlers import profiles as handlers
+from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
     ActiveProfileResponse,
     ProfileApplyResponse,
@@ -88,10 +91,33 @@ async def profiles_diff_route(name: FromPath[str]) -> ProfileDiffResponse:
     return await handlers.diff_profile(name)
 
 
-@post("/api/profiles/{name:str}/apply", status_code=HTTP_200_OK)
-async def profiles_apply_route(name: FromPath[str]) -> ProfileApplyResponse:
-    """Make the profile the project's; ``reindex_required`` says whether to rebuild."""
-    return await handlers.apply_profile(name)
+@post(
+    "/api/profiles/{name:str}/apply",
+    status_code=HTTP_200_OK,
+    media_type=SSE_MEDIA_TYPE,
+    responses={
+        HTTP_200_OK: ResponseSpec(
+            data_container=ProfileApplyResponse,
+            media_type=MediaType.JSON,
+            description="The apply; with ?reindex=true, the /api/sync SSE events instead",
+            generate_examples=False,
+        )
+    },
+)
+async def profiles_apply_route(
+    name: FromPath[str], reindex: FromQuery[bool] = False
+) -> Response[ProfileApplyResponse] | Stream:
+    """Make the profile the project's; ``reindex_required`` says whether to rebuild.
+
+    ``?reindex=true`` also rebuilds the index when the profile needs it, as
+    ``lilbee profile apply --reindex`` does, and answers with the ``/api/sync``
+    SSE events. The done event carries the apply and ``rebuild``, the sync
+    result or null when no rebuild was needed.
+    """
+    applied = await handlers.apply_profile(name)
+    if not reindex:
+        return Response(applied, media_type=MediaType.JSON)
+    return Stream(handlers.rebuild_after_apply_stream(applied))
 
 
 @put("/api/profiles/{name:str}")

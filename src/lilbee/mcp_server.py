@@ -1382,9 +1382,39 @@ def profile_show(name: str) -> dict[str, Any]:
 
 
 @_tool_if(_profiles_enabled)
-def profile_apply(name: str) -> dict[str, Any]:
-    """Make a profile the project's; your values stay. Rebuild when ``reindex_required``."""
-    return _profile_call(lambda: _profile_applied(name))
+async def profile_apply(name: str, reindex: bool = False) -> dict[str, Any]:
+    """Make a profile the project's; your values stay. Rebuild when ``reindex_required``.
+
+    ``reindex`` also rebuilds the index when the profile needs it and blocks until
+    done: ``rebuild`` is the sync result, or null when no rebuild was needed.
+    """
+    applied = await asyncio.to_thread(_profile_call, lambda: _profile_applied(name))
+    if not reindex or "error" in applied:
+        return applied
+    return {**applied, **await _rebuild_after_apply(applied)}
+
+
+async def _rebuild_after_apply(applied: dict[str, Any]) -> dict[str, Any]:
+    """The ``rebuild`` result an apply needs, with ``rebuild_error`` when it is refused."""
+    from lilbee.app.ingest import LIBRARY_REFUSALS
+    from lilbee.data.ingest import sync as run_sync
+
+    needed = await asyncio.to_thread(
+        profiles.apply_needs_rebuild,
+        _profile_store(),
+        applied["name"],
+        applied["reindex_required"],
+    )
+    if not needed:
+        return {"rebuild": None}
+    with _cancel_token() as cancel:
+        try:
+            result = await run_sync(
+                quiet=True, force_rebuild=True, cancel=cancel, started_by=_SYNC_STARTER
+            )
+        except LIBRARY_REFUSALS as exc:
+            return {"rebuild": None, "rebuild_error": str(exc)}
+    return {"rebuild": result.model_dump()}
 
 
 @_tool_if(_profiles_enabled)

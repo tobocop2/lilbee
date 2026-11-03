@@ -91,6 +91,7 @@ async def sync_stream(
     force_rebuild: bool = False,
     retry_skipped: bool = False,
     prune_ignored: bool = False,
+    done_payload: Callable[[SyncResult], dict[str, Any]] = lambda result: result.model_dump(),
 ) -> AsyncGenerator[str, None]:
     """Trigger sync, yield SSE progress events, then done event.
 
@@ -99,7 +100,8 @@ async def sync_stream(
     When ``retry_skipped`` is true, it clears the failed-file markers so files
     that were skipped on a previous sync get another attempt, without dropping
     the store. When ``prune_ignored`` is true, it also drops sources a
-    ``.lilbeeignore`` now excludes.
+    ``.lilbeeignore`` now excludes. ``done_payload`` builds the done event's data
+    from the sync's result.
     """
     sse = SseStream()
     task = asyncio.create_task(
@@ -107,7 +109,7 @@ async def sync_stream(
     )
     async for event in sse.drain(task, "Sync stream"):
         yield event
-    frame = sse.terminal_frame(task, lambda result: result.model_dump())
+    frame = sse.terminal_frame(task, done_payload)
     if frame is not None:
         yield frame
 

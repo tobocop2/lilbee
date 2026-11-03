@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,6 +15,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder
 from lilbee.core.system import default_data_dir
+from lilbee.data.types import SyncResult
 from lilbee.mcp_server import (
     ProfileAction,
     build_mcp_server,
@@ -84,17 +87,75 @@ def test_show_a_broken_profile_has_no_diff_and_names_the_reason():
     assert result["profile"]["error"] == "Profiles cannot set chat_model"
 
 
-def test_apply_records_the_profile_and_reports_the_reindex():
+async def test_apply_records_the_profile_and_reports_the_reindex():
     _write(_global_dir(), "court-filings", CREDITED)
-    result = profile_apply("Court filings")
+    result = await profile_apply("Court filings")
     assert result["reindex_required"] is True
     assert _stored()["profile"]["name"] == "Court filings"
     assert profile_list()["active"]["profile"]["credit"] == "by Jane Doe (@janedoe)"
 
 
-def test_show_of_the_active_profile_after_its_file_is_deleted_says_how_to_recover():
+def _recording_sync(calls: list[dict[str, Any]]):
+    async def _sync(**kwargs: Any) -> SyncResult:
+        calls.append(kwargs)
+        return SyncResult(added=["filing.pdf"])
+
+    return _sync
+
+
+async def test_apply_with_reindex_applies_then_returns_the_rebuild_result(monkeypatch):
+    _write(_global_dir(), "court-filings", CREDITED)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    result = await profile_apply("Court filings", reindex=True)
+    assert _stored()["profile"]["name"] == "Court filings"
+    assert [(c["force_rebuild"], c["started_by"]) for c in calls] == [(True, "lilbee mcp")]
+    assert result["reindex_required"] is True
+    assert result["rebuild"]["added"] == ["filing.pdf"]
+
+
+async def test_apply_with_reindex_skips_the_rebuild_when_nothing_needs_it(monkeypatch):
+    _write(_global_dir(), "tight", '[profile]\nname = "Tight"\n[values]\ntop_k = 4\n')
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    result = await profile_apply("Tight", reindex=True)
+    assert calls == []
+    assert (result["name"], result["rebuild"]) == ("Tight", None)
+
+
+async def test_apply_without_reindex_only_applies(monkeypatch):
+    _write(_global_dir(), "court-filings", CREDITED)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    result = await profile_apply("Court filings")
+    assert result["reindex_required"] is True
+    assert "rebuild" not in result
+    assert calls == []
+
+
+async def test_apply_with_reindex_reports_a_refused_rebuild_after_the_apply(monkeypatch):
+    from lilbee.runtime.lock import LibraryUnlockableError
+
+    async def _refused(**_kwargs: Any) -> SyncResult:
+        raise LibraryUnlockableError("The library is locked.")
+
+    _write(_global_dir(), "court-filings", CREDITED)
+    monkeypatch.setattr("lilbee.data.ingest.sync", _refused)
+    result = await profile_apply("Court filings", reindex=True)
+    assert _stored()["profile"]["name"] == "Court filings"
+    assert (result["rebuild"], result["rebuild_error"]) == (None, "The library is locked.")
+
+
+async def test_apply_with_reindex_of_a_missing_profile_rebuilds_nothing(monkeypatch):
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    assert await profile_apply("nope", reindex=True) == {"error": "No profile named 'nope'"}
+    assert calls == []
+
+
+async def test_show_of_the_active_profile_after_its_file_is_deleted_says_how_to_recover():
     path = _write(_global_dir(), "court-filings", CREDITED)
-    profile_apply("Court filings")
+    await profile_apply("Court filings")
     path.unlink()
     assert profile_list()["active"]["status"] == "missing"
     error = profile_show("Court filings")["error"]
@@ -103,8 +164,8 @@ def test_show_of_the_active_profile_after_its_file_is_deleted_says_how_to_recove
     assert "apply another profile" in error
 
 
-def test_a_refusal_returns_the_core_message():
-    assert profile_apply("nope") == {"error": "No profile named 'nope'"}
+async def test_a_refusal_returns_the_core_message():
+    assert await profile_apply("nope") == {"error": "No profile named 'nope'"}
     assert profile_manage(ProfileAction.DELETE, name="Scanned archive") == {
         "error": "Scanned archive ships with lilbee and cannot be changed; duplicate it instead"
     }
@@ -166,9 +227,9 @@ def test_manage_discard_warns_when_it_leaves_ocr_off_with_a_vision_model():
     assert cfg.ocr is OcrMode.OFF
 
 
-def test_apply_warns_when_it_leaves_ocr_off_with_a_vision_model():
+async def test_apply_warns_when_it_leaves_ocr_off_with_a_vision_model():
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-    result = profile_apply("Notes and markdown")
+    result = await profile_apply("Notes and markdown")
     assert len(result["warnings"]) == 1
     assert "ocr" in result["warnings"][0]
     assert cfg.ocr is OcrMode.OFF
@@ -281,15 +342,18 @@ def test_every_action_has_a_handler():
 _CALLS = {
     "profile_list": lambda: profile_list(),
     "profile_show": lambda: profile_show("Scanned archive"),
-    "profile_apply": lambda: profile_apply("Scanned archive"),
+    "profile_apply": lambda: asyncio.run(profile_apply("Scanned archive", reindex=True)),
     "profile_manage": lambda: profile_manage(ProfileAction.DISCARD),
 }
 
 
 @pytest.mark.parametrize("tool", sorted(_CALLS))
-def test_each_tool_refuses_once_the_setting_is_off(tool):
+def test_each_tool_refuses_once_the_setting_is_off(tool, monkeypatch):
     cfg.mcp_profiles_enabled = False
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
     assert _CALLS[tool]() == {"error": MCP_PROFILES_DISABLED_HINT}
+    assert calls == []
     assert "profile" not in _stored()
 
 

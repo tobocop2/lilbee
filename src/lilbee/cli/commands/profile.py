@@ -282,7 +282,6 @@ def profile_apply(
 ) -> None:
     """Make a profile this project's; your own values and LILBEE_* variables stay."""
     from lilbee.app import profiles
-    from lilbee.app.status import held_out_sources
     from lilbee.server.models import ProfileApplyResponse
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -301,13 +300,7 @@ def profile_apply(
         # The store read below is the first services init of this command, and a
         # rebuild never needs the chat model that init would warm.
         cfg.worker_pool_eager_start = False
-        # A rebuild also retries each held-out file, which is the only way a raised
-        # limit reaches them: a limit is not a setting that requires a rebuild.
-        if (
-            result.reindex_required
-            or profiles.sets_reindex_field(_store(), result.name)
-            or held_out_sources()[1] > 0
-        ):
+        if profiles.apply_needs_rebuild(_store(), result.name, result.reindex_required):
             reindexed, reindex_failed, reindex_error = _reindex()
     if cfg.json_mode:
         json_output(_rebuild_json(result, reindexed, reindex_error, reindex_failed))

@@ -1131,7 +1131,9 @@ covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
 profiles (`/api/profiles`: list, show, the active profile, diff, apply,
-and every profile file operation),
+and every profile file operation; `POST /api/profiles/{name}/apply?reindex=true`
+also rebuilds the index when the profile needs it, like
+`lilbee profile apply --reindex`, and streams the `/api/sync` events),
 saved conversations (`/api/sessions`: list, read, create, append, fork,
 rename, delete, the compaction summary, and `GET /api/sessions/{id}/markdown`
 for a markdown export whose `Content-Disposition` header names the file),

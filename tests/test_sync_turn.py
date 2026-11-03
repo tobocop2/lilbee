@@ -254,6 +254,64 @@ async def test_the_sync_stream_of_serve_sends_the_wait_then_its_own_result(
     assert len(frames) == 2
 
 
+@pytest.fixture
+def profile_services() -> Iterator[None]:
+    from lilbee.app.services import set_services
+    from tests.conftest import make_mock_services
+
+    set_services(make_mock_services())
+    yield
+    set_services(None)
+
+
+async def test_a_profile_apply_with_reindex_over_serve_waits_for_the_running_sync(
+    library: _Library, turn_held_by_another_add: FileLock, profile_services: None
+) -> None:
+    from lilbee.server.handlers.profiles import apply_profile, rebuild_after_apply_stream
+
+    library.disk |= {"filing.pdf"}
+    frames: list[str] = []
+    with mock.patch("lilbee.data.ingest.sync", _sync(library)):
+        applied = await apply_profile("Scanned archive")
+        async for frame in rebuild_after_apply_stream(applied):
+            frames.append(frame)
+            if frame.startswith("event: sync_wait"):
+                assert library.embedded == []
+                turn_held_by_another_add.release()
+    assert frames[0].startswith("event: sync_wait")
+    assert frames[-1].startswith("event: done")
+    assert library.embedded == ["filing.pdf"]
+
+
+async def test_a_profile_apply_with_reindex_over_mcp_waits_for_the_running_sync(
+    library: _Library, turn_held_by_another_add: FileLock, profile_services: None
+) -> None:
+    from lilbee.mcp_server import profile_apply
+    from lilbee.runtime import lock as lock_mod
+
+    cfg.mcp_profiles_enabled = True
+    library.disk |= {"filing.pdf"}
+    waiting = threading.Event()
+    read_owner = lock_mod.read_sync_turn_owner
+
+    def _read_owner_and_mark(data_root: Any) -> SyncTurnOwner | None:
+        waiting.set()
+        return read_owner(data_root)
+
+    with (
+        mock.patch("lilbee.data.ingest.sync", _sync(library)),
+        mock.patch("lilbee.runtime.lock.read_sync_turn_owner", _read_owner_and_mark),
+    ):
+        applying = asyncio.create_task(profile_apply("Scanned archive", reindex=True))
+        assert await asyncio.to_thread(waiting.wait, _HANG_LIMIT_S)
+        assert library.embedded == []
+        turn_held_by_another_add.release()
+        result = await asyncio.wait_for(applying, _HANG_LIMIT_S)
+    assert library.embedded == ["filing.pdf"]
+    assert result["name"] == "Scanned archive"
+    assert result["rebuild"] is not None
+
+
 _NOTICE = SyncWaitEvent(message=_WAIT_FOR_ADD, holder="lilbee add", pid=os.getpid())
 
 
