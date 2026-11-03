@@ -513,3 +513,56 @@ def test_a_pack_install_makes_the_next_read_in_the_process_ask_the_new_parser(
         "architecture": "bert",
         "embedding_length": "1024",
     }
+
+
+def test_a_bundled_server_never_installs_a_pack_for_a_missing_helper(
+    fetched, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = tmp_path / "wheel" / "llama-server"
+    server.parent.mkdir()
+    server.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        binary_mod,
+        "_bundled_tool",
+        lambda tool: server if tool is EngineTool.LLAMA_SERVER else None,
+    )
+    monkeypatch.setattr(binary_mod.shutil, "which", lambda _name: None)
+    with pytest.raises(ProviderError) as excinfo:
+        resolve_engine_tool(EngineTool.GGUF_PARSER)
+    assert fetched == []
+    assert "go install github.com/gpustack/gguf-parser-go" in str(excinfo.value)
+    assert "engine install" not in str(excinfo.value)
+
+
+def test_a_failed_first_use_install_is_not_retried_in_the_same_process(
+    fetched, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet.engine_store import PackUrlError
+
+    attempts: list[str] = []
+
+    def offline(_lock: Any, cell: str, *, dest: Path) -> Path:
+        attempts.append(cell)
+        raise PackUrlError("no network")
+
+    monkeypatch.setattr(first_use, "fetch_frozen", offline)
+    for _ in range(3):
+        with pytest.raises(first_use.INSTALL_REFUSALS, match="no network"):
+            first_use.first_use_tool("llama-server")
+    assert attempts == [CELL]
+
+
+def test_the_install_command_retries_after_a_failed_first_use(
+    fetched, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet.engine_store import PackUrlError
+
+    good = first_use.fetch_frozen
+    monkeypatch.setattr(
+        first_use, "fetch_frozen", lambda *_a, **_k: (_ for _ in ()).throw(PackUrlError("down"))
+    )
+    with pytest.raises(PackUrlError):
+        first_use.first_use_tool("llama-server")
+    monkeypatch.setattr(first_use, "fetch_frozen", good)
+    first_use.install_pack()
+    assert first_use.first_use_tool("llama-server").is_file()
