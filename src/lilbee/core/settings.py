@@ -291,7 +291,10 @@ def read_persisted(root: Path) -> tuple[tuple[int, int, int] | None, dict[str, A
     """The stamp of *root*'s config.toml and ``persisted_values``, from one locked read.
 
     The read holds the lock a writer takes, so it never sees a write in progress.
+    Without the file there is nothing to lock, so the read creates no folder or lock file.
     """
+    if overlay_stamp(root) is None:
+        return None, persisted_values(root)
     with _config_write_lock(root):
         return overlay_stamp(root), persisted_values(root)
 
