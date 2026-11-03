@@ -55,6 +55,7 @@ def host(system: str, machine: str, mac_ver: str = "") -> host_caps.HostCaps:
     ("caps", "ok", "known", "words"),
     [
         (host("Darwin", "arm64", "14.0"), True, True, ""),
+        (host("Darwin", "arm64", "14"), True, True, ""),
         (host("Darwin", "arm64", "15.2"), True, True, ""),
         (host("Darwin", "arm64", "26.0"), True, True, ""),
         (host("Darwin", "arm64", "13.6"), False, True, "needs macOS 14.0 or later"),

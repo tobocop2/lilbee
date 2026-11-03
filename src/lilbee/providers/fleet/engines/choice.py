@@ -316,6 +316,21 @@ def host_lock(pin: Mapping[str, Any], host: HostCaps) -> PinLock:
     return lock.for_cell(host_cell(lock, host))
 
 
+def installed_tool(pin: Mapping[str, Any], tool: str, host: HostCaps) -> Path | None:
+    """The executable *tool* of the complete build that *pin* names, or ``None`` when absent.
+
+    Raises ``ProviderError`` when the store holds two builds for the pin.
+    """
+    store = EngineStore(engines_root(cfg.models_dir))
+    try:
+        build = store.complete_build(host_lock(pin, host))
+    except EngineConflictError as exc:
+        raise ProviderError(str(exc)) from exc
+    except BUILD_UNREADABLE:
+        return None
+    return next(iter(build.glob(f"*/bin/{tool}*")), None) if build else None
+
+
 def release_pins(builds: Sequence[tuple[str, str, str, Path]]) -> set[tuple[str, str, str]]:
     """The builds to keep, as (engine, version, backend), for the installed *builds*.
 

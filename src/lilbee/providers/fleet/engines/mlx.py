@@ -9,12 +9,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from lilbee.catalog.types import ModelFormat
-from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
-from lilbee.providers.fleet.engine_store import EngineConflictError, EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
     EngineName,
@@ -94,7 +92,7 @@ class MlxAdapter:
             )
         if not host.macos_known or host.macos_version is None:
             return HostGate(True, host.macos_reason, known=False)
-        if host.macos_version < MACOS_FLOOR:
+        if (*host.macos_version, 0, 0)[:2] < MACOS_FLOOR:
             have = ".".join(map(str, host.macos_version))
             return HostGate(
                 False,
@@ -104,16 +102,9 @@ class MlxAdapter:
 
     def binary(self) -> Path:
         from lilbee.catalog.runnable import session_host
-        from lilbee.providers.fleet.engines.choice import BUILD_UNREADABLE, host_lock
+        from lilbee.providers.fleet.engines.choice import installed_tool
 
-        store = EngineStore(engines_root(cfg.models_dir))
-        try:
-            build = store.complete_build(host_lock(self.pin_record(), session_host()))
-        except EngineConflictError as exc:
-            raise ProviderError(str(exc)) from exc
-        except BUILD_UNREADABLE:
-            build = None
-        tool = next(iter(build.glob(f"*/bin/{_TOOL}*")), None) if build else None
+        tool = installed_tool(self.pin_record(), _TOOL, session_host())
         if tool is None:
             raise ProviderError(
                 f"The mlx engine is not installed. Run lilbee engine install {self.name}."
