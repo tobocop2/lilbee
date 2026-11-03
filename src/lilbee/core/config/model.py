@@ -1906,10 +1906,19 @@ cfg, load_warnings = _build_cfg()
 if shown := shown_marks():
     os.environ[SHOWN_ENV_VAR] = shown
 
-# Canonicalize LILBEE_DATA at the cfg.data_root resolution boundary so
-# spawn-context worker subprocesses inherit the same data root.
-# ``setdefault`` preserves a user-set value.
-os.environ.setdefault("LILBEE_DATA", str(cfg.data_root))
+
+def export_data_root() -> None:
+    """Name cfg's data root in ``LILBEE_DATA`` when the variable names none.
+
+    Spawn-context worker subprocesses then inherit the same root, and the CLI
+    loads every root through the one overlay that records the reading a config
+    follower starts from. A user-set value is kept; a blank one names no root.
+    """
+    if not os.environ.get("LILBEE_DATA", "").strip():
+        os.environ["LILBEE_DATA"] = str(cfg.data_root)
+
+
+export_data_root()
 
 
 def export_download_environment() -> None:

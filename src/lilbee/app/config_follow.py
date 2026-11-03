@@ -9,7 +9,7 @@ from lilbee.app.settings import (
     ConfigReading,
     SettingsUpdateResult,
     adopt_external_changes,
-    read_config_state,
+    start_config_reading,
 )
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
@@ -31,7 +31,7 @@ class ConfigFileFollower:
     """
 
     def __init__(self) -> None:
-        self._reading: ConfigReading = read_config_state()
+        self._reading: ConfigReading = start_config_reading()
         self._lock = asyncio.Lock()
         # The file state of the last failed check, so the error is logged once per state.
         self._failed_stamp: object = _NO_FAILURE

@@ -242,6 +242,35 @@ def overlay_stamp(root: Path) -> tuple[int, int, int] | None:
     return stat.st_mtime_ns, stat.st_size, stat.st_ino
 
 
+@dataclass(frozen=True)
+class OverlayReading:
+    """What one overlay read from a root's config.toml: the file's stamp and the values it set."""
+
+    root: Path
+    stamp: tuple[int, int, int] | None
+    values: Mapping[str, Any]
+
+
+class _LastOverlay:
+    """The reading of the last overlay onto cfg, so a follower started later begins from it."""
+
+    def __init__(self) -> None:
+        self._reading: OverlayReading | None = None
+        self._lock = threading.Lock()
+
+    def record(self, reading: OverlayReading) -> None:
+        with self._lock:
+            self._reading = reading
+
+    def of(self, root: Path) -> OverlayReading | None:
+        with self._lock:
+            reading = self._reading
+        return reading if reading is not None and reading.root == root else None
+
+
+_last_overlay = _LastOverlay()
+
+
 def overlay_persisted_settings(root: Path) -> None:
     """Set every overlayable key on cfg to its resolved value under ``root``.
 
@@ -251,10 +280,18 @@ def overlay_persisted_settings(root: Path) -> None:
     value the caller set from ``root``, and a model role at its built-in keeps the
     model cfg holds, so entering a fresh root leaves it usable. A root
     without the file resolves as a root with an empty one, and
-    ``LILBEE_SKIP_TOML_CONFIG=1`` disables the overlay.
+    ``LILBEE_SKIP_TOML_CONFIG=1`` disables the overlay. The file is read once, under
+    the lock a writer takes, and ``last_overlay`` returns that reading.
     """
-    for key, value in (persisted_values(root) or {}).items():
+    stamp, values = read_persisted(root)
+    for key, value in (values or {}).items():
         setattr(cfg, key, value)
+    _last_overlay.record(OverlayReading(root, stamp, values or {}))
+
+
+def last_overlay(root: Path) -> OverlayReading | None:
+    """The reading the last overlay took, when it was of *root*; None otherwise."""
+    return _last_overlay.of(root)
 
 
 def persisted_values(root: Path) -> dict[str, Any] | None:

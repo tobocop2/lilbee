@@ -721,13 +721,16 @@ def _settle(
     """
     effective = keys if changed is None else changed
     reindex_effective = effective if reindex_changed is None else reindex_changed
-    if values is None:
-        persistent_settings.sync_from_resolver(cfg, keys)
-    else:
-        for key in keys:
-            setattr(cfg, key, values[key])
-    _rederive_from_resolved(effective)
-    _invalidate_caches(effective)
+    try:
+        if values is None:
+            persistent_settings.sync_from_resolver(cfg, keys)
+        else:
+            for key in keys:
+                setattr(cfg, key, values[key])
+        _rederive_from_resolved(effective)
+    finally:
+        # A step that raises can leave keys set on cfg; no cache may keep the old value.
+        _invalidate_caches(effective)
     reindex_required = bool((REINDEX_FIELDS - inert_reindex_keys()) & reindex_effective)
     if embed_in_batch:
         reindex_required = reindex_required or _embed_reindex_required()
@@ -998,12 +1001,29 @@ _ABSENT = object()
 def read_config_state() -> ConfigReading:
     """Read config.toml under cfg's data root the way startup does, in one locked read."""
     stamp, values = persistent_settings.read_persisted(cfg.data_root)
+    return ConfigReading(stamp, values or {}, _held_values())
+
+
+def start_config_reading() -> ConfigReading:
+    """The reading a follower starts from: the one the settings were loaded from.
+
+    A write that lands after the CLI loaded config.toml and before the follower starts
+    is then a change the follower takes. Without a load of cfg's data root, the file is
+    read now.
+    """
+    loaded = persistent_settings.last_overlay(cfg.data_root)
+    if loaded is None:
+        return read_config_state()
+    return ConfigReading(loaded.stamp, loaded.values, _held_values())
+
+
+def _held_values() -> dict[str, Any]:
+    """The value each held key takes when the file stops setting it, as cfg holds it now."""
     folders = root_folders(cfg.data_root)
-    held = {
+    return {
         key: folders[key] if key in folders else getattr(cfg, key)
         for key in persistent_settings.HELD_AT_BUILT_IN & _RELOADED_KEYS
     }
-    return ConfigReading(stamp, values or {}, held)
 
 
 def _registry_refreshed() -> bool:
