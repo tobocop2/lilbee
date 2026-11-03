@@ -35,6 +35,7 @@ from lilbee.app.analyze import (
     server_directory,
     tip_state,
 )
+from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.memory import (
     MEMORY_DISABLED_HINT,
     forget,
@@ -1818,6 +1819,27 @@ _NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'
 class LilbeeMCP(MCPServer):
     """MCP server that trims its tools wire and keeps it current with config."""
 
+    _config_follower: ConfigFileFollower | None = None
+
+    def follow_config_file(self) -> None:
+        """Take what another process writes to config.toml before each tool call.
+
+        Only the stdio server calls this. The HTTP mount sits behind the daemon's own
+        middleware, which already takes the file once per request.
+        """
+        self._config_follower = ConfigFileFollower()
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: Context[Any, Any] | None = None,
+    ) -> Any:
+        """Run a tool after the config.toml check; every tool call passes through here."""
+        if self._config_follower is not None:
+            await self._config_follower.take()
+        return await super().call_tool(name, arguments, context)
+
     async def list_tools(self) -> list[MCPTool]:
         """The registered tools with schema noise stripped and flat descriptions.
 
@@ -2095,4 +2117,6 @@ def main() -> None:
     if parent_pid is not None:
         watch_parent_thread(parent_pid, _exit_on_parent_death)
 
-    asyncio.run(_serve_stdio(build_mcp_server()))
+    server = build_mcp_server()
+    server.follow_config_file()
+    asyncio.run(_serve_stdio(server))
