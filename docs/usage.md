@@ -530,9 +530,9 @@ formats, not engines. The format name is `gguf`, `mlx`, `openvino` or
 ### Install an engine
 
 An engine that is not bundled needs a pack. Packs of ik_llama.cpp, mistral.rs and
-TEI are published for Linux x86_64. No pack of mlx is published yet, so mlx refuses
-to install and prints the no-pack text. A host with no pack for its platform gets the
-same text. Nothing is installed, and llama.cpp stays in use.
+TEI are published for Linux x86_64. No pack of mlx, openvino or lemonade is published
+yet, so those engines refuse to install and print the no-pack text. A host with no pack
+for its platform gets the same text. Nothing is installed, and llama.cpp stays in use.
 
 If the `lilbee-engine-llama-cpp` wheel is installed, the llama.cpp of that
 wheel runs. The llama.cpp pack stays unused. To run the pack, remove the wheel

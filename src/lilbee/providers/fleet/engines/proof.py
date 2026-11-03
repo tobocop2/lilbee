@@ -18,10 +18,20 @@ class HardwareProof(StrEnum):
     NOT_RUN = "not_run"
 
 
-# Device words are what a user reads: "Intel NPU", not a vendor id. No engine here has a
-# NOT_RUN device yet, because no engine for an NPU ships. The OpenVINO and Lemonade
-# adapters add their rows with the adapter.
-HARDWARE_PROOF: Mapping[str, Mapping[str, HardwareProof]] = {}
+# Device words are what a user reads: "Intel NPU", not a vendor id. A row flips to
+# RECORDED only with a log from a real run on that device. The OpenVINO CPU and
+# iGPU rows rest on the ThinkPad recordings of run-f3; no engine has an NPU log.
+HARDWARE_PROOF: Mapping[str, Mapping[str, HardwareProof]] = {
+    "openvino": {
+        "Intel CPU": HardwareProof.RECORDED,
+        "Intel integrated graphics": HardwareProof.RECORDED,
+        "Intel NPU": HardwareProof.NOT_RUN,
+    },
+    "lemonade": {
+        "CPU": HardwareProof.RECORDED,
+        "AMD XDNA2 NPU": HardwareProof.NOT_RUN,
+    },
+}
 
 _DEVICE_JOINER = " and "
 
