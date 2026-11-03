@@ -13,7 +13,7 @@ from typing import TypeVar
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.app.services import peek_services
 from lilbee.catalog.refs import model_format
-from lilbee.catalog.runnable import refresh_session_host
+from lilbee.catalog.runnable import refresh_session_host, session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
@@ -282,9 +282,14 @@ def roles(config: Config = cfg) -> list[RoleView]:
 
 
 def not_installed() -> list[str]:
-    """The names of the engines this build knows that have no installed build."""
+    """The names of the engines with no installed build that the host gate lets this host run."""
     installed = installed_engines()
-    return [str(name) for name in choice.ADAPTERS if name not in installed]
+    host = session_host()
+    return [
+        str(name)
+        for name, adapter in choice.ADAPTERS.items()
+        if name not in installed and adapter.host_gate(host).ok
+    ]
 
 
 def engine_names(model: str) -> list[str]:
