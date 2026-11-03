@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import heapq
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
@@ -57,6 +59,12 @@ PATH_ARG_COMMANDS = frozenset({"/add", "/import", "/export", "/export-chat", "/a
 PATH_ARG_WORDS: dict[str, tuple[str, ...]] = {"/analyze": (ANALYZE_OFF_ARG, ANALYZE_REPORT_ARG)}
 
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
+
+
+def reads_a_folder(text: str) -> bool:
+    """Whether the completions for *text* list a folder on disk (a path-argument command)."""
+    cmd, space, _ = text.partition(" ")
+    return bool(space) and cmd.lower() in PATH_ARG_COMMANDS
 
 
 def get_completions(text: str) -> list[str]:
@@ -173,16 +181,18 @@ def _path_options(partial: str = "") -> list[str]:
         if not parent.is_dir():
             return []
 
-        results: list[str] = []
-        for p in sorted(parent.iterdir()):
-            if p.name.startswith("."):
-                continue
-            if prefix and not p.name.lower().startswith(prefix):
-                continue
-            results.append(p.name + "/" if p.is_dir() else p.name)
-            if len(results) >= _MAX_PATH_COMPLETIONS:
-                break
-        return results
+        # One pass over the folder keeps the 20 smallest names in a heap, so a
+        # folder with thousands of entries is neither sorted nor stat-ed in full.
+        with os.scandir(parent) as entries:
+            names = heapq.nsmallest(
+                _MAX_PATH_COMPLETIONS,
+                (
+                    e.name
+                    for e in entries
+                    if not e.name.startswith(".") and e.name.lower().startswith(prefix)
+                ),
+            )
+        return [name + "/" if (parent / name).is_dir() else name for name in names]
     except Exception:
         log.debug("Failed to list paths for autocomplete", exc_info=True)
         return []
