@@ -19,7 +19,7 @@ from litestar.openapi import OpenAPIConfig
 
 from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.endpoints import MCP_PATH
-from lilbee.app.services import get_services, peek_services
+from lilbee.app.services import get_services, peek_services, wait_for_opens
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.runtime.progress import LibraryUpgradeEvent
@@ -133,7 +133,6 @@ from lilbee.server.wiki import (
 if TYPE_CHECKING:
     from litestar.types import ASGIApp, Receive, Scope, Send
 
-    from lilbee.data.store import Store
     from lilbee.retrieval.embedder import Embedder
 
 log = logging.getLogger(__name__)
@@ -314,7 +313,6 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     _warn_if_few_file_descriptors()
     session_manager.load_or_generate()
 
-    opening: Store | None = None
     try:
         services = get_services()  # pre-load all services (provider, embedder, etc.)
         log.info("LLM provider pre-loaded")
@@ -322,8 +320,7 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         log.warning("Failed to pre-load LLM provider", exc_info=True)
     else:
         _log_embedding_model_state(services.embedder)
-        opening = services.store
-        opening.open_in_background()
+        services.store.open_in_background()
     try:
         yield
     finally:
@@ -334,13 +331,12 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         svc = peek_services()
         if svc is not None:
             svc.provider.shutdown()
-        if opening is not None:
-            await _wait_for_the_open(opening)
+        await _wait_for_the_opens()
 
 
-async def _wait_for_the_open(store: Store) -> None:
-    """Wait, with a bound, for the open; one in LanceDB at exit aborts Python 3.12 on Linux."""
-    if not await asyncio.to_thread(store.wait_for_open, _OPEN_EXIT_WAIT_SECONDS):
+async def _wait_for_the_opens() -> None:
+    """Wait, within one bound, for every open; an open in LanceDB at exit aborts 3.12 on Linux."""
+    if not await asyncio.to_thread(wait_for_opens, _OPEN_EXIT_WAIT_SECONDS):
         log.warning(
             "The library is still opening after %.0f s; the server exits anyway.",
             _OPEN_EXIT_WAIT_SECONDS,
