@@ -1,10 +1,11 @@
-"""The Lemonade adapter: XDNA2 gate, fixed ports, backend download notice, proof rows."""
+"""The Lemonade adapter: XDNA2 gate, role folders, model link, swap entry, proof rows."""
 
 from __future__ import annotations
 
 import json
-import logging
+import os
 import socket
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,9 @@ from lilbee.providers.fleet.engines import choice, lemonade, proof
 from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.lemonade import LEMONADE
 from lilbee.providers.fleet.host_caps import HostCaps
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind
+from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
 
 FIXTURES = Path(__file__).parent / "fixtures" / "host_caps"
@@ -35,21 +38,45 @@ def _host(name: str) -> HostCaps:
     )
 
 
-def _launch() -> list[str]:
-    request = LaunchRequest(
+LLAMA_SERVER = Path("/engines/llama/llama-server")
+MODES = {
+    WorkerRole.CHAT: "chat",
+    WorkerRole.EMBED: "embeddings",
+    WorkerRole.RERANK: "reranking",
+}
+
+
+def _request(model: Path, replica: int = 0, slots: int = 1, ctx: int = 2048) -> LaunchRequest:
+    return LaunchRequest(
         binary=BINARY,
-        model_path=Path("/models/m.gguf"),
+        model_path=model,
         devices=(),
         n_gpu_layers=0,
-        slots=1,
-        ctx_per_slot=2048,
+        slots=slots,
+        ctx_per_slot=ctx,
+        replica=replica,
     )
-    return LEMONADE.launch_argv(LEMONADE.role_spec(WorkerRole.CHAT, None, None), request)
+
+
+def _launch(
+    role: WorkerRole = WorkerRole.CHAT,
+    model: Path | None = None,
+    replica: int = 0,
+    slots: int = 1,
+) -> list[str]:
+    request = _request(model or Path("/models/m.gguf"), replica, slots)
+    return LEMONADE.launch_argv(LEMONADE.role_spec(role, None, None), request)
+
+
+def _config(role: WorkerRole = WorkerRole.CHAT, replica: int = 0) -> dict[str, object]:
+    path = lemonade.role_dir(role, replica) / "config" / "config.json"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)
 def _data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    monkeypatch.setattr(lemonade, "resolve_llama_server", lambda: LLAMA_SERVER)
 
 
 def test_b1_an_xdna2_host_passes() -> None:
@@ -88,59 +115,146 @@ def test_b2_the_memory_rule_is_a_fixed_reserve() -> None:
     assert LEMONADE.pin_record()["memory"]["rule"] == "fixed_reserve"
 
 
-def test_s7_the_command_starts_lemond_with_its_own_data_folders(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(lemonade, "busy_ports", tuple)
+def test_s7_the_command_starts_lemond_with_its_own_data_folders() -> None:
     argv = _launch()
-    cache, config = lemonade.data_dirs()
+    root = lemonade.role_dir(WorkerRole.CHAT, 0)
     assert argv[:2] == [str(BINARY), "--port"]
     assert PORT_SLOT in argv
-    assert argv[-2:] == [str(cache), str(config)]
+    assert argv[-2:] == [str(root / "cache"), str(root / "config")]
     assert "--no-broadcast" in argv
 
 
-def test_ports_a_busy_port_refuses_the_launch_and_names_it(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("role", list(MODES))
+def test_r1_each_role_gets_folders_a_config_and_a_link_to_the_model(role: WorkerRole) -> None:
+    model = Path("/models/m.gguf")
+    _launch(role, model)
+    root = lemonade.role_dir(role, 0)
+    link = root / "view" / MODES[role] / f"lilbee-{role.value}.gguf"
+    assert link.is_symlink()
+    assert link.readlink() == model
+    assert (root / "cache").is_dir()
+    config = _config(role)
+    assert config["extra_models_dir"] == str(root / "view")
+    assert config["websocket_port"] == "auto"
+    assert config["llamacpp"] == {"backend": "cpu", "cpu_bin": str(LLAMA_SERVER.parent)}
+    options = json.loads((root / "config" / "recipe_options.json").read_text(encoding="utf-8"))
+    assert options == {
+        f"extra.lilbee-{role.value}": {"ctx_size": 2048, "llamacpp_args": "--parallel 1"}
+    }
+
+
+def test_r1_the_recipe_scales_context_and_parallel_with_the_slots() -> None:
+    _launch(slots=3)
+    path = lemonade.role_dir(WorkerRole.CHAT, 0) / "config" / "recipe_options.json"
+    options = json.loads(path.read_text(encoding="utf-8"))["extra.lilbee-chat"]
+    assert options == {"ctx_size": 6144, "llamacpp_args": "--parallel 3"}
+
+
+def test_r2_a_second_call_changes_nothing() -> None:
+    _launch()
+    root = lemonade.role_dir(WorkerRole.CHAT, 0)
+    files = [root / "config" / "config.json", root / "config" / "recipe_options.json"]
+    before = [f.read_bytes() for f in files]
+    assert _launch() == _launch()
+    assert [f.read_bytes() for f in files] == before
+
+
+def test_r2_a_new_model_path_moves_the_link() -> None:
+    _launch(model=Path("/models/a.gguf"))
+    _launch(model=Path("/models/b.gguf"))
+    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
+    assert link.readlink() == Path("/models/b.gguf")
+
+
+def test_r3_the_swap_entry_names_the_model_and_checks_live() -> None:
+    for role in MODES:
+        launch = InstanceLaunch(
+            role=role, argv=_launch(role), env_overrides={}, model="m", replica=0
+        )
+        extras = LEMONADE.swap_extras(launch)
+        assert extras == {"checkEndpoint": "/live", "useModelName": f"lilbee-{role.value}"}
+        launch = replace(launch, swap_extras=extras)
+        config = json.loads(build_swap_config([launch], {launch.model_id: 5800}))
+        entry = config["models"][launch.model_id]
+        assert entry["useModelName"] == f"lilbee-{role.value}"
+        assert entry["checkEndpoint"] == "/live"
+
+
+def test_r4_held_lemonade_ports_do_not_refuse_the_launch() -> None:
+    held: list[socket.socket] = []
+    try:
+        for port in (8001, 9000):
+            server = socket.socket()
+            try:
+                server.bind(("127.0.0.1", port))
+            except OSError:
+                server.close()
+                continue
+            server.listen()
+            held.append(server)
+        assert _launch()[0] == str(BINARY)
+    finally:
+        for server in held:
+            server.close()
+
+
+def test_r4_the_fixed_port_helpers_are_gone() -> None:
+    for name in ("CHILD_PORTS", "WEBSOCKET_PORT", "busy_ports", "port_is_busy"):
+        assert not hasattr(lemonade, name)
+
+
+def test_r5_a_failed_symlink_falls_back_to_a_hard_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(lemonade, "port_is_busy", lambda port: port == 8002)
-    with pytest.raises(ProviderError) as raised:
-        _launch()
-    assert "port 8002 is in use" in str(raised.value)
-    assert "9000" in str(raised.value)
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"weights")
+    monkeypatch.setattr(os, "symlink", _refuse)
+    _launch(model=model)
+    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
+    assert not link.is_symlink()
+    assert os.path.samefile(link, model)
 
 
-def test_ports_all_free_gives_no_busy_ports(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(lemonade, "port_is_busy", lambda _port: False)
-    assert lemonade.busy_ports() == ()
-
-
-def test_ports_a_listening_socket_reads_as_busy() -> None:
-    with socket.socket() as server:
-        server.bind(("127.0.0.1", 0))
-        server.listen()
-        port = server.getsockname()[1]
-        assert lemonade.port_is_busy(port)
-    assert not lemonade.port_is_busy(port)
-
-
-def test_s8_the_first_launch_reports_the_backend_download(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_r5_a_failed_hard_link_falls_back_to_a_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(lemonade, "busy_ports", tuple)
-    with caplog.at_level(logging.WARNING, logger=lemonade.log.name):
-        _launch()
-    assert "downloads its llama.cpp backend" in caplog.text
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"weights")
+    monkeypatch.setattr(os, "symlink", _refuse)
+    monkeypatch.setattr(os, "link", _refuse)
+    _launch(model=model)
+    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
+    assert link.read_bytes() == b"weights"
+    assert not os.path.samefile(link, model)
 
 
-def test_s8_no_report_once_the_backend_is_present(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_r5_a_copy_is_replaced_when_the_model_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(lemonade, "busy_ports", tuple)
-    (lemonade.data_dirs()[0] / "bin" / "llamacpp" / "cpu").mkdir(parents=True)
-    with caplog.at_level(logging.WARNING, logger=lemonade.log.name):
-        _launch()
-    assert "downloads" not in caplog.text
+    first, second = tmp_path / "a.gguf", tmp_path / "b.gguf"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    monkeypatch.setattr(os, "symlink", _refuse)
+    monkeypatch.setattr(os, "link", _refuse)
+    _launch(model=first)
+    _launch(model=second)
+    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
+    assert link.read_bytes() == b"two"
+
+
+def test_r6_every_role_and_replica_has_its_own_folder() -> None:
+    folders = {lemonade.role_dir(role, r) for role in MODES for r in (0, 1)}
+    assert len(folders) == 6
+    _launch(WorkerRole.CHAT, replica=0)
+    _launch(WorkerRole.CHAT, replica=1)
+    assert (
+        _config(WorkerRole.CHAT, 0)["extra_models_dir"]
+        != _config(WorkerRole.CHAT, 1)["extra_models_dir"]
+    )
+
+
+def _refuse(*_args: object, **_kwargs: object) -> None:
+    raise OSError("not allowed")
 
 
 def test_s14_a_role_the_server_does_not_answer_is_refused() -> None:

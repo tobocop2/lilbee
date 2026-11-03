@@ -15,10 +15,10 @@ BASE = Path(__file__).parent / "fixtures" / "engine_launch_argv_base.json"
 
 
 def test_l4_with_no_row_every_shipped_engine_launches_with_the_base_argv(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(proof, "HARDWARE_PROOF", {})
     base = json.loads(BASE.read_text(encoding="utf-8"))
-    now = launch_argvs(monkeypatch)
+    now = launch_argvs(monkeypatch, tmp_path / "models")
     assert set(base) == {"ik_llama.cpp", "llama.cpp", "mistral.rs", "mlx", "tei"}
     assert {name: now[name] for name in base} == base

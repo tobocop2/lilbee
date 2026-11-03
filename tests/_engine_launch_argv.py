@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from lilbee.core.config import cfg
 from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet.engines import choice, lemonade, openvino
 from lilbee.providers.fleet.engines.base import LaunchRequest
@@ -16,13 +17,16 @@ THREADS = 8
 HELP = "  --device <dev>  devices\n  -ts, --tensor-split N0,N1  split\n"
 
 
-def launch_argvs(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, list[str]]]:
+def launch_argvs(
+    monkeypatch: pytest.MonkeyPatch, models_dir: Path
+) -> dict[str, dict[str, list[str]]]:
     """Engine name -> role value -> argv, with the host inputs of the argv pinned."""
     monkeypatch.setattr(adapters, "engine_thread_count", lambda: THREADS)
     monkeypatch.setattr(adapters, "engine_help", lambda _binary: HELP)
     both = staticmethod(lambda _binary: frozenset({"CPU", "GPU"}))
     monkeypatch.setattr(openvino.OpenvinoAdapter, "_listed", both)
-    monkeypatch.setattr(lemonade, "busy_ports", tuple)
+    monkeypatch.setattr(cfg, "models_dir", models_dir)
+    monkeypatch.setattr(lemonade, "resolve_llama_server", lambda: Path("/engines/llama-server"))
     request = LaunchRequest(
         binary=Path(BINARY),
         model_path=Path(MODEL),
