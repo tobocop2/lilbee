@@ -7,21 +7,37 @@ import json
 import struct
 import sys
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 
+from lilbee.catalog import runnable
+from lilbee.providers.fleet import engine_manifest, host_caps
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engines import LLAMA, EngineAdapter, EngineName, LaunchRequest
+from lilbee.providers.fleet.engines.choice import PinError, pin_lock
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
+from tests._published import render_table, wheel_name
 from tests.conformance.fake_adapter import FAKE
 from tests.conformance.harness import Verdict, _check_pin, run_managed
 
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32", reason="the stand-in binary is a POSIX executable script"
 )
+
+
+def _host(system: str, machine: str) -> host_caps.HostCaps:
+    return host_caps.collect(
+        system=system,
+        machine=machine,
+        cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
+        nvml=None,
+    )
+
+
 _ROWS = ("M1", "M2", "M3", "M4", "M5", "M6")
 
 
@@ -121,10 +137,59 @@ def test_client_detokenize_uses_the_adapter_path() -> None:
     assert seen[0][0].endswith("/v1/detokenize")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="no per-platform url, sha256 and macOS floor exist in the repo: the engine is built "
-    "from source, so the pin record cannot list release artifacts yet",
-)
-def test_llama_pin_record_lists_release_artifacts() -> None:
-    assert _check_pin(LLAMA.pin_record()) is Verdict.PASS
+def _llama_table(*keys: str, version: str | None = None) -> dict[str, Any]:
+    """The table the generator writes for llama.cpp wheels in cells *keys*.
+
+    The engines repo names the wheel 1.<upstream build number>.<release build>, so the default
+    is the real name of the b12032 wheel, whatever the lilbee version is.
+    """
+    wheel_version = version or "1.12032.1"
+    wheels = [
+        (wheel_name(EngineName.LLAMA, wheel_version, key), f"{n}" * 64, n)
+        for n, key in enumerate(keys, 1)
+    ]
+    return render_table(wheels)
+
+
+def test_llama_pin_record_lists_release_artifacts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: _host("Darwin", "arm64"))
+    table = _llama_table("macos-arm64-cpu", "linux-x86_64-cpu")
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", table)
+    pin = LLAMA.pin_record()
+    assert _check_pin(pin) is Verdict.PASS
+    row = pin["platforms"]["macos-arm64-cpu"]
+    assert (row["sha256"], row["size"], row["min_os"]) == ("1" * 64, 1, "14.0")
+    assert row["url"].startswith("https://")
+    assert set(pin["platforms"]) == {"macos-arm64-cpu"}
+
+
+def test_llama_pin_record_takes_the_cell_of_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: _host("Linux", "x86_64"))
+    monkeypatch.setattr(
+        engine_manifest, "MANIFESTS", _llama_table("macos-arm64-cpu", "linux-x86_64-cpu")
+    )
+    pin = LLAMA.pin_record()
+    assert _check_pin(pin) is Verdict.PASS
+    assert pin["platforms"]["linux-x86_64-cpu"]["sha256"] == "2" * 64
+    assert set(pin["platforms"]) == {"linux-x86_64-cpu"}
+
+
+def test_llama_pin_record_skips_the_wheels_of_another_engine_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: _host("Linux", "x86_64"))
+    table = _llama_table("linux-x86_64-cpu", version="1.12033.1")
+    assert table
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", table)
+    assert LLAMA.pin_record()["platforms"] == {}
+
+
+def test_llama_pin_record_with_an_empty_table_lists_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
+    pin = LLAMA.pin_record()
+    assert pin["platforms"] == {}
+    assert _check_pin(pin) is Verdict.FAIL
+    with pytest.raises(PinError, match="the pin record is not usable"):
+        pin_lock(pin)
