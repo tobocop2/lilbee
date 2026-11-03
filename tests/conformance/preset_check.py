@@ -25,6 +25,7 @@ from lilbee.providers.base import ChatResult, ProviderError
 from lilbee.providers.factory import create_sdk_provider
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
+from lilbee.retrieval.reasoning import split_reasoning
 from tests.conformance.harness import (
     BLUE,
     NEAR_COPY_COSINE,
@@ -136,7 +137,8 @@ def _template(setup: Setup) -> Outcome:
         _CONVERSATION, model=_ref(setup, "chat"), options={"max_tokens": 1024}
     )
     assert isinstance(result, ChatResult)
-    return Outcome("rome" in result.text.lower(), f"finish={result.finish_reason}")
+    answer = split_reasoning(result.text).answer
+    return Outcome("rome" in answer.lower(), f"finish={result.finish_reason}")
 
 
 def _tool(setup: Setup) -> Outcome:
