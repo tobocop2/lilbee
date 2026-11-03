@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from tests.conformance.preset_check import recording
+from tests.conformance.preset_check import Setup, fixture_json, recording
 from tests.conformance.record_presets import build_parser, token_from
 
 _TOKEN = "s3cret-token-value"  # pragma: allowlist secret
@@ -217,3 +217,13 @@ class TestRedirects:
         ):
             assert _post(proxy, "/v1/embeddings")[0] == 200
         assert seen == [("lilbee", "/v1/embeddings", f"Bearer {_TOKEN}")]
+
+
+class TestFixtureJson:
+    def test_the_fixture_holds_the_status_and_body_of_each_error_answer(self) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with _server("lilbee", seen) as upstream, recording(upstream) as (proxy, tape):
+            assert _post(proxy, "/v1/chat/completions")[0] == 401
+        setup = Setup(("chat",), {"chat": "m"})
+        doc = fixture_json("lilbee", "1", setup, {}, tape)
+        assert doc["error_answers"] == [[401, '{"ok": false, "from": "lilbee"}']]

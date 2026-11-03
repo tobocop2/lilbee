@@ -463,6 +463,11 @@ def _queue_key(method: str, path: str, request: Any) -> tuple[str, str, str]:
     return method, path, json.dumps(request, sort_keys=True)
 
 
+def error_answers(exchanges: list[Exchange]) -> list[list[Any]]:
+    """The status and body of each error answer, in order; a fixture pins them next to the steps."""
+    return [[exchange.status, exchange.body] for exchange in exchanges if exchange.status >= 400]
+
+
 def _replay_handler(
     queues: dict[tuple[str, str, str], deque[Exchange]],
 ) -> type[BaseHTTPRequestHandler]:
@@ -521,6 +526,7 @@ def fixture_json(
         "embed_dim": setup.embed_dim,
         "strict": setup.strict,
         "results": {step: outcome.as_json() for step, outcome in results.items()},
+        "error_answers": error_answers(tape.exchanges),
         "exchanges": [exchange.as_json() for exchange in tape.exchanges],
     }
 

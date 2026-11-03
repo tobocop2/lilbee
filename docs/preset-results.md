@@ -15,53 +15,55 @@ The check uses the real lilbee provider. It stores a preset, points the model se
 
 A recording proxy sits between lilbee and the server. It saves each request and each answer in `tests/conformance/fixtures/presets/`. A test replays each fixture with no server and checks that the results are the same. A result is "pass" only when a run on a real server gave it.
 
+The Fixture column names the fixture that backs each pass row and each fail row. A fixture that records the other result than the row has the word "(fail)" or "(pass)" after its name. For example, the vMLX vision row passes with `vmlx-vision-mllm`, and `vmlx-vision` (fail) records the run without `--is-mllm`. A test replays each fixture and fails when a row and the replayed result disagree, when a row names no fixture, or when a step of a fixture has no row. The fixture also holds the status and the body of each error answer. The replay fails when one of them changes.
+
 ## Results
 
 The TEI, Lemonade and mistral.rs runs used CPU only, on a Linux host. The MLX server runs used the host class "hosted macos-15, Metal, paravirtual GPU". Each version is the version of the server in the run.
 
-| Server | Role | Result | Version |
-|---|---|---|---|
-| TEI | embed | pass (384 values per vector) | 1.9.4, `cpu-1.9` image, model `BAAI/bge-small-en-v1.5` |
-| TEI | rerank (wire `tei`) | pass | 1.9.4, `cpu-1.9` image, model `BAAI/bge-reranker-base` |
-| TEI | rerank (wire `v1`) | fail: TEI documents no `POST /v1/rerank` route and answers HTTP 404, and lilbee reports "The provider doesn't offer ... on your account" | 1.9.4 |
-| TEI | chat, vision | not supported for this role: TEI documents no route | 1.9.4 |
-| Lemonade | chat template | pass | 2026.44.1, llama.cpp b11393 CPU |
-| Lemonade | tool call | pass | 2026.44.1, llama.cpp b11393 CPU |
-| Lemonade | context overflow | pass | 2026.44.1, llama.cpp b11393 CPU |
-| Lemonade | embed | pass (1024 values per vector) | 2026.44.1, llama.cpp b11393 CPU |
-| Lemonade | rerank (wire `v1`) | pass | 2026.44.1, llama.cpp b11393 CPU |
-| Lemonade | vision | pass | 2026.44.1, llama.cpp b11393 CPU |
-| mistral.rs | chat template | pass | 0.9.5 CPU |
-| mistral.rs | tool call | pass | 0.9.5 CPU |
-| mistral.rs | context overflow | pass | 0.9.5 CPU |
-| mistral.rs | embed | pass (1024 values per vector) | 0.9.5 CPU |
-| mistral.rs | vision | pass | 0.9.5 CPU |
-| mistral.rs | rerank | not supported for this role: its `openapi.json` lists no rerank route | 0.9.5 CPU |
-| mlx-lm | chat template | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 0.32.2, hosted macos-15, Metal, paravirtual GPU |
-| mlx-lm | tool call | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 0.32.2, hosted macos-15, Metal, paravirtual GPU |
-| mlx-lm | context overflow | fail: the server accepts the 60008-token prompt and gives no answer within 120 s. The recording shows HTTP 504 "the server gave no answer within 120 s" from the bounding shim, and lilbee reports `kind=server`. See the findings | 0.32.2, hosted macos-15, Metal, paravirtual GPU |
-| mlx-lm | embed, rerank | not supported for this role: `mlx_lm/server.py` at tag v0.32.2 routes only `/v1/completions`, `/v1/chat/completions` and `/chat/completions` (lines 1244 to 1246, other paths answer 404 "Not Found" at lines 1249 to 1253), and `mlx_lm/SERVER.md` documents only chat and `/v1/models` | 0.32.2, hosted macos-15, Metal, paravirtual GPU |
-| mlx-lm | vision | fail with `mlx-community/Qwen3-VL-2B-Instruct-4bit` (a model type mlx-lm loads): `POST /v1/chat/completions` with an image part answers HTTP 404 "Only 'text' content type is supported." The server takes images only for a model that has a processor in `mlx_lm/processors/__init__.py`, and at tag v0.32.2 that list holds only Muse Spark. Its public MLX conversions have 816B parameters, too large for the runner. A tiny random-weight test checkpoint exists, but it cannot name an image colour, so the pass path was not run | 0.32.2, hosted macos-15, Metal, paravirtual GPU |
-| oMLX | chat template | pass | 0.7.3, hosted macos-15, Metal, paravirtual GPU |
-| oMLX | tool call | pass | 0.7.3, hosted macos-15, Metal, paravirtual GPU |
-| oMLX | context overflow | pass | 0.7.3, hosted macos-15, Metal, paravirtual GPU |
-| oMLX | embed | pass (1024 values per vector) | 0.7.3, hosted macos-15, Metal, paravirtual GPU |
-| oMLX | rerank (wire `v1`) | pass, with the memory guard on (the default) and with `--memory-guard off`; both answer HTTP 200 | 0.7.3, hosted macos-15, Metal, paravirtual GPU |
-| oMLX | vision | fail with `Qwen2-VL-2B-Instruct-4bit`: the model answers "Blue" for a red image | 0.7.3, hosted macos-15, Metal, paravirtual GPU |
-| oMLX | vision | pass with `Qwen2.5-VL-3B-Instruct-4bit`: the model answers "Red." | 0.7.3, hosted macos-15, Metal, paravirtual GPU |
-| vMLX | chat template | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU |
-| vMLX | tool call | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU |
-| vMLX | context overflow | fail: the server logs that it declares 40960 tokens and attempts longer prompts, and gives no answer to the 60008-token prompt within 120 s. The recording shows HTTP 504 "the server gave no answer within 120 s" from the bounding shim, and lilbee reports `kind=server`. See the findings | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU |
-| vMLX | embed | pass (384 values per vector), started with `--embedding-model`; the request must name the embedding model | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU |
-| vMLX | rerank | fail with `BAAI/bge-reranker-v2-m3`: `POST /v1/rerank` answers HTTP 500 "Received 393 parameters not in model" and lists `classifier.*` and `roberta.*` weights. vMLX documents encoder rerankers (BGE, XLM-RoBERTa) and loads the model named in the request. The MLX conversion `flaglow/BAAI-bge-reranker-v2-m3-mlx-fp16` fails the same way (HTTP 500, 393 parameters not in model). No other reranker was tried | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU |
-| vMLX | vision | pass with `--is-mllm`; fail without it: `vmlx serve` loads a vision model as text-only and answers HTTP 400 "unsupported media modality image because the loaded runtime is text-only" | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU |
-| vllm-mlx | chat template | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 0.4.1, hosted macos-15, Metal, paravirtual GPU |
-| vllm-mlx | tool call | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 0.4.1, hosted macos-15, Metal, paravirtual GPU |
-| vllm-mlx | context overflow | fail: the server accepts the 60008-token prompt and gives no answer within 120 s. The recording shows HTTP 504 "the server gave no answer within 120 s" from the bounding shim, and lilbee reports `kind=server`. See the findings | 0.4.1, hosted macos-15, Metal, paravirtual GPU |
-| vllm-mlx | embed | pass (384 values per vector), started with `--embedding-model` | 0.4.1, hosted macos-15, Metal, paravirtual GPU |
-| vllm-mlx | rerank | pass with `--rerank-model BAAI/bge-reranker-v2-m3`; the request must name that model, and the name "default" answers HTTP 400. Without `--rerank-model` the route answers HTTP 404 "No reranker model loaded" | 0.4.1, hosted macos-15, Metal, paravirtual GPU |
-| vllm-mlx | vision | pass with `mlx-community/Qwen2.5-VL-3B-Instruct-4bit`, no extra flag | 0.4.1, hosted macos-15, Metal, paravirtual GPU |
-| GenieX | all roles | not verified | none |
+| Server | Role | Result | Version | Fixture |
+|---|---|---|---|---|
+| TEI | embed | pass (384 values per vector) | 1.9.4, `cpu-1.9` image, model `BAAI/bge-small-en-v1.5` | `tei-embed` |
+| TEI | rerank (wire `tei`) | pass | 1.9.4, `cpu-1.9` image, model `BAAI/bge-reranker-base` | `tei-rerank` |
+| TEI | rerank (wire `v1`) | fail: TEI documents no `POST /v1/rerank` route and answers HTTP 404, and lilbee reports "The provider doesn't offer ... on your account" | 1.9.4 | `tei-rerank-v1` |
+| TEI | chat, vision | not supported for this role: TEI documents no route | 1.9.4 |  |
+| Lemonade | chat template | pass | 2026.44.1, llama.cpp b11393 CPU | `lemonade` |
+| Lemonade | tool call | pass | 2026.44.1, llama.cpp b11393 CPU | `lemonade` |
+| Lemonade | context overflow | pass | 2026.44.1, llama.cpp b11393 CPU | `lemonade` |
+| Lemonade | embed | pass (1024 values per vector) | 2026.44.1, llama.cpp b11393 CPU | `lemonade` |
+| Lemonade | rerank (wire `v1`) | pass | 2026.44.1, llama.cpp b11393 CPU | `lemonade` |
+| Lemonade | vision | pass | 2026.44.1, llama.cpp b11393 CPU | `lemonade` |
+| mistral.rs | chat template | pass | 0.9.5 CPU | `mistralrs-chat` |
+| mistral.rs | tool call | pass | 0.9.5 CPU | `mistralrs-chat` |
+| mistral.rs | context overflow | pass | 0.9.5 CPU | `mistralrs-chat` |
+| mistral.rs | embed | pass (1024 values per vector) | 0.9.5 CPU | `mistralrs-embed` |
+| mistral.rs | vision | pass | 0.9.5 CPU | `mistralrs-vision` |
+| mistral.rs | rerank | not supported for this role: its `openapi.json` lists no rerank route | 0.9.5 CPU |  |
+| mlx-lm | chat template | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 0.32.2, hosted macos-15, Metal, paravirtual GPU | `mlxlm-chat` |
+| mlx-lm | tool call | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 0.32.2, hosted macos-15, Metal, paravirtual GPU | `mlxlm-chat` |
+| mlx-lm | context overflow | fail: the server accepts the 60008-token prompt and gives no answer within 120 s. The recording shows HTTP 504 "the server gave no answer within 120 s" from the bounding shim, and lilbee reports `kind=server`. See the findings | 0.32.2, hosted macos-15, Metal, paravirtual GPU | `mlxlm-chat` |
+| mlx-lm | embed, rerank | not supported for this role: `mlx_lm/server.py` at tag v0.32.2 routes only `/v1/completions`, `/v1/chat/completions` and `/chat/completions` (lines 1244 to 1246, other paths answer 404 "Not Found" at lines 1249 to 1253), and `mlx_lm/SERVER.md` documents only chat and `/v1/models` | 0.32.2, hosted macos-15, Metal, paravirtual GPU |  |
+| mlx-lm | vision | fail with `mlx-community/Qwen3-VL-2B-Instruct-4bit` (a model type mlx-lm loads): `POST /v1/chat/completions` with an image part answers HTTP 404 "Only 'text' content type is supported." The server takes images only for a model that has a processor in `mlx_lm/processors/__init__.py`, and at tag v0.32.2 that list holds only Muse Spark. Its public MLX conversions have 816B parameters, too large for the runner. A tiny random-weight test checkpoint exists, but it cannot name an image colour, so the pass path was not run | 0.32.2, hosted macos-15, Metal, paravirtual GPU | `mlxlm-vision` |
+| oMLX | chat template | pass | 0.7.3, hosted macos-15, Metal, paravirtual GPU | `omlx-chat` |
+| oMLX | tool call | pass | 0.7.3, hosted macos-15, Metal, paravirtual GPU | `omlx-chat` |
+| oMLX | context overflow | pass | 0.7.3, hosted macos-15, Metal, paravirtual GPU | `omlx-chat` |
+| oMLX | embed | pass (1024 values per vector) | 0.7.3, hosted macos-15, Metal, paravirtual GPU | `omlx-embed` |
+| oMLX | rerank (wire `v1`) | pass, with the memory guard on (the default) and with `--memory-guard off`; both answer HTTP 200 | 0.7.3, hosted macos-15, Metal, paravirtual GPU | `omlx-rerank` |
+| oMLX | vision | fail with `Qwen2-VL-2B-Instruct-4bit`: the model answers "Blue" for a red image | 0.7.3, hosted macos-15, Metal, paravirtual GPU | `omlx-vision` |
+| oMLX | vision | pass with `Qwen2.5-VL-3B-Instruct-4bit`: the model answers "Red." | 0.7.3, hosted macos-15, Metal, paravirtual GPU | `omlx-vision-3b` |
+| vMLX | chat template | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU | `vmlx-chat` |
+| vMLX | tool call | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU | `vmlx-chat` |
+| vMLX | context overflow | fail: the server logs that it declares 40960 tokens and attempts longer prompts, and gives no answer to the 60008-token prompt within 120 s. The recording shows HTTP 504 "the server gave no answer within 120 s" from the bounding shim, and lilbee reports `kind=server`. See the findings | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU | `vmlx-chat` |
+| vMLX | embed | pass (384 values per vector), started with `--embedding-model`; the request must name the embedding model | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU | `vmlx-embed` |
+| vMLX | rerank | fail with `BAAI/bge-reranker-v2-m3`: `POST /v1/rerank` answers HTTP 500 "Received 393 parameters not in model" and lists `classifier.*` and `roberta.*` weights. vMLX documents encoder rerankers (BGE, XLM-RoBERTa) and loads the model named in the request. The MLX conversion `flaglow/BAAI-bge-reranker-v2-m3-mlx-fp16` fails the same way (HTTP 500, 393 parameters not in model). No other reranker was tried | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU | `vmlx-rerank`, `vmlx-rerank-flaglow` |
+| vMLX | vision | pass with `--is-mllm`; fail without it: `vmlx serve` loads a vision model as text-only and answers HTTP 400 "unsupported media modality image because the loaded runtime is text-only" | 1.6.83 with mlx-lm 0.31.3, hosted macos-15, Metal, paravirtual GPU | `vmlx-vision-mllm`, `vmlx-vision` (fail) |
+| vllm-mlx | chat template | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 0.4.1, hosted macos-15, Metal, paravirtual GPU | `vllmmlx-chat` |
+| vllm-mlx | tool call | pass; the fixture of this recording ends with an overflow step that timed out at 120 s, and its HTTP 504 comes from the recording shim, not the server | 0.4.1, hosted macos-15, Metal, paravirtual GPU | `vllmmlx-chat` |
+| vllm-mlx | context overflow | fail: the server accepts the 60008-token prompt and gives no answer within 120 s. The recording shows HTTP 504 "the server gave no answer within 120 s" from the bounding shim, and lilbee reports `kind=server`. See the findings | 0.4.1, hosted macos-15, Metal, paravirtual GPU | `vllmmlx-chat` |
+| vllm-mlx | embed | pass (384 values per vector), started with `--embedding-model` | 0.4.1, hosted macos-15, Metal, paravirtual GPU | `vllmmlx-embed` |
+| vllm-mlx | rerank | pass with `--rerank-model BAAI/bge-reranker-v2-m3`; the request must name that model, and the name "default" answers HTTP 400. Without `--rerank-model` the route answers HTTP 404 "No reranker model loaded" | 0.4.1, hosted macos-15, Metal, paravirtual GPU | `vllmmlx-rerank-bge`, `vllmmlx-rerank` (fail) |
+| vllm-mlx | vision | pass with `mlx-community/Qwen2.5-VL-3B-Instruct-4bit`, no extra flag | 0.4.1, hosted macos-15, Metal, paravirtual GPU | `vllmmlx-vision` |
+| GenieX | all roles | not verified | none |  |
 
 The models in the runs:
 

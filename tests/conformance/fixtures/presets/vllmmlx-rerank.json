@@ -16,6 +16,12 @@
    "detail": "ProviderError: The provider doesn't offer vllmmlx-rerank/default on your account. Pick a different model or check the name."
   }
  },
+ "error_answers": [
+  [
+   404,
+   "{\"detail\":\"No reranker model loaded. Start the server with --rerank-model to enable the /v1/rerank endpoint.\"}"
+  ]
+ ],
  "exchanges": [
   {
    "method": "POST",

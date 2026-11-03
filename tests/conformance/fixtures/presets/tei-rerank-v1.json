@@ -15,6 +15,12 @@
    "detail": "ProviderError: The provider doesn't offer tei-rerank-v1/BAAI/bge-reranker-base on your account. Pick a different model or check the name."
   }
  },
+ "error_answers": [
+  [
+   404,
+   ""
+  ]
+ ],
  "exchanges": [
   {
    "method": "POST",
