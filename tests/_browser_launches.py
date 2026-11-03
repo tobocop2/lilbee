@@ -40,9 +40,10 @@ class BrowserLaunches:
                 command = child.cmdline()
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
-            # The browser starts renderer, GPU and utility children of the same binary. An exiting
-            # process's command line reads empty on Linux, so it cannot be told from a helper.
-            if command and not any(arg.startswith(_CHILD_PROCESS_FLAG) for arg in command):
+            # The browser starts renderer, GPU and utility children of the same binary. On Linux a
+            # process that exits, or that blanks its own arguments, reads as no text at all (an
+            # empty list, or a list of empty strings), so it cannot be told from a helper.
+            if any(command) and not any(arg.startswith(_CHILD_PROCESS_FLAG) for arg in command):
                 self._seen[key] = command
 
     def _poll(self) -> None:

@@ -39,7 +39,7 @@ class RemoveRequest(BaseModel):
 async def sync_route(data: SyncRequest | None = None) -> Stream:
     """Re-index changed documents with streaming SSE progress events.
 
-    Pass ``{"force_rebuild": true}`` to wipe the store and re-ingest every file
+    Pass ``{"force_rebuild": true}`` to re-ingest every file over the index
     under the current ``cfg.embedding_model``. This is the recovery path after
     a ``PUT /api/models/embedding`` that returned ``reindex_required=true``.
     Pass ``{"retry_skipped": true}`` for the lighter path: retry the files that

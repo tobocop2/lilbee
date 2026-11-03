@@ -18,6 +18,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
+from lilbee.cli.commands.analyze import print_tip_if_shown
 from lilbee.cli.helpers import json_output, print_prefixed, print_source_listing, render_status
 from lilbee.core.config import cfg
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
@@ -117,6 +118,7 @@ def init() -> None:
             json_output({"command": "init", "path": str(root), "created": False})
             return
         console.print(f"Already initialized: {root}", soft_wrap=True)
+        print_tip_if_shown(root)
         return
 
     docs = root / "documents"
@@ -130,3 +132,4 @@ def init() -> None:
         json_output({"command": "init", "path": str(root), "created": True})
         return
     console.print(f"Initialized local knowledge base at {root}", soft_wrap=True)
+    print_tip_if_shown(root)

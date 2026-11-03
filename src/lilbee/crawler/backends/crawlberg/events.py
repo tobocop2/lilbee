@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass
@@ -10,9 +11,14 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
 from lilbee.crawler import url_filter
-from lilbee.crawler.bootstrap import CrawlEngineRefusedError
+from lilbee.crawler.bootstrap import (
+    CrawlEngineRefusedError,
+    CrawlerBrowserError,
+    install_deps_command,
+)
 from lilbee.crawler.messages import (
     BROWSER_FLAGS_REFUSED_MESSAGE,
+    CHROMIUM_LIBRARY_MISSING_MESSAGE,
     CRAWL_REFUSED_MESSAGE,
     EXCLUDE_PATTERN_REFUSED_MESSAGE,
     ROBOTS_REFUSED_MESSAGE,
@@ -36,6 +42,8 @@ _REFUSED_SETTING_MESSAGES = {
 # page it refuses because the site's robots.txt could not be read.
 _ROBOTS_DISALLOWED_START = "robots.txt disallows "
 _ROBOTS_UNREACHABLE_START = "robots_unreachable: "
+# The glibc loader's message for a shared library the browser needs and the host lacks.
+_MISSING_LIBRARY = re.compile(r"error while loading shared libraries: (?P<library>[^\s:]+):")
 
 
 class _EventKind(StrEnum):
@@ -97,9 +105,20 @@ def _create_engine(config: crawlberg.CrawlConfig) -> crawlberg.CrawlEngineHandle
 def _error_text(error: str) -> str:
     """crawlberg's *error* for a page, in lilbee's words when robots.txt refused the page.
 
+    A browser that cannot start for a missing system library names the library and the fix.
+
     A robots.txt that could not be read because the SSRF policy refuses its address is
     that SSRF refusal.
     """
+    # The dynamic loader's own words, which Chromium's stderr carries into crawlberg's text.
+    if missing := _MISSING_LIBRARY.search(error):
+        try:
+            command = install_deps_command()
+        except CrawlerBrowserError:
+            return error
+        return CHROMIUM_LIBRARY_MISSING_MESSAGE.format(
+            library=missing["library"], command=command, reason=error
+        )
     # crawlberg's error event has no code for a robots.txt refusal; only its text tells it.
     if error.startswith(_ROBOTS_DISALLOWED_START):
         return ROBOTS_REFUSED_MESSAGE

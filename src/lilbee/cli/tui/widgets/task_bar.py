@@ -15,7 +15,7 @@ from textual.widgets import Label, Static
 
 from lilbee.catalog.formatting import display_label_for_ref
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+from lilbee.cli.tui.task_queue import Task, TaskQueue, TaskStatus
 from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
@@ -254,7 +254,14 @@ class TaskBar(Static):
                         TaskStatus.FAILED if self._flash_failed_count else TaskStatus.DONE
                     )
 
-        idle = not active and not queued and not in_flash and self._flash_outcome is None
+        cancelling = self._controller.cancelling_tasks()
+        idle = (
+            not active
+            and not queued
+            and not cancelling
+            and not in_flash
+            and self._flash_outcome is None
+        )
         pending = self._controller.pending_sync_count if idle else 0
         spawning_roles = sorted(self._controller.spawning_roles) if idle else []
         # Computed regardless of task activity: a chat warm holds the user's input
@@ -270,7 +277,7 @@ class TaskBar(Static):
 
         self.display = True
         dot_color, summary = self._status_line(
-            active, queued, spawning_roles, pending, warm_line, idle=idle
+            active, queued, spawning_roles, pending, warm_line, idle=idle, cancelling=cancelling
         )
         hint_text = self._hint_copy()
         # Fingerprint captures every variable the label content depends
@@ -312,6 +319,7 @@ class TaskBar(Static):
         warm_line: str | None,
         *,
         idle: bool,
+        cancelling: list[Task] | None = None,
     ) -> tuple[str, Content]:
         """Pick the dot color and summary text for the current bar state."""
         if warm_line is not None:
@@ -321,7 +329,7 @@ class TaskBar(Static):
         if idle and pending > 0:
             template = self._pending_sync_template(pending)
             return "$text-muted", Content.from_markup(template.format(count=pending))
-        return self._compose_segments(active, queued)
+        return self._compose_segments(active, queued, cancelling or [])
 
     def _warm_line(self) -> str | None:
         """The cold-start chat warm line, or None when chat isn't warming."""
@@ -385,7 +393,9 @@ class TaskBar(Static):
             return msg.TASKBAR_HINT_INPUT
         return msg.TASKBAR_HINT
 
-    def _compose_segments(self, active: list, queued: list) -> tuple[str, Content]:
+    def _compose_segments(
+        self, active: list, queued: list, cancelling: list[Task] | None = None
+    ) -> tuple[str, Content]:
         """Return (dot color, text summary) for the current state."""
         # Pulsing even/odd cadence, shared with TaskRow's rail pulse.
         on_beat = (self._tick_count // _DOT_PULSE_HALF_TICKS) % 2 == 0
@@ -411,6 +421,12 @@ class TaskBar(Static):
         if queued:
             queued_text = msg.TASKBAR_QUEUED_COUNT.format(count=len(queued))
             parts.append(Content.from_markup(f"[dim]{queued_text}[/dim]"))
+        for task in cancelling or []:
+            parts.append(
+                Content.from_markup(
+                    "$label [b]$name[/b]", label=msg.TASKBAR_CANCELLING, name=task.name
+                )
+            )
 
         dot_color = ("$primary" if on_beat else "$primary-lighten-2") if active else "$text-muted"
         return dot_color, Content("  ·  ").join(parts)

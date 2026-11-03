@@ -6,7 +6,6 @@ import math
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, runtime_checkable
 
 from pydantic import BaseModel
@@ -95,6 +94,9 @@ class LLMOptions(BaseModel):
     # Structured-output request for the internal calls that want a bare JSON
     # value back. Must be listed here or the allowlist above silently drops it.
     response_format: dict[str, Any] | None = None
+    # False makes llama-server evaluate the whole prompt, so a seeded reply does not
+    # follow from what its slots hold. The SDK translator drops it for every other provider.
+    cache_prompt: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return only non-None values as a dict."""
@@ -104,6 +106,14 @@ class LLMOptions(BaseModel):
 def filter_options(options: dict[str, Any]) -> dict[str, Any]:
     """Validate and filter generation options through LLMOptions model."""
     return LLMOptions(**options).to_dict()
+
+
+class ChosenSeed(int):
+    """A seed lilbee picked for an internal call, not one the user set.
+
+    A provider with no seed field drops it and answers the call. A seed that is
+    a plain ``int`` came from the user, and that provider refuses it.
+    """
 
 
 def aux_options(num_predict: int, **extra: Any) -> dict[str, Any]:
@@ -149,6 +159,7 @@ class ProviderErrorKind(StrEnum):
     SERVER = "server"
     CAPACITY = "capacity"
     PORT_CONFLICT = "port_conflict"
+    MODEL_FILE_BROKEN = "model_file_broken"
     UNKNOWN = "unknown"
 
 
@@ -506,20 +517,6 @@ class LLMProvider(Protocol):
         """Release resources (e.g. background threads). No-op if nothing to clean up."""
         ...
 
-    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """Drop loaded-model state; ``None`` evicts all, else only that path. No-op default."""
-        return
-
-    def drop_loaded_models_async(self) -> None:
-        """Drop all loaded-model state off the caller's thread. No-op default.
-
-        Like :meth:`invalidate_load_cache` with no path, but the teardown (which
-        stops every server and waits on each process) runs on a background thread
-        so a settings change that touches a role-agnostic load key never blocks
-        the UI / request thread. The next call rebuilds with current cfg.
-        """
-        self.invalidate_load_cache()
-
     def warm_up_pool(self) -> None:
         """Eagerly start the configured role servers so the first call lands warm.
 
@@ -549,12 +546,12 @@ class LLMProvider(Protocol):
         """
         return
 
-    def reload_placement(self, *, wait: bool = False) -> None:
-        """Re-plan GPU placement with current cfg, restarting only moved roles.
+    def replan_fleet(self, *, wait: bool = False) -> None:
+        """Re-plan the fleet from current cfg, restarting only moved roles.
 
         Default no-op for providers without GPU-placed servers. The fleet diffs
         the fresh plan against the running fleet and respawns only the roles
-        whose placement changed, so an untouched role's loaded model stays
+        whose launch changed, so an untouched role's loaded model stays
         resident. ``wait=True`` blocks until the restarted proxies are healthy.
         """
         return

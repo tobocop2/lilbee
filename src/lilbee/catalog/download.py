@@ -317,11 +317,12 @@ def fetch_model_files(
     """
     filename = resolve_filename(entry)
     shards = split_shard_filenames(filename)
-    dest = models_dir / shards[0]
-    if all(_shard_is_cached(entry, models_dir, shard, on_probe) for shard in shards):
+    paths = _cached_shards(entry, models_dir, shards, on_probe)
+    if paths is not None:
+        dest = paths[0]
         log.info("Model already downloaded: %s", dest)
         if on_progress is not None:
-            size = sum((models_dir / shard).stat().st_size for shard in shards)
+            size = sum(path.stat().st_size for path in paths)
             on_progress(size, size)  # Report 100% immediately (every shard)
         _ensure_projector(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
         return dest
@@ -377,13 +378,35 @@ def _probe(on_probe: ProbeCallback | None, file: RemoteFile) -> RemoteFile:
     return file
 
 
-def _shard_is_cached(
+def _cached_shard(
     entry: CatalogModel, models_dir: Path, shard: str, on_probe: ProbeCallback | None
-) -> bool:
-    """Whether *shard* is on disk at the size the Hub reports for it."""
+) -> Path | None:
+    """The on-disk copy of *shard* at the size the Hub reports for it, or None.
+
+    Looks in the Hub cache layout first, then at the flat path an older
+    install used.
+    """
+    from huggingface_hub import try_to_load_from_cache
+
     file = _probe(on_probe, fetch_remote_file(entry.hf_repo, shard))
-    path = models_dir / shard
-    return path.exists() and _size_matches(path, file.size)
+    hit = try_to_load_from_cache(entry.hf_repo, shard, cache_dir=str(models_dir))
+    for path in (Path(hit) if isinstance(hit, str) else None, models_dir / shard):
+        if path is not None and path.exists() and _size_matches(path, file.size):
+            return path
+    return None
+
+
+def _cached_shards(
+    entry: CatalogModel, models_dir: Path, shards: list[str], on_probe: ProbeCallback | None
+) -> list[Path] | None:
+    """Every shard's on-disk copy, or None at the first one that is missing."""
+    paths: list[Path] = []
+    for shard in shards:
+        path = _cached_shard(entry, models_dir, shard, on_probe)
+        if path is None:
+            return None
+        paths.append(path)
+    return paths
 
 
 def _probed_shard(entry: CatalogModel, shard: str, on_probe: ProbeCallback | None) -> RemoteFile:
@@ -401,7 +424,7 @@ def _ensure_projector(
 ) -> None:
     """Fetch the projector whenever the repo ships one, not only for VISION entries.
 
-    Dual-use VL repos (Qwen-VL, InternVL, SmolVLM, gemma-3) classify as chat by
+    Dual-use VL repos (Qwen-VL, InternVL, gemma-3) classify as chat by
     name and arch, and without their projector the vision role dies at plan
     time with a missing-mmproj warning a re-pull cannot cure.
     """

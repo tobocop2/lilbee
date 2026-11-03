@@ -314,7 +314,7 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
 # family. Trailing hyphens keep chat models that merely contain the letters out.
 EMBEDDING_NAME_PATTERNS: frozenset[str] = frozenset({"embed", "bge-", "e5-", "gte-"})
 VISION_NAME_PATTERNS: frozenset[str] = frozenset(
-    {"llava", "vision", "moondream", "ocr", "minicpm-v"}
+    {"llava", "vision", "moondream", "ocr", "minicpm-v", "smolvlm"}
 )
 # Reranker detection runs before embedding detection so ``bge-reranker-*`` is
 # not misclassified as EMBEDDING.

@@ -16,7 +16,7 @@ from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import HTTPException, NotFoundException, ValidationException
 from litestar.params import FromQuery
 from litestar.response import Stream
-from litestar.status_codes import HTTP_202_ACCEPTED, HTTP_503_SERVICE_UNAVAILABLE
+from litestar.status_codes import HTTP_200_OK, HTTP_202_ACCEPTED, HTTP_503_SERVICE_UNAVAILABLE
 from pydantic import ValidationError
 
 from lilbee.app.services import request_server_exit
@@ -25,8 +25,10 @@ from lilbee.server import handlers
 from lilbee.server.content_disposition import CONTENT_DISPOSITION, attachment_disposition
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
+    ConfigResetRequest,
     ConfigResponse,
     ConfigSchemaResponse,
+    ConfigSourcesResponse,
     ConfigUpdateResponse,
     HealthResponse,
     ShutdownResponse,
@@ -86,10 +88,29 @@ async def config_defaults_route() -> ConfigResponse:
     return await handlers.get_config_defaults()
 
 
+@post("/api/config/reset", status_code=HTTP_200_OK)
+async def config_reset_route(data: ConfigResetRequest) -> ConfigUpdateResponse:
+    """Remove the listed keys from config.toml; each falls back to the next source."""
+    try:
+        return await handlers.reset_config(data.keys)
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=config_write_failure_message(exc)
+        ) from exc
+
+
 @get("/api/config/schema")
 async def config_schema_route() -> ConfigSchemaResponse:
     """Return type, choices, writability and reindex metadata for every public field."""
     return await handlers.get_config_schema()
+
+
+@get("/api/config/sources")
+async def config_sources_route() -> ConfigSourcesResponse:
+    """Return the layer that supplies each configuration value."""
+    return await handlers.get_config_sources()
 
 
 @patch("/api/config")

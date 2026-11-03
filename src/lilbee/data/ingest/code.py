@@ -8,7 +8,7 @@ from lilbee.app.services import get_services
 from lilbee.data.extract.chunk import enforce_chunk_limit
 from lilbee.data.extract.code_chunker import CodeChunk, chunk_code
 from lilbee.data.store import ChunkType
-from lilbee.data.types import ChunkRecord
+from lilbee.data.types import CODE_CONTENT_TYPE, ChunkRecord
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 
@@ -30,7 +30,7 @@ def ingest_code_sync(
     return [
         ChunkRecord(
             source=source_name,
-            content_type="code",
+            content_type=CODE_CONTENT_TYPE,
             chunk_type=ChunkType.RAW,
             page_start=0,
             page_end=0,

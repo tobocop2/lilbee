@@ -6,7 +6,7 @@ import asyncio
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -51,23 +51,23 @@ class ProgressReporter:
     ``TaskQueue`` so updates survive any UI navigation.
     """
 
-    def __init__(self, controller: TaskBarController, task_id: str) -> None:
+    def __init__(self, controller: TaskBarController, task: Task) -> None:
         self._controller = controller
-        self._task_id = task_id
+        # The row itself, not its id: a cancel marks this object, and a cleared history
+        # drops only the queue's reference to it, so the cancel still reaches the run.
+        self._task = task
 
     @property
     def task_id(self) -> str:
-        return self._task_id
+        return self._task.task_id
 
     def is_set(self) -> bool:
         """True once this task is cancelled, by the user or at exit; the signal a run polls."""
-        task = self._controller.queue.get_task(self._task_id)
-        return task is not None and task.status is TaskStatus.CANCELLED
+        return self._task.status is TaskStatus.CANCELLED
 
     def cancelled_by_user(self) -> bool:
         """True once the user cancelled this task; a stop at app exit is not a user cancel."""
-        task = self._controller.queue.get_task(self._task_id)
-        return task is not None and task.cancel_origin is CancelOrigin.USER
+        return self._task.cancel_origin is CancelOrigin.USER
 
     def check_cancelled(self) -> None:
         """Raise ``TaskCancelledError`` if the task was cancelled, by the user or at exit."""
@@ -85,11 +85,24 @@ class ProgressReporter:
         """
         self.check_cancelled()
         self._controller.queue.update_task(
-            self._task_id, progress, detail, indeterminate=indeterminate
+            self._task.task_id, progress, detail, indeterminate=indeterminate
         )
 
 
 TaskTarget = Callable[[ProgressReporter], None]
+
+
+class _TaskWorker(threading.Thread):
+    """The worker thread of one task; it keeps the task's row for as long as it runs."""
+
+    def __init__(self, controller: TaskBarController, task: Task) -> None:
+        super().__init__(
+            target=controller._run_task_worker,
+            args=(task,),
+            daemon=True,
+            name=f"task-{task.task_id}",
+        )
+        self.task = task
 
 
 def _chromium_bootstrap_target(reporter: ProgressReporter) -> None:
@@ -133,7 +146,7 @@ class TaskBarController:
         # worker ends; a row cancelled with no worker loses its entry at the cancel.
         self._task_targets: dict[str, tuple[TaskTarget, Callable[[], None] | None]] = {}
         # task_id -> its started worker thread, joined by stop_all at exit.
-        self._workers: dict[str, threading.Thread] = {}
+        self._workers: dict[str, _TaskWorker] = {}
         # Held to enqueue a task with its target, to promote a row with the start of its
         # worker, to start a detection, to begin the stop, and for every use of _workers.
         self._lock = threading.Lock()
@@ -150,6 +163,62 @@ class TaskBarController:
         # per role so the chat screen isn't drowned in implementation
         # detail on first prompt.
         self.spawning_roles: set[str] = set()
+        # Called on the main thread once at each end of a task's work.
+        self._work_end_listeners: list[Callable[[], None]] = []
+
+    def subscribe_work_end(self, listener: Callable[[], None]) -> None:
+        """Call *listener* on the main thread once at each end of a task's work.
+
+        The end is the exit of the task's worker, or the end of a row that has no worker.
+
+        A queue change cannot report this: a cancel ends the row, and the row's worker
+        ends later with no further change to the queue.
+        """
+        if listener not in self._work_end_listeners:
+            self._work_end_listeners.append(listener)
+
+    def unsubscribe_work_end(self, listener: Callable[[], None]) -> None:
+        """Stop calling *listener*; harmless if it is not subscribed."""
+        if listener in self._work_end_listeners:
+            self._work_end_listeners.remove(listener)
+
+    def _work_ended(self, task_id: str) -> None:
+        """Report the end of *task_id*'s work once: now, or when its worker exits if it has one."""
+        with self._lock:
+            if task_id in self._workers:
+                return
+        for listener in list(self._work_end_listeners):
+            try:
+                listener()
+            except Exception:
+                # A bad listener must not reach the caller of a cancel or starve the next one.
+                log.exception("A work-end listener raised")
+
+    def has_live_work(self, task_types: Collection[str]) -> bool:
+        """True while a task of *task_types* is queued, active, or unwinding after a cancel.
+
+        A cancel takes the row off the queue at once, but its worker keeps writing until
+        its next checkpoint, so a live worker counts as well as a live row.
+        """
+        # Queued first: a row promoted between the two reads then shows as active.
+        rows = self.queue.queued_tasks + self.queue.active_tasks
+        if any(task.task_type in task_types for task in rows):
+            return True
+        with self._lock:
+            workers = list(self._workers.values())
+        return any(w.is_alive() and w.task.task_type in task_types for w in workers)
+
+    def cancelling_tasks(self, task_types: Collection[str] | None = None) -> list[Task]:
+        """Cancelled tasks whose worker is alive, read from the map that has_live_work reads."""
+        with self._lock:
+            workers = list(self._workers.values())
+        return [
+            w.task
+            for w in workers
+            if w.is_alive()
+            and w.task.status is TaskStatus.CANCELLED
+            and (task_types is None or w.task.task_type in task_types)
+        ]
 
     def add_task(
         self,
@@ -181,11 +250,13 @@ class TaskBarController:
         self.queue.complete_task(task_id)
         self._after_done_hooks(task_type)
         self._advance_all(task_type)
+        self._work_ended(task_id)
 
     def fail_task(self, task_id: str, detail: str = "") -> None:
         """Mark a task failed. Row lingers in history until the user clears it."""
         self.queue.fail_task(task_id, detail)
         self._advance_all(self._task_type_of(task_id))
+        self._work_ended(task_id)
 
     def cancel_task(self, task_id: str) -> None:
         """Mark a task cancelled; its worker notices at the next cancel checkpoint.
@@ -203,6 +274,7 @@ class TaskBarController:
             # finalizes and advances when it exits, or is queued and holds no
             # slot worth freeing.
             self._advance_all(task_type)
+        self._work_ended(task_id)
 
     def _after_done_hooks(self, task_type: str | None) -> None:
         """Side effects triggered by a DONE completion.
@@ -391,15 +463,10 @@ class TaskBarController:
                 return False
             # A row put straight on the queue has no target and gets no worker.
             if task.task_id in self._task_targets:
-                thread = threading.Thread(
-                    target=self._run_task_worker,
-                    args=(task.task_id,),
-                    daemon=True,
-                    name=f"task-{task.task_id}",
-                )
+                worker = _TaskWorker(self, task)
                 # The map holds started threads only; a worker that ends at once waits here.
-                thread.start()
-                self._workers[task.task_id] = thread
+                worker.start()
+                self._workers[task.task_id] = worker
             return True
 
     def _cancel(self, task_id: str, origin: CancelOrigin) -> None:
@@ -429,15 +496,15 @@ class TaskBarController:
             if thread is not None:
                 thread.join(max(0.0, deadline - time.monotonic()))
 
-    def _run_task_worker(self, task_id: str) -> None:
+    def _run_task_worker(self, task: Task) -> None:
         """Body of the daemon worker thread."""
+        task_id = task.task_id
         entry = self._task_targets.get(task_id)
         if entry is None:
             return
         target, on_success = entry
-        task = self.queue.get_task(task_id)
-        task_type = task.task_type if task is not None else None
-        reporter = ProgressReporter(self, task_id)
+        task_type = task.task_type
+        reporter = ProgressReporter(self, task)
         try:
             target(reporter)
         except (TaskCancelledError, asyncio.CancelledError) as exc:
@@ -457,6 +524,8 @@ class TaskBarController:
             self._task_targets.pop(task_id, None)
             with self._lock:
                 self._workers.pop(task_id, None)
+            # After the pop, so a listener that asks has_live_work sees this worker gone.
+            call_from_thread(self.app, self._work_ended, task_id)
 
     def _post_finalize(
         self, task_id: str, outcome: TaskOutcome, detail: str, task_type: str | None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import functools
 from typing import Any
@@ -12,8 +13,11 @@ from lilbee.app.settings import (
     SettingInfo,
     apply_settings_update,
     list_settings,
+    profile_defaults,
     provider_reset_refused_message,
     requires_services_reset,
+    reset_settings,
+    setting_sources,
 )
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS as _MODEL_ROLE_FIELDS,
@@ -29,6 +33,7 @@ from lilbee.server.models import (
     ConfigFieldSchema,
     ConfigResponse,
     ConfigSchemaResponse,
+    ConfigSourcesResponse,
     ConfigUpdateResponse,
 )
 
@@ -48,8 +53,20 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
     """
     if requires_services_reset(updates):
         raise ValueError(provider_reset_refused_message("Switching"))
-    result = apply_settings_update(updates, allow_model_roles=False)
-    return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
+    result = await asyncio.to_thread(apply_settings_update, updates, allow_model_roles=False)
+    return ConfigUpdateResponse.from_result(result)
+
+
+async def reset_config(keys: list[str]) -> ConfigUpdateResponse:
+    """Remove each key from config.toml so its value falls back to the next source.
+
+    Refuses the same keys PATCH /api/config refuses: a provider switch and the
+    model role slots.
+    """
+    if requires_services_reset(dict.fromkeys(keys)):
+        raise ValueError(provider_reset_refused_message("Resetting"))
+    result = await asyncio.to_thread(reset_settings, keys, allow_model_roles=False)
+    return ConfigUpdateResponse.from_result(result)
 
 
 async def get_config() -> ConfigResponse:
@@ -57,6 +74,14 @@ async def get_config() -> ConfigResponse:
     dumped = cfg.model_dump()
     result = {k: v for k, v in dumped.items() if k in _PUBLIC_CONFIG_FIELDS}
     return ConfigResponse(**result)
+
+
+async def get_config_sources() -> ConfigSourcesResponse:
+    """Return the source of every value GET /api/config answers."""
+    sources = await asyncio.to_thread(setting_sources)
+    return ConfigSourcesResponse(
+        sources={k: v for k, v in sources.items() if k in _PUBLIC_CONFIG_FIELDS}
+    )
 
 
 @functools.cache
@@ -78,16 +103,21 @@ def _compute_config_defaults() -> dict[str, Any]:
 
 
 async def get_config_defaults() -> ConfigResponse:
-    """Return canonical defaults for every public config field.
+    """Return the default of every public config field.
 
     Covers writable fields (resettable via PATCH /api/config) and the
-    model-role fields (resettable via PUT /api/models/<role>).
+    model-role fields (resettable via PUT /api/models/<role>). A value the
+    active profile sets replaces the built-in, as in ``lilbee settings list``,
+    because a reset falls back to it.
 
     Deepcopies the cached dict so callers that mutate the response
     (list-valued fields like ``crawl_exclude_patterns``) cannot poison
     subsequent calls.
     """
-    return ConfigResponse(**copy.deepcopy(_compute_config_defaults()))
+    defaults = copy.deepcopy(_compute_config_defaults())
+    profile = await asyncio.to_thread(profile_defaults)
+    defaults.update({key: value for key, value in profile.items() if key in defaults})
+    return ConfigResponse(**defaults)
 
 
 def _field_schema(info: SettingInfo) -> ConfigFieldSchema:
@@ -105,6 +135,7 @@ def _field_schema(info: SettingInfo) -> ConfigFieldSchema:
         group=info.group,
         help=info.help_text,
         choices=list(info.choices) if info.choices else None,
+        advanced=info.advanced,
     )
 
 
@@ -115,4 +146,5 @@ async def get_config_schema() -> ConfigSchemaResponse:
     ``settings_list`` reads, so a new setting appears here with no route
     change and no restated value set.
     """
-    return ConfigSchemaResponse(fields=[_field_schema(info) for info in list_settings()])
+    infos = await asyncio.to_thread(list_settings)
+    return ConfigSchemaResponse(fields=[_field_schema(info) for info in infos])

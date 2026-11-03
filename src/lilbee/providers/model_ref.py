@@ -14,6 +14,7 @@ from typing import Any
 from lilbee.catalog.refs import GGUF_SUFFIX, NATIVE_GGUF_REF_MIN_SLASHES
 from lilbee.catalog.types import ModelSource
 from lilbee.providers.base import (
+    ChosenSeed,
     ProviderError,
     ProviderErrorKind,
     filter_options,
@@ -197,10 +198,13 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
     ``num_ctx``) plus a ``top_k`` and ``repeat_penalty`` drop: hosted APIs do not
     take either, so dropping them keeps the wire request clean. An Anthropic ref
     refuses a ``seed`` or penalty set to any value, zero included, with a bad-request
-    error; when ``response_format`` is set it drops them and sends the request.
+    error; when ``response_format`` is set it drops them and sends the request,
+    and it drops a seed that is a :class:`ChosenSeed` instead of refusing it.
+    ``cache_prompt`` is a llama-server field, and no ref here gets it.
     """
     if not ref.is_api:
         filtered = filter_options(options)
+        filtered.pop("cache_prompt", None)
         think = filtered.pop("think", None)
         if think is False and ref.provider == ModelSource.OLLAMA:
             # Ollama maps reasoning_effort onto its think field; any value
@@ -209,10 +213,18 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
         return filtered
     api_options = normalize_generation_options(options)
     if ref.provider == "anthropic":
+        # A ``response_format`` marks an internal call, and so does a seed lilbee chose:
+        # the fix the refusal asks for is not the user's to make.
         if "response_format" not in api_options:
-            _refuse_unsupported(api_options, ref, _ANTHROPIC_UNSUPPORTED)
+            chosen = isinstance(options.get("seed"), ChosenSeed)
+            _refuse_unsupported(
+                {k: v for k, v in api_options.items() if not (chosen and k == "seed")},
+                ref,
+                _ANTHROPIC_UNSUPPORTED,
+            )
         for name in _ANTHROPIC_UNSUPPORTED:
             api_options.pop(name, None)
+    api_options.pop("cache_prompt", None)
     api_options.pop("top_k", None)
     api_options.pop("repeat_penalty", None)
     api_options.pop("think", None)

@@ -43,7 +43,8 @@ if TYPE_CHECKING:
 
 
 wiki_app = typer.Typer(
-    help="Wiki layer commands: generate, browse, lint, citations, status, prune."
+    help="Wiki layer commands: generate, browse, lint, citations, status, prune.",
+    no_args_is_help=True,
 )
 
 # Citations table renders excerpts truncated to ``_CITATION_EXCERPT_MAX_CHARS``;

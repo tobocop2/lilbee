@@ -348,7 +348,7 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
         layout = _layout_config()
         if layout is None:
             return paginated
-        return replace(paginated, layout=layout, use_layout_for_markdown=True)
+        return replace(paginated, layout=layout)
     return ExtractionConfig(
         chunking=chunking,
         output_format=MARKDOWN_OUTPUT,
@@ -358,6 +358,21 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
         extraction_timeout_secs=_extraction_timeout_secs(),
         ocr_strategy=_ocr_strategy(),
         force_ocr_pages=_force_ocr_pages(),
+    )
+
+
+def analysis_config() -> ExtractionConfig:
+    """Native extraction for corpus analysis: no OCR, no layout model, tables and languages on."""
+    from xberg import ExtractionConfig, LanguageDetectionConfig, PageConfig, PdfConfig
+
+    # No OCR block at all: xberg 1.2.7 OCRs a PDF's page images whenever one is present,
+    # even disabled (fixed in 1.2.9).
+    return ExtractionConfig(
+        disable_ocr=True,
+        pages=PageConfig(extract_pages=True),
+        pdf_options=PdfConfig(extract_tables=True),
+        language_detection=LanguageDetectionConfig(enabled=True, detect_multiple=True),
+        extraction_timeout_secs=_extraction_timeout_secs(),
     )
 
 

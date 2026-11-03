@@ -54,6 +54,8 @@ DEFAULT_NUM_CTX = 8192
 # Idle minutes before the engine unloads its weights; also read by the engine reaper.
 ENGINE_IDLE_TTL_MINUTES_DEFAULT = 5
 CONFIG_FILE_NAME = "config.toml"
+ENV_PREFIX = "LILBEE_"
+SKIP_TOML_ENV = "LILBEE_SKIP_TOML_CONFIG"
 
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
@@ -268,3 +270,8 @@ DEFAULT_CORS_ORIGIN_REGEX = (
     r"|https?://127\.0\.0\.1(:\d+)?"
     r"|https?://\[::1\](:\d+)?)$"
 )
+
+
+def env_var_name(field: str) -> str:
+    """The ``LILBEE_<FIELD>`` environment variable that sets a config field."""
+    return f"{ENV_PREFIX}{field.upper()}"

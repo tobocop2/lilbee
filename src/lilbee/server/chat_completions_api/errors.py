@@ -75,6 +75,8 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
     ProviderErrorKind.SERVER: (502, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.CAPACITY: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.PORT_CONFLICT: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    # Passes through: the text names the model and the fix, and holds no engine path.
+    ProviderErrorKind.MODEL_FILE_BROKEN: (503, CompletionsErrorCode.INTERNAL_ERROR),
 }
 
 

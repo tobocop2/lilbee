@@ -5,12 +5,7 @@ from __future__ import annotations
 from textual.suggester import Suggester
 
 from lilbee.cli.tui.command_registry import completion_names
-from lilbee.cli.tui.widgets.autocomplete import (
-    _document_options,
-    _model_options,
-    _setting_options,
-    _theme_options,
-)
+from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES, PATH_ARG_COMMANDS
 
 _SLASH_COMMANDS = completion_names()
 
@@ -42,33 +37,13 @@ class SlashSuggester(Suggester):
     def _suggest_argument(self, value: str) -> str | None:
         cmd, _, partial = value.partition(" ")
         cmd = cmd.lower()
-
-        if cmd == "/model":
-            return self._suggest_from_list(value, partial, self._get_model_names())
-        if cmd == "/set":
-            return self._suggest_from_list(value, partial, self._get_setting_names())
-        if cmd == "/delete":
-            return self._suggest_from_list(value, partial, self._get_document_names())
-        if cmd == "/theme":
-            return self._suggest_from_list(value, partial, self._get_theme_names())
-        return None
+        source = ARG_SOURCES.get(cmd)
+        if source is None or cmd in PATH_ARG_COMMANDS:
+            return None
+        return self._suggest_from_list(value, partial, source())
 
     def _suggest_from_list(self, full: str, partial: str, options: list[str]) -> str | None:
         for opt in options:
             if opt.startswith(partial) and opt != partial:
                 return full[: len(full) - len(partial)] + opt
         return None
-
-    # Option sources are shared with the completion overlay (autocomplete);
-    # these stay as methods so callers and tests can override per-suggester.
-    def _get_model_names(self) -> list[str]:
-        return _model_options()
-
-    def _get_setting_names(self) -> list[str]:
-        return _setting_options()
-
-    def _get_document_names(self) -> list[str]:
-        return _document_options()
-
-    def _get_theme_names(self) -> list[str]:
-        return _theme_options()

@@ -1,6 +1,7 @@
 """Tests for Config (pydantic-settings BaseSettings) and env var overrides."""
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -27,7 +28,7 @@ from lilbee.core.config import (
     refuse_environment,
     validate_ocr_timeout,
 )
-from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
+from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX, env_var_name
 from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
 from lilbee.core.config.model import (
     _TAKES_DEFAULT_WHEN_REFUSED,
@@ -35,6 +36,7 @@ from lilbee.core.config.model import (
     env_value,
     value_is_set,
 )
+from lilbee.core.config.resolve import read_layers
 from tests._sys_modules import inject_modules
 
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
@@ -140,9 +142,7 @@ class TestEnvVarOverrides:
         assert through_link.data_dir == direct.data_dir
         assert through_link.lancedb_dir == direct.lancedb_dir
 
-    def test_padded_data_env_finds_the_same_dir_for_root_and_config(
-        self, tmp_path, overlay_reads_config_toml
-    ):
+    def test_padded_data_env_finds_the_same_dir_for_root_and_config(self, tmp_path):
         """A padded LILBEE_DATA sends the root and its config.toml to one dir."""
         (tmp_path / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"LILBEE_DATA": f"  {tmp_path}  "}):
@@ -484,6 +484,31 @@ class TestOcrStrategy:
 
 
 class TestTomlConfigFile:
+    def test_config_construction_equals_resolver_per_field(self, tmp_path):
+        from lilbee.core.config.resolve import (
+            ROOT_DERIVED_FIELDS,
+            read_layers,
+            resolve_all,
+        )
+
+        (tmp_path / "config.toml").write_text(
+            'top_k = 7\nchunk_size = 900\n[profile]\nname = "x"\n[profile.values]\n'
+            "top_k = 3\nchunk_overlap = 50\nrerank_min_score = 0.7\n",
+            encoding="utf-8",
+        )
+        env = clean_env(tmp_path)
+        env["LILBEE_CHUNK_SIZE"] = "1024"
+        with mock.patch.dict(os.environ, env, clear=True):
+            built = Config()
+            resolved = resolve_all(read_layers(tmp_path))
+        probe = Config.model_validate({k: v.value for k, v in resolved.items()})
+        keys = sorted(set(Config.model_fields) - ROOT_DERIVED_FIELDS)
+        assert len(keys) > 100
+        assert {k for k in keys if getattr(built, k) != getattr(probe, k)} == set()
+        assert (built.top_k, built.chunk_size, built.chunk_overlap) == (7, 1024, 50)
+        assert built.rerank_min_score == 0.7
+        assert built.top_p == 0.9
+
     def test_toml_values_loaded(self, tmp_path):
         ref = "ollama/my-saved-model:latest"
         toml_path = tmp_path / "config.toml"
@@ -951,6 +976,62 @@ class TestSemanticChunkingConfig:
         assert parse([]) is False
 
 
+class TestSoftFieldWarningNamesItsRealSource:
+    """A warn-and-fall-back Config field names where the bad value actually came from."""
+
+    def test_env_source_names_the_env_var(self, tmp_path, caplog) -> None:
+        env = {**clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "not-a-number"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.n_gpu_layers is None
+        messages = [rec.message for rec in caplog.records]
+        assert any(env_var_name("n_gpu_layers") in m for m in messages)
+
+    def test_config_toml_source_names_the_file_not_the_env_var(self, tmp_path, caplog) -> None:
+        (tmp_path / "config.toml").write_text('n_gpu_layers = "not-a-number"\n', encoding="utf-8")
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.n_gpu_layers is None
+        messages = [rec.message for rec in caplog.records]
+        assert any("config.toml" in m for m in messages)
+        assert not any(env_var_name("n_gpu_layers") in m for m in messages)
+
+    def test_profile_source_names_the_profile_not_the_env_var(self, tmp_path, caplog) -> None:
+        (tmp_path / "config.toml").write_text(
+            '[profile]\nname = "my-profile"\n\n[profile.values]\nsemantic_chunking = "maybe"\n',
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.semantic_chunking is False
+        messages = [rec.message for rec in caplog.records]
+        assert any("my-profile" in m for m in messages)
+        assert not any(env_var_name("semantic_chunking") in m for m in messages)
+
+    def test_profile_source_with_no_name_uses_the_generic_phrase(self, tmp_path, caplog) -> None:
+        """A hand-edited [profile] table with values but no name key still says something."""
+        (tmp_path / "config.toml").write_text(
+            '[profile]\n\n[profile.values]\nsemantic_chunking = "maybe"\n', encoding="utf-8"
+        )
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.semantic_chunking is False
+        messages = [rec.message for rec in caplog.records]
+        assert any("the applied profile" in m for m in messages)
+
+
 class TestResolveDefaultsValidator:
     def test_non_dict_input_passes_through(self) -> None:
         """The before-validator hands non-dict input straight back; pydantic
@@ -1146,7 +1227,7 @@ class TestCorsOriginRegexConfig:
             assert c.cors_origin_regex == r"^https://only-this\.example$"
 
     def test_cors_origin_regex_from_env_match_nothing_disables_default(self, tmp_path) -> None:
-        # Empty env vars are ignored by _PlainEnvSource, so the documented opt-out is
+        # Empty env vars are ignored by the settings resolver, so the documented opt-out is
         # to set a regex that matches nothing: e.g. ^$.
         env = clean_env(tmp_path)
         env["LILBEE_CORS_ORIGIN_REGEX"] = "^$"
@@ -1241,15 +1322,6 @@ class TestGenerationOptions:
         assert "max_tokens" not in opts
         assert filter_options(opts)["num_predict"] == 2048
         assert normalize_generation_options(opts)["max_tokens"] == 2048
-
-    def test_model_default_cap_wins_over_the_unset_config_cap(self):
-        from lilbee.providers.model_defaults import ModelDefaults
-
-        c = Config()
-        c.apply_model_defaults(ModelDefaults(max_tokens=512))
-        assert c.generation_options()["num_predict"] == 512
-        c.max_tokens = 2048
-        assert c.generation_options()["num_predict"] == 2048
 
     def test_remaps_top_k_sampling(self):
         c = Config()
@@ -2230,11 +2302,9 @@ class TestEmptyValueClearsModelRole:
             'vision_model = ""\nreranker_model = ""\nchat_model = ""\nchunk_size = ""\ntop_k = 9\n',
             encoding="utf-8",
         )
-        assert _TomlSource(Config, toml_path)() == {
-            "vision_model": "",
-            "reranker_model": "",
-            "top_k": 9,
-        }
+        expected = {"vision_model": "", "reranker_model": "", "top_k": 9}
+        assert read_layers(tmp_path).user == expected
+        assert _TomlSource(Config, toml_path)() == expected
 
 
 @pytest.fixture()
@@ -2570,27 +2640,28 @@ class TestABadValueInConfigTomlKeepsTheRest:
         assert warnings == (warning,)
         assert built.chunk_size == 321
 
-    def test_a_bad_value_of_any_type_on_any_setting_keeps_its_sibling(self, tmp_path):
-        """Every setting, each hostile value: the load holds, and a warned key has its default."""
+    @pytest.mark.parametrize(
+        "key", [name for name in Config.model_fields if name != "chunk_overlap"]
+    )
+    def test_a_bad_value_of_any_type_on_any_setting_keeps_its_sibling(self, tmp_path, key):
+        """Each setting, each hostile value: the load holds, and a warned key has its default."""
         defaults, _ = _build_with(tmp_path, "")
+        refused = False
+        for bad in _HOSTILE_TOML_VALUES:
+            built, warnings = _build_with(tmp_path, f"{key} = {bad}\nchunk_overlap = 33\n")
+            assert built.chunk_overlap == 33, (key, bad)
+            if warnings:
+                assert all(w.startswith(f"config.toml: {key} = ") for w in warnings), warnings
+                assert getattr(built, key) == getattr(defaults, key), (key, bad)
+                refused = True
+        if Config.model_fields[key].annotation in (int, float):
+            assert refused, key
+
+    def test_the_hostile_values_cover_many_settings(self):
         fields = [name for name in Config.model_fields if name != "chunk_overlap"]
+        plain = [name for name in fields if Config.model_fields[name].annotation in (int, float)]
         assert len(fields) > 150
-        refused: set[str] = set()
-        for key in fields:
-            for bad in _HOSTILE_TOML_VALUES:
-                built, warnings = _build_with(tmp_path, f"{key} = {bad}\nchunk_overlap = 33\n")
-                assert built.chunk_overlap == 33, (key, bad)
-                if warnings:
-                    assert all(w.startswith(f"config.toml: {key} = ") for w in warnings), warnings
-                    assert getattr(built, key) == getattr(defaults, key), (key, bad)
-                    refused.add(key)
-        plain = {
-            name
-            for name, field in Config.model_fields.items()
-            if field.annotation in (int, float) and name != "chunk_overlap"
-        }
         assert len(plain) > 50
-        assert plain <= refused
 
     @pytest.mark.parametrize(
         ("key", "stored", "loaded"),
@@ -2826,30 +2897,35 @@ class TestARefusedVariableStops:
             "LILBEE_OCR = 'OFF' is not one of auto, all, off"
         )
 
-    def test_a_refused_variable_of_any_setting_stops_with_the_one_line(self, tmp_path):
-        """Every setting, each hostile string: a stop names it, and exactly these settings stop."""
-        assert _refusal_of(tmp_path, _STORED_TOML) is None
-        fields = list(Config.model_fields)
-        assert len(fields) > 150
-        refused: set[str] = set()
+    @pytest.mark.parametrize("key", list(Config.model_fields))
+    def test_a_refused_variable_of_any_setting_stops_with_the_one_line(self, tmp_path, key):
+        """Each setting, each hostile string: a stop names it, and exactly these settings stop."""
+        variable = f"LILBEE_{key.upper()}"
+        refused = False
         # The crawler extra, when installed, also refuses a pattern such as "{"; the list of
         # settings that refuse must not depend on it.
         with inject_modules({"crawlberg": None}):
-            for key in fields:
-                variable = f"LILBEE_{key.upper()}"
-                for bad in _HOSTILE_ENV_VALUES:
-                    line = _refusal_of(tmp_path, _STORED_TOML, **{variable: bad})
-                    if line is None:
-                        continue
-                    assert line.startswith(f"{variable} = {bad!r} is "), line
-                    assert "\n" not in line and "; " not in line.removeprefix(variable), line
-                    refused.add(key)
-        kinds = {name: _kind_of(field) for name, field in Config.model_fields.items()}
+            for bad in _HOSTILE_ENV_VALUES:
+                line = _refusal_of(tmp_path, _STORED_TOML, **{variable: bad})
+                if line is None:
+                    continue
+                assert line.startswith(f"{variable} = {bad!r} is "), line
+                assert "\n" not in line and "; " not in line.removeprefix(variable), line
+                refused = True
+        closed = _kind_of(Config.model_fields[key]) != _TEXT
+        expected = (closed and key not in _TAKES_DEFAULT_WHEN_REFUSED) or (
+            key in _OPEN_SETTINGS_THAT_REFUSE
+        )
+        assert refused == expected, key
+
+    def test_the_stored_settings_stand_and_every_kind_has_many(self, tmp_path):
+        assert _refusal_of(tmp_path, _STORED_TOML) is None
+        assert len(Config.model_fields) > 150
+        named = set(_OPEN_SETTINGS_THAT_REFUSE) | set(_TAKES_DEFAULT_WHEN_REFUSED)
+        assert named <= set(Config.model_fields)
+        kinds = [_kind_of(field) for field in Config.model_fields.values()]
         for kind in ("flag", "choice", "number", "optional number"):
-            assert sum(1 for found in kinds.values() if found == kind) > 10, kind
-        closed = {name for name, kind in kinds.items() if kind != _TEXT}
-        expected = (closed - _TAKES_DEFAULT_WHEN_REFUSED) | _OPEN_SETTINGS_THAT_REFUSE
-        assert sorted(refused ^ expected) == []
+            assert kinds.count(kind) > 10, kind
 
     def test_the_entry_point_check_raises_what_the_load_raises(self, tmp_path):
         env = {**clean_env(tmp_path), "LILBEE_TOP_K": "many"}

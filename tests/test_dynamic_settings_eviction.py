@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -19,24 +18,19 @@ from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 class _RecordingProvider:
     """Stand-in provider recording the lifecycle calls the boundary makes.
 
-    ``calls`` keeps the legacy invalidate_load_cache trail; ``reloaded_roles``
-    and ``dropped`` capture the new off-thread per-role reload and whole-fleet
-    drop that a load-affecting change now routes to.
+    ``reloaded_roles`` and ``replanned`` capture the off-thread reload that a
+    load-affecting change routes to, named by role or not.
     """
 
     def __init__(self) -> None:
-        self.calls: list[Path | None] = []
         self.reloaded_roles: list[object] = []
-        self.dropped = 0
-
-    def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        self.calls.append(model_path)
+        self.replanned = 0
 
     def reload_role(self, role: object, *, wait: bool = False) -> None:
         self.reloaded_roles.append(role)
 
-    def drop_loaded_models_async(self) -> None:
-        self.dropped += 1
+    def replan_fleet(self, *, wait: bool = False) -> None:
+        self.replanned += 1
 
     def vision_ocr(
         self, image_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
@@ -92,49 +86,49 @@ def _restore_services() -> None:
     set_services(None)
 
 
-def test_role_agnostic_load_key_drops_fleet_off_thread():
-    """num_ctx has no single owning role, so it drops the whole fleet off-thread."""
+def test_role_agnostic_load_key_replans_the_fleet():
+    """num_ctx has no single owning role, so the re-plan finds the roles it moves."""
     provider = _install_recording_provider()
     try:
         apply_settings_update({"num_ctx": 4096})
-        assert provider.dropped == 1
+        assert provider.replanned == 1
         assert provider.reloaded_roles == []
     finally:
         _restore_services()
 
 
-def test_num_ctx_max_change_drops_fleet():
+def test_num_ctx_max_change_replans_the_fleet():
     """num_ctx_max feeds the chat ctx picker but is role-agnostic at this layer,
-    so it routes to the off-thread whole-fleet drop, not a per-role reload."""
+    so it routes to the fleet re-plan, not a per-role reload."""
     provider = _install_recording_provider()
     try:
         apply_settings_update({"num_ctx_max": 131072})
-        assert provider.dropped == 1
+        assert provider.replanned == 1
         assert provider.reloaded_roles == []
     finally:
         _restore_services()
 
 
-def test_kv_cache_type_change_drops_fleet():
-    """kv_cache_type is a load-time launch flag; a change drops the fleet so the
-    next call respawns under the new value."""
+def test_kv_cache_type_change_replans_the_fleet():
+    """kv_cache_type is a load-time launch flag; a change re-plans the fleet so the
+    role it moves respawns under the new value."""
     from lilbee.core.config.enums import KvCacheType
 
     provider = _install_recording_provider()
     try:
         apply_settings_update({"kv_cache_type": KvCacheType.Q8_0})
-        assert provider.dropped == 1
+        assert provider.replanned == 1
         assert provider.reloaded_roles == []
     finally:
         _restore_services()
 
 
-def test_chunk_size_change_drops_fleet():
-    """chunk_size sizes the embed window and owns no role, so it takes the whole-fleet drop."""
+def test_chunk_size_change_replans_the_fleet():
+    """chunk_size sizes the embed window and owns no role, so it takes the fleet re-plan."""
     provider = _install_recording_provider()
     try:
         apply_settings_update({"chunk_size": 1024})
-        assert provider.dropped == 1
+        assert provider.replanned == 1
         assert provider.reloaded_roles == []
     finally:
         _restore_services()
@@ -142,7 +136,7 @@ def test_chunk_size_change_drops_fleet():
 
 def test_embed_and_rerank_model_change_reloads_only_those_roles():
     """Switching embedding_model / reranker_model reloads just that role's server
-    off-thread; the whole fleet is never dropped (other roles keep serving)."""
+    off-thread; no second re-plan runs (other roles keep serving)."""
     from lilbee.providers.roles import WorkerRole
 
     provider = _install_recording_provider()
@@ -150,20 +144,20 @@ def test_embed_and_rerank_model_change_reloads_only_those_roles():
         apply_settings_update({"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF"})
         apply_settings_update({"reranker_model": "ggml-org/bge-reranker-v2-m3-Q8_0-GGUF"})
         assert provider.reloaded_roles == [WorkerRole.EMBED, WorkerRole.RERANK]
-        assert provider.dropped == 0
+        assert provider.replanned == 0
     finally:
         _restore_services()
 
 
 def test_embedding_model_change_derives_embedding_dim(monkeypatch):
-    """Switching embedding_model also persists the model's output width (from its
-    GGUF header), so a fresh index is built at the right dimension instead of the
-    768 default -- the gap that broke a Qwen3-Embedding (4096) corpus build."""
+    """Switching embedding_model re-derives the model's output width from its GGUF header."""
     from lilbee.app import settings as settings_mod
 
     _install_recording_provider()
     try:
-        monkeypatch.setattr(settings_mod, "_embedder_dim_from_gguf", lambda _ref: 4096)
+        monkeypatch.setattr(
+            settings_mod, "_embedder_dim_from_gguf", lambda _ref, _registry=None: 4096
+        )
         apply_settings_update({"embedding_model": "Qwen/Qwen3-Embedding-8B-GGUF/x.gguf"})
         assert cfg.embedding_dim == 4096
     finally:
@@ -177,7 +171,9 @@ def test_embedding_model_change_leaves_dim_when_unreadable(monkeypatch):
     _install_recording_provider()
     cfg.embedding_dim = 768
     try:
-        monkeypatch.setattr(settings_mod, "_embedder_dim_from_gguf", lambda _ref: None)
+        monkeypatch.setattr(
+            settings_mod, "_embedder_dim_from_gguf", lambda _ref, _registry=None: None
+        )
         apply_settings_update({"embedding_model": "some/unreadable.gguf"})
         assert cfg.embedding_dim == 768
     finally:
@@ -315,7 +311,7 @@ def test_chat_and_vision_model_change_reloads_those_roles(monkeypatch):
         apply_settings_update({"chat_model": "Qwen/Qwen3-0.6B-GGUF"})
         apply_settings_update({"vision_model": "lightonai/LightOnOCR-2.1B-GGUF"})
         assert provider.reloaded_roles == [WorkerRole.CHAT, WorkerRole.VISION]
-        assert provider.dropped == 0
+        assert provider.replanned == 0
     finally:
         _restore_services()
 
@@ -329,7 +325,7 @@ def test_ocr_change_reloads_the_vision_role():
         apply_settings_update({"ocr": "off"})
         apply_settings_update({"ocr": "auto"})
         assert provider.reloaded_roles == [WorkerRole.VISION, WorkerRole.VISION]
-        assert provider.dropped == 0
+        assert provider.replanned == 0
     finally:
         _restore_services()
 
@@ -346,7 +342,21 @@ def test_sampling_param_change_does_not_touch_fleet():
         apply_settings_update({"max_tokens": 1024})
         apply_settings_update({"rag_system_prompt": "You are helpful"})
         assert provider.reloaded_roles == []
-        assert provider.dropped == 0
+        assert provider.replanned == 0
+    finally:
+        _restore_services()
+
+
+def test_reset_of_an_unset_load_key_does_not_drop_the_fleet():
+    """num_ctx has no saved override and already sits at its built-in default,
+    so resetting it changes nothing and must not force a fleet reload."""
+    from lilbee.app.settings import reset_settings
+
+    provider = _install_recording_provider()
+    try:
+        reset_settings(["num_ctx"])
+        assert provider.reloaded_roles == []
+        assert provider.replanned == 0
     finally:
         _restore_services()
 
@@ -358,34 +368,20 @@ def test_unknown_key_does_not_touch_fleet():
         apply_settings_update({"theme": "dracula"})
         apply_settings_update({"wiki": True})
         assert provider.reloaded_roles == []
-        assert provider.dropped == 0
+        assert provider.replanned == 0
     finally:
         _restore_services()
 
 
-def test_protocol_default_is_safe_for_remote_provider():
-    """A backend that subclasses LLMProvider but doesn't override
-    invalidate_load_cache gets the Protocol's no-op default body."""
-
-    class _BackendWithNoOverride(LLMProvider):  # type: ignore[misc]
-        """Concrete subclass without an explicit invalidate_load_cache override."""
-
-    backend = _BackendWithNoOverride()
-    assert backend.invalidate_load_cache() is None
-    assert backend.invalidate_load_cache(Path("/tmp/whatever.gguf")) is None
-
-
 def test_protocol_defaults_for_drop_and_role_ready():
     """A backend without managed servers gets the Protocol's safe defaults:
-    drop_loaded_models_async delegates to the no-op invalidate, and every role
-    reports ready (the SDK side is always reachable)."""
+    every role reports ready (the SDK side is always reachable)."""
     from lilbee.providers.roles import WorkerRole
 
     class _BackendWithNoOverride(LLMProvider):  # type: ignore[misc]
         """Concrete subclass relying entirely on Protocol defaults."""
 
     backend = _BackendWithNoOverride()
-    assert backend.drop_loaded_models_async() is None
     assert backend.role_ready(WorkerRole.CHAT) is True
     assert backend.role_ready(WorkerRole.EMBED) is True
 
@@ -421,12 +417,12 @@ async def test_app_set_setting_evicts_via_boundary(_patch_chat_setup):
 
             app.set_setting("num_ctx", 16384)
             await pilot.pause()
-            assert provider.dropped == 1
+            assert provider.replanned == 1
 
             # Sampling param does not touch the fleet.
             app.set_setting("temperature", 0.5)
             await pilot.pause()
-            assert provider.dropped == 1
+            assert provider.replanned == 1
     finally:
         _restore_services()
 

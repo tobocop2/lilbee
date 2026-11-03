@@ -6,7 +6,9 @@ import asyncio
 import functools
 import weakref
 from contextlib import asynccontextmanager, contextmanager
+from unittest.mock import patch
 
+from lilbee.app.settings import SettingsUpdateResult
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -15,6 +17,14 @@ class LilbeeAppHost(LilbeeApp):
     """LilbeeApp subclass that skips the heavyweight on_mount work for tests."""
 
     _test_skip_auto_init = True
+
+
+def patch_model_write():
+    """Stand in for the model write of a picker pick: it succeeds and needs no rebuild."""
+    return patch(
+        "lilbee.cli.tui.widgets.model_pick.apply_active_model",
+        return_value=SettingsUpdateResult(updated=[], reindex_required=False),
+    )
 
 
 # Chat screens whose show handler has returned. The handler moves focus to the chat
@@ -33,7 +43,9 @@ def _record_show(on_show):
 
 ChatScreen.on_show = _record_show(ChatScreen.on_show)  # type: ignore[method-assign]
 
-_GATE_HANDOVER_TIMEOUT_S = 20.0
+# Under pytest's 60 s per-test timeout. A macOS runner at a third of its usual
+# speed (run 41360452220) took Textual's own 30 s pause limit to the edge.
+_GATE_HANDOVER_TIMEOUT_S = 45.0
 _GATE_POLL_S = 0.02
 _PUMP_TIMEOUT_S = 5.0
 

@@ -153,6 +153,10 @@ class ModelManager:
         """True when the manifest registry holds *model*."""
         return self._registry.is_installed(model)
 
+    def is_registered(self, model: str) -> bool:
+        """True when a manifest records *model*, so the model list shows it."""
+        return self._registry.has_manifest(model)
+
     def _is_remote(self, model: str) -> bool:
         return model in self.list_installed(ModelSource.REMOTE)
 

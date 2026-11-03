@@ -3181,8 +3181,10 @@ class TestRegisterDownloadedModel:
         (cache / "refs" / "main").write_text(rev)
         return snap / "test.gguf"
 
-    def test_manifest_write_failure_recovers_via_cache(self, tmp_path: Path) -> None:
-        """A manifest-write hiccup is logged, not raised: the bytes are in the HF cache."""
+    def test_manifest_write_failure_fails_the_pull_with_a_plain_message(
+        self, tmp_path: Path
+    ) -> None:
+        """A manifest that cannot be written fails the pull: the model list reads manifests."""
         from lilbee.core.config import cfg
         from lilbee.modelhub.registry import ModelRegistry, register_downloaded_model
 
@@ -3190,33 +3192,15 @@ class TestRegisterDownloadedModel:
         old_models_dir = cfg.models_dir
         cfg.models_dir = tmp_path
         try:
-            with patch(
-                "lilbee.modelhub.registry.ModelRegistry._write_manifest",
-                side_effect=OSError("disk full"),
-            ):
-                register_downloaded_model(self._entry(), file_path)  # must not raise
-            assert ModelRegistry(tmp_path).is_installed("user/test/test.gguf")
-        finally:
-            cfg.models_dir = old_models_dir
-
-    def test_broken_download_re_raises(self, tmp_path: Path) -> None:
-        """If the GGUF isn't even in the cache the download is broken; the failure propagates."""
-        from lilbee.core.config import cfg
-        from lilbee.modelhub.registry import register_downloaded_model
-
-        file_path = tmp_path / "test.gguf"
-        file_path.write_bytes(b"fake")  # not in the HF cache layout
-        old_models_dir = cfg.models_dir
-        cfg.models_dir = tmp_path
-        try:
             with (
                 patch(
-                    "lilbee.modelhub.registry.ModelRegistry.install",
-                    side_effect=RuntimeError("disk full"),
+                    "lilbee.modelhub.registry.ModelRegistry._write_manifest",
+                    side_effect=PermissionError("read-only folder"),
                 ),
-                pytest.raises(RuntimeError, match="disk full"),
+                pytest.raises(RuntimeError, match=r"cannot save its record.*pull again"),
             ):
                 register_downloaded_model(self._entry(), file_path)
+            assert not ModelRegistry(tmp_path).has_manifest("user/test/test.gguf")
         finally:
             cfg.models_dir = old_models_dir
 

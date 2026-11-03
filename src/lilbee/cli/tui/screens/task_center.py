@@ -115,6 +115,8 @@ class TaskCenter(Screen[None]):
         # on_mount would fire into a detached DOM after navigating away.
         # The queue calls this under the controller lock, so it must not call the controller.
         self.app.task_bar.queue.subscribe(self._on_queue_change)
+        # A worker's exit is not a queue change; the row leaves "cancelling" on this call.
+        self.app.task_bar.subscribe_work_end(self._refresh_rows)
         if self._tick_timer is None:
             self._tick_timer = self.set_interval(_TICK_INTERVAL_SECONDS, self._advance_tick)
         self._refresh_rows()
@@ -122,6 +124,8 @@ class TaskCenter(Screen[None]):
     def on_hide(self) -> None:
         with contextlib.suppress(Exception):
             self.app.task_bar.queue.unsubscribe(self._on_queue_change)
+        with contextlib.suppress(Exception):
+            self.app.task_bar.unsubscribe_work_end(self._refresh_rows)
         if self._tick_timer is not None:
             self._tick_timer.stop()
             self._tick_timer = None
@@ -162,9 +166,10 @@ class TaskCenter(Screen[None]):
     def action_clear_history(self) -> None:
         """Drop all DONE/FAILED/CANCELLED rows (bound to capital ``C``).
 
+        A cancelling task is not history yet: its worker still runs, so its row stays.
         ``clear_history`` itself emits a notification so the subscription
         triggers the row reconcile; no manual refresh needed here."""
-        self.app.task_bar.queue.clear_history()
+        self.app.task_bar.queue.clear_history(keep=self._cancelling_ids())
 
     def action_cancel_task(self) -> None:
         """Cancel the task whose row currently has focus.
@@ -201,6 +206,10 @@ class TaskCenter(Screen[None]):
         queue = self.app.task_bar.queue
         return queue.active_tasks + queue.queued_tasks + list(reversed(queue.history))
 
+    def _cancelling_ids(self) -> set[str]:
+        """Ids of cancelled tasks whose worker still runs, from the record has_live_work reads."""
+        return {t.task_id for t in self.app.task_bar.cancelling_tasks()}
+
     def _advance_tick(self) -> None:
         """Bump the spinner frame and re-render counts + active row pulse."""
         # The on_hide path stops this timer, but Textual sometimes drains
@@ -216,16 +225,18 @@ class TaskCenter(Screen[None]):
             return
         self._tick += 1
         tasks = self._all_tasks()
+        cancelling = self._cancelling_ids()
         for task in tasks:
             row = self._rows.get(task.task_id)
             if row is not None:
-                row.update(task, self._tick)
+                row.update(task, self._tick, cancelling=task.task_id in cancelling)
         self._update_counts(tasks)
 
     def _refresh_rows(self) -> None:
         """Reconcile rows against the queue: add new, update existing, remove stale."""
         container = self.query_one("#task-rows", VerticalScroll)
         tasks = self._all_tasks()
+        cancelling = self._cancelling_ids()
         seen: set[str] = set()
         for task in tasks:
             seen.add(task.task_id)
@@ -234,7 +245,7 @@ class TaskCenter(Screen[None]):
                 row = TaskRow(task_id=task.task_id)
                 self._rows[task.task_id] = row
                 container.mount(row)
-            row.update(task, self._tick)
+            row.update(task, self._tick, cancelling=task.task_id in cancelling)
         for tid in list(self._rows):
             if tid not in seen:
                 row = self._rows.pop(tid)
@@ -267,6 +278,9 @@ class TaskCenter(Screen[None]):
         queued = counts[TaskStatus.QUEUED]
         done = counts[TaskStatus.DONE]
         body = msg.TASK_CENTER_COUNTS.format(active=active, queued=queued, done=done)
+        cancelling = len(self._cancelling_ids())
+        if cancelling:
+            body += msg.TASK_CENTER_COUNTS_CANCELLING.format(cancelling=cancelling)
         if active > 0:
             spinner = _COUNTS_SPINNER_FRAMES[self._tick % len(_COUNTS_SPINNER_FRAMES)]
             counts_label.update(f"{spinner}  {body}")

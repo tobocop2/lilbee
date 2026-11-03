@@ -57,3 +57,19 @@ def test_a_process_whose_command_line_is_gone_is_not_a_launch(
     browser = _Child(1, [str(SHELL), "--headless"])
     exiting_helper = _Child(2, [])
     assert _scan(monkeypatch, [browser, exiting_helper]) == [[str(SHELL), "--headless"]]
+
+
+def test_a_process_that_blanked_its_arguments_is_not_a_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CI run read ['', '', ...] from a helper; it is not a launch."""
+    browser = _Child(1, [str(SHELL), "--headless"])
+    blanked = _Child(2, ["", "", "", ""])
+    assert _scan(monkeypatch, [browser, blanked]) == [[str(SHELL), "--headless"]]
+
+
+def test_a_second_real_launch_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = _Child(1, [str(SHELL), "--headless"])
+    second = _Child(2, [str(SHELL), "--headless", "--lang=fr"])
+    blanked = _Child(3, ["", ""])
+    assert len(_scan(monkeypatch, [first, second, blanked])) == 2

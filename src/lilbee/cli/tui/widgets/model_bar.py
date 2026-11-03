@@ -476,9 +476,9 @@ class ChatModeToggle(Widget, can_focus=False):
             self.app.notify(msg.SEARCH_NEEDS_EMBEDDER)
             _open_catalog_for_key(self, "embedding_model")
             return False
-        apply_setting(self.app, "chat_mode", target)
+        saved = apply_setting(self.app, "chat_mode", target)
         self._refresh()
-        return True
+        return saved
 
     def toggle(self) -> bool:
         """Flip mode if embedding is ready. Returns True when the mode changed."""

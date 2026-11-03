@@ -290,6 +290,21 @@ class TestSyncTokenizerBackend:
         ):
             bind_backend(BackendKind.TOKENIZER, provider)
 
+    def test_bind_survives_a_provider_that_stops_after_the_probe(self):
+        """A count failing after the probe cannot reach xberg's probe, which masks it as zero."""
+        import xberg
+
+        from lilbee.data.extract.backends import BackendKind, bind_backend
+        from lilbee.data.types import TokenizerBackendName
+        from lilbee.providers.base import ProviderError
+
+        provider = MagicMock()
+        provider.count_tokens.side_effect = [1, ProviderError("The embedding server stopped")]
+        with _isolated_tokenizer_binding():
+            bind_backend(BackendKind.TOKENIZER, provider)
+            assert TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends()
+        provider.count_tokens.assert_called_once()
+
     def test_bind_registers_an_sdk_backend_on_its_estimate(self, monkeypatch):
         """SDK embedders have no local tokenizer; the estimate still passes the
         real xberg probe, so registration succeeds."""

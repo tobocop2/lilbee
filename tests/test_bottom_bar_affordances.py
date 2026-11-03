@@ -89,6 +89,27 @@ def _rendered_tab_text(tabs: ViewTabs) -> str:
     return " ".join(parts)
 
 
+async def test_a_long_project_label_ends_in_an_ellipsis_instead_of_the_screen_edge(
+    _patch_chat_setup,
+) -> None:
+    from textual.widgets import Static
+
+    label = "/home/detox27_gmail_com/projects/x"
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await await_chat(app, pilot)
+        tabs = app.screen.query_one(ViewTabs)
+        tabs.mode_text = "NORMAL"
+        with mock.patch("lilbee.app.status.lilbee_label", return_value=label):
+            tabs._update_trailing()
+        await pilot.pause()
+        trailing = tabs.query_one("#view-tabs-trailing", Static)
+        assert trailing.region.right <= tabs.region.right
+        assert trailing.region.width < len(label), "the label fits, so the test shows nothing"
+        row = "".join(strip.text for strip in trailing.render_lines(trailing.size.region)).rstrip()
+        assert row.endswith("…"), row
+
+
 async def test_view_tabs_hides_model_pill_on_chat(_patch_chat_setup) -> None:
     """ModelBar already shows the active chat model on chat, so the ViewTabs
     pill would just duplicate it; it must hide there."""

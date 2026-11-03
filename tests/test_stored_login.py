@@ -33,14 +33,17 @@ def stored(monkeypatch):
 
 @pytest.fixture
 def persisted(monkeypatch):
-    """Settings writes go to a list instead of config.toml."""
+    """Settings writes reach the isolated config.toml, and each batch is also recorded."""
     from lilbee.app import settings as appset
 
     writes: list[dict] = []
-    monkeypatch.setattr(
-        appset.persistent_settings, "update_values", lambda _root, v: writes.append(v)
-    )
-    monkeypatch.setattr(appset.persistent_settings, "delete_values", lambda *_a: None)
+    write_to_file = appset.persistent_settings.update_values
+
+    def record_and_write(root, values):
+        writes.append(values)
+        write_to_file(root, values)
+
+    monkeypatch.setattr(appset.persistent_settings, "update_values", record_and_write)
     return writes
 
 

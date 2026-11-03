@@ -178,17 +178,30 @@ _chars = st.one_of(
     st.characters(codec="utf-8", exclude_characters=_ESCAPED_ONLY),
 )
 _tokens = st.builds(_token, _chars, st.booleans())
-_segment = st.one_of(
-    st.just([]),
-    st.lists(_tokens, min_size=1, max_size=5),
-    st.lists(_tokens, min_size=1, max_size=40),
-    st.sampled_from(_DEVICE_SEGMENTS).map(lambda name: [_token(char, False) for char in name]),
-).filter(lambda tokens: "".join(token.char for token in tokens) not in _DOT_SEGMENTS)
-_last = st.one_of(
-    st.just(tuple(_token(char, False) for char in _LAST_SEGMENT)),
-    st.just(()),
-    _segment.map(tuple),
+_shown_tokens = st.builds(
+    _token,
+    _chars.filter(lambda char: char.isprintable() and char not in _ESCAPED_ONLY),
+    st.just(False),
 )
+
+
+def _segment_of(tokens: st.SearchStrategy[_Token]) -> st.SearchStrategy[list[_Token]]:
+    """A path segment written from *tokens*, or one of the device names."""
+    return st.one_of(
+        st.just([]),
+        st.lists(tokens, min_size=1, max_size=5),
+        st.lists(tokens, min_size=1, max_size=40),
+        st.sampled_from(_DEVICE_SEGMENTS).map(lambda name: [_token(char, False) for char in name]),
+    ).filter(lambda tokens: "".join(token.char for token in tokens) not in _DOT_SEGMENTS)
+
+
+def _last_of(tokens: st.SearchStrategy[_Token]) -> st.SearchStrategy[tuple[_Token, ...]]:
+    """The last path segment: the default name, none, or a segment written from *tokens*."""
+    return st.one_of(
+        st.just(tuple(_token(char, False) for char in _LAST_SEGMENT)),
+        st.just(()),
+        _segment_of(tokens).map(tuple),
+    )
 
 
 @dataclass(frozen=True)
@@ -211,16 +224,25 @@ class _Address:
         )
 
 
-_addresses = st.builds(
-    _Address,
-    st.sampled_from(sorted(_HOSTS)),
-    st.lists(_segment.map(tuple), min_size=1, max_size=3).map(tuple),
-    _last,
-    st.one_of(
-        st.none(),
-        st.lists(st.builds(_query_token, _chars, st.booleans()), min_size=1, max_size=8).map(tuple),
-    ),
-)
+def _addresses_of(tokens: st.SearchStrategy[_Token]) -> st.SearchStrategy[_Address]:
+    """Addresses whose path is written from *tokens*; the query takes any character."""
+    return st.builds(
+        _Address,
+        st.sampled_from(sorted(_HOSTS)),
+        st.lists(_segment_of(tokens).map(tuple), min_size=1, max_size=3).map(tuple),
+        _last_of(tokens),
+        st.one_of(
+            st.none(),
+            st.lists(st.builds(_query_token, _chars, st.booleans()), min_size=1, max_size=8).map(
+                tuple
+            ),
+        ),
+    )
+
+
+_addresses = _addresses_of(_tokens)
+# Addresses whose path holds no kept escape and no character that fails to print.
+_shown_addresses = _addresses_of(_shown_tokens)
 
 
 def _near(token: _Token) -> list[list[_Token]]:
@@ -352,12 +374,10 @@ class TestSavedNames:
         assert len(saved.encode("utf-8")) <= _MAX_PATH_BYTES, url
 
     @_PROPERTY_SETTINGS
-    @given(address=_addresses, data=st.data())
+    @given(address=_shown_addresses, data=st.data())
     def test_a_label_shows_no_escape_the_address_did_not_hold(
         self, address: _Address, data: st.DataObject
     ):
-        tokens = [t for part in (*address.segments, address.last) for t in part]
-        assume(all(not t.kept_escape and t.char.isprintable() for t in tokens))
         url = _url(address, data)
         label = source_label(f"_web/{url_to_filename(url)}")
         assert not _ESCAPE.search(label), (url, label)

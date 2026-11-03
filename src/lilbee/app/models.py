@@ -202,7 +202,9 @@ def adopt_embedder(ref: str) -> AdoptResult:
 
     Makes a downloaded index searchable under its own embedder without a
     rebuild: the persisted vectors already match *ref*, so the switch routes
-    through the settings boundary and ``reindex_required`` stays false.
+    through the settings boundary, which normally reports ``reindex_required``
+    false. The result carries the boundary's verdict as is: true when the index
+    still does not match *ref*, and the CLI then shows the rebuild hint.
     """
     from lilbee.app.settings import apply_settings_update
     from lilbee.catalog.types import ModelSource
@@ -383,7 +385,11 @@ def pull_model_data(
 
     manager = get_services().model_manager
 
-    if manager.is_installed(ref, source):
+    # A GGUF found only in the HF cache is not listed until a manifest records it.
+    # Pulling again registers it, or fails with the reason it cannot.
+    if manager.is_installed(ref, source) and (
+        source is not ModelSource.NATIVE or manager.is_registered(ref)
+    ):
         # A cached vision install may carry the main GGUF but not its mmproj
         # projector; without it llama-server can't serve OCR, so ensure it before
         # reporting already-installed.

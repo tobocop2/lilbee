@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from lilbee.providers.base import ChosenSeed
+
 EXPANSION_PROMPT = (
     "Generate {count} alternative search queries for the following question. "
     "Return ONLY the queries, one per line, no numbering or explanation.\n\n"
@@ -14,6 +16,10 @@ EXPANSION_MAX_TOKENS = 200
 # shape of output from a list of query variants. Same number today, but tuning
 # either one must not move the other.
 HYDE_MAX_TOKENS = 200
+
+# The seed of the LLM steps of a search when the user sets none. An unseeded step
+# samples new variants on every call, so the same query returns different rows.
+SEARCH_SEED = ChosenSeed(42)
 
 CONDENSE_PROMPT = (
     "Rewrite the follow-up question as one standalone search query, resolving "

@@ -958,6 +958,21 @@ class TestIndexMismatch:
 
         assert store.index_mismatch() is None
 
+    def test_a_picked_model_is_judged_against_the_index_without_changing_cfg(
+        self, store, test_config
+    ):
+        store.add_chunks(_make_records())
+        built_with = test_config.embedding_model
+        dim = test_config.embedding_dim
+        test_config.embedding_model = "acme/other-GGUF/other.gguf"
+
+        assert store.index_mismatch(model=built_with, dim=dim) is None
+        picked = store.index_mismatch(model="acme/third-GGUF/third.gguf", dim=dim)
+        assert picked is not None
+        assert picked.current_model == "acme/third-GGUF/third.gguf"
+        assert store.index_mismatch(model=built_with, dim=dim // 2) is not None
+        assert test_config.embedding_model == "acme/other-GGUF/other.gguf"
+
     def test_an_index_built_with_another_model_is_a_health_warning(self, store, test_config):
         """Search refuses such an index with a 409, but a client that has not
         searched yet sees a green health; the warning carries both refs."""
@@ -5552,7 +5567,7 @@ class TestWikiRefreshed:
         store.record_wiki_refreshed(old)
         before = sorted(path.name for path in beside_the_tables.iterdir())
         assert ".wiki_refreshed" in before
-        monkeypatch.setattr(os, "replace", mock.Mock(side_effect=OSError("the disk is full")))
+        monkeypatch.setattr(os, "replace", mock.Mock(side_effect=OSError(28, "the disk is full")))
 
         with pytest.raises(OSError, match="the disk is full"):
             store.record_wiki_refreshed(SourcesCheckpoint("2026-02-02T00:00:00+00:00", 9))

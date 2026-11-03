@@ -887,6 +887,25 @@ class TestThemes:
             assert app.theme == target
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_set_setting_refuses_text_the_setting_cannot_read(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await await_chat(app, pilot)
+            await pilot.pause()
+            with (
+                mock.patch("lilbee.app.settings.persistent_settings.update_values") as mock_update,
+                pytest.raises(ValueError, match="flash_attention = 'maybe'"),
+            ):
+                app.set_setting("flash_attention", "maybe")
+            mock_update.assert_not_called()
+            assert cfg.flash_attention is None
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_set_setting_deletes_key_for_none(self, mock_catalog: mock.MagicMock) -> None:
         """Nullable settings cleared to None drop the TOML key.
 
@@ -911,10 +930,10 @@ class TestThemes:
             assert mock_delete.call_args.args[1] == ["seed"]
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_set_setting_refused_gpu_devices_stores_automatic(
+    async def test_set_setting_refused_gpu_devices_keeps_the_pin(
         self, mock_catalog: mock.MagicMock
     ) -> None:
-        """The losing field: the valid pin set first is gone; another setting still raises."""
+        """The losing field: the valid pin set first stays; every refused value raises."""
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -924,8 +943,9 @@ class TestThemes:
             await pilot.pause()
             app.set_setting("gpu_devices", "0,1")
             assert cfg.gpu_devices == "0,1"
-            app.set_setting("gpu_devices", "cpu")
-            assert cfg.gpu_devices is None
+            with pytest.raises(ValueError, match="gpu_devices = 'cpu'"):
+                app.set_setting("gpu_devices", "cpu")
+            assert cfg.gpu_devices == "0,1"
             with pytest.raises(ValueError, match="top_k"):
                 app.set_setting("top_k", "many")
 
@@ -1236,6 +1256,7 @@ class TestMinimalFooter:
         assert not any("section" in d.lower() for d in visible)
 
     def test_settings_bindings_minimal(self) -> None:
+        from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
         visible = self._visible_bindings(SettingsScreen.BINDINGS)
@@ -1247,7 +1268,9 @@ class TestMinimalFooter:
         # Field tabbing and reset-all are F1-only, and "Reset field" / "Reset
         # all" must not share one label: they are different actions, and one
         # label covering both is what made the old row unreadable.
-        assert not any("field" in d.lower() for d in visible)
+        assert not any(d in ("Next field", "Prev field", "Reset field") for d in visible)
+        # The one field word in the footer is the way out of a text field.
+        assert msg.SETTINGS_LEAVE_FIELD in visible
         assert not any(d == "Reset all" for d in visible)
         # < and > are the one surviving pair: one action, two directions.
         assert any(
@@ -1366,7 +1389,7 @@ class TestSyncHint:
 
         with (
             mock.patch("lilbee.data.ingest.detect_pending", return_value=3) as detect,
-            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as run_sync,
+            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen.run_sync") as run_sync,
         ):
             app = LilbeeApp()
             async with app.run_test() as pilot:
@@ -1427,12 +1450,12 @@ class TestSyncHint:
 
     @pytest.mark.asyncio
     async def test_shift_s_triggers_sync_and_clears_hint(self) -> None:
-        """Pressing S from any screen routes to ChatScreen._run_sync and clears the hint."""
+        """Pressing S from any screen routes to ChatScreen.run_sync and clears the hint."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with (
             mock.patch("lilbee.data.ingest.detect_pending", return_value=2),
-            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as run_sync,
+            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen.run_sync") as run_sync,
         ):
             app = LilbeeApp()
             async with app.run_test() as pilot:
@@ -1460,7 +1483,7 @@ class TestSyncHint:
 
         with (
             mock.patch("lilbee.data.ingest.detect_pending", return_value=0),
-            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as run_sync,
+            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen.run_sync") as run_sync,
         ):
             app = LilbeeApp(initial_view="Catalog")
             async with app.run_test() as pilot:
@@ -1539,7 +1562,7 @@ class TestSyncHint:
 
                 app.task_bar.start_detect_pending = _track  # type: ignore[method-assign]
 
-                app.screen._run_sync()
+                app.screen.run_sync()
                 gate.wait(timeout=5)
                 for _ in range(50):
                     queue = app.task_bar.queue
@@ -1668,7 +1691,7 @@ class TestRunSyncRetry:
             assert len(timers) == 2 and switches == ["Chat", "Chat"]
             timers[1]()  # attempts=0: gives up without scheduling
             assert len(timers) == 2
-        chat._run_sync.assert_not_called()
+        chat.run_sync.assert_not_called()
 
     def test_run_sync_retry_stops_when_the_app_is_tearing_down(self) -> None:
         """A pending retry firing after the screens are gone must do nothing."""
@@ -1689,7 +1712,7 @@ class TestRunSyncRetry:
             laters[0]()  # fires with an empty stack: returns immediately
         switch.assert_not_called()
         timer.assert_not_called()
-        chat._run_sync.assert_not_called()
+        chat.run_sync.assert_not_called()
 
 
 def _is_one_action_two_ways(first: str, second: str) -> bool:

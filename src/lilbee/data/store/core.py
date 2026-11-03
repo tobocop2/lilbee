@@ -121,7 +121,7 @@ if TYPE_CHECKING:
     from lancedb.db import LanceDBConnection
     from lancedb.expr import Expr
     from lancedb.index import FTS, IndexConfig
-    from lancedb.query import LanceFtsQueryBuilder
+    from lancedb.query import LanceFtsQueryBuilder, LanceQueryBuilder
     from lancedb.table import LanceTable
 
 log = logging.getLogger(__name__)
@@ -172,6 +172,79 @@ def _is_fts_position_overflow(exc: Exception) -> bool:
     return "offset" in msg and "exceeds" in msg
 
 
+def _stable_top(
+    table: LanceTable,
+    query: LanceQueryBuilder,
+    limit: int,
+    score: str,
+    *,
+    ascending: bool = False,
+) -> list[dict[str, Any]]:
+    """The best *limit* rows of *query*, one set in one order on every call.
+
+    LanceDB returns equal scores in an arbitrary order that changes between calls,
+    and its limit cuts them at an arbitrary row. Rank fusion turns that order into
+    different scores and so into different results. A tie that crosses the cut is
+    widened until it ends, and ties then rank by source and chunk.
+
+    The vector and text columns cost a wide fetch 50 times its time. Widening so
+    reads only the score and the ranking key, and whole rows only for the winners.
+
+    A tie past ``_TIE_FETCH_CEILING`` rows keeps the stable order, but the rows
+    inside the tie are the ones LanceDB returned.
+    """
+
+    def tie_crosses_cut(found: list[dict[str, Any]], width: int) -> bool:
+        return (
+            len(found) == width
+            and width < _TIE_FETCH_CEILING
+            and found[limit - 1][score] == found[-1][score]
+        )
+
+    def best(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        sign = 1 if ascending else -1
+        ranked = sorted(found, key=lambda r: (sign * r[score], r[_SOURCE_ID], r[_CHUNK_INDEX]))
+        return ranked[:limit]
+
+    width = limit + 1
+    rows = query.limit(width).to_list()
+    if not tie_crosses_cut(rows, width):
+        return best(rows)
+    query = query.select([_SOURCE_ID, _CHUNK_INDEX, score])
+    while tie_crosses_cut(rows, width):
+        width = min(width * _TIE_WIDEN_FACTOR, _TIE_FETCH_CEILING)
+        rows = query.limit(width).to_list()
+    return _whole_rows(table, best(rows), score)
+
+
+def _whole_rows(table: LanceTable, keys: list[dict[str, Any]], score: str) -> list[dict[str, Any]]:
+    """The whole row of each of *keys*, in that order, with its *score*.
+
+    The read is by source and chunk rather than by row id: a row id changes when a
+    compaction lands between the fetch of the keys and this read. A row deleted in
+    that time drops out.
+    """
+    if not keys:
+        return []
+    indexes: dict[str, list[int]] = {}
+    for key in keys:
+        indexes.setdefault(key[_SOURCE_ID], []).append(key[_CHUNK_INDEX])
+    where = " OR ".join(
+        f"({_SOURCE_ID} = '{escape_sql_string(source)}'"
+        f" AND {_CHUNK_INDEX} IN ({', '.join(map(str, chunks))}))"
+        for source, chunks in indexes.items()
+    )
+    found = {
+        (row[_SOURCE_ID], row[_CHUNK_INDEX]): row
+        for row in table.search().where(where).limit(None).to_list()
+    }
+    return [
+        {**found[place], score: key[score]}
+        for key in keys
+        if (place := (key[_SOURCE_ID], key[_CHUNK_INDEX])) in found
+    ]
+
+
 def _lexical_rows(
     table: LanceTable,
     query_text: str,
@@ -193,10 +266,10 @@ def _lexical_rows(
     query: LanceFtsQueryBuilder = table.search(  # type: ignore[call-overload]
         MatchQuery(query_text, column),  # type: ignore[call-arg]
         query_type="fts",
-    ).limit(limit)
+    )
     if chunk_type:
         query = query.where(_chunk_type_predicate(chunk_type))
-    return cast("list[dict[str, Any]]", query.to_list())
+    return _stable_top(table, query, limit, _SCORE_COLUMN)
 
 
 # Vector ANN index. IVF_PQ compresses vectors so search scales to millions;
@@ -230,6 +303,10 @@ _TITLE_COLUMN = "title"
 
 # The column that names a source in every table; ``_sources`` alone maps it to a path.
 _SOURCE_ID = "source_id"
+_CHUNK_INDEX = "chunk_index"
+# The columns LanceDB adds to a keyword row and to a vector row.
+_SCORE_COLUMN = "_score"
+_DISTANCE_COLUMN = "_distance"
 # The name of each thread an upgrade adds a table's id column on.
 _UPGRADE_THREAD_PREFIX = "library-upgrade"
 # The ``_sources`` column that holds a source's path.
@@ -387,6 +464,13 @@ _TERM_SCAN_BATCH_ROWS = 20_000
 _TITLE_FETCH_FACTOR = 20
 _TITLE_MIN_FETCH = 200
 _TITLE_FETCH_CEILING = 4096
+
+# Bounds the fetch that settles a tie across a search limit, so a term in every
+# chunk of a huge corpus cannot make one query read all of them.
+_TIE_FETCH_CEILING = 4096
+# A widening reads keys only and costs 11 to 22 ms at any width up to the ceiling, so
+# few wide steps beat many narrow ones: a full tie takes three steps instead of nine.
+_TIE_WIDEN_FACTOR = 8
 
 
 def _ann_nprobes(row_count: int) -> int:
@@ -1115,7 +1199,7 @@ class Store:
                 pa.field("line_start", pa.int32()),
                 pa.field("line_end", pa.int32()),
                 pa.field("chunk", pa.utf8()),
-                pa.field("chunk_index", pa.int32()),
+                pa.field(_CHUNK_INDEX, pa.int32()),
                 pa.field(_TITLE_COLUMN, pa.utf8()),
                 pa.field("vector", pa.list_(pa.float32(), self._config.embedding_dim)),
             ]
@@ -1203,6 +1287,14 @@ class Store:
         # re-decides instead of logging a mismatch this write just resolved.
         self._doc_prefix_warned = False
 
+    def restamp_meta(self) -> None:
+        """Record the current embedding identity and schema version after a full rebuild."""
+        with self._write_lock():
+            self._write_meta_unlocked(
+                embedding_model=self._config.embedding_model,
+                embedding_dim=self._config.embedding_dim,
+            )
+
     def _has_chunks(self) -> bool:
         """Return True when the chunks table exists and has at least one row."""
         chunks = self.open_table(CHUNKS_TABLE)
@@ -1242,8 +1334,13 @@ class Store:
             self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
             return True
 
-    def index_mismatch(self) -> EmbeddingModelMismatchError | None:
+    def index_mismatch(
+        self, model: str | None = None, dim: int | None = None
+    ) -> EmbeddingModelMismatchError | None:
         """The drift between the persisted embedding identity and cfg, or None.
+
+        *model* and *dim* judge a candidate embedder (a picked ref) in place of
+        cfg's; each defaults to cfg's value.
 
         Pure check, no side effects, and the one verdict search, ingest, the
         embedding setter, sync and health all read. Migration of legacy stores
@@ -1255,8 +1352,8 @@ class Store:
         at entry so the comparison is coherent even if another thread mutates
         them mid-call.
         """
-        current_model = self._config.embedding_model
-        current_dim = self._config.embedding_dim
+        current_model = self._config.embedding_model if model is None else model
+        current_dim = self._config.embedding_dim if dim is None else dim
         meta = self.get_meta()
         if meta is None:
             return None
@@ -2168,7 +2265,7 @@ class Store:
         the limit applies *after* the type filter; post-filtering would
         silently starve wiki-only queries whose matches live past the window.
         """
-        query = table.search(query_vector).distance_type(_VECTOR_METRIC).limit(limit)
+        query = table.search(query_vector).distance_type(_VECTOR_METRIC)
         indices = _index_registry(table, self._config.lancedb_dir)
         if indices is None or _has_vector_index(indices):
             # IVF_PQ is lossy; probe more partitions and refine against full
@@ -2178,7 +2275,7 @@ class Store:
             query = query.refine_factor(_ANN_REFINE_FACTOR)
         if chunk_type:
             query = query.where(_chunk_type_predicate(chunk_type))
-        return _id_chunks(query.to_list())
+        return _id_chunks(_stable_top(table, query, limit, _DISTANCE_COLUMN, ascending=True))
 
     def _with_paths(self, results: list[SearchChunk]) -> list[SearchChunk]:
         """*results* with the path of each source in place of its id, in one lookup."""
@@ -2451,13 +2548,13 @@ class Store:
         if table is None:
             return {}
         per_chunk: dict[tuple[str, int], tuple[set[str], set[str]]] = {}
-        arrow = table.to_arrow().select(["type", "normalized_value", _SOURCE_ID, "chunk_index"])
+        arrow = table.to_arrow().select(["type", "normalized_value", _SOURCE_ID, _CHUNK_INDEX])
         for batch in arrow.to_batches(max_chunksize=_TERM_SCAN_BATCH_ROWS):
             rows = zip(
                 batch.column("type").to_pylist(),
                 batch.column("normalized_value").to_pylist(),
                 batch.column(_SOURCE_ID).to_pylist(),
-                batch.column("chunk_index").to_pylist(),
+                batch.column(_CHUNK_INDEX).to_pylist(),
                 strict=True,
             )
             for t_, v, src, idx in rows:
@@ -3632,7 +3729,7 @@ class Store:
             .limit(1)
             .to_list()
         )
-        if rows and rows[0].get("_distance", 1.0) <= self._config.memory_dedup_distance:
+        if rows and rows[0].get(_DISTANCE_COLUMN, 1.0) <= self._config.memory_dedup_distance:
             return str(rows[0]["id"])
         return None
 
@@ -3719,7 +3816,7 @@ class Store:
             .limit(top_k)
             .to_list()
         )
-        return [MemoryRow(**r) for r in rows if r.get("_distance", 1.0) <= max_distance]
+        return [MemoryRow(**r) for r in rows if r.get(_DISTANCE_COLUMN, 1.0) <= max_distance]
 
     def update_memory(self, memory_id: str, *, shared: bool, owner: str) -> bool:
         """Set the *shared* flag on *owner*'s memory. Returns True when found and owned.
