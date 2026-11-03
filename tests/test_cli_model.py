@@ -552,7 +552,7 @@ class TestPullModelData:
         monkeypatch.setattr(
             model_mod,
             "ensure_vision_projector",
-            lambda ref, *, warn_unreadable: flags.append(warn_unreadable),
+            lambda ref, *, warn_unreadable, cancel=None: flags.append(warn_unreadable),
         )
         model_mod.pull_model_data(_CHAT_REF, ModelSource.NATIVE)
         model_mod.pull_model_data("Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf", ModelSource.NATIVE)
@@ -587,7 +587,7 @@ class TestEnsureVisionProjector:
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: next(missing))
         called: list[object] = []
         monkeypatch.setattr(
-            "lilbee.catalog.download_mmproj", lambda e: called.append(e) or Path("p")
+            "lilbee.catalog.download_mmproj", lambda e, **_: called.append(e) or Path("p")
         )
         assert (
             model_mod.ensure_vision_projector("acme/SmolVLM2-GGUF", warn_unreadable=False) is None
@@ -603,7 +603,7 @@ class TestEnsureVisionProjector:
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: next(missing))
         called: list[object] = []
         monkeypatch.setattr(
-            "lilbee.catalog.download_mmproj", lambda e: called.append(e) or Path("p")
+            "lilbee.catalog.download_mmproj", lambda e, **_: called.append(e) or Path("p")
         )
         assert (
             model_mod.ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF", warn_unreadable=False)
@@ -619,7 +619,7 @@ class TestEnsureVisionProjector:
         monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: False)
         called: list[object] = []
-        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: called.append(e))
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e, **_: called.append(e))
         assert (
             model_mod.ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF", warn_unreadable=False)
             is None
@@ -629,7 +629,7 @@ class TestEnsureVisionProjector:
     def test_unresolvable_ref_is_noop(self, monkeypatch):
         monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: None)
         called: list[object] = []
-        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: called.append(e))
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e, **_: called.append(e))
         assert model_mod.ensure_vision_projector("not a repo", warn_unreadable=False) is None
         assert called == []
 
@@ -643,7 +643,7 @@ class TestEnsureVisionProjector:
         )
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
 
-        def _offline(_entry):
+        def _offline(_entry, **_):
             raise ProjectorListingError("hub down")
 
         monkeypatch.setattr("lilbee.catalog.download_mmproj", _offline)
@@ -662,7 +662,9 @@ class TestEnsureVisionProjector:
             "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
         )
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
-        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: Path("/m/mmproj-x.gguf"))
+        monkeypatch.setattr(
+            "lilbee.catalog.download_mmproj", lambda e, **_: Path("/m/mmproj-x.gguf")
+        )
         with pytest.raises(RuntimeError, match=r"mmproj-x\.gguf.*does not find it"):
             model_mod.ensure_vision_projector("acme/SmolVLM2-GGUF", warn_unreadable=False)
 
@@ -683,7 +685,7 @@ class TestEnsureVisionProjector:
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
 
         def _fetch_into(directory):
-            def _fetch(_entry):
+            def _fetch(_entry, **_):
                 path = directory / "mmproj-m-f16.gguf"
                 path.write_bytes(b"projector")
                 return path
@@ -706,7 +708,7 @@ class TestEnsureVisionProjector:
         )
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
 
-        def _stalled(_entry):
+        def _stalled(_entry, **_):
             raise RuntimeError("download kept stalling")
 
         monkeypatch.setattr("lilbee.catalog.download_mmproj", _stalled)
@@ -720,7 +722,7 @@ class TestEnsureVisionProjector:
             "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.VISION)
         )
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
-        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: None)
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e, **_: None)
         warning = model_mod.ensure_vision_projector("acme/llava-lite-GGUF", warn_unreadable=False)
         assert warning is not None
         assert "acme/llava-lite-GGUF" in warning
@@ -733,7 +735,7 @@ class TestEnsureVisionProjector:
             "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
         )
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
-        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: None)
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e, **_: None)
         assert (
             model_mod.ensure_vision_projector("acme/plain-chat-GGUF", warn_unreadable=False) is None
         )

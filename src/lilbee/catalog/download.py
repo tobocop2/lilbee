@@ -300,9 +300,14 @@ def download_url(
     return _retry_transient(fetch, on_retry, cancel)
 
 
-def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:
-    """Run one file's transfer, retrying the faults another attempt can clear."""
-    return _retry_transient(lambda: _hf_download_or_translate(entry, config))
+def _download_with_retry(
+    entry: CatalogModel, config: DownloadConfig, cancel: CancelSignal | None = None
+) -> Path:
+    """Run one file's transfer, retrying the faults another attempt can clear.
+
+    A set *cancel* ends the wait between attempts with ``TaskCancelledError``.
+    """
+    return _retry_transient(lambda: _hf_download_or_translate(entry, config), cancel=cancel)
 
 
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
@@ -596,14 +601,16 @@ def download_mmproj(
     entry: CatalogModel,
     *,
     on_progress: ProgressCallback | None = None,
+    cancel: CancelSignal | None = None,
 ) -> Path | None:
     """Download the mmproj (CLIP projection) file for a vision model.
     Returns the path to the downloaded file, or None if the repo lists none.
     Raises ``ProjectorListingError`` when the repo listing cannot be read.
+    A set *cancel* ends the wait between attempts with ``TaskCancelledError``.
     The optional ``on_progress`` callback receives ``(downloaded, total)`` byte
     counts and is wired through the same tqdm hook used by the main download.
     """
-    return _fetch_mmproj(entry, _models_dir(), hf_token(), on_progress=on_progress)
+    return _fetch_mmproj(entry, _models_dir(), hf_token(), on_progress=on_progress, cancel=cancel)
 
 
 def _fetch_mmproj(
@@ -613,6 +620,7 @@ def _fetch_mmproj(
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
+    cancel: CancelSignal | None = None,
 ) -> Path | None:
     """Fetch *entry*'s mmproj into *models_dir*, or None when the repo names none."""
     mmproj_filename = _resolve_mmproj_filename(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
@@ -635,6 +643,7 @@ def _fetch_mmproj(
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         ),
+        cancel,
     )
     if on_progress is not None and (not tracker or not tracker.was_used):
         # Cache hit: HF returned the cached path without invoking tqdm.

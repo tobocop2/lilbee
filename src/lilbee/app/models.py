@@ -370,14 +370,16 @@ def _unchecked_projector_warning(ref: str) -> str:
     )
 
 
-def ensure_vision_projector(ref: str, *, warn_unreadable: bool) -> str | None:
+def ensure_vision_projector(
+    ref: str, *, warn_unreadable: bool, cancel: CancelSignal | None = None
+) -> str | None:
     """Fetch the projector a GGUF lacks when its repo lists one; return a warning if unsure.
 
     Runs after a fresh pull and for an installed model. A complete install never
     touches the network. An unreadable listing never fails, so an offline pull
     of a cached model still succeeds; it warns only when *warn_unreadable* is
     set, which a pull that just fetched the model sets. A projector fetched but
-    not found by the engine launch judge raises.
+    not found by the engine launch judge raises. A set *cancel* ends the fetch.
     """
     from lilbee.catalog import download_mmproj, resolve_pull_target
     from lilbee.catalog.download import ProjectorListingError
@@ -386,7 +388,7 @@ def ensure_vision_projector(ref: str, *, warn_unreadable: bool) -> str | None:
     if entry is None or not _vision_projector_missing(ref):
         return None
     try:
-        fetched = download_mmproj(entry)
+        fetched = download_mmproj(entry, cancel=cancel)
     except ProjectorListingError as exc:
         log.info("Could not check %s for a missing projector: %s", ref, exc)
         return _unchecked_projector_warning(ref) if warn_unreadable else None
@@ -433,7 +435,7 @@ def pull_model_data(
         # repo lists; without it llama-server can't serve OCR, so ensure it
         # before reporting already-installed.
         warning = (
-            ensure_vision_projector(ref, warn_unreadable=False)
+            ensure_vision_projector(ref, warn_unreadable=False, cancel=cancel)
             if source is ModelSource.NATIVE
             else None
         )
@@ -454,7 +456,7 @@ def pull_model_data(
         source=source.value,
         status=PullStatus.OK,
         path=str(path) if path is not None else None,
-        warning=ensure_vision_projector(ref, warn_unreadable=True),
+        warning=ensure_vision_projector(ref, warn_unreadable=True, cancel=cancel),
     )
 
 

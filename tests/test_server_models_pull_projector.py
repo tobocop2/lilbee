@@ -42,7 +42,7 @@ def _stub_entry(monkeypatch: pytest.MonkeyPatch, task: ModelTask = ModelTask.VIS
 
 
 def _stub_listing_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _raise(_entry: object) -> None:
+    def _raise(_entry: object, **_: object) -> None:
         raise ProjectorListingError("offline")
 
     monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: True)
@@ -56,7 +56,7 @@ async def test_pull_fetches_the_missing_projector(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: next(missing))
     fetched: list[object] = []
     monkeypatch.setattr(
-        "lilbee.catalog.download_mmproj", lambda e: fetched.append(e) or Path("mmproj.gguf")
+        "lilbee.catalog.download_mmproj", lambda e, **_: fetched.append(e) or Path("mmproj.gguf")
     )
     events = await _pull_events()
     assert len(fetched) == 1
@@ -89,7 +89,7 @@ async def test_repo_without_projector_ends_in_done_with_the_warning(
 ) -> None:
     _stub_entry(monkeypatch)
     monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: True)
-    monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda _e: None)
+    monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda _e, **_: None)
     events = await _pull_events()
     assert events == [("done", {"warning": app_models._no_projector_warning(REF)})]
 
@@ -100,6 +100,6 @@ async def test_fetched_projector_the_engine_misses_is_an_error(
 ) -> None:
     _stub_entry(monkeypatch)
     monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: True)
-    monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda _e: Path("mmproj.gguf"))
+    monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda _e, **_: Path("mmproj.gguf"))
     events = await _pull_events()
     assert [name for name, _ in events] == ["error"]
