@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from lilbee.providers.fleet import adapters
-from lilbee.providers.fleet.engines import choice
+from lilbee.providers.fleet.engines import choice, lemonade, openvino
 from lilbee.providers.fleet.engines.base import LaunchRequest
 
 BINARY = PurePosixPath("/engines/bin/server")
@@ -20,6 +20,9 @@ def launch_argvs(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, list[st
     """Engine name -> role value -> argv, with the host inputs of the argv pinned."""
     monkeypatch.setattr(adapters, "engine_thread_count", lambda: THREADS)
     monkeypatch.setattr(adapters, "engine_help", lambda _binary: HELP)
+    both = staticmethod(lambda _binary: frozenset({"CPU", "GPU"}))
+    monkeypatch.setattr(openvino.OpenvinoAdapter, "_listed", both)
+    monkeypatch.setattr(lemonade, "busy_ports", tuple)
     request = LaunchRequest(
         binary=Path(BINARY),
         model_path=Path(MODEL),

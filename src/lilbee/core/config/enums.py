@@ -31,6 +31,7 @@ class EngineSetting(StrEnum):
     TEI = "tei"
     MLX = "mlx"
     OPENVINO = "openvino"
+    LEMONADE = "lemonade"
 
 
 class FtsLanguage(StrEnum):
