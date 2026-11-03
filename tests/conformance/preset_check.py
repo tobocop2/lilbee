@@ -114,10 +114,11 @@ class Setup:
 
 @contextmanager
 def configured(url: str, setup: Setup, data_root: Path) -> Iterator[None]:
-    """Store the preset in *data_root* and point the model settings at it."""
+    """Store the preset in *data_root*, clear every role's model, and let each step set its own."""
     snapshot = cfg.model_copy()
     cfg.data_root = data_root
     cfg.server_presets = None
+    cfg.chat_model = cfg.embedding_model = cfg.reranker_model = cfg.vision_model = ""
     presets.add_preset(setup.preset, url, roles=setup.roles, rerank_wire=setup.rerank_wire)
     try:
         yield
