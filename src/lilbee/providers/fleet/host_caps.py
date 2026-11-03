@@ -18,6 +18,7 @@ T = TypeVar("T")
 
 NO_NVIDIA_DRIVER = "no NVIDIA driver"
 NVIDIA_UNREADABLE = "the NVIDIA driver answers could not be read"
+MACOS_UNREADABLE = "The macOS version of this computer could not be read."
 _NVML_CUDA_MAJOR_DIVISOR = 1000
 _NVML_CUDA_MINOR_DIVISOR = 10
 
@@ -79,6 +80,11 @@ class HostCaps:
     nvidia_driver_cuda: tuple[int, int] | None
     nvidia_reason: str
     nvidia_known: bool
+    macos_version: tuple[int, ...] | None = None
+    """The macOS version as numbers, or ``None`` off macOS and when it could not be read."""
+    macos_reason: str = ""
+    macos_known: bool = True
+    """False only on macOS when the version could not be read; then ``macos_reason`` says so."""
 
 
 def _decoded(value: str | bytes) -> str:
@@ -252,12 +258,24 @@ def _neon(arch: HostArch | None) -> Feature:
     return Feature(False, "not an ARM CPU")
 
 
+def _macos_version(host_os: HostOS | None, raw: str) -> tuple[int, ...] | None:
+    """The numbers of a macOS version string, or ``None`` off macOS or when unparseable."""
+    if host_os is not HostOS.MACOS:
+        return None
+    try:
+        parts = tuple(int(part) for part in raw.split("."))
+    except ValueError:
+        return None
+    return parts or None
+
+
 def collect(
     *,
     system: str,
     machine: str,
     cpu_info: dict[str, Any],
     nvml: dict[str, Any] | None,
+    mac_ver: str = "",
 ) -> HostCaps:
     """Build the host answer from raw readings; a value that cannot be read is unknown."""
     host_os = _OS_BY_SYSTEM.get(system)
@@ -265,6 +283,8 @@ def collect(
     gpus = _gpus(nvml.get("gpus")) if nvml else ()
     cuda = _cuda_version(nvml.get("cuda_driver")) if nvml else None
     nvidia_known = gpus is not None and (cuda is not None or not nvml)
+    macos_version = _macos_version(host_os, mac_ver)
+    macos_known = host_os is not HostOS.MACOS or macos_version is not None
     return HostCaps(
         os=host_os,
         arch=arch,
@@ -274,6 +294,9 @@ def collect(
         nvidia_driver_cuda=cuda,
         nvidia_reason=_nvidia_reason(nvml, nvidia_known),
         nvidia_known=nvidia_known,
+        macos_version=macos_version,
+        macos_reason="" if macos_known else MACOS_UNREADABLE,
+        macos_known=macos_known,
     )
 
 
@@ -297,4 +320,5 @@ def detect() -> HostCaps:
         machine=platform.machine(),
         cpu_info=_read_or_none(_cpu_info) or {},
         nvml=read_nvml(),
+        mac_ver=platform.mac_ver()[0],
     )
