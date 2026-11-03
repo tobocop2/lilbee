@@ -2115,12 +2115,24 @@ def _warn_gpu_present_but_unenumerated(binary: Path) -> None:
     quietly planned for CPU, and said nothing. The vendor lookup is the same one
     the Vulkan ICD rules use, and it works on Windows as well as Linux.
     """
-    from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
+    from lilbee.providers.fleet.gpu_hardware import (
+        installed_gpu_vendor_ids,
+        undriven_gpu_vendor_ids,
+    )
     from lilbee.providers.fleet.gpu_select import PCIVendorID
 
     present = installed_gpu_vendor_ids()
     names = sorted(v.label for v in PCIVendorID if v in present)
     if not names:
+        undriven = undriven_gpu_vendor_ids()
+        idle = sorted(v.label for v in PCIVendorID if v in undriven)
+        if idle:
+            log.warning(
+                "The %s GPU on this host has no kernel driver loaded, so the engine "
+                "cannot use it. Placement falls back to shared-memory mode. Load the "
+                "GPU's kernel driver and start lilbee again.",
+                " and ".join(idle),
+            )
         return
     hints = sorted(
         {_VENDOR_VISIBILITY_HINT[name] for name in names if name in _VENDOR_VISIBILITY_HINT}
