@@ -3290,6 +3290,23 @@ class TestPathOptions:
             r = _path_options("something")
         assert r == []
 
+    def test_a_large_folder_returns_the_first_20_names_in_order(self, tmp_path):
+        from lilbee.cli.tui.widgets.autocomplete import _path_options
+
+        names = [f"f{i:03d}" for i in range(300)]
+        for name in reversed(names):
+            (tmp_path / name).touch()
+        assert _path_options(str(tmp_path) + "/") == names[:20]
+
+    def test_a_partial_name_filters_before_the_cap(self, tmp_path):
+        from lilbee.cli.tui.widgets.autocomplete import _path_options
+
+        for i in range(30):
+            (tmp_path / f"keep{i:02d}").touch()
+            (tmp_path / f"drop{i:02d}").touch()
+        r = _path_options(str(tmp_path / "KEEP"))
+        assert r == [f"keep{i:02d}" for i in range(20)]
+
     def test_limits_results_to_20(self, tmp_path):
         from lilbee.cli.tui.widgets.autocomplete import _path_options
 

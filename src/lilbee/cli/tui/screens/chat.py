@@ -81,6 +81,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
     get_completions,
     longest_common_prefix,
     path_completion_prefix,
+    reads_a_folder,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.context_chip import ContextChip
@@ -2936,9 +2937,24 @@ class ChatScreen(Screen[None]):
 
     def _refresh_completion_overlay(self) -> None:
         """Live-filter the dropdown against the current input, in command and arg modes alike."""
-        overlay = self._completion_overlay
         text = self._chat_input.value
+        if reads_a_folder(text):
+            self._list_path_completions(text)
+            return
+        self._show_completions_for(text, get_completions(text))
+
+    @work(thread=True, exclusive=True, group="path_completions", exit_on_error=False)
+    def _list_path_completions(self, text: str) -> None:
+        """List the typed path's folder off the event loop; a newer key cancels this listing."""
         options = get_completions(text)
+        if not _get_worker().is_cancelled:
+            call_from_thread(self, self._show_completions_for, text, options)
+
+    def _show_completions_for(self, text: str, options: list[str]) -> None:
+        """Apply *options* if *text* is still the input; a stale listing is dropped."""
+        if text != self._chat_input.value:
+            return
+        overlay = self._completion_overlay
         if options:
             self._completion_origin = text
             overlay.show_completions(options)
