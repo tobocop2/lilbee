@@ -60,12 +60,12 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      # Audit the locked third-party set; lilbee-engine is first-party vendored
+      # Audit the locked third-party set; lilbee-engine-llama-cpp is first-party vendored
       # binaries resolved from a local path, not a PyPI package.
       - name: Export locked requirements for audit
         run: >
           uv export --locked --all-extras --no-emit-project
-          --no-emit-package lilbee-engine
+          --no-emit-package lilbee-engine-llama-cpp
           --format requirements-txt -o requirements-audit.txt
 
       - name: Run pip-audit

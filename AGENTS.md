@@ -223,7 +223,7 @@ The codebase has a small set of `try: import X except ImportError:` patterns for
 | provider SDK | `lilbee.providers.availability.provider_sdk_available()` | `lilbee[providers]` | SDK provider, settings TUI |
 | `crawlberg`, `ada_url` | `lilbee.crawler.crawler_available()` | `lilbee[crawler]` | Web crawler, saved page names |
 | `graspologic_native` | `lilbee.retrieval.concepts.nlp.concepts_available()` | `lilbee[graph]` | Concept-graph clustering |
-| `lilbee_engine` | resolved in `lilbee.providers.fleet.binary.resolve_engine_tool()` | bundled wheel | The local inference engine binaries (llama-server + llama-swap + gguf-parser) |
+| `lilbee_engine_llama_cpp` | resolved in `lilbee.providers.fleet.binary.resolve_engine_tool()` | bundled wheel | The local inference engine binaries (llama-server + llama-swap + gguf-parser) |
 
 Any other `try: import X` should be either added to this table or refactored. CLI command bodies that branch on extras dispatch through these `*_available()` helpers, not via `importlib.import_module(name)`.
 
@@ -398,7 +398,7 @@ work; the greps below remain the full set a reviewer still runs by eye.
 - `grep -rnE "def \w+\(.*\) -> .*:\s*$" src/ | xargs -I{} awk 'def_lines>20'` (proxy: scan modules >700 LOC) — functions over ~20 lines need a split into named sub-helpers.
 - `grep -rn "from lilbee\.\(modelhub\|providers\|data\|retrieval\|wiki\|crawler\)" src/lilbee/catalog src/lilbee/core` — upward imports from foundation layers. catalog and core never import from anything above them.
 - `grep -rn "from lilbee\.\(retrieval\|wiki\|crawler\|cli\|server\)" src/lilbee/data src/lilbee/modelhub src/lilbee/providers` — Layer-2 modules importing Layer-3+. Invert via callback or move the helper down.
-- `grep -rn "include-package-data=lilbee_engine" tools/wheel-build/` — Nuitka `--include-package-data` for a native-lib or opaque-data closure. Its heuristics silently drop `.dylib`/`.bin`; use `--include-data-dir` (verbatim). See Build & Release Artifacts.
+- `grep -rn "include-package-data=lilbee_engine_llama_cpp" tools/wheel-build/` — Nuitka `--include-package-data` for a native-lib or opaque-data closure. Its heuristics silently drop `.dylib`/`.bin`; use `--include-data-dir` (verbatim). See Build & Release Artifacts.
 - `grep -rn "continue-on-error" .github/workflows/ | grep -iE "smoke|verify|self-check|artifact"` — a swallowed correctness gate. A smoke/verify step must fail the job; `continue-on-error` on one is how a broken artifact ships.
 
 ### Self-Review Checklist (before every push)

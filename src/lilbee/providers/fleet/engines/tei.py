@@ -12,7 +12,7 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
-from lilbee.providers.fleet.engine_manifest import pack_digest
+from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engine_store import (
     EngineNotInstalledError,
     EngineStore,
@@ -156,14 +156,15 @@ class TeiAdapter:
 
         host = session_host()
         backend = self.pick_build(host).backend
+        platforms = pack_platforms(self.name.value, _VERSION, host, backend)
         return {
             "engine": self.name.value,
             "version": _VERSION,
             "backend": backend,
-            "sha256": pack_digest(self.name.value, host, backend),
+            "sha256": pack_digest(self.name.value, _VERSION, host, backend),
             "tool": _TOOL,
             "launch": _PIN_LAUNCH,
-            "platforms": {},
+            "platforms": platforms,
             "memory": {"sizing": None, "rule": f"fixed {_RESERVE_BYTES} bytes"},
             "licenses": ["Apache-2.0"],
         }

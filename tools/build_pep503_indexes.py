@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emit PEP 503 simple-repository indexes for the per-backend engine wheels.
 
-Reads the ``lilbee-engine`` wheels produced by build-multigpu.yml, groups
+Reads the ``lilbee-engine-llama-cpp`` wheels produced by build-multigpu.yml, groups
 them by backend, and writes per-directory ``index.html`` files. Each wheel link
 is an absolute URL into the GitHub release assets, so the static site need not
 host multi-gigabyte wheels (GitHub Pages caps a deployment at 1 GB; releases do
@@ -18,15 +18,15 @@ because they also ship to PyPI, where a build tag would break the pin.
 
 Input layout (artifact-dir mode):
 
-    <input>/wheel-multigpu-<os>-<backend>/lilbee_engine-*.whl
+    <input>/wheel-multigpu-<os>-<backend>/lilbee_engine_llama_cpp-*.whl
 
 Backend is the last dash-segment of the artifact dir name; the wheel's version
 is parsed from its filename so the release URL needs no extra CLI flag.
 
 Output layout:
 
-    <site>/<backend>/lilbee-engine/index.html   # hrefs to <release>/<whl>
-    <site>/<backend>/index.html                 # link to lilbee-engine/
+    <site>/<backend>/lilbee-engine-llama-cpp/index.html   # hrefs to <release>/<whl>
+    <site>/<backend>/index.html                 # link to lilbee-engine-llama-cpp/
 
 Usage:
     python tools/build_pep503_indexes.py <artifacts-dir> <site-dir> \\
@@ -40,13 +40,13 @@ import re
 import sys
 from pathlib import Path
 
-# The per-backend index serves the engine wheel, lilbee-engine. Its
+# The per-backend index serves the engine wheel, lilbee-engine-llama-cpp. Its
 # artifacts are wheel-multigpu-<os>-<backend> (no per-CPython axis: the binaries
 # are Python-version-independent). The pure lilbee wheel is backend-agnostic and
 # ships only to PyPI, so it has no per-backend index.
 ARTIFACT_DIR_RE = re.compile(r"^wheel-multigpu-(?P<rest>.+)$")
-WHEEL_FILENAME_RE = re.compile(r"^lilbee_engine-(?P<version>[^-]+)-")
-_PROJECT = "lilbee-engine"
+WHEEL_FILENAME_RE = re.compile(r"^lilbee_engine_llama_cpp-(?P<version>[^-]+)-")
+_PROJECT = "lilbee-engine-llama-cpp"
 _DEFAULT_RELEASE_BASE_URL = "https://github.com/tobocop2/lilbee/releases/download"
 
 # Wheel filename layout (PEP 427): project-version[-buildtag]-python-abi-platform.whl
@@ -66,7 +66,7 @@ def backend_from_artifact_dir(name: str) -> str | None:
 
 
 def version_from_wheel_filename(name: str) -> str | None:
-    """Extract the version from ``lilbee_engine-<version>-<rest>.whl``."""
+    """Extract the version from ``lilbee_engine_llama_cpp-<version>-<rest>.whl``."""
     m = WHEEL_FILENAME_RE.match(name)
     return m.group("version") if m else None
 
@@ -75,11 +75,11 @@ def build_tag_for_backend(backend: str) -> str:
     """PEP 427 build tag that disambiguates the same-platform engine variants.
 
     EVERY backend gets one. attach-release-artifacts.yml (and release-candidate.yml)
-    rename every ``lilbee_engine`` wheel to ``...-1.<backend>-...`` with no exception,
+    rename every ``lilbee_engine_llama_cpp`` wheel to ``...-1.<backend>-...`` with no exception,
     so all same-platform variants coexist in the GH release's flat namespace. These
     indexes link those release assets, so they must use the tagged names -- there is
     no plain (untagged) engine wheel in the release to point at. (An earlier version
-    exempted vulkan/metal as "PyPI defaults that ship plain", but lilbee-engine is
+    exempted vulkan/metal as "PyPI defaults that ship plain", but lilbee-engine-llama-cpp is
     not on PyPI at all, so those indexes 404'd for every Mac/Vulkan user.)
     """
     return f"1.{backend}"
@@ -107,7 +107,7 @@ def collect_wheels(input_dir: Path) -> dict[str, list[Path]]:
         backend = backend_from_artifact_dir(child.name)
         if backend is None:
             continue
-        wheels = sorted(child.glob("lilbee_engine-*.whl"))
+        wheels = sorted(child.glob("lilbee_engine_llama_cpp-*.whl"))
         if not wheels:
             continue
         by_backend.setdefault(backend, []).extend(wheels)

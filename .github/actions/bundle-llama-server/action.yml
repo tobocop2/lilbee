@@ -2,7 +2,7 @@ name: Bundle engine
 description: >-
   Build the self-contained engine (llama-server + its ggml/llama/mtmd libs with a
   baked rpath, plus the llama-swap and gguf-parser Go helpers) and install the
-  lilbee_engine package so the Nuitka build bundles the whole local engine into
+  lilbee_engine_llama_cpp package so the Nuitka build bundles the whole local engine into
   the onefile. Run before the executable is built.
 inputs:
   backend:
@@ -68,7 +68,7 @@ runs:
       run: |
         set -uo pipefail
         if bash tools/wheel-build/ci_mirror.sh fetch \
-          "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine/bin; then
+          "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine_llama_cpp/bin; then
           echo "restored=true" >> "$GITHUB_OUTPUT"
         else
           echo "restored=false" >> "$GITHUB_OUTPUT"
@@ -82,7 +82,7 @@ runs:
       if: steps.engine-mirror.outputs.restored != 'true'
       uses: actions/cache/restore@v4
       with:
-        path: packaging/engine-wheel/lilbee_engine/bin
+        path: packaging/engine-wheel/lilbee_engine_llama_cpp/bin
         key: ${{ steps.engine-key.outputs.key }}
 
     - name: Decide whether the engine still needs building
@@ -136,10 +136,10 @@ runs:
         engine-key: ${{ steps.engine-key.outputs.key }}
         release-tag: ${{ inputs.asset-release-tag }}
         token: ${{ github.token }}
-    - name: Install lilbee_engine into the build venv
+    - name: Install lilbee_engine_llama_cpp into the build venv
       shell: bash
       # The wheel carries all three binaries (llama-server self-contained with its
       # backend libs, plus the static Go helpers); Nuitka bundles them via
       # --include-package-data and the runtime resolver finds each via
-      # lilbee_engine.get_llama_server_path() / get_llama_swap_path() / get_gguf_parser_path().
+      # lilbee_engine_llama_cpp.get_llama_server_path() / get_llama_swap_path() / get_gguf_parser_path().
       run: uv pip install --no-deps ./packaging/engine-wheel

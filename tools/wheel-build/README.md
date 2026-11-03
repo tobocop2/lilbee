@@ -13,7 +13,7 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   (Vulkan SDK on Linux/Windows; CUDA Toolkit when `BACKEND=cuXXX`; ROCm when
   `BACKEND=rocm`; no-op on macOS where Metal ships with the OS).
 - `build_llama_server.sh` — builds the self-contained `llama-server` (binary +
-  ggml/llama/mtmd libs with a baked rpath) into the `lilbee-engine` wheel
+  ggml/llama/mtmd libs with a baked rpath) into the `lilbee-engine-llama-cpp` wheel
   package's `bin/` for the requested backend.
 - `bundle_rocm_runtime.sh` — packs the ROCm userspace `llama-server` links
   (discovered by walking `DT_NEEDED`, plus the rocBLAS Tensile kernels) beside

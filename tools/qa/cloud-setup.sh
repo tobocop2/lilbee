@@ -50,13 +50,13 @@ git reset --hard "origin/${BRANCH}"
 # 5. Install lilbee with the [providers] + [crawler] + [graph] extras.
 uv sync --extra providers --extra crawler --extra graph
 
-# 5b. Build the CUDA engine. On a source checkout the lilbee-engine path
+# 5b. Build the CUDA engine. On a source checkout the lilbee-engine-llama-cpp path
 # dependency ships an empty bin/, so build llama-server (CUDA) plus the
 # llama-swap / gguf-parser helpers from the pinned sources. The build script
-# drops all three into packaging/engine-wheel/lilbee_engine/bin; lilbee finds
+# drops all three into packaging/engine-wheel/lilbee_engine_llama_cpp/bin; lilbee finds
 # them via LILBEE_LLAMA_SERVER_PATH and PATH. Skipped when a previous run
 # already built the binary.
-ENGINE_BIN_DIR="${WORK_DIR}/packaging/engine-wheel/lilbee_engine/bin"
+ENGINE_BIN_DIR="${WORK_DIR}/packaging/engine-wheel/lilbee_engine_llama_cpp/bin"
 if [ ! -x "${ENGINE_BIN_DIR}/llama-server" ]; then
   command -v nvcc >/dev/null 2>&1 || { echo "nvcc not found; install the CUDA toolkit first (or pick a CUDA base image)" >&2; exit 1; }
   if ! command -v go >/dev/null 2>&1; then

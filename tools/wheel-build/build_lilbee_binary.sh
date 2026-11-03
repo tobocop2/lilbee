@@ -66,16 +66,16 @@ done
 # bin/ with the self-contained llama-server (binary + ggml/llama/mtmd libs with a
 # baked rpath) plus the llama-swap and gguf-parser helpers, so
 # --include-package-data ships the whole engine inside the onefile and the runtime
-# resolver finds each via lilbee_engine.get_*_path(). Optional so a build without
+# resolver finds each via lilbee_engine_llama_cpp.get_*_path(). Optional so a build without
 # the engine wheel still succeeds (resolver falls back to PATH).
 LLAMA_SERVER_FLAGS=()
-if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
+if uv run --no-sync python -c "import lilbee_engine_llama_cpp" >/dev/null 2>&1; then
     # --include-package pulls the __init__.py and every bin/*.so, the
     # libggml-cpu-<variant>.so dispatch modules alike (Nuitka places a bare .so
     # beside the binary verbatim); versioned .so.N files and the bundled
     # libvulkan.so.1 ride --include-package-data along with the executables.
-    LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
-    LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
+    LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine_llama_cpp)
+    LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine_llama_cpp)
     # Platform gap: --include-package-data keeps the extensionless executables on
     # Linux/macOS but drops the macOS .dylib / Windows .dll closure AND the
     # Windows .exe executables (Nuitka routes those through its DLL/program
@@ -84,13 +84,13 @@ if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
     # --include-data-files (rpath and exec bit preserved), EXCEPT .so: those are
     # already included via --include-package above, and data-files-ing a .so
     # FATALs with an extension/data conflict.
-    ENGINE_BIN=$(uv run --no-sync python -c "import lilbee_engine, pathlib; print(pathlib.Path(lilbee_engine.__file__).parent / 'bin')")
+    ENGINE_BIN=$(uv run --no-sync python -c "import lilbee_engine_llama_cpp, pathlib; print(pathlib.Path(lilbee_engine_llama_cpp.__file__).parent / 'bin')")
     for _f in "${ENGINE_BIN}"/*; do
         [ -f "${_f}" ] || continue
         case "${_f}" in
             *.so | *.so.* ) continue ;;
         esac
-        LLAMA_SERVER_FLAGS+=(--include-data-files="${_f}=lilbee_engine/bin/$(basename "${_f}")")
+        LLAMA_SERVER_FLAGS+=(--include-data-files="${_f}=lilbee_engine_llama_cpp/bin/$(basename "${_f}")")
     done
 fi
 

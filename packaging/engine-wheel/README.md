@@ -1,4 +1,4 @@
-# lilbee-engine
+# lilbee-engine-llama-cpp
 
 A per-platform, self-contained wheel that bundles lilbee's local inference
 engine binaries:
@@ -13,12 +13,12 @@ This is lilbee's core engine dependency, shipped as the `engine` extra:
 `pip install 'lilbee[engine]' --extra-index-url https://lilbee.sh/<backend>/`
 resolves the matching per-platform wheel. It is not on PyPI, since the CUDA and
 ROCm wheels run several times PyPI's default 100 MiB per-file limit, so all
-backends are published from lilbee's own PEP 503 index. CI fills `lilbee_engine/bin/` with the three
+backends are published from lilbee's own PEP 503 index. CI fills `lilbee_engine_llama_cpp/bin/` with the three
 binaries and retags the wheel to the platform before publishing; a source
 checkout has an empty `bin/` and resolves via `PATH` or
 `LILBEE_LLAMA_SERVER_PATH` instead.
 
 `lilbee.providers.fleet.binary` resolves each tool via
-`lilbee_engine.get_llama_server_path()` / `get_llama_swap_path()` /
+`lilbee_engine_llama_cpp.get_llama_server_path()` / `get_llama_swap_path()` /
 `get_gguf_parser_path()`. For a bring-your-own setup, point `LILBEE_LLAMA_SERVER_PATH`
 at a `llama-server` binary and put `llama-swap` / `gguf-parser` on `PATH`.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assert a lilbee-engine wheel carries the backend it claims, and the runtime it links.
+"""Assert a lilbee-engine-llama-cpp wheel carries the backend it claims, and the runtime it links.
 
 Both checks read the payload, because neither failure shows in a build log or on a
 driverless runner. A flavor missing its ggml backend library is a build whose flag
@@ -38,7 +38,7 @@ assert _spec and _spec.loader
 wheel_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wheel_server)
 
-BIN_DIR = "lilbee_engine/bin/"
+BIN_DIR = "lilbee_engine_llama_cpp/bin/"
 
 # GitHub caps a single artifact at 2 GiB, and every wheel travels as one. A bundled
 # ROCm engine is the only flavor near it: its runtime and per-gfx kernels are most of
@@ -110,7 +110,7 @@ _LIBRARY_FORMS = {
     "linux": ("lib{name}.so", r"lib{name}\.so(\.[\d.]+)?"),
     "macos": ("lib{name}.dylib", r"lib{name}(\.[\d.]+)?\.dylib"),
 }
-# "lilbee_engine-0.6.90-1.rocm-py3-none-manylinux_2_17_x86_64.whl". PEP 427 puts
+# "lilbee_engine_llama_cpp-0.6.90-1.rocm-py3-none-manylinux_2_17_x86_64.whl". PEP 427 puts
 # the build tag third, and build_pep503_indexes.py writes it as 1.<backend>.
 _BUILD_TAG = re.compile(r"^[^-]+-[^-]+-\d+\.(?P<backend>[a-z0-9]+)-")
 

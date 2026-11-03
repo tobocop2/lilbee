@@ -42,7 +42,7 @@ def _wheel(tmp_path: Path, name: str, bin_files: tuple[str, ...]) -> Path:
     path = tmp_path / name
     with zipfile.ZipFile(path, "w") as zf:
         for entry in bin_files:
-            zf.writestr(f"lilbee_engine/bin/{entry}", b"x")
+            zf.writestr(f"lilbee_engine_llama_cpp/bin/{entry}", b"x")
     return path
 
 
@@ -50,7 +50,7 @@ def test_linux_cuda_wheel_without_runtime_is_rejected(tmp_path: Path) -> None:
     # The shipped-broken shape: ggml-cuda present, the runtime it links absent.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cu125-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cu125-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cuda.so"),
     )
     problems = acb.check(wheel)
@@ -62,7 +62,7 @@ def test_linux_cuda_wheel_without_runtime_is_rejected(tmp_path: Path) -> None:
 def test_linux_cuda_wheel_with_runtime_passes(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cu125-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cu125-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cuda.so", *_LINUX_RUNTIME),
     )
     assert acb.check(wheel) == []
@@ -71,7 +71,7 @@ def test_linux_cuda_wheel_with_runtime_passes(tmp_path: Path) -> None:
 def test_windows_cuda_wheel_without_runtime_is_rejected(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cu125-py3-none-win_amd64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cu125-py3-none-win_amd64.whl",
         ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_CRT),
     )
     assert len(acb.check(wheel)) == 3
@@ -80,7 +80,7 @@ def test_windows_cuda_wheel_without_runtime_is_rejected(tmp_path: Path) -> None:
 def test_windows_cuda_wheel_with_runtime_passes(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cu125-py3-none-win_amd64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cu125-py3-none-win_amd64.whl",
         ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_RUNTIME, *_WINDOWS_CRT),
     )
     assert acb.check(wheel) == []
@@ -91,7 +91,7 @@ def test_cuda_detected_from_payload_not_filename(tmp_path: Path) -> None:
     # Detection must still fire, or the gate silently passes every build artifact.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-py3-none-win_amd64.whl",
+        "lilbee_engine_llama_cpp-1.0-py3-none-win_amd64.whl",
         ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_CRT),
     )
     assert len(acb.check(wheel)) == 3
@@ -100,7 +100,7 @@ def test_cuda_detected_from_payload_not_filename(tmp_path: Path) -> None:
 def test_non_cuda_wheel_passes(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cpu-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cpu-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", *_LINUX_VARIANTS),
     )
     assert acb.check(wheel) == []
@@ -110,7 +110,7 @@ def test_non_cuda_wheel_carrying_cuda_runtime_is_rejected(tmp_path: Path) -> Non
     # Guards the other direction: the copy step must stay scoped to CUDA backends.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.vulkan-py3-none-win_amd64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.vulkan-py3-none-win_amd64.whl",
         ("llama-server.exe", "ggml-vulkan.dll", "cudart64_12.dll", *_WINDOWS_CRT),
     )
     problems = acb.check(wheel)
@@ -121,7 +121,7 @@ def test_non_cuda_wheel_carrying_cuda_runtime_is_rejected(tmp_path: Path) -> Non
 def test_windows_wheel_without_the_msvc_runtime_is_rejected(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.vulkan-py3-none-win_amd64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.vulkan-py3-none-win_amd64.whl",
         ("llama-server.exe", "ggml-vulkan.dll", "msvcp140.dll"),
     )
     problems = acb.check(wheel)
@@ -131,16 +131,16 @@ def test_windows_wheel_without_the_msvc_runtime_is_rejected(tmp_path: Path) -> N
 
 
 def test_empty_bin_dir_is_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "lilbee_engine-1.0-py3-none-win_amd64.whl"
+    path = tmp_path / "lilbee_engine_llama_cpp-1.0-py3-none-win_amd64.whl"
     with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("lilbee_engine/__init__.py", b"")
-    assert acb.check(path) == [f"{path.name}: no lilbee_engine/bin/ payload at all"]
+        zf.writestr("lilbee_engine_llama_cpp/__init__.py", b"")
+    assert acb.check(path) == [f"{path.name}: no lilbee_engine_llama_cpp/bin/ payload at all"]
 
 
 def test_macos_cuda_payload_asserts_nothing(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-py3-none-macosx_11_0_arm64.whl",
+        "lilbee_engine_llama_cpp-1.0-py3-none-macosx_11_0_arm64.whl",
         ("llama-server", "libggml-cuda.so"),
     )
     assert acb.check(wheel) == []
@@ -151,7 +151,7 @@ def test_rocm_wheel_without_the_hip_backend_is_rejected(tmp_path: Path) -> None:
     # backend because the cmake flag naming it was ignored.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-base.so", "libggml-cpu.so"),
     )
     problems = acb.check(wheel)
@@ -162,7 +162,7 @@ def test_rocm_wheel_without_the_hip_backend_is_rejected(tmp_path: Path) -> None:
 def test_rocm_wheel_with_the_hip_backend_passes(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so", "libggml-hip.so", *_ROCM_RUNTIME),
     )
     assert acb.check(wheel) == []
@@ -174,7 +174,7 @@ def test_a_versioned_soname_alone_satisfies_the_backend_check(tmp_path: Path) ->
     # is complete, and failing it would be a false alarm.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so", "libggml-hip.so.0.15.1", *_ROCM_RUNTIME),
     )
     assert acb.check(wheel) == []
@@ -185,7 +185,7 @@ def test_backend_argument_covers_a_wheel_built_before_its_tag_is_added(tmp_path:
     # gate has to fire: at build time, on the runner that produced it.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so"),
     )
     assert acb.check(wheel) == []
@@ -197,7 +197,7 @@ def test_backend_argument_covers_a_wheel_built_before_its_tag_is_added(tmp_path:
 def test_sycl_wheel_without_its_backend_is_rejected(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.sycl-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.sycl-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so"),
     )
     assert len(acb.check(wheel)) == 1
@@ -206,7 +206,7 @@ def test_sycl_wheel_without_its_backend_is_rejected(tmp_path: Path) -> None:
 def test_windows_vulkan_wheel_without_its_backend_is_rejected(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.vulkan-py3-none-win_amd64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.vulkan-py3-none-win_amd64.whl",
         ("llama-server.exe", "ggml-cpu.dll", *_WINDOWS_CRT),
     )
     problems = acb.check(wheel)
@@ -217,7 +217,7 @@ def test_windows_vulkan_wheel_without_its_backend_is_rejected(tmp_path: Path) ->
 def test_macos_metal_wheel_checks_the_dylib_name(tmp_path: Path) -> None:
     missing = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.metal-py3-none-macosx_11_0_arm64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.metal-py3-none-macosx_11_0_arm64.whl",
         ("llama-server", "libggml-cpu.dylib"),
     )
     problems = acb.check(missing)
@@ -235,7 +235,7 @@ def test_macos_metal_wheel_checks_the_dylib_name(tmp_path: Path) -> None:
 def test_every_cuda_flavor_maps_to_the_cuda_backend_library(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cu124-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cu124-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so", *_LINUX_RUNTIME),
     )
     problems = acb.check(wheel)
@@ -248,7 +248,7 @@ def test_an_unrecognised_backend_asserts_nothing(tmp_path: Path) -> None:
     # the library that flavor builds.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cann-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cann-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so"),
     )
     assert acb.check(wheel) == []
@@ -259,7 +259,7 @@ def test_rocm_wheel_without_the_runtime_is_rejected(tmp_path: Path) -> None:
     # machine with ROCm installed and silently falls back to CPU everywhere else.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so", "libggml-hip.so"),
     )
     problems = acb.check(wheel)
@@ -271,7 +271,7 @@ def test_rocm_wheel_without_the_runtime_is_rejected(tmp_path: Path) -> None:
 def test_rocm_wheel_with_the_runtime_passes(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so", "libggml-hip.so", *_ROCM_RUNTIME),
     )
     assert acb.check(wheel) == []
@@ -282,7 +282,7 @@ def test_rocm_wheel_without_the_tensile_kernels_is_rejected(tmp_path: Path) -> N
     # library resolves and then fails on the first matrix multiply.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-hip.so", *_ROCM_RUNTIME[:3]),
     )
     problems = acb.check(wheel)
@@ -295,7 +295,7 @@ def test_a_rocm_soname_bump_does_not_fail_the_gate(tmp_path: Path) -> None:
     # every upgrade is a red build for a wheel that is in fact correct.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
         (
             "llama-server",
             "libggml-hip.so",
@@ -311,7 +311,7 @@ def test_a_rocm_soname_bump_does_not_fail_the_gate(tmp_path: Path) -> None:
 def test_a_non_rocm_wheel_is_not_asked_for_the_rocm_runtime(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.vulkan-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.vulkan-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-vulkan.so", "libvulkan.so.1", *_LINUX_VARIANTS),
     )
     assert acb.check(wheel) == []
@@ -321,7 +321,7 @@ def test_cpu_linux_wheel_with_a_single_cpu_library_is_rejected(tmp_path: Path) -
     # The pre-dispatch shape: one libggml-cpu.so carrying only the AVX baseline.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cpu-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cpu-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so"),
     )
     problems = acb.check(wheel)
@@ -332,7 +332,7 @@ def test_cpu_linux_wheel_with_a_single_cpu_library_is_rejected(tmp_path: Path) -
 def test_cpu_windows_wheel_needs_variant_modules(tmp_path: Path) -> None:
     single = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cpu-py3-none-win_amd64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cpu-py3-none-win_amd64.whl",
         ("llama-server.exe", "ggml-cpu.dll", *_WINDOWS_CRT),
     )
     problems = acb.check(single)
@@ -351,7 +351,7 @@ def test_a_lone_variant_module_is_rejected(tmp_path: Path) -> None:
     # One variant means the build host's instruction set, not runtime dispatch.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cpu-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cpu-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu-haswell.so"),
     )
     problems = acb.check(wheel)
@@ -364,7 +364,7 @@ def test_vulkan_linux_wheel_without_the_loader_is_rejected(tmp_path: Path) -> No
     # startup failure, so only the payload can prove the loader ships.
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.vulkan-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.vulkan-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-vulkan.so", *_LINUX_VARIANTS),
     )
     problems = acb.check(wheel)
@@ -375,7 +375,7 @@ def test_vulkan_linux_wheel_without_the_loader_is_rejected(tmp_path: Path) -> No
 def test_vulkan_windows_wheel_is_not_asked_for_variants_or_loader(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.vulkan-py3-none-win_amd64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.vulkan-py3-none-win_amd64.whl",
         ("llama-server.exe", "ggml-vulkan.dll", "ggml-cpu.dll", *_WINDOWS_CRT),
     )
     assert acb.check(wheel) == []
@@ -386,7 +386,7 @@ def test_main_passes_the_backend_through(
 ) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cpu.so"),
     )
     assert acb.main(["--backend", "rocm", str(wheel)]) == 1
@@ -398,7 +398,7 @@ def test_main_returns_nonzero_and_names_the_wheel(
 ) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cu125-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cu125-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cuda.so"),
     )
     assert acb.main([str(wheel)]) == 1
@@ -408,7 +408,7 @@ def test_main_returns_nonzero_and_names_the_wheel(
 def test_main_returns_zero_on_a_good_wheel(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
-        "lilbee_engine-1.0-1.cu125-py3-none-manylinux_2_17_x86_64.whl",
+        "lilbee_engine_llama_cpp-1.0-1.cu125-py3-none-manylinux_2_17_x86_64.whl",
         ("llama-server", "libggml-cuda.so", *_LINUX_RUNTIME),
     )
     assert acb.main([str(wheel)]) == 0
@@ -433,7 +433,7 @@ _ROCM_PAYLOAD = (
     "libhipblas.so.3",
     "rocblas/library/kernels.dat",
 )
-_ROCM_WHEEL = "lilbee_engine-0.1-1.rocm-py3-none-manylinux_2_17_x86_64.whl"
+_ROCM_WHEEL = "lilbee_engine_llama_cpp-0.1-1.rocm-py3-none-manylinux_2_17_x86_64.whl"
 
 
 def test_a_wheel_too_big_to_upload_is_a_problem(
@@ -454,16 +454,16 @@ def test_a_wheel_within_the_limit_passes(tmp_path: Path) -> None:
 def _server_wheel(
     tmp_path: Path, *, server: str | None = "llama-server", mode: int = 0o755, base: bool = True
 ) -> Path:
-    path = tmp_path / "lilbee_engine-1-1.cpu-py3-none-manylinux_2_34_x86_64.whl"
+    path = tmp_path / "lilbee_engine_llama_cpp-1-1.cpu-py3-none-manylinux_2_34_x86_64.whl"
     with zipfile.ZipFile(path, "w") as zf:
         if server:
-            info = zipfile.ZipInfo(f"lilbee_engine/bin/{server}")
+            info = zipfile.ZipInfo(f"lilbee_engine_llama_cpp/bin/{server}")
             info.external_attr = (0o100000 | mode) << 16
             zf.writestr(info, b"x")
-        zf.writestr("lilbee_engine/bin/libggml-cpu-x64.so", b"x")
-        zf.writestr("lilbee_engine/bin/libggml-cpu-haswell.so", b"x")
+        zf.writestr("lilbee_engine_llama_cpp/bin/libggml-cpu-x64.so", b"x")
+        zf.writestr("lilbee_engine_llama_cpp/bin/libggml-cpu-haswell.so", b"x")
         if base:
-            zf.writestr("lilbee_engine/bin/libggml-base.so.0.9.5", b"x")
+            zf.writestr("lilbee_engine_llama_cpp/bin/libggml-base.so.0.9.5", b"x")
     return path
 
 

@@ -13,7 +13,7 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.binary import EngineTool
 from lilbee.providers.fleet.devices import DeviceProbe
-from lilbee.providers.fleet.engine_manifest import pack_digest
+from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest, RequestProfile
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
@@ -79,15 +79,17 @@ class IkLlamaAdapter:
     def pin_record(self) -> Mapping[str, Any]:
         from lilbee.catalog.runnable import session_host
 
+        host = session_host()
+        platforms = pack_platforms(self.name.value, VERSION, host, BACKEND)
         return {
             "engine": self.name.value,
             "version": VERSION,
             "backend": BACKEND,
-            "sha256": pack_digest(self.name.value, session_host(), BACKEND),
+            "sha256": pack_digest(self.name.value, VERSION, host, BACKEND),
             "tool": EngineTool.LLAMA_SERVER.value,
             "libraries": _PIN_LIBRARIES,
             "launch": _PIN_LAUNCH,
-            "platforms": {},
+            "platforms": platforms,
             "memory": {"sizing": _PIN_SIZING, "rule": None},
             "licenses": ["MIT"],
         }

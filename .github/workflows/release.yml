@@ -276,7 +276,7 @@ jobs:
       #
       # lancedb is the one package left out of the constraints, because the
       # locked version is the one with no wheel here. nuitka and pip are build
-      # tools, unpinned on every cell. lilbee-engine leaves the export as well,
+      # tools, unpinned on every cell. lilbee-engine-llama-cpp leaves the export as well,
       # for a different reason: it is a local path, and uv rejects an unnamed
       # requirement as a constraint.
       #
@@ -293,7 +293,7 @@ jobs:
           set -euxo pipefail
           uv venv
           uv export --frozen --extra release --no-hashes \
-            --no-emit-project --no-emit-package lilbee-engine \
+            --no-emit-project --no-emit-package lilbee-engine-llama-cpp \
             --no-emit-package lancedb \
             --format requirements-txt -o intel-constraints.txt
           uv pip install --python-platform x86_64-apple-darwin \
@@ -319,7 +319,7 @@ jobs:
             lancedb==0.40.0+compat
 
       # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
-      # baked rpath) and install lilbee_engine so Nuitka bundles the whole
+      # baked rpath) and install lilbee_engine_llama_cpp so Nuitka bundles the whole
       # engine into this executable.
       - name: Bundle llama-server
         uses: ./.github/actions/bundle-llama-server

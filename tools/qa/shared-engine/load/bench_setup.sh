@@ -16,7 +16,7 @@ if [ ! -x "$ENGINE_CACHE/llama-server" ]; then
   mkdir -p "$ENGINE_CACHE" /tmp/engwheel
   curl -fL --retry 3 -o /tmp/engwheel/engine.whl "$WHEEL_URL"
   python3 -c "import zipfile; zipfile.ZipFile('/tmp/engwheel/engine.whl').extractall('/tmp/engwheel/x')"
-  cp -a /tmp/engwheel/x/lilbee_engine/bin/. "$ENGINE_CACHE/"
+  cp -a /tmp/engwheel/x/lilbee_engine_llama_cpp/bin/. "$ENGINE_CACHE/"
 fi
 chmod +x "$ENGINE_CACHE"/llama-* "$ENGINE_CACHE"/gguf-parser 2>/dev/null
 
