@@ -110,6 +110,9 @@ class TestEveryVendorGetsTheWarning:
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
             lambda: frozenset(vendor_ids),
         )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_hardware.undriven_gpu_vendor_ids", frozenset
+        )
 
     @pytest.mark.parametrize(
         ("vendor_id", "vendor"),
@@ -126,6 +129,23 @@ class TestEveryVendorGetsTheWarning:
             planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
         assert vendor in caplog.text
         assert "reported none" in caplog.text
+
+    def test_a_card_with_no_kernel_driver_is_named_with_the_cause(
+        self, monkeypatch, caplog
+    ) -> None:
+        # An NVIDIA-only laptop with the nvidia module not loaded: the card does not
+        # count as a usable GPU, but the user still needs to hear why there is none.
+        from lilbee.providers.fleet import planning as planning_mod
+
+        self._probe_reporting_nothing(monkeypatch, set())
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_hardware.undriven_gpu_vendor_ids",
+            lambda: frozenset({0x10DE}),
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
+        assert "NVIDIA GPU" in caplog.text
+        assert "no kernel driver" in caplog.text
 
     def test_a_host_with_no_gpu_at_all_stays_quiet(self, monkeypatch, caplog) -> None:
         from lilbee.providers.fleet import planning as planning_mod

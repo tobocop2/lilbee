@@ -21,16 +21,21 @@ DISPLAY_CONTROLLER_CLASS = "0x038000"
 NETWORK_CONTROLLER_CLASS = "0x020000"
 
 
-def _write_pci_device(root: Path, slot: str, *, class_code: str, vendor: str) -> None:
+def _write_pci_device(
+    root: Path, slot: str, *, class_code: str, vendor: str, driver_bound: bool = True
+) -> None:
     """Write one sysfs PCI device directory.
 
     Real slot names are ``0000:00:02.0``; the colons are illegal in Windows paths
     and the probe never parses the name, so the fixture uses a portable stand-in.
+    sysfs links ``driver`` to the bound kernel driver; a directory stands in for it.
     """
     device = root / slot
     device.mkdir(parents=True)
     (device / "class").write_text(f"{class_code}\n")
     (device / "vendor").write_text(f"{vendor}\n")
+    if driver_bound:
+        (device / "driver").mkdir()
 
 
 class TestLinuxSysfs:
@@ -48,6 +53,37 @@ class TestLinuxSysfs:
         monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
 
         assert gpu_hardware.installed_gpu_vendor_ids() == frozenset({INTEL, NVIDIA})
+
+    def test_a_card_with_no_kernel_driver_is_not_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An NVIDIA card whose module is not loaded cannot run anything.
+
+        Measured on a hybrid ThinkPad with the nvidia module unloaded: sysfs
+        lists the card with no ``driver`` link, and reporting it hid the Intel
+        GPU that does work.
+        """
+        _write_pci_device(
+            tmp_path, "0000-00-02.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x8086"
+        )
+        _write_pci_device(
+            tmp_path,
+            "0000-01-00.0",
+            class_code=VGA_CONTROLLER_CLASS,
+            vendor="0x10de",
+            driver_bound=False,
+        )
+        monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
+
+        assert gpu_hardware.installed_gpu_vendor_ids() == frozenset({INTEL})
+        assert gpu_hardware.undriven_gpu_vendor_ids() == frozenset({NVIDIA})
+
+    def test_undriven_cards_are_not_read_off_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only sysfs records a missing driver; elsewhere the answer is empty."""
+        monkeypatch.setattr(gpu_hardware.sys, "platform", "win32")
+
+        assert gpu_hardware.undriven_gpu_vendor_ids() == frozenset()
 
     def test_non_display_devices_are_ignored(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

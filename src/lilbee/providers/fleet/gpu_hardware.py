@@ -35,6 +35,9 @@ _PCI_CLASS_CODE_BASE_SHIFT = 16
 _SYSFS_PCI_DEVICE_DIR = Path("/sys/bus/pci/devices")
 _SYSFS_CLASS_FILE = "class"
 _SYSFS_VENDOR_FILE = "vendor"
+# The link to the kernel driver bound to the device. A card with none, such as
+# an NVIDIA card whose module is not loaded, cannot run a Vulkan driver.
+_SYSFS_DRIVER_LINK = "driver"
 
 # Windows PnP device-instance IDs carry the PCI vendor in their hardware IDs
 # ("PCI\\VEN_10DE&DEV_1F95&..."). Both value names are set by the class
@@ -44,22 +47,35 @@ _PCI_VENDOR_ID_PATTERN = re.compile(r"ven_([0-9a-f]{4})", re.IGNORECASE)
 
 
 def installed_gpu_vendor_ids() -> frozenset[int]:
-    """PCI vendor IDs of this host's display controllers.
+    """PCI vendor IDs of this host's display controllers that a kernel driver runs.
 
-    Empty means the device tree holds no PCI display controller or could not be
-    read at all (macOS, an ARM SoC whose GPU is not on the PCI bus, a container
-    with no ``/sys``). That is "cannot tell", not "there is no GPU", and callers
-    must not read it as proof that a vendor is absent.
+    Empty means the device tree holds no such controller or could not be read
+    at all (macOS, an ARM SoC whose GPU is not on the PCI bus, a container with
+    no ``/sys``, or a Linux host where no display controller has a bound
+    driver). That is "cannot tell", not "there is no GPU", and callers must not
+    read it as proof that a vendor is absent.
     """
     if sys.platform == "win32":
         return frozenset(_windows_gpu_vendor_ids())
     if sys.platform.startswith("linux"):
-        return frozenset(_linux_gpu_vendor_ids())
+        return frozenset(vendor for vendor, bound in _linux_display_controllers() if bound)
     return frozenset()
 
 
-def _linux_gpu_vendor_ids() -> Iterator[int]:
-    """Yield the vendor ID of every PCI display controller in sysfs."""
+def undriven_gpu_vendor_ids() -> frozenset[int]:
+    """PCI vendor IDs of display controllers with no bound kernel driver.
+
+    Such a card cannot run anything, so it is not in ``installed_gpu_vendor_ids``;
+    this names it so a warning can say why the engine found no GPU. Only Linux
+    sysfs records the binding, so every other platform answers empty.
+    """
+    if not sys.platform.startswith("linux"):
+        return frozenset()
+    return frozenset(vendor for vendor, bound in _linux_display_controllers() if not bound)
+
+
+def _linux_display_controllers() -> Iterator[tuple[int, bool]]:
+    """Yield each sysfs PCI display controller's vendor ID and whether a driver is bound."""
     try:
         devices = sorted(_SYSFS_PCI_DEVICE_DIR.iterdir())
     except OSError:
@@ -72,7 +88,7 @@ def _linux_gpu_vendor_ids() -> Iterator[int]:
             continue
         vendor_id = _read_sysfs_hex(device / _SYSFS_VENDOR_FILE)
         if vendor_id is not None:
-            yield vendor_id
+            yield vendor_id, (device / _SYSFS_DRIVER_LINK).exists()
 
 
 def _read_sysfs_hex(path: Path) -> int | None:

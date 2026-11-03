@@ -68,3 +68,33 @@ class TestUnknownHardwareDisablesNothing:
         assert result is not None
         assert "radeon*" in result
         assert "intel*" not in result
+
+
+class TestACardWithNoDriverDoesNotWinTheChoice:
+    """Measured on a hybrid ThinkPad: Intel UHD on i915, GTX 1650 Ti with the
+    nvidia module not loaded. The NVIDIA ICD manifest is installed, so ranking
+    by PCI presence kept NVIDIA, hid Intel, and the engine listed no device."""
+
+    def test_the_intel_driver_is_kept_when_the_nvidia_card_has_no_driver(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet import gpu_hardware
+
+        for slot, vendor, bound in (("igpu", "0x8086", True), ("dgpu", "0x10de", False)):
+            device = tmp_path / slot
+            device.mkdir()
+            (device / "class").write_text("0x030000\n", encoding="utf-8")
+            (device / "vendor").write_text(f"{vendor}\n", encoding="utf-8")
+            if bound:
+                (device / "driver").mkdir()
+        monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
+        monkeypatch.setattr(
+            gpu_select, "_vulkan_vendors_present", lambda: {PCIVendorID.NVIDIA, PCIVendorID.INTEL}
+        )
+
+        result = gpu_select.disable_conflicting_vulkan_icds()
+
+        assert result is not None
+        assert "intel*" not in result
+        assert "nv*" in result.split(",")
