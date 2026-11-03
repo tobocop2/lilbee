@@ -41,7 +41,7 @@ From another folder, add `--no-sources` (or `--project <checkout>`):
 uv pip install --no-sources -e <checkout>[engine]
 ```
 
-Without one of these, `uv` resolves `lilbee-engine` to the 0.0.0 placeholder package in `packaging/engine-wheel`, which has no `llama-server` binary. The `[tool.uv.pip] no-sources` setting in `pyproject.toml` only applies when `uv` runs inside the checkout.
+Without one of these, `uv` resolves `lilbee-engine-llama-cpp` to the 0.0.0 placeholder package in `packaging/engine-wheel`, which has no `llama-server` binary. `uv sync --extra engine` does the same, because it reads the lock file, which records the placeholder. The `[tool.uv.pip] no-sources` setting in `pyproject.toml` only applies when `uv` runs inside the checkout.
 
 Optionally install the git hooks so lint, format, and type checks run on each commit (the same checks CI enforces):
 
