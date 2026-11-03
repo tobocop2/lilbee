@@ -472,6 +472,11 @@ server the removal needs `allow_http_engines`.
 If the build of an engine differs from the pin, `engine list` prints one line:
 the engine is not installed, and the line names the build that differs.
 
+If lilbee has no recorded run of an engine on a device, the line ends with
+`, not run on <device>`. The install output prints the same words. Each build in
+the JSON list has a `not_run_on` field with the same devices. `auto` never
+chooses an engine that has a device in this list.
+
 #### The saved choice
 
 The engine commands write two keys to `config.toml`: `preferred_engine` and

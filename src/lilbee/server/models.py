@@ -977,6 +977,7 @@ class EngineBuildResponse(BaseModel):
     engine: str
     version: str
     backend: str
+    not_run_on: list[str] = []
 
 
 class EngineBuildsResponse(BaseModel):
@@ -1030,6 +1031,7 @@ class EngineInstalledResponse(BaseModel):
     version: str
     backend: str
     note: str = ""
+    not_run_on: list[str] = []
 
 
 class PresetAddBody(BaseModel):
