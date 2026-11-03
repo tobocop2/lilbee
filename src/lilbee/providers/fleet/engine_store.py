@@ -29,6 +29,7 @@ from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.core.security import FileLockUnavailableError, file_lock
 from lilbee.providers.fleet.engine_digests import PACKAGES_URL
 from lilbee.providers.fleet.wheel_server import server_entry, server_problems
+from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 
@@ -691,6 +692,7 @@ def fetch_frozen(
     dest: Path,
     on_progress: ProgressCallback | None = None,
     on_retry: RetryCallback | None = None,
+    cancel: CancelSignal | None = None,
 ) -> Path:
     """Download the wheel of *lock* for the cell *platform* into *dest*, unchecked.
 
@@ -716,7 +718,9 @@ def fetch_frozen(
     shortfall = disk_shortfall(dest, url_filename(asset.url), asset.size)
     if shortfall is not None:
         raise EngineDiskError(shortfall)
-    return download_url(asset.url, dest, asset.size, on_progress=on_progress, on_retry=on_retry)
+    return download_url(
+        asset.url, dest, asset.size, on_progress=on_progress, on_retry=on_retry, cancel=cancel
+    )
 
 
 __all__ = [
