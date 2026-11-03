@@ -230,7 +230,7 @@ class TestRunCrawl:
         task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
         await run_crawl(task)
         assert task.status == TaskStatus.DONE
-        mock_sync.assert_awaited_once_with(quiet=True, cancel=task.cancel)
+        mock_sync.assert_awaited_once_with(quiet=True, cancel=task.cancel, started_by="a crawl")
 
     @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("sync boom"))
     @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
@@ -290,7 +290,7 @@ class TestRunCrawl:
 
         captured_finished_at: list[str] = []
 
-        async def spy_sync(*, quiet: bool = False, cancel=None) -> MagicMock:
+        async def spy_sync(*, quiet: bool = False, cancel=None, started_by=None) -> MagicMock:
             captured_finished_at.append(task.finished_at)
             return MagicMock()
 

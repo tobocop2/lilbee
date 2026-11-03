@@ -22,6 +22,7 @@ from lilbee.runtime.progress import (
     OcrStartEvent,
     ProgressEvent,
     SyncDoneEvent,
+    SyncWaitEvent,
 )
 
 if TYPE_CHECKING:
@@ -66,10 +67,17 @@ def _print_done(con: PlainConsole, data: ProgressEvent) -> None:
         con.print(f"Synced: {summary}", style=theme.MUTED)
 
 
+def _print_wait(con: PlainConsole, data: ProgressEvent) -> None:
+    if not isinstance(data, SyncWaitEvent):
+        raise TypeError(f"Expected SyncWaitEvent, got {type(data).__name__}")
+    con.print(data.message, style=theme.MUTED, soft_wrap=True)
+
+
 def _sync_progress_printer(con: PlainConsole) -> DetailedProgressCallback:
-    """Return a callback that prints one-line status for FILE_START and SYNC_DONE events."""
+    """Return a callback that prints one-line status for FILE_START, SYNC_WAIT and SYNC_DONE."""
     handlers: dict[EventType, Callable[[PlainConsole, ProgressEvent], None]] = {
         EventType.FILE_START: _print_file_start,
+        EventType.SYNC_WAIT: _print_wait,
         EventType.SYNC_DONE: _print_done,
     }
 
@@ -157,6 +165,25 @@ def _tesseract_status(data: ProgressEvent) -> str:
     return f"⟳ {data.status_text}"
 
 
+def _chat_status_line(event_type: EventType, data: ProgressEvent) -> str | None:
+    """The status line an event sets in chat mode, or None for an event that sets none."""
+    if event_type == EventType.FILE_START:
+        if not isinstance(data, FileStartEvent):
+            raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
+        return f"⟳ Syncing [{data.current_file}/{data.total_files}]: {data.file}"
+    if event_type == EventType.EXTRACT:
+        if not isinstance(data, ExtractEvent):
+            raise TypeError(f"Expected ExtractEvent, got {type(data).__name__}")
+        return f"⟳ {data.step} [{data.page}/{data.total_pages}]: {data.file}"
+    if event_type == EventType.OCR_START:
+        return _tesseract_status(data)
+    if event_type == EventType.SYNC_WAIT:
+        if not isinstance(data, SyncWaitEvent):
+            raise TypeError(f"Expected SyncWaitEvent, got {type(data).__name__}")
+        return f"⟳ {data.message}"
+    return None
+
+
 def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
     """Return a progress callback for chat-mode background sync.
     FILE_START updates *status.text* (rendered by prompt_toolkit's bottom
@@ -166,21 +193,10 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
     status.clear()
 
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
-        queue_suffix = f" (+{status.pending} queued)" if status.pending > 0 else ""
-        if event_type == EventType.FILE_START:
-            if not isinstance(data, FileStartEvent):
-                raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
-            status.text = (
-                f"⟳ Syncing [{data.current_file}/{data.total_files}]: {data.file}{queue_suffix}"
-            )
-        elif event_type == EventType.EXTRACT:
-            if not isinstance(data, ExtractEvent):
-                raise TypeError(f"Expected ExtractEvent, got {type(data).__name__}")
-            status.text = (
-                f"⟳ {data.step} [{data.page}/{data.total_pages}]: {data.file}{queue_suffix}"
-            )
-        elif event_type == EventType.OCR_START:
-            status.text = _tesseract_status(data) + queue_suffix
+        line = _chat_status_line(event_type, data)
+        if line is not None:
+            queue_suffix = f" (+{status.pending} queued)" if status.pending > 0 else ""
+            status.text = line + queue_suffix
         elif event_type == EventType.SYNC_DONE:
             status.clear()
             if not isinstance(data, SyncDoneEvent):
@@ -208,7 +224,7 @@ def run_sync_background(
     def _run() -> object:
         if chat_mode:
             status.adjust_pending(-1)
-        return asyncio.run(sync(quiet=True, on_progress=callback))
+        return asyncio.run(sync(quiet=True, on_progress=callback, started_by="lilbee chat"))
 
     if chat_mode:
         status.adjust_pending(1)

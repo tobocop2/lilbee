@@ -281,7 +281,7 @@ async def _maybe_periodic_sync(tasks: set[asyncio.Task[None]], cancel: CancelTok
         try:
             from lilbee.data.ingest import sync
 
-            await sync(quiet=True, cancel=cancel)
+            await sync(quiet=True, cancel=cancel, started_by="a crawl")
         except Exception as exc:
             log.warning("Periodic sync during crawl failed: %s", exc)
         finally:

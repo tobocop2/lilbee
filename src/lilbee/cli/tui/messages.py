@@ -791,6 +791,7 @@ TASKBAR_SYNC_PENDING_PLURAL_INPUT = "[b]{count} docs to sync[/b] · Esc then S t
 SYNC_CANCELLED_RESUME = "Sync cancelled. Press S to resume."
 SYNC_EMBEDDING = "Embedding {file}"
 SYNC_FILE_DONE = "Done: {file}"
+SYNC_WAITING = "Waiting for the running sync"
 ADD_SYNCING_FILE = "Syncing {file}..."
 ADD_PAGE_PROGRESS = "{status} page {current} of {total}"
 ADD_FILE_DONE = "Done {file}"

@@ -972,7 +972,12 @@ class ChatScreen(Screen[None]):
 
         reporter.update(0, f"Added {len(registered)} source(s), syncing...", indeterminate=True)
         sync_result = asyncio_loop.run(
-            sync(quiet=True, on_progress=build_add_progress_callback(reporter), cancel=reporter)
+            sync(
+                quiet=True,
+                on_progress=build_add_progress_callback(reporter),
+                cancel=reporter,
+                started_by="the lilbee TUI",
+            )
         )
         self._notify_unreadable_folders(sync_result)
         if sync_result.failed:
@@ -2647,6 +2652,7 @@ class ChatScreen(Screen[None]):
                     cancel=reporter,
                     force_rebuild=force_rebuild,
                     prune_ignored=prune_ignored,
+                    started_by="the lilbee TUI",
                 )
             )
         except asyncio.CancelledError as exc:

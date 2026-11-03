@@ -20,6 +20,7 @@ from lilbee.runtime.progress.types import (
     SetupProgressEvent,
     SetupStartEvent,
     SyncDoneEvent,
+    SyncWaitEvent,
     WikiPageEvent,
     WikiPhaseEvent,
 )
@@ -32,6 +33,7 @@ ProgressEvent = (
     | OcrStartEvent
     | EmbedEvent
     | SyncDoneEvent
+    | SyncWaitEvent
     | CrawlStartEvent
     | CrawlPageEvent
     | CrawlPageFailedEvent

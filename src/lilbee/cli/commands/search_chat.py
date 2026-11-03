@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -315,10 +316,8 @@ def ask(
         _swap_stale_models_to_installed(chat_overridden=chat_model_overridden())
         get_services().embedder.validate_model()
         if cfg.auto_sync and not no_sync:
-            if cfg.json_mode:
-                auto_sync(PlainConsole(quiet=True), run_sync_with_signal_cancel)
-            else:
-                auto_sync(console, run_sync_with_signal_cancel)
+            run_sync = functools.partial(run_sync_with_signal_cancel, started_by="lilbee ask")
+            auto_sync(PlainConsole(quiet=True) if cfg.json_mode else console, run_sync)
 
         chunk_type = scope_to_chunk_type(scope)
 

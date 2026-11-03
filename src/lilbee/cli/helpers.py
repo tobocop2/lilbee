@@ -276,7 +276,7 @@ def add_paths(
     and this function returns immediately after registering. *run_sync*
     overrides the foreground sync call and receives the registration result
     (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
-    ``asyncio.run(sync())``. The sync runs when a path reached the corpus, or
+    ``asyncio.run(sync(started_by="lilbee add"))``. The sync runs when a path reached the corpus, or
     when *sync_anyway* says the caller has other new content to index.
     """
     registration = register_paths(paths, con, force=force)
@@ -302,7 +302,7 @@ def _run_foreground_sync() -> object:
     """Run a blocking sync with no cancellation hook (default for non-CLI callers)."""
     from lilbee.data.ingest import sync
 
-    return asyncio.run(sync())
+    return asyncio.run(sync(started_by="lilbee add"))
 
 
 def sync_result_to_json(result: object) -> dict:
