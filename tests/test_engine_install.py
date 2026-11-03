@@ -7,6 +7,7 @@ import json
 import re
 import socket
 import stat
+import time
 import zipfile
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -23,6 +24,8 @@ from lilbee.catalog import download, runnable
 from lilbee.catalog.models import DownloadProgress
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import run_engine_command
+from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet import engine_manifest, engine_store, host_caps
@@ -33,10 +36,13 @@ from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS, collect
 from lilbee.server.routes import engines as routes
+from tests._async_wait import wait_until
+from tests._lilbee_app_test_host import await_chat
 from tests._litestar_test_client import create_test_client
 from tests._release_server import ReleaseServer, release_server
 from tests.conformance.fake_adapter import FakeAdapter
 from tests.test_engine_service import GGUF_ENGINE
+from tests.test_tui_engine_choice import _ChatApp
 
 ENGINE = EngineName.IK_LLAMA
 VERSION = "git-0123456789ab"
@@ -262,6 +268,86 @@ def test_a_download_the_network_keeps_cutting_gives_the_missing_pack_text(
     )
     assert len(release.requests) == 3
     assert _builds() == []
+
+
+def _downloadable(good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+
+
+def _leftovers(root: Path) -> list[str]:
+    """Every download folder, lock file and stage folder still under the engines folder."""
+    return sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if path.is_file() or path.name.startswith((".download-", ".stage-"))
+    )
+
+
+async def test_cancelling_the_slash_install_mid_download_leaves_no_partial_file_and_no_lock(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, root: Path
+) -> None:
+    _downloadable(good, release, monkeypatch)
+    app = _ChatApp()
+    real = engine_service.make_download_callback
+
+    def cancelling(on_update: Any) -> Any:
+        inner = real(on_update)
+
+        def on_bytes(done: int, total: int) -> None:
+            app.task_bar.cancel_task(app.task_bar.queue.active_tasks[0].task_id)
+            inner(done, total)
+
+        return on_bytes
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        monkeypatch.setattr(engine_service, "make_download_callback", cancelling)
+        chat._cmd_engine(f"install {ENGINE.value}")
+        assert await wait_until(
+            pilot,
+            lambda: bool(app.task_bar.queue.history) and not app.task_bar._workers,
+            timeout=10,
+        )
+        (row,) = app.task_bar.queue.history
+        assert row.status is TaskStatus.CANCELLED
+    assert len(release.requests) == 1
+    assert _builds() == []
+    assert _leftovers(root) == []
+
+
+async def test_cancelling_the_slash_install_during_the_backoff_ends_it_before_the_next_connect(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, root: Path
+) -> None:
+    _downloadable(good, release, monkeypatch)
+    release.reset_next = 10
+    monkeypatch.setattr(download, "_RETRY_BACKOFF_SECONDS", 60)
+    app = _ChatApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        chat._cmd_engine(f"install {ENGINE.value}")
+        assert await wait_until(
+            pilot,
+            lambda: any("trying again" in str(n.message) for n in app._notifications),
+            timeout=10,
+        )
+        started = time.monotonic()
+        app.task_bar.cancel_task(app.task_bar.queue.active_tasks[0].task_id)
+        assert await wait_until(
+            pilot,
+            lambda: bool(app.task_bar.queue.history) and not app.task_bar._workers,
+            timeout=10,
+        )
+        (row,) = app.task_bar.queue.history
+        assert row.status is TaskStatus.CANCELLED
+        assert time.monotonic() - started < 5
+    assert len(release.requests) == 1
+    assert _builds() == []
+    assert _leftovers(root) == []
 
 
 def test_a_pin_with_no_cells_installs_a_wheel_on_a_host_the_manifest_cannot_name(

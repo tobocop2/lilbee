@@ -183,6 +183,7 @@ def _raise_if_disk_exhausted(
 
 _TRANSFER_RETRIES = 2
 _RETRY_BACKOFF_SECONDS = 5
+_CANCEL_POLL_SECONDS = 0.2
 
 
 class _TransientDownloadError(RuntimeError):
@@ -193,10 +194,30 @@ RetryCallback = Callable[[int, int, str], None]
 """Receives (attempt, attempts, cause) when a failed attempt is about to repeat."""
 
 
-def _retry_transient(work: Callable[[], _T], on_retry: RetryCallback | None = None) -> _T:
+def _backoff(seconds: float, cancel: CancelSignal | None) -> None:
+    """Wait *seconds*; a set *cancel* ends the wait at once with ``TaskCancelledError``."""
+    if cancel is None:
+        time.sleep(seconds)
+        return
+    deadline = time.monotonic() + seconds
+    while True:
+        if cancel.is_set():
+            raise TaskCancelledError
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(_CANCEL_POLL_SECONDS, remaining))
+
+
+def _retry_transient(
+    work: Callable[[], _T],
+    on_retry: RetryCallback | None = None,
+    cancel: CancelSignal | None = None,
+) -> _T:
     """Run *work*, retrying only the faults another attempt can clear.
 
-    *on_retry* hears each failed attempt that another attempt follows.
+    *on_retry* hears each failed attempt that another attempt follows. A set
+    *cancel* ends the wait between attempts with ``TaskCancelledError``.
 
     Every other error propagates on the first attempt, cancellation included,
     so a defect or a configuration error is never hidden behind a retry. A
@@ -213,7 +234,7 @@ def _retry_transient(work: Callable[[], _T], on_retry: RetryCallback | None = No
         if attempt < _TRANSFER_RETRIES:
             if on_retry is not None:
                 on_retry(attempt + 1, _TRANSFER_RETRIES + 1, str(last_error))
-            time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
+            _backoff(_RETRY_BACKOFF_SECONDS * (attempt + 1), cancel)
     raise RuntimeError(
         f"{last_error}. The transfer failed {_TRANSFER_RETRIES + 1} times. Check the "
         "network connection and retry; the files that finished are kept."
@@ -237,12 +258,14 @@ def download_url(
     *,
     on_progress: ProgressCallback | None = None,
     on_retry: RetryCallback | None = None,
+    cancel: CancelSignal | None = None,
 ) -> Path:
     """Download *url* into *dest*, resuming a partial file; return the file path.
 
     Network and I/O faults retry. A refusal the server will repeat, and the hub's
     offline switch, end the transfer at once.
-    *on_progress* receives byte counts and *on_retry* each failed attempt.
+    *on_progress* receives byte counts and *on_retry* each failed attempt. A set
+    *cancel* ends the wait between attempts with ``TaskCancelledError``.
     """
     from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
     from huggingface_hub.file_download import http_get
@@ -274,7 +297,7 @@ def download_url(
             raise _TransientDownloadError(f"Transfer failed: {exc}") from None
         return target
 
-    return _retry_transient(fetch, on_retry)
+    return _retry_transient(fetch, on_retry, cancel)
 
 
 def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:

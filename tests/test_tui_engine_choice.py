@@ -342,8 +342,9 @@ async def test_the_slash_install_shows_its_bytes_in_the_task_bar_and_each_retry_
     app = _ChatApp()
 
     def install(
-        _name: str, _wheel: object = None, *, on_update: Any, on_retry: Any
+        _name: str, _wheel: object = None, *, on_update: Any, on_retry: Any, cancel: Any
     ) -> engine_service.InstalledBuild:
+        assert cancel.is_set() is False
         on_retry("Transfer failed: timed out. Attempt 1 of 3 failed; trying again.")
         on_update(DownloadProgress(percent=40.0, detail="4/10 MB", is_cache_hit=False))
         seen.extend(

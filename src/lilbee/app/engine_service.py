@@ -53,6 +53,7 @@ from lilbee.providers.fleet.engines.choice import (
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
 from lilbee.retrieval.canary_probe import embedder_trigger
+from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -357,11 +358,12 @@ def install(
     wheel: Path | None = None,
     on_update: Callable[[DownloadProgress], None] | None = None,
     on_retry: Callable[[str], None] | None = None,
+    cancel: CancelSignal | None = None,
 ) -> InstalledBuild:
     """Install the pinned build of engine *name* from *wheel*, a pack, or its release URL.
 
     *on_update* hears the download bytes. *on_retry* hears each failed attempt with its
-    cause and attempt number.
+    cause and attempt number. A set *cancel* ends the download, also while it waits to try again.
 
     The host gate and the cell for this computer run first. The store checks the digest,
     the licence and the files of the wheel and writes the record.
@@ -399,6 +401,7 @@ def install(
                     dest=scratch,
                     on_progress=on_bytes,
                     on_retry=_retry_reporter(on_retry),
+                    cancel=cancel,
                 ),
             )
         else:

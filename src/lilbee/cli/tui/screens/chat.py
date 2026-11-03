@@ -126,7 +126,7 @@ from lilbee.retrieval.query.compaction import (
 from lilbee.retrieval.query.history_window import estimate_tokens
 from lilbee.retrieval.reasoning import RetrievalNotice
 from lilbee.runtime import asyncio_loop
-from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.lock import ResetRefusedError
 from lilbee.runtime.progress import (
     EventType,
@@ -1502,7 +1502,7 @@ class ChatScreen(Screen[None]):
             def on_update(p: DownloadProgress) -> None:
                 reporter.update(p.percent, f"{name}: {p.detail}")
 
-            result = self._engine_command(args, on_update)
+            result = self._engine_command(args, on_update, reporter)
             if not result.ok:
                 raise RuntimeError(result.text)
 
@@ -1513,7 +1513,10 @@ class ChatScreen(Screen[None]):
         self._engine_command(args)
 
     def _engine_command(
-        self, args: str, on_update: Callable[[DownloadProgress], None] | None = None
+        self,
+        args: str,
+        on_update: Callable[[DownloadProgress], None] | None = None,
+        cancel: CancelSignal | None = None,
     ) -> EngineCommandResult:
         """Run an /engine command on a worker thread, show its result and return it."""
         from lilbee.cli.tui.engine_commands import announce, run_engine_command
@@ -1521,7 +1524,7 @@ class ChatScreen(Screen[None]):
         def on_retry(text: str) -> None:
             call_from_thread(self, self.notify, text, severity="warning")
 
-        result = run_engine_command(args, on_update, on_retry)
+        result = run_engine_command(args, on_update, on_retry, cancel)
         call_from_thread(self, announce, self.app, result)
         return result
 
