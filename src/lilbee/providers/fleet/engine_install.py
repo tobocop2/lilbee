@@ -2,24 +2,7 @@
 
 from __future__ import annotations
 
-import sys
-from enum import StrEnum
-from pathlib import Path
-
 from lilbee._frozen import is_frozen
-
-
-class InstallMethod(StrEnum):
-    """How this lilbee was put on the machine."""
-
-    UV_TOOL = "uv_tool"
-    UV_ENV = "uv_env"
-    PIPX = "pipx"
-    PIP = "pip"
-    HOMEBREW = "homebrew"
-    STANDALONE = "standalone"
-    UNKNOWN = "unknown"
-
 
 _INSTALL_COMMAND = (
     "To download the engine, run 'lilbee engine install'. "
@@ -37,33 +20,12 @@ _BRING_YOUR_OWN = (
 )
 
 
-def detect_install_method() -> InstallMethod:
-    """Tell how lilbee was installed from the interpreter's own location."""
-    if is_frozen():
-        exe = Path(sys.executable).as_posix().lower()
-        return (
-            InstallMethod.HOMEBREW
-            if ("/cellar/" in exe or "/homebrew/" in exe)
-            else (InstallMethod.STANDALONE)
-        )
-    prefix = Path(sys.prefix).as_posix().lower()
-    if "/uv/tools/" in prefix:
-        return InstallMethod.UV_TOOL
-    if "/pipx/venvs/" in prefix:
-        return InstallMethod.PIPX
-    if sys.prefix == sys.base_prefix:
-        return InstallMethod.UNKNOWN
-    try:
-        lines = (Path(sys.prefix) / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return InstallMethod.PIP
-    made_by_uv = any(line.partition("=")[0].strip() == "uv" for line in lines)
-    return InstallMethod.UV_ENV if made_by_uv else InstallMethod.PIP
+def engine_install_hint(bundled: bool | None = None) -> str:
+    """The advice for installing the engine, for a self-contained build or a package install.
 
-
-def engine_install_hint(method: InstallMethod | None = None) -> str:
-    """The advice for installing the engine, for *method* or the detected install."""
-    method = detect_install_method() if method is None else method
-    if method in (InstallMethod.HOMEBREW, InstallMethod.STANDALONE):
+    *bundled* defaults to whether this lilbee is a frozen, self-contained build.
+    """
+    bundled = is_frozen() if bundled is None else bundled
+    if bundled:
         return f"{_BUNDLED_FORMS} {_BRING_YOUR_OWN}"
     return f"{_INSTALL_COMMAND} {_BUNDLED_FORMS} {_BRING_YOUR_OWN}"
