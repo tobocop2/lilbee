@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -2284,6 +2285,68 @@ class TestLifespan:
         async with _lifespan(mock.MagicMock()):
             svc.provider.shutdown.assert_not_called()
         svc.provider.shutdown.assert_called_once()
+
+
+class _HeldOpenStore:
+    """A store whose background open runs until a waiter arrives, or never when *hangs*."""
+
+    def __init__(self, *, hangs: bool = False) -> None:
+        self.hangs = hangs
+        self.waits: list[float] = []
+        self.opened = threading.Event()
+        self.release = threading.Event()
+        self._open_thread: threading.Thread | None = None
+
+    def open_in_background(self) -> None:
+        self._open_thread = threading.Thread(target=self._open, daemon=True)
+        self._open_thread.start()
+
+    def _open(self) -> None:
+        self.release.wait()
+        self.opened.set()
+
+    def wait_for_open(self, timeout: float) -> bool:
+        self.waits.append(timeout)
+        if self.hangs:
+            return False
+        assert self._open_thread is not None
+        self.release.set()
+        self._open_thread.join()
+        return True
+
+
+class TestLifespanWaitsForTheOpen:
+    """The lifespan does not end while the library open it started still runs."""
+
+    @mock.patch("lilbee.server.app.peek_services", return_value=None)
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_the_shutdown_waits_for_an_open_still_in_progress(self, mock_get_svc, _peek):
+        store = _HeldOpenStore()
+        mock_get_svc.return_value = mock.MagicMock(store=store)
+        from lilbee.server.app import _lifespan
+
+        async with _lifespan(mock.MagicMock()):
+            assert not store.opened.is_set()
+        assert store.opened.is_set()
+
+    @mock.patch("lilbee.server.app.peek_services", return_value=None)
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_the_shutdown_returns_within_the_bound_when_the_open_hangs(
+        self, mock_get_svc, _peek, caplog
+    ):
+        from lilbee.cli.launchers.server import _TERMINATE_GRACE_S
+        from lilbee.server.app import _lifespan
+
+        store = _HeldOpenStore(hangs=True)
+        mock_get_svc.return_value = mock.MagicMock(store=store)
+        with caplog.at_level(logging.WARNING, logger="lilbee.server.app"):
+            async with _lifespan(mock.MagicMock()):
+                pass
+        assert len(store.waits) == 1
+        assert 0 < store.waits[0] < _TERMINATE_GRACE_S
+        assert not store.opened.is_set()
+        assert "still opening" in caplog.text
+        store.release.set()
 
 
 class TestSessionManagerPersistence:
