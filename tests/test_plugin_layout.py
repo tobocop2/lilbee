@@ -77,3 +77,44 @@ def test_worker_agent_names_itself():
     meta = _frontmatter(PLUGIN / "agents" / "lilbee-worker.md")
     assert meta["name"] == "lilbee-worker"
     assert meta["description"]
+
+
+NPM_PACKAGE = ROOT / "packages" / "lilbee"
+
+
+def test_npm_package_ships_the_skills_and_both_host_entry_points():
+    package = json.loads((NPM_PACKAGE / "package.json").read_text(encoding="utf-8"))
+    assert package["name"] == "lilbee"
+    assert package["exports"]["./server"] == "./plugin/server.js"
+    assert (NPM_PACKAGE / "plugin" / "server.js").is_file()
+    assert {"plugin", "skills"} <= set(package["files"])
+    assert package["pi"] == {"extensions": ["./plugin/extensions"], "skills": ["./skills"]}
+    assert {"pi-package", "opencode-plugin"} <= set(package["keywords"])
+    for hook in ("prepack", "pretest"):
+        assert package["scripts"][hook] == "node scripts/copy-skills.mjs"
+
+
+def test_npm_package_copies_the_plugin_skills_at_pack_time():
+    script = (NPM_PACKAGE / "scripts" / "copy-skills.mjs").read_text(encoding="utf-8")
+    assert "../../../plugins/lilbee/skills" in script
+    ignored = (NPM_PACKAGE / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "skills/" in ignored
+
+
+def test_npm_plugin_command_matches_the_claude_mcp_config():
+    command = (NPM_PACKAGE / "plugin" / "command.js").read_text(encoding="utf-8")
+    found = re.search(r"MCP_COMMAND = (\[.*?\])", command)
+    assert found
+    config = json.loads((PLUGIN / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["lilbee"]
+    assert json.loads(found.group(1)) == [config["command"], *config["args"]]
+
+
+def test_npm_package_tests_run_in_the_launcher_ci_job():
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    steps = ci["jobs"]["npm-launcher"]["steps"]
+    tests = [s for s in steps if s.get("run") == "npm test"]
+    assert [s["working-directory"] for s in tests] == ["packages/lilbee"]
+    workdirs = [
+        s.get("working-directory") for job in ci["jobs"].values() for s in job.get("steps", [])
+    ]
+    assert "plugins/lilbee" not in workdirs
