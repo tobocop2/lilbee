@@ -11,6 +11,11 @@ from lilbee.providers.fleet.engines import proof
 from tests._engine_launch_argv import launch_argvs
 
 # The argv of each adapter at 6c19ed322, recorded before any proof table existed.
+# Updated by hand after commit 05be33fae, which put the engine subcommand after
+# `serve` for mistral.rs: the `text` word in chat and the `vision` word in vision.
+# Updated again after commits 37f0ca6eb and 1e7fbaf0e: the mistral.rs vision
+# subcommand is `multimodal`, and the TEI roles carry `--max-batch-tokens`.
+# No other line changed.
 BASE = Path(__file__).parent / "fixtures" / "engine_launch_argv_base.json"
 
 
