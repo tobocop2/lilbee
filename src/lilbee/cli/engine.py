@@ -17,6 +17,7 @@ from lilbee.cli import theme
 from lilbee.cli.app import console, json_out
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.engines.proof import not_run_clause, not_run_on
 from lilbee.providers.fleet.swap_manager import stop_engine
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole
@@ -69,14 +70,15 @@ def list_builds() -> None:
         if build.engine not in absent:
             console.print(build.label)
     for name in absent:
+        clause = not_run_clause(not_run_on(name))
         if name in stale:
             old = stale[name]
             console.print(
                 f"{name} not installed: the installed build {old.version} ({old.backend}) "
-                "differs from the pin"
+                f"differs from the pin{clause}"
             )
         else:
-            console.print(f"{name} not installed")
+            console.print(f"{name} not installed{clause}")
 
 
 @engine_app.command("install")
@@ -115,9 +117,16 @@ def install(
             )
     except engine_service.EngineRefusedError as exc:
         raise _refuse("engine install", exc) from exc
-    label = f"{built.engine} {built.version} ({built.backend})"
+    label = built.label
     if cfg.json_mode:
-        json_out({"command": "engine install", "installed": label, "note": built.note})
+        json_out(
+            {
+                "command": "engine install",
+                "installed": label,
+                "note": built.note,
+                "not_run_on": list(built.not_run_on),
+            }
+        )
         return
     console.print(f"Installed engine {label}.")
     if built.note:

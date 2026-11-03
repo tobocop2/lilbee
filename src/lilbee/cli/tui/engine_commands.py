@@ -84,8 +84,7 @@ def _store_verb(
         built = engine_service.install(
             words[0], on_update=on_update, on_retry=on_retry, cancel=cancel
         )
-        label = f"{built.engine} {built.version} ({built.backend})"
-        done = msg.ENGINE_INSTALL_DONE.format(build=label)
+        done = msg.ENGINE_INSTALL_DONE.format(build=built.label)
         return EngineCommandResult(True, f"{done} {built.note}" if built.note else done)
     return None
 

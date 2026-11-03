@@ -30,7 +30,7 @@ ALL_ROUTES = [
     routes.engine_remove_route,
     routes.engine_roles_route,
 ]
-BUILD = {"engine": "fx", "version": "1", "backend": "cpu"}
+BUILD = {"engine": "fx", "version": "1", "backend": "cpu", "not_run_on": []}
 BUNDLED_REFUSAL = "inside the executable"
 MISSING_REFUSAL = "Engine fx 9 (cpu) is not installed."
 

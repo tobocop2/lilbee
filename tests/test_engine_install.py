@@ -472,7 +472,12 @@ def test_the_cli_installs_and_lists_the_engine(good: Path) -> None:
     code, body = _cli("install", ENGINE.value, "--wheel", str(good))
     assert (code, body) == (
         0,
-        {"command": "engine install", "installed": f"{ENGINE} {VERSION} (cpu)", "note": ""},
+        {
+            "command": "engine install",
+            "installed": f"{ENGINE} {VERSION} (cpu)",
+            "note": "",
+            "not_run_on": [],
+        },
     )
     listing = CliRunner().invoke(cli_app, ["engine", "list"])
     assert f"{ENGINE} {VERSION} (cpu)" in listing.output
@@ -512,7 +517,13 @@ def test_rest_installs_a_pack_from_the_packs_folder(good: Path, root: Path) -> N
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
     assert _rest({"engine": ENGINE.value}) == (
         200,
-        {"engine": ENGINE.value, "version": VERSION, "backend": "cpu", "note": ""},
+        {
+            "engine": ENGINE.value,
+            "version": VERSION,
+            "backend": "cpu",
+            "note": "",
+            "not_run_on": [],
+        },
     )
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
@@ -542,6 +553,7 @@ def test_mcp_installs_and_refuses(good: Path, root: Path) -> None:
         "version": VERSION,
         "backend": "cpu",
         "note": "",
+        "not_run_on": [],
     }
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 

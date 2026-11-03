@@ -27,6 +27,7 @@ from lilbee.providers.fleet.engine_store import (
 )
 from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.engines.proof import is_proven
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.roles import WorkerRole
 
@@ -135,7 +136,10 @@ def _is_apple_silicon(caps: HostCaps) -> bool:
 def _default(
     fmt: ModelFormat, host: HostSource, installed: InstalledEngines, role: WorkerRole | None
 ) -> EngineName | None:
-    """The first engine in the host's order that is installed, loads *fmt* and serves *role*."""
+    """The first engine in the host's order that is installed, loads *fmt* and serves *role*.
+
+    An engine with a device it has not run on is never chosen here; ``is_proven`` says so.
+    """
     order: list[EngineName] = []
     if EngineName.MLX in installed and _is_apple_silicon(host()):
         order.append(EngineName.MLX)
@@ -147,6 +151,7 @@ def _default(
             if e in installed
             and fmt in installed[e]
             and _serves(e, role)
+            and is_proven(e)
             and host_answer(e, host).auto_selectable
         ),
         None,

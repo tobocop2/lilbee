@@ -8,7 +8,7 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.app.services import peek_services
@@ -52,6 +52,7 @@ from lilbee.providers.fleet.engines.choice import (
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.fleet.engines.proof import not_run_clause, not_run_on
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
 from lilbee.retrieval.canary_probe import embedder_trigger
 from lilbee.runtime.cancellation import CancelSignal
@@ -118,6 +119,12 @@ class InstalledBuild:
     version: str
     backend: str
     note: str = ""
+    not_run_on: tuple[str, ...] = ()
+
+    @property
+    def label(self) -> str:
+        """The build as one line, with the devices it has not run on."""
+        return BuildView(self.engine, self.version, self.backend, self.not_run_on).label
 
 
 _STORE_REFUSALS = (
@@ -238,18 +245,19 @@ class BuildView:
     engine: str
     version: str
     backend: str
+    not_run_on: tuple[str, ...] = ()
 
     @property
     def label(self) -> str:
-        """The build as one line: ``name version (backend)``."""
-        return f"{self.engine} {self.version} ({self.backend})"
+        """The build as one line: ``name version (backend)``, then the devices not run on."""
+        return f"{self.engine} {self.version} ({self.backend}){not_run_clause(self.not_run_on)}"
 
 
 def builds(config: Config = cfg) -> list[BuildView]:
     """Every engine build installed beside the models that the host gate lets this host run."""
     store = EngineStore(engines_root(config.models_dir))
     return [
-        BuildView(b.engine, b.version, b.backend)
+        BuildView(b.engine, b.version, b.backend, not_run_on(b.engine))
         for b in store.installed()
         if choice.host_answer(b.engine, session_host).ok
     ]
@@ -262,11 +270,16 @@ class EngineListView:
     builds: list[BuildView]
     not_installed: list[str]
 
-    def payload(self) -> dict[str, list[dict[str, str]] | list[str]]:
+    def payload(self) -> dict[str, list[dict[str, Any]] | list[str]]:
         """The list as plain data, the same on the CLI, REST and MCP."""
         return {
             "builds": [
-                {"engine": b.engine, "version": b.version, "backend": b.backend}
+                {
+                    "engine": b.engine,
+                    "version": b.version,
+                    "backend": b.backend,
+                    "not_run_on": list(b.not_run_on),
+                }
                 for b in self.builds
             ],
             "not_installed": self.not_installed,
@@ -448,7 +461,9 @@ def install(
         raise EngineRefusedError(str(exc)) from exc
     except _UNREADABLE_WHEEL as exc:
         raise EngineRefusedError(f"Engine {name} was not installed: {exc}") from exc
-    return InstalledBuild(lock.engine, lock.version, lock.backend, gate.reason)
+    return InstalledBuild(
+        lock.engine, lock.version, lock.backend, gate.reason, not_run_on(lock.engine)
+    )
 
 
 def _pack_installable() -> bool:
