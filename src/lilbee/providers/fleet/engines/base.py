@@ -34,6 +34,7 @@ class EngineName(StrEnum):
     TEI = "tei"
     MLX = "mlx"
     OPENVINO = "openvino"
+    LEMONADE = "lemonade"
 
 
 @dataclass(frozen=True)

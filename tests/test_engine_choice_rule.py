@@ -71,14 +71,15 @@ def _default(host, fmt, installed):
 
 @pytest.fixture(autouse=True)
 def _mlx_without_its_gate(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The rule is crossed with every host, so the real macOS gate of mlx stays out of it.
+    """The rule is crossed with every host, so the real gates of mlx and openvino stay out of it.
 
-    The gate has its own rows in test_mlx_adapter.
+    The gates have their own rows in test_mlx_adapter and test_engine_openvino.
     """
     open_mlx = SimpleNamespace(
         bundled=False, served_roles=frozenset(WorkerRole), host_gate=lambda _host: HostGate(True)
     )
     monkeypatch.setitem(ADAPTERS, M, open_mlx)  # type: ignore[arg-type]
+    monkeypatch.setitem(ADAPTERS, OV, open_mlx)  # type: ignore[arg-type]
 
 
 def _oracle(host, fmt, installed, preferred, override):
