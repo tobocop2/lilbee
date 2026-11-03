@@ -2013,6 +2013,7 @@ def _launch_for(
         n_cpu_moe=expert_offload_layers(meta),
         device_names=_device_names(chosen) or _no_device_pin(engine),
         target=plan.target,
+        replica=plan.replica,
         memory_endpoint=engine.check_readback(binary),
         fit_target_mib=(
             _chat_fit_target_mib(binary, chosen, reserved_after_chat or {}, engine=engine)
