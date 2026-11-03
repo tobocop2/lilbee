@@ -333,3 +333,7 @@ The engine pin sync in `engine-pin-sync.yml` is one job with a 30 minute limit t
 ## Add an engine
 
 Add a profile to `tests/conformance/fake_engine.py` that replays the measured behaviour, and add a golden file only for a new requirement. The harness in `tests/conformance/harness.py` does not change for a new engine.
+
+## Related
+
+- [Server presets](presets.md) shows how to connect a server that you run yourself.

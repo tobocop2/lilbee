@@ -124,3 +124,4 @@ lilbee checks the address again before the request. Before the request, it resol
 
 - [Usage](usage.md) lists the slash commands and the CLI commands.
 - [Settings reference](settings.md) lists `server_presets`, `allow_http_engines` and `mcp_presets_enabled`.
+- [Engine integration](engine-integration.md) lists what a server must do before lilbee can use it.
