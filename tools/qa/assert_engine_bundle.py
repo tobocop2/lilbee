@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Assert a lilbee-engine-llama-cpp bundle carries the backend it claims, and the runtime it links.
 
-A bundle is a wheel, or the ``lilbee_engine/bin`` directory of an executable's
+A bundle is a wheel, or the ``lilbee_engine_llama_cpp/bin`` directory of an executable's
 standalone tree. Both go through the same checks; only the wheel has a size limit.
 
 Both checks read the payload, because neither failure shows in a build log or on a
@@ -197,7 +197,7 @@ def _oversized(wheel: Path) -> str | None:
 
 
 def _bin_entries(bundle: Path) -> list[str]:
-    """The files under ``lilbee_engine/bin`` of a wheel, or under a bin directory."""
+    """The files under ``lilbee_engine_llama_cpp/bin`` of a wheel, or under a bin directory."""
     if bundle.is_dir():
         return sorted(p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if not p.is_dir())
     with zipfile.ZipFile(bundle) as zf:
@@ -225,7 +225,7 @@ def check(
 ) -> list[str]:
     """Return a list of problems with *bundle*; empty means it is correct.
 
-    *bundle* is a wheel, or the ``lilbee_engine/bin`` directory of an executable.
+    *bundle* is a wheel, or the ``lilbee_engine_llama_cpp/bin`` directory of an executable.
     *backend* names the flavor it was built as. Pass it at build time, when a wheel
     has no build tag to read it from yet. A directory has no file name to read
     the platform from, so it needs *runner_os*. *tool* names the engine server of

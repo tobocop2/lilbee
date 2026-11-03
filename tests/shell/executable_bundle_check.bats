@@ -139,35 +139,35 @@ run_check_step() {
 
 @test "every check step fails when the build left two engine trees" {
   for wf in ${WORKFLOWS}; do
-    run_check_step "${wf}" dist/a.dist/lilbee_engine/bin dist/b.dist/lilbee_engine/bin
+    run_check_step "${wf}" dist/a.dist/lilbee_engine_llama_cpp/bin dist/b.dist/lilbee_engine_llama_cpp/bin
     [ "$status" -ne 0 ]
-    [[ "$output" == *"a.dist/lilbee_engine/bin"* ]]
-    [[ "$output" == *"b.dist/lilbee_engine/bin"* ]]
+    [[ "$output" == *"a.dist/lilbee_engine_llama_cpp/bin"* ]]
+    [[ "$output" == *"b.dist/lilbee_engine_llama_cpp/bin"* ]]
     [ ! -e "${WORK}/uv.args" ]
   done
 }
 
 @test "every check step reads the dist tree, not a copy in a build intermediate" {
   for wf in ${WORKFLOWS}; do
-    run_check_step "${wf}" "dist/__main__.dist/lilbee_engine/bin" \
-      "dist/__main__.onefile-build/lilbee_engine/bin" "dist/__main__.build/lilbee_engine/bin"
+    run_check_step "${wf}" "dist/__main__.dist/lilbee_engine_llama_cpp/bin" \
+      "dist/__main__.onefile-build/lilbee_engine_llama_cpp/bin" "dist/__main__.build/lilbee_engine_llama_cpp/bin"
     [ "$status" -eq 0 ]
-    grep -qF -- '--platform Linux dist/__main__.dist/lilbee_engine/bin' "${WORK}/uv.args"
+    grep -qF -- '--platform Linux dist/__main__.dist/lilbee_engine_llama_cpp/bin' "${WORK}/uv.args"
   done
 }
 
 @test "every check step runs the checker on the one engine tree it finds" {
   for wf in ${WORKFLOWS}; do
-    run_check_step "${wf}" "dist/__main__.dist/lilbee_engine/bin"
+    run_check_step "${wf}" "dist/__main__.dist/lilbee_engine_llama_cpp/bin"
     [ "$status" -eq 0 ]
-    grep -qF -- '--platform Linux dist/__main__.dist/lilbee_engine/bin' "${WORK}/uv.args"
+    grep -qF -- '--platform Linux dist/__main__.dist/lilbee_engine_llama_cpp/bin' "${WORK}/uv.args"
     grep -qF -- '--backend vulkan' "${WORK}/uv.args"
   done
 }
 
 @test "find_engine_bin.sh prints the single engine tree" {
-  mkdir -p "${BATS_TEST_TMPDIR}/dist/x.dist/lilbee_engine/bin"
+  mkdir -p "${BATS_TEST_TMPDIR}/dist/x.dist/lilbee_engine_llama_cpp/bin"
   run bash "${REPO_ROOT}/tools/qa/find_engine_bin.sh" "${BATS_TEST_TMPDIR}/dist"
   [ "$status" -eq 0 ]
-  [ "$output" = "${BATS_TEST_TMPDIR}/dist/x.dist/lilbee_engine/bin" ]
+  [ "$output" = "${BATS_TEST_TMPDIR}/dist/x.dist/lilbee_engine_llama_cpp/bin" ]
 }

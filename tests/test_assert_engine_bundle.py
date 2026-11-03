@@ -672,7 +672,7 @@ def test_a_directory_has_no_size_limit(tmp_path: Path, monkeypatch: pytest.Monke
 def test_an_empty_directory_has_no_payload(tmp_path: Path) -> None:
     root = tmp_path / "bin"
     root.mkdir()
-    assert "no lilbee_engine/bin/ payload" in acb.check(root, "cpu", "Linux")[0]
+    assert "no lilbee_engine_llama_cpp/bin/ payload" in acb.check(root, "cpu", "Linux")[0]
 
 
 def test_main_checks_a_directory_with_a_platform(
