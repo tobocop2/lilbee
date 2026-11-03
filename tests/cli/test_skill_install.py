@@ -56,3 +56,35 @@ def test_race_collision_dest_created_concurrently(tmp_path, monkeypatch):
     # Concurrent install: returns None (already exists), no exception.
     assert result is None
     assert dest.exists()
+
+
+def test_bundled_skill_dir_prefers_installed_copy(tmp_path, monkeypatch):
+    packaged = tmp_path / "packaged"
+    packaged.mkdir()
+    (packaged / "SKILL.md").write_text("packaged", encoding="utf-8")
+    monkeypatch.setattr(skill_install, "_PACKAGED_SKILL", packaged)
+    assert skill_install.bundled_skill_dir() == packaged
+
+
+def test_bundled_skill_dir_uses_checkout_copy_when_not_installed(tmp_path, monkeypatch):
+    monkeypatch.setattr(skill_install, "_PACKAGED_SKILL", tmp_path / "absent")
+    result = skill_install.bundled_skill_dir()
+    assert result == skill_install._CHECKOUT_SKILL
+    assert (result / "SKILL.md").is_file()
+
+
+def test_bundled_skill_dir_names_both_locations_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(skill_install, "_PACKAGED_SKILL", tmp_path / "no-installed")
+    monkeypatch.setattr(skill_install, "_CHECKOUT_SKILL", tmp_path / "no-checkout")
+    with pytest.raises(FileNotFoundError, match=r"no-installed.*no-checkout"):
+        skill_install.bundled_skill_dir()
+
+
+def test_install_copies_the_packaged_skill_files(tmp_path, monkeypatch):
+    packaged = tmp_path / "packaged"
+    packaged.mkdir()
+    (packaged / "SKILL.md").write_text("packaged text", encoding="utf-8")
+    monkeypatch.setattr(skill_install, "_PACKAGED_SKILL", packaged)
+    dest = tmp_path / "skills" / "lilbee-mcp"
+    assert install_bundled_skill(dest) == dest
+    assert (dest / "SKILL.md").read_text(encoding="utf-8") == "packaged text"

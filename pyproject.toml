@@ -131,6 +131,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/lilbee"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"plugins/lilbee/skills/lilbee-mcp" = "lilbee/skills/lilbee_mcp"
+
 # Dev resolves the bundled engine from the in-repo wheel package; CI fills its
 # bin/ with the self-contained llama-server + llama-swap + gguf-parser before
 # building. Release installs (`pip install lilbee`) resolve `lilbee-engine` from
