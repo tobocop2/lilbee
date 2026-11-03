@@ -18,6 +18,7 @@ setup() {
   # curl answers the registry lookup with REGISTRY_CODE and serves the archive.
   cat > "${BIN}/curl" <<'STUB'
 #!/bin/sh
+all_args="$*"
 out=""
 url=""
 while [ $# -gt 0 ]; do
@@ -28,6 +29,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 echo "curl ${url}" >> "${FAKE_CALLS}"
+echo "curl-args ${all_args}" >> "${FAKE_ARGS}"
+if [ -n "${CURL_RC:-}" ]; then exit "${CURL_RC}"; fi
 case "${url}" in
   */v0.1/servers/*) printf '%s' "${REGISTRY_CODE}" ;;
   *.tar.gz) cp "${FAKE_ARCHIVE}" "${out}" ;;
@@ -40,15 +43,23 @@ STUB
 echo "cosign $*" >> "${FAKE_CALLS}"
 [ "${COSIGN_RC:-0}" -eq 0 ]
 STUB
-  chmod +x "${BIN}/curl" "${BIN}/cosign"
+  # npm view answers with the mcpName of the published package, or fails.
+  cat > "${BIN}/npm" <<'STUB'
+#!/bin/sh
+echo "npm $*" >> "${FAKE_CALLS}"
+printf '%s\n' "${NPM_MCPNAME}"
+[ "${NPM_RC:-0}" -eq 0 ]
+STUB
+  chmod +x "${BIN}/curl" "${BIN}/cosign" "${BIN}/npm"
 
   SERVER_JSON="${FIXTURE}/server.json"
-  printf '{"name": "io.github.example/thing", "version": "1.2.3"}\n' > "${SERVER_JSON}"
+  printf '{"name": "io.github.example/thing", "version": "1.2.3", "packages": [{"registryType": "npm", "identifier": "thing-pkg", "version": "1.2.3"}]}\n' > "${SERVER_JSON}"
 }
 
 publish() {
-  FAKE_CALLS="${CALLS}" FAKE_ARCHIVE="${FIXTURE}/archive.tar.gz" \
+  FAKE_CALLS="${CALLS}" FAKE_ARGS="${FIXTURE}/args" FAKE_ARCHIVE="${FIXTURE}/archive.tar.gz" \
   REGISTRY_CODE="${REGISTRY_CODE:-404}" PATH="${BIN}:${PATH}" \
+  NPM_MCPNAME="${NPM_MCPNAME-io.github.example/thing}" \
   bash "${SCRIPT}" "$@"
 }
 
@@ -99,4 +110,55 @@ publish() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"has no version"* ]]
   ! grep -q "^curl" "${CALLS}"
+}
+
+@test "a transport failure on the registry lookup says so and exits non-zero" {
+  CURL_RC=7 run publish "${SERVER_JSON}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Could not reach the MCP Registry"* ]]
+  [[ "$output" == *"curl exit 7"* ]]
+  ! grep -q "^publisher" "${CALLS}"
+}
+
+@test "the registry lookup has a time limit" {
+  REGISTRY_CODE=200 run publish "${SERVER_JSON}"
+  [ "$status" -eq 0 ]
+  grep -q -- "^curl-args .*--max-time [0-9]* .*/v0.1/servers/" "${FIXTURE}/args"
+}
+
+@test "the npm package for this version is asked for its mcpName" {
+  REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+  [ "$status" -eq 0 ]
+  grep -qx "npm view thing-pkg@1.2.3 mcpName" "${CALLS}"
+}
+
+@test "a published package without mcpName is skipped with the reason" {
+  NPM_MCPNAME="" REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Skipped the MCP Registry listing"* ]]
+  [[ "$output" == *"thing-pkg@1.2.3 has no mcpName"* ]]
+  ! grep -q "^publisher" "${CALLS}"
+  ! grep -q "^cosign" "${CALLS}"
+}
+
+@test "a published package with another mcpName is skipped with the reason" {
+  NPM_MCPNAME="io.github.other/thing" REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Skipped the MCP Registry listing"* ]]
+  [[ "$output" == *"io.github.other/thing"* ]]
+  ! grep -q "^publisher" "${CALLS}"
+}
+
+@test "a failed npm lookup stops the script instead of skipping" {
+  NPM_RC=1 REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Could not read mcpName from npm"* ]]
+  ! grep -q "^publisher" "${CALLS}"
+}
+
+@test "a server.json with no npm package is refused" {
+  printf '{"name": "io.github.example/thing", "version": "1.2.3"}\n' > "${SERVER_JSON}"
+  REGISTRY_CODE=404 run publish "${SERVER_JSON}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"has no npm package"* ]]
 }

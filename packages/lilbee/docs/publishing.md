@@ -22,7 +22,8 @@ to the new npm version. A test fails when they differ. After the npm publish,
 the job lists the new version in the MCP Registry. The registry checks the
 published package for `mcpName`, and the login uses the job's OIDC token. The
 job asks the registry first, so a re-run after a failed listing lists the
-version.
+version. The job asks npm for `mcpName` of the published version. If npm
+returns none, the job prints why it skipped the listing and stays green.
 
 ## One-time setup
 
