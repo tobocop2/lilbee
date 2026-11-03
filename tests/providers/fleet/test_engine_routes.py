@@ -14,6 +14,7 @@ import pytest
 from huggingface_hub import constants as hub_constants
 
 from lilbee.catalog import download as dl
+from lilbee.providers.fleet import engine_store
 from lilbee.providers.fleet.engine_store import (
     ChecksumError,
     EngineConflictError,
@@ -22,6 +23,7 @@ from lilbee.providers.fleet.engine_store import (
     InstallTool,
     LicenceRefusedError,
     MissingPackError,
+    PackUrlError,
     PinLock,
     PlatformAsset,
     UnsafeWheelError,
@@ -53,6 +55,12 @@ def store(tmp_path: Path) -> EngineStore:
 def hub_online(monkeypatch: pytest.MonkeyPatch) -> None:
     """The suite switches the hub's network off; the download tests use a loopback server."""
     monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
+
+
+@pytest.fixture(autouse=True)
+def loopback_pack_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The download tests serve packs from a loopback server, so that is the allowed prefix."""
+    monkeypatch.setattr(engine_store, "PACKAGES_URL", "http://127.0.0.1:")
 
 
 def lock_of(sha: str, size: int = 1, url: str = RELEASE) -> PinLock:
@@ -195,6 +203,25 @@ def test_fetch_frozen_downloads_the_url_of_the_cell(tmp_path: Path) -> None:
         got = fetch_frozen(lock, CELL, dest=tmp_path / "dl")
     assert got == tmp_path / "dl" / "fx.whl"
     assert got.read_bytes() == b"wheel bytes"
+
+
+def test_fetch_frozen_refuses_a_url_outside_the_pack_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_store, "PACKAGES_URL", "https://index.test/packs/")
+    with release_server() as server:
+        lock = lock_of("a" * 64, url=f"{server.url}/fx.whl")
+        with pytest.raises(PackUrlError, match=r"https://index\.test/packs/"):
+            fetch_frozen(lock, CELL, dest=tmp_path)
+    assert server.requests == []
+
+
+def test_fetch_frozen_refuses_every_url_when_the_table_names_no_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_store, "PACKAGES_URL", "")
+    with pytest.raises(PackUrlError, match="no pack index"):
+        fetch_frozen(lock_of("a" * 64), CELL, dest=tmp_path)
 
 
 def test_fetch_frozen_for_a_cell_without_a_build_is_refused_before_any_request(

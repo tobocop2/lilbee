@@ -206,3 +206,32 @@ def test_the_command_reports_a_refused_input_and_exits_non_zero(
         runpy.run_path(str(GENERATOR), run_name="__main__")
     assert done.value.code == 1
     assert "no size" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "prefix", ["http://index.test/packs/", "ftp://index.test/", "index.test/", ""]
+)
+def test_a_prefix_that_is_not_https_is_refused(gen: ModuleType, prefix: str) -> None:
+    packages = [{"filename": TEI, "hash": f"sha256={SHA}"}]
+    with pytest.raises(gen.DigestError, match="must start with https://"):
+        gen.render(packages, {TEI: 1}, prefix)
+
+
+def test_the_table_records_the_prefix_the_downloads_must_stay_under(gen: ModuleType) -> None:
+    text = gen.render([], {}, "https://index.test/packs")
+    assert text.endswith(f'PACKAGES_URL = "{PREFIX}"\n')
+
+
+def test_the_command_refuses_an_http_prefix_and_exits_non_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packages = tmp_path / "p.json"
+    packages.write_text(json.dumps({"filename": TEI, "hash": f"sha256={SHA}"}), encoding="utf-8")
+    sizes = tmp_path / "s.json"
+    sizes.write_text(json.dumps({TEI: 1}), encoding="utf-8")
+    argv = ["g", str(packages), str(sizes), "--packages-url", "http://index.test/packs/"]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as done:
+        runpy.run_path(str(GENERATOR), run_name="__main__")
+    assert done.value.code == 1
+    assert "must start with https://" in capsys.readouterr().err

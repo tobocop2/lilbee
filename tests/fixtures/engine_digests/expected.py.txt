@@ -70,3 +70,4 @@ MANIFESTS = {
         },
     },
 }
+PACKAGES_URL = "https://index.test/packs/"

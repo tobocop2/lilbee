@@ -111,7 +111,7 @@ _LIBRARY_FORMS = {
     "macos": ("lib{name}.dylib", r"lib{name}(\.[\d.]+)?\.dylib"),
 }
 # "lilbee_engine_llama_cpp-0.6.90-1.rocm-py3-none-manylinux_2_17_x86_64.whl". PEP 427 puts
-# the build tag third, and build_pep503_indexes.py writes it as 1.<backend>.
+# the build tag third, and build_wheel_indexes.py writes it as 1.<backend>.
 _BUILD_TAG = re.compile(r"^[^-]+-[^-]+-\d+\.(?P<backend>[a-z0-9]+)-")
 
 

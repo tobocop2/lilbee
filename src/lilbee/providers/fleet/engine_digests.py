@@ -7,3 +7,4 @@ from typing import Any
 
 MANIFESTS: Mapping[str, Mapping[str, Mapping[str, Mapping[str, Any]]]]
 MANIFESTS = {}
+PACKAGES_URL = ""
