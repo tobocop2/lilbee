@@ -191,6 +191,8 @@ def _path_options(partial: str = "") -> list[str]:
                     for e in entries
                     if not e.name.startswith(".") and e.name.lower().startswith(prefix)
                 ),
+                # The key the old sorted(Path) used: Windows compares names case-folded.
+                key=os.path.normcase,
             )
         return [name + "/" if (parent / name).is_dir() else name for name in names]
     except Exception:

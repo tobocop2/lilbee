@@ -9666,6 +9666,126 @@ async def test_an_input_that_stops_being_a_path_command_drops_a_pending_listing(
             assert overlay._options == ["/help"]
 
 
+async def test_tab_reads_the_path_list_off_the_event_loop():
+    """Tab on a path argument returns before the folder listing ends, then fills the match."""
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+    seen: dict[str, int] = {}
+    timed_out: list[bool] = []
+
+    def listing(_text):
+        if entered.is_set():
+            return ["docs/"]
+        seen["thread"] = threading.get_ident()
+        entered.set()
+        # On a blocked event loop this wait only ends by its timeout.
+        timed_out.append(not release.wait(5))
+        return ["docs/"]
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        loop_thread = threading.get_ident()
+        with patch("lilbee.cli.tui.screens.chat.get_completions", new=listing):
+            try:
+                screen._chat_input.value = "/add d"
+                assert await _wait_for(pilot, entered.is_set)
+                release.set()
+                assert await _wait_for(pilot, lambda: screen._completion_overlay.is_visible)
+                # Fresh start: a closed dropdown, a fresh blocked listing for the Tab.
+                screen._completion_overlay.hide()
+                entered.clear()
+                release.clear()
+                timed_out.clear()
+                screen.action_complete()
+                assert entered.is_set() or await _wait_for(pilot, entered.is_set)
+                assert not release.is_set()
+                assert seen["thread"] != loop_thread
+            finally:
+                release.set()
+            assert await _wait_for(pilot, lambda: screen._chat_input.value == "/add docs/")
+            assert timed_out == [False]
+
+
+async def test_tab_with_no_path_match_inserts_a_tab_after_the_listing():
+    """An empty listing for Tab leaves the dropdown closed and types a tab character."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        with patch("lilbee.cli.tui.screens.chat.get_completions", new=lambda _text: []):
+            screen._chat_input.value = "/add zz"
+            await pilot.pause(0.1)
+            screen.action_complete()
+            assert await _wait_for(pilot, lambda: "\t" in screen._chat_input.value)
+        assert not screen._completion_overlay.is_visible
+
+
+async def test_a_newer_key_cancels_a_pending_tab_listing():
+    """A key typed while a Tab listing runs wins: the late Tab rows are not applied."""
+    import threading
+
+    first_in = threading.Event()
+    release_first = threading.Event()
+
+    def listing(text):
+        if text == "/add a":
+            first_in.set()
+            release_first.wait(5)
+            return ["stale/"]
+        return ["fresh/"]
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        overlay = screen._completion_overlay
+        with patch("lilbee.cli.tui.screens.chat.get_completions", new=listing):
+            try:
+                screen._chat_input.value = "/add a"
+                assert await _wait_for(pilot, first_in.is_set)
+                screen.action_complete()
+                screen._chat_input.value = "/add b"
+                assert await _wait_for(pilot, lambda: overlay._options == ["fresh/"])
+            finally:
+                release_first.set()
+            await pilot.pause(0.2)
+            assert overlay._options == ["fresh/"]
+            assert screen._chat_input.value == "/add b"
+
+
+async def test_a_tab_listing_that_ends_after_the_input_changed_is_dropped():
+    """Backspacing out of the path command while Tab lists leaves the new input alone."""
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def listing(text):
+        if text.startswith("/add"):
+            entered.set()
+            release.wait(5)
+            return ["late/"]
+        return ["/help"]
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        overlay = screen._completion_overlay
+        with patch("lilbee.cli.tui.screens.chat.get_completions", new=listing):
+            try:
+                screen._chat_input.value = "/add x"
+                assert await _wait_for(pilot, entered.is_set)
+                screen.action_complete()
+                screen._chat_input.value = "/he"
+                assert await _wait_for(pilot, lambda: overlay._options == ["/help"])
+            finally:
+                release.set()
+            await pilot.pause(0.2)
+            assert overlay._options == ["/help"]
+            assert screen._chat_input.value == "/he"
+
+
 async def test_an_unknown_command_keeps_the_draft_and_says_so():
     """``/sync`` is not a chat command: Enter keeps the draft and names the typo."""
     from lilbee.cli.tui import messages as msg
