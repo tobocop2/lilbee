@@ -69,15 +69,25 @@ def settings_list(
     group: str | None = typer.Option(
         None, "--group", help="Filter to one group (case-insensitive); omit for every group."
     ),
+    advanced: bool = typer.Option(
+        False,
+        "--advanced",
+        help="Also list the advanced settings (engine internals, timeouts, thresholds).",
+    ),
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
-    """List every writable setting with its current value and source."""
+    """List the writable settings with their current value and source.
+
+    The advanced settings are left out unless you pass --advanced.
+    'get', 'set' and 'unset' work on any setting, advanced or not.
+    """
     from lilbee.app.settings import config_write_failure_message, list_settings
     from lilbee.server.models import SettingsListResponse
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    infos = run_or_fail(lambda: list_settings(group), config_write_failure_message)
+    listed = run_or_fail(lambda: list_settings(group), config_write_failure_message)
+    infos = [info for info in listed if advanced or not info.advanced]
     emit(SettingsListResponse.from_infos(infos), lambda: _render_list(infos))
 
 

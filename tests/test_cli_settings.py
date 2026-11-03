@@ -79,7 +79,7 @@ def test_list_shows_every_setting_in_the_group_with_value_and_source(project):
 def test_list_shows_every_key_whole_at_80_columns(project):
     result = runner.invoke(
         app,
-        ["settings", "list", "--data-dir", str(project)],
+        ["settings", "list", "--advanced", "--data-dir", str(project)],
         env={"COLUMNS": "80"},
     )
     assert result.exit_code == 0, result.output
@@ -92,7 +92,7 @@ def test_list_filters_on_the_ocr_tuning_group_and_shows_the_profile_source(proje
         '[profile]\nname = "Scans"\n[profile.values]\nocr_scan_confidence = 0.5\n',
         encoding="utf-8",
     )
-    settings = _json(project, "list", "--group", "OCR-Tuning")["settings"]
+    settings = _json(project, "list", "--advanced", "--group", "OCR-Tuning")["settings"]
     assert {entry["group"] for entry in settings} == {"OCR-Tuning"}
     row = {entry["key"]: entry for entry in settings}["ocr_scan_confidence"]
     assert (row["value"], row["source"]) == (0.5, "profile")
@@ -121,7 +121,8 @@ def test_list_reflects_a_profile_value_and_its_source(project):
 
 
 def test_list_and_get_report_which_settings_are_advanced(project):
-    advanced_by_key = {e["key"]: e["advanced"] for e in _json(project, "list")["settings"]}
+    listed = _json(project, "list", "--advanced")["settings"]
+    advanced_by_key = {e["key"]: e["advanced"] for e in listed}
     assert advanced_by_key["ocr_timeout"] is True
     assert advanced_by_key["top_k"] is False
     assert {key for key, advanced in advanced_by_key.items() if advanced} == {
@@ -129,6 +130,42 @@ def test_list_and_get_report_which_settings_are_advanced(project):
     }
     assert _json(project, "get", "ocr_timeout")["advanced"] is True
     assert _json(project, "get", "top_k")["advanced"] is False
+
+
+def test_list_hides_an_advanced_setting_by_default(project):
+    result = _invoke(project, "list")
+    assert result.exit_code == 0, result.output
+    assert "top_k" in result.output
+    assert "ocr_timeout" not in result.output
+
+
+def test_list_advanced_flag_shows_the_advanced_settings(project):
+    result = _invoke(project, "list", "--advanced")
+    assert result.exit_code == 0, result.output
+    assert "top_k" in result.output
+    assert "ocr_timeout" in result.output
+
+
+def test_list_json_hides_an_advanced_setting_by_default(project):
+    rows = _json(project, "list")["settings"]
+    assert rows
+    assert "ocr_timeout" not in {row["key"] for row in rows}
+    assert not any(row["advanced"] for row in rows)
+
+
+def test_list_json_advanced_flag_adds_exactly_the_advanced_settings(project):
+    plain = {row["key"] for row in _json(project, "list")["settings"]}
+    full = {row["key"]: row for row in _json(project, "list", "--advanced")["settings"]}
+    assert plain < set(full)
+    assert set(full) - plain == {key for key, row in full.items() if row["advanced"]}
+    assert "ocr_timeout" in full
+
+
+def test_get_set_and_unset_work_on_an_advanced_key_without_the_flag(project):
+    assert _json(project, "get", "ocr_timeout")["advanced"] is True
+    assert _invoke(project, "set", "ocr_timeout", "99").exit_code == 0
+    assert _json(project, "get", "ocr_timeout")["value"] == 99
+    assert _invoke(project, "unset", "ocr_timeout").exit_code == 0
 
 
 def test_list_unknown_group_is_an_error(project):
@@ -420,7 +457,7 @@ def test_every_listed_group_lists_settings_and_general_is_not_a_group(project):
     from lilbee.app.settings_map import SettingGroup
 
     for group in SettingGroup:
-        assert _json(project, "list", "--group", group.value)["settings"], group
+        assert _json(project, "list", "--advanced", "--group", group.value)["settings"], group
     assert "General" not in {group.value for group in SettingGroup}
     assert _invoke(project, "list", "--group", "General").exit_code == 1
 
