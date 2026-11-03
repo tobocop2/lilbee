@@ -53,6 +53,8 @@ jobs:
               - '.github/workflows/**'
               - '.github/actions/**'
               - 'scripts/*.sh'
+              - 'plugins/**'
+              - '.claude-plugin/**'
             flake:
               - 'flake.nix'
               - 'flake.lock'
@@ -156,6 +158,27 @@ jobs:
       - name: Test the npm launcher
         run: npm test
         working-directory: packages/lilbee
+
+  claude-plugin:
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Validate the marketplace
+        run: claude plugin validate --strict .
+
+      - name: Validate the plugin
+        run: claude plugin validate --strict plugins/lilbee
 
   # Seeded TUI fuzz: fixed seeds, deterministic, fails on any invariant break.
   fuzz-smoke:
@@ -520,7 +543,7 @@ jobs:
   # The one check branch protection requires.
   ci-result:
     if: always()
-    needs: [changes, lint, shell, npm-launcher, fuzz-smoke, test, integration, flake]
+    needs: [changes, lint, shell, npm-launcher, claude-plugin, fuzz-smoke, test, integration, flake]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

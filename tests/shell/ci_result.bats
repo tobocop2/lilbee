@@ -129,7 +129,7 @@ path_group() {
   [ "$status" -eq 0 ]
   for p in 'src/**' 'tests/**' pyproject.toml uv.lock Makefile engine-versions.env \
     scripts/check_style_rules.py 'scripts/*.sh' 'scripts/qa/**' 'tools/qa/**' 'packages/lilbee/**' \
-    'tools/wheel-build/**' 'packaging/tools/**' '.github/workflows/**' '.github/actions/**'; do
+    'tools/wheel-build/**' 'packaging/tools/**' '.github/workflows/**' '.github/actions/**' 'plugins/**' '.claude-plugin/**'; do
     printf '%s\n' "$output" | grep -qxF -e "${p}" || { echo "code group lost ${p}" >&2; return 1; }
   done
 }
@@ -148,6 +148,7 @@ path_group() {
     "lint=needs.changes.outputs.code == 'true'" \
     "shell=needs.changes.outputs.code == 'true'" \
     "npm-launcher=needs.changes.outputs.code == 'true'" \
+    "claude-plugin=needs.changes.outputs.code == 'true'" \
     "fuzz-smoke=needs.changes.outputs.code == 'true'" \
     "test=needs.changes.outputs.code == 'true'" \
     "integration=needs.changes.outputs.code == 'true'" \

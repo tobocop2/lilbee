@@ -1,0 +1,13 @@
+{
+  "name": "lilbee",
+  "version": "0.6.102",
+  "description": "Search and manage a local lilbee knowledge base over MCP, with a worker agent for long operations.",
+  "author": {
+    "name": "tobocop2",
+    "url": "https://github.com/tobocop2"
+  },
+  "homepage": "https://github.com/tobocop2/lilbee",
+  "repository": "https://github.com/tobocop2/lilbee",
+  "license": "MIT",
+  "keywords": ["rag", "mcp", "local", "search"]
+}

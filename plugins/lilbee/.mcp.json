@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "lilbee": {
+      "command": "lilbee",
+      "args": ["mcp"]
+    }
+  }
+}
