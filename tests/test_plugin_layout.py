@@ -145,3 +145,39 @@ def test_npm_package_tests_run_in_the_launcher_ci_job():
         s.get("working-directory") for job in ci["jobs"].values() for s in job.get("steps", [])
     ]
     assert "plugins/lilbee" not in workdirs
+
+
+_INSTALL_DOCS = [ROOT / "README.md", ROOT / "docs" / "usage.md"]
+
+
+def _install_commands(doc: Path) -> list[str]:
+    """Every backticked command in the per-agent install table of one document."""
+    text = doc.read_text(encoding="utf-8")
+    table = text.split("| Agent | Install |", 1)[1].split("\n\n", 1)[0]
+    return re.findall(r"`([^`]+)`", table)
+
+
+def _manifest_names() -> tuple[str, str, str]:
+    marketplace_file = ROOT / ".claude-plugin" / "marketplace.json"
+    marketplace = json.loads(marketplace_file.read_text(encoding="utf-8"))
+    package = json.loads((NPM_PACKAGE / "package.json").read_text(encoding="utf-8"))
+    slug = re.search(r"github\.com/(.+?)\.git$", package["repository"]["url"]).group(1)
+    return marketplace["name"], slug, package["name"]
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_table_commands_use_the_manifest_names(doc):
+    marketplace, slug, npm_name = _manifest_names()
+    commands = _install_commands(doc)
+    assert f"claude plugin marketplace add {slug}" in commands
+    assert f"claude plugin install {marketplace}@{marketplace}" in commands
+    assert f"opencode plugin add {npm_name}" in commands
+    assert f"pi install npm:{npm_name}" in commands
+    assert f"npx skills add {slug} -a hermes-agent" in commands
+    assert f"npx skills add {slug}" in commands
+    assert "lilbee mcp" in commands
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_table_agrees_between_readme_and_usage(doc):
+    assert _install_commands(doc) == _install_commands(ROOT / "README.md")

@@ -491,6 +491,29 @@ See the [`lilbee-mcp` skill](../plugins/lilbee/skills/lilbee-mcp/SKILL.md) for t
 tool list and workflows. Non-MCP agents can use the [JSON CLI
 fallback](#json-cli-fallback) below.
 
+### Install in your agent
+
+One command per agent installs the skill and the MCP server:
+
+| Agent | Install |
+| --- | --- |
+| Claude Code | `claude plugin marketplace add tobocop2/lilbee`, then `claude plugin install lilbee@lilbee`. Adds the skills, the worker agent, and the MCP server. |
+| opencode | `opencode plugin add lilbee-agent`. Adds the skills and the MCP server. |
+| pi | `pi install npm:lilbee-agent`. Adds the skills and the MCP server. |
+| Hermes | `npx skills add tobocop2/lilbee -a hermes-agent` for the skills, then add the MCP server to `~/.hermes/config.yaml` (below). |
+| Any other agent | `npx skills add tobocop2/lilbee` for the skills. Register the MCP server with the command `lilbee mcp`. |
+
+Install lilbee first: every row starts the MCP server with `lilbee mcp`, which needs `lilbee` on your PATH. These installs add lilbee to the agent you already run; `lilbee launch` stays the route for running the agent on local models. The `lilbee-agent` npm package and the registry listing arrive with the next release.
+
+Hermes plugins cannot bundle an MCP server, so Hermes takes this entry in `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  lilbee:
+    command: lilbee
+    args: [mcp]
+```
+
 ### Client config blocks
 
 `lilbee agent-config <client>` prints a paste-ready config for one client,
