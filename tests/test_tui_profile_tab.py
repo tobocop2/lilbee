@@ -21,6 +21,7 @@ from textual.widget import Widget
 from textual.widgets import Checkbox, DataTable, Footer, Input, Select, Static, TabbedContent
 
 from lilbee.app import profiles
+from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.command_registry import get_command
@@ -49,6 +50,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
 from lilbee.core.system import default_data_dir
+from lilbee.data.store.types import HeldOut, HeldRecord
 from tests._async_wait import press_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._profile_fixtures import (
@@ -611,6 +613,46 @@ async def test_a_change_that_needs_no_reindex_shows_no_summary(sources) -> None:
         await _press(pilot, dialog.query_one("#apply-cancel", ConfirmPill))
         assert await _until(pilot, lambda: app.screen is screen)
     assert cfg.max_chunks_per_file == 3000
+
+
+async def test_a_held_out_file_offers_the_rebuild_and_says_why(sources) -> None:
+    held = {"long.md": HeldRecord(HeldOut.FAILED, "hash", "14 chunks exceed the limit")}
+    get_services().store.held_records.return_value = held
+    _write_global("fewer", "[values]\nmax_chunks_per_file = 10\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        _pick(screen, "fewer")
+        dialog = await _dialog(app, pilot, ApplyProfileDialog)
+        pills = [p.id for p in dialog.query("#apply-actions ConfirmPill")]
+        assert pills == ["apply-reindex", "apply-apply", "apply-cancel"]
+        assert _text(dialog.query_one("#apply-summary", Static)) == msg.PROFILE_APPLY_HELD_OUT
+
+
+async def test_a_reindex_setting_at_its_current_value_offers_the_rebuild_and_says_why(
+    sources,
+) -> None:
+    _write_global("same", f"[values]\nchunk_overlap = {cfg.chunk_overlap}\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        _pick(screen, "same")
+        dialog = await _dialog(app, pilot, ApplyProfileDialog)
+        assert not dialog.query("#apply-changes")
+        pills = [p.id for p in dialog.query("#apply-actions ConfirmPill")]
+        assert pills == ["apply-reindex", "apply-apply", "apply-cancel"]
+        assert _text(dialog.query_one("#apply-summary", Static)) == msg.PROFILE_APPLY_SETS_REINDEX
+
+
+async def test_no_reindex_change_and_no_held_out_file_offers_no_rebuild(sources) -> None:
+    _write_global("fewer", "[values]\nmax_chunks_per_file = 10\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        _pick(screen, "fewer")
+        dialog = await _dialog(app, pilot, ApplyProfileDialog)
+        pills = [p.id for p in dialog.query("#apply-actions ConfirmPill")]
+        assert pills == ["apply-apply", "apply-cancel"]
 
 
 async def test_a_failed_write_on_apply_toasts_and_changes_nothing(sources) -> None:
