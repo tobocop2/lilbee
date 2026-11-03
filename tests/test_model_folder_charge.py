@@ -29,16 +29,18 @@ from lilbee.providers.fleet.placement_spec import (
     TargetRefusedError,
 )
 from lilbee.providers.roles import RoleTarget, WorkerRole
+from tests._stated_sizes import state_size
 
 GIB = 1024**3
 _CARD = 24 * GIB
 _REF = "org/repo/model"
 
 
+pytestmark = pytest.mark.usefixtures("stated_sizes")
+
+
 def _sparse(path: Path, size: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as handle:
-        handle.truncate(size)
+    state_size(path, size)
 
 
 def _folder(root: Path, *shards: int) -> Path:
