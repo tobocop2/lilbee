@@ -36,10 +36,15 @@ from lilbee.runtime.progress import (
 _HANG_LIMIT_S = 10.0
 _TURN_LOCK = "sync.turn.lock"
 _TURN_OWNER = "sync.turn.owner.json"
-_WAIT_FOR_ADD = (
-    f"A sync started by lilbee add (process {os.getpid()}) is running on this library. "
-    "Waiting for it to finish. Press Ctrl-C to stop waiting."
-)
+
+
+def _wait_for_add() -> str:
+    """The wait message, built when a test runs: under pytest --forked the module is imported in the
+    worker and each test runs in a fork with another pid."""
+    return (
+        f"A sync started by lilbee add (process {os.getpid()}) is running on this library. "
+        "Waiting for it to finish. Press Ctrl-C to stop waiting."
+    )
 
 
 @dataclass
@@ -141,7 +146,7 @@ async def test_a_waiting_sync_names_the_running_sync_once(
     assert not task.done()
     turn_held_by_another_add.release()
     await asyncio.wait_for(task, _HANG_LIMIT_S)
-    assert seen == [SyncWaitEvent(message=_WAIT_FOR_ADD, holder="lilbee add", pid=os.getpid())]
+    assert seen == [_notice()]
 
 
 async def test_a_waiting_sync_with_no_readable_owner_says_another_sync_runs(
@@ -230,7 +235,7 @@ def test_lilbee_add_prints_the_wait_on_stderr_naming_the_running_sync(
     finally:
         holder.release()
     err = capsys.readouterr().err
-    assert " ".join(err.split()) == _WAIT_FOR_ADD
+    assert " ".join(err.split()) == _wait_for_add()
 
 
 async def test_the_sync_stream_of_serve_sends_the_wait_then_its_own_result(
@@ -246,7 +251,7 @@ async def test_the_sync_stream_of_serve_sends_the_wait_then_its_own_result(
                 turn_held_by_another_add.release()
     wait_frame = (
         f"event: sync_wait\ndata: "
-        f"{json.dumps({'message': _WAIT_FOR_ADD, 'holder': 'lilbee add', 'pid': os.getpid()})}"
+        f"{json.dumps({'message': _wait_for_add(), 'holder': 'lilbee add', 'pid': os.getpid()})}"
         "\n\n"
     )
     assert frames[0] == wait_frame
@@ -312,15 +317,16 @@ async def test_a_profile_apply_with_reindex_over_mcp_waits_for_the_running_sync(
     assert result["rebuild"] is not None
 
 
-_NOTICE = SyncWaitEvent(message=_WAIT_FOR_ADD, holder="lilbee add", pid=os.getpid())
+def _notice() -> SyncWaitEvent:
+    return SyncWaitEvent(message=_wait_for_add(), holder="lilbee add", pid=os.getpid())
 
 
 def test_the_background_sync_printer_prints_the_wait_notice() -> None:
     from lilbee.cli import sync as cli_sync
 
     con = mock.MagicMock()
-    cli_sync._sync_progress_printer(con)(EventType.SYNC_WAIT, _NOTICE)
-    assert con.print.call_args.args == (_WAIT_FOR_ADD,)
+    cli_sync._sync_progress_printer(con)(EventType.SYNC_WAIT, _notice())
+    assert con.print.call_args.args == (_wait_for_add(),)
 
 
 def test_the_chat_status_bar_shows_the_wait_notice() -> None:
@@ -328,8 +334,8 @@ def test_the_chat_status_bar_shows_the_wait_notice() -> None:
 
     status = cli_sync.SyncStatus()
     status.adjust_pending(1)
-    cli_sync._chat_sync_callback(status)(EventType.SYNC_WAIT, _NOTICE)
-    assert status.text == f"⟳ {_WAIT_FOR_ADD} (+1 queued)"
+    cli_sync._chat_sync_callback(status)(EventType.SYNC_WAIT, _notice())
+    assert status.text == f"⟳ {_wait_for_add()} (+1 queued)"
 
 
 @pytest.mark.parametrize("build", ["build_add_progress_callback", "build_sync_progress_callback"])
@@ -338,7 +344,7 @@ def test_the_tui_task_bar_says_it_waits_for_the_running_sync(build: str) -> None
     from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 
     reporter = mock.MagicMock(spec=ProgressReporter)
-    getattr(chat_helpers, build)(reporter)(EventType.SYNC_WAIT, _NOTICE)
+    getattr(chat_helpers, build)(reporter)(EventType.SYNC_WAIT, _notice())
     reporter.update.assert_called_once_with(0, "Waiting for the running sync", indeterminate=True)
 
 
