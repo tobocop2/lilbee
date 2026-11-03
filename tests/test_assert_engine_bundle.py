@@ -617,7 +617,7 @@ def test_a_flag_in_another_command_does_not_count_as_the_call(tmp_path: Path) ->
 
 
 def _bin_dir(tmp_path: Path, bin_files: tuple[str, ...]) -> Path:
-    root = tmp_path / "dist" / "lilbee.dist" / "lilbee_engine" / "bin"
+    root = tmp_path / "dist" / "lilbee.dist" / "lilbee_engine_llama_cpp" / "bin"
     for entry in bin_files:
         (root / entry).parent.mkdir(parents=True, exist_ok=True)
         (root / entry).write_bytes(b"x")
