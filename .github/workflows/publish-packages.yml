@@ -370,14 +370,16 @@ jobs:
       # io.github.tobocop2 namespace is verified by GitHub login). The script
       # asks the registry whether it holds this version, so a re-run after a
       # failed listing lists it. The registry reads `mcpName` from the
-      # published package, so this runs after the npm publish, and the script
-      # skips the listing when the published package lacks `mcpName`.
+      # published package, so this runs after the npm publish. The script waits
+      # up to a minute for npm to show the version, and skips the listing when
+      # the published package lacks `mcpName`.
       - name: Install cosign
         if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
         uses: sigstore/cosign-installer@v4.1.2
 
       - name: List lilbee in the MCP Registry
         if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
+        timeout-minutes: 10
         run: bash scripts/publish_mcp_registry.sh server.json
 
       - name: Say why nothing published
