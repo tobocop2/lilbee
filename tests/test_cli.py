@@ -117,6 +117,7 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     searcher = MagicMock()
+    searcher.search_unavailable.return_value = False
     searcher.search.return_value = []
     searcher.ask_stream.return_value = _mock_stream("")
     store = MagicMock()
@@ -3802,6 +3803,28 @@ class TestEnsureChatModelWiring:
         assert result.exit_code == 1
         assert "lilbee model pull" in result.output
         mock_pull.assert_not_called()
+
+
+class TestAskWithoutEmbedder:
+    """Ask that cannot ground an answer exits non-zero with the guidance text."""
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_exits_non_zero_with_guidance(self, mock_sync, mock_svc):
+        from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
+
+        mock_svc.searcher.search_unavailable.return_value = True
+        result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 1
+        assert " ".join(SEARCH_NEEDS_EMBEDDER.split()) in " ".join(result.output.split())
+        mock_svc.searcher.ask_stream.assert_not_called()
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_json_mode_reports_error_and_exits_non_zero(self, mock_sync, mock_svc):
+        mock_svc.searcher.search_unavailable.return_value = True
+        result = runner.invoke(app, ["--json", "ask", "test"])
+        assert result.exit_code == 1
+        assert "embedding model" in json.loads(result.output)["error"]
+        mock_svc.searcher.ask_raw.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
