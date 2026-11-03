@@ -59,11 +59,9 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(cfg, "preferred_engine", "auto")
     monkeypatch.setattr(cfg, "engine_choices", None)
-    monkeypatch.setattr(
-        engine_choice,
-        "session_host",
-        lambda: collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None),
-    )
+    linux = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None)
+    monkeypatch.setattr(engine_choice, "session_host", lambda: linux)
+    monkeypatch.setattr(engine_service, "session_host", lambda: linux)
 
 
 @pytest.fixture

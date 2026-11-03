@@ -13,7 +13,7 @@ from typing import TypeVar
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.app.services import peek_services
 from lilbee.catalog.refs import model_format
-from lilbee.catalog.runnable import refresh_session_host
+from lilbee.catalog.runnable import refresh_session_host, session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
@@ -228,9 +228,13 @@ class BuildView:
 
 
 def builds(config: Config = cfg) -> list[BuildView]:
-    """Every engine build installed beside the models."""
+    """Every engine build installed beside the models that the host gate lets this host run."""
     store = EngineStore(engines_root(config.models_dir))
-    return [BuildView(b.engine, b.version, b.backend) for b in store.installed()]
+    return [
+        BuildView(b.engine, b.version, b.backend)
+        for b in store.installed()
+        if choice.host_answer(b.engine, session_host).ok
+    ]
 
 
 @dataclass(frozen=True)
@@ -282,9 +286,13 @@ def roles(config: Config = cfg) -> list[RoleView]:
 
 
 def not_installed() -> list[str]:
-    """The names of the engines this build knows that have no installed build."""
+    """The names of the engines with no installed build that the host gate lets this host run."""
     installed = installed_engines()
-    return [str(name) for name in choice.ADAPTERS if name not in installed]
+    return [
+        str(name)
+        for name in choice.ADAPTERS
+        if name not in installed and choice.host_answer(name, session_host).ok
+    ]
 
 
 def engine_names(model: str) -> list[str]:
