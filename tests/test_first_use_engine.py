@@ -541,7 +541,7 @@ def test_a_failed_first_use_install_is_not_retried_in_the_same_process(
 
     attempts: list[str] = []
 
-    def offline(_lock: Any, cell: str, *, dest: Path) -> Path:
+    def offline(_lock: Any, cell: str, **_kwargs: Any) -> Path:
         attempts.append(cell)
         raise PackUrlError("no network")
 
