@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.tobocop2/lilbee",
+  "title": "lilbee",
+  "description": "Local AI stack: search your files, notes, code and sites with cited answers.",
+  "websiteUrl": "https://lilbee.sh",
+  "repository": {
+    "url": "https://github.com/tobocop2/lilbee",
+    "source": "github"
+  },
+  "version": "0.6.103",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "lilbee",
+      "version": "0.6.103",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}

@@ -17,6 +17,11 @@ To ship a new npm version, bump `version` in a PR. In the same PR, move
 when it cannot look up the latest one. If the version is already on npm, the
 job skips the publish.
 
+In the same PR, set `version` in both places of `server.json` at the repo root
+to the new npm version. A test fails when they differ. After the npm publish,
+the job lists the new version in the MCP Registry. The registry checks the
+published package for `mcpName`, and the login uses the job's OIDC token.
+
 ## One-time setup
 
 1. Create an npmjs.com account, or log into the existing one. Turn on 2FA.
