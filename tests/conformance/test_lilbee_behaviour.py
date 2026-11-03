@@ -41,6 +41,18 @@ def test_L1_embed_without_tokenize_estimates_the_cut() -> None:
     assert len(vectors) == 1
 
 
+@pytest.mark.xfail(strict=True, raises=ProviderError, reason="L1, owner item 1180")
+def test_L1_embed_when_tokenize_refuses_the_request_estimates_the_cut() -> None:
+    """A /tokenize that answers 422 to the body (row 85) still lets an oversize input embed."""
+    with FakeEngine(PROFILES["omlx_embed"].behaviour) as engine:
+        try:
+            vectors = _client(engine, "m-embed", token_cap=_TOKEN_CAP).embed(["w " * 500])
+        except ProviderError as exc:
+            assert "HTTP 422" in str(exc), f"failed on something other than the 422: {exc}"
+            raise
+    assert len(vectors) == 1
+
+
 @pytest.mark.xfail(strict=True, raises=_FAILS_AS_STATED, reason="L2, owner item 1180")
 def test_L2_json_404_on_apply_template_falls_back_to_an_estimate() -> None:
     """A JSON error envelope on a missing route is an absent route, so the count estimates."""
@@ -60,6 +72,15 @@ def test_L3_reasoning_field_is_read_as_well_as_reasoning_content() -> None:
 def test_L4_sequence_length_overflow_text_is_a_context_overflow() -> None:
     """The text "sequence length is greater than" classifies as context overflow, not unknown."""
     with FakeEngine(PROFILES["mistralrs_cpu"].behaviour) as engine:
+        error = _error_of(lambda: _client(engine, "m-chat").chat(_OVERSIZE))
+    assert isinstance(error, ProviderError)
+    assert error.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="L4, owner item 1180")
+def test_L4_context_length_exceeded_code_is_a_context_overflow() -> None:
+    """The oMLX 400 with the code `context_length_exceeded` (row 86) is an overflow, not unknown."""
+    with FakeEngine(PROFILES["omlx_chat"].behaviour) as engine:
         error = _error_of(lambda: _client(engine, "m-chat").chat(_OVERSIZE))
     assert isinstance(error, ProviderError)
     assert error.kind is ProviderErrorKind.CONTEXT_OVERFLOW

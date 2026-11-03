@@ -3,7 +3,9 @@
   "rows": [
     5,
     16,
-    25
+    25,
+    57,
+    70
   ],
   "request": null,
   "assert": "The launch template holds {port}, the engine starts from it, and --help exits 0 with text."
