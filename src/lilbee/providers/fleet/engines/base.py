@@ -9,12 +9,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from lilbee.core.config.enums import KvCacheType
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.adapters import RoleServerSpec
     from lilbee.providers.fleet.devices import DeviceProbe
+    from lilbee.providers.fleet.engines.host_gate import HostGate
+    from lilbee.providers.fleet.host_caps import HostCaps
     from lilbee.providers.fleet.launch import InstanceLaunch
 
 
@@ -22,19 +24,9 @@ class EngineName(StrEnum):
     """The engines the fleet can launch."""
 
     LLAMA = "llama.cpp"
-
-
-class ModelFormat(StrEnum):
-    """A weight file format an engine loads."""
-
-    GGUF = "gguf"
-
-
-class MemoryKind(StrEnum):
-    """How much an engine's memory figures can be trusted."""
-
-    SIZED = "sized"
-    FIXED_RESERVE = "fixed_reserve"
+    IK_LLAMA = "ik_llama.cpp"
+    MLX = "mlx"
+    OPENVINO = "openvino"
 
 
 @dataclass(frozen=True)
@@ -59,52 +51,6 @@ class LaunchRequest:
     memory_endpoint: bool = False
     fit_target_mib: tuple[int, ...] = ()
     kv_unified_per_slot: int | None = None
-
-
-@dataclass(frozen=True)
-class MemoryRequest:
-    """What the memory estimate needs to know about one instance."""
-
-    model_path: Path
-    ctx: int
-    slots: int
-    gpu_layers: int
-    flash_attn: bool
-    kv_cache_type: KvCacheType
-    mmproj_path: Path | None = None
-    tensor_split: tuple[int, ...] = ()
-    batch_size: int | None = None
-    expert_offload: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class MemoryEstimate:
-    """One instance's memory footprint under both memory models.
-
-    A tensor-split instance fails on its busiest device, so the planner fits
-    ``peak_footprint`` (the largest device), never the sum.
-    """
-
-    kind: MemoryKind
-    device_bytes: int
-    """Discrete-GPU model: bytes resident in device memory, summed over devices."""
-    host_bytes: int
-    """Discrete-GPU model: bytes held in host memory."""
-    shared_bytes: int
-    """Unified-memory model: the whole resident footprint."""
-    per_device: tuple[int, ...] = ()
-    """Discrete-GPU model: bytes on each device."""
-    per_device_shared: tuple[int, ...] = ()
-    """Unified-memory model: bytes on each device."""
-
-    def footprint(self, *, unified: bool) -> int:
-        """Total bytes to charge against a shared budget for this memory model."""
-        return self.shared_bytes if unified else self.device_bytes
-
-    def peak_footprint(self, *, unified: bool) -> int:
-        """The busiest single device's bytes, or the total without a per-device breakdown."""
-        per_device = self.per_device_shared if unified else self.per_device
-        return max(per_device) if per_device else self.footprint(unified=unified)
 
 
 @dataclass(frozen=True)
@@ -149,8 +95,14 @@ class EngineAdapter(Protocol, Hashable):
     served_roles: frozenset[WorkerRole]
     memory_kind: MemoryKind
     """How far this engine's memory figures can be trusted, known without an estimate."""
+    takes_device_names: bool
+    """Whether ``launch_argv`` puts ``LaunchRequest.device_names`` on the command line."""
 
     def supports_architecture(self, architecture: str) -> bool: ...
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        """Whether *host* can run this engine; callable at any time, before ``binary()``."""
+        ...
 
     def binary(self) -> Path: ...
 
@@ -166,7 +118,9 @@ class EngineAdapter(Protocol, Hashable):
 
     def discover_devices(self, binary: Path) -> DeviceProbe: ...
 
-    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate: ...
+    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        """Size one instance; ``per_device`` follows a ratio only if ``launch_argv`` honours it."""
+        ...
 
     def check_readback(self, binary: Path) -> bool:
         """Whether *binary* can report its memory use by endpoint."""

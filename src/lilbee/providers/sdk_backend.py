@@ -158,7 +158,8 @@ class CompletionRequest:
     to the wire format its SDK expects. ``messages`` is the raw lilbee
     message list (may contain ``images`` bytes); the adapter formats it
     for its SDK. ``api_base`` is populated for local/Ollama deployments
-    and omitted for API-hosted models.
+    and omitted for API-hosted models. ``inline_reasoning`` asks the adapter to
+    re-inline server-extracted reasoning as ``<think>`` text (the chat role).
     """
 
     ref: ProviderModelRef
@@ -166,6 +167,7 @@ class CompletionRequest:
     options: dict[str, Any] = field(default_factory=dict)
     api_base: str | None = None
     api_key: str | None = None
+    inline_reasoning: bool = False
 
 
 @dataclass(frozen=True)

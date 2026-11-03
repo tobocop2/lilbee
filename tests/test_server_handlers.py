@@ -3942,7 +3942,9 @@ class TestPlacementHandlersRunOffTheLoop:
         gib = 1024**3
         return PlacementView(
             gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * gib, 72 * gib),),
-            roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+            roles=(
+                RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),
+            ),
             unplaceable=(),
             manual=False,
             spec_json=None,

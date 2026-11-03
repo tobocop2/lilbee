@@ -98,8 +98,9 @@ def _check_placement() -> None:
     """
     from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.planning import plan_all_launches
+    from lilbee.providers.roles import ROLE_REGISTRY
 
-    plan = plan_all_launches(engine=LLAMA)
+    plan = plan_all_launches(engines=dict.fromkeys(ROLE_REGISTRY, LLAMA))
     launches = plan.launches
     _require(bool(launches), "planner produced no servers (every role unplaceable)")
     roles = {launch.role for launch in launches}

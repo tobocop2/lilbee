@@ -17,7 +17,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -34,7 +34,7 @@ from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_c
 from lilbee.providers.fleet.gpu_env import engine_environ
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
-from lilbee.providers.fleet.planning import clear_ctx_downshift, log_engine_launch
+from lilbee.providers.fleet.planning import clear_ctx_downshift, log_role_launches
 from lilbee.providers.fleet.readback import (
     MEMORY_FLAG,
     check_launch,
@@ -221,9 +221,8 @@ class SwapManager:
     or model change) never touches another group's loaded servers.
     """
 
-    def __init__(self, data_dir: Path, group: SwapGroup, engine: EngineAdapter) -> None:
+    def __init__(self, data_dir: Path, group: SwapGroup) -> None:
         self._data_dir = data_dir
-        self._engine = engine
         self._group = group
         self._config_path = data_dir / _config_filename(os.getpid(), group.value)
         self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group.value)
@@ -258,10 +257,14 @@ class SwapManager:
         self,
         launches: list[InstanceLaunch],
         *,
+        engines: Mapping[WorkerRole, EngineAdapter],
         ttl_seconds: int = 0,
         lifetime: EngineLifetime = EngineLifetime.BUILDER,
     ) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
+
+        *engines* is the mapping the plan of these launches was made with; the
+        start logs each launch with the engine of its role from it.
 
         The proxy and every member get a freshly allocated free port, which is
         why llama-swap's own startPort is not used: that assigns a fixed
@@ -337,8 +340,7 @@ class SwapManager:
         )
         self._write_state()
         self._await_health()
-        for launch in launches:
-            log_engine_launch(launch, engine=self._engine)
+        log_role_launches(launches, engines=engines)
 
     def reap_stale(self) -> None:
         """Kill every dead or unhealthy recorded engine; see :func:`reap_stale`."""

@@ -6,18 +6,19 @@ import fnmatch
 import functools
 import logging
 import os
-import re
 import threading
 import time
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
-from huggingface_hub import ModelInfo
+from huggingface_hub import HfApi, ModelInfo
+from huggingface_hub.errors import HfHubHTTPError, NotASafetensorsRepoError, SafetensorsParsingError
 from huggingface_hub.hf_api import RepoSibling
 
 from lilbee.catalog.compat import classify
 from lilbee.catalog.content import is_safety_stripped
+from lilbee.catalog.formats import formats_from_tags, hf_listing_params, select_files
 from lilbee.catalog.models import (
     CatalogModel,
     HfGgufMeta,
@@ -26,9 +27,11 @@ from lilbee.catalog.models import (
     estimate_size_gb,
 )
 from lilbee.catalog.refs import GGUF_GLOB, rank_gguf_candidates
+from lilbee.catalog.types import ModelCompat, ModelFormat
 from lilbee.providers.base import is_header_safe
 
 if TYPE_CHECKING:
+    from lilbee.core.config import Config
     from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
@@ -95,11 +98,6 @@ _HF_EXPAND_FIELDS: list[str] = [
     "cardData",
     "tags",
 ]
-
-# HF ``?search=`` is a single space-tokenized substring match on the model id.
-# Multiple ``search=`` params are silently ignored, so the user's query is
-# space-joined onto the GGUF filter into one param value.
-_HF_GGUF_SEARCH_TERM = "GGUF"
 
 # Query parameter carrying the listing position in the ``Link rel=next`` URL.
 _HF_CURSOR_PARAM = "cursor"
@@ -178,11 +176,14 @@ def _next_cursor(resp: httpx.Response) -> str | None:
     return cursor or None
 
 
-def _hf_search_value(search: str) -> str:
-    """Build the HF ``search=`` value: GGUF plus the user's slash/dash-split tokens."""
-    parts = re.split(r"[\s/\-]+", search.strip())
-    tokens = [_HF_GGUF_SEARCH_TERM, *(p for p in parts if p)]
-    return " ".join(tokens)
+def _compat(architecture: str, engine: EngineAdapter | None) -> ModelCompat:
+    """The engine verdict for a GGUF row; a row with no engine stays unknown."""
+    return classify(architecture, engine) if engine is not None else ModelCompat.UNKNOWN
+
+
+def _hf_search_value(search: str, fmt: ModelFormat = ModelFormat.GGUF) -> str:
+    """Build the HF ``search=`` value: the format's search word plus the user's tokens."""
+    return hf_listing_params(fmt, search)["search"]
 
 
 @functools.lru_cache(maxsize=64)
@@ -207,6 +208,30 @@ def repo_has_mmproj(hf_repo: str) -> bool:
     return any(fnmatch.fnmatch(s.rfilename, DEFAULT_MMPROJ_PATTERN) for s in siblings)
 
 
+def read_parameter_count(repo: str, *, token: str | bool | None = None) -> dict[str, int]:
+    """The per-dtype tensor count of a Hub repo, read from the safetensors headers alone.
+
+    Returns an empty dict when the repo has no readable header, so the caller
+    reaches the unknown-size reserve instead of an error. A header that parses but
+    has the wrong shape (a list where a mapping belongs) counts as unreadable.
+    """
+    try:
+        counts = HfApi().get_safetensors_metadata(repo, token=token).parameter_count
+        return {str(dtype): count for dtype, count in counts.items()}
+    except (
+        HfHubHTTPError,
+        NotASafetensorsRepoError,
+        SafetensorsParsingError,
+        OSError,
+        AttributeError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        log.debug("No safetensors header for %s: %s", repo, exc)
+        return {}
+
+
 def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
     """Best-guess GGUF filename for a repo's sibling list, or ``GGUF_GLOB``.
 
@@ -217,6 +242,17 @@ def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
     """
     ranked = rank_gguf_candidates(s.rfilename for s in siblings)
     return next(iter(ranked), GGUF_GLOB)
+
+
+def _resolve_sibling_file(fmt: ModelFormat, siblings: list[RepoSibling]) -> str:
+    """The entry file a row of *fmt* names, or an empty string when the repo has none."""
+    if fmt == ModelFormat.GGUF:
+        return _resolve_sibling_gguf(siblings)
+    try:
+        selected = select_files(fmt, (s.rfilename for s in siblings))
+    except ValueError:  # an unusable file set: the row has no entry file to name
+        return ""
+    return selected[0] if selected else ""
 
 
 class HfClient:
@@ -236,8 +272,8 @@ class HfClient:
     # repeats within the window stay at DEBUG.
     FETCH_FAILURE_WARN_INTERVAL_S: float = 300.0
 
-    def __init__(self, engine: EngineAdapter) -> None:
-        self._engine = engine
+    def __init__(self, config: Config) -> None:
+        self._config = config
         self._cache: dict[str, tuple[float, HfPage]] = {}
         self._cache_lock = threading.Lock()
         self._arch_cache: dict[str, str] = {}
@@ -253,6 +289,23 @@ class HfClient:
         """Record *architecture* for *ref* in the per-instance cache."""
         self._arch_cache[ref] = architecture
 
+    def _page_engine(self, fmt: ModelFormat) -> EngineAdapter | None:
+        """The engine for the verdict on a page: only GGUF rows get one.
+
+        With no engine the rows stay unknown, because browsing needs none and a
+        pull refuses on its own.
+        """
+        # Local import to avoid a cycle with the engine choice module.
+        from lilbee.app.engine_choice import engine_for_format
+        from lilbee.providers.fleet.engines.choice import NoEngineError
+
+        if fmt != ModelFormat.GGUF:
+            return None
+        try:
+            return engine_for_format(fmt, self._config)
+        except NoEngineError:
+            return None
+
     def fetch_models(
         self,
         pipeline_tag: str = "text-generation",
@@ -261,19 +314,16 @@ class HfClient:
         library: str | None = None,
         search: str = "",
         cursor: str | None = None,
+        fmt: ModelFormat = ModelFormat.GGUF,
     ) -> HfPage:
-        """Fetch one page of GGUF models from the HuggingFace API with TTL cache.
+        """Fetch one page of *fmt* models from the HuggingFace API with TTL cache.
 
         *cursor* names the page to fetch (None is the first). The returned page
         carries the next page's cursor from the ``Link: <...>; rel="next"``
         response header (RFC 5988), the pagination the HuggingFace API documents.
         """
-        # Local import to avoid a cycle: query imports hf_client (this
-        # module), and hf_client uses pipeline_to_task from query.
-        from lilbee.catalog.query import pipeline_to_task
-
-        search_value = _hf_search_value(search)
-        cache_key = f"{pipeline_tag}:{sort}:{limit}:{cursor}:{library}:{search_value}"
+        search_value = _hf_search_value(search, fmt)
+        cache_key = f"{pipeline_tag}:{sort}:{limit}:{cursor}:{library}:{search_value}:{fmt}"
         now = time.monotonic()
         with self._cache_lock:
             expired = [k for k, (ts, _) in self._cache.items() if now - ts >= self.CACHE_TTL]
@@ -286,6 +336,7 @@ class HfClient:
 
         params = httpx.QueryParams(
             pipeline_tag=pipeline_tag,
+            filter=fmt.value,
             search=search_value,
             sort=sort,
             limit=limit,
@@ -309,34 +360,12 @@ class HfClient:
 
         next_cursor = _next_cursor(resp)
 
+        engine = self._page_engine(fmt)
         models: list[CatalogModel] = []
         for raw in data:
-            if not raw.get("id"):
-                continue
-            item = ModelInfo(**raw)
-            card_desc = item.card_data.get("description", "") if item.card_data else ""
-            gguf_meta = HfGgufMeta(**(item.gguf or {}))
-            gguf_filename = _resolve_sibling_gguf(item.siblings or [])
-            size_gb = estimate_size_gb(gguf_meta.total, gguf_filename)
-            task = pipeline_to_task(item.pipeline_tag or "")
-            models.append(
-                CatalogModel(
-                    hf_repo=item.id,
-                    gguf_filename=gguf_filename,
-                    size_gb=size_gb,
-                    min_ram_gb=estimate_min_ram_gb(size_gb),
-                    description=card_desc[:120] if card_desc else "",
-                    featured=False,
-                    downloads=item.downloads or 0,
-                    trending_score=item.trending_score or 0,
-                    task=task,
-                    architecture=gguf_meta.architecture,
-                    compat=classify(gguf_meta.architecture, self._engine),
-                    params=gguf_meta.total,
-                    safety_stripped=is_safety_stripped(item.tags or []),
-                )
-            )
-            self.cache_arch(item.id, gguf_meta.architecture)
+            model = self._catalog_row(raw, fmt, engine)
+            if model is not None:
+                models.append(model)
         page = HfPage(models=models, next_cursor=next_cursor)
         with self._cache_lock:
             self._cache[cache_key] = (now, page)
@@ -344,6 +373,42 @@ class HfClient:
                 oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
                 del self._cache[oldest_key]
         return page
+
+    def _catalog_row(
+        self, raw: dict[str, Any], fmt: ModelFormat, engine: EngineAdapter | None
+    ) -> CatalogModel | None:
+        """One catalog row for a Hub repo, or None when it has no id or no file of *fmt*."""
+        # Local import to avoid a cycle: query imports hf_client (this
+        # module), and hf_client uses pipeline_to_task from query.
+        from lilbee.catalog.query import pipeline_to_task
+
+        if not raw.get("id"):
+            return None
+        item = ModelInfo(**raw)
+        filename = _resolve_sibling_file(fmt, item.siblings or [])
+        if not filename:
+            return None
+        card_desc = item.card_data.get("description", "") if item.card_data else ""
+        gguf_meta = HfGgufMeta(**(item.gguf or {}))
+        size_gb = estimate_size_gb(gguf_meta.total, filename)
+        self.cache_arch(item.id, gguf_meta.architecture)
+        return CatalogModel(
+            hf_repo=item.id,
+            gguf_filename=filename,
+            size_gb=size_gb,
+            min_ram_gb=estimate_min_ram_gb(size_gb),
+            description=card_desc[:120] if card_desc else "",
+            featured=False,
+            downloads=item.downloads or 0,
+            trending_score=item.trending_score or 0,
+            task=pipeline_to_task(item.pipeline_tag or ""),
+            architecture=gguf_meta.architecture,
+            compat=_compat(gguf_meta.architecture, engine),
+            params=gguf_meta.total,
+            safety_stripped=is_safety_stripped(item.tags or []),
+            format=fmt,
+            formats=formats_from_tags(item.tags or []) | {fmt},
+        )
 
     def _log_fetch_failure(self, exc: Exception) -> None:
         """Log an HF fetch failure, rate-limited so offline use doesn't spam.

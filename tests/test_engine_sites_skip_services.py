@@ -12,7 +12,7 @@ from lilbee.app import services as services_mod
 from lilbee.cli.commands import setup as setup_cmd
 from lilbee.cli.launchers import server as launcher
 from lilbee.core.config import cfg
-from lilbee.providers.fleet.engines import LLAMA, select_engine
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.roles import WorkerRole
 
@@ -31,15 +31,11 @@ def _opening_a_store_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(services_mod._state, "singleton", None)
 
 
-def test_select_engine_is_the_adapter_the_container_holds() -> None:
-    assert select_engine(cfg) is LLAMA
-
-
 def test_placement_views_plan_with_the_selected_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[Any] = []
 
-    def _resolve(spec: object, *, engine: Any, **kwargs: object) -> Any:
-        seen.append(engine)
+    def _resolve(spec: object, *, engines: Any, **kwargs: object) -> Any:
+        seen.append(engines)
         raise PlacementError("stop after the engine is chosen")
 
     monkeypatch.setattr(placement, "resolve_placement_plan", _resolve)
@@ -48,7 +44,7 @@ def test_placement_views_plan_with_the_selected_engine(monkeypatch: pytest.Monke
             call()
     with pytest.raises(PlacementError, match="stop after the engine is chosen"):
         placement.set_placement(None)
-    assert seen == [LLAMA, LLAMA, LLAMA]
+    assert [set(engines.values()) for engines in seen] == [{LLAMA}] * 3
 
 
 def test_launcher_sizes_the_chat_window_with_the_selected_engine(
@@ -105,11 +101,11 @@ def test_self_check_server_plans_with_the_selected_engine(
         return _Launch()
 
     class _Swap:
-        def __init__(self, work_dir: Path, group: object, engine: Any) -> None:
-            seen.append(engine)
+        def __init__(self, work_dir: Path, group: object) -> None:
+            pass
 
-        def start(self, launches: list[Any]) -> None:
-            return None
+        def start(self, launches: list[Any], *, engines: Any) -> None:
+            seen.extend(engines.values())
 
         def endpoint(self) -> str:
             return "http://127.0.0.1:1"

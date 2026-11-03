@@ -14,7 +14,8 @@ from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.engine_params import chat_ctx_ceiling
-from lilbee.providers.fleet.engines import EngineAdapter, MemoryRequest
+from lilbee.providers.fleet.engines import EngineAdapter
+from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.fleet.placement import _vram_proportional_split
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM

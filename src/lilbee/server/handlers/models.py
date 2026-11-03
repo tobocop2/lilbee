@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Literal
 
 from cachetools import TTLCache
@@ -24,11 +25,13 @@ from lilbee.catalog import (
     picks_for,
 )
 from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo
+from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.role_validator import MODEL_FIELD_TO_TASK, validate_model_task_assignment
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.key_check import provider_key_status
 from lilbee.providers.local_servers import local_server_for_label
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
@@ -47,6 +50,7 @@ from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
 from lilbee.server.models import (
     CatalogEntryResponse,
     ExternalModelsResponse,
+    HiddenEntryResponse,
     ModelsCatalogResponse,
     ModelsDeleteResponse,
     ModelsInstalledResponse,
@@ -351,6 +355,7 @@ def _build_catalog_entry(
         architecture=enriched.architecture,
         compat=enriched.compat,
         safety_stripped=enriched.safety_stripped,
+        formats=sorted(f.value for f in enriched.formats),
     )
 
 
@@ -501,6 +506,8 @@ async def models_catalog(
         has_more=has_more,
         next_offset=offset + limit if has_more else None,
         truncated=result.truncated,
+        hidden=[HiddenEntryResponse(**asdict(h)) for h in result.hidden],
+        hidden_summary=hidden_summary([h.text for h in result.hidden]),
         models=hosted[offset : offset + limit] + native_rows,
     )
 
@@ -526,13 +533,19 @@ async def enforce_pull_arch_compat(
 
     from lilbee.catalog.compat import UnsupportedArchError
 
-    if _parse_source(source) is not ModelSource.NATIVE or allow_unsupported:
+    if _parse_source(source) is not ModelSource.NATIVE:
         return
     manager = get_services().model_manager
     try:
+        manager.require_engine(model)
+    except NoEngineError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if allow_unsupported:
+        return
+    try:
         await asyncio.to_thread(manager.enforce_arch_compat, model)
     except UnsupportedArchError as exc:
-        engine = get_services().engine
+        engine = get_services().engines.for_ref(model)
         raise HTTPException(
             status_code=409,
             detail="unsupported_arch",

@@ -493,6 +493,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "unless you want an agent managing presets."
         ),
     ),
+    "mcp_engines_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Off (default): the engine tools are not offered over MCP, and a connected "
+            "agent cannot read or change the engine of a model. On: an agent can list "
+            "the engine of each role and choose engines. The tools cost context on "
+            "every request, so this stays off unless you want an agent choosing engines."
+        ),
+    ),
     "chat_mode": SettingDef(
         str,
         nullable=False,

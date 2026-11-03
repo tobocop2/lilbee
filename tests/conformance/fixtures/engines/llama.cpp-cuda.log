@@ -1,0 +1,31 @@
+engine: llama.cpp-cuda
+version: memory-20261019-152820 62be051e9 llama-server 0.7.0-dev (build 1, commit 62be051)
+host: Linux-6.8.0-138-generic-x86_64-with-glibc2.39
+backend: cuda
+models: chat=Qwen3-0.6B,embed=Qwen3-Embedding-0.6B,rerank=bge-reranker-v2-m3,vision=SmolVLM-256M-Instruct
+STEP llama.cpp-cuda template ok=True finish=stop
+STEP llama.cpp-cuda tool ok=True tool_calls=['get_weather']
+STEP llama.cpp-cuda overflow ok=True kind=context_overflow
+STEP llama.cpp-cuda json_object ok=True finish=stop
+STEP llama.cpp-cuda json_schema ok=True finish=stop
+STEP llama.cpp-cuda reasoning ok=True finish=stop
+STEP llama.cpp-cuda embed ok=True dims=[1024]
+STEP llama.cpp-cuda rerank ok=True best=1
+STEP llama.cpp-cuda vision ok=True red_named=True blue_called_red=False
+STEP llama.cpp-cuda named ok=True log=['served by engine=llama-cpp-cuda version=preset role=chat model=llama-cpp-cuda/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'llama-cpp-cuda', <WorkerRole.EMBED: 'embed'>: 'llama-cpp-cuda', <WorkerRole.RERANK: 'rerank'>: 'llama-cpp-cuda'}
+gpu: NVIDIA GeForce RTX 3090, 24576 MiB, 595.91.07
+gpu-peak: busy_percent=83 memory_mib=4100 samples=15
+gpu-processes:      12       29 llama-server 
+server-output (lines that name the cuda device):
+  [45325] 0.00.233.880 I cmn  common_param:   - CUDA0   : NVIDIA GeForce RTX 3090 (24126 MiB, 23861 MiB free)
+  [45325] 0.00.234.047 I cmn  common_param: system_info: n_threads = 6 (n_threads_batch = 6) / 256 | CUDA : ARCHS = 860 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 
+  [45325] 0.00.776.313 I llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 3090) (0000:a1:00.0) - 23861 MiB free
+  [45325] 0.01.070.995 I load_tensors: offloading output layer to GPU
+  [45325] 0.01.071.004 I load_tensors: offloading 27 repeating layers to GPU
+  [41229] 0.00.159.414 I cmn  common_param:   - CUDA0   : NVIDIA GeForce RTX 3090 (24126 MiB, 22471 MiB free)
+  [41229] 0.00.159.626 I cmn  common_param: system_info: n_threads = 6 (n_threads_batch = 6) / 256 | CUDA : ARCHS = 860 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 
+  [41229] 0.00.685.609 I llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 3090) (0000:a1:00.0) - 22471 MiB free
+  [41229] 0.00.964.741 I load_tensors: offloading output layer to GPU
+  [41229] 0.00.964.752 I load_tensors: offloading 27 repeating layers to GPU
+  [42959] 0.00.167.955 I cmn  common_param:   - CUDA0   : NVIDIA GeForce RTX 3090 (24126 MiB, 21088 MiB free)
+  [42959] 0.00.168.167 I cmn  common_param: system_info: n_threads = 6 (n_threads_batch = 6) / 256 | CUDA : ARCHS = 860 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 

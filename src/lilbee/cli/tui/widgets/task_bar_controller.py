@@ -554,7 +554,7 @@ class TaskBarController:
 
 def download_key(model: CatalogModel) -> str:
     """Identity of a pull: repo plus filename, since one repo ships several quants."""
-    return f"{model.hf_repo}::{model.gguf_filename}"
+    return f"{model.pull_ref}::{model.gguf_filename}"
 
 
 def _download_target(
@@ -570,13 +570,14 @@ def _download_target(
     from lilbee.catalog import DownloadProgress
     from lilbee.catalog.compat import UnsupportedArchError
     from lilbee.catalog.types import ModelSource
+    from lilbee.providers.fleet.engines.choice import NoEngineError
 
     def _on_progress(p: DownloadProgress) -> None:
         reporter.update(p.percent, f"{model.display_name}: {p.detail}")
 
     try:
         pull_model_data(
-            model.ref,
+            model.pull_ref,
             ModelSource.NATIVE,
             on_update=_on_progress,
             allow_unsupported=allow_unsupported,
@@ -584,6 +585,8 @@ def _download_target(
         )
     except PermissionError as exc:
         raise RuntimeError(msg.CATALOG_GATED_REPO.format(name=model.display_name)) from exc
+    except NoEngineError as exc:
+        raise RuntimeError(str(exc)) from exc
     except UnsupportedArchError as exc:
         raise RuntimeError(
             f"Architecture {exc.architecture!r} not supported by this lilbee build."

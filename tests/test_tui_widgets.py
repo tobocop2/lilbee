@@ -1222,8 +1222,10 @@ class TestModelBar:
                 await pilot.pause()
                 chat_btn = app.query_one("#model-pick-chat", ModelPickerButton)
                 embed_btn = app.query_one("#model-pick-embed", ModelPickerButton)
-                assert chat_btn.tooltip == msg.MODEL_PICKER_CHAT_TOOLTIP
-                assert embed_btn.tooltip == msg.MODEL_PICKER_EMBED_TOOLTIP
+                assert chat_btn.tooltip == f"{msg.MODEL_PICKER_CHAT_TOOLTIP} {msg.ENGINE_KEY_HINT}"
+                assert (
+                    embed_btn.tooltip == f"{msg.MODEL_PICKER_EMBED_TOOLTIP} {msg.ENGINE_KEY_HINT}"
+                )
 
 
 class TestCloudProviderLabel:

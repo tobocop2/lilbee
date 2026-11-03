@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from lilbee.catalog.compat import UnsupportedQuantError, classify, file_header
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
+from lilbee.catalog.formats import select_files
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
     HF_API_URL,
@@ -31,7 +32,7 @@ from lilbee.catalog.refs import (
     rank_gguf_candidates,
     split_shard_filenames,
 )
-from lilbee.catalog.types import ModelCompat, ModelTask
+from lilbee.catalog.types import ModelCompat, ModelFormat, ModelTask
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 if TYPE_CHECKING:
@@ -210,6 +211,28 @@ def _retry_transient(work: Callable[[], _T]) -> _T:
     ) from last_error
 
 
+def retry_transfer(work: Callable[[], _T]) -> _T:
+    """Run *work* with the model download's retry rule: network and I/O faults retry.
+
+    A repository, revision or file the hub does not have is permanent and propagates at once.
+    """
+    from huggingface_hub.errors import (
+        EntryNotFoundError,
+        RepositoryNotFoundError,
+        RevisionNotFoundError,
+    )
+
+    def attempt() -> _T:
+        try:
+            return work()
+        except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError):
+            raise
+        except (httpx.TimeoutException, httpx.ConnectError, OSError) as exc:
+            raise _TransientDownloadError(f"Transfer failed: {exc}") from None
+
+    return _retry_transient(attempt)
+
+
 def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:
     """Run one file's transfer, retrying the faults another attempt can clear."""
     return _retry_transient(lambda: _hf_download_or_translate(entry, config))
@@ -322,6 +345,10 @@ def fetch_model_files(
     caller gets before the first bytes, and it names the cache blob so the
     caller can clear that file's leftovers.
     """
+    if entry.format != ModelFormat.GGUF:
+        return fetch_format_files(
+            entry, models_dir, token, on_progress=on_progress, on_probe=on_probe
+        )
     filename = resolve_filename(entry, engine)
     shards = split_shard_filenames(filename)
     dest = models_dir / shards[0]
@@ -333,22 +360,48 @@ def fetch_model_files(
         _ensure_projector(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
         return dest
 
-    remote = [_probed_shard(entry, shard, on_probe) for shard in shards]
+    shard_paths = _fetch_files(entry, models_dir, token, shards, on_progress, on_probe)
+    first_shard_path = shard_paths[0]  # the 00001-of-N shard llama.cpp loads from
+
+    if on_progress:
+        total_size = sum(path.stat().st_size for path in shard_paths)
+        on_progress(total_size, total_size)
+    _ensure_projector(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
+    return first_shard_path
+
+
+def _fetch_files(
+    entry: CatalogModel,
+    models_dir: Path,
+    token: HfToken,
+    files: list[str],
+    on_progress: ProgressCallback | None,
+    on_probe: ProbeCallback | None,
+    cached: frozenset[str] = frozenset(),
+) -> list[Path]:
+    """Download *files* in order with one 0 to 100 percent progress run; return their paths.
+
+    The space check counts only the files outside *cached*, the ones still to fetch.
+    """
+    remote = [_probed_shard(entry, shard, on_probe) for shard in files]
     shard_sizes = [file.size for file in remote]
     sizes_known = all(size != _SIZE_UNKNOWN for size in shard_sizes)
     # Reclaim first: a leftover partial is unreadable bytes that still occupy
     # the volume the space check is about to measure.
     discard_partial_blobs(models_dir, entry.hf_repo, _blobs(remote))
-    _require_disk_space(entry, models_dir, sum(shard_sizes) if sizes_known else 0)
+    to_fetch = sum(
+        size for name, size in zip(files, shard_sizes, strict=True) if name not in cached
+    )
+    _require_disk_space(entry, models_dir, to_fetch if sizes_known else 0)
 
     # Sum the shard sizes up front so a multi-shard pull reports one monotonic
     # 0->100% against the real total, not N separate per-shard cycles. Only use
     # the sum when every shard size is known (0 = unresolved/offline); a partial
     # sum would undercount the total and let progress run past 100%.
-    grand_total = sum(shard_sizes) if len(shards) > 1 and sizes_known else 0
+    grand_total = sum(shard_sizes) if len(files) > 1 and sizes_known else 0
     tracker = _ProgressTracker(on_progress, grand_total=grand_total) if on_progress else None
-    shard_paths: list[Path] = []
-    for shard in shards:
+    file_paths: list[Path] = []
+    for shard in files:
         log.info("Downloading %s/%s → %s", entry.hf_repo, shard, models_dir)
         config = DownloadConfig(
             repo_id=entry.hf_repo,
@@ -357,19 +410,53 @@ def fetch_model_files(
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
-        shard_path = _download_with_retry(entry, config)
-        shard_paths.append(shard_path)
+        file_path = _download_with_retry(entry, config)
+        file_paths.append(file_path)
         if tracker is not None:
-            tracker.shard_done(shard_path.stat().st_size)
-    first_shard_path = shard_paths[0]  # the 00001-of-N shard llama.cpp loads from
+            tracker.shard_done(file_path.stat().st_size)
+    if on_progress and (not tracker or not tracker.was_used):
+        log.info("Model found in HuggingFace cache: %s", file_paths[0])
+    return file_paths
 
+
+def _cached_path(hf_repo: str, name: str, models_dir: Path) -> Path | None:
+    """The cache path of *name* when the cache holds the whole file, else None."""
+    from huggingface_hub import try_to_load_from_cache
+
+    found = try_to_load_from_cache(hf_repo, name, cache_dir=str(models_dir))
+    return Path(found) if isinstance(found, str) else None
+
+
+def fetch_format_files(
+    entry: CatalogModel,
+    models_dir: Path,
+    token: HfToken,
+    *,
+    on_progress: ProgressCallback | None = None,
+    on_probe: ProbeCallback | None = None,
+) -> Path:
+    """Fetch a non-GGUF *entry*'s selected file set into the cache; return its entry file."""
+    selected = select_files(entry.format, _repo_sibling_files(entry.hf_repo))
+    if not selected:
+        raise RuntimeError(f"No {entry.format} model files found in {entry.hf_repo}")
+    cached = {
+        name: path
+        for name in selected
+        if (path := _cached_path(entry.hf_repo, name, models_dir)) is not None
+    }
+    if len(cached) == len(selected):
+        log.info("Model already downloaded: %s", cached[selected[0]])
+        if on_progress is not None:
+            size = sum(path.stat().st_size for path in cached.values())
+            on_progress(size, size)
+        return cached[selected[0]]
+    paths = _fetch_files(
+        entry, models_dir, token, selected, on_progress, on_probe, frozenset(cached)
+    )
     if on_progress:
-        total_size = sum(path.stat().st_size for path in shard_paths)
-        if not tracker or not tracker.was_used:
-            log.info("Model found in HuggingFace cache: %s", first_shard_path)
+        total_size = sum(path.stat().st_size for path in paths)
         on_progress(total_size, total_size)
-    _ensure_projector(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
-    return first_shard_path
+    return paths[0]
 
 
 def _blobs(files: Iterable[RemoteFile]) -> list[str]:

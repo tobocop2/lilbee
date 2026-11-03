@@ -82,3 +82,9 @@ class ConfirmDialog(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+class CancelFirstConfirmDialog(ConfirmDialog):
+    """A confirm dialog that opens on No, so one Enter keeps the current state."""
+
+    AUTO_FOCUS = "#confirm-no"

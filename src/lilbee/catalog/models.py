@@ -6,8 +6,13 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from lilbee.catalog.refs import ggml_bytes_per_param, ggml_quant_block_sizes, quant_label
-from lilbee.catalog.types import ModelCompat, ModelTask
+from lilbee.catalog.refs import (
+    FORMAT_SEPARATOR,
+    ggml_bytes_per_param,
+    ggml_quant_block_sizes,
+    quant_label,
+)
+from lilbee.catalog.types import ModelCompat, ModelFormat, ModelTask
 
 # Minimum recommended floor so a tiny model still reports a sane RAM ask.
 _MIN_RAM_FLOOR_GB = 2.0
@@ -138,11 +143,23 @@ class CatalogModel:
     # Safety-stripped (abliterated/uncensored) per the repo's HF tags. Browse
     # rows carry it; recommendation rails exclude rows that set it.
     safety_stripped: bool = False
+    # The weight format a pull fetches. For a non-GGUF format ``gguf_filename`` is
+    # the entry file the engine loads from.
+    format: ModelFormat = ModelFormat.GGUF
+    # Every format the repo ships that this host can run; ``format`` is the one a pull takes.
+    formats: frozenset[ModelFormat] = frozenset({ModelFormat.GGUF})
 
     @property
     def ref(self) -> str:
         """Browse-time ref (the HF repo); concrete filename is resolved at install."""
         return self.hf_repo
+
+    @property
+    def pull_ref(self) -> str:
+        """The reference a pull takes: the repo for GGUF, ``<repo>#<format>`` for another format."""
+        if self.format is ModelFormat.GGUF:
+            return self.hf_repo
+        return f"{self.hf_repo}{FORMAT_SEPARATOR}{self.format}"
 
     @property
     def display_name(self) -> str:
@@ -151,6 +168,15 @@ class CatalogModel:
         from lilbee.catalog.formatting import clean_display_name
 
         return clean_display_name(self.hf_repo)
+
+
+@dataclass(frozen=True)
+class HiddenModel:
+    """A row the listing left out, with the text that says why."""
+
+    hf_repo: str
+    reason: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -167,6 +193,7 @@ class CatalogResult:
     models: list[CatalogModel]
     has_more: bool = False
     truncated: bool = False
+    hidden: tuple[HiddenModel, ...] = ()
 
 
 @dataclass(frozen=True)

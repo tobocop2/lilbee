@@ -174,6 +174,17 @@ class TestAutoExtract:
         record = svc.store.add_memory.call_args.args[0]
         assert record.source is MemorySource.EXTRACTED
 
+    def test_reasoning_text_is_not_stored(self, svc):
+        """A JSON array inside the reasoning block never becomes a memory."""
+        cfg.memory_enabled = True
+        cfg.memory_auto_extract = True
+        svc.provider.chat.return_value = _chat_result(
+            '<think>[{"text": "a draft", "kind": "fact"}]</think>'
+            '[{"text": "the user prefers rust", "kind": "fact"}]'
+        )
+        stored = app_memory.auto_extract("I love rust", "Rust is great.")
+        assert [m.text for m in stored] == ["the user prefers rust"]
+
     def test_extraction_is_an_auxiliary_call(self, svc):
         """The extraction call carries the auxiliary cap and thinking off."""
         cfg.memory_enabled = True

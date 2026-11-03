@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 
+from lilbee.app.engine_choice import BookReading, EngineBook
 from lilbee.app.services import peek_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.providers.fleet.engines import select_engine
+from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.planning import (
     ResolvedPlacement,
@@ -51,6 +52,7 @@ class RolePlacementView:
     devices: tuple[int, ...]
     tensor_split: tuple[int, ...] | None
     replicas: int
+    engine: str
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,15 @@ class SkippedRole:
 
     role: WorkerRole
     model: str
+
+
+@dataclass(frozen=True)
+class SkippedNoEngine:
+    """A configured role left unplaced because no installed engine loads its model."""
+
+    role: WorkerRole
+    model: str
+    notice: str
 
 
 @dataclass(frozen=True)
@@ -81,6 +92,9 @@ class PlacementView:
     # Configured roles absent from the plan because their model isn't installed,
     # so a surface can show "not downloaded" instead of an unexplained empty table.
     skipped_not_installed: tuple[SkippedRole, ...] = ()
+    # Configured roles left out because no installed engine loads their model, each
+    # with the notice that says why, so a surface can say it and name the fix.
+    skipped_no_engine: tuple[SkippedNoEngine, ...] = ()
     # Roles sharing one swap group: each is placed, but only one is resident at a
     # time, so their footprints do not sum against the card they name.
     co_tenants: tuple[WorkerRole, ...] = ()
@@ -105,6 +119,7 @@ def _active_spec() -> PlacementSpec | None:
 
 def _view(
     resolved: ResolvedPlacement,
+    engines: Mapping[WorkerRole, EngineAdapter],
     *,
     manual: bool,
     spec_json: str | None,
@@ -134,6 +149,7 @@ def _view(
                 devices=plan.devices,
                 tensor_split=plan.tensor_split or None,
                 replicas=1,
+                engine=str(engines[plan.role].name),
             )
     return PlacementView(
         gpus=gpus,
@@ -149,9 +165,30 @@ def _view(
             SkippedRole(role=role, model=ref)
             for role, ref in resolved.skipped_not_installed.items()
         ),
+        skipped_no_engine=tuple(
+            SkippedNoEngine(role=role, model=skip.model, notice=skip.notice)
+            for role, skip in resolved.skipped_no_engine.items()
+        ),
         co_tenants=tuple(sorted(resolved.co_tenants, key=lambda role: role.value)),
         rejected_spec_json=rejected_spec_json,
         engine_backend=resolved.engine_backend,
+    )
+
+
+def _planning_engines() -> BookReading:
+    """The engine of each role now, read from the engine book at this call."""
+    return EngineBook(cfg).read()
+
+
+def _resolve(
+    spec: PlacementSpec | None, reading: BookReading, *, fall_back_to_auto: bool = False
+) -> ResolvedPlacement:
+    """Plan *spec* with the engines of one book reading, carrying its no-engine notices."""
+    return resolve_placement_plan(
+        spec,
+        engines=reading.adapters,
+        no_engine_notices=reading.notices,
+        fall_back_to_auto=fall_back_to_auto,
     )
 
 
@@ -163,18 +200,28 @@ def get_placement() -> PlacementView:
     nothing is using.
     """
     spec = _active_spec()
-    resolved = resolve_placement_plan(spec, engine=select_engine(cfg), fall_back_to_auto=True)
+    reading = _planning_engines()
+    resolved = _resolve(spec, reading, fall_back_to_auto=True)
+    engines = reading.adapters
     if spec is None:
-        return _view(resolved, manual=False, spec_json=None)
+        return _view(resolved, engines, manual=False, spec_json=None)
     if not resolved.spec_applied:
-        return _view(resolved, manual=False, spec_json=None, rejected_spec_json=spec.to_json())
-    return _view(resolved, manual=True, spec_json=spec.to_json())
+        return _view(
+            resolved, engines, manual=False, spec_json=None, rejected_spec_json=spec.to_json()
+        )
+    return _view(resolved, engines, manual=True, spec_json=spec.to_json())
 
 
 def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:
     """Dry-run: what spec (or auto, when None) would place. No persistence or reload."""
-    resolved = resolve_placement_plan(spec, engine=select_engine(cfg))
-    return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+    reading = _planning_engines()
+    resolved = _resolve(spec, reading)
+    return _view(
+        resolved,
+        reading.adapters,
+        manual=spec is not None,
+        spec_json=spec.to_json() if spec else None,
+    )
 
 
 def placement_refused_message() -> str:
@@ -203,7 +250,8 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     fleet would report our own residency as unavailable and poison the chat
     context sizing, while charging stays against total capacity (bb-a8f).
     """
-    resolved = resolve_placement_plan(spec, engine=select_engine(cfg))
+    reading = _planning_engines()
+    resolved = _resolve(spec, reading)
     if spec is None:
         settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
         cfg.placement = None
@@ -216,7 +264,12 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
         clear_read_device_cache()  # nothing running; let the next boot probe fresh
     else:
         services.provider.reload_placement(wait=True)
-    return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+    return _view(
+        resolved,
+        reading.adapters,
+        manual=spec is not None,
+        spec_json=spec.to_json() if spec else None,
+    )
 
 
 def wait_chat_ready(
