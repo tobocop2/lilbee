@@ -196,7 +196,7 @@ def test_a_cpu_without_avx2_is_refused_naming_avx2() -> None:
 def test_an_unreadable_cpu_stays_selectable_but_never_automatic() -> None:
     gate = IK_LLAMA.host_gate(_host("Linux", "x86_64", None))
     assert (gate.ok, gate.known, gate.auto_selectable) == (True, False, False)
-    assert gate.reason == "the CPU flags of this CPU could not be read"
+    assert gate.reason == "The CPU flags of this CPU could not be read."
 
 
 def test_an_unreadable_architecture_stays_selectable_but_never_automatic() -> None:

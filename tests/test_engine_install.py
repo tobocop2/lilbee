@@ -853,7 +853,7 @@ def _refusing_host(os: HostOS, arch: HostArch, avx2: Feature | None = None) -> H
         os=os,
         arch=arch,
         avx2=avx2 or Feature(True),
-        neon=Feature(False, "not an ARM CPU"),
+        neon=Feature(False, "This is not an ARM CPU."),
         gpus=(),
         nvidia_driver_cuda=None,
         nvidia_reason="",
@@ -866,7 +866,7 @@ def _refusing_host(os: HostOS, arch: HostArch, avx2: Feature | None = None) -> H
     [
         (
             "ik_llama.cpp",
-            _refusing_host(HostOS.LINUX, HostArch.X86_64, Feature(False, "Xeon lacks AVX2")),
+            _refusing_host(HostOS.LINUX, HostArch.X86_64, Feature(False, "Xeon lacks AVX2.")),
             "Xeon lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON.",
         ),
         (

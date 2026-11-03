@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from conftest import stub_hf_listing
@@ -27,7 +29,7 @@ from lilbee.providers.fleet.host_caps import Feature, HostCaps, NvidiaGpu
 from tests.conformance.fake_adapter import FakeAdapter
 
 PRESENT = Feature(True)
-ABSENT = Feature(False, "lacks it")
+ABSENT = Feature(False, "The host lacks it.")
 UNKNOWN = Feature(False, "could not be read", known=False)
 
 
@@ -97,7 +99,7 @@ def test_nvidia_field_gates_in_three_states(
 
 
 def test_absent_wins_over_unknown_and_unknown_shows_its_reason() -> None:
-    assert gate_on(UNKNOWN, ABSENT) == HostGate(False, "lacks it")
+    assert gate_on(UNKNOWN, ABSENT) == HostGate(False, "The host lacks it.")
     assert gate_on(PRESENT, UNKNOWN) == HostGate(True, "could not be read", known=False)
 
 
@@ -120,7 +122,9 @@ def test_refused_host_hides_with_the_gate_reason() -> None:
     hidden = explain({ModelFormat.SAFETENSORS}, _host(avx2=ABSENT, gpus=GPU), [_fake_offer()])
     assert hidden is not None
     assert hidden.reason is HiddenReason.HOST_UNSUPPORTED
-    assert "lacks it" in hidden.text
+    assert hidden.text.startswith("This host cannot run it. ")
+    assert hidden.text == "This host cannot run it. The host lacks it."
+    assert not re.search(r"\. [a-z]", hidden.text)
 
 
 def test_no_engine_for_the_format_hides_it() -> None:

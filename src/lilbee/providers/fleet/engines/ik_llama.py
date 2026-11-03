@@ -58,7 +58,7 @@ class IkLlamaAdapter:
         gate = gate_on(feature)
         if gate.ok:
             return gate
-        return HostGate(False, f"{gate.reason}. {_REFUSAL_TAIL}")
+        return HostGate(False, f"{gate.reason} {_REFUSAL_TAIL}")
 
     def binary(self) -> Path:
         """The server of the installed build of the pin; raises when the pack is not installed."""

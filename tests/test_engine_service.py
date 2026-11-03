@@ -25,7 +25,8 @@ from lilbee.providers.fleet.engines.choice import (
     AUTO,
     NoEngineError,
 )
-from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.chat_dispatch import capability
 from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
@@ -450,6 +451,9 @@ class _StoreEngine(FakeAdapter):
 
     name = "mistral.rs"
     formats = frozenset({"gguf"})
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return PASS
 
 
 @pytest.fixture

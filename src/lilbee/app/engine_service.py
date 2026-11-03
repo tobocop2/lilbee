@@ -171,14 +171,16 @@ def _engine_name(name: str) -> EngineName:
 def _require_installed(name: EngineName, installed: InstalledEngines) -> None:
     """Refuse a name that is not among the *installed* engines the host can run.
 
-    An engine that is on disk but refused by the host gate gets the gate's reason.
+    An engine the host gate refuses gets the gate's reason, with a build or without.
+    The engine list hides such an engine, so the list is no help to the user.
     """
     if name in installed:
         return
-    if name in installed_engines():
-        reason = choice.host_answer(name, session_host).reason
+    refusal = choice.host_answer(name, session_host)
+    if not refusal.ok:
+        state = "installed, but" if name in installed_engines() else "not installed, and"
         raise EngineRefusedError(
-            f"Engine {name} is installed, but this computer cannot run it. {reason}".rstrip()
+            f"Engine {name} is {state} this computer cannot run it. {refusal.reason}".rstrip()
         )
     raise EngineRefusedError(f"Engine {name} is not installed. {LIST_HINT}")
 

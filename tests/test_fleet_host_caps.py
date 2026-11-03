@@ -85,7 +85,7 @@ class TestRecordedHosts:
         assert _recorded("mac-m1pro")["flags"] is None
         assert caps.neon.present
         assert not caps.avx2.present
-        assert caps.avx2.reason == "not an x86 CPU"
+        assert caps.avx2.reason == "This is not an x86 CPU."
         assert (caps.os, caps.arch) == (HostOS.MACOS, HostArch.ARM64)
         assert caps.gpus == ()
         assert caps.nvidia_driver_cuda is None
@@ -96,7 +96,7 @@ class TestRecordedHosts:
         assert not caps.avx2.present
         assert "E5-2609" in caps.avx2.reason
         assert not caps.neon.present
-        assert caps.neon.reason == "not an ARM CPU"
+        assert caps.neon.reason == "This is not an ARM CPU."
         assert [(g.name, g.compute) for g in caps.gpus] == [("NVIDIA GeForce GTX 1070 Ti", (6, 1))]
         assert caps.nvidia_driver_cuda == (12, 4)
         assert caps.nvidia_reason == ""
