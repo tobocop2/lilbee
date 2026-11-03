@@ -356,15 +356,19 @@ def test_a_planner_launch_for_mlx_gives_a_provider_that_refuses_an_oversize_prom
 
     provider = FleetProvider()
     monkeypatch.setattr(provider, "_adopt_engine", lambda role: MLX)
-    swap = _FakeSwap()
-    swap.endpoint = lambda: "http://127.0.0.1:1"  # type: ignore[attr-defined]
+
+    class Swap(_FakeSwap):
+        def endpoint(self) -> str:
+            return "http://127.0.0.1:1"
+
+    swap: Any = Swap()
     calls: list[str] = []
     for method in ("chat", "chat_result", "chat_stream_items", "chat_tools"):
         monkeypatch.setattr(
             "lilbee.providers.fleet.client.LlamaServerClient." + method,
             lambda *a, **k: calls.append("http"),
         )
-    provider._adopt_group(SwapGroup("chat"), swap, [launch])  # type: ignore[arg-type]
+    provider._adopt_group(SwapGroup("chat"), swap, [launch])
     assert provider._chat_ctx == CONTEXT
     monkeypatch.setattr(cfg, "chat_model", "org/repo#mlx")
     prompt = "word " * PROMPT_TOKENS
