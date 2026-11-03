@@ -65,6 +65,25 @@ lilbee-compat-windows-x86_64-cu124.exe" ]
   [[ "$(runs_of publish-flatpak.yml)" == *"release_required_assets.sh --soft .github/gpu-cells.yml"* ]]
 }
 
+# The default of one workflow_dispatch input. YAML 1.1 readers (the jq based
+# yq) read the `on:` key as the boolean true, YAML 1.2 readers (the Go yq on
+# the runners) as the string "on", so the query takes whichever exists.
+input_default() {  # workflow file name, input name
+  yq -r "(.[\"on\"] // .[\"true\"]).workflow_dispatch.inputs.$2.default" "${WORKFLOWS}/$1"
+}
+
+@test "the Flatpak only_app input defaults to empty, so a release publishes every app" {
+  run input_default publish-flatpak.yml only_app
+  [ "$status" -eq 0 ]
+  [ "${output}" = "" ]
+}
+
+@test "the Docker variant input defaults to empty, so a release builds every image" {
+  run input_default publish-docker.yml variant
+  [ "$status" -eq 0 ]
+  [ "${output}" = "" ]
+}
+
 @test "the Flatpak publish step runs only for the app that only_app names" {
   grep -q '^      only_app:$' "${WORKFLOWS}/publish-flatpak.yml"
   run yq -r '.jobs[].steps[]? | select(.uses == "./.github/actions/publish-flatpak") | .if' \
