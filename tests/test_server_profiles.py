@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import json
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
@@ -18,6 +19,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.profile_files import PROFILES_DIRNAME
 from lilbee.core.system import default_data_dir
+from lilbee.data.types import SyncResult
 from tests.conftest import make_mock_services
 
 CREDITED = (
@@ -141,6 +143,76 @@ def test_apply_reports_a_reindex_when_a_reindex_setting_changes(client):
     applied = client.post(_url("Court filings", "/apply")).json()
     assert applied["reindex_required"] is True
     assert [(r["key"], r["effect"]) for r in applied["changes"]] == [("chunk_size", "reindex")]
+
+
+def _recording_sync(calls: list[dict[str, Any]]):
+    async def _sync(**kwargs: Any) -> SyncResult:
+        calls.append(kwargs)
+        return SyncResult(added=["filing.pdf"])
+
+    return _sync
+
+
+def _frames(body: str) -> list[tuple[str, Any]]:
+    """Each SSE frame of *body* as (event, data)."""
+    frames = []
+    for block in body.strip().split("\n\n"):
+        event, data = block.split("\n", 1)
+        frames.append((event.removeprefix("event: "), json.loads(data.removeprefix("data: "))))
+    return frames
+
+
+def test_apply_with_reindex_applies_then_streams_the_rebuild_to_its_result(client, monkeypatch):
+    _write(_global_dir(), "court-filings", CREDITED)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    resp = client.post(_url("Court filings", "/apply?reindex=true"))
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert _stored()["profile"]["name"] == "Court filings"
+    assert [(c["force_rebuild"], c["started_by"]) for c in calls] == [(True, "lilbee serve")]
+    event, done = _frames(resp.text)[-1]
+    assert event == "done"
+    assert (done["name"], done["reindex_required"]) == ("Court filings", True)
+    assert done["rebuild"]["added"] == ["filing.pdf"]
+
+
+def test_apply_with_reindex_skips_the_rebuild_when_nothing_needs_it(client, monkeypatch):
+    _write(_global_dir(), "tight", '[profile]\nname = "Tight"\n[values]\ntop_k = 4\n')
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    resp = client.post(_url("Tight", "/apply?reindex=true"))
+    assert calls == []
+    [(event, done)] = _frames(resp.text)
+    assert (event, done["name"], done["rebuild"]) == ("done", "Tight", None)
+
+
+def test_apply_without_reindex_only_applies_and_answers_json(client, monkeypatch):
+    _write(_global_dir(), "court-filings", CREDITED)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    resp = client.post(_url("Court filings", "/apply"))
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.json()["reindex_required"] is True
+    assert "rebuild" not in resp.json()
+    assert calls == []
+
+
+def test_apply_with_reindex_of_a_missing_profile_answers_404_and_rebuilds_nothing(
+    client, monkeypatch
+):
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    assert client.post(_url("nope", "/apply?reindex=true")).status_code == 404
+    assert calls == []
+
+
+def test_the_schema_publishes_the_reindex_option_and_the_json_apply_response(client):
+    op = client.get("/schema/openapi.json").json()["paths"]["/api/profiles/{name}/apply"]["post"]
+    reindex = next(p for p in op["parameters"] if p["name"] == "reindex")
+    assert (reindex["in"], reindex["schema"]["default"]) == ("query", False)
+    ok = op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert ok.endswith("/ProfileApplyResponse")
 
 
 def test_save_as_writes_the_profile_to_the_target_folder_and_switches_to_it(client):

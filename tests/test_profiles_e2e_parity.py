@@ -147,11 +147,6 @@ NOT_OFFERED: dict[tuple[Surface, Scenario], str] = {
     (Surface.TUI, Scenario.VALIDATE): "the TUI has no validate action; import refuses instead",
     (Surface.TUI, Scenario.ANALYZE_SAVE_GLOBAL): "the report's Save saves to the default folder",
 }
-# Apply with reindex is one call on the CLI and the TUI, and two calls over HTTP and MCP.
-TWO_STEP: dict[Surface, str] = {
-    Surface.HTTP: "POST /api/profiles/{name}/apply, then POST /api/sync with force_rebuild",
-    Surface.MCP: "profile_apply, then sync(force_rebuild=True)",
-}
 REPORTED = frozenset(
     {
         Scenario.APPLY,
@@ -188,8 +183,6 @@ _WARNING_TOAST = "warning toast"
 # An offer that is coming is pushed within a few message-loop ticks of the reset.
 _OFFER_PAUSES = 30
 _OTHER = "other"
-# POST /api/sync answers 201; POST /api/analyze answers 200.
-SYNC_STATUS = 201
 # The sources a Settings row pills; built-in and derived values show no pill.
 _PILLED_SOURCES = (
     SettingSource.USER,
@@ -576,9 +569,9 @@ def _http_export(client: TestClient[Any], world: World) -> None:
     (world.outbox / filename).write_text(response.text, encoding="utf-8")
 
 
-def _http_apply_then_rebuild(client: TestClient[Any], _world: World) -> Any:
-    applied = _json(client.post(_url(COURT, "/apply")))
-    _done(client.post("/api/sync", json={"force_rebuild": True}), SYNC_STATUS)
+def _http_apply_and_rebuild(client: TestClient[Any], _world: World) -> Any:
+    applied = _done(client.post(_url(COURT, "/apply?reindex=true")))
+    assert applied.pop("rebuild") is not None
     return applied
 
 
@@ -600,7 +593,7 @@ HTTP_CALLS: dict[Scenario, Callable[[TestClient[Any], World], Any]] = {
         c.post("/api/profiles", json={"name": SAVED, "target": "project"})
     ),
     Scenario.APPLY: lambda c, _w: _json(c.post(_url(COURT, "/apply"))),
-    Scenario.APPLY_REINDEX: _http_apply_then_rebuild,
+    Scenario.APPLY_REINDEX: _http_apply_and_rebuild,
     Scenario.UPDATE: lambda c, _w: _json(c.put(_url(COURT))),
     Scenario.DISCARD: lambda c, _w: _json(c.post("/api/profiles/discard")),
     Scenario.DUPLICATE: lambda c, _w: _json(
@@ -668,10 +661,7 @@ MCP_CALLS: dict[Scenario, Callable[[World], list[tuple[str, dict[str, Any]]]]] =
     Scenario.SAVE_AS: lambda _w: [_manage(McpAction.SAVE, name=SAVED, folder="global")],
     Scenario.SAVE_AS_PROJECT: lambda _w: [_manage(McpAction.SAVE, name=SAVED, folder="project")],
     Scenario.APPLY: lambda _w: [("profile_apply", {"name": COURT})],
-    Scenario.APPLY_REINDEX: lambda _w: [
-        ("profile_apply", {"name": COURT}),
-        ("sync", {"force_rebuild": True}),
-    ],
+    Scenario.APPLY_REINDEX: lambda _w: [("profile_apply", {"name": COURT, "reindex": True})],
     Scenario.UPDATE: lambda _w: [_manage(McpAction.UPDATE)],
     Scenario.DISCARD: lambda _w: [_manage(McpAction.DISCARD)],
     Scenario.DUPLICATE: lambda _w: [_manage(McpAction.DUPLICATE, name=COURT, new_name=COPY)],
@@ -1309,8 +1299,7 @@ def test_the_not_offered_cells_are_absent_from_their_surface() -> None:
     assert "default_save_folder()" in inspect.getsource(AnalyzeReportScreen.action_save)
 
 
-def test_apply_takes_one_call_to_reindex_only_on_the_cli_and_tui() -> None:
-    """HTTP and MCP apply take only a name, so a rebuild is a second call; see TWO_STEP."""
-    assert set(TWO_STEP) == {Surface.HTTP, Surface.MCP}
-    assert list(inspect.signature(mcp_profile_apply).parameters) == ["name"]
-    assert set(profiles_apply_route.fn.__annotations__) == {"name", "return"}
+def test_apply_takes_the_cli_reindex_option_over_http_and_mcp() -> None:
+    """HTTP and MCP apply take ``reindex``, off by default as on the CLI: one call rebuilds."""
+    for apply in (mcp_profile_apply, profiles_apply_route.fn):
+        assert inspect.signature(apply).parameters["reindex"].default is False

@@ -6,7 +6,7 @@ A profile name from a URL only ever reaches the profile lookup, never a file pat
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from typing import TypeVar
 
 from litestar.exceptions import HTTPException, NotFoundException, ValidationException
@@ -16,6 +16,8 @@ from lilbee.app import profiles
 from lilbee.app.profiles import ExportedProfile, ProfileNotFoundError, file_failure_message
 from lilbee.app.services import get_services
 from lilbee.core.profile_files import ProfileNameClashError, ProfileStore
+from lilbee.server.handlers.ingest import sync_stream
+from lilbee.server.handlers.sse import sse_done
 from lilbee.server.models import (
     ActiveProfileResponse,
     ProfileApplyResponse,
@@ -82,6 +84,22 @@ async def diff_profile(name: str) -> ProfileDiffResponse:
 async def apply_profile(name: str) -> ProfileApplyResponse:
     """Make *name* the project's profile."""
     return ProfileApplyResponse.from_result(await _run(lambda: profiles.apply(_store(), name)))
+
+
+async def rebuild_after_apply_stream(applied: ProfileApplyResponse) -> AsyncGenerator[str, None]:
+    """The rebuild an apply needs as sync SSE events; done carries the apply and ``rebuild``."""
+    needed = await asyncio.to_thread(
+        profiles.apply_needs_rebuild, _store(), applied.name, applied.reindex_required
+    )
+    applied_payload = applied.model_dump(mode="json")
+    if not needed:
+        yield sse_done({**applied_payload, "rebuild": None})
+        return
+    async for frame in sync_stream(
+        force_rebuild=True,
+        done_payload=lambda result: {**applied_payload, "rebuild": result.model_dump()},
+    ):
+        yield frame
 
 
 async def save_profile(data: ProfileSaveRequest) -> ProfileSaveResponse:
