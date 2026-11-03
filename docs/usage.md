@@ -1631,20 +1631,28 @@ lowering `usable_vram_fraction` fixes it more directly than pinning placement.
 
 ### Use another llama-server build
 
-Set `llama_server_path` (`LILBEE_LLAMA_SERVER_PATH`) to any llama-server binary, for example a build of ik_llama.cpp:
+Set `llama_server_path` (`LILBEE_LLAMA_SERVER_PATH`) to any llama-server binary, for example a CPU build of ik_llama.cpp:
 
 ```bash
-LILBEE_LLAMA_SERVER_PATH=/path/to/ik_llama.cpp/build/bin/llama-server lilbee
+git clone https://github.com/ikawrakow/ik_llama.cpp
+cd ik_llama.cpp
+git checkout 229c703c4c948382e634a0c563a049740ceac3ff
+cmake -B build -DGGML_NATIVE=OFF
+cmake --build build -j --target llama-server
+LILBEE_LLAMA_SERVER_PATH=$PWD/build/bin/llama-server lilbee
 ```
 
-lilbee reads the `--help` text of the binary once. It writes an optional flag (`--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--kv-unified`) only if the help lists it. For each flag the build lacks, lilbee logs one warning that names the flag and the effect, and the launch continues.
+lilbee reads the `--help` text of the binary once. It writes an optional flag (`--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--kv-unified`, `--device`, `--tensor-split`) only if the help lists it. For each flag the build lacks, lilbee logs one warning that names the flag and the effect, and the launch continues.
 
-Two rules keep the launch safe:
+These rules keep the launch safe:
 
 - If the binary prints no help text, lilbee writes every optional flag and logs one warning.
-- lilbee always writes `--embeddings`, `--device` and `--tensor-split` where placement asks for them. A build that lacks one of them stops with its own error.
+- lilbee always writes `--embeddings` for an embedding model and for a reranker. It does not check the help text for this flag. A build that lacks it stops with its own error.
+- A build whose help text does not list `--device` or `--tensor-split` gets neither flag. Placement across several GPUs then does not apply to that build.
 
-An ik_llama.cpp build does not list `--list-devices`. lilbee then reads the GPU list from the Vulkan loader of the host. The ik_llama.cpp README lists ROCm, Vulkan and Metal as unsupported, so use a CPU or CUDA build.
+An ik_llama.cpp build does not list `--list-devices`. lilbee then reads the GPU list from the Vulkan loader of the host. The ik_llama.cpp README lists ROCm, Vulkan and Metal as unsupported, so use a CPU or CUDA build. The CPU build of the commit below answered chat and embed requests from lilbee.
+
+The help text of ik_llama.cpp commit 229c703c4c948382e634a0c563a049740ceac3ff (2026-11-03) lists `--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling` and `--memory`. It does not list `--device`, `--tensor-split`, `--kv-unified`, `--list-devices` or `--load-mode`. It lists the embedding flag as `--embedding(s)`.
 
 ---
 
