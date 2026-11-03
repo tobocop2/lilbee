@@ -24,6 +24,20 @@
    "detail": "kind=server"
   }
  },
+ "error_answers": [
+  [
+   504,
+   "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  ],
+  [
+   504,
+   "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  ],
+  [
+   504,
+   "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  ]
+ ],
  "exchanges": [
   {
    "method": "POST",
