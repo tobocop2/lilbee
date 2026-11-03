@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -12,6 +12,7 @@ import tomli_w
 
 from lilbee.app.settings import (
     apply_profile_layer,
+    inert_reindex_keys,
     list_settings,
     ocr_off_vision_notice,
     reset_settings,
@@ -269,22 +270,24 @@ def diff(store: ProfileStore, name: str) -> ProfileDiff:
 
 
 class RebuildReason(StrEnum):
-    """Why a rebuild after applying a profile changes the index."""
+    """Why a rebuild after applying or discarding profile values changes the index."""
 
     CHANGES = "changes"
     SETS_REINDEX = "sets_reindex"
     HELD_OUT = "held_out"
 
 
-def rebuild_reason(profile: ProfileFile, reindex_required: bool) -> RebuildReason | None:
-    """Why a rebuild after applying *profile* changes the index; None when it changes nothing.
+def rebuild_reason(keys: Iterable[str], reindex_required: bool) -> RebuildReason | None:
+    """Why a rebuild after the profile's values of *keys* take effect changes the index.
 
-    A rebuild also retries each held-out file, the only way a raised limit reaches
-    them: a limit is not a setting that requires a rebuild.
+    None when it changes nothing. A key whose gating setting is off, such as
+    ``table_model`` without layout detection, changes no index. A rebuild also
+    retries each held-out file, the only way a raised limit reaches them: a limit
+    is not a setting that requires a rebuild.
     """
     if reindex_required:
         return RebuildReason.CHANGES
-    if any(key in REINDEX_FIELDS for key in profile.values):
+    if (REINDEX_FIELDS - inert_reindex_keys()) & set(keys):
         return RebuildReason.SETS_REINDEX
     if held_out_sources()[1] > 0:
         return RebuildReason.HELD_OUT
@@ -293,7 +296,7 @@ def rebuild_reason(profile: ProfileFile, reindex_required: bool) -> RebuildReaso
 
 def apply_needs_rebuild(store: ProfileStore, name: str, reindex_required: bool) -> bool:
     """Whether a rebuild after applying profile *name* changes the index."""
-    return rebuild_reason(usable(store, name), reindex_required) is not None
+    return rebuild_reason(usable(store, name).values, reindex_required) is not None
 
 
 def apply(store: ProfileStore, name: str) -> ApplyResult:

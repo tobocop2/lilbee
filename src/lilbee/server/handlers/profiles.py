@@ -91,13 +91,29 @@ async def rebuild_after_apply_stream(applied: ProfileApplyResponse) -> AsyncGene
     needed = await asyncio.to_thread(
         profiles.apply_needs_rebuild, _store(), applied.name, applied.reindex_required
     )
-    applied_payload = applied.model_dump(mode="json")
+    async for frame in _rebuild_stream(applied.model_dump(mode="json"), needed):
+        yield frame
+
+
+async def rebuild_after_discard_stream(
+    discarded: ProfileDiscardResponse,
+) -> AsyncGenerator[str, None]:
+    """The rebuild a discard needs as sync SSE events; done carries the discard and ``rebuild``."""
+    reason = await asyncio.to_thread(
+        profiles.rebuild_reason, discarded.dropped, discarded.reindex_required
+    )
+    async for frame in _rebuild_stream(discarded.model_dump(mode="json"), reason is not None):
+        yield frame
+
+
+async def _rebuild_stream(payload: dict[str, object], needed: bool) -> AsyncGenerator[str, None]:
+    """A forced sync's SSE events when *needed*; done carries *payload* and ``rebuild``."""
     if not needed:
-        yield sse_done({**applied_payload, "rebuild": None})
+        yield sse_done({**payload, "rebuild": None})
         return
     async for frame in sync_stream(
         force_rebuild=True,
-        done_payload=lambda result: {**applied_payload, "rebuild": result.model_dump()},
+        done_payload=lambda result: {**payload, "rebuild": result.model_dump()},
     ):
         yield frame
 

@@ -554,6 +554,53 @@ def test_discard_with_reindex_skips_the_rebuild_when_nothing_needs_it(project, m
     rebuilds.assert_not_called()
 
 
+def test_discard_with_reindex_rebuilds_while_a_file_is_held_out(project, monkeypatch):
+    """A discard that lowers no limit still lets a rebuild retry the held file, as apply does."""
+    rebuilds = MagicMock(return_value=MagicMock(added=["long.md"], failed=[]))
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    svc_mod.get_services().store.held_records.return_value = {
+        "long.md": HeldRecord(HeldOut.FAILED, "hash", "14 chunks exceed the per-file limit")
+    }
+    (project / "config.toml").write_text("max_chunks_per_file = 10\n", encoding="utf-8")
+    payload = _json(project, "discard", "--reindex")
+    assert payload["reindex_required"] is False
+    assert payload["reindexed"] == 1
+    rebuilds.assert_called_once_with()
+
+
+def test_discard_with_reindex_rebuilds_a_reindex_setting_at_its_current_value(project, monkeypatch):
+    """The index can predate the value, so a rebuild applies it, as apply does."""
+    rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf"], failed=[]))
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    (project / "config.toml").write_text(f"chunk_size = {cfg.chunk_size}\n", encoding="utf-8")
+    payload = _json(project, "discard", "--reindex")
+    assert (payload["dropped"], payload["reindex_required"]) == (["chunk_size"], False)
+    rebuilds.assert_called_once_with()
+
+
+def test_discard_with_reindex_skips_a_setting_whose_gate_is_off(project, monkeypatch):
+    rebuilds = MagicMock()
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    assert cfg.semantic_chunking is False
+    (project / "config.toml").write_text(
+        f"topic_threshold = {cfg.topic_threshold}\n", encoding="utf-8"
+    )
+    payload = _json(project, "discard", "--reindex")
+    assert (payload["dropped"], payload["reindexed"]) == (["topic_threshold"], None)
+    rebuilds.assert_not_called()
+
+
+def test_apply_with_reindex_skips_a_setting_whose_gate_is_off(project, monkeypatch):
+    """topic_threshold changes nothing while semantic chunking is off, so no rebuild runs."""
+    rebuilds = MagicMock()
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    assert cfg.semantic_chunking is False
+    _write(_global_dir(), "tables", f"[values]\ntopic_threshold = {cfg.topic_threshold}\n")
+    payload = _json(project, "apply", "tables", "--reindex")
+    assert (payload["reindex_required"], payload["reindexed"]) == (False, None)
+    rebuilds.assert_not_called()
+
+
 def test_discard_with_reindex_exits_nonzero_and_hints_when_the_rebuild_fails(project, monkeypatch):
     rebuilds = MagicMock(side_effect=RuntimeError("A sync is already running"))
     monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)

@@ -15,7 +15,13 @@ from textual.message import Message
 from textual.widgets import DataTable, Select, Static
 
 from lilbee.app import profiles
-from lilbee.app.profiles import ActiveProfile, ChangeRow, DiscardResult, ProfileStatus
+from lilbee.app.profiles import (
+    ActiveProfile,
+    ChangeRow,
+    DiscardResult,
+    ProfileStatus,
+    RebuildReason,
+)
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.profile_dialogs import (
@@ -296,15 +302,20 @@ class ProfileTab(Vertical):
     def _discard(self, snapshot: ProfileSnapshot) -> None:
         name = snapshot.active.name
 
-        def _done(result: DiscardResult) -> None:
+        def _work() -> tuple[DiscardResult, RebuildReason | None]:
+            result = profiles.discard()
+            return result, profiles.rebuild_reason(result.dropped, result.reindex_required)
+
+        def _done(outcome: tuple[DiscardResult, RebuildReason | None]) -> None:
+            result, reason = outcome
             self.app.publish_settings(result.dropped)
             self.notify(msg.PROFILE_DISCARDED.format(name=name))
             self.app.notify_warnings(result.warnings)
             self._stale()
-            if result.reindex_required:
-                self.app.offer_rebuild(msg.PROFILE_DISCARD_REINDEX_MESSAGE.format(name=name))
+            if reason is not None:
+                self.app.offer_rebuild(msg.profile_discard_rebuild_text(reason, name))
 
-        run_profile_op(self, profiles.discard, _done)
+        run_profile_op(self, _work, _done)
 
     def _reapply(self, snapshot: ProfileSnapshot) -> None:
         start_profile_switch(self.app, self, snapshot.active.name, self._stale)

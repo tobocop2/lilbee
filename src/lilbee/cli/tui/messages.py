@@ -1079,6 +1079,15 @@ def profile_rebuild_reason_text(reason: RebuildReason, count: int, files: int) -
     return profile_reindex_text(count, files) if files else ""
 
 
+def profile_discard_rebuild_text(reason: RebuildReason, name: str) -> str:
+    """The rebuild question after a discard, saying why a rebuild changes the index."""
+    if reason is RebuildReason.HELD_OUT:
+        return PROFILE_APPLY_HELD_OUT
+    if reason is RebuildReason.SETS_REINDEX:
+        return PROFILE_APPLY_SETS_REINDEX
+    return PROFILE_DISCARD_REINDEX_MESSAGE.format(name=name)
+
+
 def profile_reindex_text(count: int, files: int) -> str:
     """The Apply dialog's summary of the changes that rebuild the index."""
     if count == 1:

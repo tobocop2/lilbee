@@ -728,7 +728,7 @@ def _settle(
             setattr(cfg, key, values[key])
     _rederive_from_resolved(effective)
     _invalidate_caches(effective)
-    reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & reindex_effective)
+    reindex_required = bool((REINDEX_FIELDS - inert_reindex_keys()) & reindex_effective)
     if embed_in_batch:
         reindex_required = reindex_required or _embed_reindex_required()
     return SettingsUpdateResult(
@@ -805,7 +805,7 @@ def _rederive_from_resolved(keys: set[str]) -> None:
         reconcile_embedding_dim()
 
 
-def _inert_reindex_keys() -> set[str]:
+def inert_reindex_keys() -> set[str]:
     """Reindex keys that change no extraction output under the effective config.
 
     ``table_model`` is read only inside layout detection, and ``topic_threshold``
