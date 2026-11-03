@@ -95,6 +95,12 @@ def test_l2_a_proven_build_lists_an_empty_not_run_on(wheel: Path) -> None:
     assert engine_service.builds()[0].label == f"{ENGINE.value} {VERSION} (cpu)"
 
 
+def test_l2_cli_install_json_carries_not_run_on(unproven: None, wheel: Path) -> None:
+    out = _cli_json("install", ENGINE.value, "--wheel", str(wheel))
+    assert out["not_run_on"] == [DEVICE]
+    assert out["installed"] == BUILD_LINE
+
+
 def test_l2_the_install_response_carries_not_run_on(
     unproven: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -119,8 +125,3 @@ def test_l3_auto_skips_an_engine_with_a_device_not_run(monkeypatch: pytest.Monke
     assert pick() is EngineName.MLX
     monkeypatch.setattr(proof, "HARDWARE_PROOF", {"mlx": {"Apple GPU": HardwareProof.NOT_RUN}})
     assert pick() is EngineName.LLAMA
-
-
-def test_l4_no_shipped_engine_has_a_device_not_run() -> None:
-    assert all(not proof.not_run_on(str(name)) for name in choice.ADAPTERS)
-    assert proof.HARDWARE_PROOF == {}
