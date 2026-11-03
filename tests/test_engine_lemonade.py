@@ -154,9 +154,29 @@ def test_r2_a_second_call_changes_nothing() -> None:
     _launch()
     root = lemonade.role_dir(WorkerRole.CHAT, 0)
     files = [root / "config" / "config.json", root / "config" / "recipe_options.json"]
+    link = root / "view" / "chat" / "lilbee-chat.gguf"
     before = [f.read_bytes() for f in files]
+    link_before = (link.lstat().st_ino, link.lstat().st_mtime_ns)
     assert _launch() == _launch()
     assert [f.read_bytes() for f in files] == before
+    assert (link.lstat().st_ino, link.lstat().st_mtime_ns) == link_before
+
+
+def test_r2_a_repeat_call_never_removes_the_live_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = Path("/models/m.gguf")
+    _launch(model=model)
+    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
+    gone: list[Path] = []
+    real_unlink = Path.unlink
+
+    def watch(self: Path, missing_ok: bool = False) -> None:
+        gone.append(self)
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", watch)
+    _launch(model=Path("/models/other.gguf"))
+    assert link not in gone
+    assert link.readlink() == Path("/models/other.gguf")
 
 
 def test_r2_a_new_model_path_moves_the_link() -> None:
@@ -164,6 +184,46 @@ def test_r2_a_new_model_path_moves_the_link() -> None:
     _launch(model=Path("/models/b.gguf"))
     link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
     assert link.readlink() == Path("/models/b.gguf")
+
+
+def test_r8_the_embed_recipe_records_the_context_lemond_serves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """bge-m3 asked for 4096 in the recording and ran with the 8192 it was trained on."""
+    served = int(_p4_embed_ctx())
+    monkeypatch.setattr(lemonade, "read_gguf_metadata", lambda _p: {"context_length": str(served)})
+    _launch(WorkerRole.EMBED)
+    path = lemonade.role_dir(WorkerRole.EMBED, 0) / "config" / "recipe_options.json"
+    options = json.loads(path.read_text(encoding="utf-8"))["extra.lilbee-embed"]
+    assert options["ctx_size"] == served
+
+
+def test_r8_chat_and_rerank_record_the_context_they_asked_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lemonade, "read_gguf_metadata", lambda _p: {"context_length": "32768"})
+    for role in (WorkerRole.CHAT, WorkerRole.RERANK):
+        _launch(role)
+        path = lemonade.role_dir(role, 0) / "config" / "recipe_options.json"
+        assert (
+            json.loads(path.read_text(encoding="utf-8"))[f"extra.lilbee-{role.value}"]["ctx_size"]
+            == 2048
+        )
+
+
+def test_r8_an_unreadable_embed_model_keeps_the_asked_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lemonade, "read_gguf_metadata", lambda _p: None)
+    _launch(WorkerRole.EMBED)
+    path = lemonade.role_dir(WorkerRole.EMBED, 0) / "config" / "recipe_options.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["extra.lilbee-embed"]["ctx_size"] == 2048
+
+
+def _p4_embed_ctx() -> str:
+    from tests.conformance.test_f3_recordings import _p4_children
+
+    return _p4_children()["embed"]["--ctx-size"]
 
 
 def test_r3_the_swap_entry_names_the_model_and_checks_live() -> None:
