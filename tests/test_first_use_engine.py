@@ -80,7 +80,7 @@ def fetched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     publish(monkeypatch, make_pack(wheel))
     calls: list[str] = []
 
-    def fake(lock: Any, cell: str, *, dest: Path) -> Path:
+    def fake(lock: Any, cell: str, *, dest: Path, **_signals: Any) -> Path:
         calls.append(cell)
         dest.mkdir(parents=True, exist_ok=True)
         copy = dest / wheel.name
@@ -222,6 +222,35 @@ def test_the_install_command_fetches_the_pack_when_no_engine_is_present(fetched)
     assert "Installed engine llama.cpp" in result.output
     assert fetched == [CELL]
     assert resolve_llama_server().is_file()
+    assert fetched == [CELL]
+
+
+def test_installing_the_pack_reports_bytes_and_retries_and_honours_cancel(
+    fetched, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = first_use.fetch_frozen
+    seen: dict[str, Any] = {}
+
+    def reporting(lock: Any, cell: str, *, dest: Path, **signals: Any) -> Path:
+        seen.update(signals)
+        signals["on_progress"](4, 10)
+        signals["on_retry"](1, 3, "Transfer failed: reset")
+        return real(lock, cell, dest=dest)
+
+    monkeypatch.setattr(first_use, "fetch_frozen", reporting)
+    updates: list[float] = []
+    retries: list[str] = []
+    cancel = threading.Event()
+    built = engine_service.install(
+        EngineName.LLAMA.value,
+        on_update=lambda p: updates.append(p.percent),
+        on_retry=retries.append,
+        cancel=cancel,
+    )
+    assert built.engine == EngineName.LLAMA.value
+    assert updates == [40.0]
+    assert retries == ["Transfer failed: reset. Attempt 1 of 3 failed; trying again."]
+    assert seen["cancel"] is cancel
     assert fetched == [CELL]
 
 
