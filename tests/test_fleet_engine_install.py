@@ -71,28 +71,20 @@ def test_a_frozen_build_is_homebrew_or_standalone(monkeypatch, executable, expec
 
 
 @pytest.mark.parametrize(
-    ("method", "must_have", "must_not_have"),
+    "method",
     [
-        (InstallMethod.PIP, "pip install --pre", "uv "),
-        (InstallMethod.UV_ENV, "uv pip install --prerelease=allow", "uv tool"),
-        (InstallMethod.UV_TOOL, "uv tool install --force --prerelease=allow", "uv pip"),
-        (InstallMethod.PIPX, "pipx install --force --pip-args=", "uv "),
+        InstallMethod.PIP,
+        InstallMethod.UV_ENV,
+        InstallMethod.UV_TOOL,
+        InstallMethod.PIPX,
+        InstallMethod.UNKNOWN,
     ],
 )
-def test_each_install_gets_its_own_command_for_every_index(
-    method, must_have, must_not_have
-) -> None:
+def test_a_package_install_is_told_to_run_the_engine_install_command(method) -> None:
     hint = engine_install_hint(method)
-    assert hint.count(must_have) == 5
-    for index in ("cu125", "rocm", "metal", "vulkan", "cpu"):
-        assert f"https://lilbee.sh/{index}/" in hint
-    assert must_not_have not in hint
-
-
-def test_an_unknown_install_lists_the_pip_and_the_uv_forms() -> None:
-    hint = engine_install_hint(InstallMethod.UNKNOWN)
-    assert hint.count("pip install --pre") == 5
-    assert hint.count("uv tool install") == 5
+    assert "lilbee engine install" in hint
+    assert "[engine]" not in hint
+    assert "extra-index-url" not in hint
 
 
 @pytest.mark.parametrize("method", [InstallMethod.HOMEBREW, InstallMethod.STANDALONE])
@@ -109,5 +101,5 @@ def test_the_missing_engine_error_carries_the_advice_for_this_install(monkeypatc
     monkeypatch.setattr(mod, "detect_install_method", lambda: InstallMethod.UV_TOOL)
     with pytest.raises(ProviderError, match="llama-server binary not found") as excinfo:
         binary_mod.resolve_llama_server()
-    assert "uv tool install --force" in str(excinfo.value)
-    assert "pip install --pre" not in str(excinfo.value)
+    assert "lilbee engine install" in str(excinfo.value)
+    assert "[engine]" not in str(excinfo.value)

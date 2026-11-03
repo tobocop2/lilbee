@@ -268,7 +268,7 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 | `anthropic_api_key` | `LILBEE_ANTHROPIC_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | Anthropic API key (enables frontier models in chat picker). |
 | `deepseek_api_key` | `LILBEE_DEEPSEEK_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | DeepSeek API key (enables frontier models in chat picker). |
 | `gemini_api_key` | `LILBEE_GEMINI_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | Google Gemini API key (enables frontier models in chat picker). |
-| `llama_server_path` | `LILBEE_LLAMA_SERVER_PATH` | `str` | *(empty)* | yes | yes | yes | no | yes | Path to a llama-server binary (empty: bundled wheel or PATH). |
+| `llama_server_path` | `LILBEE_LLAMA_SERVER_PATH` | `str` | *(empty)* | yes | yes | yes | no | yes | llama-server path (empty: bundled wheel, PATH, then the engine pack). |
 | `llm_api_key` | `LILBEE_LLM_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | API key for the remote OpenAI-compatible endpoint and local model servers such as LM Studio. Ollama and hosted models never get this key; hosted models use their own provider key. |
 | `llm_provider` | `LILBEE_LLM_PROVIDER` | `str` | `auto` | yes | yes | refused | no | no | Inference provider: auto (default, runs models locally on llama-server) or remote (external OpenAI-compatible endpoint). One of `auto`, `remote`. Refused over HTTP and over MCP mounted on the HTTP server. |
 | `mistral_api_key` | `LILBEE_MISTRAL_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | Mistral API key (enables frontier models in chat picker). |

@@ -14,6 +14,7 @@ from lilbee.app import engine_service
 from lilbee.cli import theme
 from lilbee.cli.app import console, json_out
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.swap_manager import stop_engine
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole
@@ -77,7 +78,9 @@ def list_builds() -> None:
 
 @engine_app.command("install")
 def install(
-    name: str = typer.Argument(help="Engine name, as 'lilbee engine roles' shows it."),
+    name: str = typer.Argument(
+        EngineName.LLAMA.value, help="Engine name, as 'lilbee engine roles' shows it."
+    ),
     wheel: Annotated[
         Path | None,
         typer.Option("--wheel", help="Install from this wheel file instead of the packs folder."),
