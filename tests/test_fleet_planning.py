@@ -4912,8 +4912,11 @@ def _plan_folder_chat(
     prepare_host(monkeypatch, tmp_path, (Role(WorkerRole.CHAT, gib),), 256 * _GB)
     folder = tmp_path / "chat-folder"
     folder.mkdir()
-    with (folder / "model.safetensors").open("wb") as weights:
-        weights.truncate(gib * _GB)
+    (folder / "model.safetensors").write_bytes(b"")
+    # Windows fills a truncated file with real zeros (20 GiB), so state the size instead.
+    monkeypatch.setattr(
+        model_memory_mod, "_installed_sizes", lambda _path: {"model.safetensors": gib * _GB}
+    )
     (folder / "config.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
     monkeypatch.setattr(cfg, "gpu_memory_fraction", fraction)
