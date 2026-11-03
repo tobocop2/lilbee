@@ -30,9 +30,9 @@ from lilbee.app.settings import (
     adopt_external_changes,
     apply_settings_update,
     config_write_failure_message,
-    read_config_state,
     reset_settings,
     setting_sources,
+    start_config_reading,
 )
 from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.app.themes import DARK_THEMES
@@ -260,7 +260,7 @@ class LilbeeApp(App[None]):
         # so Footer / signal / worker wiring runs once per session.
         self._installed_screen_names: set[str] = set()
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
-        self._config_reading = read_config_state()
+        self._config_reading = start_config_reading()
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
             self, "provider_availability_changed"
         )
