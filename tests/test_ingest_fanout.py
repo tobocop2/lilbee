@@ -241,6 +241,17 @@ class TestShardSpecs:
         # So are its skip records.
         assert {spec.shard.corpus_root for spec in specs} == {cfg.data_root}
 
+    def test_a_cpu_embed_role_gets_no_card_mask(self):
+        """The workers embed on the CPU, so no card is dealt to them."""
+        on_cpu = cfg.model_copy(update={"placement": '{"embed": {"target": "cpu"}}'})
+        specs = fanout.shard_specs(on_cpu, processes=2, devices=2)
+        assert [spec.visible_devices for spec in specs] == [{}, {}]
+
+    def test_an_embed_role_on_a_card_keeps_its_mask(self):
+        on_card = cfg.model_copy(update={"placement": '{"embed": {"devices": [0]}}'})
+        specs = fanout.shard_specs(on_card, processes=2, devices=2)
+        assert all(spec.visible_devices for spec in specs)
+
     def test_the_engine_slot_is_keyed_by_card_not_by_worker(self):
         """Workers on one card share its fleet; a private slot each would double-book VRAM."""
         specs = fanout.shard_specs(cfg, processes=4, devices=2)

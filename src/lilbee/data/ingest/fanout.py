@@ -156,6 +156,7 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
     """One spec per worker, dividing the corpus, the cards and the CPU pools."""
     from lilbee.providers.fleet.gpu_env import shard_visible_devices
 
+    on_cpu = _embed_on_cpu(config)
     cpu_share = max(1, cpu_quota() // processes)
     plan_share = max(1, available_cpu_count() // processes)
     root = config.data_root / SHARDS_DIRNAME
@@ -168,10 +169,21 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
             # fleet, workers on different cards never see each other's.
             engine_dir=root / f"gpu{index % devices}" / "engine",
             cpu_share=cpu_share,
-            visible_devices=shard_visible_devices(index % devices),
+            visible_devices={} if on_cpu else shard_visible_devices(index % devices),
         )
         for index in range(processes)
     ]
+
+
+def _embed_on_cpu(config: Config) -> bool:
+    """Whether the placement spec puts the embed role on the CPU, so no card is dealt."""
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+
+    if not config.placement:
+        return False
+    entry = PlacementSpec.from_json(config.placement).roles.get(WorkerRole.EMBED)
+    return entry is not None and entry.device_target is RoleTarget.CPU
 
 
 def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -> Config:

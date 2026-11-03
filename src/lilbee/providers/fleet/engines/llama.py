@@ -15,6 +15,7 @@ from lilbee.providers.fleet.adapters import (
     FLAG_DEVICE,
     FLAG_FIT_TARGET,
     FLAG_KV_UNIFIED_PER_SLOT,
+    NO_DEVICE,
     ROLE_SPECS,
     RoleServerSpec,
     build_server_argv,
@@ -139,7 +140,9 @@ class LlamaCppAdapter:
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
         if request.target is RoleTarget.CPU:
-            request = replace(request, n_gpu_layers=0, fit_target_mib=())
+            # Zero layers alone still opens the card (424 MiB measured), so the
+            # adapter pairs them with the no-device name whatever the caller sent.
+            request = replace(request, n_gpu_layers=0, fit_target_mib=(), device_names=(NO_DEVICE,))
         return build_server_argv(
             binary=request.binary,
             spec=spec,

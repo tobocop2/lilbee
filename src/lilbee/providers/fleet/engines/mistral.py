@@ -34,6 +34,12 @@ _CPU = "cpu"
 # The one id the engine serves a model under; it answers 400 to any other.
 _SERVED_NAME = "default"
 _GGUF_SUFFIX = ".gguf"
+# The model subcommand each role names; the device flags go after it.
+_SUBCOMMAND = {
+    WorkerRole.EMBED: "embedding",
+    WorkerRole.VISION: "vision",
+}
+_TEXT = "text"
 _METAL = "metal"
 _CUDA_DRIVER_FLOOR = (12, 8)
 # The compute capabilities the release publishes a CUDA 12.8 archive for.
@@ -181,13 +187,14 @@ class MistralAdapter:
         decides the device flags: a CPU build gets ``--cpu``, and
         any GPU build turns paged attention off, because its cache takes the whole card
         and the first chat then answers 503. The port flag
-        belongs to ``serve``, so it sits before the model subcommand. A GGUF file
+        belongs to ``serve``, so it sits before the model subcommand. The device flags
+        belong to the subcommand: before it the engine ignores ``--cpu`` and takes the
+        whole card (20536 MiB measured), so every role names its subcommand. A GGUF file
         goes by ``-f`` with its folder as ``-m``; how the engine takes a folder with
         several quantizations is open for slice 8.
         """
         argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
-        if spec.role is WorkerRole.EMBED:
-            argv.append("embedding")
+        argv.append(_SUBCOMMAND.get(spec.role, _TEXT))
         argv += self._device_flags(request.target)
         path = request.model_path
         if path.suffix.lower() == _GGUF_SUFFIX:

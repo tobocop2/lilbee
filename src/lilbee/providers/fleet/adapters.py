@@ -26,6 +26,8 @@ _HOST = "127.0.0.1"
 FLAG_BATCH_SIZE = "--batch-size"
 FLAG_UBATCH_SIZE = "--ubatch-size"
 FLAG_DEVICE = "--device"
+# The value of ``--device`` that names no device: the engine opens no card.
+NO_DEVICE = "none"
 FLAG_FIT_TARGET = "--fit-target"
 FLAG_KV_UNIFIED = "--kv-unified"
 FLAG_KV_UNIFIED_PER_SLOT = "--kv-unified-per-slot"
