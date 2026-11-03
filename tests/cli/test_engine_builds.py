@@ -22,6 +22,8 @@ runner = CliRunner()
 def models_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    # The fx build installed here is named by no shipped pin; the startup prune would remove it.
+    monkeypatch.setattr("lilbee.providers.fleet.engine_store.prune_engines", lambda _models: [])
     return tmp_path / "models"
 
 
