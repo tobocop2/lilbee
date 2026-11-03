@@ -181,3 +181,12 @@ def test_install_table_commands_use_the_manifest_names(doc):
 @pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
 def test_install_table_agrees_between_readme_and_usage(doc):
     assert _install_commands(doc) == _install_commands(ROOT / "README.md")
+
+
+@pytest.mark.parametrize(
+    "doc", [ROOT / "README.md", ROOT / "docs" / "agent-models.md"], ids=lambda p: p.name
+)
+def test_launcher_lists_name_every_launcher(doc):
+    text = doc.read_text(encoding="utf-8")
+    for agent in ("opencode", "hermes", "pi", "claude"):
+        assert f"`lilbee launch {agent}`" in text
