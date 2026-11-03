@@ -1,0 +1,147 @@
+{
+ "server": "mlxlm-chat",
+ "version": "mlx-lm 0.32.2 metal",
+ "roles": [
+  "chat"
+ ],
+ "models": {
+  "chat": "mlx-community/Qwen3-0.6B-4bit"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "template": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "tool": {
+   "ok": true,
+   "detail": "tool_calls=['get_weather']"
+  },
+  "overflow": {
+   "ok": false,
+   "detail": "kind=server"
+  }
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "You answer in one short sentence.",
+      "role": "system"
+     },
+     {
+      "content": "What is the capital of France?",
+      "role": "user"
+     },
+     {
+      "content": "Paris.",
+      "role": "assistant"
+     },
+     {
+      "content": "And of Italy?",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\": \"chatcmpl-5f7bb66d-a911-43fa-a5bc-9e2d8492eb16\", \"system_fingerprint\": \"0.32.2-0.32.4-macOS-15.8.2-arm64-arm-64bit-air64_v27\", \"object\": \"chat.completion\", \"model\": \"mlx-community/Qwen3-0.6B-4bit\", \"created\": 1793713830, \"choices\": [{\"index\": 0, \"finish_reason\": \"stop\", \"message\": {\"role\": \"assistant\", \"content\": \"\\n\\nThe capital of France is Paris, and the capital of Italy is Rome.\", \"reasoning\": \"\\nOkay, the user is asking for the capitals of France and Italy. I need to provide both answers in one short sentence. Let me start with France. I know that Paris is the capital of France. Then for Italy, I remember that Rome is the capital. So putting them together, maybe something like \\\"The capital of France is Paris, and the capital of Italy is Rome.\\\" That should work. Let me check if there's any other capital I'm missing. No, France has Paris and Italy has Rome. Yep, that's all.\\n\"}}], \"usage\": {\"prompt_tokens\": 43, \"completion_tokens\": 130, \"total_tokens\": 173, \"prompt_tokens_details\": {\"cached_tokens\": 0}}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "What is the weather in Paris? Use the tool.",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "function": {
+       "description": "Get the weather for a city.",
+       "name": "get_weather",
+       "parameters": {
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\": \"chatcmpl-6f911a6b-bac9-4836-9a9c-b0211dd8ef61\", \"system_fingerprint\": \"0.32.2-0.32.4-macOS-15.8.2-arm64-arm-64bit-air64_v27\", \"object\": \"chat.completion\", \"model\": \"mlx-community/Qwen3-0.6B-4bit\", \"created\": 1793713836, \"choices\": [{\"index\": 0, \"finish_reason\": \"tool_calls\", \"message\": {\"role\": \"assistant\", \"content\": \"\\n\\n\", \"reasoning\": \"\\nOkay, the user is asking for the weather in Paris. I need to use the get_weather function. The function requires a city parameter, so I'll set the city to \\\"Paris\\\". Let me make sure I have the correct city name. Once I call the function, it should return the weather data for Paris. I don't see any other parameters needed here. Just pass \\\"Paris\\\" as the argument.\\n\", \"tool_calls\": [{\"function\": {\"name\": \"get_weather\", \"arguments\": \"{\\\"city\\\": \\\"Paris\\\"}\"}, \"type\": \"function\", \"id\": \"ff039b6a-4525-4fd6-95d9-5b470eb1dfd0\"}]}}], \"usage\": {\"prompt_tokens\": 157, \"completion_tokens\": 107, \"total_tokens\": 264, \"prompt_tokens_details\": {\"cached_tokens\": 3}}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 504,
+   "content_type": "application/json",
+   "body": "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 504,
+   "content_type": "application/json",
+   "body": "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 504,
+   "content_type": "application/json",
+   "body": "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  }
+ ]
+}

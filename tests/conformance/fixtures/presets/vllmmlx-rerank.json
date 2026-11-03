@@ -1,0 +1,37 @@
+{
+ "server": "vllmmlx-rerank",
+ "version": "vllm-mlx 0.4.1 metal",
+ "roles": [
+  "rerank"
+ ],
+ "models": {
+  "rerank": "default"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "rerank": {
+   "ok": false,
+   "detail": "ProviderError: The provider doesn't offer vllmmlx-rerank/default on your account. Pick a different model or check the name."
+  }
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "default",
+    "query": "What is the capital of France?"
+   },
+   "status": 404,
+   "content_type": "application/json",
+   "body": "{\"detail\":\"No reranker model loaded. Start the server with --rerank-model to enable the /v1/rerank endpoint.\"}"
+  }
+ ]
+}

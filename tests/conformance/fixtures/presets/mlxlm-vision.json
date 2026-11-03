@@ -1,0 +1,49 @@
+{
+ "server": "mlxlm-vision",
+ "version": "mlx-lm 0.32.2 metal",
+ "roles": [
+  "vision"
+ ],
+ "models": {
+  "vision": "mlx-community/Qwen3-VL-2B-Instruct-4bit"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "vision": {
+   "ok": false,
+   "detail": "ProviderError: The provider doesn't offer mlxlm-vision/mlx-community/Qwen3-VL-2B-Instruct-4bit on your account. Pick a different model or check the name."
+  }
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": [
+       {
+        "image_url": {
+         "url": "data:image/png;base64,iVBORw0K..."
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "What colour is this image? Answer in one word.",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-VL-2B-Instruct-4bit",
+    "stream": false
+   },
+   "status": 404,
+   "content_type": "application/json",
+   "body": "{\"error\": \"Only 'text' content type is supported.\"}"
+  }
+ ]
+}

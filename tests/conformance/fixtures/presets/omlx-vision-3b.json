@@ -1,0 +1,49 @@
+{
+ "server": "omlx-vision-3b",
+ "version": "omlx 0.7.3 metal",
+ "roles": [
+  "vision"
+ ],
+ "models": {
+  "vision": "Qwen2.5-VL-3B-Instruct-4bit"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "vision": {
+   "ok": true,
+   "detail": "colour_named=True"
+  }
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": [
+       {
+        "image_url": {
+         "url": "data:image/png;base64,iVBORw0K..."
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "What colour is this image? Answer in one word.",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "Qwen2.5-VL-3B-Instruct-4bit",
+    "stream": false
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "  {\"id\":\"chatcmpl-b222d7f7\",\"object\":\"chat.completion\",\"created\":1793711926,\"model\":\"Qwen2.5-VL-3B-Instruct-4bit\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Red.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":36,\"completion_tokens\":2,\"total_tokens\":38,\"input_tokens\":36,\"output_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0},\"model_load_duration\":20.5,\"time_to_first_token\":12.88,\"total_time\":13.42,\"prompt_eval_duration\":12.88,\"generation_duration\":0.54,\"prompt_tokens_per_second\":2.79,\"generation_tokens_per_second\":3.7}}"
+  }
+ ]
+}
