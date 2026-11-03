@@ -161,6 +161,9 @@ dev = [
     # The crawl tests sign a certificate for a local HTTPS site.
     "cryptography>=44",
     "hypothesis>=6.100",
+    # The MCP Registry test validates server.json against the registry schema;
+    # it is already present through the mcp package.
+    "jsonschema>=4",
     "mypy>=1.19.1",
     "packaging>=24",
     "pytest",

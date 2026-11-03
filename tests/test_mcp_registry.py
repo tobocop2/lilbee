@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVER_JSON = ROOT / "server.json"
 NPM_PACKAGE = ROOT / "packages" / "lilbee" / "package.json"
 SCHEMA = ROOT / "tests" / "data" / "mcp-registry-server.schema.json"
+PUBLISH_SCRIPT = "scripts/publish_mcp_registry.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "publish-packages.yml"
 
 
@@ -24,12 +27,6 @@ def _load(path: Path) -> dict[str, Any]:
 def _npm_steps() -> list[dict[str, Any]]:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     return workflow["jobs"]["npm"]["steps"]
-
-
-def _step_index(steps: list[dict[str, Any]], needle: str) -> int:
-    hits = [i for i, step in enumerate(steps) if needle in step.get("run", "")]
-    assert len(hits) == 1, f"expected one step running {needle!r}, found {len(hits)}"
-    return hits[0]
 
 
 def test_server_json_matches_registry_schema() -> None:
@@ -65,11 +62,24 @@ def test_package_entry_runs_the_npm_launcher_with_mcp() -> None:
     assert package["packageArguments"] == [{"type": "positional", "value": "mcp"}]
 
 
-def test_workflow_publishes_to_registry_after_npm_publish() -> None:
-    steps = _npm_steps()
-    npm_publish = _step_index(steps, "npm publish")
-    login = _step_index(steps, "mcp-publisher login github-oidc")
-    publish = _step_index(steps, "mcp-publisher publish")
-    assert npm_publish < login < publish
-    assert steps[publish]["if"] == steps[npm_publish]["if"]
-    assert steps[login]["if"] == steps[npm_publish]["if"]
+def test_jsonschema_is_a_declared_dev_dependency() -> None:
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dev = pyproject["dependency-groups"]["dev"]
+    assert any(re.match(r"jsonschema\b", entry) for entry in dev)
+
+
+def test_registry_step_runs_the_script_on_server_json_with_oidc() -> None:
+    job = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["npm"]
+    assert job["permissions"]["id-token"] == "write"
+    steps = job["steps"]
+    publish_npm = next(
+        i for i, s in enumerate(steps) if s.get("run") == "npm publish --access public"
+    )
+    (registry,) = [i for i, s in enumerate(steps) if PUBLISH_SCRIPT in s.get("run", "")]
+    assert publish_npm < registry
+    step = steps[registry]
+    assert step["run"].split() == ["bash", PUBLISH_SCRIPT, "server.json"]
+    assert step["if"] == "vars.NPM_TRUSTED_PUBLISHING == 'enabled'"
+    installer = [s for s in steps if s.get("uses", "").startswith("sigstore/cosign-installer@")]
+    assert len(installer) == 1
+    assert steps.index(installer[0]) < registry
