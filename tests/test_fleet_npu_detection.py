@@ -44,16 +44,16 @@ def test_no_accelerator_on_linux_is_no_npu() -> None:
 def test_l5_s1_windows_answers_unknown_never_no_npu() -> None:
     caps = _host("windows-amd64")
     assert (caps.npu_known, caps.npus) == (False, ())
-    assert caps.npu_reason == "lilbee cannot read the NPU list on windows."
+    assert caps.npu_reason == "lilbee cannot read the NPU list on Windows."
     gate = npu_gate(caps, NpuVendor.AMD)
     assert (gate.ok, gate.known, gate.auto_selectable) == (True, False, False)
-    assert "windows" in gate.reason
+    assert "Windows" in gate.reason
 
 
 def test_s1_macos_answers_unknown() -> None:
     gate = npu_gate(_host("mac-arm64"), NpuVendor.INTEL)
     assert (gate.ok, gate.known) == (True, False)
-    assert "macos" in gate.reason
+    assert "macOS" in gate.reason
 
 
 def test_s2_a_qualcomm_accelerator_on_linux_is_refused_by_name() -> None:
@@ -103,3 +103,25 @@ def test_detect_reads_sysfs_only_on_linux(monkeypatch: pytest.MonkeyPatch) -> No
     assert host_caps.detect().npus == (Npu(NpuVendor.INTEL, "Intel NPU"),)
     monkeypatch.setattr(host_caps.platform, "system", lambda: "Windows")
     assert host_caps.detect().npu_known is False
+
+
+def test_a_vendor_outside_the_npu_table_is_no_npu() -> None:
+    caps = collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={},
+        nvml=None,
+        accel_devices=[("0xdead", "0x0001")],
+    )
+    assert (caps.npu_known, caps.npus) == (True, ())
+
+
+def test_a_sysfs_glob_that_raises_reads_as_no_accelerator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Unreadable:
+        def glob(self, pattern: str) -> list[Path]:
+            raise OSError(pattern)
+
+    monkeypatch.setattr(host_caps, "_SYSFS_ACCEL_DIR", Unreadable())
+    assert host_caps._accel_devices() == []
