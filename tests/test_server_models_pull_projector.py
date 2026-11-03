@@ -103,3 +103,23 @@ async def test_fetched_projector_the_engine_misses_is_an_error(
     monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda _e, **_: Path("mmproj.gguf"))
     events = await _pull_events()
     assert [name for name, _ in events] == ["error"]
+
+
+@pytest.mark.asyncio
+async def test_pull_passes_the_client_cancel_to_the_projector_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_entry(monkeypatch)
+    missing = iter([True, False])
+    monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: next(missing))
+    signals: list[object] = []
+
+    def _fetch(_entry: object, *, cancel: object = None, **_: object) -> Path:
+        signals.append(cancel)
+        return Path("mmproj.gguf")
+
+    monkeypatch.setattr("lilbee.catalog.download_mmproj", _fetch)
+    await _pull_events()
+    assert len(signals) == 1
+    assert signals[0] is not None
+    assert hasattr(signals[0], "is_set")
