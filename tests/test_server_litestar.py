@@ -2318,10 +2318,26 @@ class _HeldOpenStore:
 class TestLifespanWaitsForTheOpen:
     """The lifespan does not end while the library open it started still runs."""
 
+    @pytest.fixture()
+    def _registered_stores(self):
+        """Give each test a clean registry; a fake store joins it like a built one."""
+        from lilbee.app.services import _state
+
+        with _state.stores_lock:
+            saved = list(_state.stores)
+            _state.stores.clear()
+        yield _state.stores
+        with _state.stores_lock:
+            _state.stores.clear()
+            _state.stores.update(saved)
+
     @mock.patch("lilbee.server.app.peek_services", return_value=None)
     @mock.patch("lilbee.server.app.get_services")
-    async def test_the_shutdown_waits_for_an_open_still_in_progress(self, mock_get_svc, _peek):
+    async def test_the_shutdown_waits_for_an_open_still_in_progress(
+        self, mock_get_svc, _peek, _registered_stores
+    ):
         store = _HeldOpenStore()
+        _registered_stores.add(store)
         mock_get_svc.return_value = mock.MagicMock(store=store)
         from lilbee.server.app import _lifespan
 
@@ -2332,12 +2348,13 @@ class TestLifespanWaitsForTheOpen:
     @mock.patch("lilbee.server.app.peek_services", return_value=None)
     @mock.patch("lilbee.server.app.get_services")
     async def test_the_shutdown_returns_within_the_bound_when_the_open_hangs(
-        self, mock_get_svc, _peek, caplog
+        self, mock_get_svc, _peek, caplog, _registered_stores
     ):
         from lilbee.cli.launchers.server import _TERMINATE_GRACE_S
         from lilbee.server.app import _lifespan
 
         store = _HeldOpenStore(hangs=True)
+        _registered_stores.add(store)
         mock_get_svc.return_value = mock.MagicMock(store=store)
         with caplog.at_level(logging.WARNING, logger="lilbee.server.app"):
             async with _lifespan(mock.MagicMock()):
@@ -2347,6 +2364,79 @@ class TestLifespanWaitsForTheOpen:
         assert not store.opened.is_set()
         assert "still opening" in caplog.text
         store.release.set()
+
+    @mock.patch("lilbee.server.app.peek_services", return_value=None)
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_the_shutdown_waits_for_an_open_on_a_store_made_after_start(
+        self, mock_get_svc, _peek, _registered_stores
+    ):
+        from lilbee.server.app import _lifespan
+
+        first = _HeldOpenStore()
+        first.release.set()
+        _registered_stores.add(first)
+        mock_get_svc.return_value = mock.MagicMock(store=first)
+        later = _HeldOpenStore()
+        async with _lifespan(mock.MagicMock()):
+            # What /reset does: a new store, opened later on a request thread.
+            _registered_stores.add(later)
+            later.open_in_background()
+            assert not later.opened.is_set()
+        assert later.opened.is_set()
+        assert len(later.waits) == 1
+
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_the_shutdown_waits_for_the_open_after_a_real_reset(
+        self, mock_get_svc, monkeypatch
+    ):
+        from lilbee.app import services as services_mod
+        from lilbee.data.store import Store
+        from lilbee.server.app import _lifespan
+        from tests.conftest import make_mock_services
+
+        started = threading.Event()
+        release = threading.Event()
+        done = threading.Event()
+
+        def blocked_open(self):
+            started.set()
+            release.wait(timeout=30)
+            self._db = mock.MagicMock()
+            done.set()
+            return self._db
+
+        monkeypatch.setattr(Store, "_open_held", blocked_open)
+        mock_get_svc.return_value = mock.MagicMock()
+        services_mod.set_services(make_mock_services())
+        opener = None
+        try:
+            async with _lifespan(mock.MagicMock()):
+                services_mod.reset_store()
+                new_store = services_mod.peek_services().store
+                opener = threading.Thread(target=new_store.get_db, daemon=True)
+                opener.start()
+                assert started.wait(timeout=10)
+                # Let the exit's wait begin, then let the open finish.
+                threading.Timer(0.3, release.set).start()
+            assert done.is_set()
+        finally:
+            release.set()
+            services_mod.set_services(None)
+            if opener is not None:
+                opener.join(timeout=10)
+
+    @mock.patch("lilbee.server.app.peek_services", return_value=None)
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_the_shutdown_waits_once_for_all_opens_within_the_one_bound(
+        self, mock_get_svc, _peek
+    ):
+        from lilbee.server.app import _lifespan
+
+        mock_get_svc.return_value = mock.MagicMock()
+        with mock.patch("lilbee.server.app.wait_for_opens", return_value=True) as waited:
+            async with _lifespan(mock.MagicMock()):
+                pass
+        waited.assert_called_once_with(5.0)
 
 
 class TestSessionManagerPersistence:

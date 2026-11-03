@@ -24,6 +24,7 @@ import signal
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
@@ -180,6 +181,10 @@ class _ServicesState:
         self.interactive: bool = False
         # Where this process shows a library upgrade; each surface sets its own.
         self.on_upgrade: DetailedProgressCallback | None = None
+        # Every store this process built, so the exit can wait for any library open
+        # (the first, the one /reset makes, a lazy one) without each path telling it.
+        self.stores: weakref.WeakSet[Store] = weakref.WeakSet()
+        self.stores_lock = threading.Lock()
 
     def report_upgrade(self, event_type: EventType, event: ProgressEvent) -> None:
         """Pass a library upgrade event to the reporter the surface set last, if any."""
@@ -188,6 +193,31 @@ class _ServicesState:
 
 
 _state = _ServicesState()
+
+
+def _new_store(config: Config) -> Store:
+    """Build a Store and record it, so ``wait_for_opens`` sees its open; the one way to make one."""
+    from lilbee.data.store import Store
+
+    store = Store(config, on_upgrade=_state.report_upgrade)
+    with _state.stores_lock:
+        _state.stores.add(store)
+    return store
+
+
+def wait_for_opens(timeout: float) -> bool:
+    """Wait up to *timeout* seconds in all, for every library open still running.
+
+    Return False when an open is still running at the deadline.
+    """
+    deadline = time.monotonic() + timeout
+    with _state.stores_lock:
+        stores = list(_state.stores)
+    done = True
+    for store in stores:
+        if not store.wait_for_open(max(0.0, deadline - time.monotonic())):
+            done = False
+    return done
 
 
 def build_services(
@@ -214,7 +244,6 @@ def build_services(
     binds its own, not only get_services.
     """
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
     from lilbee.modelhub.registry import ModelRegistry
@@ -234,7 +263,7 @@ def build_services(
     registry = registry or ModelRegistry(config.models_dir)
     # The first point that sees env vars, --model and config.toml together.
     warn_unregistered_role_refs(config, registry)
-    store = Store(config, on_upgrade=_state.report_upgrade)
+    store = _new_store(config)
     embedder = Embedder(config, provider)
     reranker = Reranker(config)
     concepts = ConceptGraph(config, store)
@@ -400,7 +429,6 @@ def reset_store() -> None:
     from dataclasses import replace
 
     from lilbee.core.config import cfg
-    from lilbee.data.store import Store
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.query import Searcher
@@ -408,7 +436,7 @@ def reset_store() -> None:
     # Build the replacement, swap the reference, then close the old store last so
     # a new caller never observes a closed handle mid-swap.
     old_store = svc.store
-    store = Store(cfg, on_upgrade=_state.report_upgrade)
+    store = _new_store(cfg)
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
     searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
