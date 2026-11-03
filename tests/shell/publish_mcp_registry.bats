@@ -103,22 +103,22 @@ publish() {
   REGISTRY_CODE=200 run publish "${SERVER_JSON}"
   [ "$status" -eq 0 ]
   [[ "$output" == *"already in the MCP Registry"* ]]
-  ! grep -q "^publisher" "${CALLS}"
-  ! grep -q "^cosign" "${CALLS}"
+  ! grep -q "^publisher" "${CALLS}" || false
+  ! grep -q "^cosign" "${CALLS}" || false
 }
 
 @test "a registry error stops the script before any publish" {
   REGISTRY_CODE=503 run publish "${SERVER_JSON}"
   [ "$status" -eq 1 ]
   [[ "$output" == *"answered 503"* ]]
-  ! grep -q "^publisher" "${CALLS}"
+  ! grep -q "^publisher" "${CALLS}" || false
 }
 
 @test "a failed signature check stops the script before the publisher runs" {
   COSIGN_RC=1 REGISTRY_CODE=404 run publish "${SERVER_JSON}"
   [ "$status" -ne 0 ]
   grep -q "^cosign verify-blob" "${CALLS}"
-  ! grep -q "^publisher" "${CALLS}"
+  ! grep -q "^publisher" "${CALLS}" || false
 }
 
 @test "the signature check names the downloaded archive and its bundle" {
@@ -132,7 +132,7 @@ publish() {
   run publish "${SERVER_JSON}"
   [ "$status" -eq 1 ]
   [[ "$output" == *"has no version"* ]]
-  ! grep -q "^curl" "${CALLS}"
+  ! grep -q "^curl" "${CALLS}" || false
 }
 
 @test "a transport failure on the registry lookup says so and exits non-zero" {
@@ -140,7 +140,7 @@ publish() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"Could not reach the MCP Registry"* ]]
   [[ "$output" == *"curl exit 7"* ]]
-  ! grep -q "^publisher" "${CALLS}"
+  ! grep -q "^publisher" "${CALLS}" || false
 }
 
 @test "the registry lookup has a positive time limit" {
@@ -154,7 +154,7 @@ publish() {
   REGISTRY_CODE=404 run publish "${SERVER_JSON}"
   [ "$status" -eq 0 ]
   grep -qx "curl https://registry.npmjs.org/@scope%2Fthing/1.2.4" "${CALLS}"
-  ! grep -q "^npm" "${CALLS}"
+  ! grep -q "^npm" "${CALLS}" || false
 }
 
 @test "the registry lookup is limited to 30 seconds and the npm lookup to 15" {
@@ -169,20 +169,20 @@ publish() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"Could not reach the MCP Registry"* ]]
   [[ "$output" == *"curl exit 28"* ]]
-  ! grep -q "^publisher" "${CALLS}"
+  ! grep -q "^publisher" "${CALLS}" || false
 }
 
 @test "a registry code other than 200 and 404 stops before npm is asked" {
   REGISTRY_CODE=429 run publish "${SERVER_JSON}"
   [ "$status" -eq 1 ]
   [[ "$output" == *"answered 429"* ]]
-  ! grep -q "registry.npmjs.org" "${CALLS}"
+  ! grep -q "registry.npmjs.org" "${CALLS}" || false
 }
 
 @test "a listed version is skipped without asking npm and is written to the job summary" {
   GITHUB_STEP_SUMMARY="${FIXTURE}/summary" REGISTRY_CODE=200 run publish "${SERVER_JSON}"
   [ "$status" -eq 0 ]
-  ! grep -q "registry.npmjs.org" "${CALLS}"
+  ! grep -q "registry.npmjs.org" "${CALLS}" || false
   grep -q "io.github.example/thing 1.2.3 is already in the MCP Registry" "${FIXTURE}/summary"
 }
 
@@ -199,8 +199,8 @@ publish() {
   [[ "$output" == *"Skipped the MCP Registry listing"* ]]
   [[ "$output" == *"thing-pkg@1.2.3 has no mcpName"* ]]
   grep -q "thing-pkg@1.2.3 has no mcpName" "${FIXTURE}/summary"
-  ! grep -q "^publisher" "${CALLS}"
-  ! grep -q "^cosign" "${CALLS}"
+  ! grep -q "^publisher" "${CALLS}" || false
+  ! grep -q "^cosign" "${CALLS}" || false
 }
 
 @test "a published package with another mcpName goes to the publisher, which owns the refusal" {
@@ -223,7 +223,7 @@ publish() {
   [[ "$output" == *"npm has no thing-pkg@1.2.3 after 60 seconds; publish it to npm before listing it"* ]]
   [ "$(grep -c "registry.npmjs.org" "${CALLS}")" -eq 7 ]
   [ "$(wc -l < "${SLEEP_LOG}")" -eq 6 ]
-  ! grep -q "^publisher" "${CALLS}"
+  ! grep -q "^publisher" "${CALLS}" || false
 }
 
 @test "the wait between npm lookups is set by MCP_NPM_RETRY_WAIT" {
@@ -237,7 +237,7 @@ publish() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"npm answered 503"* ]]
   [ ! -s "${SLEEP_LOG}" ]
-  ! grep -q "^publisher" "${CALLS}"
+  ! grep -q "^publisher" "${CALLS}" || false
 }
 
 @test "an npm transport failure fails at once without waiting" {
