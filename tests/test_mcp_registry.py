@@ -24,11 +24,6 @@ def _load(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _npm_steps() -> list[dict[str, Any]]:
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    return workflow["jobs"]["npm"]["steps"]
-
-
 def test_server_json_matches_registry_schema() -> None:
     schema = _load(SCHEMA)
     server = _load(SERVER_JSON)
@@ -71,6 +66,7 @@ def test_jsonschema_is_a_declared_dev_dependency() -> None:
 def test_registry_step_runs_the_script_on_server_json_with_oidc() -> None:
     job = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["npm"]
     assert job["permissions"]["id-token"] == "write"
+    assert job["timeout-minutes"] <= 30
     steps = job["steps"]
     publish_npm = next(
         i for i, s in enumerate(steps) if s.get("run") == "npm publish --access public"

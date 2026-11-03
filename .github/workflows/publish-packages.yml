@@ -321,6 +321,7 @@ jobs:
     needs: resolve
     if: inputs.channels == 'all' || contains(inputs.channels, 'npm')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Mirrors the PyPI job: the `npm` environment name is pinned by npm's
     # trusted-publisher config (like `pypi` in publish.yml) -- don't rename.
     environment: npm
@@ -369,7 +370,8 @@ jobs:
       # io.github.tobocop2 namespace is verified by GitHub login). The script
       # asks the registry whether it holds this version, so a re-run after a
       # failed listing lists it. The registry reads `mcpName` from the
-      # published package, so this runs after the npm publish.
+      # published package, so this runs after the npm publish, and the script
+      # skips the listing when the published package lacks `mcpName`.
       - name: Install cosign
         if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
         uses: sigstore/cosign-installer@v4.1.2
@@ -382,10 +384,11 @@ jobs:
         if: vars.NPM_TRUSTED_PUBLISHING != 'enabled' || steps.check.outputs.skip == 'true'
         env:
           SKIP: ${{ steps.check.outputs.skip }}
+          TRUSTED: ${{ vars.NPM_TRUSTED_PUBLISHING }}
           VERSION: ${{ steps.check.outputs.version }}
         run: |
-          if [ "${SKIP}" = "true" ]; then
-            echo "lilbee ${VERSION} is already on npm. To publish, bump version in packages/lilbee/package.json."
+          if [ "${SKIP}" = "true" ] && [ "${TRUSTED}" = "enabled" ]; then
+            echo "Skipped the Publish lilbee step: lilbee ${VERSION} is already on npm. To publish, bump version in packages/lilbee/package.json. The MCP Registry step still ran and lists ${VERSION} only if that npm package carries mcpName."
           else
-            echo "The repository variable NPM_TRUSTED_PUBLISHING is not 'enabled', so lilbee ${VERSION} did not publish to npm. Finish the one-time npmjs setup in packages/lilbee/docs/publishing.md, then set the variable."
+            echo "Skipped the Publish lilbee and MCP Registry steps: the repository variable NPM_TRUSTED_PUBLISHING is not 'enabled', so lilbee ${VERSION} did not publish. Finish the one-time npmjs setup in packages/lilbee/docs/publishing.md, then set the variable."
           fi
