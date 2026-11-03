@@ -5,11 +5,12 @@ from __future__ import annotations
 import importlib
 import logging
 import pkgutil
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from lilbee.catalog.refs import model_format
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -149,6 +150,12 @@ def _request(preferred: str, override: str | None) -> tuple[str, NoticeKind] | N
 def engines_loading(fmt: str, installed: InstalledEngines) -> list[EngineName]:
     """The installed engines whose adapter loads *fmt*."""
     return [name for name, formats in installed.items() if fmt in formats]
+
+
+def loadable_refs(refs: Iterable[str]) -> list[str]:
+    """The refs in *refs* whose format an installed engine loads, in order."""
+    installed = installed_engines()
+    return [ref for ref in refs if engines_loading(model_format(ref), installed)]
 
 
 def _candidates(

@@ -14,7 +14,7 @@ from lilbee.catalog.refs import model_format
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.providers.fleet.engines.choice import NoEngineError, loadable_refs
 from lilbee.providers.model_ref import parse_model_ref
 
 log = logging.getLogger(__name__)
@@ -226,9 +226,11 @@ def adopt_embedder(ref: str) -> AdoptResult:
 
 
 def installed_chat_model_refs() -> list[str]:
-    """Return sorted refs for every chat-task model in the registry."""
+    """Return sorted refs for every chat model whose format an installed engine loads."""
     registry = get_services().registry
-    return sorted(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
+    return sorted(
+        loadable_refs(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
+    )
 
 
 def with_configured_chat(refs: list[str], configured: str) -> list[str]:
