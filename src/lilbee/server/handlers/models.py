@@ -593,7 +593,9 @@ async def models_pull(
                 allow_unsupported=allow_unsupported,
                 cancel=sse.cancel,
             )
-            warning = ensure_vision_projector(model, warn_unreadable=not was_installed)
+            warning = ensure_vision_projector(
+                model, warn_unreadable=not was_installed, cancel=sse.cancel
+            )
             done = {} if warning is None else {"warning": warning}
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_done(done))
         except TaskCancelledError:
