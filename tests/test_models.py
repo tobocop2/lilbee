@@ -1,5 +1,6 @@
 """Tests for models.py: RAM detection, model selection, picker UI, auto-install."""
 
+import io
 from unittest import mock
 
 import pytest
@@ -266,6 +267,52 @@ class TestPullWithProgress:
         mock_manager.pull.side_effect = fake_pull
         set_services(mock.MagicMock(model_manager=mock_manager))
         models.pull_with_progress("test-model")
+
+
+class TestPullWithProgressProjector:
+    """The first-run picker pull runs the shared projector step after the download."""
+
+    @staticmethod
+    def _services() -> mock.MagicMock:
+        from lilbee.app.services import set_services
+
+        services = mock.MagicMock(model_manager=mock.MagicMock())
+        set_services(services)
+        return services
+
+    def test_fetches_projector_after_download(self):
+        services = self._services()
+        order: list[str] = []
+        services.model_manager.pull.side_effect = lambda *a, **k: order.append("pull")
+        with mock.patch(
+            "lilbee.app.models.ensure_vision_projector",
+            side_effect=lambda ref, **k: order.append(f"projector:{ref}:{k['warn_unreadable']}"),
+        ):
+            models.pull_with_progress("acme/vl-GGUF")
+        assert order == ["pull", "projector:acme/vl-GGUF:True"]
+
+    def test_prints_projector_warning(self):
+        self._services()
+        console = models.PlainConsole(file=io.StringIO(), width=200)
+        with mock.patch(
+            "lilbee.app.models.ensure_vision_projector",
+            return_value="acme/vl is named as a vision model, but lists no projector file.",
+        ):
+            models.pull_with_progress("acme/vl-GGUF", console=console)
+        out = console.file.getvalue()
+        assert "Warning: acme/vl is named as a vision model" in out
+        assert "Model 'acme/vl-GGUF' ready." in out
+
+    def test_unfetchable_projector_is_an_error(self):
+        self._services()
+        with (
+            mock.patch(
+                "lilbee.app.models.ensure_vision_projector",
+                side_effect=RuntimeError("Fetched the projector p.gguf for r, but not found"),
+            ),
+            pytest.raises(RuntimeError, match="Fetched the projector"),
+        ):
+            models.pull_with_progress("acme/vl-GGUF")
 
 
 class TestEnsureChatModel:
