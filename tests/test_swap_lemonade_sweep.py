@@ -60,7 +60,7 @@ def test_r10_a_lemonade_process_below_a_live_swap_is_spared(
 ) -> None:
     live = _Proc("lemond", ["lemond", str(root / "cache")], parents=["lemond", "llama-swap"])
     _table(monkeypatch, [live])
-    assert sm._find_orphan_servers(()) == []
+    assert sm._find_orphan_servers((5800,)) == []
 
 
 def test_r10_a_process_that_cannot_be_read_is_skipped(
@@ -71,7 +71,7 @@ def test_r10_a_process_that_cannot_be_read_is_skipped(
             raise psutil.AccessDenied()
 
     _table(monkeypatch, [_Gone("lemond", [])])
-    assert sm._find_orphan_servers(()) == []
+    assert sm._find_orphan_servers((5800,)) == []
 
 
 def test_r10_an_unreadable_parent_chain_does_not_spare_the_process(
@@ -83,4 +83,14 @@ def test_r10_an_unreadable_parent_chain_does_not_spare_the_process(
 
     orphan = _Hidden("lemond", ["lemond", str(root / "cache")])
     _table(monkeypatch, [orphan])
-    assert sm._find_orphan_servers(()) == [orphan]
+    assert sm._find_orphan_servers((5800,)) == [orphan]
+
+
+def test_r10_a_state_with_no_recorded_ports_scans_nothing(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _forbidden(_needle: str) -> object:
+        raise AssertionError("the process table must not be scanned")
+
+    monkeypatch.setattr(sm, "_processes_named", _forbidden)
+    assert sm._find_orphan_servers(()) == []

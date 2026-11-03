@@ -242,6 +242,24 @@ def test_r5_a_copy_is_replaced_when_the_model_changes(
     assert link.read_bytes() == b"two"
 
 
+def test_r5_no_way_to_place_the_model_is_a_clear_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "symlink", _refuse)
+    monkeypatch.setattr(os, "link", _refuse)
+    monkeypatch.setattr(lemonade.shutil, "copyfile", _refuse)
+    with pytest.raises(ProviderError, match="cannot link the model"):
+        _launch(model=tmp_path / "m.gguf")
+
+
+def test_r5_a_plain_file_in_place_of_the_link_is_replaced_when_the_model_is_missing() -> None:
+    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
+    link.parent.mkdir(parents=True)
+    link.write_bytes(b"old")
+    _launch(model=Path("/models/gone.gguf"))
+    assert link.readlink() == Path("/models/gone.gguf")
+
+
 def test_r6_every_role_and_replica_has_its_own_folder() -> None:
     folders = {lemonade.role_dir(role, r) for role in MODES for r in (0, 1)}
     assert len(folders) == 6
