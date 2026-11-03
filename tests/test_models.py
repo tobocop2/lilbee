@@ -198,17 +198,14 @@ class TestPromptModelChoice:
             result = models.prompt_model_choice(8.0)
         assert result == models.MODEL_CATALOG[1]
 
+    @pytest.mark.parametrize("signal", [EOFError, KeyboardInterrupt])
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
-    def test_eof_returns_recommended(self, mock_disk_estimate):
-        with mock.patch("builtins.input", side_effect=EOFError):
-            result = models.prompt_model_choice(8.0)
-        assert result == models.pick_default_model(8.0)
-
-    @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
-    def test_keyboard_interrupt_returns_recommended(self, mock_disk_estimate):
-        with mock.patch("builtins.input", side_effect=KeyboardInterrupt):
-            result = models.prompt_model_choice(8.0)
-        assert result == models.pick_default_model(8.0)
+    def test_end_of_input_is_not_a_choice(self, mock_disk_estimate, signal):
+        with (
+            mock.patch("builtins.input", side_effect=signal),
+            pytest.raises(RuntimeError, match="lilbee model pull"),
+        ):
+            models.prompt_model_choice(8.0)
 
 
 class TestValidateDiskAndPull:
@@ -313,6 +310,37 @@ class TestPullWithProgressProjector:
             pytest.raises(RuntimeError, match="Fetched the projector"),
         ):
             models.pull_with_progress("acme/vl-GGUF")
+
+
+class TestEnsureChatModelAtEndOfInput:
+    """A tty-looking stdin that is already at end of input pulls nothing."""
+
+    @pytest.mark.parametrize("signal", [EOFError, KeyboardInterrupt])
+    @mock.patch.object(models, "pull_with_progress")
+    @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
+    @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
+    @mock.patch.object(models, "list_installed_models", return_value=[])
+    def test_refuses_and_pulls_nothing(self, _list, _ram, _disk, mock_pull, signal):
+        with (
+            mock.patch.object(models.sys.stdin, "isatty", return_value=True),
+            mock.patch("builtins.input", side_effect=signal),
+            pytest.raises(RuntimeError, match="lilbee model pull"),
+        ):
+            models.ensure_chat_model()
+        mock_pull.assert_not_called()
+
+    @mock.patch.object(models, "pull_with_progress")
+    @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
+    @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
+    @mock.patch.object(models, "list_installed_models", return_value=[])
+    def test_enter_on_empty_line_pulls_recommended(self, _list, _ram, _disk, mock_pull):
+        with (
+            mock.patch.object(models.sys.stdin, "isatty", return_value=True),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            pulled = models.ensure_chat_model()
+        assert pulled == models.pick_default_model(32.0).ref
+        mock_pull.assert_called_once()
 
 
 class TestEnsureChatModel:
