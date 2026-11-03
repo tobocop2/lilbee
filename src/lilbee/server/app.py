@@ -132,6 +132,7 @@ from lilbee.server.wiki import (
 if TYPE_CHECKING:
     from litestar.types import ASGIApp, Receive, Scope, Send
 
+    from lilbee.data.store import Store
     from lilbee.retrieval.embedder import Embedder
 
 log = logging.getLogger(__name__)
@@ -228,6 +229,8 @@ def _log_embedding_model_state(embedder: Embedder) -> None:
 
 
 _UPGRADE_WAIT_SECONDS = 10.0
+# How long a stopping server waits for the library open it started; under the launcher's grace.
+_OPEN_EXIT_WAIT_SECONDS = 5.0
 _UPGRADE_RETRY_AFTER_SECONDS = 10
 _UPGRADING_MESSAGE = "lilbee is upgrading the library. Try again in a few seconds."
 
@@ -295,6 +298,7 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     _warn_if_few_file_descriptors()
     session_manager.load_or_generate()
 
+    opening: Store | None = None
     try:
         services = get_services()  # pre-load all services (provider, embedder, etc.)
         log.info("LLM provider pre-loaded")
@@ -302,7 +306,8 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         log.warning("Failed to pre-load LLM provider", exc_info=True)
     else:
         _log_embedding_model_state(services.embedder)
-        services.store.open_in_background()
+        opening = services.store
+        opening.open_in_background()
     try:
         yield
     finally:
@@ -313,6 +318,17 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         svc = peek_services()
         if svc is not None:
             svc.provider.shutdown()
+        if opening is not None:
+            await _wait_for_the_open(opening)
+
+
+async def _wait_for_the_open(store: Store) -> None:
+    """Wait, with a bound, for the open; one in LanceDB at exit aborts Python 3.12 on Linux."""
+    if not await asyncio.to_thread(store.wait_for_open, _OPEN_EXIT_WAIT_SECONDS):
+        log.warning(
+            "The library is still opening after %.0f s; the server exits anyway.",
+            _OPEN_EXIT_WAIT_SECONDS,
+        )
 
 
 def _json_error_response(request: Request, exc: Exception) -> Response:
