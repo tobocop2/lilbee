@@ -105,7 +105,7 @@ def _serves(name: str, role: WorkerRole | None) -> bool:
     return role is None or adapter is None or role in adapter.served_roles
 
 
-def _host_answer(name: str, host: HostSource) -> HostGate:
+def host_answer(name: str, host: HostSource) -> HostGate:
     """What the host says about *name*; a bundled engine reads nothing."""
     adapter = _adapter(name)
     return PASS if adapter is None or adapter.bundled else adapter.host_gate(host())
@@ -130,7 +130,7 @@ def _default(
             if e in installed
             and fmt in installed[e]
             and _serves(e, role)
-            and _host_answer(e, host).auto_selectable
+            and host_answer(e, host).auto_selectable
         ),
         None,
     )
@@ -166,7 +166,7 @@ def _candidates(
     return [
         name
         for name in engines_loading(fmt, installed)
-        if _serves(name, role) and _host_answer(name, host).ok
+        if _serves(name, role) and host_answer(name, host).ok
     ]
 
 
@@ -218,7 +218,7 @@ def choose_engine(
     name, kind = request
     loads = name in engines_loading(fmt, installed)
     serves = _serves(name, role)
-    answer = _host_answer(name, host) if loads and serves else PASS
+    answer = host_answer(name, host) if loads and serves else PASS
     if loads and serves and answer.ok:
         return EngineChoice(EngineName(name), None, None)
     subject = f"Engine {name} for {role.value}" if role else f"Engine {name}"
@@ -316,7 +316,7 @@ def host_lock(pin: Mapping[str, Any], host: HostCaps) -> PinLock:
     return lock.for_cell(host_cell(lock, host))
 
 
-def installed_tool(pin: Mapping[str, Any], tool: str, host: HostCaps) -> Path | None:
+def store_tool(pin: Mapping[str, Any], tool: str, host: HostCaps) -> Path | None:
     """The executable *tool* of the complete build that *pin* names, or ``None`` when absent.
 
     Raises ``ProviderError`` when the store holds two builds for the pin.

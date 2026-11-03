@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import platform
-import re
 from collections.abc import Mapping
 from typing import Any, TypeVar
 
@@ -14,9 +13,8 @@ from lilbee.providers.fleet.engine_store import (
     UnsupportedPlatformError,
 )
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.host_caps import HostCaps, HostOS
+from lilbee.providers.fleet.host_caps import HostCaps, HostOS, version_numbers
 
-_NUMBER = re.compile(r"\d+")
 _FLOOR_LABELS = {
     HostOS.MACOS: ("macOS", "Update macOS"),
     HostOS.LINUX: ("glibc", "Update the system"),
@@ -72,10 +70,6 @@ def find_cell(engine: str, cells: Mapping[str, _T], os_name: str, arch: str, bac
     )
 
 
-def _numbers(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in _NUMBER.findall(version))
-
-
 def _computer_has(host_os: HostOS, label: str, host_version: str) -> str:
     if host_version:
         return f"{label} {host_version}"
@@ -91,7 +85,7 @@ def require_floor(
     host_version: str,
 ) -> None:
     """Raise ``UnsupportedOsError`` when the host is older than the floor of *asset*."""
-    if asset.min_os is None or _numbers(host_version) >= _numbers(asset.min_os):
+    if asset.min_os is None or version_numbers(host_version) >= version_numbers(asset.min_os):
         return
     label, update = _FLOOR_LABELS[host_os]
     raise UnsupportedOsError(

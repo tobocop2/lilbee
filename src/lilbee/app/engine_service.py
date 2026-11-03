@@ -228,9 +228,13 @@ class BuildView:
 
 
 def builds(config: Config = cfg) -> list[BuildView]:
-    """Every engine build installed beside the models."""
+    """Every engine build installed beside the models that the host gate lets this host run."""
     store = EngineStore(engines_root(config.models_dir))
-    return [BuildView(b.engine, b.version, b.backend) for b in store.installed()]
+    return [
+        BuildView(b.engine, b.version, b.backend)
+        for b in store.installed()
+        if choice.host_answer(b.engine, session_host).ok
+    ]
 
 
 @dataclass(frozen=True)
@@ -284,11 +288,10 @@ def roles(config: Config = cfg) -> list[RoleView]:
 def not_installed() -> list[str]:
     """The names of the engines with no installed build that the host gate lets this host run."""
     installed = installed_engines()
-    host = session_host()
     return [
         str(name)
-        for name, adapter in choice.ADAPTERS.items()
-        if name not in installed and adapter.host_gate(host).ok
+        for name in choice.ADAPTERS
+        if name not in installed and choice.host_answer(name, session_host).ok
     ]
 
 

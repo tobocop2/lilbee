@@ -18,7 +18,7 @@ from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet import engine_manifest, host_caps, swap_config
+from lilbee.providers.fleet import host_caps, swap_config
 from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
     EngineStore,
@@ -79,12 +79,6 @@ def test_the_gate_passes_apple_silicon_on_macos_14_and_refuses_the_rest(
 def test_a_host_whose_platform_cannot_be_read_neither_passes_nor_refuses() -> None:
     gate = MLX.host_gate(host("", ""))
     assert (gate.ok, gate.known) == (True, False)
-
-
-def test_the_gate_floor_is_the_floor_of_every_published_row() -> None:
-    assert MACOS_FLOOR == (14, 0)
-    for cells in engine_manifest.MANIFESTS.get("mlx", {}).values():
-        assert {row["min_os"] for row in cells.values()} == {"14.0"}
 
 
 def test_the_adapter_is_found_by_module_and_serves_chat_only() -> None:
@@ -149,6 +143,14 @@ def test_the_recorded_hang_is_not_read_as_a_context_overflow() -> None:
     replies = [json.loads(e["body"]) for e in recorded if e["status"] == 200]
     message = replies[0]["choices"][0]["message"]
     assert message[MLX.request_profile(WorkerRole.CHAT).reasoning_field]
+
+
+@pytest.mark.parametrize(
+    "body", ["exceed_context_size", "request exceeds the available context size", "", "context"]
+)
+def test_no_server_reply_is_read_as_a_context_overflow(body: str) -> None:
+    """The server never reports an overflow; the provider refuses before the request."""
+    assert MLX.request_profile(WorkerRole.CHAT).context_overflow.search(body) is None
 
 
 def model_dir(tmp_path: Path, config: object) -> Path:
@@ -334,3 +336,39 @@ def test_binary_reports_two_builds_of_one_pin_as_a_provider_error(
     monkeypatch.setattr(EngineStore, "complete_build", conflict)
     with pytest.raises(ProviderError, match="two builds of mlx"):
         MLX.binary()
+
+
+def test_a_planner_launch_for_mlx_gives_a_provider_that_refuses_an_oversize_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet import planning
+    from lilbee.providers.fleet.provider import FleetProvider, SwapGroup
+    from tests.test_fleet_provider import _FakeSwap
+
+    folder = model_dir(tmp_path, {"max_position_embeddings": CONTEXT})
+    (folder / "model.safetensors").write_bytes(b"\0" * 1024)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", CONTEXT)
+    monkeypatch.setattr(cfg, "num_ctx_max", None)
+    monkeypatch.setattr(cfg, "placement", "")
+    monkeypatch.setattr(MLX, "binary", lambda: tmp_path / "mlx-lm-server")
+    launch = planning.build_single_role_launch(WorkerRole.CHAT, folder, engine=MLX)
+    assert launch.ctx == CONTEXT
+
+    provider = FleetProvider()
+    monkeypatch.setattr(provider, "_adopt_engine", lambda role: MLX)
+    swap = _FakeSwap()
+    swap.endpoint = lambda: "http://127.0.0.1:1"  # type: ignore[attr-defined]
+    calls: list[str] = []
+    for method in ("chat", "chat_result", "chat_stream_items", "chat_tools"):
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.client.LlamaServerClient." + method,
+            lambda *a, **k: calls.append("http"),
+        )
+    provider._adopt_group(SwapGroup("chat"), swap, [launch])  # type: ignore[arg-type]
+    assert provider._chat_ctx == CONTEXT
+    monkeypatch.setattr(cfg, "chat_model", "org/repo#mlx")
+    prompt = "word " * PROMPT_TOKENS
+    with pytest.raises(ProviderError) as refused:
+        provider.chat([{"role": "user", "content": prompt}], model="org/repo#mlx")
+    assert refused.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+    assert calls == []

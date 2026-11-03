@@ -7,6 +7,7 @@ This module is the one reader of the NVML bindings; it reads no device text itse
 from __future__ import annotations
 
 import platform
+import re
 from collections.abc import Callable, Collection
 from contextlib import suppress
 from dataclasses import dataclass
@@ -258,15 +259,19 @@ def _neon(arch: HostArch | None) -> Feature:
     return Feature(False, "not an ARM CPU")
 
 
+_NUMBER = re.compile(r"\d+")
+
+
+def version_numbers(version: str) -> tuple[int, ...]:
+    """The numbers of a dotted version string; empty when it holds none."""
+    return tuple(int(part) for part in _NUMBER.findall(version))
+
+
 def _macos_version(host_os: HostOS | None, raw: str) -> tuple[int, ...] | None:
     """The numbers of a macOS version string, or ``None`` off macOS or when unparseable."""
     if host_os is not HostOS.MACOS:
         return None
-    try:
-        parts = tuple(int(part) for part in raw.split("."))
-    except ValueError:
-        return None
-    return parts or None
+    return version_numbers(raw) or None
 
 
 def collect(
