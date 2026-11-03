@@ -172,7 +172,9 @@ class TestRetryIsOnEveryTransfer:
         retried: list[str] = []
         gguf = tmp_path / "f.gguf"
 
-        def _fake_retried(entry: CatalogModel, config: dl.DownloadConfig) -> Path:
+        def _fake_retried(
+            entry: CatalogModel, config: dl.DownloadConfig, cancel: object = None
+        ) -> Path:
             retried.append(config.filename)
             gguf.write_bytes(b"g")  # lands only when the transfer ran
             return gguf

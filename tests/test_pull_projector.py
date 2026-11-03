@@ -75,7 +75,9 @@ class _Hub:
             path.write_bytes(b"model")
         return paths
 
-    def _transfer(self, entry: CatalogModel, config: dl.DownloadConfig) -> Path:
+    def _transfer(
+        self, entry: CatalogModel, config: dl.DownloadConfig, cancel: object = None
+    ) -> Path:
         if self.fail_transfer is not None:
             raise self.fail_transfer
         self.fetched.append(config.filename)
