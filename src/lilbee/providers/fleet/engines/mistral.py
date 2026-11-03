@@ -13,7 +13,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
-from lilbee.providers.fleet.engine_manifest import pack_digest
+from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engine_store import EngineConflictError, EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
@@ -142,14 +142,15 @@ class MistralAdapter:
 
         host = session_host()
         backend = self.pick_build(host).backend or _CPU
+        platforms = pack_platforms(self.name.value, _VERSION, host, backend)
         return {
             "engine": self.name.value,
             "version": _VERSION,
             "backend": backend,
-            "sha256": pack_digest(self.name.value, host, backend),
+            "sha256": pack_digest(self.name.value, _VERSION, host, backend),
             "tool": _TOOL,
             "launch": [_TOOL, "serve"],
-            "platforms": {},
+            "platforms": platforms,
             "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},
             "licenses": _LICENCES,
         }

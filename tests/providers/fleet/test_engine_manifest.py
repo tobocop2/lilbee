@@ -1,8 +1,7 @@
-"""The engine manifest: its schema, the cell choice for a host, and the OS floor."""
+"""The digest table lookups, the cell choice for a host, and the OS floor."""
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 from unittest import mock
 
@@ -10,12 +9,9 @@ import pytest
 
 from lilbee.providers.fleet import engine_manifest
 from lilbee.providers.fleet.engine_manifest import (
-    Manifest,
-    ManifestError,
     UnsupportedOsError,
     host_cell,
     host_os_version,
-    parse_manifest,
 )
 from lilbee.providers.fleet.engine_store import (
     PinLock,
@@ -23,7 +19,9 @@ from lilbee.providers.fleet.engine_store import (
     UnsupportedPlatformError,
 )
 from lilbee.providers.fleet.engines import choice
+from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.host_caps import HostOS, collect
+from tests._published import render_table, wheel_name
 
 BASE = "https://github.com/tobocop2/lilbee-engines/releases/download/llama.cpp-b12032-1/"
 SHA = "a" * 64
@@ -36,132 +34,52 @@ def row(os_name: str, arch: str, backend: str, min_os: str | None, version: str 
         "arch": arch,
         "backend": backend,
         "version": version,
-        "url": f"{BASE}lilbee_engine-1-{backend}-{os_name}.whl",
+        "url": f"{BASE}lilbee_engine_llama_cpp-1-{backend}-{os_name}.whl",
         "sha256": SHA,
         "size": 1000,
         "min_os": min_os,
     }
 
 
-def doc() -> dict[str, Any]:
-    cells = {
-        "macos-arm64-metal": row("macos", "arm64", "metal", "13.3"),
-        "linux-x86_64-vulkan": row("linux", "x86_64", "vulkan", "2.34"),
-        "linux-x86_64-cu121": row("linux", "x86_64", "cu121", "2.35", "b9665"),
-        "windows-x86_64-cpu": row("windows", "x86_64", "cpu", None),
-    }
-    return {
-        "schema": 1,
-        "engine": "llama.cpp",
-        "release": "llama.cpp-b12032-1",
-        "licenses": ["MIT"],
-        "cells": cells,
-    }
+CELLS = {
+    "macos-arm64-metal": PlatformAsset(BASE + "m.whl", SHA, 1000, "13.3"),
+    "linux-x86_64-vulkan": PlatformAsset(BASE + "v.whl", SHA, 1000, "2.34"),
+    "linux-x86_64-cu121": PlatformAsset(BASE + "c.whl", SHA, 1000, "2.35"),
+    "windows-x86_64-cpu": PlatformAsset(BASE + "w.whl", SHA, 1000, None),
+}
+
+
+def select(
+    os_name: str, arch: str, backend: str, os_version: str, version: str = "b12032"
+) -> PlatformAsset:
+    """The cell for a host and the floor check, as a pin with these cells runs them."""
+    asset = engine_manifest.find_cell("llama.cpp", CELLS, os_name, arch, backend)
+    engine_manifest.require_floor("llama.cpp", version, backend, asset, HostOS(os_name), os_version)
+    return asset
 
 
 @pytest.fixture(autouse=True)
 def pinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the digest of every cell of the test manifest, as the shipped table does."""
-    cells = {key: {"sha256": SHA} for key in doc()["cells"]}
-    table = {"llama.cpp": {"schema": engine_manifest.SCHEMA, "cells": cells}}
-    monkeypatch.setattr(engine_manifest, "MANIFESTS", table)
+    """The table the generator writes for one wheel per cell of CELLS."""
+    wheels = [
+        (wheel_name(EngineName.LLAMA, "b12032", key, asset.min_os), SHA, 1000)
+        for key, asset in CELLS.items()
+    ]
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", render_table(wheels))
 
 
-@pytest.fixture
-def manifest() -> Manifest:
-    return parse_manifest(doc())
+def test_a_pinned_digest_is_read_from_the_cell_of_the_engine() -> None:
+    assert engine_manifest.pack_digest("llama.cpp", "b12032", linux(), "vulkan") == SHA
 
 
-def test_a_good_manifest_keeps_its_cells_and_licences(manifest: Manifest) -> None:
-    assert (manifest.engine, manifest.release, manifest.licences) == (
-        "llama.cpp",
-        "llama.cpp-b12032-1",
-        ("MIT",),
-    )
-    cell = manifest.cells["linux-x86_64-cu121"]
-    assert (cell.version, cell.asset.min_os, cell.asset.size) == ("b9665", "2.35", 1000)
-    assert manifest.cells["windows-x86_64-cpu"].asset.min_os is None
-
-
-def break_cell(**change: Any) -> dict[str, Any]:
-    broken = doc()
-    broken["cells"]["linux-x86_64-vulkan"].update(change)
-    return broken
-
-
-def break_top(**change: Any) -> dict[str, Any]:
-    broken = doc()
-    broken.update(change)
-    return broken
-
-
-BAD = {
-    "schema-2": break_top(schema=2),
-    "no-cells": break_top(cells={}),
-    "cells-not-a-map": break_top(cells=[1]),
-    "no-engine": break_top(engine=""),
-    "gpl": break_top(licenses=["GPL-3.0-only"]),
-    "no-licences": break_top(licenses=[]),
-    "licence-not-text": break_top(licenses=[7]),
-    "http": break_cell(url=BASE.replace("https", "http") + "x.whl"),
-    "other-host": break_cell(url="https://example.com/x.whl"),
-    "not-a-wheel": break_cell(url=BASE + "x.tar.gz"),
-    "dot-dot": break_cell(url=BASE + "../../../../evil/mal/releases/download/r/x.whl"),
-    "encoded-dot-dot": break_cell(url=BASE + "%2e%2E/x.whl"),
-    "query-hides-suffix": break_cell(url=BASE + "x?u=.whl"),
-    "query-after-suffix": break_cell(url=BASE + "x.whl?u=1"),
-    "empty-query": break_cell(url=BASE + "x.whl?"),
-    "fragment-hides-suffix": break_cell(url=BASE + "x#.whl"),
-    "empty-fragment": break_cell(url=BASE + "x.whl#"),
-    "short-sha": break_cell(sha256="a" * 63),
-    "non-hex-sha": break_cell(sha256="z" * 64),
-    "zero-size": break_cell(size=0),
-    "bool-size": break_cell(size=True),
-    "empty-min-os": break_cell(min_os=""),
-    "text-min-os": break_cell(min_os="new"),
-    "no-min-os": {
-        **doc(),
-        "cells": {
-            "k": {k: v for k, v in row("linux", "x86_64", "k", "1").items() if k != "min_os"}
-        },
-    },
-    "key-mismatch": break_top(cells={"linux-x86_64-cpu": row("linux", "x86_64", "vulkan", "2.34")}),
-    "cell-not-an-object": break_top(cells={"linux-x86_64-cpu": "x"}),
-}
-
-
-@pytest.mark.parametrize("name", sorted(BAD))
-def test_a_manifest_that_breaks_the_schema_is_refused(name: str) -> None:
-    with pytest.raises(ManifestError):
-        parse_manifest(copy.deepcopy(BAD[name]))
-
-
-def test_the_bad_manifest_table_is_not_empty() -> None:
-    assert len(BAD) >= 26
-
-
-def test_a_row_whose_digest_differs_from_the_pinned_digest_is_refused() -> None:
-    with pytest.raises(ManifestError, match=r"sha256 of cell 'linux-x86_64-vulkan'.*pinned digest"):
-        parse_manifest(break_cell(sha256="b" * 64))
-
-
-def test_a_row_digest_matches_the_pinned_digest_in_any_case() -> None:
-    parsed = parse_manifest(break_cell(sha256=SHA.upper()))
-    assert parsed.cells["linux-x86_64-vulkan"].asset.sha256 == SHA.upper()
-
-
-def test_a_row_with_no_pinned_digest_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
-    with pytest.raises(ManifestError, match="pinned digest"):
-        parse_manifest(doc())
-
-
-def test_a_cell_missing_from_the_pinned_table_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    cells = {"macos-arm64-metal": {"sha256": SHA}}
-    table = {"llama.cpp": {"schema": engine_manifest.SCHEMA, "cells": cells}}
-    monkeypatch.setattr(engine_manifest, "MANIFESTS", table)
-    with pytest.raises(ManifestError, match="linux-x86_64-vulkan"):
-        parse_manifest(doc())
+@pytest.mark.parametrize(
+    ("engine", "version", "backend"),
+    [("tei", "b12032", "vulkan"), ("llama.cpp", "b12032", "rocm"), ("llama.cpp", "b9", "vulkan")],
+)
+def test_an_engine_version_or_cell_the_table_does_not_list_has_no_digest(
+    engine: str, version: str, backend: str
+) -> None:
+    assert engine_manifest.pack_digest(engine, version, linux(), backend) is None
 
 
 MAC_OLD = (
@@ -188,10 +106,10 @@ GLIBC_OLD = (
     ],
 )
 def test_a_host_at_or_above_the_floor_gets_the_cell_wheel(
-    manifest: Manifest, os_name: str, arch: str, backend: str, version: str
+    os_name: str, arch: str, backend: str, version: str
 ) -> None:
-    asset = manifest.select(os_name, arch, backend, version)
-    assert asset.url == manifest.cells[f"{os_name}-{arch}-{backend}"].asset.url
+    asset = select(os_name, arch, backend, version)
+    assert asset is CELLS[f"{os_name}-{arch}-{backend}"]
 
 
 @pytest.mark.parametrize(
@@ -210,18 +128,18 @@ def test_a_host_at_or_above_the_floor_gets_the_cell_wheel(
     ],
 )
 def test_a_host_below_the_floor_is_refused_with_the_fix(
-    manifest: Manifest, os_name: str, backend: str, version: str, want: str
+    os_name: str, backend: str, version: str, want: str
 ) -> None:
     with pytest.raises(UnsupportedOsError) as caught:
-        manifest.select(os_name, "arm64" if os_name == "macos" else "x86_64", backend, version)
+        select(os_name, "arm64" if os_name == "macos" else "x86_64", backend, version)
     assert str(caught.value) == want
 
 
-def test_a_floor_names_the_version_of_its_own_cell(manifest: Manifest) -> None:
+def test_a_floor_names_the_version_of_its_own_cell() -> None:
     with pytest.raises(
         UnsupportedOsError, match=r"Engine llama\.cpp b9665 \(cu121\) needs glibc 2\.35"
     ):
-        manifest.select("linux", "x86_64", "cu121", "2.34")
+        select("linux", "x86_64", "cu121", "2.34", "b9665")
 
 
 def test_a_floor_on_windows_names_windows() -> None:
@@ -232,25 +150,25 @@ def test_a_floor_on_windows_names_windows() -> None:
         engine_manifest.require_floor("e", "1", "cpu", asset, HostOS.WINDOWS, "10.0.17763")
 
 
-def test_a_missing_backend_lists_the_builds_for_this_computer(manifest: Manifest) -> None:
+def test_a_missing_backend_lists_the_builds_for_this_computer() -> None:
     with pytest.raises(UnsupportedPlatformError) as caught:
-        manifest.select("windows", "x86_64", "rocm", "10.0.26100")
+        select("windows", "x86_64", "rocm", "10.0.26100")
     assert str(caught.value) == (
         "Engine llama.cpp has no rocm build for windows-x86_64. Builds for this computer: cpu."
     )
 
 
-def test_a_host_with_no_build_at_all_says_none(manifest: Manifest) -> None:
+def test_a_host_with_no_build_at_all_says_none() -> None:
     with pytest.raises(UnsupportedPlatformError) as caught:
-        manifest.select("linux", "aarch64", "vulkan", "2.39")
+        select("linux", "aarch64", "vulkan", "2.39")
     assert str(caught.value) == (
         "Engine llama.cpp has no vulkan build for linux-aarch64. Builds for this computer: none."
     )
 
 
-def test_builds_for_this_computer_are_sorted_and_leave_out_other_hosts(manifest: Manifest) -> None:
+def test_builds_for_this_computer_are_sorted_and_leave_out_other_hosts() -> None:
     with pytest.raises(UnsupportedPlatformError) as caught:
-        manifest.select("linux", "x86_64", "rocm", "2.39")
+        select("linux", "x86_64", "rocm", "2.39")
     assert str(caught.value).endswith("Builds for this computer: cu121, vulkan.")
 
 
@@ -357,7 +275,7 @@ def test_pin_lock_turns_the_cells_of_a_pin_into_assets() -> None:
     lock = choice.pin_lock(pin)
     assert lock.platforms == {
         "linux-x86_64-vulkan": PlatformAsset(
-            f"{BASE}lilbee_engine-1-vulkan-linux.whl", SHA, 1000, "2.34"
+            f"{BASE}lilbee_engine_llama_cpp-1-vulkan-linux.whl", SHA, 1000, "2.34"
         )
     }
 
@@ -375,3 +293,26 @@ def test_pin_lock_refuses_a_cell_without_a_floor_field() -> None:
     }
     with pytest.raises(choice.PinError, match="not usable"):
         choice.pin_lock(pin)
+
+
+def table_lock(floor: str | None, sha: str = SHA) -> PinLock:
+    """The lock of a pin whose platforms come from a table the generator rendered."""
+    file = wheel_name(EngineName.LLAMA, "b12032", "linux-x86_64-vulkan", floor)
+    rows = render_table([(file, sha, 4)])["llama.cpp"]["b12032"]
+    cells = {key: PlatformAsset(**row) for key, row in rows.items()}
+    return lock_with(cells)
+
+
+def test_a_floor_of_the_generated_table_refuses_an_old_system() -> None:
+    lock = table_lock("2.40")
+    with (
+        mock.patch.object(engine_manifest, "host_os_version", return_value="2.31"),
+        pytest.raises(UnsupportedOsError, match=r"needs glibc 2\.40 or later"),
+    ):
+        host_cell(lock, linux())
+
+
+def test_a_floor_of_the_generated_table_accepts_a_new_system() -> None:
+    lock = table_lock("2.40")
+    with mock.patch.object(engine_manifest, "host_os_version", return_value="2.41"):
+        assert host_cell(lock, linux()) == "linux-x86_64-vulkan"

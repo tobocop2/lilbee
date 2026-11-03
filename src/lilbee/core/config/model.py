@@ -427,7 +427,7 @@ class Config(BaseSettings):
     max_tokens: int | None = ConfigField(default=None, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
-    # Path to a llama-server binary. Empty = use the bundled lilbee-engine
+    # Path to a llama-server binary. Empty = use the bundled lilbee-engine-llama-cpp
     # wheel binary, else a llama-server on PATH.
     llama_server_path: str = ConfigField(default="", writable=True)
     # Per-server local model-manager URLs. Blank means "use the server's spec

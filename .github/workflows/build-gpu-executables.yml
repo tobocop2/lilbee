@@ -235,7 +235,7 @@ jobs:
             lancedb==0.40.0+compat
 
       # Build the self-contained CUDA llama-server (binary + ggml/llama/mtmd libs
-      # with a baked rpath) and install lilbee_engine so Nuitka bundles the
+      # with a baked rpath) and install lilbee_engine_llama_cpp so Nuitka bundles the
       # whole engine into the onefile.
       - name: Bundle llama-server
         uses: ./.github/actions/bundle-llama-server
@@ -301,7 +301,7 @@ jobs:
           set -euo pipefail
           # Nuitka names the standalone tree after the entry module (__main__.dist);
           # find it by shape rather than by that name.
-          bin_dir=$(find dist -type d -path '*lilbee_engine/bin' | head -1)
+          bin_dir=$(find dist -type d -path '*lilbee_engine_llama_cpp/bin' | head -1)
           [ -n "${bin_dir}" ] || { echo "no bundled engine found under dist/" >&2; exit 1; }
           echo "ENGINE_BIN_DIR=${bin_dir}" >> "${GITHUB_ENV}"
           # rocBLAS also loads Tensile kernels as data, so the directory is required

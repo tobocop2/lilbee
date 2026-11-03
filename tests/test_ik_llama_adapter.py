@@ -251,6 +251,29 @@ def test_install_from_a_pack_with_the_pinned_digest_lists_the_engine(
     assert EngineName.IK_LLAMA in installed_engines()
 
 
+def test_install_of_a_wheel_other_than_the_published_pack_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
+    wheel = tmp_path / "ik.whl"
+    _make_wheel(wheel)
+    publish(monkeypatch, EngineName.IK_LLAMA, "0" * 64)
+    with pytest.raises(engine_service.EngineRefusedError, match="does not match its pin"):
+        engine_service.install("ik_llama.cpp", wheel)
+    assert EngineStore(engines_root(cfg.models_dir)).installed() == []
+
+
+def test_install_on_a_system_below_the_published_floor_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
+    wheel = tmp_path / "ik.whl"
+    publish(monkeypatch, EngineName.IK_LLAMA, _make_wheel(wheel), min_os="2.40", host_os="2.31")
+    with pytest.raises(engine_service.EngineRefusedError, match=r"needs glibc 2\.40 or later"):
+        engine_service.install("ik_llama.cpp", wheel)
+    assert EngineStore(engines_root(cfg.models_dir)).installed() == []
+
+
 @pytest.mark.parametrize("system", ["linux", "darwin"])
 def test_auto_never_picks_the_installed_engine(system: str, build: Path, monkeypatch) -> None:
     machine = "arm64" if system == "darwin" else "x86_64"

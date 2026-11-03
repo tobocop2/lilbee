@@ -189,7 +189,7 @@ Evidence: row 4, row 16, row 25, row 37, row 41. No engine in the spike served a
 
 ### M4 Pin
 
-A pin has a version. Each platform has an https URL and a 64-character sha256. A macOS platform has `min_os`.
+A pin has a version. Each platform has an https URL, a 64-character sha256, a size and `min_os`. The OS floor `min_os` comes from the platform tag of the wheel file name: a Windows wheel has none. `tools/gen_engine_digests.py` writes these values into `src/lilbee/providers/fleet/engine_digests.py` from the `packages.json` and `sizes.json` of the engines index. The table has one row for each engine, version and cell. The adapter copies the row of its pinned version and of the host cell into the `platforms` field of the pin record. A version that the table does not list has no pack.
 
 Evidence: row 11. The Metal archive of mistral.rs panicked on macOS 14.6.1. The pins are in `engine-versions.env` and `sources.json`.
 

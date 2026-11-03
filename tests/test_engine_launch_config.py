@@ -136,7 +136,7 @@ def _install_host(
     monkeypatch.setattr(engine_choice, "session_host", lambda: session)
     # The real read builds the process-wide services, and those start a warm-up thread.
     monkeypatch.setattr(swap_config, "_concurrency_limit", lambda *_a, **_k: 4)
-    bundled = tmp_path / "lilbee_engine" / "bin" / _BUNDLED
+    bundled = tmp_path / "lilbee_engine_llama_cpp" / "bin" / _BUNDLED
     bundled.parent.mkdir(parents=True)
     bundled.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(llama, "resolve_llama_server", lambda: bundled)

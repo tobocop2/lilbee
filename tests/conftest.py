@@ -272,7 +272,7 @@ def _sealed_engine_resolution(request, monkeypatch):
     installed resolves a real binary where CI raises ProviderError. Blocking
     the three engine names in shutil.which and the LILBEE_LLAMA_SERVER_PATH
     override forces a test that needs a binary to plant its own (a tmp-file
-    ``cfg.llama_server_path``, a fake ``lilbee_engine``, or a
+    ``cfg.llama_server_path``, a fake ``lilbee_engine_llama_cpp``, or a
     ``shutil.which`` patch) or use ``@pytest.mark.real_engine_resolution``.
     """
     if "real_engine_resolution" in {m.name for m in request.node.iter_markers()}:

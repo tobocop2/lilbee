@@ -25,7 +25,7 @@ def _load() -> ModuleType:
 
 bpi = _load()
 
-_RAW = "lilbee_engine-0.6.90b420.dev721-py3-none-macosx_11_0_arm64.whl"
+_RAW = "lilbee_engine_llama_cpp-0.6.90b420.dev721-py3-none-macosx_11_0_arm64.whl"
 
 
 def test_every_backend_gets_a_build_tag() -> None:
@@ -46,7 +46,7 @@ def test_metal_and_vulkan_are_not_treated_as_untagged_defaults() -> None:
 def test_rename_matches_release_asset_layout() -> None:
     assert (
         bpi.rename_for_release(_RAW, "metal")
-        == "lilbee_engine-0.6.90b420.dev721-1.metal-py3-none-macosx_11_0_arm64.whl"
+        == "lilbee_engine_llama_cpp-0.6.90b420.dev721-1.metal-py3-none-macosx_11_0_arm64.whl"
     )
 
 
@@ -60,7 +60,7 @@ def test_index_href_targets_the_tagged_asset(tmp_path: Path) -> None:
         bpi.collect_wheels(art),
         "https://github.com/tobocop2/lilbee/releases/download",
     )
-    index = (site / "metal" / "lilbee-engine" / "index.html").read_text()
+    index = (site / "metal" / "lilbee-engine-llama-cpp" / "index.html").read_text(encoding="utf-8")
     assert "dev721-1.metal-py3-none-macosx_11_0_arm64.whl" in index
     # the plain (never-uploaded) name must not appear
     assert "dev721-py3-none-macosx_11_0_arm64.whl</a>" not in index

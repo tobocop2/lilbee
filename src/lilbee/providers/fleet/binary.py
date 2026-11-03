@@ -20,7 +20,7 @@ _HELP_PROBE_TIMEOUT_S = 15.0
 
 
 class EngineTool(StrEnum):
-    """A bundled engine executable resolved from the ``lilbee-engine`` wheel."""
+    """A bundled engine executable resolved from the ``lilbee-engine-llama-cpp`` wheel."""
 
     LLAMA_SERVER = "llama-server"
     LLAMA_SWAP = "llama-swap"
@@ -35,12 +35,12 @@ _BUNDLED_ACCESSORS = {
 
 
 def _bundled_tool(tool: EngineTool) -> Path | None:
-    """Path to *tool* from the ``lilbee-engine`` wheel, or ``None`` if absent."""
+    """Path to *tool* from the ``lilbee-engine-llama-cpp`` wheel, or ``None`` if absent."""
     try:
-        import lilbee_engine
+        import lilbee_engine_llama_cpp
     except ImportError:
         return None
-    accessor = getattr(lilbee_engine, _BUNDLED_ACCESSORS[tool], None)
+    accessor = getattr(lilbee_engine_llama_cpp, _BUNDLED_ACCESSORS[tool], None)
     if accessor is None:  # a wheel that predates this tool lacks the accessor
         return None
     path = Path(accessor())
@@ -80,12 +80,12 @@ def engine_build_id() -> str:
     if cfg.llama_server_path:
         return f"custom:{cfg.llama_server_path}@{_binary_signature(Path(cfg.llama_server_path))}"
     try:
-        import lilbee_engine
+        import lilbee_engine_llama_cpp
     except ImportError:
-        lilbee_engine = None
-    if lilbee_engine is not None:
+        lilbee_engine_llama_cpp = None
+    if lilbee_engine_llama_cpp is not None:
         try:
-            return str(lilbee_engine.get_engine_pin())
+            return str(lilbee_engine_llama_cpp.get_engine_pin())
         except AttributeError:  # pre-pin wheels lack the accessor
             return f"wheel:{_engine_wheel_version()}"
     found = shutil.which(EngineTool.LLAMA_SERVER.value)
@@ -97,16 +97,16 @@ def engine_build_id() -> str:
 def _engine_wheel_version() -> str:
     """The engine wheel's version, or a marker when it has no distribution metadata.
 
-    ``lilbee_engine`` can be importable with nothing to look up: an extracted
+    ``lilbee_engine_llama_cpp`` can be importable with nothing to look up: an extracted
     wheel on sys.path, a vendored copy, or a distribution registered under a name
-    that does not normalize to ``lilbee-engine``. Since this feeds the pin, and
+    that does not normalize to ``lilbee-engine-llama-cpp``. Since this feeds the pin, and
     the pin is computed on every state write, a missing version degrades to a
     marker rather than raising out of ``engine_pin``.
     """
     from importlib.metadata import PackageNotFoundError
 
     try:
-        return _pkg_version("lilbee-engine")
+        return _pkg_version("lilbee-engine-llama-cpp")
     except PackageNotFoundError:
         return "unknown"
 
@@ -171,7 +171,7 @@ def _load_config_signature() -> str:
 def resolve_engine_tool(tool: EngineTool) -> Path:
     """Resolve *tool*: configured llama-server path, then bundled wheel, then PATH.
 
-    Never downloads anything; the binaries arrive via the bundled ``lilbee-engine``
+    Never downloads anything; the binaries arrive via the bundled ``lilbee-engine-llama-cpp``
     wheel or bring-your-own. Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH``
     (an explicit setting beats the bundled wheel); the other tools resolve from the
     wheel, then ``PATH``.

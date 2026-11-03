@@ -248,14 +248,14 @@ def test_a_missing_release_file_is_a_missing_pack_after_one_request(store: Engin
     slept.assert_not_called()
 
 
-def test_uv_argv_installs_pinned_hashes_into_the_stage_from_the_backend_index(
+def test_uv_argv_installs_pinned_hashes_into_the_stage_from_the_engines_index(
     tmp_path: Path,
 ) -> None:
     lock = PinLock("llama.cpp", "1", "cu125", {}, ("MIT",), "A" * 64, "server")
     argv = pip_install_argv(lock, tmp_path / "stage")
     assert argv[:3] == ["uv", "pip", "install"]
     assert argv[argv.index("--target") + 1] == str(tmp_path / "stage")
-    assert argv[argv.index("--index-url") + 1] == "https://lilbee.sh/cu125/"
+    assert argv[argv.index("--index-url") + 1] == "https://lilbee.sh/engines/simple/"
     assert {"--no-deps", "--require-hashes", "--only-binary=:all:"} <= set(argv)
     assert argv[-2:] == ["-r", "-"]
     assert pip_requirement(lock) == f"lilbee-engine-llama-cpp==1 --hash=sha256:{'a' * 64}\n"

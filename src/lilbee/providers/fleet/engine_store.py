@@ -667,7 +667,7 @@ def pip_install_argv(lock: PinLock, stage: Path, tool: InstallTool = InstallTool
         "--only-binary=:all:",
         "--require-hashes",
         "--index-url",
-        f"{_PACKAGE_INDEX}/{lock.backend}/",
+        f"{_PACKAGE_INDEX}/engines/simple/",
         "-r",
         "-",
     ]
