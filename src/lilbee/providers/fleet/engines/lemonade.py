@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import logging
+import json
+import os
 import re
-import socket
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
@@ -13,6 +14,7 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import RoleServerSpec
+from lilbee.providers.fleet.binary import resolve_llama_server
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engine_store import engines_root
@@ -28,18 +30,12 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
-log = logging.getLogger(__name__)
-
 _VERSION = "2026.44.1"
 _TOOL = "lemond"
 _BACKEND = "cpu"
 _HOST = "127.0.0.1"
 _LICENCES = ["Apache-2.0"]
 _XDNA2 = "XDNA2"
-# Lemonade starts one llama-server per role on these ports and opens a WebSocket on
-# the last one. The recorded run did not set the first three, so lilbee cannot move them.
-CHILD_PORTS = (8001, 8002, 8003)
-WEBSOCKET_PORT = 9000
 _RESERVE_BYTES = 2 * 1024**3
 """The figure charged for one role; the recorded chat, embed and rerank models fit under it."""
 _ENDPOINTS = {
@@ -48,10 +44,12 @@ _ENDPOINTS = {
     WorkerRole.RERANK: "/v1/reranking",
 }
 _DATA_DIRNAME = "lemonade-data"
-_BACKEND_DOWNLOAD = (
-    "Lemonade downloads its llama.cpp backend (about 17 MB) the first time a model loads. "
-    "The first request waits for that download."
-)
+_MODES = {
+    WorkerRole.CHAT: "chat",
+    WorkerRole.EMBED: "embeddings",
+    WorkerRole.RERANK: "reranking",
+}
+_TMP_SUFFIX = ".tmp"
 
 _PROFILE = RequestProfile(
     embed_fields={},
@@ -68,22 +66,77 @@ _PROFILE = RequestProfile(
 )
 
 
-def port_is_busy(port: int) -> bool:
-    """True when something on this computer already listens on *port*."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.settimeout(1.0)
-        return probe.connect_ex((_HOST, port)) == 0
+def data_root() -> Path:
+    """The folder that holds every Lemonade role folder, apart from any Lemonade of the user."""
+    return engines_root(cfg.models_dir) / _DATA_DIRNAME
 
 
-def busy_ports() -> tuple[int, ...]:
-    """The ports Lemonade needs that something already holds."""
-    return tuple(p for p in (*CHILD_PORTS, WEBSOCKET_PORT) if port_is_busy(p))
+def role_dir(role: WorkerRole, replica: int) -> Path:
+    """The private cache, config and model view of one role instance."""
+    return data_root() / f"{role.value}-{replica}"
 
 
-def data_dirs() -> tuple[Path, Path]:
-    """The cache and config folders of Lemonade, apart from any Lemonade of the user."""
-    root = engines_root(cfg.models_dir) / _DATA_DIRNAME
-    return root / "cache", root / "config"
+def model_name(role: WorkerRole) -> str:
+    """The name Lemonade gives the model of *role*, taken from the link file name."""
+    return f"lilbee-{role.value}"
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write *text* to *path* through a temporary file, so a reader never sees half of it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + _TMP_SUFFIX)
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _links_to(link: Path, target: Path) -> bool:
+    """True when *link* already serves *target*, as a link or as a hard link or copy."""
+    if link.is_symlink():
+        return link.readlink() == target
+    try:
+        return link.is_file() and os.path.samefile(link, target)
+    except OSError:
+        return False
+
+
+def _place_model(link: Path, target: Path) -> None:
+    """Make *link* serve *target*: a symlink, else a hard link, else a copy."""
+    if _links_to(link, target):
+        return
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.unlink(missing_ok=True)
+    tmp = link.with_name(link.name + _TMP_SUFFIX)
+    tmp.unlink(missing_ok=True)
+    for make in (os.symlink, os.link, shutil.copyfile):
+        try:
+            make(target, tmp)
+        except OSError:
+            continue
+        os.replace(tmp, link)
+        return
+    raise ProviderError(f"Lemonade cannot link the model {target} into {link.parent}.")
+
+
+def _prepare(spec: RoleServerSpec, request: LaunchRequest) -> Path:
+    """Write the folders, the config and the model link of one role; safe to repeat."""
+    root = role_dir(spec.role, request.replica)
+    (root / "cache").mkdir(parents=True, exist_ok=True)
+    view = root / "view"
+    _place_model(view / _MODES[spec.role] / f"{model_name(spec.role)}.gguf", request.model_path)
+    config = {
+        "extra_models_dir": str(view),
+        "websocket_port": "auto",
+        "llamacpp": {"backend": _BACKEND, "cpu_bin": str(resolve_llama_server().parent)},
+    }
+    recipe = {
+        f"extra.{model_name(spec.role)}": {
+            "ctx_size": request.ctx_per_slot * request.slots,
+            "llamacpp_args": f"--parallel {request.slots}",
+        }
+    }
+    _write_atomic(root / "config" / "config.json", json.dumps(config, indent=2))
+    _write_atomic(root / "config" / "recipe_options.json", json.dumps(recipe, indent=2))
+    return root
 
 
 class LemonadeAdapter:
@@ -149,21 +202,12 @@ class LemonadeAdapter:
         return RoleServerSpec(role, _ENDPOINTS[role], (), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The ``lemond`` command, after a check that its fixed ports are free.
+        """The ``lemond`` command, after the role folder holds its config and model link.
 
-        Lemonade picks the ports of its llama.cpp children itself, so lilbee refuses
-        to start it while another program holds one of them.
+        Lemonade reads the model from the view folder in place, runs lilbee's own
+        llama-server, and picks the ports of its children and WebSocket itself.
         """
-        held = busy_ports()
-        if held:
-            ports = ", ".join(str(p) for p in held)
-            raise ProviderError(
-                f"Lemonade needs the ports {', '.join(map(str, CHILD_PORTS))} and "
-                f"{WEBSOCKET_PORT}, and port {ports} is in use. Stop the program that uses it."
-            )
-        cache, config = data_dirs()
-        if not (cache / "bin" / "llamacpp" / _BACKEND).is_dir():
-            log.warning(_BACKEND_DOWNLOAD)
+        root = _prepare(spec, request)
         return [
             str(request.binary),
             "--port",
@@ -171,8 +215,8 @@ class LemonadeAdapter:
             "--host",
             _HOST,
             "--no-broadcast",
-            str(cache),
-            str(config),
+            str(root / "cache"),
+            str(root / "config"),
         ]
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
@@ -208,7 +252,7 @@ class LemonadeAdapter:
         return {}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
-        return {"checkEndpoint": "/live"}
+        return {"checkEndpoint": "/live", "useModelName": model_name(launch.role)}
 
     def request_profile(self, role: WorkerRole) -> RequestProfile:
         return _PROFILE
