@@ -1222,6 +1222,8 @@ def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
     process on a recycled port is never killed; a server whose parent is a
     live llama-swap belongs to a current run on a reused port and is spared.
     """
+    if not ports:
+        return []
     return [*_port_orphans(ports), *_lemonade_orphans()]
 
 
@@ -1257,8 +1259,6 @@ def _has_live_swap_ancestor(proc: psutil.Process) -> bool:
 
 def _port_orphans(ports: tuple[int, ...]) -> list[psutil.Process]:
     """Live llama-server processes whose ``--port`` is one of *ports*."""
-    if not ports:
-        return []
     targets = {str(port) for port in ports}
     orphans: list[psutil.Process] = []
     for proc in _processes_named(_LLAMA_SERVER_PROCESS_NAME):
