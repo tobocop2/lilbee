@@ -126,6 +126,7 @@ _PROBE_TIMEOUT_S = 5.0
 _LIVENESS_TIMEOUT = httpx.Timeout(connect=0.5, read=2.0, write=2.0, pool=2.0)
 # Run as `python -m`; the frozen build dispatches `-m lilbee.*` to the module's main().
 _REAPER_MODULE = "lilbee.providers.fleet.engine_reaper"
+_REAPER_LOG_FILENAME = "engine-reaper.log"
 # A reaper reports running within one interpreter start; a frozen onefile start
 # on a slow disk is the long case.
 _REAPER_READY_TIMEOUT_S = 10.0
@@ -975,15 +976,20 @@ def ensure_engine_reaper(data_dir: Path) -> bool:
     """
     if reaper_running(data_dir):
         return True
+    reaper_log = data_dir / _LOGS_SUBDIR / _REAPER_LOG_FILENAME
     try:
-        reaper = subprocess.Popen(  # noqa: S603 - argv is this interpreter and a fixed module
-            [sys.executable, "-m", _REAPER_MODULE, str(data_dir)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS,
-        )
+        reaper_log.parent.mkdir(parents=True, exist_ok=True)
+        log_offset = reaper_log.stat().st_size if reaper_log.exists() else 0
+        # The child keeps its own copy of the handle; the parent closes its copy at once.
+        with reaper_log.open("ab") as reaper_err:
+            reaper = subprocess.Popen(  # noqa: S603 - argv is this interpreter and a fixed module
+                [sys.executable, "-m", _REAPER_MODULE, str(data_dir)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=reaper_err,
+                start_new_session=True,
+                creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS,
+            )
     except OSError:
         log.warning("Could not launch the engine reaper for %s.", data_dir)
         return False
@@ -995,8 +1001,25 @@ def ensure_engine_reaper(data_dir: Path) -> bool:
     # An exited reaper either lost the claim to a live one or failed to start.
     if reaper_running(data_dir):
         return True
-    log.warning("The engine reaper for %s did not report running.", data_dir)
+    log.warning(
+        "The engine reaper for %s did not report running. Its log is %s.%s",
+        data_dir,
+        reaper_log,
+        _log_tail_since(reaper_log, log_offset),
+    )
     return False
+
+
+def _log_tail_since(path: Path, offset: int) -> str:
+    """The text written to *path* after *offset*, capped, as a message suffix ('' when none)."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            data = handle.read()
+    except OSError:
+        return ""
+    text = data.decode(errors="replace").strip()[-_BOOT_LOG_TAIL_CHARS:]
+    return f"\n{text}" if text else ""
 
 
 def reap_stale(data_dir: Path) -> None:
