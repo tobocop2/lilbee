@@ -129,7 +129,7 @@ def test_a_failed_take_on_the_tui_retry_is_logged_and_does_not_raise(monkeypatch
     shown: list[tuple[Any, ...]] = []
     monkeypatch.setattr(tui_app_mod, "call_from_thread", lambda *args: shown.append(args))
 
-    def refuse(_reading):
+    def refuse(_reading, **_options):
         raise ValueError("refused value")
 
     monkeypatch.setattr(tui_app_mod, "adopt_external_changes", refuse)
@@ -137,6 +137,24 @@ def test_a_failed_take_on_the_tui_retry_is_logged_and_does_not_raise(monkeypatch
         assert app.take_external_settings_now() is None
     assert shown == []
     assert [r.exc_info[1].args for r in caplog.records if r.exc_info] == [("refused value",)]
+
+
+def test_a_provider_switch_from_outside_stops_the_fleet_after_the_tui_lock_is_free(monkeypatch):
+    from lilbee.app import services as svc_mod
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    seen: list[tuple[bool, str, bool]] = []
+
+    def stop_the_fleet() -> None:
+        # Another take during the stop finds the reading current: nothing is taken twice.
+        held = app._config_lock.locked()
+        seen.append((held, cfg.llm_provider, None if held else app.adopt_external_settings()))
+
+    monkeypatch.setattr(svc_mod, "reset_services", stop_the_fleet)
+    _write_from_another_process("llm_provider", "remote", tick=4)
+    assert app.adopt_external_settings() is True
+    assert seen == [(False, "remote", False)]
 
 
 # A fresh interpreter starts the CLI the way `lilbee` does on the default path: the import

@@ -31,6 +31,7 @@ from lilbee.app.settings import (
     adopt_external_changes,
     apply_settings_update,
     config_write_failure_message,
+    reset_for_provider_switch,
     reset_settings,
     setting_sources,
     start_config_reading,
@@ -674,7 +675,7 @@ class LilbeeApp(App[None]):
         self.notify_warnings(result.warnings)
         self.publish_settings([key])
         if ask_rebuild and result.reindex_required:
-            self.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE)
+            self.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE, [key])
         elif key == "wiki" and cfg.wiki is False:
             self._offer_wiki_wipe()
         return True
@@ -721,11 +722,17 @@ class LilbeeApp(App[None]):
             call_from_thread(self, self._show_taken_settings, result)
 
     def _take_external_changes(self) -> tuple[bool, SettingsUpdateResult | None]:
-        """Take the outside changes under the lock every take shares."""
+        """Take the outside changes under the lock every take shares; stop the fleet after it.
+
+        The reading moves with the values under the lock, so a take that waited finds the
+        file taken. A provider switch stops the fleet, seconds long, once the lock is free.
+        """
         with self._config_lock:
             before = self._config_reading
-            self._config_reading, result = adopt_external_changes(before)
-            return self._config_reading is not before, result
+            self._config_reading, result = adopt_external_changes(before, reset_providers=False)
+            changed = self._config_reading is not before
+        reset_for_provider_switch(result)
+        return changed, result
 
     def _show_taken_settings(self, result: SettingsUpdateResult) -> None:
         self.notify_warnings(result.warnings)
@@ -1149,10 +1156,17 @@ class LilbeeApp(App[None]):
         if chat is None:
             return
         chat.run_sync(force_rebuild=True)
-        # The rebuild builds the index with the values now in force: leaving Settings asks none.
+        # The rebuild builds the index with every value now in force.
+        self.rebuild_answered(None)
+
+    def rebuild_answered(self, keys: Iterable[str] | None) -> None:
+        """Count the values in force of *keys*, or of all when None, as asked about.
+
+        Leaving Settings then asks only about the other index values the visit changed.
+        """
         settings = self.settings_screen()
         if settings is not None:
-            settings.take_index_values()
+            settings.take_index_values(keys)
 
     def settings_screen(self) -> SettingsScreen | None:
         """The Settings screen when it is on the screen stack, under any dialog."""
@@ -1160,12 +1174,14 @@ class LilbeeApp(App[None]):
 
         return next((s for s in self.screen_stack if isinstance(s, SettingsScreen)), None)
 
-    def offer_rebuild(self, message: str) -> None:
-        """Ask whether to rebuild the index, saying why in *message*; yes starts the rebuild."""
+    def offer_rebuild(self, message: str, keys: Iterable[str] = ()) -> None:
+        """Ask whether to rebuild the index for *keys*, saying why in *message*; yes starts it."""
 
         def _answered(rebuild: bool | None) -> None:
             if rebuild:
                 self.start_rebuild()
+            else:
+                self.rebuild_answered(keys)
 
         self.push_screen(ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, message), _answered)
 

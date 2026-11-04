@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -265,9 +265,16 @@ class SettingsScreen(Screen[None]):
         if self not in self.app.screen_stack and (message := self.leave()):
             self.app.offer_rebuild(message)
 
-    def take_index_values(self) -> None:
-        """Count the values in force as the ones the index holds: leaving asks about later edits."""
-        self._index_values = reindex_values()
+    def take_index_values(self, keys: Iterable[str] | None = None) -> None:
+        """Count the values in force of *keys*, or of all when None, as the ones the index holds.
+
+        Leaving asks about the values changed after this. Only a visit in progress moves for *keys*.
+        """
+        values = reindex_values()
+        if keys is None:
+            self._index_values = values
+        elif self._index_values is not None:
+            self._index_values.update({key: values[key] for key in keys if key in values})
 
     def leave(self) -> str | None:
         """End the visit; the rebuild question its edits leave, or None when they leave none.
