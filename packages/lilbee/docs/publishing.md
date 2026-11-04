@@ -73,6 +73,6 @@ publishing, and passes. Releases do not break.
   and prints the version.
 - OIDC needs `id-token: write` on the job. The `npm` job sets it.
 - To run the job by hand, dispatch the workflow with only this channel:
-  `gh workflow run publish-packages.yml -f tag=v0.6.90b423 -f channels=npm`.
+  `gh workflow run publish-packages.yml -f tag=<tag> -f channels=npm`.
   It publishes the version the tag carries, and only if that version is not on
   npm yet.
