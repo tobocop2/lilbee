@@ -539,6 +539,12 @@ wheel runs. The llama.cpp pack stays unused. To run the pack, remove the wheel
 with `pip uninstall lilbee-engine-llama-cpp`, then run
 `lilbee engine install`.
 
+Lemonade has no pack, so you install it yourself. Follow the
+[Lemonade install guide](https://lemonade-server.ai/docs/guide/install/), or unpack the
+`lemonade-embeddable` archive from the Lemonade releases. Then put the folder with `lemond`
+on `PATH`. lilbee finds `lemond` there, and `lilbee engine list` no longer lists lemonade
+as not installed.
+
 To install from a local pack, copy it into the `packs` folder of the engines folder.
 Name the file `<engine>-<version>-<backend>.whl`. Then run:
 
