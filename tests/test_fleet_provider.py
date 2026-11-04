@@ -6080,6 +6080,81 @@ def test_rediscover_releases_unused_holds_when_the_retry_fails(monkeypatch) -> N
     assert released == [1]
 
 
+def test_a_failed_sweep_after_a_rediscover_keeps_the_retry_result(monkeypatch) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+
+    def _broken_sweep() -> None:
+        raise OSError("lock file gone")
+
+    monkeypatch.setattr(p, "_release_unused_holds", _broken_sweep)
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _connection_error()
+        return "ok"
+
+    assert p._with_rediscover(_call) == "ok"
+    assert p._open_rediscovers == 0
+
+
+class _LockRaisingOnFirstExit:
+    """Wraps the provider lock; the first release raises, as an async exception there would."""
+
+    def __init__(self, inner: contextlib.AbstractContextManager[object]) -> None:
+        self._inner = inner
+        self._raised = False
+
+    def __enter__(self) -> object:
+        return self._inner.__enter__()
+
+    def __exit__(self, *exc: object) -> None:
+        self._inner.__exit__(*exc)
+        if not self._raised:
+            self._raised = True
+            raise KeyboardInterrupt
+
+
+def test_an_exception_right_after_the_open_count_goes_up_brings_it_down(monkeypatch) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    monkeypatch.setattr(p, "_release_unused_holds", lambda: None)
+
+    def _call() -> str:
+        if not isinstance(p._lock, _LockRaisingOnFirstExit):
+            p._lock = _LockRaisingOnFirstExit(p._lock)  # type: ignore[assignment]
+        raise _connection_error()
+
+    with pytest.raises(KeyboardInterrupt):
+        p._with_rediscover(_call)
+    assert p._open_rediscovers == 0
+
+
+def test_a_sweep_with_nothing_to_release_does_not_wait_on_the_build_lock() -> None:
+    p = FleetProvider()
+    hold = MagicMock()
+    p._engine_holds = {Path("/e1"): hold}
+    p._group_dirs = {SwapGroup.CHAT: Path("/e1")}
+    p._build_lock = MagicMock()  # type: ignore[assignment]
+
+    p._release_unused_holds()
+
+    p._build_lock.__enter__.assert_not_called()
+    hold.release_and_check_last.assert_not_called()
+
+
+def test_a_hold_sweep_that_cannot_start_a_thread_is_skipped(monkeypatch) -> None:
+    p = FleetProvider()
+
+    def _no_threads(self: threading.Thread) -> None:
+        raise RuntimeError("can't create new thread at interpreter shutdown")
+
+    monkeypatch.setattr(threading.Thread, "start", _no_threads)
+    p._start_hold_sweep()
+
+
 def test_rediscover_takes_the_config_file_after_the_drops_and_before_the_retry(
     monkeypatch,
 ) -> None:
