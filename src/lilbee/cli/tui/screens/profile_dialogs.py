@@ -21,6 +21,7 @@ from textual.widgets import DataTable, Input, Select, Static
 from lilbee.app import profiles
 from lilbee.app.profiles import DiffRow, ProfileDiff, ProfileEffect
 from lilbee.app.services import get_services
+from lilbee.app.settings import index_has_chunks
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.settings_widgets import user_pill
@@ -219,7 +220,7 @@ def switch_plan(profile: ProfileFile, diff: ProfileDiff) -> SwitchPlan:
     """The Apply dialog's plan for *profile*: its diff, your kept values, the files to rebuild."""
     reindex = any(row.effect is ProfileEffect.REINDEX for row in diff.changes)
     rebuild = profiles.rebuild_reason(profile.values, reindex)
-    files = len(get_services().store.get_sources()) if reindex else 0
+    files = len(get_services().store.get_sources()) if reindex and index_has_chunks() else 0
     kept = tuple((key, getattr(cfg, key)) for key in diff.kept)
     reapply = profile_key(profile.name) == profile_key(profiles.active(ProfileStore()).name)
     return SwitchPlan(profile, diff, kept, files, rebuild, reapply)
