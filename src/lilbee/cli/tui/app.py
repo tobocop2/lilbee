@@ -6,6 +6,7 @@ import contextlib
 import logging
 import os
 import sys
+import threading
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -24,7 +25,7 @@ from textual.screen import Screen
 from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
-from lilbee.app.services import get_services, peek_services
+from lilbee.app.services import get_services, peek_services, set_config_refresh
 from lilbee.app.settings import (
     SettingsUpdateResult,
     adopt_external_changes,
@@ -261,6 +262,9 @@ class LilbeeApp(App[None]):
         self._installed_screen_names: set[str] = set()
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
         self._config_reading = start_config_reading()
+        # The app thread and the engine's retry thread both take config.toml changes.
+        self._config_lock = threading.Lock()
+        set_config_refresh(self.take_external_settings_now)
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
             self, "provider_availability_changed"
         )
@@ -695,12 +699,31 @@ class LilbeeApp(App[None]):
         state that lives outside cfg, such as the profile name. An editor the user is
         typing in keeps its text; saving it writes that value over the other process's.
         """
-        before = self._config_reading
-        self._config_reading, result = adopt_external_changes(before)
+        changed, result = self._take_external_changes()
         if result is not None:
-            self.notify_warnings(result.warnings)
-            self.publish_settings(result.updated)
-        return self._config_reading is not before
+            self._show_taken_settings(result)
+        return changed
+
+    def take_external_settings_now(self) -> None:
+        """Take config.toml changes from the thread the engine retries on.
+
+        The settings land on cfg in the calling thread. The app thread shows them;
+        on the app thread itself the take already happened and nothing is shown.
+        """
+        _changed, result = self._take_external_changes()
+        if result is not None:
+            call_from_thread(self, self._show_taken_settings, result)
+
+    def _take_external_changes(self) -> tuple[bool, SettingsUpdateResult | None]:
+        """Take the outside changes under the lock every take shares."""
+        with self._config_lock:
+            before = self._config_reading
+            self._config_reading, result = adopt_external_changes(before)
+            return self._config_reading is not before, result
+
+    def _show_taken_settings(self, result: SettingsUpdateResult) -> None:
+        self.notify_warnings(result.warnings)
+        self.publish_settings(result.updated)
 
     def on_app_focus(self) -> None:
         """The terminal came back to the front: another shell may have changed config.toml."""

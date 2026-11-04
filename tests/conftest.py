@@ -178,7 +178,7 @@ def _download_without_a_child_process(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _restore_interactive_intent():
-    """Snapshot the interactive-session flag and the upgrade reporter around every test.
+    """Snapshot the interactive flag, the upgrade reporter and the config refresh per test.
 
     mark_interactive_session flips process state; a leak arms the TUI's
     straggler exit inside a test worker, which then exits the worker. The CLI
@@ -188,9 +188,11 @@ def _restore_interactive_intent():
 
     before = services_mod._state.interactive
     reporter = services_mod._state.on_upgrade
+    config_refresh = services_mod._state.config_refresh
     yield
     services_mod._state.interactive = before
     services_mod._state.on_upgrade = reporter
+    services_mod._state.config_refresh = config_refresh
 
 
 @pytest.fixture(autouse=True)

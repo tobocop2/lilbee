@@ -47,7 +47,12 @@ def create_sdk_provider() -> SdkLLMProvider:
     return SdkLLMProvider(sdk_library().create_backend())
 
 
-def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
+def create_provider(
+    config: Config,
+    *,
+    hold_warm: bool = False,
+    config_refresh: Callable[[], None] | None = None,
+) -> LLMProvider:
     """Create a new LLM provider instance from the given config.
 
     *hold_warm* marks the provider as serving an interactive session, so a local
@@ -55,13 +60,15 @@ def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
     idle-unloading for as long as the session owns the process (a fleet shared
     with other users, or kept warm, outlives it and keeps its idle window).
     Irrelevant to a remote provider, which has no local engine to hold.
+    *config_refresh* takes config.toml changes now; the local engine runs it
+    before it retries a call on an engine that went away.
     """
     match config.llm_provider:
         case LlmProvider.AUTO:
             # circular: routing_provider -> factory via create_sdk_provider
             from lilbee.providers.routing_provider import RoutingProvider
 
-            return RoutingProvider(hold_warm=hold_warm)
+            return RoutingProvider(hold_warm=hold_warm, config_refresh=config_refresh)
 
         case LlmProvider.REMOTE:
             if not availability.provider_sdk_available():

@@ -607,7 +607,7 @@ class TestRoutingProvider:
         count_lock = threading.Lock()
 
         class FakeFleet:
-            def __init__(self, *, hold_warm: bool = False) -> None:
+            def __init__(self, *, hold_warm: bool = False, config_refresh=None) -> None:
                 with count_lock:
                     construct_count["n"] += 1
                 # Widen the check-then-set window: without it the cheap __init__

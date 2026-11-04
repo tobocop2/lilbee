@@ -6003,6 +6003,45 @@ def test_rediscover_releases_holds_before_the_retry(monkeypatch) -> None:
     assert order == ["drop", "release", "retry"]  # holds dropped before the retry
 
 
+def test_rediscover_takes_the_config_file_after_the_drops_and_before_the_retry(
+    monkeypatch,
+) -> None:
+    # The take replans; with groups still held the replan would run against them.
+    order: list[str] = []
+    p = FleetProvider(config_refresh=lambda: order.append("refresh"))
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: order.append("drop"))
+    monkeypatch.setattr(p, "_release_holds", lambda: order.append("release"))
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _connection_error()
+        order.append("retry")
+        return "ok"
+
+    assert p._with_rediscover(_call) == "ok"
+    assert order == ["drop", "release", "refresh", "retry"]
+
+
+def test_a_call_that_succeeds_never_takes_the_config_file() -> None:
+    refreshes: list[int] = []
+    p = FleetProvider(config_refresh=lambda: refreshes.append(1))
+    assert p._with_rediscover(lambda: "ok") == "ok"
+    assert refreshes == []
+
+
+def test_the_routing_provider_hands_the_config_refresh_to_its_fleet() -> None:
+    from lilbee.providers.routing_provider import RoutingProvider
+
+    def refresh() -> None:
+        return None
+
+    local = RoutingProvider(config_refresh=refresh)._get_local()
+    assert isinstance(local, FleetProvider)
+    assert local._config_refresh is refresh
+
+
 def test_rediscover_does_not_close_a_client_a_reader_is_using() -> None:
     # _with_rediscover reaches _drop_swap_refs on any connection blip. A client
     # another thread is mid-embed or mid-stream on must be retired, not closed

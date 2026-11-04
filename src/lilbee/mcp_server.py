@@ -57,6 +57,7 @@ from lilbee.app.services import (
     get_services,
     reset_services,
     reset_store,
+    set_config_refresh,
 )
 from lilbee.app.settings import (
     SettingInfo,
@@ -1828,6 +1829,7 @@ class LilbeeMCP(MCPServer):
         middleware, which already takes the file once per request.
         """
         self._config_follower = ConfigFileFollower()
+        set_config_refresh(self._config_follower.take_now)
 
     async def call_tool(
         self,

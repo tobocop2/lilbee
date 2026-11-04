@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 from litestar.testing import TestClient
 
+from lilbee.app import config_follow
+from lilbee.app import services as svc_mod
 from lilbee.app import settings as app_settings
 from lilbee.app.services import set_services
 from lilbee.app.settings import OCR_OFF_VISION_NOTICE
@@ -256,3 +259,59 @@ def test_a_provider_switch_waits_for_a_restart_as_the_settings_api_refuses_it(cl
     assert cfg.llm_provider == before
     notes = [r.getMessage() for r in caplog.records if "llm_provider" in r.getMessage()]
     assert notes == ["config.toml now sets llm_provider; restart this process to use it."]
+
+
+class _LockThatSeesWaiters:
+    """The follower's lock, with an event set when a second taker starts to wait for it."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._attempts = 0
+        self.second_waits = threading.Event()
+
+    def __enter__(self) -> None:
+        self._attempts += 1
+        if self._attempts == 2:
+            self.second_waits.set()
+        self._inner.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._inner.release()
+
+
+def test_the_engine_retry_take_and_a_request_take_settle_one_write_once(
+    client, monkeypatch, caplog
+):
+    follower = svc_mod._state.config_refresh.__self__  # type: ignore[union-attr]
+    assert svc_mod._state.config_refresh == follower.take_now
+    lock = _LockThatSeesWaiters(follower._lock)
+    monkeypatch.setattr(follower, "_lock", lock)
+    real_adopt = config_follow.adopt_external_changes
+    inside: list[int] = []
+    most_inside: list[int] = []
+    retry = threading.Thread(target=svc_mod.refresh_config)
+
+    def adopt_while_the_retry_waits(reading: Any, **kwargs: Any) -> Any:
+        inside.append(1)
+        most_inside.append(len(inside))
+        if not retry.is_alive() and not lock.second_waits.is_set():
+            retry.start()
+            assert lock.second_waits.wait(timeout=10)
+        try:
+            return real_adopt(reading, **kwargs)
+        finally:
+            inside.pop()
+
+    monkeypatch.setattr(config_follow, "adopt_external_changes", adopt_while_the_retry_waits)
+    settles = _count_calls(monkeypatch, app_settings, "_settle")
+    _write_from_another_process("top_k", 17)
+    with caplog.at_level(logging.INFO, logger="lilbee.app.config_follow"):
+        assert client.get("/api/config").json()["top_k"] == 17
+        retry.join(timeout=10)
+    assert not retry.is_alive()
+    assert max(most_inside) == 1
+    assert len(most_inside) == 2  # the request and the retry each checked the file
+    assert settles == [{"top_k"}]
+    assert [r.getMessage() for r in caplog.records if r.getMessage().startswith("Took")] == [
+        "Took top_k from config.toml."
+    ]

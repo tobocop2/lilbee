@@ -99,6 +99,28 @@ def test_the_tui_takes_a_write_made_before_it_started():
     assert cfg.top_k == 21
 
 
+def test_the_tui_engine_retry_takes_the_file_and_shows_it_on_the_app_thread(monkeypatch):
+    from lilbee.app import services as svc_mod
+    from lilbee.cli.tui import app as tui_app_mod
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    assert svc_mod._state.config_refresh == app.take_external_settings_now
+    shown: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(tui_app_mod, "call_from_thread", lambda *args: shown.append(args))
+    svc_mod.refresh_config()
+    assert shown == []  # nothing changed, nothing to show
+    _write_from_another_process("top_k", 23, tick=3)
+    svc_mod.refresh_config()
+    assert cfg.top_k == 23
+    assert len(shown) == 1
+    node, show, result = shown[0]
+    assert node is app
+    assert show == app._show_taken_settings
+    assert result.updated == ["top_k"]
+    assert app.adopt_external_settings() is False  # the retry's take moved the reading
+
+
 # A fresh interpreter starts the CLI the way `lilbee` does on the default path: the import
 # loads config.toml (top_k 12) from the platform data dir, the callback applies the
 # overrides, and an outside write of top_k 21 lands before the product reads the file.

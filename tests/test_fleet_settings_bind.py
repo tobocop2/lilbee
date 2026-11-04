@@ -7,6 +7,7 @@ the health probe are fake.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -25,7 +26,7 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.fleet.swap_manager import SwapState
 from lilbee.providers.roles import RerankMode, WorkerRole
-from tests.test_fleet_provider import _fake_client, _FakeSwap
+from tests.test_fleet_provider import _connection_error, _fake_client, _FakeSwap
 from tests.test_fleet_reload_plan import (
     _CHAT_REF,
     _NOTES_CHUNK_OVERLAP,
@@ -364,3 +365,76 @@ def test_a_thread_that_cannot_start_leaves_no_reload_in_flight(
         provider.replan_fleet()
     assert provider._reloading is False
     assert provider._reload_owed == frozenset()
+
+
+def _peer_mid_call_over_an_owner_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, flash_attention: bool
+) -> tuple[FleetProvider, _States, list[Path]]:
+    """A peer bound on flash_attention on; the owner then restarts its fleet on *flash_attention*.
+
+    The owner writes config.toml first, so the restart records the launches of the new
+    value. The peer still holds the old value in memory. Returns the peer, the shared
+    state and the dirs the peer built a private fleet in.
+    """
+    monkeypatch.setattr(cfg, "flash_attention", True)
+    _owner_provider, states = _owner(monkeypatch, tmp_path)
+    result, peer = _new_process_ladder(monkeypatch, tmp_path, states)
+    assert result is True
+    monkeypatch.setattr(cfg, "flash_attention", flash_attention)
+    for group, launches in _launches_by_group(planning_mod.plan_all_launches()).items():
+        _record(states, group, list(launches))
+    monkeypatch.setattr(cfg, "flash_attention", True)
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    built: list[Path] = []
+    monkeypatch.setattr(peer, "_plan_and_spawn", lambda data_dir: built.append(data_dir) or True)
+    return peer, states, built
+
+
+def _call_failing_once_then_binding(peer: FleetProvider) -> Callable[[], bool]:
+    """The call in flight: the old proxy is gone, so the first try fails to connect."""
+    tries = {"n": 0}
+
+    def call() -> bool:
+        tries["n"] += 1
+        if tries["n"] == 1:
+            raise _connection_error()
+        return peer._ensure_fleet()
+
+    return call
+
+
+def test_a_call_in_flight_over_an_owner_restart_rebinds_on_the_new_value(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    peer, states, built = _peer_mid_call_over_an_owner_restart(
+        monkeypatch, tmp_path, flash_attention=False
+    )
+    takes: list[bool] = []
+
+    def take_the_owner_write() -> None:
+        takes.append(bool(peer._swaps))
+        cfg.flash_attention = False
+        _apply_settings_write(monkeypatch, peer, {"flash_attention"})
+
+    monkeypatch.setattr(peer, "_config_refresh", take_the_owner_write, raising=False)
+    assert peer._with_rediscover(_call_failing_once_then_binding(peer)) is True
+    assert takes == [False]  # once, after the drops
+    assert built == []
+    assert set(peer._swaps) == set(states)
+    assert all(swap.bound for swap in peer._swaps.values())
+
+
+def test_a_call_in_flight_over_a_restart_with_no_change_rebinds_as_before(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    peer, states, built = _peer_mid_call_over_an_owner_restart(
+        monkeypatch, tmp_path, flash_attention=True
+    )
+    takes: list[int] = []
+    monkeypatch.setattr(peer, "_config_refresh", lambda: takes.append(1), raising=False)
+    assert peer._with_rediscover(_call_failing_once_then_binding(peer)) is True
+    assert takes == [1]
+    assert built == []
+    assert set(peer._swaps) == set(states)
+    assert cfg.flash_attention is True

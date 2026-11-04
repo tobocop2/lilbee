@@ -181,6 +181,8 @@ class _ServicesState:
         self.interactive: bool = False
         # Where this process shows a library upgrade; each surface sets its own.
         self.on_upgrade: DetailedProgressCallback | None = None
+        # How this process takes config.toml now; set by each surface that follows the file.
+        self.config_refresh: Callable[[], None] | None = None
         # Every store this process built, so the exit can wait for any library open
         # (the first, the one /reset makes, a lazy one) without each path telling it.
         self.stores: weakref.WeakSet[Store] = weakref.WeakSet()
@@ -256,7 +258,9 @@ def build_services(
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    provider = provider or create_provider(config, hold_warm=interactive)
+    provider = provider or create_provider(
+        config, hold_warm=interactive, config_refresh=refresh_config
+    )
     from lilbee.data.extract.backends import sync_xberg_backends
 
     sync_xberg_backends(provider)
@@ -371,6 +375,22 @@ def mark_interactive_session() -> None:
     one-shot CLI or the MCP server never calls it.
     """
     _state.interactive = True
+
+
+def set_config_refresh(hook: Callable[[], None] | None) -> None:
+    """Register how this process takes config.toml changes now (None clears it).
+
+    serve, the stdio MCP server and the TUI register the check they already run, so
+    the local engine can take an owner's new settings before it retries a call.
+    """
+    _state.config_refresh = hook
+
+
+def refresh_config() -> None:
+    """Take config.toml changes now through the registered check; nothing without one."""
+    hook = _state.config_refresh
+    if hook is not None:
+        hook()
 
 
 def report_library_upgrade(callback: DetailedProgressCallback | None) -> None:
