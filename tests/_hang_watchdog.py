@@ -29,6 +29,9 @@ report it receives. When no report arrives for ``_STALL_FACTOR`` times the
 backstop, it signals each worker to dump its stacks to its own file, then
 dumps its own stacks and ``_exit``\\s, so the run fails with every stack.
 
+``LILBEE_TEST_HANG_TEARDOWN_S`` sets the window for that teardown backstop.
+When unset, it equals ``LILBEE_TEST_HANG_DUMP_S``.
+
 Unset or ``0`` is a no-op, so local runs are untouched. Dumps go to
 ``LILBEE_TEST_HANG_DUMP_DIR/hang-<workerid>.txt`` (default: the pytest rootdir)
 for a CI step to print after the test step. The next test's setup truncates
@@ -51,6 +54,7 @@ import pytest
 
 _ENV_SECONDS = "LILBEE_TEST_HANG_DUMP_S"
 _ENV_DIR = "LILBEE_TEST_HANG_DUMP_DIR"
+_ENV_TEARDOWN_SECONDS = "LILBEE_TEST_HANG_TEARDOWN_S"
 
 # The early dump fires at this share of the test's own timeout.
 _EARLY_SHARE = 0.75
@@ -69,6 +73,7 @@ _PHASE_FAILED = pytest.StashKey[bool]()
 # so it must outlive every test; keep a module reference so it is not closed.
 _dump_handle: TextIO | None = None
 _timeout_s = 0.0
+_teardown_s = 0.0
 _early_timer: threading.Timer | None = None
 _early_fired = threading.Event()
 _stall_s = 0.0
@@ -199,11 +204,13 @@ def _cancel_stall() -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    global _dump_handle, _timeout_s
+    global _dump_handle, _timeout_s, _teardown_s
     raw = os.environ.get(_ENV_SECONDS, "").strip()
     _timeout_s = float(raw) if raw else 0.0
     if _timeout_s <= 0:
         return
+    raw_teardown = os.environ.get(_ENV_TEARDOWN_SECONDS, "").strip()
+    _teardown_s = float(raw_teardown) if raw_teardown else _timeout_s
     dump_dir = Path(os.environ.get(_ENV_DIR) or config.rootpath)
     dump_dir.mkdir(parents=True, exist_ok=True)
     # One file per worker: xdist workers share a rootdir but not a process.
@@ -331,7 +338,7 @@ def pytest_runtest_teardown(item: pytest.Item) -> Generator[None, None, None]:
     before_header = _dump_handle.tell()
     _dump_handle.write(f"hang watchdog armed for the teardown of {item.nodeid}\n")
     _dump_handle.flush()
-    faulthandler.dump_traceback_later(_timeout_s, file=_dump_handle, exit=True)
+    faulthandler.dump_traceback_later(_teardown_s, file=_dump_handle, exit=True)
     try:
         return (yield)
     finally:

@@ -92,7 +92,27 @@ def wedged_teardown():
 def test_fails(wedged_teardown):
     assert False
 """
-# The controller stall limit is four times this, so the worker backstop fires first.
+# The setup blocks on an event that a child timer sets after the teardown window.
+_SLOW_SETUP_THEN_WEDGED = """
+import threading
+
+import pytest
+
+
+@pytest.fixture
+def wedged_teardown():
+    released = threading.Event()
+    threading.Timer(3, released.set).start()
+    released.wait()
+    yield
+    threading.Event().wait()
+
+
+def test_fails(wedged_teardown):
+    assert False
+"""
+# The teardown window of the backstop tests; the setup and call window stays long.
+# The controller stall limit is four times the long window, so the worker backstop fires first.
 _TEARDOWN_BACKSTOP_S = 2
 _FAILED_FAST = "def test_fails():\n    assert False\n"
 # The session ends after the failed test's teardown, slower than the backstop.
@@ -106,7 +126,7 @@ def pytest_sessionfinish(session):
 
 
 def _child_run(
-    tmp_path: Path, source: str, *extra: str, backstop_s: int
+    tmp_path: Path, source: str, *extra: str, backstop_s: int, teardown_s: int | None = None
 ) -> tuple[list[str], dict[str, str], Path]:
     """The command, environment and dump directory of a child pytest run."""
     test_file = tmp_path / "test_case.py"
@@ -116,6 +136,7 @@ def _child_run(
         **{k: v for k, v in os.environ.items() if not k.startswith(_PARENT_ENV_PREFIXES)},
         "LILBEE_TEST_HANG_DUMP_S": str(backstop_s),
         "LILBEE_TEST_HANG_DUMP_DIR": str(dump_dir),
+        **({} if teardown_s is None else {"LILBEE_TEST_HANG_TEARDOWN_S": str(teardown_s)}),
         "PYTHONPATH": str(_TESTS_DIR),
         "ENTERED": str(tmp_path / "entered"),
         "RELEASE": str(tmp_path / "release"),
@@ -140,9 +161,15 @@ def _child_run(
 
 
 def _run_pytest(
-    tmp_path: Path, source: str, *extra: str, backstop_s: int = _BACKSTOP_S
+    tmp_path: Path,
+    source: str,
+    *extra: str,
+    backstop_s: int = _BACKSTOP_S,
+    teardown_s: int | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
-    command, env, dump_dir = _child_run(tmp_path, source, *extra, backstop_s=backstop_s)
+    command, env, dump_dir = _child_run(
+        tmp_path, source, *extra, backstop_s=backstop_s, teardown_s=teardown_s
+    )
     result = subprocess.run(
         command,
         capture_output=True,
@@ -187,7 +214,7 @@ def test_a_failed_test_whose_teardown_blocks_ends_at_the_backstop(
     tmp_path: Path, extra: tuple[str, ...], dump_name: str
 ) -> None:
     result, dump_dir = _run_pytest(
-        tmp_path, _FAILED_THEN_WEDGED, *extra, backstop_s=_TEARDOWN_BACKSTOP_S
+        tmp_path, _FAILED_THEN_WEDGED, *extra, teardown_s=_TEARDOWN_BACKSTOP_S
     )
 
     assert result.returncode != 0
@@ -196,6 +223,24 @@ def test_a_failed_test_whose_teardown_blocks_ends_at_the_backstop(
     assert "wedged_teardown" in dump
     controller = (dump_dir / "hang-master.txt").read_text(encoding="utf-8")
     assert "no test report for" not in controller
+
+
+@pytest.mark.parametrize(
+    ("extra", "dump_name"),
+    [((), "hang-master.txt"), (("-n", "1"), "hang-gw0.txt")],
+    ids=["single-process", "xdist-worker"],
+)
+def test_a_setup_slower_than_the_teardown_window_still_ends_at_the_teardown_backstop(
+    tmp_path: Path, extra: tuple[str, ...], dump_name: str
+) -> None:
+    result, dump_dir = _run_pytest(
+        tmp_path, _SLOW_SETUP_THEN_WEDGED, *extra, teardown_s=_TEARDOWN_BACKSTOP_S
+    )
+
+    assert result.returncode != 0
+    dump = (dump_dir / dump_name).read_text(encoding="utf-8")
+    assert "hang watchdog armed for the teardown of test_case.py::test_fails" in dump
+    assert "wedged_teardown" in dump
 
 
 @pytest.mark.parametrize("extra", [(), ("-n", "1")], ids=["single-process", "xdist-worker"])
@@ -212,7 +257,7 @@ def test_a_failed_test_with_a_fast_teardown_leaves_no_dump(
 
 def test_a_failed_test_does_not_arm_the_backstop_past_its_teardown(tmp_path: Path) -> None:
     (tmp_path / "conftest.py").write_text(_SLOW_SESSION_FINISH, encoding="utf-8")
-    result, dump_dir = _run_pytest(tmp_path, _FAILED_FAST, backstop_s=_TEARDOWN_BACKSTOP_S)
+    result, dump_dir = _run_pytest(tmp_path, _FAILED_FAST, teardown_s=_TEARDOWN_BACKSTOP_S)
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "1 failed" in result.stdout
