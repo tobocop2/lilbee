@@ -48,9 +48,9 @@ The [usage guide](https://github.com/tobocop2/lilbee/blob/main/docs/usage.md) co
 
 ## How the package works
 
-The package is a small launcher with zero runtime dependencies. On first use it detects your hardware and downloads the matching standalone binary of the **latest lilbee release** — CUDA on NVIDIA, ROCm on AMD, Metal on Apple silicon, and an AVX-baseline build on older x86-64 CPUs — sha256-verified against the release manifest and cached. A CUDA build is chosen only when `nvidia-smi` reports the driver's CUDA version; on any other NVIDIA host the default build's Vulkan engine drives the card. Every later run execs the cached binary directly, with no network.
+The package is a small launcher with zero runtime dependencies. On first use it detects your hardware and downloads the matching standalone binary of **the lilbee release this package version is** — CUDA on NVIDIA, ROCm on AMD, Metal on Apple silicon, and an AVX-baseline build on older x86-64 CPUs — sha256-verified against the release manifest and cached. A CUDA build is chosen only when `nvidia-smi` reports the driver's CUDA version; on any other NVIDIA host the default build's Vulkan engine drives the card. Every later run execs the cached binary directly, with no network.
 
-The first download is large (about 370MB on macOS, more for CUDA builds). Run `lilbee prepare` once to do it ahead of time; run it again any time to upgrade to the newest release (the old binary is removed). `lilbee prepare <tag>` installs one exact release instead. If the latest-release lookup is unreachable, the launcher falls back to the release pinned in `package.json`, the one this launcher version was tested against.
+The first download is large (about 370MB on macOS, more for CUDA builds). Run `lilbee prepare` once to do it ahead of time. The npm version is the lilbee version (`0.6.90-beta.691` is lilbee `0.6.90b691`), and the launcher runs exactly that release; to get a newer lilbee, install a newer package version. `lilbee prepare <tag>` installs one exact release instead.
 
 ## MCP
 
@@ -105,14 +105,13 @@ Remote:
 | `LILBEE_BIN` | Explicit path to a lilbee binary. |
 | `LILBEE_DATA_DIR` | Library location for `mcp`; same as `--data-dir`. |
 | `LILBEE_VARIANT` | Override the detected download variant: `default` (the plain build), `cu121`, `cu124`, `cu125`, `rocm`, `compat`, `compat-cu124` (Linux, and Windows from release 0.6.90b691 on), `compat-rocm` (Linux). |
-| `LILBEE_RELEASE` | Run an exact lilbee release tag instead of the latest. `lilbee prepare <tag>` does the same for one install. |
-| `LILBEE_CHANNEL` | `stable` (default) or `dev`: whether "latest" may pick an in-development (`.dev`) build. |
+| `LILBEE_RELEASE` | Run an exact lilbee release tag instead of the one this package version is. `lilbee prepare <tag>` does the same for one install. |
 | `LILBEE_DEBUG` | `=1` prints binary resolution detail on every run. |
 | `LILBEE_MCP_CACHE` | Override the download cache directory. |
 
 These are the launcher's own variables. Everything else in your environment passes through to the lilbee binary unchanged, so every lilbee environment variable (`LILBEE_DATA_DIR`, `LILBEE_MODELS_DIR`, …) works exactly as it does with any other install.
 
-The launcher always runs its own sha256-verified download; it ignores lilbee installs from other package managers, so `npm install` means a fresh, known binary. `LILBEE_BIN` is the one escape hatch: set it to run a specific binary instead. The fallback release lives in `package.json` under `lilbee.release`; it is used only when the latest-release lookup fails.
+The launcher always runs its own sha256-verified download; it ignores lilbee installs from other package managers, so `npm install` means a fresh, known binary. `LILBEE_BIN` is the one escape hatch: set it to run a specific binary instead. The release the launcher runs lives in `package.json` under `lilbee.release`; the release scripts set it with the package version.
 
 ## Embedding
 
