@@ -55,6 +55,7 @@ scripts/*
 !scripts/release.sh
 !scripts/release_notes.sh
 !scripts/promote_release.sh
+!scripts/release_version.sh
 !scripts/release_watch.sh
 !scripts/release_selfheal.sh
 !scripts/compute_version_tag.sh

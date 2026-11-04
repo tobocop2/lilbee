@@ -6,8 +6,8 @@
 #   DRY_RUN=1 bash scripts/promote_release.sh v0.6.90b420.dev726 0.6.90b420
 #
 # release-candidate.yml calls a tag a promotion when the parent of its commit is
-# another tag's commit and nothing but pyproject.toml, uv.lock and the Claude plugin
-# manifest (which carries the release version) differs between the two. It then
+# another tag's commit and nothing but the version files (scripts/release_version.sh
+# files) differs between the two. It then
 # copies the source release's notes instead of generating new ones.
 # This builds exactly that commit: the version bump alone, on top of FROM.
 #
@@ -31,6 +31,7 @@ case "$to" in
   v*) echo "promote: TO must be a bare version, no leading v (got '$to')" >&2; exit 1 ;;
 esac
 
+here=$(cd "$(dirname "$0")" && pwd)
 cd "$(git rev-parse --show-toplevel)"
 
 git fetch -q origin "refs/tags/${from}:refs/tags/${from}" 2>/dev/null || true
@@ -50,22 +51,13 @@ cur=$(awk -F'"' '/^version *= */ { print $2; exit }' "$work/pyproject.toml")
 [ -n "$cur" ] || { echo "promote: could not read the version from ${from}" >&2; exit 1; }
 [ "$cur" != "$to" ] || { echo "promote: ${from} is already version ${to}" >&2; exit 1; }
 
-perl -pi -e 's/^version = "\Q'"$cur"'\E"$/version = "'"$to"'"/' \
-  "$work/pyproject.toml" "$work/uv.lock"
-
-# The promoted tag is a new release version, so the plugin manifest carries it too.
-# A source tag from before the plugin existed has no manifest.
-claude_manifest=plugins/lilbee/.claude-plugin/plugin.json
-if [ -f "$work/$claude_manifest" ]; then
-  perl -pi -e 's/^(\s*"version": ")\Q'"$cur"'\E(",?)$/${1}'"$to"'${2}/' "$work/$claude_manifest"
-  grep -q "\"version\": \"${to}\"" "$work/$claude_manifest" \
-    || { echo "promote: ${claude_manifest} did not take version ${to}" >&2; exit 1; }
-fi
+# The promoted tag is a new release version, so every version file takes it.
+"${here}/release_version.sh" stamp "$work" "$cur" "$to"
 
 # The promotion is only detected when these files are the whole diff, so
 # check it here rather than finding out from a release that generated its notes
 # from scratch.
-changed=$(git -C "$work" diff --name-only | grep -v -x -e pyproject.toml -e uv.lock -e "$claude_manifest" || true)
+changed=$(git -C "$work" diff --name-only | grep -v -x -F -f <("${here}/release_version.sh" files) || true)
 if [ -n "$changed" ]; then
   echo "promote: expected only the version files to change, got: $(echo "$changed" | tr '\n' ' ')" >&2
   exit 1
