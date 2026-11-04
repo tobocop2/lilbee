@@ -221,8 +221,10 @@ def test_install_docs_say_lilbee_comes_first_and_plugins_do_not_install_it(doc):
 
 
 @pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
-def test_install_docs_show_the_no_install_mcp_form(doc):
-    assert "command: npx      args: [-y, lilbee, mcp]" in doc.read_text(encoding="utf-8")
+def test_install_docs_show_the_no_install_mcp_forms(doc):
+    text = doc.read_text(encoding="utf-8")
+    assert "command: npx      args: [-y, lilbee, mcp]" in text
+    assert 'command: uvx      args: [--from, "lilbee>=0.6.90b0", lilbee, mcp]' in text
 
 
 @pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)

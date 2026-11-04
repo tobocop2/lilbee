@@ -609,14 +609,15 @@ mcp_servers:
     args: [mcp]
 ```
 
-Any MCP config takes the same two fields. If you did not install lilbee, use `npx` instead:
+Any MCP config takes the same two fields. If you did not install lilbee, use `npx` or `uvx` instead:
 
 ```
 command: lilbee   args: [mcp]
 command: npx      args: [-y, lilbee, mcp]
+command: uvx      args: [--from, "lilbee>=0.6.90b0", lilbee, mcp]
 ```
 
-The first `npx` start downloads the lilbee binary. It took 281 seconds on the test machine, so an agent can time out. Later starts took 18 seconds.
+The first `npx` start downloads the lilbee binary. It took 281 seconds on the test machine, so an agent can time out. Later starts took 18 seconds. The first `uvx` start installs lilbee's Python packages, which took 82 seconds. The `--from` version lets `uvx` pick a lilbee pre-release without pulling pre-releases of other packages.
 
 Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets with file and line. The agent reels above show this live: each pane reads and searches this repository through lilbee.
 
