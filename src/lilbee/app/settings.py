@@ -478,7 +478,7 @@ def _reload_changed_roles(changed_keys: set[str]) -> None:
         services.provider.replan_fleet()
 
 
-def requires_services_reset(updates: dict[str, Any]) -> bool:
+def requires_services_reset(updates: Iterable[str]) -> bool:
     """True if applying *updates* would tear down and rebuild the Services singleton.
 
     A provider switch reconstructs the provider via ``create_provider``, which
@@ -1134,6 +1134,7 @@ def adopt_external_changes(
     last: ConfigReading,
     *,
     hold: frozenset[str] = frozenset(),
+    reset_providers: bool = True,
 ) -> tuple[ConfigReading, SettingsUpdateResult | None]:
     """Set on cfg each key another process changed in config.toml since *last*.
 
@@ -1146,7 +1147,9 @@ def adopt_external_changes(
     holds it, it keeps its folders, and a later check takes the change. The keys go
     through the same settle step as an update made here. A file that does not parse
     changes nothing and keeps *last*, as at startup. A key in *hold* is never taken: a
-    warning says the process takes it at its next start.
+    warning says the process takes it at its next start. With *reset_providers* False a
+    provider switch leaves the fleet running: the caller stops it with
+    ``reset_for_provider_switch`` once the lock it holds around this call is free.
     Returns the new reading and the update result, or None when no key changed.
     """
     roots_changed = _registry_refreshed()
@@ -1169,11 +1172,16 @@ def adopt_external_changes(
             log.warning("config.toml now sets %s; restart this process to use it.", key)
         if not targets and not roots_changed:
             return now, None
-        txn.needs_provider_reset = bool(targets.keys() & PROVIDER_SWITCHING_KEYS)
+        txn.needs_provider_reset = reset_providers and requires_services_reset(targets)
         result = _settle(set(targets), embed_in_batch=False, values=targets)
         if roots_changed:
             result = replace(result, updated=sorted({*result.updated, "linked_roots"}))
         return now, result
+
+
+def reset_for_provider_switch(result: SettingsUpdateResult | None) -> None:
+    """Stop the fleet when *result*, a take that left the reset to its caller, switched provider."""
+    _run_deferred_provider_reset(result is not None and requires_services_reset(result.updated))
 
 
 def _hide_analyze_tip() -> None:

@@ -246,15 +246,19 @@ def start_switch(
     *on_applied* runs only when the profile was applied.
     """
 
-    def _on_choice(choice: ApplyChoice | None) -> None:
+    def _on_choice(switch: SwitchPlan, choice: ApplyChoice | None) -> None:
         if choice is None or choice is ApplyChoice.CANCEL:
             on_close()
             return
 
         def _applied(result: profiles.ApplyResult) -> None:
-            app.publish_settings([row.key for row in result.changes])
+            changed = [row.key for row in result.changes]
+            app.publish_settings(changed)
             if choice is ApplyChoice.APPLY_REINDEX:
                 app.start_rebuild()
+            elif switch.rebuild is not None:
+                # The dialog asked about the profile's rows only; other edits stay owed.
+                app.rebuild_answered(changed)
             node.notify(msg.PROFILE_APPLIED.format(name=result.name))
             app.notify_warnings(result.warnings)
             on_close()
@@ -263,7 +267,7 @@ def start_switch(
         run_profile_op(node, apply, _applied)
 
     def _ask(switch: SwitchPlan) -> None:
-        app.push_screen(ApplyProfileDialog(switch), _on_choice)
+        app.push_screen(ApplyProfileDialog(switch), lambda choice: _on_choice(switch, choice))
 
     run_profile_op(node, plan, _ask, on_error=on_close)
 

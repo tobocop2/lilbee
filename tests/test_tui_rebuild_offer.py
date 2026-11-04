@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from unittest import mock
 
@@ -11,21 +12,25 @@ from textual.pilot import Pilot
 from textual.screen import Screen
 from textual.widgets import Footer, Input, Label, Static
 
+from conftest import TEST_EMBED_REF
 from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
+from lilbee.cli.tui.screens.profile_dialogs import ApplyProfileDialog
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
 from lilbee.core.config import cfg
 from lilbee.data.store.types import HeldOut, HeldRecord
+from tests import test_tui_embed_swap as embed_swap
 from tests._async_wait import press_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
 from tests._profile_fixtures import (
     gate_releases_at_once,  # noqa: F401 -- autouse fixture, applied by import
     isolated_cfg,  # noqa: F401 -- autouse fixture, applied by import
 )
-from tests.test_tui_profile_tab import _dialog, _loaded, _press, _text, _until
+from tests.test_tui_embed_swap import _NEW
+from tests.test_tui_profile_tab import _dialog, _loaded, _pick, _press, _text, _until
 
 # A dialog that is coming is pushed within a few message-loop ticks of the trigger.
 _ABSENT_PAUSES = 30
@@ -33,6 +38,8 @@ _REBUILD_KEY = "chunk_size"
 _PLAIN_KEY = "top_k"
 _LIMIT_KEY = "max_chunks_per_file"
 _BOTH_MESSAGE = f"{msg.SETTINGS_REINDEX_MESSAGE} {msg.PROFILE_APPLY_HELD_OUT}"
+# The embedder-swap services fixture, by its name, for the swaps made from Settings.
+services = embed_swap.services
 
 
 @pytest.fixture
@@ -60,6 +67,7 @@ class _Visit:
     def __init__(self) -> None:
         self.app = _VisitApp()
         self.dialogs: list[ConfirmDialog] = []
+        self.cleanups: list[Callable[[], object]] = []
 
     async def __aenter__(self) -> _Visit:
         self._rebuild = mock.patch.object(LilbeeAppHost, "start_rebuild")
@@ -88,6 +96,8 @@ class _Visit:
     async def __aexit__(self, *exc: object) -> None:
         self._push.stop()
         await self._context.__aexit__(*exc)
+        for cleanup in self.cleanups:
+            cleanup()
         self._rebuild.stop()
 
     async def save(self, key: str, value: str) -> None:
@@ -480,6 +490,111 @@ async def test_a_view_key_does_not_close_the_rebuild_offer_unanswered(
         await visit.answer_offer("confirm-no")
         assert len(visit.dialogs) == 1
     visit.rebuild.assert_not_called()
+
+
+def _rebuild_for_real(visit: _Visit) -> mock.Mock:
+    """Run the app's own rebuild start over a stand-in Chat view; returns that view."""
+    chat = mock.Mock()
+    visit.rebuild.side_effect = lambda: LilbeeApp.start_rebuild(visit.app)
+    patch = mock.patch.object(visit.app, "chat_screen", return_value=chat)
+    patch.start()
+    visit.cleanups.append(patch.stop)
+    return chat
+
+
+@pytest.mark.parametrize(("pill_id", "rebuilds"), [("apply-reindex", 1), ("apply-apply", 0)])
+async def test_a_profile_apply_answers_the_rebuild_and_leaving_asks_nothing(
+    index_holds_chunks, pill_id: str, rebuilds: int
+) -> None:
+    async with _Visit() as visit:
+        chat = _rebuild_for_real(visit)
+        _pick(visit.screen, "Research papers")
+        dialog = await _dialog(visit.app, visit.pilot, ApplyProfileDialog)
+        await _press(visit.pilot, dialog.query_one(f"#{pill_id}", ConfirmPill))
+        await _loaded(visit.app, visit.pilot, "Research papers")
+        assert cfg.table_extraction is True
+        await visit.leave()
+        assert await visit.no_dialog()
+    assert chat.run_sync.call_count == rebuilds
+
+
+async def _apply_research_papers_without_rebuild(visit: _Visit) -> None:
+    """Pick the Research papers profile and press plain Apply on its rebuild question."""
+    _pick(visit.screen, "Research papers")
+    dialog = await _dialog(visit.app, visit.pilot, ApplyProfileDialog)
+    await _press(visit.pilot, dialog.query_one("#apply-apply", ConfirmPill))
+    await _loaded(visit.app, visit.pilot, "Research papers")
+
+
+async def test_an_edit_before_a_plain_apply_is_still_offered_on_leaving(index_holds_chunks) -> None:
+    """The profile's question names only its own rows, so the earlier edit stays owed."""
+    async with _Visit() as visit:
+        chat = _rebuild_for_real(visit)
+        await visit.save(_REBUILD_KEY, "900")
+        await _apply_research_papers_without_rebuild(visit)
+        assert cfg.chunk_size == 900
+        await visit.leave()
+        await visit.answer_offer("confirm-no")
+        assert await visit.no_dialog(shown=1)
+    chat.run_sync.assert_not_called()
+
+
+async def test_an_edit_after_a_plain_apply_is_offered_on_leaving(index_holds_chunks) -> None:
+    async with _Visit() as visit:
+        chat = _rebuild_for_real(visit)
+        await _apply_research_papers_without_rebuild(visit)
+        await visit.save(_REBUILD_KEY, "900")
+        await visit.leave()
+        await visit.answer_offer("confirm-no")
+        assert await visit.no_dialog(shown=1)
+    chat.run_sync.assert_not_called()
+
+
+@pytest.mark.parametrize(("asked", "offers"), [(_REBUILD_KEY, 0), ("chunk_overlap", 1)])
+async def test_an_offer_answered_no_covers_only_its_own_setting(
+    index_holds_chunks, asked: str, offers: int
+) -> None:
+    """A save that asks about one setting leaves an earlier edit to another one owed."""
+    async with _Visit() as visit:
+        await visit.save(_REBUILD_KEY, "900")
+        assert visit.app.set_setting(asked, 901 if asked == _REBUILD_KEY else 99)
+        await visit.answer_offer("confirm-no")
+        await visit.leave()
+        assert await visit.no_dialog(shown=1) is (offers == 0)
+        assert len(visit.dialogs) == 1 + offers
+    visit.rebuild.assert_not_called()
+
+
+@pytest.mark.parametrize(("pill_id", "rebuilds"), [("confirm-yes", 1), ("confirm-no", 0)])
+async def test_an_embedder_swap_offered_after_its_write_is_asked_once_in_settings(
+    services: mock.MagicMock, index_holds_chunks, pill_id: str, rebuilds: int
+) -> None:
+    """The picker finds no chunks and asks nothing; the offer after the write is the question."""
+    services.store.has_chunks.return_value = False
+    async with _Visit() as visit:
+        chat = _rebuild_for_real(visit)
+        visit.screen._on_model_picker_dismissed("embedding_model", _NEW)
+        await visit.answer_offer(pill_id)
+        assert cfg.embedding_model == _NEW
+        await visit.leave()
+        assert await visit.no_dialog(shown=1)
+    assert chat.run_sync.call_count == rebuilds
+
+
+@pytest.mark.parametrize(("pill_id", "rebuilds"), [("confirm-yes", 1), ("confirm-no", 0)])
+async def test_an_embedder_swap_asked_before_its_write_is_asked_once_in_settings(
+    services: mock.MagicMock, index_holds_chunks, pill_id: str, rebuilds: int
+) -> None:
+    async with _Visit() as visit:
+        chat = _rebuild_for_real(visit)
+        visit.screen._on_model_picker_dismissed("embedding_model", _NEW)
+        await visit.answer_offer(pill_id, msg.EMBED_SWAP_REBUILD_MESSAGE)
+        assert await _until(visit.pilot, lambda: chat.run_sync.call_count == rebuilds)
+        await visit.app.workers.wait_for_complete()
+        assert cfg.embedding_model == (_NEW if rebuilds else TEST_EMBED_REF)
+        await visit.leave()
+        assert await visit.no_dialog(shown=1)
+    assert chat.run_sync.call_count == rebuilds
 
 
 async def test_a_catalog_round_trip_leaves_no_settings_buried(index_holds_chunks) -> None:
