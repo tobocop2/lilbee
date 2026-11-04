@@ -386,6 +386,14 @@ def _peer_mid_call_over_an_owner_restart(
     monkeypatch.setattr(cfg, "flash_attention", True)
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    # Only the machine dir has a live fleet; a private dir is free, so a peer that cannot
+    # bind builds there.
+    monkeypatch.setattr(prov_mod, "live_users_exist", lambda d: Path(d) == tmp_path)
+    monkeypatch.setattr(
+        prov_mod, "_healthy_states", lambda d: dict(states) if Path(d) == tmp_path else {}
+    )
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d: None)
+    monkeypatch.setattr(prov_mod, "engine_record_exists", lambda _d: False)
     built: list[Path] = []
     monkeypatch.setattr(peer, "_plan_and_spawn", lambda data_dir: built.append(data_dir) or True)
     return peer, states, built
@@ -419,8 +427,8 @@ def test_a_call_in_flight_over_an_owner_restart_rebinds_on_the_new_value(
 
     monkeypatch.setattr(peer, "_config_refresh", take_the_owner_write, raising=False)
     assert peer._with_rediscover(_call_failing_once_then_binding(peer)) is True
+    assert built == []  # no private fleet: the peer bound the owner's
     assert takes == [False]  # once, after the drops
-    assert built == []
     assert set(peer._swaps) == set(states)
     assert all(swap.bound for swap in peer._swaps.values())
 
