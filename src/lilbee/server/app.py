@@ -234,7 +234,8 @@ def _log_embedding_model_state(embedder: Embedder) -> None:
 
 
 _UPGRADE_WAIT_SECONDS = 10.0
-# How long a stopping server waits for the library open it started; under the launcher's grace.
+# How long a stopping server waits for the library open it started, beside the provider
+# shutdown; an open still running then ends the process at once (exit_if_opens_remain).
 _OPEN_EXIT_WAIT_SECONDS = 5.0
 _UPGRADE_RETRY_AFTER_SECONDS = 10
 _UPGRADING_MESSAGE = "lilbee is upgrading the library. Try again in a few seconds."
@@ -334,10 +335,12 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         session_manager.cleanup()
         # Terminate the provider's worker/fleet subprocesses so they don't
         # outlive the server (e.g. on parent-death shutdown in managed mode).
+        # The open wait runs beside it, so its bound counts from the same start.
         svc = peek_services()
+        stops = [_wait_for_the_opens()]
         if svc is not None:
-            svc.provider.shutdown()
-        await _wait_for_the_opens()
+            stops.append(asyncio.to_thread(svc.provider.shutdown))
+        await asyncio.gather(*stops)
 
 
 async def _wait_for_the_opens() -> None:

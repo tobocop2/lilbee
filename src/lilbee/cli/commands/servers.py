@@ -13,6 +13,7 @@ import typer
 
 from lilbee.app.services import (
     exit_after_signal,
+    exit_if_opens_remain,
     report_library_upgrade,
     set_server_exit_hook,
     wait_for_hard_exit_teardown,
@@ -219,7 +220,7 @@ def serve(
         install_health_access_filter()
         config = uvicorn.Config(app, host=cfg.server_host, port=cfg.server_port)
         server = uvicorn.Server(config)
-        raise typer.Exit(asyncio.run(_run_server(server, config, cfg.server_host)))
+        status = asyncio.run(_run_server(server, config, cfg.server_host))
     finally:
         # A signal-driven shutdown stops the fleet on its own thread; hold the
         # locks until it finishes so a successor cannot start while this
@@ -228,6 +229,8 @@ def serve(
         server_lock.release()
         if scope_hold is not None:
             scope_hold.release()
+    exit_if_opens_remain(status)
+    raise typer.Exit(status)
 
 
 def mcp_cmd(

@@ -599,6 +599,8 @@ _STRAGGLER_BUDGET_S = 5.0
 
 _STRAGGLER_NOTE = "lilbee: a background task would not stop; exiting anyway.\n"
 
+_OPEN_EXIT_NOTE = "lilbee: the library is still opening; exiting now. The next start finishes it.\n"
+
 
 def _write_exit_note(note: str) -> None:
     """Print an exit-path status line; stderr may already be gone at exit."""
@@ -607,6 +609,26 @@ def _write_exit_note(note: str) -> None:
         sys.stderr.flush()
     except (OSError, ValueError):
         pass
+
+
+def _flush_logs() -> None:
+    """Flush every log handler and stdio; ``os._exit`` drops what a buffer still holds."""
+    named = [e for e in logging.Logger.manager.loggerDict.values() if isinstance(e, logging.Logger)]
+    loggers = [logging.getLogger(), *named]
+    for logger in loggers:
+        for handler in logger.handlers:
+            with suppress(OSError, ValueError):
+                handler.flush()
+    for stream in (sys.stdout, sys.stderr):
+        with suppress(AttributeError, OSError, ValueError):
+            stream.flush()
+
+
+def _exit_now(status: int, note: str) -> None:
+    """Write *note*, flush the logs, then end the process with *status*, skipping atexit."""
+    _write_exit_note(note)
+    _flush_logs()
+    os._exit(status)
 
 
 def _all_threads() -> list[threading.Thread]:
@@ -634,8 +656,7 @@ def wait_for_hard_exit_teardown() -> None:
                 _write_exit_note(_STOPPING_NOTE)
                 thread.join()
     except KeyboardInterrupt:
-        _write_exit_note(_FORCE_QUIT_NOTE)
-        os._exit(_FORCE_QUIT_EXIT_CODE)
+        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
 
 
 def reset_services_on_exit() -> None:
@@ -686,11 +707,23 @@ def _exit_if_stragglers(status: int) -> None:
         for thread in _straggler_threads():
             thread.join(max(0.0, deadline - time.monotonic()))
         if _straggler_threads():
-            _write_exit_note(_STRAGGLER_NOTE)
-            os._exit(status)
+            _exit_now(status, _STRAGGLER_NOTE)
     except KeyboardInterrupt:
-        _write_exit_note(_FORCE_QUIT_NOTE)
-        os._exit(_FORCE_QUIT_EXIT_CODE)
+        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
+
+
+def exit_if_opens_remain(status: int) -> None:
+    """End the process with *status* when a library open still runs; else return.
+
+    The open runs on a daemon thread, and a daemon thread inside LanceDB at
+    interpreter finalization aborts Python 3.11 and 3.12 (CPython gh-87135).
+    The exit skips atexit, so the container teardown atexit would run comes
+    first. An upgrade the exit cuts short runs again at the next open.
+    """
+    if wait_for_opens(0.0):
+        return
+    reset_services_on_exit()
+    _exit_now(status, _OPEN_EXIT_NOTE)
 
 
 def exit_on_signals_in_loop(loop: asyncio.AbstractEventLoop) -> None:
