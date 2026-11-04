@@ -42,7 +42,7 @@ from lilbee.providers.fleet.engine_store import (
     launch_uses_engine,
 )
 from lilbee.providers.fleet.engines import choice
-from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
+from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName, UserInstalled
 from lilbee.providers.fleet.engines.choice import (
     AUTO,
     LIST_HINT,
@@ -435,7 +435,8 @@ def install(
     try:
         lock = choice.pin_lock(adapter.pin_record())
     except choice.NoPublishedPackError as exc:
-        raise EngineRefusedError(str(exc)) from exc
+        hint = f" {adapter.install_hint}" if isinstance(adapter, UserInstalled) else ""
+        raise EngineRefusedError(f"{exc}{hint}") from exc
     except choice.PinError as exc:
         raise EngineRefusedError(f"Engine {name} cannot be installed: {exc}.") from exc
     store = EngineStore(engines_root(cfg.models_dir))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -40,7 +41,13 @@ def test_binary_comes_from_the_store_or_says_how_to_install(
     monkeypatch.setattr(choice, "store_tool", lambda *_a: BINARY)
     assert adapter.binary() == BINARY
     monkeypatch.setattr(choice, "store_tool", lambda *_a: None)
-    with pytest.raises(ProviderError, match=f"lilbee engine install {adapter.name.value}"):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    expected = (
+        "lemonade-server.ai"
+        if hasattr(adapter, "user_binary")
+        else f"lilbee engine install {adapter.name.value}"
+    )
+    with pytest.raises(ProviderError, match=expected):
         adapter.binary()
 
 
