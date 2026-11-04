@@ -370,6 +370,106 @@ def test_a_report_re_arms_the_stall_timer_under_its_own_name(
     assert len(stall_recorders.exit_dumps) == 2
 
 
+_CRASHED_TEST = "tests/test_case.py::test_wedged"
+
+
+class _FakeConfig:
+    """Answers the two timeout lookups the crash hook makes."""
+
+    def __init__(self, option: object, ini: object, rootpath: Path) -> None:
+        self.rootpath = rootpath
+        self._option = option
+        self._ini = ini
+
+    def getoption(self, name: str, default: object = None) -> object:
+        assert name == "timeout"
+        return self._option
+
+    def getini(self, name: str) -> object:
+        assert name == "timeout"
+        return self._ini
+
+
+def _crash_report(
+    config: _FakeConfig, worker: str = "gw2", nodeid: str = _CRASHED_TEST
+) -> types.SimpleNamespace:
+    """The report xdist builds for a dead worker, with its stock message."""
+    node = types.SimpleNamespace(gateway=types.SimpleNamespace(id=worker), config=config)
+    return types.SimpleNamespace(
+        node=node, longrepr=f"worker {worker!r} crashed while running {nodeid!r}"
+    )
+
+
+def test_a_crashed_worker_report_names_the_configured_timeout_and_the_dump(
+    watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dump = f"hang dump: {_CRASHED_TEST} still running after 45s\nall thread stacks:\n"
+    (tmp_path / "hang-gw2.txt").write_text(dump, encoding="utf-8")
+    monkeypatch.setenv("LILBEE_TEST_HANG_DUMP_DIR", str(tmp_path))
+    report = _crash_report(_FakeConfig(option=None, ini="37", rootpath=tmp_path))
+
+    result = watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
+
+    assert result is None
+    text = str(report.longrepr)
+    assert text.startswith("worker 'gw2' crashed while running 'tests/test_case.py::test_wedged'")
+    assert "The pytest-timeout limit is 37s." in text
+    assert "pytest-timeout can end a worker with no traceback" in text
+    assert f"hang dump from {tmp_path / 'hang-gw2.txt'}:" in text
+    assert text.endswith(dump)
+
+
+def test_a_command_line_timeout_overrides_the_ini_value_in_the_crash_report(
+    watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LILBEE_TEST_HANG_DUMP_DIR", str(tmp_path))
+    report = _crash_report(_FakeConfig(option=12.5, ini="60", rootpath=tmp_path))
+
+    watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
+
+    assert "The pytest-timeout limit is 12.5s." in str(report.longrepr)
+
+
+def test_a_crash_with_no_dump_file_says_no_dump_was_written(
+    watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LILBEE_TEST_HANG_DUMP_DIR", str(tmp_path))
+    report = _crash_report(_FakeConfig(option=None, ini="60", rootpath=tmp_path))
+
+    watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
+
+    text = str(report.longrepr)
+    assert "The pytest-timeout limit is 60s." in text
+    assert f"No hang dump was written for {_CRASHED_TEST} by gw2." in text
+    assert "hang dump from" not in text
+
+
+def test_a_dump_of_another_test_is_not_attached_to_the_crash_report(
+    watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    other = "hang dump: tests/test_case.py::test_other still running after 45s\n"
+    (tmp_path / "hang-gw2.txt").write_text(other, encoding="utf-8")
+    monkeypatch.setenv("LILBEE_TEST_HANG_DUMP_DIR", str(tmp_path))
+    report = _crash_report(_FakeConfig(option=None, ini="60", rootpath=tmp_path))
+
+    watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
+
+    text = str(report.longrepr)
+    assert f"No hang dump was written for {_CRASHED_TEST} by gw2." in text
+    assert "test_other" not in text
+
+
+def test_a_crash_report_without_a_timeout_says_the_timeout_is_off(
+    watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("LILBEE_TEST_HANG_DUMP_DIR", raising=False)
+    report = _crash_report(_FakeConfig(option=None, ini=0, rootpath=tmp_path))
+
+    watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
+
+    assert "pytest-timeout is off." in str(report.longrepr)
+
+
 def test_session_finish_cancels_the_stall_timer_and_the_exit(
     watchdog: types.ModuleType, stall_recorders: _Recorders
 ) -> None:
