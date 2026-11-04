@@ -291,6 +291,63 @@ def test_with_no_live_user_a_new_process_replaces_the_stale_fleet(
     joiner.shutdown()
 
 
+def test_with_the_slot_free_a_new_process_binds_the_live_private_fleet(
+    real_planner, box: _Box, monkeypatch
+) -> None:
+    private_pids = box.seed_fleet(box.private)
+    peer_hold = hold_user_lock(box.private, pid=_PEER_PID)
+    joiner = _process(monkeypatch)
+    assert joiner._acquire_engine(box.root) is True
+    assert set(joiner._group_dirs.values()) == {box.private}
+    assert set(joiner._swaps) == set(private_pids)
+    assert all(swap.bound for swap in joiner._swaps.values())
+    assert box.records[_SLOT] == {}
+    assert box.pids(box.private) == private_pids
+    assert list(joiner._engine_holds) == [box.private]
+    # The joiner holds a user lock in the private dir, so the peer is not last out.
+    assert _user_lock_path(box.private, os.getpid()).exists()
+    assert peer_hold.release_and_check_last() is False
+    joiner.shutdown()
+    assert box.stopped == [_PRIVATE]
+
+
+def test_with_the_slot_live_a_new_process_binds_the_slot_before_the_private_fleet(
+    real_planner, box: _Box, monkeypatch
+) -> None:
+    slot_pids = box.seed_fleet(box.slot)
+    private_pids = box.seed_fleet(box.private)
+    holds = [hold_user_lock(d, pid=_PEER_PID) for d in (box.slot, box.private)]
+    joiner = _process(monkeypatch)
+    assert joiner._acquire_engine(box.root) is True
+    assert set(joiner._group_dirs.values()) == {box.slot}
+    assert all(swap.bound for swap in joiner._swaps.values())
+    assert list(joiner._engine_holds) == [box.slot]
+    assert (box.pids(box.slot), box.pids(box.private)) == (slot_pids, private_pids)
+    joiner.shutdown()
+    assert box.stopped == []
+    for hold in holds:
+        assert hold.release_and_check_last() is True
+
+
+def test_with_the_slot_free_a_private_fleet_that_does_not_match_leads_to_a_slot_build(
+    real_planner, box: _Box, monkeypatch, tmp_path: Path
+) -> None:
+    private_pids = box.seed_fleet(box.private)
+    peer_hold = hold_user_lock(box.private, pid=_PEER_PID)
+    _pick_reranker(monkeypatch, tmp_path)
+    joiner = _process(monkeypatch)
+    assert joiner._acquire_engine(box.root) is True
+    assert set(joiner._group_dirs.values()) == {box.slot}
+    assert not any(swap.bound for swap in joiner._swaps.values())
+    assert SwapGroup.RERANK in box.records[_SLOT]
+    assert list(joiner._engine_holds) == [box.slot]
+    assert box.pids(box.private) == private_pids
+    assert box.stopped == []
+    joiner.shutdown()
+    assert box.pids(box.private) == private_pids
+    assert peer_hold.release_and_check_last() is True
+
+
 def test_an_overflowed_process_that_writes_a_setting_leaves_the_owner_running(
     real_planner, box: _Box, monkeypatch, tmp_path: Path
 ) -> None:

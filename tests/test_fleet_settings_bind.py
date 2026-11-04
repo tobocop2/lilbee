@@ -100,7 +100,7 @@ def _new_process_ladder(
     monkeypatch.setattr(peer, "_hold_membership", lambda _dir: None)
     monkeypatch.setattr(peer, "_plan_and_spawn", lambda _dir: pytest.fail("built a second fleet"))
     result = peer._acquire_in_dir(
-        tmp_path, engine_pin(), prov_mod._placeable_demand(), is_overflow=False
+        tmp_path, engine_pin(), prov_mod._placeable_demand(), overflow_dir=tmp_path / "private"
     )
     return result, peer
 
