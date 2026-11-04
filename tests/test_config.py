@@ -2760,7 +2760,6 @@ _REFUSED_VARIABLES = [
         "[2, 4]",
         "is refused (force_ocr_pages: 'abc' is not a page number)",
     ),
-    ("linked_roots", "notadict", '{ notes = "/kept/notes" }', "is not a table of names and values"),
 ]
 
 # The settings whose refused variable falls back: a value origin/main took as auto or off,
@@ -2782,9 +2781,11 @@ _OPEN_SETTINGS_THAT_REFUSE = {
     "force_ocr_pages",
     "ocr_language",
     "placement",
-    "linked_roots",
     "crawl_login_host",
 }
+
+# No variable sets these: the load warns that the variable is ignored and never stops.
+_SETTINGS_NO_VARIABLE_SETS = {"linked_roots"}
 
 
 _TEXT = "text"
@@ -2913,9 +2914,9 @@ class TestARefusedVariableStops:
                 assert "\n" not in line and "; " not in line.removeprefix(variable), line
                 refused = True
         closed = _kind_of(Config.model_fields[key]) != _TEXT
-        expected = (closed and key not in _TAKES_DEFAULT_WHEN_REFUSED) or (
-            key in _OPEN_SETTINGS_THAT_REFUSE
-        )
+        expected = (
+            (closed and key not in _TAKES_DEFAULT_WHEN_REFUSED) or key in _OPEN_SETTINGS_THAT_REFUSE
+        ) and key not in _SETTINGS_NO_VARIABLE_SETS
         assert refused == expected, key
 
     def test_the_stored_settings_stand_and_every_kind_has_many(self, tmp_path):

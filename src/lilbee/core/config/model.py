@@ -119,6 +119,12 @@ _NOT_SETTINGS: dict[str, str] = {
     "main_gpu": "choose the cards with gpu_devices or placement",
 }
 
+# A field no environment string parses into, by name, and what to use instead.
+# Its variable is ignored with a warning, as the resolver ignores it.
+_NOT_FROM_ENV: dict[str, str] = {
+    "linked_roots": "register a folder with `lilbee add`, or edit linked_roots in config.toml",
+}
+
 
 def value_is_set(field_name: str, raw: object) -> bool:
     """Whether an env or config.toml value is set: not blank, or blank on a clearable model role."""
@@ -1617,7 +1623,7 @@ def _variable(settings_cls: type[BaseSettings], field_name: str) -> str:
 
 def _not_a_setting(name: str, key: str) -> str:
     """The warning for *name*, which sets *key* although *key* is not a setting."""
-    return f"{name} is not a setting and is ignored; {_NOT_SETTINGS[key]}"
+    return f"{name} is not a setting and is ignored; {(_NOT_SETTINGS | _NOT_FROM_ENV)[key]}"
 
 
 def _expected(error: ErrorDetails) -> str:
@@ -1664,6 +1670,8 @@ class _PlainEnvSource:
         """Each set variable's string by field, and why its setting refuses the ones it does."""
         values: dict[str, Any] = {}
         for field_name in self._settings_cls.model_fields:
+            if field_name in _NOT_FROM_ENV:
+                continue
             raw = os.environ.get(_variable(self._settings_cls, field_name))
             if value_is_set(field_name, raw):
                 values[field_name] = raw
@@ -1691,7 +1699,7 @@ class _PlainEnvSource:
             warn_on_load(f"{variable} = {values[key]!r} {refused[key]}; {key} uses its default")
             values[key] = self._settings_cls.model_fields[key].default
             del refused[key]
-        for key in _NOT_SETTINGS:
+        for key in (*_NOT_SETTINGS, *_NOT_FROM_ENV):
             variable = _variable(self._settings_cls, key)
             if os.environ.get(variable, "").strip():
                 warn_on_load(_not_a_setting(variable, key))
