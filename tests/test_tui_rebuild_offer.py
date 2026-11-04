@@ -73,6 +73,21 @@ async def test_saving_a_rebuild_setting_offers_a_rebuild(pill_id: str, rebuilds:
     assert cfg.chunk_size == 900
 
 
+async def test_saving_a_rebuild_setting_on_an_empty_index_offers_no_rebuild(
+    index_is_empty,
+) -> None:
+    app = _SettingsApp()
+    with mock.patch.object(LilbeeAppHost, "start_rebuild") as rebuild:
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _editors(app, pilot)
+            field = screen.query_one(f"#ed-{_REBUILD_KEY}", Input)
+            field.value = "900"
+            await _press(pilot, field)
+            assert await _no_offer(app, pilot)
+    assert rebuild.call_count == 0
+    assert cfg.chunk_size == 900
+
+
 @pytest.mark.parametrize(("pill_id", "rebuilds"), [("confirm-yes", 1), ("confirm-no", 0)])
 async def test_resetting_a_rebuild_setting_offers_a_rebuild(pill_id: str, rebuilds: int) -> None:
     apply_settings_update({_REBUILD_KEY: 900})

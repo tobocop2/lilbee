@@ -315,6 +315,13 @@ def test_set_a_reindex_field_prints_the_rebuild_hint(project):
     assert _json(project, "set", "chunk_size", "900")["reindex_required"] is True
 
 
+def test_set_a_reindex_field_on_an_empty_index_reports_no_rebuild(project, index_is_empty):
+    result = _invoke(project, "set", "chunk_size", "900")
+    assert result.exit_code == 0, result.output
+    assert "lilbee rebuild" not in result.output
+    assert _json(project, "set", "chunk_size", "901")["reindex_required"] is False
+
+
 def test_set_prints_a_warning_the_update_passes_through(project, monkeypatch):
     monkeypatch.setattr("lilbee.app.settings._update_warnings", lambda _keys: ("Mind the gap.",))
     result = _invoke(project, "set", "ocr", "off")

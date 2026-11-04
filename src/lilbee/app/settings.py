@@ -739,8 +739,10 @@ def _settle(
         # A step that raises can leave keys set on cfg; no cache may keep the old value.
         _invalidate_caches(effective)
     reindex_required = bool((REINDEX_FIELDS - inert_reindex_keys()) & reindex_effective)
-    if embed_in_batch:
-        reindex_required = reindex_required or _embed_reindex_required()
+    if reindex_required or embed_in_batch:
+        reindex_required = index_has_chunks() and (
+            reindex_required or (embed_in_batch and _embed_reindex_required())
+        )
     return SettingsUpdateResult(
         updated=sorted(keys),
         reindex_required=reindex_required,
@@ -828,6 +830,16 @@ def inert_reindex_keys() -> set[str]:
     if not cfg.semantic_chunking:
         inert.add("topic_threshold")
     return inert
+
+
+def index_has_chunks() -> bool:
+    """True when the index holds at least one chunk; a rebuild has nothing to change otherwise.
+
+    The store answers without opening the library when the library has no folder.
+    """
+    from lilbee.app.services import get_services
+
+    return get_services().store.has_chunks()
 
 
 def _embed_reindex_required() -> bool:

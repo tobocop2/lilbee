@@ -95,6 +95,12 @@ async def test_apply_records_the_profile_and_reports_the_reindex():
     assert profile_list()["active"]["profile"]["credit"] == "by Jane Doe (@janedoe)"
 
 
+async def test_apply_reports_no_reindex_when_the_index_holds_no_chunks(index_is_empty):
+    _write(_global_dir(), "court-filings", CREDITED)
+    result = await profile_apply("Court filings")
+    assert result["reindex_required"] is False
+
+
 def _recording_sync(calls: list[dict[str, Any]]):
     async def _sync(**kwargs: Any) -> SyncResult:
         calls.append(kwargs)
