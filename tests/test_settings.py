@@ -1954,6 +1954,43 @@ class TestResolverIsTheOnlyWriter:
         saved = settings.load(cfg.data_root)
         assert (saved["top_k"], saved["seed"]) == ((9, 5) if undo_fails else (7, 5))
 
+    def test_a_changing_file_after_the_update_landed_puts_the_file_and_cfg_back(self, monkeypatch):
+        """The file changes under the delete after the update was written: both go back in full."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("top_k = 7\nseed = 5\n")
+        settings.overlay_persisted_settings(root)
+
+        def _file_changed(_data_root, keys):
+            if keys:
+                raise settings.ConfigChangedWhileReadError("config.toml changed while it was read")
+
+        monkeypatch.setattr(appset.persistent_settings, "delete_values", _file_changed)
+        with pytest.raises(settings.ConfigChangedWhileReadError):
+            appset.apply_settings_update({"top_k": 9, "seed": None})
+        assert (cfg.top_k, cfg.seed) == (7, 5)
+        saved = settings.load(cfg.data_root)
+        assert (saved["top_k"], saved["seed"]) == (7, 5)
+
+    def test_a_changing_file_before_any_write_leaves_the_file_to_its_editor(self, monkeypatch):
+        """The read refuses before a write: cfg goes back, and the file is not written."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("top_k = 7\nseed = 5\n")
+        settings.overlay_persisted_settings(root)
+        before_text = (root / "config.toml").read_text(encoding="utf-8")
+
+        def _file_changed(_data_root, _updates):
+            raise settings.ConfigChangedWhileReadError("config.toml changed while it was read")
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", _file_changed)
+        with pytest.raises(settings.ConfigChangedWhileReadError):
+            appset.apply_settings_update({"top_k": 9})
+        assert (cfg.top_k, cfg.seed) == (7, 5)
+        assert (root / "config.toml").read_text(encoding="utf-8") == before_text
+
     def test_live_cfg_matches_fresh_config_after_updates_and_nulls(self, monkeypatch):
         from lilbee.app import settings as appset
         from lilbee.core.config import Config, cfg

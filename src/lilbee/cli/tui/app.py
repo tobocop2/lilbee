@@ -921,8 +921,12 @@ class LilbeeApp(App[None]):
             self.focused, (Input, TextArea)
         ):
             return False
-        # Nothing to jump to when Chat is already the active view.
-        if action == "open_chat" and self.active_view == msg.DEFAULT_VIEW:
+        # Nothing to jump to when Chat is already the active view. [ and ] are
+        # priority bindings, which run before a modal screen's own handling, so
+        # over a dialog they would switch views and close it with no answer.
+        if (action == "open_chat" and self.active_view == msg.DEFAULT_VIEW) or (
+            action in ("nav_prev", "nav_next") and self.screen.is_modal
+        ):
             return False
         # False, not None: Textual drops a False binding from the row entirely
         # and renders a None one greyed but present. With sessions off there is

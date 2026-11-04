@@ -491,7 +491,6 @@ async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
     services_mock = MagicMock()
-    services_mock.store.has_chunks.return_value = True
     app = LilbeeAppHost()
     async with app.run_test(size=(80, 24)) as pilot:
         with (
@@ -500,6 +499,7 @@ async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
+            patch("lilbee.cli.tui.widgets.model_pick.index_has_chunks", return_value=True),
             patch(
                 "lilbee.cli.tui.widgets.model_pick.embed_pick_needs_rebuild",
                 return_value=True,

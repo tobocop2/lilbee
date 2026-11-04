@@ -963,7 +963,6 @@ async def _rebuild_owed_on_leaving(app: LilbeeApp, pilot: Pilot) -> bool:
     )
     screen = app.screen
     assert isinstance(screen, SettingsScreen)
-    # The stand-in services answer the chunk count with a truthy mock.
     return bool(screen.leave())
 
 

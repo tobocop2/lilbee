@@ -6110,6 +6110,28 @@ async def test_catalog_action_go_back_invokes_switch_view():
                 switch.assert_called_once_with("Chat")
 
 
+async def test_catalog_action_go_back_dismisses_a_catalog_a_model_field_pushed():
+    """A catalog that is not an installed view goes back by closing, not by switching views."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            assert not app.is_screen_installed(screen)
+            screen._active_tab_id_cache = "chat"
+            screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            with patch.object(app, "switch_view") as switch:
+                screen.action_go_back()
+                await _pilot.pause()
+                switch.assert_not_called()
+            assert screen not in app.screen_stack
+
+
 async def test_catalog_vim_keys():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -16485,7 +16507,6 @@ async def test_settings_embed_picker_against_empty_store_applies_directly():
     from unittest.mock import patch
 
     services_mock = MagicMock()
-    services_mock.store.has_chunks.return_value = False
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
@@ -16495,6 +16516,7 @@ async def test_settings_embed_picker_against_empty_store_applies_directly():
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
+            patch("lilbee.cli.tui.widgets.model_pick.index_has_chunks", return_value=False),
         ):
             screen._on_model_picker_dismissed("embedding_model", "fake/new-embed.gguf")
             await pilot.pause()

@@ -2900,7 +2900,10 @@ class TestARefusedVariableStops:
 
     @pytest.mark.parametrize("key", list(Config.model_fields))
     def test_a_refused_variable_of_any_setting_stops_with_the_one_line(self, tmp_path, key):
-        """Each setting, each hostile string: a stop names it, and exactly these settings stop."""
+        """Each setting, each hostile string: a stop names it, and exactly these settings stop.
+
+        ``linked_roots`` is exempt: no variable sets it, so no variable can stop the load.
+        """
         variable = f"LILBEE_{key.upper()}"
         refused = False
         # The crawler extra, when installed, also refuses a pattern such as "{"; the list of
