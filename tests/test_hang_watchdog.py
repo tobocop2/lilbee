@@ -413,7 +413,7 @@ def test_a_crashed_worker_report_names_the_configured_timeout_and_the_dump(
     assert result is None
     text = str(report.longrepr)
     assert text.startswith("worker 'gw2' crashed while running 'tests/test_case.py::test_wedged'")
-    assert "The pytest-timeout limit is 37s." in text
+    assert "The configured pytest-timeout limit is 37s (a test with its own" in text
     assert "pytest-timeout can end a worker with no traceback" in text
     assert f"hang dump from {tmp_path / 'hang-gw2.txt'}:" in text
     assert text.endswith(dump)
@@ -427,7 +427,7 @@ def test_a_command_line_timeout_overrides_the_ini_value_in_the_crash_report(
 
     watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
 
-    assert "The pytest-timeout limit is 12.5s." in str(report.longrepr)
+    assert "The configured pytest-timeout limit is 12.5s (" in str(report.longrepr)
 
 
 def test_a_crash_with_no_dump_file_says_no_dump_was_written(
@@ -439,7 +439,7 @@ def test_a_crash_with_no_dump_file_says_no_dump_was_written(
     watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
 
     text = str(report.longrepr)
-    assert "The pytest-timeout limit is 60s." in text
+    assert "The configured pytest-timeout limit is 60s (" in text
     assert f"No hang dump was written for {_CRASHED_TEST} by gw2." in text
     assert "hang dump from" not in text
 

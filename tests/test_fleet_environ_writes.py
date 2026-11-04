@@ -37,7 +37,7 @@ _STARTUP_WRITES = {
     ("crawler/__init__.py", "<module>"): "import-time default, importing main thread",
     ("core/config/model.py", "<module>"): "import-time export of the data root and marks",
     ("core/config/model.py", "export_download_environment"): "startup export, main thread",
-    ("core/config/model.py", "export_data_root"): "called once at import, main thread",
+    ("core/config/model.py", "export_data_root"): "module-level call at import, main thread",
     ("cli/app.py", "_apply_data_root"): "the CLI callback exports the data root on the main thread",
 }
 

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import threading
+import time
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -2464,6 +2465,34 @@ class TestLifespanWaitsForTheOpen:
             async with _lifespan(mock.MagicMock()):
                 pass
         assert sorted(met) == ["open wait", "shutdown"]
+
+    @mock.patch("lilbee.server.app.peek_services")
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_a_failed_provider_shutdown_still_awaits_the_open_wait(
+        self, mock_get_svc, mock_peek, caplog
+    ):
+        """The shutdown error is logged, and the open wait finishes before the server exits."""
+        from lilbee.server.app import _lifespan
+
+        mock_get_svc.return_value = mock.MagicMock()
+        svc = mock.MagicMock()
+        mock_peek.return_value = svc
+        svc.provider.shutdown.side_effect = RuntimeError("the fleet stop failed")
+        waited: list[float] = []
+
+        def wait(timeout: float) -> bool:
+            time.sleep(0.2)
+            waited.append(timeout)
+            return True
+
+        with (
+            mock.patch("lilbee.server.app.wait_for_opens", side_effect=wait),
+            caplog.at_level("WARNING"),
+        ):
+            async with _lifespan(mock.MagicMock()):
+                pass
+        assert len(waited) == 1
+        assert "the fleet stop failed" in caplog.text
 
 
 class TestSessionManagerPersistence:

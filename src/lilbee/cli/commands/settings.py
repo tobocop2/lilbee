@@ -82,11 +82,11 @@ def settings_list(
     The advanced settings are left out unless you pass --advanced.
     'get', 'set' and 'unset' work on any setting, advanced or not.
     """
-    from lilbee.app.settings import config_write_failure_message, list_settings
+    from lilbee.app.settings import config_read_failure_message, list_settings
     from lilbee.server.models import SettingsListResponse
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    listed = run_or_fail(lambda: list_settings(group), config_write_failure_message)
+    listed = run_or_fail(lambda: list_settings(group), config_read_failure_message)
     infos = [info for info in listed if advanced or not info.advanced]
     emit(SettingsListResponse.from_infos(infos), lambda: _render_list(infos))
 
@@ -98,11 +98,11 @@ def settings_get(
     use_global: bool = global_option,
 ) -> None:
     """Show one setting's current value and source."""
-    from lilbee.app.settings import config_write_failure_message, get_setting
+    from lilbee.app.settings import config_read_failure_message, get_setting
     from lilbee.server.models import SettingValueResponse
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    info = run_or_fail(lambda: get_setting(key), config_write_failure_message)
+    info = run_or_fail(lambda: get_setting(key), config_read_failure_message)
     emit(SettingValueResponse.from_info(info), lambda: _render_get(info))
 
 

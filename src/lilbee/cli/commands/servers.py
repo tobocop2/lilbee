@@ -41,6 +41,9 @@ from lilbee.runtime.lock import (
 
 if TYPE_CHECKING:
     import uvicorn
+    from filelock import FileLock
+
+    from lilbee.runtime.lock import ScopeHold
 
 
 SCOPE_ENV = "LILBEE_EXCLUSIVE_SCOPE"
@@ -215,22 +218,32 @@ def serve(
 
     logging.getLogger("asyncio").setLevel(logging.ERROR)
 
+    status = 1
     try:
         app = create_app()
         install_health_access_filter()
         config = uvicorn.Config(app, host=cfg.server_host, port=cfg.server_port)
         server = uvicorn.Server(config)
         status = asyncio.run(_run_server(server, config, cfg.server_host))
+    except Exception:
+        # The exit in the finally can end the process before the traceback prints.
+        logging.getLogger(__name__).error("The server run failed.", exc_info=True)
+        raise
     finally:
-        # A signal-driven shutdown stops the fleet on its own thread; hold the
-        # locks until it finishes so a successor cannot start while this
-        # server's models still occupy memory.
-        wait_for_hard_exit_teardown()
-        server_lock.release()
-        if scope_hold is not None:
-            scope_hold.release()
-    exit_if_opens_remain(status)
+        _stop_server(status, server_lock, scope_hold)
     raise typer.Exit(status)
+
+
+def _stop_server(status: int, server_lock: FileLock, scope_hold: ScopeHold | None) -> None:
+    """Free the locks after the teardown, then end the process if a library open still runs."""
+    # A signal-driven shutdown stops the fleet on its own thread; hold the
+    # locks until it finishes so a successor cannot start while this
+    # server's models still occupy memory.
+    wait_for_hard_exit_teardown()
+    server_lock.release()
+    if scope_hold is not None:
+        scope_hold.release()
+    exit_if_opens_remain(status)
 
 
 def mcp_cmd(
