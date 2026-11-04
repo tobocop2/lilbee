@@ -120,7 +120,6 @@ class TestRunTui:
         """A sync awaiting a page that never returns still flushes before the services go."""
         import asyncio
         import threading
-        import time
 
         from lilbee.cli.tui import run_tui
         from lilbee.cli.tui.app import LilbeeApp
@@ -129,11 +128,17 @@ class TestRunTui:
         from lilbee.runtime import asyncio_loop
 
         flushed = threading.Event()
+        waiting = threading.Event()
+        wait_ended_by: list[str] = []
         flushed_at_teardown: list[bool] = []
 
         async def _sync_on_a_page_that_never_returns() -> None:
             try:
+                waiting.set()
                 await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                wait_ended_by.append("cancel")
+                raise
             finally:
                 await to_ingest_thread(flushed.set)
 
@@ -142,9 +147,9 @@ class TestRunTui:
 
         def _run(app: LilbeeApp) -> None:
             app.task_bar.start_task("Sync", TaskType.SYNC, _target)
-            time.sleep(0.2)
+            # Quit only once the sync is parked on the page; the guard only stops a hang.
+            assert waiting.wait(timeout=60)
 
-        started = time.monotonic()
         with (
             mock.patch.object(LilbeeApp, "run", autospec=True, side_effect=_run),
             mock.patch("lilbee.cli.sync.shutdown_executor"),
@@ -155,8 +160,9 @@ class TestRunTui:
             mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang"),
         ):
             run_tui()
+        # The quit cancelled the page wait (it did not outlast the exit budget) and flushed first.
+        assert wait_ended_by == ["cancel"]
         assert flushed_at_teardown == [True]
-        assert time.monotonic() - started < 4.0
 
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
