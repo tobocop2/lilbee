@@ -49,7 +49,11 @@ from lilbee.core.config.resolve import (
 from lilbee.core.config.schema import field_type_name
 from lilbee.core.crawl_patterns import exclude_patterns_refusal
 from lilbee.core.project_state import dismiss_tip
-from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
+from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
+from lilbee.providers.roles import (
+    MODEL_FIELD_TO_ROLE,
+    ROLE_GATE_FIELD_TO_ROLE,
+)
 from lilbee.runtime.progress import OcrBackendUsed
 
 if TYPE_CHECKING:
@@ -531,7 +535,7 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
 
         invalidate_arch_cache()
-    if changed_keys & (LOAD_AFFECTING_KEYS | ROLE_GATE_FIELD_TO_ROLE.keys()):
+    if changed_keys & FLEET_RELOAD_KEYS:
         # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         _reload_changed_roles(changed_keys)
     if "token_sizing" in changed_keys:

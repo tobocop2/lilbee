@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import json
 import logging
 import re
 import sys
@@ -28,6 +29,7 @@ import httpx
 from lilbee.catalog import clean_display_name
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning
+from lilbee.core.settings import read_persisted
 from lilbee.core.vectors import Vector
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers import engine_params
@@ -61,6 +63,7 @@ from lilbee.providers.fleet.readback import engine_log_path, writes_engine_log
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
     EngineLifetime,
+    PlanOrigin,
     SwapManager,
     SwapState,
     engine_record_exists,
@@ -72,7 +75,12 @@ from lilbee.providers.fleet.swap_manager import (
 )
 from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.model_ref import parse_model_ref
-from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, WorkerRole, configured_model_message
+from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
+from lilbee.providers.roles import (
+    MODEL_FIELD_TO_ROLE,
+    WorkerRole,
+    configured_model_message,
+)
 from lilbee.providers.warm_progress import (
     WarmPhase,
     WarmProgress,
@@ -150,6 +158,10 @@ _PREWARMED_SHARDS: set[tuple[str, int, int]] = set()
 # The embedder generates nothing, so its budget is the cold load plus the margin alone.
 _REQUEST_TIMEOUT_FLOOR_S = 900.0
 _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
+# How long a peer waits for a live builder of its config root to rebuild on a newer
+# config.toml before it overflows, and how often it looks at the slot meanwhile.
+_OWNER_CATCH_UP_WAIT_S = 30.0
+_OWNER_CATCH_UP_POLL_S = 0.5
 # Jinja chat templates flag tool support by referencing one of these names as an
 # identifier inside a ``{% ... %}`` / ``{{ ... }}`` block (not free-text prose).
 # The server parses tool calls natively via ``--jinja``; this probe only decides
@@ -267,6 +279,57 @@ def _healthy_states(engine_dir: Path) -> dict[SwapGroup, SwapState]:
         if state is not None and state_is_healthy(state):
             found[group] = state
     return found
+
+
+class _SlotOwed(NamedTuple):
+    """A ladder pass found the slot's builder owes config.toml a rebuild; *states* is the slot."""
+
+    states: dict[SwapGroup, SwapState]
+
+
+def _plan_origin() -> PlanOrigin:
+    """This config root and what its config.toml sets for a fleet plan, as a state records them.
+
+    Only the keys whose change makes the fleet owner rebuild count, so a write of any
+    other key never makes a fleet look older than the file. A torn or unreadable file
+    gives no view.
+    """
+    _stamp, values = read_persisted(cfg.data_root)
+    view = None
+    if values is not None:
+        picked = {key: value for key, value in values.items() if key in FLEET_RELOAD_KEYS}
+        view = json.dumps(picked, sort_keys=True, default=str)
+    return PlanOrigin(str(cfg.data_root), view)
+
+
+def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
+    """True when a fleet of this config root was planned before config.toml's last plan write.
+
+    Its builder has still to take the write and rebuild, so a peer on the new value waits
+    for that rather than load a second fleet beside it.
+    """
+    now = _plan_origin()
+    return now.fleet_view is not None and any(
+        state.origin is not None
+        and state.origin.config_root == now.config_root
+        and state.origin.fleet_view not in (None, now.fleet_view)
+        for state in states.values()
+    )
+
+
+def _await_slot_change(
+    engine_dir: Path, before: dict[SwapGroup, SwapState], deadline: float
+) -> None:
+    """Wait, holding no lock, until *engine_dir*'s fleet changes or loses its users.
+
+    The wait ends at *deadline* (a ``time.monotonic`` value) at the latest.
+    """
+    while time.monotonic() < deadline:
+        time.sleep(_OWNER_CATCH_UP_POLL_S)
+        if not live_users_exist(engine_dir, exclude_self=True):
+            return
+        if _healthy_states(engine_dir) != before:
+            return
 
 
 def _bindable_group(
@@ -1118,8 +1181,12 @@ class FleetProvider:
         self._engine_refusal = None
         machine_dir = machine_engine_dir()
         private = private_engine_dir(config_root)
+        # One bound for the attempt: a wait on the slot leaves the private dir only the rest.
+        wait_until = time.monotonic() + _OWNER_CATCH_UP_WAIT_S
         if kernel_arbitrates_locks(machine_dir):
-            machine = self._acquire_in_dir(machine_dir, pin, demand, overflow_dir=private)
+            machine = self._acquire_in_dir(
+                machine_dir, pin, demand, overflow_dir=private, wait_until=wait_until
+            )
             if machine is not None:
                 return machine
         else:
@@ -1135,12 +1202,53 @@ class FleetProvider:
                 ENGINE_DIR_ENV,
             )
         # The machine slot is out; use this config root's private engine dir.
-        return self._acquire_in_dir(private, pin, demand, overflow_dir=None) or False
+        return (
+            self._acquire_in_dir(private, pin, demand, overflow_dir=None, wait_until=wait_until)
+            or False
+        )
 
     def _acquire_in_dir(
-        self, engine_dir: Path, pin: str, demand: _EngineDemand, *, overflow_dir: Path | None
+        self,
+        engine_dir: Path,
+        pin: str,
+        demand: _EngineDemand,
+        *,
+        overflow_dir: Path | None,
+        wait_until: float,
     ) -> bool | None:
         """Bind or build one engine dir; ``None`` on the slot means overflow next.
+
+        When the live fleet there was planned for this config root before config.toml's
+        last plan write, its builder rebuilds on that write soon. The ladder then lets the
+        build lock go, waits until the fleet changes or *wait_until*, and runs once more,
+        so this process does not load a second fleet beside the rebuilt one. The caller
+        holds this provider's in-process build lock across the wait, so this process's
+        other starts wait the same bound.
+        """
+        outcome = self._acquire_in_dir_locked(
+            engine_dir,
+            pin,
+            demand,
+            overflow_dir=overflow_dir,
+            may_wait=time.monotonic() < wait_until,
+        )
+        if isinstance(outcome, _SlotOwed):
+            _await_slot_change(engine_dir, outcome.states, wait_until)
+            outcome = self._acquire_in_dir_locked(
+                engine_dir, pin, demand, overflow_dir=overflow_dir, may_wait=False
+            )
+        return None if isinstance(outcome, _SlotOwed) else outcome
+
+    def _acquire_in_dir_locked(
+        self,
+        engine_dir: Path,
+        pin: str,
+        demand: _EngineDemand,
+        *,
+        overflow_dir: Path | None,
+        may_wait: bool,
+    ) -> bool | None | _SlotOwed:
+        """One ladder pass over one engine dir under its build lock; see ``_acquire_in_dir``.
 
         *overflow_dir* is the private dir behind the machine slot, and ``None`` when
         *engine_dir* is that private dir. Before a build in the slot, a matching
@@ -1162,20 +1270,16 @@ class FleetProvider:
         """
         wanted = demand.pairs
         with build_lock(engine_dir):
-            if self._bind_held_dir(engine_dir, pin, demand):
+            # One probe pass serves the bind and the owed-rebuild check.
+            states = _healthy_states(engine_dir) if wanted else {}
+            if self._bind_held_dir(engine_dir, pin, demand, states):
                 return True
             # This process's own hold is no reason to overflow: the ladder runs only
             # when this provider serves no group, so the hold is all that is left.
             if live_users_exist(engine_dir, exclude_self=True):
-                # A live engine is never evicted or stacked on. On the machine slot
-                # that means overflow (None); in the overflow dir there is nowhere
-                # further to go, so serve nothing rather than kill the incumbent or
-                # load a second fleet's weights beside it (an OOM on a small-VRAM box).
-                log.info("The engine at %s has a live user and cannot serve this setup", engine_dir)
-                if overflow_dir is None:
-                    self._engine_refusal = _ENGINES_IN_USE_MESSAGE
-                    return False
-                return None
+                if may_wait and _owner_owes_the_file(states):
+                    return _SlotOwed(states)
+                return self._refuse_live_engine(engine_dir, overflow_dir)
             if overflow_dir is not None:
                 # Lock order: the slot's build lock, then the private dir's. No
                 # path takes the slot's build lock while it holds a private one.
@@ -1198,15 +1302,38 @@ class FleetProvider:
                 _watch_bound_engine(engine_dir)
             return built
 
-    def _bind_held_dir(self, engine_dir: Path, pin: str, demand: _EngineDemand) -> bool:
+    def _refuse_live_engine(self, engine_dir: Path, overflow_dir: Path | None) -> bool | None:
+        """Leave a live engine this process cannot bind: overflow (None) or serve nothing.
+
+        A live engine is never evicted or stacked on. On the machine slot that means
+        overflow; in the overflow dir there is nowhere further to go, so serve nothing
+        rather than kill the incumbent or load a second fleet's weights beside it (an
+        OOM on a small-VRAM box).
+        """
+        log.info("The engine at %s has a live user and cannot serve this setup", engine_dir)
+        if overflow_dir is None:
+            self._engine_refusal = _ENGINES_IN_USE_MESSAGE
+            return False
+        return None
+
+    def _bind_held_dir(
+        self,
+        engine_dir: Path,
+        pin: str,
+        demand: _EngineDemand,
+        states: dict[SwapGroup, SwapState] | None = None,
+    ) -> bool:
         """Bind *engine_dir*'s running engine and join its users; caller holds its build lock.
 
         The user lock taken here is what a peer's last-user stop counts, so a
-        bound engine is never stopped under this process.
+        bound engine is never stopped under this process. *states* is the caller's
+        probe of the dir, when it has one.
         """
         if not demand.pairs:
             return False
-        if not self._bind_all_in_dir(engine_dir, _healthy_states(engine_dir), pin, demand):
+        if states is None:
+            states = _healthy_states(engine_dir)
+        if not self._bind_all_in_dir(engine_dir, states, pin, demand):
             return False
         self._hold_membership(engine_dir)
         _watch_bound_engine(engine_dir)
@@ -1301,6 +1428,7 @@ class FleetProvider:
             # (a wedged GPU probe, an unusable CUDA runtime) propagates so the
             # warm tracker and the caller report the real reason instead of a
             # silent never-ready fleet.
+            origin = _plan_origin()
             planning.capture_plan_probe()
             plan = planning.plan_all_launches()
         except ProviderError as exc:
@@ -1329,7 +1457,9 @@ class FleetProvider:
             )
             for group, group_launches in by_group.items():
                 swap = SwapManager(data_dir, group)
-                swap.start(list(group_launches), ttl_seconds=ttl_seconds, lifetime=lifetime)
+                swap.start(
+                    list(group_launches), ttl_seconds=ttl_seconds, lifetime=lifetime, origin=origin
+                )
                 started[group] = swap
         except BaseException:
             for swap in started.values():
@@ -1540,6 +1670,8 @@ class FleetProvider:
                 # An owner that restarted its fleet for new settings wrote them first.
                 # With no group held, the replan the take starts returns at once, and
                 # the retry plans on the new settings, so it binds the restarted fleet.
+                # When the retry reaches the slot before the owner rebuilds, the ladder
+                # waits for that rebuild (see _acquire_in_dir) instead of overflowing.
                 if self._config_refresh is not None:
                     self._config_refresh()
                 return call()
@@ -2754,6 +2886,7 @@ class FleetProvider:
             # build a second fleet into the same dir, double-allocating VRAM.
             with build_lock(reload_dir):
                 reap_stale(reload_dir)
+                origin = _plan_origin()
                 try:
                     if not running:
                         # Nothing loaded (a resurrect after a failed pass): the box is
@@ -2810,12 +2943,30 @@ class FleetProvider:
                             hold_warm_for_session=self._hold_warm_for_session,
                         ),
                         lifetime=lifetime,
+                        origin=origin,
                     )
                     with self._lock:
                         self._adopt_group(group, swap, group_launches)
                         self._group_dirs[group] = reload_dir
                     restarted.extend(_by_role(group_launches))
+                self._restamp_kept(running - changed, origin)
         self._preload_restarted(restarted)
+
+    def _restamp_kept(self, kept: set[SwapGroup], origin: PlanOrigin) -> None:
+        """Record *origin* on the *kept* groups: their plan matches the file, so no peer waits."""
+        with self._lock:
+            swaps = [self._swaps[group] for group in kept if group in self._swaps]
+        for swap in swaps:
+            try:
+                swap.restamp(origin)
+            except OSError as exc:
+                # Best effort: the restamp only lets waiting peers stop sooner. On Windows a
+                # peer that holds the state file open makes the write fail.
+                log.warning(
+                    "Could not record the new config on a running engine group (%s); "
+                    "waiting peers use their time limit instead.",
+                    exc,
+                )
 
     @staticmethod
     def _log_dropped_groups(

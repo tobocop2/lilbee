@@ -99,7 +99,11 @@ class _FakeSwap:
         self.started.append(launches)
         self.lifetime = kwargs.get("lifetime")
         self.ttl_seconds = kwargs.get("ttl_seconds")
+        self.origin = kwargs.get("origin")
         self.running = True
+
+    def restamp(self, origin: object) -> None:
+        self.origin = origin
 
     def endpoint(self) -> str:
         return "http://fake-endpoint"

@@ -7,6 +7,7 @@ the health probe are fake.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -100,7 +101,11 @@ def _new_process_ladder(
     monkeypatch.setattr(peer, "_hold_membership", lambda _dir: None)
     monkeypatch.setattr(peer, "_plan_and_spawn", lambda _dir: pytest.fail("built a second fleet"))
     result = peer._acquire_in_dir(
-        tmp_path, engine_pin(), prov_mod._placeable_demand(), overflow_dir=tmp_path / "private"
+        tmp_path,
+        engine_pin(),
+        prov_mod._placeable_demand(),
+        overflow_dir=tmp_path / "private",
+        wait_until=time.monotonic() + prov_mod._OWNER_CATCH_UP_WAIT_S,
     )
     return result, peer
 
