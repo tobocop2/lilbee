@@ -374,6 +374,31 @@ async def test_the_container_is_built_behind_the_gate(monkeypatch):
     assert container.add_pool_listener.called, "the app subscribed to some other container"
 
 
+async def test_the_gate_opens_the_library_on_a_thread_the_interpreter_joins(monkeypatch):
+    """A quit during the open cannot hit CPython gh-87135, which needs a daemon thread."""
+    import threading
+
+    from lilbee.app.services import set_services
+    from lilbee.cli.tui.app import LilbeeApp
+    from tests._async_wait import wait_until
+
+    set_services(None)
+    daemon: list[bool] = []
+    container = mock.MagicMock()
+    container.store.get_db.side_effect = lambda: daemon.append(threading.current_thread().daemon)
+    monkeypatch.setattr("lilbee.cli.tui.app.get_services", lambda: container)
+    monkeypatch.setattr("lilbee.cli.tui.screens.startup_gate.get_services", lambda: container)
+    monkeypatch.setattr("lilbee.cli.tui.app.chat_ready", lambda: True)
+    monkeypatch.setattr("lilbee.cli.tui.app.embedding_ready", lambda: True)
+    monkeypatch.setattr(LilbeeApp, "canonicalize_persisted_models", lambda self: None)
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_until(pilot, lambda: bool(daemon), max_pauses=200)
+
+    assert daemon == [False]
+
+
 async def test_gate_composes_and_styles_its_widgets(monkeypatch):
     """Render the gate for real: a bad CSS selector must fail here, not at launch.
 

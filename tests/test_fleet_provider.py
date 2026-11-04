@@ -6544,6 +6544,52 @@ def test_shutdown_does_not_hang_on_a_wedged_build(monkeypatch) -> None:
     assert p._shut_down is True  # and the latch is set for any queued thread
 
 
+def test_two_concurrent_shutdowns_release_each_engine_once(monkeypatch, tmp_path: Path) -> None:
+    """SIGTERM stops the provider from the lifespan and the signal teardown at once."""
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    hold = _hold_reporting(True)
+    p._engine_holds = {tmp_path: hold}
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    in_stop = threading.Event()
+    second_waits = threading.Event()
+    stopped: list[Path] = []
+
+    def stop_engine(engine_dir: Path) -> None:
+        stopped.append(engine_dir)
+        in_stop.set()
+        assert second_waits.wait(10)
+
+    monkeypatch.setattr(prov_mod, "stop_engine", stop_engine)
+    inner = p._build_lock
+
+    class _SpyLock:
+        def acquire(self, *args, **kwargs):
+            if in_stop.is_set():
+                second_waits.set()  # the second shutdown asks while the first holds it
+            return inner.acquire(*args, **kwargs)
+
+        def release(self) -> None:
+            inner.release()
+
+    p._build_lock = _SpyLock()  # type: ignore[assignment]
+    first = threading.Thread(target=p.shutdown)
+    first.start()
+    assert in_stop.wait(10)
+    second = threading.Thread(target=p.shutdown)
+    second.start()
+    first.join(10)
+    second.join(10)
+
+    assert second_waits.is_set()
+    assert not first.is_alive() and not second.is_alive()
+    assert stopped == [tmp_path]
+    hold.release_and_check_last.assert_called_once_with()
+    client.close.assert_called_once_with()
+    assert p._engine_holds == {}
+
+
 def test_shutdown_latches_before_taking_the_build_lock() -> None:
     """A queued warm thread can only bail early if the flag is already set."""
     provider = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
