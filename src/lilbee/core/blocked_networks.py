@@ -83,9 +83,19 @@ _IPV4_NUMBER = re.compile(r"0[xX][0-9a-fA-F]*|[0-9]+")
 _IPV4_MAX_PARTS = 4
 _IPV4_PART_BASE = 256
 _LOCAL_NAT64_PREFIX = ipaddress.ip_network("64:ff9b:1::/48")  # RFC 8215
+_TEREDO_PREFIX = ipaddress.ip_network("2001::/32")  # RFC 4380
 _ISATAP_INTERFACE_PREFIXES = (0x00005EFE, 0x02005EFE)  # RFC 5214: bits 32 to 63 of the address
 _NOT_AN_IPV4 = "The URL host is not a valid IPv4 address."
 _NOT_AN_IPV6 = "The URL host is not a valid IPv6 address."
+
+
+# The networks the SDK refuses when it connects for a server preset. The SDK reads each
+# address of the host at connect time, so a DNS answer that changes after the save is refused.
+CONNECT_BLOCKED_NETWORKS: tuple[IpNetwork, ...] = (
+    *ALWAYS_BLOCKED_NETWORKS,
+    _LOCAL_NAT64_PREFIX,
+    _TEREDO_PREFIX,
+)
 
 
 def _ipv4_part(part: str) -> int:
@@ -217,19 +227,3 @@ def validate_preset_url(url: str) -> None:
     if host is not None:
         for address in _resolved_addresses(host):
             _refuse_blocked(address)
-
-
-def check_request_address(url: str) -> None:
-    """Refuse a request unless every address of the URL's host is allowed at this moment.
-
-    The SDK resolves the host again when it connects, so a DNS change between this check
-    and the connection is not refused.
-    """
-    host = check_url_form(url)
-    if host is None:
-        return
-    addresses = _resolved_addresses(host)
-    if not addresses:
-        raise ValueError("The server host has no DNS answer.")
-    for address in addresses:
-        _refuse_blocked(address)
