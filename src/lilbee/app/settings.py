@@ -642,7 +642,14 @@ def apply_settings_update(
             # attempt.
             _pin_legacy_store_meta()
         before = snapshot_settings(updates)
-        to_persist, to_delete = _commit(lambda draft: _apply_updates(draft, updates))
+
+        def change(draft: Config) -> tuple[dict[str, Any], list[str]]:
+            # The embedder and its dim publish together, before config.toml takes the batch.
+            result = _apply_updates(draft, updates)
+            _rederive_from_resolved(draft, set(updates))
+            return result
+
+        to_persist, to_delete = _commit(change)
         written = False
         try:
             # A write can fail part way: the update lands and the delete raises.
@@ -768,14 +775,17 @@ def _settle(
     """
     effective = keys if changed is None else changed
     reindex_effective = effective if reindex_changed is None else reindex_changed
-    try:
+
+    def change(draft: Config) -> None:
         if values is None:
-            _commit(lambda draft: persistent_settings.sync_from_resolver(draft, keys))
+            persistent_settings.sync_from_resolver(draft, keys)
         else:
-            _commit(lambda draft: _set_each(draft, {key: values[key] for key in keys}))
-        _rederive_from_resolved(effective)
+            _set_each(draft, {key: values[key] for key in keys})
+        _rederive_from_resolved(draft, effective)
+
+    try:
+        _commit(change)
     finally:
-        # A rederive that raises comes after the commit; no cache may keep the old value.
         _invalidate_caches(effective)
     reindex_required = bool((REINDEX_FIELDS - inert_reindex_keys()) & reindex_effective)
     if reindex_required or embed_in_batch:
@@ -843,18 +853,21 @@ def _embedder_dim_from_gguf(ref: str, registry: ModelRegistry | None = None) -> 
     return dim if dim > 0 else None
 
 
-def reconcile_embedding_dim(registry: ModelRegistry | None = None) -> None:
-    """Pin ``cfg.embedding_dim`` to the native embedder's GGUF width before the store
-    is built; no-op for non-native embedders or an already-matching dim."""
-    dim = _embedder_dim_from_gguf(cfg.embedding_model, registry)
-    if dim is not None and dim != cfg.embedding_dim:
-        cfg.embedding_dim = dim
+def reconcile_embedding_dim(
+    registry: ModelRegistry | None = None, config: Config | None = None
+) -> None:
+    """Pin the embedding dim of *config* (default cfg) to the native embedder's GGUF width;
+    no-op for non-native embedders or an already-matching dim."""
+    target = cfg if config is None else config
+    dim = _embedder_dim_from_gguf(target.embedding_model, registry)
+    if dim is not None and dim != target.embedding_dim:
+        target.embedding_dim = dim
 
 
-def _rederive_from_resolved(keys: set[str]) -> None:
-    """Recompute each setting derived from one of *keys*, from that key's resolved value."""
+def _rederive_from_resolved(config: Config, keys: set[str]) -> None:
+    """Recompute on *config* each setting derived from one of *keys*."""
     if "embedding_model" in keys:
-        reconcile_embedding_dim()
+        reconcile_embedding_dim(config=config)
 
 
 def inert_reindex_keys() -> set[str]:

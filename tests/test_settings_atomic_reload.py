@@ -159,6 +159,58 @@ def test_a_reload_keeps_a_write_another_thread_made_during_it(
     assert appset.cfg.top_k == 9
 
 
+def test_a_reader_never_sees_the_new_embedder_with_the_old_dim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(appset.cfg, "embedding_model", "old/Embed-GGUF")
+    monkeypatch.setattr(appset.cfg, "embedding_dim", 768)
+    asked, read = threading.Event(), threading.Event()
+    seen: list[tuple[str, int]] = []
+
+    def reader() -> None:
+        assert asked.wait(10)
+        seen.append((appset.cfg.embedding_model, appset.cfg.embedding_dim))
+        read.set()
+
+    def dim_while_a_reader_looks(ref: str, registry: object = None) -> int:
+        asked.set()
+        assert read.wait(10)
+        return 1024
+
+    monkeypatch.setattr(appset, "_embedder_dim_from_gguf", dim_while_a_reader_looks)
+    thread = threading.Thread(target=reader)
+    thread.start()
+    appset._settle(
+        {"embedding_model"}, embed_in_batch=False, values={"embedding_model": "new/Embed-GGUF"}
+    )
+    thread.join(10)
+    assert seen == [("old/Embed-GGUF", 768)]
+    assert (appset.cfg.embedding_model, appset.cfg.embedding_dim) == ("new/Embed-GGUF", 1024)
+
+
+def test_an_update_writes_the_file_after_the_new_embedder_and_its_dim_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(appset.cfg, "embedding_model", "old/Embed-GGUF")
+    monkeypatch.setattr(appset.cfg, "embedding_dim", 768)
+    monkeypatch.setattr(appset, "_pin_legacy_store_meta", lambda: None)
+    monkeypatch.setattr(appset, "_coerce_value", lambda key, value: value)
+    monkeypatch.setattr(appset, "_embedder_dim_from_gguf", lambda ref, registry=None: 1024)
+    monkeypatch.setattr(appset, "_run_deferred_provider_reset", lambda *a, **k: None)
+    real_update = persistent_settings.update_values
+    seen: list[tuple[tuple[str, int], dict[str, Any]]] = []
+
+    def write_and_look(root: Any, updates: dict[str, Any]) -> None:
+        live = (appset.cfg.embedding_model, appset.cfg.embedding_dim)
+        real_update(root, updates)
+        seen.append((live, persistent_settings.load(root)))
+
+    monkeypatch.setattr(persistent_settings, "update_values", write_and_look)
+    appset.apply_settings_update({"embedding_model": "new/Embed-GGUF"})
+    assert seen == [(("new/Embed-GGUF", 1024), {"embedding_model": "new/Embed-GGUF"})]
+    assert (appset.cfg.embedding_model, appset.cfg.embedding_dim) == ("new/Embed-GGUF", 1024)
+
+
 def test_a_commit_leaves_a_re_derived_equal_field_in_place() -> None:
     root = appset.cfg.data_root
     appset._restore_values({"chunk_size": NEW["chunk_size"]})

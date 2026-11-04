@@ -277,20 +277,20 @@ def test_a_follower_on_another_root_reads_that_root_afresh(tmp_path):
     assert reading.values["top_k"] == 33
 
 
-def test_a_settle_that_raises_after_setting_keys_still_drops_their_caches(monkeypatch):
+def test_a_settle_whose_rederive_raises_leaves_cfg_and_still_drops_the_caches(monkeypatch):
     from lilbee.catalog import picks
 
     reading = app_settings.read_config_state()
     resets: list[bool] = []
     monkeypatch.setattr(picks, "reset_picks", lambda: resets.append(True))
 
-    def rederive_fails(keys: object) -> None:
+    def rederive_fails(config: object, keys: object) -> None:
         raise RuntimeError("rederive failed")
 
     monkeypatch.setattr(app_settings, "_rederive_from_resolved", rederive_fails)
-    flipped = not cfg.include_uncensored
-    _write_from_another_process("include_uncensored", flipped, tick=1)
+    kept = cfg.include_uncensored
+    _write_from_another_process("include_uncensored", not kept, tick=1)
     with pytest.raises(RuntimeError, match="rederive failed"):
         app_settings.adopt_external_changes(reading)
-    assert cfg.include_uncensored is flipped
+    assert cfg.include_uncensored is kept
     assert resets == [True]
