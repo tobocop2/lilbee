@@ -42,6 +42,8 @@ _RESERVE_BYTES = 2 * 1024**3
 """The figure charged for one instance; two small models peaked at 886 MiB in the recording."""
 _BATCH_LIMIT = 64
 """The inputs per request: the launch argv sets it on the server, the client splits at it."""
+_RERANK_QUERY_TOKENS = 128
+"""Tokens kept for the query in a rerank pair; lilbee sets no query limit, so this is a bound."""
 _SERVED = frozenset({WorkerRole.EMBED, WorkerRole.RERANK})
 _ENDPOINTS = {WorkerRole.EMBED: "/v1/embeddings", WorkerRole.RERANK: "/rerank"}
 
@@ -95,6 +97,17 @@ def _gpu_pick(host: HostCaps) -> BuildPick:
         found = ".".join(map(str, best))
         return BuildPick(_CPU, f"No CUDA build covers compute capability {found}")
     return BuildPick(f"{_CUDA_PREFIX}{cell}")
+
+
+def _longest_input_tokens() -> int:
+    """The token ceiling of the longest input lilbee sends: a chunk, plus a rerank query.
+
+    A token is at least one character, so the chunk character budget bounds its tokens.
+    The router warms up with one batch of this length, so it must not grow with the context.
+    """
+    from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+
+    return cfg.chunk_size * CHARS_PER_TOKEN + _RERANK_QUERY_TOKENS
 
 
 class TeiAdapter:
@@ -188,6 +201,8 @@ class TeiAdapter:
             "127.0.0.1",
             "--max-client-batch-size",
             str(_PROFILE.batch_limit),
+            "--max-batch-tokens",
+            str(_longest_input_tokens()),
             *spec.extra_args,
         ]
 
