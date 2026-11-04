@@ -313,13 +313,22 @@ async def test_go_back_closes_revealed_bar_when_unfocused() -> None:
         assert pilot.app.query_one(CatalogScreen) is screen
 
 
+class _InstalledCatalogApp(LilbeeAppHost):
+    """Shows the catalog as an installed view, as the real app does."""
+
+    def on_mount(self) -> None:
+        self.install_screen(CatalogScreen(), name="catalog")
+        self.push_screen("catalog")
+
+
 async def test_escape_without_filter_switches_to_chat() -> None:
     """Esc with no filter open leaves the catalog for the Chat view, like q."""
     from unittest.mock import patch
 
-    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+    async with _InstalledCatalogApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        screen = pilot.app.query_one(CatalogScreen)
+        screen = pilot.app.screen
+        assert isinstance(screen, CatalogScreen)
         screen._activation_settled = True
         assert not screen._filter_open
         with patch.object(pilot.app, "switch_view") as switch:
