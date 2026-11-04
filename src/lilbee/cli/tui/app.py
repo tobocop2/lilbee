@@ -714,7 +714,11 @@ class LilbeeApp(App[None]):
         The settings land on cfg in the calling thread. The app thread shows them;
         on the app thread itself the take already happened and nothing is shown.
         """
-        _changed, result = self._take_external_changes()
+        try:
+            _changed, result = self._take_external_changes()
+        except Exception:
+            log.exception("Could not take the changes in config.toml; the retry runs as before.")
+            return
         if result is not None:
             call_from_thread(self, self._show_taken_settings, result)
 

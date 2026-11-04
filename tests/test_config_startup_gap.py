@@ -121,6 +121,24 @@ def test_the_tui_engine_retry_takes_the_file_and_shows_it_on_the_app_thread(monk
     assert app.adopt_external_settings() is False  # the retry's take moved the reading
 
 
+def test_a_failed_take_on_the_tui_retry_is_logged_and_does_not_raise(monkeypatch, caplog):
+    from lilbee.cli.tui import app as tui_app_mod
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    shown: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(tui_app_mod, "call_from_thread", lambda *args: shown.append(args))
+
+    def refuse(_reading):
+        raise ValueError("refused value")
+
+    monkeypatch.setattr(tui_app_mod, "adopt_external_changes", refuse)
+    with caplog.at_level("ERROR", logger=tui_app_mod.log.name):
+        assert app.take_external_settings_now() is None
+    assert shown == []
+    assert [r.exc_info[1].args for r in caplog.records if r.exc_info] == [("refused value",)]
+
+
 # A fresh interpreter starts the CLI the way `lilbee` does on the default path: the import
 # loads config.toml (top_k 12) from the platform data dir, the callback applies the
 # overrides, and an outside write of top_k 21 lands before the product reads the file.
