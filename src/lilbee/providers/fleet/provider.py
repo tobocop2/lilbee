@@ -102,6 +102,9 @@ log = logging.getLogger(__name__)
 # and far short of any supervisor's patience for a process that will not exit.
 _SHUTDOWN_BUILD_LOCK_WAIT_S = 45.0
 
+# The thread that releases the engine holds no group uses once a retired client is idle.
+_HOLD_SWEEP_THREAD = "fleet-hold-sweep"
+
 # How long a request waits for a reload that is restarting its role's server.
 _RELOAD_GAP_WAIT_S = 60.0
 
@@ -1002,6 +1005,8 @@ class FleetProvider:
         # reload (by when those readers have finished) or at shutdown, never while
         # potentially in use. See _retire_clients.
         self._retiring_clients: list[LlamaServerClient] = []
+        # Rediscover retries between their drop and their end; the hold sweep waits for zero.
+        self._open_rediscovers = 0
         # Chat batching slots and per-slot context from the chat launch, surfaced to
         # the concurrency gate and clients; defaults until the chat group is up.
         self._chat_slots = 1
@@ -1159,7 +1164,9 @@ class FleetProvider:
                 self._hold_membership(engine_dir)
                 _watch_bound_engine(engine_dir)
                 return True
-            if live_users_exist(engine_dir):
+            # This process's own hold is no reason to overflow: the ladder runs only
+            # when this provider serves no group, so the hold is all that is left.
+            if live_users_exist(engine_dir, exclude_self=True):
                 # A live engine is never evicted or stacked on. On the machine slot
                 # that means overflow (None); in the overflow dir there is nowhere
                 # further to go, so serve nothing rather than kill the incumbent or
@@ -1413,6 +1420,10 @@ class FleetProvider:
                 client.close()
             else:
                 still_busy.append(client)
+        for client in old_clients:
+            # A hold the sweep kept for this client's stream is released when the
+            # stream ends; see _start_hold_sweep.
+            client.notify_when_idle(self._start_hold_sweep)
         self._retiring_clients = still_busy + old_clients
 
     def _require_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
@@ -1493,14 +1504,24 @@ class FleetProvider:
             if not is_connection_failure(err):
                 raise
             log.info("Engine unreachable; rediscovering before one retry")
-            self._drop_swap_refs()
-            self._release_holds()
-            # An owner that restarted its fleet for new settings wrote them first. With
-            # no group held, the replan the take starts returns at once, and the retry
-            # plans on the new settings, so it binds the restarted fleet.
-            if self._config_refresh is not None:
-                self._config_refresh()
-            return call()
+            # The holds stay through the retry: a stream on a retired client and a
+            # second thread's rebuild both need the dir held, and the ladder does not
+            # count this process's own hold as a live user. The open count keeps any
+            # sweep from releasing a hold before this retry ends.
+            with self._lock:
+                self._open_rediscovers += 1
+            try:
+                self._drop_swap_refs()
+                # An owner that restarted its fleet for new settings wrote them first.
+                # With no group held, the replan the take starts returns at once, and
+                # the retry plans on the new settings, so it binds the restarted fleet.
+                if self._config_refresh is not None:
+                    self._config_refresh()
+                return call()
+            finally:
+                with self._lock:
+                    self._open_rediscovers -= 1
+                self._release_unused_holds()
 
     def _retry_rebuilt(self, call: Callable[[], _T], role: WorkerRole, err: BaseException) -> _T:
         """Rebuild *role* so the retry is a different launch, and run *call* again.
@@ -1695,20 +1716,44 @@ class FleetProvider:
                     log.info("Engine left warm at %s (last user out)", engine_dir)
         self._engine_holds = {}
 
-    def _release_holds(self) -> None:
-        """Drop this process's engine memberships without stopping any engine.
+    def _release_unused_holds(self) -> None:
+        """Drop each membership whose dir no group uses, once no retired client is busy.
 
-        The rediscover retry re-runs the acquisition ladder. A retained membership
-        would make this process count itself as a live user of the machine slot, so
-        the ladder would judge the slot in use and overflow to a private engine
-        instead of rebinding a recovered engine or rebuilding a dead one -- N
-        private engines and N times the VRAM after the shared engine first dies.
-        Nothing is stopped here: a live engine is rebound by the retry, and a dead
-        one is cleared by the rebuild that retry triggers.
+        After a rediscover retry overflows, the old dir's hold is no longer needed,
+        and a stale hold keeps that engine's real last user from stopping it. A
+        retired client still streams from the old engine, so while any retired
+        client is in flight the holds stay; that client's last request starts the
+        sweep again (see _start_hold_sweep). While a rediscover is open its dropped
+        groups have no dir yet, so the holds stay; its own retry ends with a sweep.
+        The build lock keeps the sweep from releasing a dir that a build on another
+        thread is about to hold. Nothing is stopped here.
         """
-        for hold in list(self._engine_holds.values()):
-            hold.release_and_check_last()
-        self._engine_holds = {}
+        with self._build_lock:
+            with self._lock:
+                if self._open_rediscovers or any(
+                    client.in_flight for client in self._retiring_clients
+                ):
+                    return
+                used = set(self._group_dirs.values())
+                unused = [path for path in self._engine_holds if path not in used]
+                holds = [self._engine_holds.pop(path) for path in unused]
+            for hold in holds:
+                hold.release_and_check_last()
+
+    def _start_hold_sweep(self) -> None:
+        """Run the hold sweep on a new thread: a retired client ended its last request.
+
+        The thread that ended the request belongs to the caller and can hold any of
+        its locks. An abandoned stream also closes from garbage collection, inside
+        whatever frame runs then, including one that holds the build lock. A sweep
+        on that thread could wait on a lock the thread itself holds. A new thread
+        holds no lock and takes them in the sweep's own order.
+        """
+        threading.Thread(
+            target=self._release_unused_holds,
+            name=_HOLD_SWEEP_THREAD,
+            daemon=True,
+        ).start()
 
     def _drop_swap_refs(self, *, close_all: bool = False) -> None:
         """Clear every group's swap/clients and the chat capacity so the next call rebuilds.

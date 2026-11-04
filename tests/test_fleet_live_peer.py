@@ -9,9 +9,12 @@ engine. A peer is a user lock under another pid.
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from lilbee.core.config import cfg
@@ -21,13 +24,14 @@ from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet import swap_manager as swap_mod
 from lilbee.providers.fleet.binary import engine_pin
+from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.fleet.swap_manager import SwapManager, SwapState
 from lilbee.providers.roles import WorkerRole
-from lilbee.runtime.engine_lock import hold_user_lock, live_users_exist
-from tests.test_fleet_provider import _fake_client, _FakeSwap
+from lilbee.runtime.engine_lock import _user_lock_path, hold_user_lock, live_users_exist
+from tests.test_fleet_provider import _connection_error, _fake_client, _FakeSwap
 from tests.test_fleet_reload_plan import (
     _NOTES_CHUNK_SIZE,
     _apply_settings_write,
@@ -328,6 +332,100 @@ def test_an_evicted_owner_that_writes_a_setting_leaves_the_new_owner_running(
     assert box.stopped == []
     assert box.pids(box.slot)[SwapGroup.CHAT] == new_owner_pids[SwapGroup.CHAT]
     assert new_owner_hold.release_and_check_last() is True
+
+
+def _blip_then(provider: FleetProvider, role: WorkerRole) -> object:
+    """Run a call through the rediscover path: a connection failure, then *role*'s pool."""
+    calls = {"n": 0}
+
+    def _call() -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _connection_error()
+        return provider._require_clients(role)
+
+    return provider._with_rediscover(_call)
+
+
+def test_a_second_thread_in_the_rediscover_gap_rebuilds_the_slot_and_keeps_the_hold(
+    real_planner, box: _Box, monkeypatch
+) -> None:
+    process = _process(monkeypatch)
+    assert process._acquire_engine(box.root) is True
+    # The embed group died, so the rediscover finds the slot unbindable.
+    del box.records[_SLOT][SwapGroup.EMBED]
+    drop = process._drop_swap_refs
+    second = threading.Thread(target=process._ensure_fleet)
+
+    def _drop_then_second_thread(**kwargs: bool) -> None:
+        drop(**kwargs)
+        if second.ident is None:  # the rediscover drop; shutdown drops again later
+            second.start()
+            second.join()
+
+    monkeypatch.setattr(process, "_drop_swap_refs", _drop_then_second_thread)
+    assert _blip_then(process, WorkerRole.EMBED)
+    assert box.stopped == [_SLOT]
+    assert set(process._group_dirs.values()) == {box.slot}
+    assert box.records[_PRIVATE] == {}
+    assert list(process._engine_holds) == [box.slot]
+    # The hold stays taken, so a newcomer sees a live user and cannot evict the slot.
+    assert process._engine_holds[box.slot]._lock.is_locked
+    process.shutdown()
+
+
+def test_a_stream_in_flight_through_a_rediscover_keeps_a_peer_from_ending_its_engine(
+    real_planner, box: _Box, monkeypatch
+) -> None:
+    process = _process(monkeypatch)
+    assert process._acquire_engine(box.root) is True
+    peer_hold = hold_user_lock(box.slot, pid=_PEER_PID)
+    stream = _streaming_client()
+    process._clients[WorkerRole.CHAT] = [stream]
+    frames = stream.chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(frames) == "He"
+    assert stream.in_flight == 1
+    # The embed group died; the peer keeps the slot, so the retry overflows.
+    del box.records[_SLOT][SwapGroup.EMBED]
+    assert _blip_then(process, WorkerRole.EMBED)
+    assert set(process._group_dirs.values()) == {box.private}
+    assert stream in process._retiring_clients
+    assert sorted(process._engine_holds) == sorted([box.slot, box.private])
+    own_slot_lock = _user_lock_path(box.slot, os.getpid())
+    assert own_slot_lock.exists()
+    assert peer_hold.release_and_check_last() is False
+    peer_hold = hold_user_lock(box.slot, pid=_PEER_PID)
+    # The stream ends: its last frame takes the retired client's count to zero.
+    assert list(frames) == ["llo"]
+    assert stream.in_flight == 0
+    _join_hold_sweeps()
+    assert list(process._engine_holds) == [box.private]
+    assert not own_slot_lock.exists()
+    assert peer_hold.release_and_check_last() is True
+    process.shutdown()
+
+
+def _streaming_client() -> LlamaServerClient:
+    """A real client whose chat stream sends two frames from a mock transport."""
+    body = (
+        'data: {"choices":[{"delta":{"content":"He"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    http = httpx.Client(
+        transport=httpx.MockTransport(lambda _req: httpx.Response(200, text=body)),
+        base_url="http://gpu0",
+    )
+    client = LlamaServerClient("http://gpu0", "chat-model", http=http)
+    client._needs_alternation = False
+    return client
+
+
+def _join_hold_sweeps() -> None:
+    """Wait for each hold sweep that a retired client's last request started."""
+    for thread in threading.enumerate():
+        if thread.name == prov_mod._HOLD_SWEEP_THREAD:
+            thread.join()
 
 
 def test_a_process_that_cannot_build_leaves_a_warm_engine_it_cannot_bind(

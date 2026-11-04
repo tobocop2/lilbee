@@ -85,7 +85,7 @@ def _new_process_ladder(
 ) -> tuple[bool | None, FleetProvider]:
     """Run the real ladder as a new process on the current config, with live users present."""
     monkeypatch.setattr(prov_mod, "_healthy_states", lambda _dir: dict(states))
-    monkeypatch.setattr(prov_mod, "live_users_exist", lambda _dir: True)
+    monkeypatch.setattr(prov_mod, "live_users_exist", lambda _dir, **_kw: True)
     monkeypatch.setattr(prov_mod, "_watch_bound_engine", lambda _dir: None)
     monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: True)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _dir: pytest.fail("stopped the fleet"))
@@ -388,7 +388,7 @@ def _peer_mid_call_over_an_owner_restart(
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
     # Only the machine dir has a live fleet; a private dir is free, so a peer that cannot
     # bind builds there.
-    monkeypatch.setattr(prov_mod, "live_users_exist", lambda d: Path(d) == tmp_path)
+    monkeypatch.setattr(prov_mod, "live_users_exist", lambda d, **_kw: Path(d) == tmp_path)
     monkeypatch.setattr(
         prov_mod, "_healthy_states", lambda d: dict(states) if Path(d) == tmp_path else {}
     )

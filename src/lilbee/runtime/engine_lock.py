@@ -286,10 +286,17 @@ def _user_file_lock(path: Path) -> FileLock:
     return FileLock(path, thread_local=False, is_singleton=True)
 
 
-def live_users_exist(engine_dir: Path) -> bool:
-    """Probe every user lock file; clean the dead, report whether any refused."""
+def live_users_exist(engine_dir: Path, *, exclude_self: bool = False) -> bool:
+    """Probe every user lock file; clean the dead, report whether any refused.
+
+    *exclude_self* skips this process's own lock file, so the answer is whether
+    another process uses the engine.
+    """
     users = _users_dir(engine_dir)
+    own = _user_lock_path(engine_dir, os.getpid()) if exclude_self else None
     for path in sorted(users.glob(f"*{_USER_LOCK_SUFFIX}")):
+        if path == own:
+            continue
         probe = _user_file_lock(path)
         if probe.is_locked:
             # Held by this process; acquiring would reentrantly succeed.
