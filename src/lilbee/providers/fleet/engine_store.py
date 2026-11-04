@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 
 RECORD_NAME = "ENGINE-RECORD.json"
 PERMISSIVE_LICENCES = frozenset({"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0"})
+REDISTRIBUTABLE_REFS = frozenset({"LicenseRef-NVIDIA-CUDA-EULA"})
+NVIDIA_NOTICE = "NOTICE-NVIDIA-CUDA"
 _LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
 _STAGE_PREFIX = ".stage-"
@@ -162,17 +164,25 @@ class RemoveResult:
     canary_warning: bool
 
 
-def licence_permitted(expression: str) -> bool:
-    """True when every OR/AND term of *expression* is on the permissive list."""
+def licence_permitted(expression: str, has_notice: bool = False) -> bool:
+    """True when every OR/AND term of *expression* is permissive.
+
+    The NVIDIA CUDA licence reference passes only when *has_notice* says the
+    package carries its NVIDIA notice file.
+    """
     terms = [term for term in _LICENCE_JOINER.split(expression.strip()) if term]
-    return bool(terms) and all(term in PERMISSIVE_LICENCES for term in terms)
+    return bool(terms) and all(
+        term in PERMISSIVE_LICENCES or (has_notice and term in REDISTRIBUTABLE_REFS)
+        for term in terms
+    )
 
 
 def _check_licences(lock: PinLock) -> None:
     if not lock.licences:
         raise LicenceRefusedError(f"Engine {lock.engine} {lock.version} lists no licence.")
     for expression in lock.licences:
-        if not licence_permitted(expression):
+        # A pin has no archive, so it cannot hold the notice; the wheel check requires it.
+        if not licence_permitted(expression, has_notice=True):
             raise LicenceRefusedError(
                 f"Engine {lock.engine} {lock.version} uses the licence {expression!r}, "
                 f"which is not on the permissive list."
@@ -193,15 +203,27 @@ def _check_wheel(lock: PinLock, wheel: Path) -> None:
         _refuse_linked_binary(lock, archive)
         names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
         text = archive.read(names[0]).decode("utf-8") if names else None
-        _check_declared_licence(lock, text)
+        notice = any(_is_nvidia_notice(info) for info in archive.infolist())
+        _check_declared_licence(lock, text, notice)
         _refuse_unusable_server(lock, archive)
 
 
-def _check_declared_licence(lock: PinLock, metadata_text: str | None) -> None:
-    """Refuse unless the METADATA text declares a permissive ``License-Expression``."""
+def _is_nvidia_notice(info: zipfile.ZipInfo) -> bool:
+    """True for a non-empty notice file directly in a top-level ``*.dist-info/licenses``."""
+    match info.filename.split("/"):
+        case [folder, "licenses", name] if name == NVIDIA_NOTICE:
+            return folder.endswith(".dist-info") and info.file_size > 0
+        case _:
+            return False
+
+
+def _check_declared_licence(
+    lock: PinLock, metadata_text: str | None, has_notice: bool = False
+) -> None:
+    """Refuse unless the METADATA text declares a permitted ``License-Expression``."""
     metadata = message_from_string(metadata_text) if metadata_text else None
     expression = (metadata.get("License-Expression") if metadata else None) or ""
-    if not licence_permitted(expression):
+    if not licence_permitted(expression, has_notice):
         raise LicenceRefusedError(
             f"The wheel for engine {lock.engine} {lock.version} declares the licence "
             f"{expression!r}, which is not on the permissive list."
@@ -219,7 +241,13 @@ def _check_staged_tree(lock: PinLock, stage: Path) -> str | None:
                 f"directory."
             )
     metadata = sorted(stage.glob("*.dist-info/METADATA"))
-    _check_declared_licence(lock, metadata[0].read_text(encoding="utf-8") if metadata else None)
+    notice = any(
+        path.is_file() and path.stat().st_size > 0
+        for path in stage.glob(f"*.dist-info/licenses/{NVIDIA_NOTICE}")
+    )
+    _check_declared_licence(
+        lock, metadata[0].read_text(encoding="utf-8") if metadata else None, notice
+    )
     tools = sorted(
         path.relative_to(stage).as_posix()
         for path in stage.glob("*/bin/*")

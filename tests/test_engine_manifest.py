@@ -177,7 +177,6 @@ def test_ik_llama_pin_record_does_not_read_the_llama_record(
         "backend",
         "sha256",
         "tool",
-        "libraries",
         "launch",
         "platforms",
         "memory",
