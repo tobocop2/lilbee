@@ -23,7 +23,6 @@ from textual.widgets import (
     DataTable,
     Footer,
     Input,
-    Label,
     Select,
     Static,
     TabbedContent,
@@ -830,22 +829,21 @@ async def test_discard_empties_the_table_and_publishes_the_keys() -> None:
     assert set(seen) == {"chunk_size", "layout_detection", "max_chunks_per_file"}
 
 
-@pytest.mark.parametrize(("pill_id", "rebuilds"), [("confirm-yes", 1), ("confirm-no", 0)])
-async def test_discarding_a_reindex_setting_offers_a_rebuild(pill_id: str, rebuilds: int) -> None:
+async def test_discarding_a_reindex_setting_asks_nothing_until_the_user_leaves(
+    index_holds_chunks,
+) -> None:
     _on_legal_with_three_changes()
     app = _SettingsApp()
     with mock.patch.object(LilbeeAppHost, "start_rebuild") as rebuild:
         async with app.run_test(size=(80, 24)) as pilot:
             screen = await _loaded(app, pilot, "legal-discovery")
             await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
-            dialog = await _dialog(app, pilot, ConfirmDialog)
-            assert _text(dialog.query_one("#confirm-title", Static)) == (
-                msg.CMD_REBUILD_CONFIRM_TITLE
-            )
             assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
-            await _press(pilot, dialog.query_one(f"#{pill_id}", ConfirmPill))
-            assert await _until(pilot, lambda: app.screen is screen)
-    assert rebuild.call_count == rebuilds
+            assert not await wait_until(
+                pilot, lambda: isinstance(app.screen, ConfirmDialog), max_pauses=30
+            )
+            assert screen.leave() == msg.SETTINGS_REINDEX_MESSAGE
+    rebuild.assert_not_called()
     assert cfg.chunk_size == 512
 
 
@@ -863,7 +861,9 @@ async def test_discarding_settings_that_need_no_rebuild_offers_none() -> None:
     rebuild.assert_not_called()
 
 
-async def test_discarding_with_a_held_out_file_offers_the_rebuild_and_says_why() -> None:
+async def test_discarding_a_limit_with_a_held_out_file_offers_the_retry_on_leaving(
+    index_holds_chunks,
+) -> None:
     _write_global("legal-discovery", _LEGAL)
     profiles.apply(ProfileStore(), "legal-discovery")
     _set_yours("max_chunks_per_file = 2000\n")
@@ -874,12 +874,12 @@ async def test_discarding_with_a_held_out_file_offers_the_rebuild_and_says_why()
         async with app.run_test(size=(80, 24)) as pilot:
             screen = await _loaded(app, pilot, "legal-discovery")
             await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
-            dialog = await _dialog(app, pilot, ConfirmDialog)
-            message = dialog.query_one("#confirm-message", Label)
-            assert msg.PROFILE_APPLY_HELD_OUT in str(message.render())
-            await _press(pilot, dialog.query_one("#confirm-yes", ConfirmPill))
-            assert await _until(pilot, lambda: app.screen is screen)
-    assert rebuild.call_count == 1
+            assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
+            assert not await wait_until(
+                pilot, lambda: isinstance(app.screen, ConfirmDialog), max_pauses=30
+            )
+            assert screen.leave() == msg.PROFILE_APPLY_HELD_OUT
+    rebuild.assert_not_called()
 
 
 async def test_discard_toasts_the_warning_it_leaves_behind() -> None:
@@ -1309,18 +1309,3 @@ def test_the_profile_pill_shows_its_enter_hint_in_the_footer() -> None:
 
     shown = {b.key: b.show for b in ProfileLinePill.BINDINGS if isinstance(b, Binding)}
     assert shown == {"enter": True, "space": False}
-
-
-@pytest.mark.parametrize(
-    ("reason", "expected"),
-    [
-        (profiles.RebuildReason.HELD_OUT, msg.PROFILE_APPLY_HELD_OUT),
-        (profiles.RebuildReason.SETS_REINDEX, msg.PROFILE_APPLY_SETS_REINDEX),
-        (
-            profiles.RebuildReason.CHANGES,
-            msg.PROFILE_DISCARD_REINDEX_MESSAGE.format(name="mine"),
-        ),
-    ],
-)
-def test_the_discard_rebuild_question_says_why_for_each_reason(reason, expected):
-    assert msg.profile_discard_rebuild_text(reason, "mine") == expected

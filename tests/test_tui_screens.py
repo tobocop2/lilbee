@@ -48,7 +48,6 @@ from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
 from lilbee.cli.tui.screens.chat import _Turn, _TurnEnded
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.chat_input import ChatInput
-from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
@@ -6090,7 +6089,7 @@ async def test_catalog_header_sort():
 
 
 async def test_catalog_action_go_back_invokes_switch_view():
-    """action_go_back asks the host to switch to the Chat view."""
+    """action_go_back on the Catalog view asks the host to switch to the Chat view."""
     from unittest.mock import patch
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -6099,7 +6098,9 @@ async def test_catalog_action_go_back_invokes_switch_view():
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            app.push_screen(screen)
+            # Installed, as the app installs each view; a pushed catalog goes back by dismissing.
+            app.install_screen(screen, name="catalog")
+            app.push_screen("catalog")
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
@@ -16126,10 +16127,6 @@ async def test_pill_refresh_reads_sources_once_per_batch(tmp_path):
             for _ in range(3):
                 await pilot.pause()
         assert reads.call_count == 1
-        # chunk_overlap needs a rebuild, so the reset offers one; decline it
-        assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
-        await pilot.press("n")
-        assert await wait_until(pilot, lambda: not isinstance(app.screen, ConfirmDialog))
         assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "top_k")
         assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "chunk_overlap")
 

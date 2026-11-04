@@ -2242,6 +2242,10 @@ class CatalogScreen(Screen[None]):
             self._search_input.add_class(_HIDDEN_CLASS)
             self._focus_list_or_grid()
             return
+        # A catalog a model field pushed returns to the screen that opened it.
+        if not self.app.is_screen_installed(self):
+            self.dismiss()
+            return
         self.app.go_back()
 
     def _focus_list_or_grid(self) -> None:

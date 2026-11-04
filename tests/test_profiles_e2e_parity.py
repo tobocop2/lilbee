@@ -819,13 +819,11 @@ async def _tui_update(app: LilbeeApp, pilot: Pilot, _world: World) -> Outcome:
 async def _tui_discard(app: LilbeeApp, pilot: Pilot, _world: World) -> Outcome:
     seen = _seen(app)
     await _tab_pill(app, pilot, TabAction.DISCARD)
-    offered = await until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
-    report = {"reindex_required": offered, "warnings": _warnings(app, seen)}
-    if offered:
-        await _top(app, pilot, ConfirmDialog)
-        await _pill(app, pilot, "confirm-no")
-        await until(pilot, lambda: isinstance(app.screen, SettingsScreen))
-    return Outcome(report=report)
+    await _notified(app, pilot, seen)
+    # Read before the wait for an offer: a toast expires during that wait.
+    warnings = _warnings(app, seen)
+    offered = await _rebuild_owed_on_leaving(app, pilot)
+    return Outcome(report={"reindex_required": offered, "warnings": warnings})
 
 
 async def _apply_in_dialog(app: LilbeeApp, pilot: Pilot, pill_id: str) -> dict[str, Any]:
@@ -958,29 +956,26 @@ def _not_yours(key: str) -> bool:
     return setting_sources()[key] is not SettingSource.USER
 
 
-async def _declined_rebuild(app: LilbeeApp, pilot: Pilot) -> bool:
-    """Answer No to a rebuild offer if one comes; whether it came."""
-    if not await wait_until(
+async def _rebuild_owed_on_leaving(app: LilbeeApp, pilot: Pilot) -> bool:
+    """Whether leaving Settings offers a rebuild; no offer comes while it is open."""
+    assert not await wait_until(
         pilot, lambda: isinstance(app.screen, ConfirmDialog), max_pauses=_OFFER_PAUSES
-    ):
-        return False
-    await _pill(app, pilot, "confirm-no")
-    assert await until(pilot, lambda: isinstance(app.screen, SettingsScreen))
-    return True
+    )
+    screen = app.screen
+    assert isinstance(screen, SettingsScreen)
+    # The stand-in services answer the chunk count with a truthy mock.
+    return bool(screen.leave())
 
 
 async def _tui_reset(app: LilbeeApp, pilot: Pilot, _world: World) -> Outcome:
     screen = await _all_panes(app, pilot, RESET_KEYS)
-    offered = False
     warnings: list[str] = []
     for key in RESET_KEYS:
         seen = _seen(app)
         await press(pilot, _editor(screen, key), "ctrl+r")
         assert await until(pilot, partial(_not_yours, key)), key
-        # Read before the wait for an offer: a toast expires, and that wait runs
-        # its whole budget when no offer comes.
         warnings += _warnings(app, seen)
-        offered = await _declined_rebuild(app, pilot) or offered
+    offered = await _rebuild_owed_on_leaving(app, pilot)
     return Outcome(report={"reindex_required": offered, "warnings": warnings})
 
 

@@ -854,6 +854,33 @@ def inert_reindex_keys() -> set[str]:
     return inert
 
 
+CHUNK_LIMIT_KEY = "max_chunks_per_file"
+
+
+def reindex_values() -> dict[str, Any]:
+    """The value in force of each setting that changes what the index holds.
+
+    That is each of ``REINDEX_FIELDS`` and the chunk limit, which holds files out.
+    """
+    return {key: getattr(cfg, key) for key in REINDEX_FIELDS | {CHUNK_LIMIT_KEY}}
+
+
+def chunk_limit_loosened(before: Mapping[str, Any]) -> bool:
+    """Whether the chunk limit now in force admits more chunks than the one in *before*."""
+    old, new = before.get(CHUNK_LIMIT_KEY), cfg.max_chunks_per_file
+    return old is not None and old != 0 and (new == 0 or new > old)
+
+
+def reindex_values_differ(before: Mapping[str, Any]) -> bool:
+    """Whether the index, built with *before*, needs a rebuild for the values now in force.
+
+    The same rule as a single save: a changed setting counts unless it is inert under the
+    effective config, and an index with no chunks has nothing to rebuild.
+    """
+    changed = {key for key, value in reindex_values().items() if before.get(key) != value}
+    return bool((REINDEX_FIELDS - inert_reindex_keys()) & changed) and index_has_chunks()
+
+
 def index_has_chunks() -> bool:
     """True when the index holds at least one chunk; a rebuild has nothing to change otherwise.
 

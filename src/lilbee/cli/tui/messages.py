@@ -954,9 +954,6 @@ PROFILE_IMPORT_TITLE = "Import a profile"
 PROFILE_IMPORT_EXPLAIN = "Checks a profile file and copies it into a profile folder."
 PROFILE_IMPORT_LABEL = PROFILE_KEY_IMPORT
 PROFILE_IMPORTED = "Imported {name} to {path}."
-PROFILE_DISCARD_REINDEX_MESSAGE = (
-    "The index was built with values you discarded. Rebuild it so search uses {name}'s values."
-)
 SETTINGS_REINDEX_MESSAGE = (
     "The index was built with values you changed. Rebuild it so search uses the new values."
 )
@@ -1079,13 +1076,10 @@ def profile_rebuild_reason_text(reason: RebuildReason, count: int, files: int) -
     return profile_reindex_text(count, files) if files else ""
 
 
-def profile_discard_rebuild_text(reason: RebuildReason, name: str) -> str:
-    """The rebuild question after a discard, saying why a rebuild changes the index."""
-    if reason is RebuildReason.HELD_OUT:
-        return PROFILE_APPLY_HELD_OUT
-    if reason is RebuildReason.SETS_REINDEX:
-        return PROFILE_APPLY_SETS_REINDEX
-    return PROFILE_DISCARD_REINDEX_MESSAGE.format(name=name)
+def settings_rebuild_text(reindex: bool, held_out: bool) -> str | None:
+    """The rebuild question on leaving Settings: one text for both reasons, None for neither."""
+    reasons = ((SETTINGS_REINDEX_MESSAGE, reindex), (PROFILE_APPLY_HELD_OUT, held_out))
+    return " ".join(text for text, applies in reasons if applies) or None
 
 
 def profile_reindex_text(count: int, files: int) -> str:
