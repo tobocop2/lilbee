@@ -282,7 +282,7 @@ Standalone mode needs nothing but your machine. No cloud required. **Minimum:** 
 Two recommended ways to use lilbee, depending on whether you're the one driving:
 
 - **Run `lilbee`** for the full-screen terminal app. On first run you pick a chat model straight from the catalog, fit-checked against your hardware, then you index files, search, and chat without leaving the TUI. The Settings screen exposes every retrieval knob (search depth, distance threshold, reranker, chunking) so you can tune lilbee to your library shape.
-- **Connect it to your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also _fine-tune lilbee on the fly_ via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](plugins/lilbee/skills/lilbee-mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [A reference for AI agents](#a-reference-for-ai-agents).
+- **Connect it to your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also _fine-tune lilbee on the fly_ via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](plugins/lilbee/skills/lilbee-mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [A reference for AI agents](#a-reference-for-ai-agents) for the install commands for Claude Code, opencode, pi, and Hermes.
 
 Retrieval defaults are sane, and every setting is tunable from env vars or `config.toml`, most of them from the TUI, MCP, and the HTTP API too; the [settings reference](docs/settings.md) has a column per surface. The CLI and HTTP API cover scripting and headless runs. See the [usage guide](docs/usage.md).
 
@@ -548,7 +548,7 @@ lilbee serves your coding agents two ways, both local: it runs the models they t
 
 ### Launch your coding agent on local models
 
-`lilbee launch opencode`, `lilbee launch hermes`, and `lilbee launch claude` set up lilbee's local models in your agent in one command. For opencode and hermes, lilbee registers itself as a provider and an MCP server in the agent's own config and leaves your existing setup intact; for Claude Code, lilbee serves an Anthropic-compatible API and points the session at it by env, without touching Claude Code's settings. Each launch warms a model and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine, except a check of any provider API key you have set. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
+`lilbee launch opencode`, `lilbee launch hermes`, `lilbee launch pi`, and `lilbee launch claude` set up lilbee's local models in your agent in one command. For opencode and hermes, lilbee registers itself as a provider and an MCP server in the agent's own config and leaves your existing setup intact; for Claude Code, lilbee serves an Anthropic-compatible API and points the session at it by env, without touching Claude Code's settings. Each launch warms a model and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine, except a check of any provider API key you have set. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
 
 One model serves as many agents as you want to run. These reels show four working at once against a single local model, each in its own worktree, reading and searching this repository through lilbee.
 
@@ -584,7 +584,40 @@ https://github.com/user-attachments/assets/7bfec600-4c06-4a2f-8f77-be7e92f4f33f
 
 ### A reference for AI agents
 
-Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it your project's docs, your dependency source, your API docs, your design notes; the agent stops making up function names and instead reads the actual code, cites file and line, and says it doesn't know when the answer isn't in your library. The [`lilbee-mcp` skill](plugins/lilbee/skills/lilbee-mcp/SKILL.md) is the single entry point: drop it into `.opencode/skills/` or `.claude/skills/` and it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/). This works with cloud-model agents too; lilbee stays local, and only the queries and the returned chunks reach the model.
+Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it your project's docs, your dependency source, your API docs, your design notes; the agent stops making up function names and instead reads the actual code, cites file and line, and says it doesn't know when the answer isn't in your library. The [`lilbee-mcp` skill](plugins/lilbee/skills/lilbee-mcp/SKILL.md) is the single entry point: it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/). This works with cloud-model agents too; lilbee stays local, and only the queries and the returned chunks reach the model.
+
+First, [install lilbee](#install) itself. Use Homebrew, `npm install -g lilbee`, `pip`, or `uv`. A plugin does not install lilbee. Every route starts the MCP server with `lilbee mcp`, so `lilbee` must be on your PATH.
+
+Then run the one command for your agent:
+
+| Agent | Install |
+| --- | --- |
+| Claude Code | `claude plugin marketplace add tobocop2/lilbee`, then `claude plugin install lilbee@lilbee`. Adds the skills, the worker agent, and the MCP server. |
+| opencode | `opencode plugin lilbee --global` on opencode 1.x, `opencode plugin add lilbee` on opencode 2.x. Adds the skills and the MCP server. |
+| pi | `pi install npm:lilbee`. Adds the skills and the MCP server. |
+| Hermes | `npx skills add tobocop2/lilbee -g -a hermes-agent` for the skills only. Then add the MCP server to `~/.hermes/config.yaml` (below). |
+| Any other agent | `npx skills add tobocop2/lilbee -g` for the skills only. Register the MCP server with the command `lilbee mcp`. |
+
+A plugin (Claude Code, opencode, pi) adds the MCP server and both skills. `npx skills add` adds only the skills, so you must set up the MCP server yourself, as shown below. If you installed with npm, run `lilbee prepare` so the first agent start does not wait on the download. The `npx skills` commands need Node 22.20 or later. The `-g` flag installs the skills globally, so the agent reads them in every project; without `-a`, the skills go to every agent the installer detects. These installs add lilbee to the agent you already run; `lilbee launch` stays the route for running the agent on local models. The opencode and pi plugin in the `lilbee` npm package and the registry listing arrive with the next release.
+
+Hermes can load a plugin that bundles an MCP server, but lilbee does not ship one for Hermes yet. Hermes takes this entry in `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  lilbee:
+    command: lilbee
+    args: [mcp]
+```
+
+Any MCP config takes the same two fields. If you did not install lilbee, use `npx` or `uvx` instead:
+
+```
+command: lilbee   args: [mcp]
+command: npx      args: [-y, lilbee, mcp]
+command: uvx      args: [--from, "lilbee>=0.6.90b0", lilbee, mcp]
+```
+
+The first `npx` start downloads the lilbee binary. It took 281 seconds on the test machine, so an agent can time out. Later starts took 18 seconds. The first `uvx` start installs lilbee's Python packages, which took 82 seconds. The `--from` version lets `uvx` pick a lilbee pre-release without pulling pre-releases of other packages.
 
 Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets with file and line. The agent reels above show this live: each pane reads and searches this repository through lilbee.
 

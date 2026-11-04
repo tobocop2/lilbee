@@ -145,3 +145,88 @@ def test_npm_package_tests_run_in_the_launcher_ci_job():
         s.get("working-directory") for job in ci["jobs"].values() for s in job.get("steps", [])
     ]
     assert "plugins/lilbee" not in workdirs
+
+
+_INSTALL_DOCS = [ROOT / "README.md", ROOT / "docs" / "usage.md"]
+
+
+def _install_commands(doc: Path) -> list[str]:
+    """Every backticked command in the per-agent install table of one document."""
+    text = doc.read_text(encoding="utf-8")
+    table = text.split("| Agent | Install |", 1)[1].split("\n\n", 1)[0]
+    return re.findall(r"`([^`]+)`", table)
+
+
+def _manifest_names() -> tuple[str, str, str, str]:
+    marketplace_file = ROOT / ".claude-plugin" / "marketplace.json"
+    marketplace = json.loads(marketplace_file.read_text(encoding="utf-8"))
+    package = json.loads((NPM_PACKAGE / "package.json").read_text(encoding="utf-8"))
+    slug = re.search(r"github\.com/(.+?)\.git$", package["repository"]["url"]).group(1)
+    return marketplace["name"], marketplace["plugins"][0]["name"], slug, package["name"]
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_table_commands_use_the_manifest_names(doc):
+    marketplace, plugin, slug, npm_name = _manifest_names()
+    commands = _install_commands(doc)
+    assert f"claude plugin marketplace add {slug}" in commands
+    assert f"claude plugin install {plugin}@{marketplace}" in commands
+    assert f"opencode plugin add {npm_name}" in commands
+    assert f"opencode plugin {npm_name} --global" in commands
+    assert f"pi install npm:{npm_name}" in commands
+    assert f"npx skills add {slug} -g -a hermes-agent" in commands
+    assert f"npx skills add {slug} -g" in commands
+    assert "lilbee mcp" in commands
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_skills_installs_are_global(doc):
+    installs = [c for c in _install_commands(doc) if c.startswith("npx skills add")]
+    assert len(installs) == 2
+    for command in installs:
+        assert "-g" in command.split(), f"{command} installs into the current project"
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_docs_name_the_node_version_skills_needs(doc):
+    assert "The `npx skills` commands need Node 22.20 or later." in doc.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_hermes_snippet_registers_the_mcp_command(doc):
+    text = doc.read_text(encoding="utf-8")
+    snippet = re.search(r"```yaml\n(mcp_servers:\n.*?)```", text, re.S).group(1)
+    entry = {"command": "lilbee", "args": ["mcp"]}
+    assert yaml.safe_load(snippet) == {"mcp_servers": {"lilbee": entry}}
+
+
+def test_install_table_agrees_between_readme_and_usage():
+    assert _install_commands(ROOT / "docs" / "usage.md") == _install_commands(ROOT / "README.md")
+
+
+@pytest.mark.parametrize(
+    "doc", [ROOT / "README.md", ROOT / "docs" / "agent-models.md"], ids=lambda p: p.name
+)
+def test_launcher_lists_name_every_launcher(doc):
+    text = doc.read_text(encoding="utf-8")
+    for agent in ("opencode", "hermes", "pi", "claude"):
+        assert f"`lilbee launch {agent}`" in text
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_docs_say_lilbee_comes_first_and_plugins_do_not_install_it(doc):
+    text = doc.read_text(encoding="utf-8")
+    assert "A plugin does not install lilbee." in text
+    assert "`npx skills add` adds only the skills" in text
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_docs_show_the_no_install_mcp_forms(doc):
+    text = doc.read_text(encoding="utf-8")
+    assert "command: npx      args: [-y, lilbee, mcp]" in text
+    assert 'command: uvx      args: [--from, "lilbee>=0.6.90b0", lilbee, mcp]' in text
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_docs_do_not_claim_hermes_plugins_lack_mcp(doc):
+    assert "Hermes plugins cannot bundle an MCP server" not in doc.read_text(encoding="utf-8")
