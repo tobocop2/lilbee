@@ -9,6 +9,7 @@ import pytest
 
 from lilbee.catalog import runnable
 from lilbee.providers.fleet import engine_manifest, host_caps
+from lilbee.providers.fleet.engine_digests import PACKAGES_URL
 from lilbee.providers.fleet.engines import ik_llama, mistral, tei
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS, NoPublishedPackError, pin_lock
@@ -48,6 +49,19 @@ def test_every_row_of_the_shipped_table_states_a_wheel() -> None:
                 assert row["url"].startswith("https://")
                 assert row["size"] > 0
                 assert row["min_os"] is None or re.fullmatch(r"\d+\.\d+", row["min_os"])
+
+
+def test_every_shipped_row_lives_under_the_pack_index_and_matches_its_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert engine_manifest.MANIFESTS
+    for engine, versions in engine_manifest.MANIFESTS.items():
+        pin = _pin(monkeypatch, EngineName(engine), "Linux", "x86_64")
+        assert pin["engine"] == engine
+        assert list(versions) == [pin["version"]]
+        for cells in versions.values():
+            for row in cells.values():
+                assert row["url"].startswith(PACKAGES_URL)
 
 
 def test_an_empty_table_publishes_no_pack(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,7 +176,9 @@ def test_ik_llama_pin_record_holds_its_own_fields(monkeypatch: pytest.MonkeyPatc
     assert pin["launch"][0] == "{binary}"
     assert pin["licenses"] == ["MIT"]
     assert pin["memory"]["rule"] is None
-    assert pin["platforms"] == {}
+    shipped = engine_manifest.MANIFESTS["ik_llama.cpp"][ik_llama.VERSION]
+    assert pin["platforms"] == shipped
+    assert pin["sha256"] == shipped["linux-x86_64-cpu"]["sha256"]
 
 
 def test_ik_llama_pin_record_does_not_read_the_llama_record(

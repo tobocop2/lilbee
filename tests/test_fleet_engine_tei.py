@@ -18,6 +18,7 @@ from lilbee.app import engine_service
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet import engine_manifest
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engine_store import EngineNotInstalledError, EngineStore, PinLock
 from lilbee.providers.fleet.engines import choice
@@ -193,6 +194,7 @@ def test_pin_names_the_picked_build_and_refuses_a_lock_with_no_pack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=L4))
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
     pin = TEI.pin_record()
     assert (pin["engine"], pin["version"], pin["backend"]) == ("tei", "1.9.4", "cuda-sm89")
     assert pin["licenses"] == ["Apache-2.0"]
