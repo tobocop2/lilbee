@@ -3131,18 +3131,18 @@ class TestLongestCommonPrefix:
 
 class TestModelOptions:
     def test_returns_models(self) -> None:
-        from lilbee.cli.tui.widgets.autocomplete import _model_options
+        from lilbee.cli.tui.widgets.autocomplete import list_model_options
 
         with mock.patch("lilbee.modelhub.models.list_installed_models", return_value=["a", "b"]):
-            assert _model_options() == ["a", "b"]
+            assert list_model_options() == ["a", "b"]
 
     def test_returns_empty_on_error(self) -> None:
-        from lilbee.cli.tui.widgets.autocomplete import _model_options
+        from lilbee.cli.tui.widgets.autocomplete import list_model_options
 
         with mock.patch(
             "lilbee.modelhub.models.list_installed_models", side_effect=Exception("err")
         ):
-            assert _model_options() == []
+            assert list_model_options() == []
 
 
 class TestSettingOptions:

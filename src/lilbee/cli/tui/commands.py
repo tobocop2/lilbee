@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from textual.command import Hit, Hits, Provider
+from textual.command import CommandInput, Hit, Hits, Provider
+from textual.widgets import Input
 
 from lilbee.app.services import get_services
 from lilbee.catalog import display_label_for_ref
@@ -17,26 +19,68 @@ from lilbee.runtime.lock import LockTimeoutError
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from textual.screen import Screen
+    from textual.style import Style
+
     from lilbee.cli.tui.app import LilbeeApp
 
 
 class LilbeeCommandProvider(Provider):
     """Provides searchable commands for the Textual command palette (Ctrl+P)."""
 
+    def __init__(self, screen: Screen[Any], match_style: Style | None = None) -> None:
+        super().__init__(screen, match_style)
+        self._models: list[tuple[str, str, Any]] = []
+        self._model_lookup: asyncio.Task[list[tuple[str, str, Any]]] | None = None
+
     @property
     def _app(self) -> LilbeeApp:
         return cast("LilbeeApp", self.screen.app)
 
+    async def startup(self) -> None:
+        """Start the model lookup on a thread, once per palette open.
+
+        The lookup asks each local server over HTTP, which can take seconds.
+        No search waits for it: the static commands match at once, and the
+        model rows join when the lookup lands.
+        """
+        palette = self.app.screen
+        self._model_lookup = asyncio.create_task(asyncio.to_thread(self._model_commands))
+        self._model_lookup.add_done_callback(lambda done: self._models_landed(palette, done))
+
+    def _models_landed(
+        self, palette: Screen[Any], lookup: asyncio.Future[list[tuple[str, str, Any]]]
+    ) -> None:
+        """Keep the model rows and search again, unless the palette has closed.
+
+        The search runs again only when a model row matches what the user typed,
+        because a fresh search moves the highlight back to the first row.
+        """
+        if lookup.cancelled():
+            return
+        self._models = lookup.result()
+        if self.app.screen is not palette:
+            return
+        # An app that exits removes the palette's input while the palette is still on top.
+        for command_input in palette.query(CommandInput):
+            query = command_input.value.strip()
+            matcher = self.matcher(query)
+            if any(not query or matcher.match(text) > 0 for text, _, _ in self._models):
+                palette.post_message(Input.Changed(command_input, command_input.value))
+
     async def search(self, query: str) -> Hits:
         matcher = self.matcher(query)
-        for cmd_text, help_text, action in self._get_commands():
+        for cmd_text, help_text, action in self._all_commands():
             score = matcher.match(cmd_text)
             if score > 0:
                 yield Hit(score, matcher.highlight(cmd_text), action, help=help_text)
 
     async def discover(self) -> Hits:
-        for cmd_text, help_text, action in self._get_commands():
+        for cmd_text, help_text, action in self._all_commands():
             yield Hit(1.0, cmd_text, action, help=help_text)
+
+    def _all_commands(self) -> list[tuple[str, str, Any]]:
+        return [*self._get_commands(), *self._models]
 
     def _get_commands(self) -> list[tuple[str, str, Any]]:
         app = self._app
@@ -87,7 +131,6 @@ class LilbeeCommandProvider(Provider):
         ]
 
         commands.extend(self._slash_commands())
-        commands.extend(self._model_commands())
         return commands
 
     def _slash_commands(self) -> list[tuple[str, str, Any]]:
