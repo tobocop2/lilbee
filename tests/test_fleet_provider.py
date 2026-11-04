@@ -3838,6 +3838,9 @@ class _FakeReplica:
     def close(self) -> None:
         """Rediscovery retires the pool; a real client's close releases httpx."""
 
+    def notify_when_idle(self, _callback: object) -> None:
+        """Retiring registers the hold sweep; these routing tests never end a request."""
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
         if self.fail is not None:
@@ -5967,29 +5970,89 @@ def test_plan_and_spawn_missing_binary_keeps_demand_skips(monkeypatch, tmp_path:
     assert p._skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
 
-def test_release_holds_drops_membership_without_stopping_engines(monkeypatch) -> None:
-    # The rediscover path drops this process's memberships so it does not count
-    # itself a live user and overflow; it must never stop an engine to do so.
+def test_release_unused_holds_drops_only_dirs_no_group_uses_and_stops_nothing(
+    monkeypatch,
+) -> None:
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     p = FleetProvider()
-    hold = MagicMock()
-    p._engine_holds = {Path("/e1"): hold, Path("/e2"): MagicMock()}
+    unused, used = MagicMock(), MagicMock()
+    p._engine_holds = {Path("/e1"): unused, Path("/e2"): used}
+    p._group_dirs = {SwapGroup.CHAT: Path("/e2")}
 
-    p._release_holds()
+    p._release_unused_holds()
 
-    assert p._engine_holds == {}
-    hold.release_and_check_last.assert_called_once()
+    assert p._engine_holds == {Path("/e2"): used}
+    unused.release_and_check_last.assert_called_once()
+    used.release_and_check_last.assert_not_called()
     assert stopped == []
 
 
-def test_rediscover_releases_holds_before_the_retry(monkeypatch) -> None:
-    # A retained self-hold makes the machine slot look in use, overflowing the
-    # rebuild to a private engine; rediscover must release it before retrying.
+def test_release_unused_holds_waits_while_a_retired_client_is_in_flight() -> None:
+    p = FleetProvider()
+    hold = MagicMock()
+    p._engine_holds = {Path("/e1"): hold}
+    p._retiring_clients = [_fake_client(in_flight=1)]
+
+    p._release_unused_holds()
+
+    assert p._engine_holds == {Path("/e1"): hold}
+    hold.release_and_check_last.assert_not_called()
+
+
+def test_a_sweep_during_a_rediscover_keeps_the_holds_until_the_retry_ends(monkeypatch) -> None:
+    # A retired client's last request can start a sweep while another thread's
+    # rediscover has dropped its groups and not yet retried.
+    p = FleetProvider()
+    hold = MagicMock()
+    p._engine_holds = {Path("/e1"): hold}
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _connection_error()
+        p._release_unused_holds()
+        assert p._engine_holds == {Path("/e1"): hold}
+        return "ok"
+
+    assert p._with_rediscover(_call) == "ok"
+    assert p._open_rediscovers == 0
+    assert p._engine_holds == {}
+    hold.release_and_check_last.assert_called_once()
+
+
+def test_a_retired_client_starts_a_hold_sweep_when_its_last_request_ends(monkeypatch) -> None:
+    from lilbee.providers.fleet.client import LlamaServerClient
+
+    p = FleetProvider()
+    swept: list[str] = []
+    monkeypatch.setattr(
+        p, "_release_unused_holds", lambda: swept.append(threading.current_thread().name)
+    )
+    client = LlamaServerClient("http://127.0.0.1:1", "chat-0")
+    client.reserve()
+    client.reserve()
+    with p._lock:
+        p._retire_clients([client])
+    client.release()
+    assert swept == []
+    client.release()
+    for thread in threading.enumerate():
+        if thread.name == prov_mod._HOLD_SWEEP_THREAD:
+            thread.join()
+    assert swept == [prov_mod._HOLD_SWEEP_THREAD]
+    client.close()
+
+
+def test_rediscover_releases_unused_holds_after_the_retry(monkeypatch) -> None:
+    # The ladder skips this process's own hold, so the holds stay through the
+    # retry and only the dirs it left behind are released afterwards.
     p = FleetProvider()
     order: list[str] = []
     monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: order.append("drop"))
-    monkeypatch.setattr(p, "_release_holds", lambda: order.append("release"))
+    monkeypatch.setattr(p, "_release_unused_holds", lambda: order.append("release"))
     calls = {"n": 0}
 
     def _call() -> str:
@@ -6000,7 +6063,21 @@ def test_rediscover_releases_holds_before_the_retry(monkeypatch) -> None:
         return "ok"
 
     assert p._with_rediscover(_call) == "ok"
-    assert order == ["drop", "release", "retry"]  # holds dropped before the retry
+    assert order == ["drop", "retry", "release"]
+
+
+def test_rediscover_releases_unused_holds_when_the_retry_fails(monkeypatch) -> None:
+    p = FleetProvider()
+    released: list[int] = []
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    monkeypatch.setattr(p, "_release_unused_holds", lambda: released.append(1))
+
+    def _call() -> str:
+        raise _connection_error()
+
+    with pytest.raises(type(_connection_error())):
+        p._with_rediscover(_call)
+    assert released == [1]
 
 
 def test_rediscover_takes_the_config_file_after_the_drops_and_before_the_retry(
@@ -6010,7 +6087,7 @@ def test_rediscover_takes_the_config_file_after_the_drops_and_before_the_retry(
     order: list[str] = []
     p = FleetProvider(config_refresh=lambda: order.append("refresh"))
     monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: order.append("drop"))
-    monkeypatch.setattr(p, "_release_holds", lambda: order.append("release"))
+    monkeypatch.setattr(p, "_release_unused_holds", lambda: order.append("release"))
     calls = {"n": 0}
 
     def _call() -> str:
@@ -6021,7 +6098,7 @@ def test_rediscover_takes_the_config_file_after_the_drops_and_before_the_retry(
         return "ok"
 
     assert p._with_rediscover(_call) == "ok"
-    assert order == ["drop", "release", "refresh", "retry"]
+    assert order == ["drop", "refresh", "retry", "release"]
 
 
 def test_a_call_that_succeeds_never_takes_the_config_file() -> None:

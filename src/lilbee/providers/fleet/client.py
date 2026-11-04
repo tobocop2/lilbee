@@ -565,6 +565,8 @@ class LlamaServerClient:
         self._rerank_mode = rerank_mode
         self.in_flight = 0
         self._in_flight_lock = threading.Lock()
+        # Called each time a request takes in_flight to zero; see notify_when_idle.
+        self._on_idle: Callable[[], None] | None = None
         # Live SSE responses, so a cancel can sever the transport from another
         # thread: a reader blocked in iter_lines cannot see a cooperative
         # cancel flag, but a shutdown of its socket unblocks it with an error.
@@ -670,8 +672,25 @@ class LlamaServerClient:
 
     def release(self) -> None:
         """Release a reservation taken by :meth:`reserve`."""
+        self._leave()
+
+    def notify_when_idle(self, callback: Callable[[], None]) -> None:
+        """Call *callback* each time a request ends and leaves ``in_flight`` at zero.
+
+        The callback runs on the thread that ended the request, after the count
+        lock is released. That thread can hold any lock of its caller, so the
+        callback must not block on one.
+        """
+        with self._in_flight_lock:
+            self._on_idle = callback
+
+    def _leave(self) -> None:
+        """End one request; call the idle callback when it was the last one."""
         with self._in_flight_lock:
             self.in_flight -= 1
+            callback = self._on_idle if self.in_flight == 0 else None
+        if callback is not None:
+            callback()
 
     def health(self) -> bool:
         """True iff ``GET /health`` returns 200 (liveness, not readiness)."""
@@ -1409,8 +1428,7 @@ class _InFlight:
             self._client.in_flight += 1
 
     def __exit__(self, *_exc: object) -> None:
-        with self._client._in_flight_lock:
-            self._client.in_flight -= 1
+        self._client._leave()
 
 
 class _AbortableStream(httpx.SyncByteStream):
