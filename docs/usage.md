@@ -493,19 +493,21 @@ fallback](#json-cli-fallback) below.
 
 ### Install in your agent
 
-Each agent gets the skills and the MCP server from the commands in its row:
+First, [install lilbee](../README.md#install) itself. Use Homebrew, `npm install -g lilbee`, `pip`, or `uv`. A plugin does not install lilbee. Every route starts the MCP server with `lilbee mcp`, so `lilbee` must be on your PATH.
+
+Then run the one command for your agent:
 
 | Agent | Install |
 | --- | --- |
 | Claude Code | `claude plugin marketplace add tobocop2/lilbee`, then `claude plugin install lilbee@lilbee`. Adds the skills, the worker agent, and the MCP server. |
-| opencode | `opencode plugin add lilbee`. Adds the skills and the MCP server. |
+| opencode | `opencode plugin lilbee --global` on opencode 1.x, `opencode plugin add lilbee` on opencode 2.x. Adds the skills and the MCP server. |
 | pi | `pi install npm:lilbee`. Adds the skills and the MCP server. |
-| Hermes | `npx skills add tobocop2/lilbee -g -a hermes-agent` for the skills, then add the MCP server to `~/.hermes/config.yaml` (below). |
-| Any other agent | `npx skills add tobocop2/lilbee -g` for the skills. Register the MCP server with the command `lilbee mcp`. |
+| Hermes | `npx skills add tobocop2/lilbee -g -a hermes-agent` for the skills only. Then add the MCP server to `~/.hermes/config.yaml` (below). |
+| Any other agent | `npx skills add tobocop2/lilbee -g` for the skills only. Register the MCP server with the command `lilbee mcp`. |
 
-[Install lilbee](../README.md#install) first: every row starts the MCP server with `lilbee mcp`, which needs `lilbee` on your PATH. If you installed with npm, run `lilbee prepare` so the first agent start does not wait on the download. The `npx skills` commands need Node 22.20 or later. The `-g` flag installs the skills globally, so the agent reads them in every project; without `-a`, the skills go to every agent the installer detects. These installs add lilbee to the agent you already run; `lilbee launch` stays the route for running the agent on local models. The opencode and pi plugin in the `lilbee` npm package and the registry listing arrive with the next release.
+A plugin (Claude Code, opencode, pi) adds the MCP server and both skills. `npx skills add` adds only the skills, so you must set up the MCP server yourself, as shown below. If you installed with npm, run `lilbee prepare` so the first agent start does not wait on the download. The `npx skills` commands need Node 22.20 or later. The `-g` flag installs the skills globally, so the agent reads them in every project; without `-a`, the skills go to every agent the installer detects. These installs add lilbee to the agent you already run; `lilbee launch` stays the route for running the agent on local models. The opencode and pi plugin in the `lilbee` npm package and the registry listing arrive with the next release.
 
-Hermes plugins cannot bundle an MCP server, so Hermes takes this entry in `~/.hermes/config.yaml`:
+Hermes can load a plugin that bundles an MCP server, but lilbee does not ship one for Hermes yet. Hermes takes this entry in `~/.hermes/config.yaml`:
 
 ```yaml
 mcp_servers:
@@ -513,6 +515,15 @@ mcp_servers:
     command: lilbee
     args: [mcp]
 ```
+
+Any MCP config takes the same two fields. If you did not install lilbee, use `npx` instead:
+
+```
+command: lilbee   args: [mcp]
+command: npx      args: [-y, lilbee, mcp]
+```
+
+The first `npx` start downloads the lilbee binary. It took 281 seconds on the test machine, so an agent can time out. Later starts took 18 seconds.
 
 ### Client config blocks
 

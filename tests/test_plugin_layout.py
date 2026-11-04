@@ -172,6 +172,7 @@ def test_install_table_commands_use_the_manifest_names(doc):
     assert f"claude plugin marketplace add {slug}" in commands
     assert f"claude plugin install {plugin}@{marketplace}" in commands
     assert f"opencode plugin add {npm_name}" in commands
+    assert f"opencode plugin {npm_name} --global" in commands
     assert f"pi install npm:{npm_name}" in commands
     assert f"npx skills add {slug} -g -a hermes-agent" in commands
     assert f"npx skills add {slug} -g" in commands
@@ -210,3 +211,20 @@ def test_launcher_lists_name_every_launcher(doc):
     text = doc.read_text(encoding="utf-8")
     for agent in ("opencode", "hermes", "pi", "claude"):
         assert f"`lilbee launch {agent}`" in text
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_docs_say_lilbee_comes_first_and_plugins_do_not_install_it(doc):
+    text = doc.read_text(encoding="utf-8")
+    assert "A plugin does not install lilbee." in text
+    assert "`npx skills add` adds only the skills" in text
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_docs_show_the_no_install_mcp_form(doc):
+    assert "command: npx      args: [-y, lilbee, mcp]" in doc.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("doc", _INSTALL_DOCS, ids=lambda p: p.name)
+def test_install_docs_do_not_claim_hermes_plugins_lack_mcp(doc):
+    assert "Hermes plugins cannot bundle an MCP server" not in doc.read_text(encoding="utf-8")
