@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -31,18 +31,23 @@ _LICENCES = ["MIT", "Apache-2.0"]
 _DEVICE_VAR = "GGML_OPENVINO_DEVICE"
 _CPU_DEVICE = "CPU"
 _GPU_DEVICE = "GPU"
+_INTEL = "intel"
 _ENV = "/usr/bin/env"
 _LIST_TIMEOUT_S = 60.0
 _LIST_KILL_WAIT_S = 5.0
-_DEVICE_LINE = re.compile(r"^\s*OPENVINO\d+:\s*" + _DEVICE_VAR + r"=(\w+)", re.MULTILINE)
+_DEVICE_LINE = re.compile(
+    r"^\s*OPENVINO\d+:\s*" + _DEVICE_VAR + r"=([\w.]+)(?:\s*\(selected\))?\s*-\s*([^\n]*)",
+    re.MULTILINE,
+)
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _NPU_UNUSED = (
     "This computer has an Intel NPU. OpenVINO runs on the CPU or the integrated graphics, "
     "because no run on the NPU is recorded."
 )
 GPU_MISSING = (
-    "OpenVINO cannot use the Intel graphics device: the Intel compute runtime is not "
-    "installed on this computer. OpenVINO does not switch to the CPU by itself. "
+    "OpenVINO runs on Intel graphics only, and this computer has no Intel graphics device "
+    "that OpenVINO can use. A missing Intel compute runtime also causes this. "
+    "OpenVINO does not switch to the CPU by itself. "
     "Install the Intel compute runtime, or place this role on the CPU."
 )
 
@@ -60,9 +65,41 @@ _PROFILE = RequestProfile(
 )
 
 
-def listed_devices(output: str) -> frozenset[str]:
-    """The OpenVINO device names that ``llama-server --list-devices`` printed."""
-    return frozenset(_DEVICE_LINE.findall(output))
+@dataclass(frozen=True)
+class ListedDevice:
+    """One line of ``llama-server --list-devices``: the full name and its description."""
+
+    name: str
+    description: str
+
+
+def parse_devices(output: str) -> tuple[ListedDevice, ...]:
+    """The devices that ``llama-server --list-devices`` printed, in list order."""
+    return tuple(ListedDevice(name, rest) for name, rest in _DEVICE_LINE.findall(output))
+
+
+def _gpu_ordinal(name: str) -> int:
+    """The number in ``GPU.1``; plain ``GPU`` is the alias of ``GPU.0``."""
+    _, _, tail = name.partition(".")
+    return int(tail) if tail.isdigit() else 0
+
+
+def pick_gpu(devices: tuple[ListedDevice, ...]) -> str | None:
+    """The one GPU name a launch passes, or None when no listed GPU is an Intel GPU.
+
+    The OpenVINO GPU plugin runs on Intel GPUs only, integrated or discrete, although
+    the list also shows other cards. Intel GPUs are numbered ``GPU.X``, and an
+    integrated one is always ``GPU.0``, so the lowest number wins.
+    """
+    gpus = [
+        d
+        for d in devices
+        if (d.name == _GPU_DEVICE or d.name.startswith(_GPU_DEVICE + "."))
+        and d.description.lower().startswith(_INTEL)
+    ]
+    if not gpus:
+        return None
+    return min(gpus, key=lambda d: _gpu_ordinal(d.name)).name
 
 
 class OpenvinoAdapter:
@@ -136,7 +173,8 @@ class OpenvinoAdapter:
         CPU, so a GPU target is checked against the device list before it starts.
         """
         on_cpu = request.target is RoleTarget.CPU
-        if not on_cpu and _GPU_DEVICE not in self._listed(request.binary):
+        gpu = None if on_cpu else pick_gpu(self._listed(request.binary))
+        if not on_cpu and gpu is None:
             raise ProviderError(GPU_MISSING)
         if on_cpu:
             request = replace(request, n_gpu_layers=0, fit_target_mib=())
@@ -154,21 +192,20 @@ class OpenvinoAdapter:
             batch_size=request.batch_size,
             no_mmap=request.no_mmap,
         )
-        device = _CPU_DEVICE if on_cpu else _GPU_DEVICE
-        return [_ENV, f"{_DEVICE_VAR}={device}", *argv]
+        return [_ENV, f"{_DEVICE_VAR}={_CPU_DEVICE if gpu is None else gpu}", *argv]
 
     @staticmethod
-    def _listed(binary: Path) -> frozenset[str]:
+    def _listed(binary: Path) -> tuple[ListedDevice, ...]:
         output, _code = run_bounded(
             [str(binary), "--list-devices"],
             timeout_s=_LIST_TIMEOUT_S,
             kill_wait_s=_LIST_KILL_WAIT_S,
             merge_stderr=True,
         )
-        return listed_devices(output)
+        return parse_devices(output)
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
-        if _GPU_DEVICE in self._listed(binary):
+        if pick_gpu(self._listed(binary)) is not None:
             return frozenset({RoleTarget.CPU, RoleTarget.GPU})
         return frozenset({RoleTarget.CPU})
 
