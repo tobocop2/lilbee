@@ -1090,13 +1090,27 @@ class LlamaServerClient:
         return payload
 
     def _wire_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
-        """*options* without the fields this server's engine does not read."""
+        """*options* without the fields this server's engine does not read or enforce.
+
+        A ``json_schema`` request is a promise that the reply fits the schema, so it is
+        refused. Any other format is advice, so it is dropped.
+        """
         wire = dict(options or {})
         if not self._profile.takes_cache_prompt:
             wire.pop("cache_prompt", None)
         if not self._profile.takes_seed and isinstance(wire.get("seed"), ChosenSeed):
             wire.pop("seed")
-        return wire
+        if self._profile.structured_output or "response_format" not in wire:
+            return wire
+        reply_format = wire.pop("response_format")
+        if not (isinstance(reply_format, Mapping) and reply_format.get("type") == "json_schema"):
+            return wire
+        raise ProviderError(
+            f"{self._profile.label} does not enforce a JSON schema. "
+            "Use a llama.cpp model for structured output.",
+            provider=self._profile.label,
+            kind=ProviderErrorKind.BAD_REQUEST,
+        )
 
     def _prepare_chat_messages(
         self, messages: Sequence[Mapping[str, Any]]

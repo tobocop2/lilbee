@@ -44,6 +44,8 @@ _EMBED_PATH = "/v1/embeddings"
 _IMAGE_PART = b'"image_url"'
 _NOT_NAME = re.compile(r"[^a-z0-9_-]")
 _OVERSIZE = "w " * 60000
+_OVERFLOW_CAP_S = 30.0
+"""The most seconds the overflow step waits; an engine that hangs fails here, not at 600 s."""
 _CONVERSATION = [
     {"role": "system", "content": "You answer in one short sentence."},
     {"role": "user", "content": "What is the capital of France?"},
@@ -106,6 +108,13 @@ class Setup:
     embed_dim: int = 0
     strict: bool = False
     server: str = ""
+    window: int = 0
+    """The window the engine serves, or 0 when the server reports an overflow itself.
+
+    A positive window sends the overflow step through the fleet provider's prompt fit,
+    which refuses an oversize prompt before any request (the path of an engine whose
+    server has no overflow check, such as mlx-lm).
+    """
 
     @property
     def preset(self) -> str:
@@ -181,16 +190,29 @@ def _rerank(setup: Setup) -> Outcome:
     return Outcome(len(scores) == len(_RERANK_DOCS) and best == 1, f"best={best}")
 
 
-def _overflow(setup: Setup) -> Outcome:
+def _send_oversize(setup: Setup) -> Outcome:
+    messages = [{"role": "user", "content": _OVERSIZE}]
+    options = {"max_tokens": 16}
     try:
-        create_sdk_provider().chat(
-            [{"role": "user", "content": _OVERSIZE}],
-            model=_ref(setup, "chat"),
-            options={"max_tokens": 16},
-        )
+        if setup.window:
+            from lilbee.providers.fleet.provider import FleetProvider
+
+            provider = FleetProvider()
+            provider._chat_ctx = setup.window
+            provider._fit_chat_context(messages, None, options, _ref(setup, "chat"))
+        create_sdk_provider().chat(messages, model=_ref(setup, "chat"), options=options)
     except ProviderError as exc:
         return Outcome(exc.kind == "context_overflow", f"kind={exc.kind}")
     return Outcome(False, "the oversize prompt was accepted")
+
+
+def _overflow(setup: Setup) -> Outcome:
+    """Send an oversize prompt and expect a context overflow within the cap."""
+    box: list[Outcome] = []
+    worker = threading.Thread(target=lambda: box.append(_send_oversize(setup)), daemon=True)
+    worker.start()
+    worker.join(_OVERFLOW_CAP_S)
+    return box[0] if box else Outcome(False, "no answer within the cap")
 
 
 def _colour(setup: Setup, rgb: tuple[int, int, int]) -> str:
@@ -525,6 +547,7 @@ def fixture_json(
         "rerank_wire": setup.rerank_wire,
         "embed_dim": setup.embed_dim,
         "strict": setup.strict,
+        **({"window": setup.window} if setup.window else {}),
         "results": {step: outcome.as_json() for step, outcome in results.items()},
         "error_answers": error_answers(tape.exchanges),
         "exchanges": [exchange.as_json() for exchange in tape.exchanges],
@@ -540,6 +563,7 @@ def load_fixture(path: Path) -> tuple[Setup, dict[str, Outcome], list[Exchange],
         doc["embed_dim"],
         doc.get("strict", False),
         doc["server"],
+        doc.get("window", 0),
     )
     results = {step: Outcome(**value) for step, value in doc["results"].items()}
     return setup, results, [Exchange(**e) for e in doc["exchanges"]], doc
