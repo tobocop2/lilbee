@@ -403,6 +403,25 @@ def set_services(services: Services | None) -> None:
     _state.singleton = services
 
 
+def chunks_in_store() -> bool:
+    """True when the index holds a chunk, asked of the store alone.
+
+    A bound container (scoped or cached) answers with its own store. Without
+    one, a short-lived store answers and no provider is built, so the check
+    starts no model warm-up.
+    """
+    from lilbee.core.config import cfg
+
+    bound = _state.override.get() or _state.singleton
+    if bound is not None:
+        return bound.store.has_chunks()
+    store = _new_store(cfg)
+    try:
+        return store.has_chunks()
+    finally:
+        store.close()
+
+
 def peek_services() -> Services | None:
     """Return the cached Services container, or None if not yet initialized.
 

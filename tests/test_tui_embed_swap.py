@@ -275,9 +275,9 @@ async def test_yes_on_a_ref_the_config_canonicalizes_starts_the_rebuild(
 
 
 async def test_a_swap_nothing_asked_about_offers_the_rebuild_after(
-    services: mock.MagicMock,
+    services: mock.MagicMock, index_holds_chunks: None
 ) -> None:
-    """No chunks means no question, so a stale verdict after the write becomes an offer."""
+    """The picker finds no chunks and asks nothing; the verdict after the write finds some."""
     services.store.has_chunks.return_value = False
     async with _Running(_ModelBarApp(), services) as run:
         await _pick_on_bar(run.app, run.pilot, _NEW)
@@ -1026,7 +1026,7 @@ async def test_a_store_error_before_the_write_toasts_and_changes_nothing(
 
 @pytest.mark.parametrize("saved", [None, "ollama/saved-embed:latest"], ids=["unsaved", "saved"])
 async def test_a_store_error_at_the_verdict_puts_the_config_back(
-    saved: str | None, services: mock.MagicMock
+    saved: str | None, services: mock.MagicMock, index_holds_chunks: None
 ) -> None:
     if saved is not None:
         persistent_settings.update_values(cfg.data_root, {"embedding_model": saved})

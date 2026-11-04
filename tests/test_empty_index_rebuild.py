@@ -8,7 +8,7 @@ import pytest
 
 from lilbee.app import profiles
 from lilbee.app.profiles import DiffRow, ProfileDiff, ProfileEffect, RebuildReason
-from lilbee.app.services import set_services
+from lilbee.app.services import peek_services, set_services
 from lilbee.app.settings import apply_settings_update, index_has_chunks
 from lilbee.cli.tui.screens.profile_dialogs import switch_plan
 from lilbee.core.config import cfg
@@ -33,6 +33,18 @@ def test_a_fresh_install_has_no_chunks_and_no_library_is_made():
     assert not cfg.lancedb_dir.exists()
     assert index_has_chunks() is False
     assert not cfg.lancedb_dir.exists()
+
+
+@pytest.mark.parametrize("holds", [True, False])
+def test_the_check_with_no_container_builds_no_provider(
+    holds: bool, monkeypatch: pytest.MonkeyPatch
+):
+    set_services(None)
+    monkeypatch.setattr(Store, "has_chunks", lambda self: holds)
+    with mock.patch("lilbee.providers.factory.create_provider") as create_provider:
+        assert index_has_chunks() is holds
+    create_provider.assert_not_called()
+    assert peek_services() is None
 
 
 def test_held_records_on_a_fresh_install_are_empty_and_make_no_library():
