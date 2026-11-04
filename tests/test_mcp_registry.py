@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -80,3 +83,42 @@ def test_registry_step_runs_the_script_on_server_json_with_oidc() -> None:
     installer = [s for s in steps if s.get("uses", "").startswith("sigstore/cosign-installer@")]
     assert len(installer) == 1
     assert steps.index(installer[0]) < registry
+
+
+def _derive_step() -> dict[str, Any]:
+    steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["npm"]["steps"]
+    derive = [
+        i
+        for i, s in enumerate(steps)
+        if "package.json" in s.get("run", "") and "server.json" in s.get("run", "")
+    ]
+    (registry,) = [i for i, s in enumerate(steps) if PUBLISH_SCRIPT in s.get("run", "")]
+    assert len(derive) == 1
+    assert derive[0] < registry
+    assert steps[derive[0]]["if"] == steps[registry]["if"]
+    return steps[derive[0]]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the publish step runs only on ubuntu-latest")
+def test_publish_derives_server_versions_from_the_npm_version(tmp_path: Path) -> None:
+    jq = shutil.which("jq")
+    assert jq is not None
+    (tmp_path / "packages" / "lilbee").mkdir(parents=True)
+    package = _load(NPM_PACKAGE)
+    package["version"] = "9.8.7"
+    (tmp_path / "packages" / "lilbee" / "package.json").write_text(
+        json.dumps(package), encoding="utf-8"
+    )
+    (tmp_path / "server.json").write_text(SERVER_JSON.read_text(encoding="utf-8"), encoding="utf-8")
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    subprocess.run(
+        ["bash", "-c", _derive_step()["run"]],
+        cwd=tmp_path,
+        env={"PATH": str(Path(jq).parent) + ":/usr/bin:/bin", "RUNNER_TEMP": str(runner_temp)},
+        check=True,
+    )
+    derived = _load(tmp_path / "server.json")
+    assert derived["version"] == "9.8.7"
+    assert [p["version"] for p in derived["packages"]] == ["9.8.7"]
+    assert derived["name"] == _load(SERVER_JSON)["name"]
