@@ -1396,6 +1396,35 @@ class TestStateFilePersistenceKeys:
         assert state is not None
         assert state.proxy_port is None
         assert state.engine_pin is None
+        assert state.origin is None
+
+    def test_the_plan_origin_round_trips_and_a_restamp_rewrites_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        first = sm.PlanOrigin("/root/a", '{"flash_attention": true}')
+        mgr.start([_launch(WorkerRole.CHAT)], origin=first)
+        state = sm._load_state(mgr._state_path)
+        assert state is not None and state.origin == first
+        later = sm.PlanOrigin("/root/a", '{"flash_attention": false}')
+        mgr.restamp(later)
+        restamped = sm._load_state(mgr._state_path)
+        assert restamped is not None and restamped.origin == later
+        assert restamped.pid == state.pid and restamped.launches == state.launches
+
+    def test_a_start_with_no_origin_writes_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        payload = json.loads(mgr._state_path.read_text(encoding="utf-8"))
+        assert "config_root" not in payload
+        state = sm._load_state(mgr._state_path)
+        assert state is not None and state.origin is None
 
 
 class TestLiveStateLaunchContract:
