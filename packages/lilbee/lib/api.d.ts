@@ -108,7 +108,7 @@ export interface FetchResponseLike {
 export interface ReleaseQuery {
     /** GitHub "owner/repo"; defaults to tobocop2/lilbee. */
     repo?: string;
-    /** Offer `.dev` builds as well as stable releases. Default false (what LILBEE_CHANNEL=stable means on the CLI). */
+    /** Offer `.dev` builds as well as stable releases. Default false: stable releases only. */
     includeDev?: boolean;
     /** The host to resolve builds for; defaults to detectHost(). */
     host?: Host;

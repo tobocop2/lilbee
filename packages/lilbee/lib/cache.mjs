@@ -60,6 +60,11 @@ export function installedBinary({ cacheDir, host = { platform: process.platform,
   return null;
 }
 
+/** The cached binary of exactly `release` for this host, or null when that release is not cached. */
+export function releaseBinary({ cacheDir, release, host }) {
+  return hostBinaries(cacheDir, release, host)[0] ?? null;
+}
+
 /** Delete every cached release dir but `keep`. */
 export function pruneOtherReleases(cacheDir, keep) {
   for (const release of entriesOf(cacheDir)) {

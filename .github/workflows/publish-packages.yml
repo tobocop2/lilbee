@@ -310,16 +310,17 @@ jobs:
 
   # Publishes the npm launcher. It downloads the release binaries at first run,
   # so it must publish after they are attached -- `resolve` is that gate.
-  # It publishes packages/lilbee/package.json exactly as committed: a new npm
-  # version ships when a PR bumps `version`, and a version already on npm is
-  # skipped. Auth is npm trusted publishing: the registry takes the
+  # It publishes packages/lilbee/package.json as committed at the tag, and refuses
+  # a package.json whose version is not the npm form of the tag (release.sh and
+  # promote_release.sh stamp it). Dev builds are not published to npm. A version
+  # already on npm is skipped. Auth is npm trusted publishing: the registry takes the
   # job's OIDC token, so there is no npm token anywhere and provenance is
   # automatic. That trust is configured per package on npmjs.com and names
   # this filename, so renaming this workflow breaks the publish -- see
   # packages/lilbee/docs/publishing.md.
   npm:
     needs: resolve
-    if: inputs.channels == 'all' || contains(inputs.channels, 'npm')
+    if: (inputs.channels == 'all' || contains(inputs.channels, 'npm')) && !contains(needs.resolve.outputs.tag, '.dev')
     runs-on: ubuntu-latest
     # Mirrors the PyPI job: the `npm` environment name is pinned by npm's
     # trusted-publisher config (like `pypi` in publish.yml) -- don't rename.
@@ -328,7 +329,10 @@ jobs:
       contents: read
       id-token: write   # OIDC for trusted publishing
     steps:
+      # The tag's own tree: package.json must be the one the release stamped.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -347,6 +351,20 @@ jobs:
         run: npm test
         working-directory: packages/lilbee
 
+      - name: Check package.json matches the tag
+        working-directory: packages/lilbee
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          EXPECTED=$(bash ../../scripts/release_version.sh npm-version "${TAG#v}")
+          VERSION=$(node -p 'require("./package.json").version')
+          RELEASE=$(node -p 'require("./package.json").lilbee.release')
+          if [ "${VERSION}" != "${EXPECTED}" ] || [ "${RELEASE}" != "${TAG}" ]; then
+            echo "::error::package.json has version ${VERSION} and lilbee.release ${RELEASE}; ${TAG} needs version ${EXPECTED} and lilbee.release ${TAG}."
+            exit 1
+          fi
+
       - name: Check whether this version is already on npm
         id: check
         working-directory: packages/lilbee
@@ -362,7 +380,7 @@ jobs:
 
       - name: Publish lilbee
         if: vars.NPM_TRUSTED_PUBLISHING == 'enabled' && steps.check.outputs.skip != 'true'
-        run: npm publish --access public
+        run: npm publish --access public --tag latest
         working-directory: packages/lilbee
 
       - name: Say why nothing published
@@ -372,7 +390,7 @@ jobs:
           VERSION: ${{ steps.check.outputs.version }}
         run: |
           if [ "${SKIP}" = "true" ]; then
-            echo "lilbee ${VERSION} is already on npm. To publish, bump version in packages/lilbee/package.json."
+            echo "lilbee ${VERSION} is already on npm; nothing to publish."
           else
             echo "The repository variable NPM_TRUSTED_PUBLISHING is not 'enabled', so lilbee ${VERSION} did not publish to npm. Finish the one-time npmjs setup in packages/lilbee/docs/publishing.md, then set the variable."
           fi

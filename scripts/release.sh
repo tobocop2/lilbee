@@ -3,6 +3,7 @@
 # one, else the bNNN), commit, tag, and push from main.
 set -euo pipefail
 
+here=$(cd "$(dirname "$0")" && pwd)
 cd "$(git rev-parse --show-toplevel)"
 
 branch=$(git rev-parse --abbrev-ref HEAD)
@@ -29,13 +30,16 @@ esac
 tag="v${next}"
 echo "release: $cur -> $next ($tag)"
 
-perl -pi -e 's/^version = "\Q'"$cur"'\E"$/version = "'"$next"'"/' pyproject.toml uv.lock
-# The Claude Code plugin cache keys on the manifest version, so the plugin moves with every release.
-perl -pi -e 's/^(\s*"version": ")\Q'"$cur"'\E(",?)$/${1}'"$next"'${2}/' plugins/lilbee/.claude-plugin/plugin.json
-grep -q "\"version\": \"${next}\"" plugins/lilbee/.claude-plugin/plugin.json \
-  || { echo "release: plugin.json did not take version ${next}" >&2; git checkout -q -- pyproject.toml uv.lock plugins/lilbee/.claude-plugin/plugin.json; exit 1; }
+# One helper stamps every file that carries the version: pyproject, uv.lock, the
+# Claude plugin manifest, and the npm package (version, lilbee.release, lock file).
+# It refuses a version with no npm mapping before it touches anything. A file that
+# does not take the version restores the tree, so nothing half-stamped is committed.
+if ! "${here}/release_version.sh" stamp . "$cur" "$next"; then
+  git checkout -q -- .
+  exit 1
+fi
 
-git add pyproject.toml uv.lock plugins/lilbee/.claude-plugin/plugin.json
+git diff --name-only -z | xargs -0 git add --
 git commit -q -m "Release ${next}"
 # Lightweight: tag.gpgsign would otherwise want a message and open an editor.
 git tag --no-sign "$tag"

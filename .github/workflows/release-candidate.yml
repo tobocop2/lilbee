@@ -60,8 +60,9 @@ jobs:
 
       # A promotion (scripts/promote_release.sh, `make promote`) is a tag whose
       # parent commit is itself a v* tag, whose subject starts with "Promote ",
-      # and whose only change is the version in pyproject.toml, uv.lock and the
-      # Claude plugin manifest: the same source re-released under a new version.
+      # and whose only change is the version in the files that
+      # scripts/release_version.sh lists (the Python project, the Claude plugin
+      # manifest and the npm package): the same source re-released under a new version.
       # The subject tells it apart from a back-to-back release, which changes
       # the same files. A tag with any other change is a normal release.
       # create-prerelease uses this to carry the source release's notes over.
