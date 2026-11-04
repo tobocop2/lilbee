@@ -1295,8 +1295,24 @@ class Store:
                 embedding_dim=self._config.embedding_dim,
             )
 
+    def _library_absent(self) -> bool:
+        """True when the library is not open, has no folder and no older record file waits.
+
+        An older record file is imported by the open, so a data dir that holds one is not absent.
+        """
+        return (
+            self._db is None
+            and not self._config.lancedb_dir.exists()
+            and not legacy_files(self._config.data_root)
+        )
+
     def _has_chunks(self) -> bool:
-        """Return True when the chunks table exists and has at least one row."""
+        """Return True when the chunks table exists and has at least one row.
+
+        A data dir without a library folder holds none, and the answer leaves it uncreated.
+        """
+        if self._library_absent():
+            return False
         chunks = self.open_table(CHUNKS_TABLE)
         return chunks is not None and chunks.count_rows() > 0
 
@@ -3324,6 +3340,8 @@ class Store:
 
     def held_records(self) -> dict[str, HeldRecord]:
         """The record of every path a sync holds out, by path."""
+        if self._library_absent():
+            return {}
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return {}

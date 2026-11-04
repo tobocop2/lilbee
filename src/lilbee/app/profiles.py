@@ -12,6 +12,7 @@ import tomli_w
 
 from lilbee.app.settings import (
     apply_profile_layer,
+    index_has_chunks,
     inert_reindex_keys,
     list_settings,
     ocr_off_vision_notice,
@@ -285,10 +286,11 @@ def rebuild_reason(keys: Iterable[str], reindex_required: bool) -> RebuildReason
     retries each held-out file, the only way a raised limit reaches them: a limit
     is not a setting that requires a rebuild.
     """
-    if reindex_required:
-        return RebuildReason.CHANGES
-    if (REINDEX_FIELDS - inert_reindex_keys()) & set(keys):
-        return RebuildReason.SETS_REINDEX
+    if index_has_chunks():
+        if reindex_required:
+            return RebuildReason.CHANGES
+        if (REINDEX_FIELDS - inert_reindex_keys()) & set(keys):
+            return RebuildReason.SETS_REINDEX
     if held_out_sources()[1] > 0:
         return RebuildReason.HELD_OUT
     return None
@@ -312,7 +314,7 @@ def _apply_result(planned: ProfileDiff, warnings: tuple[str, ...] = ()) -> Apply
     return ApplyResult(
         name=planned.name,
         changes=planned.changes,
-        reindex_required=ProfileEffect.REINDEX in effects.values(),
+        reindex_required=ProfileEffect.REINDEX in effects.values() and index_has_chunks(),
         new_files_only=tuple(k for k, e in effects.items() if e is ProfileEffect.NEW_FILES_ONLY),
         kept=planned.kept,
         warnings=warnings,

@@ -1354,3 +1354,23 @@ def _hermetic_hf_client(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
     # On the class, not on get_services().hf_client: this runs for every test in
     # the suite, and building the services container each time is not free.
     monkeypatch.setattr(HfClient, "fetch_models", _fetch)
+
+
+@pytest.fixture
+def index_holds_chunks() -> Iterator[None]:
+    """An index with chunks: the rebuild check finds one."""
+    with (
+        mock.patch("lilbee.app.settings.index_has_chunks", return_value=True),
+        mock.patch("lilbee.app.profiles.index_has_chunks", return_value=True),
+    ):
+        yield
+
+
+@pytest.fixture
+def index_is_empty() -> Iterator[None]:
+    """An index with no chunks: the rebuild check finds none."""
+    with (
+        mock.patch("lilbee.app.settings.index_has_chunks", return_value=False),
+        mock.patch("lilbee.app.profiles.index_has_chunks", return_value=False),
+    ):
+        yield

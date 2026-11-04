@@ -739,8 +739,10 @@ def _settle(
         # A step that raises can leave keys set on cfg; no cache may keep the old value.
         _invalidate_caches(effective)
     reindex_required = bool((REINDEX_FIELDS - inert_reindex_keys()) & reindex_effective)
-    if embed_in_batch:
-        reindex_required = reindex_required or _embed_reindex_required()
+    if reindex_required or embed_in_batch:
+        reindex_required = index_has_chunks() and (
+            reindex_required or (embed_in_batch and _embed_reindex_required())
+        )
     return SettingsUpdateResult(
         updated=sorted(keys),
         reindex_required=reindex_required,
@@ -830,15 +832,14 @@ def inert_reindex_keys() -> set[str]:
     return inert
 
 
-def _index_has_chunks() -> bool:
-    """False only when a live store holds no chunk; with no services built, assume it does.
+def index_has_chunks() -> bool:
+    """True when the index holds at least one chunk; a rebuild has nothing to change otherwise.
 
-    A settings write must not build the services (and their engines) to answer this.
+    The store answers without opening the library when the library has no folder.
     """
-    from lilbee.app.services import peek_services
+    from lilbee.app.services import get_services
 
-    services = peek_services()
-    return services is None or services.store.has_chunks()
+    return get_services().store.has_chunks()
 
 
 def _embed_reindex_required() -> bool:

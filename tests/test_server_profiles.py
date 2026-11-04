@@ -145,6 +145,13 @@ def test_apply_reports_a_reindex_when_a_reindex_setting_changes(client):
     assert [(r["key"], r["effect"]) for r in applied["changes"]] == [("chunk_size", "reindex")]
 
 
+def test_apply_reports_no_reindex_when_the_index_holds_no_chunks(client, index_is_empty):
+    _write(_global_dir(), "court-filings", CREDITED)
+    applied = client.post(_url("Court filings", "/apply")).json()
+    assert applied["reindex_required"] is False
+    assert [(r["key"], r["effect"]) for r in applied["changes"]] == [("chunk_size", "reindex")]
+
+
 def _recording_sync(calls: list[dict[str, Any]]):
     async def _sync(**kwargs: Any) -> SyncResult:
         calls.append(kwargs)

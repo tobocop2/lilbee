@@ -859,6 +859,7 @@ class TestTableModelSetting:
         assert result.updated == ["table_model"]
         assert result.reindex_required is False
 
+    @pytest.mark.usefixtures("index_holds_chunks")
     def test_table_model_change_flags_a_reindex_once_layout_detection_is_on(self, monkeypatch):
         from lilbee.app import settings as appset
 
@@ -890,6 +891,7 @@ class TestSemanticChunkingSetting:
         assert "semantic_chunking" in WRITABLE_CONFIG_FIELDS
         assert "semantic_chunking" in REINDEX_FIELDS
 
+    @pytest.mark.usefixtures("index_holds_chunks")
     def test_semantic_chunking_change_flags_a_reindex(self, monkeypatch):
         from lilbee.app import settings as appset
 
@@ -930,6 +932,7 @@ class TestTopicThresholdSetting:
         assert result.updated == ["topic_threshold"]
         assert result.reindex_required is False
 
+    @pytest.mark.usefixtures("index_holds_chunks")
     def test_topic_threshold_change_flags_a_reindex_once_semantic_chunking_is_on(self, monkeypatch):
         from lilbee.app import settings as appset
 
@@ -2245,6 +2248,7 @@ class TestResetRemovesTheUserValue:
         assert cfg.chunk_size == 800
         assert "chunk_size" not in settings.load(root)
 
+    @pytest.mark.usefixtures("index_holds_chunks")
     def test_reset_reports_reindex_from_disk_even_when_cfg_is_stale(self):
         """A second writer (another process, or a hand edit) can change config.toml
         without this process's cfg ever observing it; the reindex verdict must come
@@ -2293,6 +2297,7 @@ class TestResetRemovesTheUserValue:
         assert settings.load(root) == {"chat_model": "acme/a-GGUF/a.gguf"}
         assert cfg.top_k == 12
 
+    @pytest.mark.usefixtures("index_holds_chunks")
     def test_reset_embedding_model_pins_meta_first_and_reports_reindex(self, monkeypatch):
         from lilbee.app import settings as appset
         from lilbee.core.config import cfg
@@ -2314,6 +2319,7 @@ class TestResetRemovesTheUserValue:
         assert cfg.embedding_model == builtin_value("embedding_model")
         assert "embedding_model" not in settings.load(root)
 
+    @pytest.mark.usefixtures("index_holds_chunks")
     def test_reset_of_a_drifted_embedding_model_checks_the_store_but_skips_the_pin(
         self, monkeypatch
     ):
