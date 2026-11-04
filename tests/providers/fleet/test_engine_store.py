@@ -291,6 +291,166 @@ def test_licence_permitted(expression: str, ok: bool) -> None:
     assert licence_permitted(expression) is ok
 
 
+_CUDA_EXPRESSION = "MIT AND LicenseRef-NVIDIA-CUDA-EULA AND BSD-3-Clause"
+
+
+@pytest.mark.parametrize(
+    ("expression", "has_notice", "ok"),
+    [
+        ("LicenseRef-NVIDIA-CUDA-EULA", True, True),
+        (_CUDA_EXPRESSION, True, True),
+        ("LicenseRef-NVIDIA-CUDA-EULA", False, False),
+        (_CUDA_EXPRESSION, False, False),
+        ("LicenseRef-NVIDIA-Other", True, False),
+        ("LicenseRef-NVIDIA-CUDA-EULA-2", True, False),
+        ("GPL-3.0-only AND LicenseRef-NVIDIA-CUDA-EULA", True, False),
+        ("MIT", False, True),
+    ],
+)
+def test_the_nvidia_cuda_term_passes_only_with_its_notice(
+    expression: str, has_notice: bool, ok: bool
+) -> None:
+    assert licence_permitted(expression, has_notice) is ok
+
+
+def _cuda_wheel(
+    path: Path,
+    *,
+    notice: bool,
+    licence: str = _CUDA_EXPRESSION,
+    tool: str = "server",
+    notice_path: str = "p-1.dist-info/licenses/NOTICE-NVIDIA-CUDA",
+    notice_text: str = "notice",
+) -> str:
+    with zipfile.ZipFile(path, "w") as archive:
+        server = zipfile.ZipInfo(f"p/bin/{tool}")
+        server.external_attr = (stat.S_IFREG | 0o755) << 16
+        archive.writestr(server, "#!/bin/sh\n")
+        archive.writestr("p-1.dist-info/METADATA", f"Name: p\nLicense-Expression: {licence}\n")
+        if notice:
+            archive.writestr(notice_path, notice_text)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_a_cuda_wheel_with_its_notice_installs(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=True)
+    store.install_from_wheel(pin(sha), path)
+    assert len(store.installed()) == 1
+
+
+def test_a_cuda_wheel_without_its_notice_is_refused(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=False)
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        store.install_from_wheel(pin(sha), path)
+
+
+def test_a_wheel_with_an_unknown_licence_is_refused_even_with_the_notice(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=True, licence="MIT AND LicenseRef-Mystery")
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-Mystery"):
+        store.install_from_wheel(pin(sha), path)
+
+
+def test_a_cuda_wheel_with_a_nested_notice_is_refused(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(
+        path, notice=True, notice_path="p/vendor/p-1.dist-info/licenses/NOTICE-NVIDIA-CUDA"
+    )
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        store.install_from_wheel(pin(sha), path)
+
+
+def test_a_cuda_wheel_with_an_empty_notice_is_refused(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=True, notice_text="")
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        store.install_from_wheel(pin(sha), path)
+
+
+def test_the_mistral_cuda_pin_record_installs_a_cuda_wheel(
+    store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.catalog import runnable
+    from lilbee.providers.fleet.engines import mistral
+
+    monkeypatch.setattr(runnable, "session_host", lambda: object())
+    monkeypatch.setattr(
+        mistral.MistralAdapter,
+        "pick_build",
+        lambda self, host: mistral.BuildPick("cuda128-sm89", ""),
+    )
+    monkeypatch.setattr(mistral, "pack_platforms", lambda *args: {})
+    monkeypatch.setattr(mistral, "pack_digest", lambda *args: None)
+    record = mistral.MistralAdapter().pin_record()
+    assert record["licenses"] == [_CUDA_EXPRESSION]
+    path = tmp_path / "m.whl"
+    sha = _cuda_wheel(path, notice=True, tool=str(record["tool"]))
+    lock = pin_lock({**record, "sha256": sha})
+    store.install_from_wheel(lock, path)
+    assert len(store.installed()) == 1
+
+
+def test_the_mistral_cpu_pin_record_states_only_mit(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lilbee.catalog import runnable
+    from lilbee.providers.fleet.engines import mistral
+
+    monkeypatch.setattr(runnable, "session_host", lambda: object())
+    monkeypatch.setattr(
+        mistral.MistralAdapter, "pick_build", lambda self, host: mistral.BuildPick("cpu", "")
+    )
+    monkeypatch.setattr(mistral, "pack_platforms", lambda *args: {})
+    monkeypatch.setattr(mistral, "pack_digest", lambda *args: None)
+    assert mistral.MistralAdapter().pin_record()["licenses"] == ["MIT"]
+
+
+def test_a_pin_may_state_the_nvidia_term_without_a_notice() -> None:
+    engine_store._check_licences(pin("0" * 64, licences=(_CUDA_EXPRESSION,)))
+
+
+def test_a_pin_with_another_nvidia_term_is_refused() -> None:
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-Other"):
+        engine_store._check_licences(pin("0" * 64, licences=("MIT AND LicenseRef-NVIDIA-Other",)))
+
+
+def _staged_cuda_tree(stage: Path, *, notice: bool) -> None:
+    (stage / "p" / "bin").mkdir(parents=True)
+    server = stage / "p" / "bin" / "server"
+    server.write_text("#!/bin/sh\n", encoding="utf-8")
+    server.chmod(0o755)
+    (stage / "p-1.dist-info" / "licenses").mkdir(parents=True)
+    (stage / "p-1.dist-info" / "METADATA").write_text(
+        f"Name: p\nLicense-Expression: {_CUDA_EXPRESSION}\n", encoding="utf-8"
+    )
+    if notice:
+        (stage / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_text(
+            "notice", encoding="utf-8"
+        )
+
+
+def test_a_staged_cuda_tree_with_its_notice_passes_the_check(tmp_path: Path) -> None:
+    _staged_cuda_tree(tmp_path, notice=True)
+    assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
+
+
+def test_a_staged_cuda_tree_with_an_empty_notice_is_refused(tmp_path: Path) -> None:
+    _staged_cuda_tree(tmp_path, notice=True)
+    (tmp_path / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_text(
+        "", encoding="utf-8"
+    )
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
+
+
+def test_a_staged_cuda_tree_without_its_notice_is_refused(tmp_path: Path) -> None:
+    _staged_cuda_tree(tmp_path, notice=False)
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
+
+
 @pytest.mark.parametrize("bad", ["../x", "a/b", ".hidden", "", "a b"])
 def test_pin_names_cannot_leave_the_engine_directory(bad: str) -> None:
     with pytest.raises(ValueError, match="cannot name an engine directory"):
