@@ -10,7 +10,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import ValidationError
 
@@ -378,41 +378,66 @@ def _coerce_value(key: str, value: Any) -> Any:
     return checked_write(key, value)
 
 
-def _apply_with_rollback(
-    updates: dict[str, Any],
-) -> tuple[dict[str, Any], list[str]]:
-    """Set each key on cfg, or none of them on a refusal. Returns (persist, delete)."""
-    snapshot = {k: getattr(cfg, k) for k in updates}
+_T = TypeVar("_T")
+
+
+def _commit(change: Callable[[Config], _T]) -> _T:
+    """Make *change* on a copy of cfg, then publish every field it moved onto cfg in one step.
+
+    Each assignment validates on the copy, so a refusal raises before cfg moves. The
+    publish is one ``dict.update`` of keys cfg already holds: with the GIL, no other
+    thread runs inside it. A reader that reads two fields in two lookups can still read
+    one on each side of a commit. The whole field dict is compared, because the model
+    validator can re-derive a field the change does not name. It is compared against
+    cfg as it was at the copy, by value: a field another thread writes meanwhile keeps
+    its new value, and a re-derived equal value is not published.
+    """
+    draft = cfg.model_copy()
+    base = dict(draft.__dict__)
+    result = change(draft)
+    moved = {
+        key: value
+        for key, value in draft.__dict__.items()
+        if value is not base[key] and value != base[key]
+    }
+    cfg.__dict__.update(moved)
+    cfg.__pydantic_fields_set__.update(moved)
+    return result
+
+
+def _set_each(config: Config, values: Mapping[str, Any]) -> None:
+    for key in values:
+        setattr(config, key, values[key])
+
+
+def _restore_values(values: Mapping[str, Any]) -> None:
+    """Put *values* back on cfg in one step."""
+    _commit(lambda draft: _set_each(draft, values))
+
+
+def _apply_updates(config: Config, updates: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Set each key on *config*; raise on the first refusal. Returns (persist, delete)."""
     to_persist: dict[str, Any] = {}
     to_delete: list[str] = []
-    try:
-        for key, raw in updates.items():
-            if raw is None:
-                setattr(cfg, key, None)
-                to_delete.append(key)
-                continue
-            try:
-                setattr(cfg, key, _coerce_value(key, raw))
-            except ValidationError as exc:
-                if _is_write_only(key):
-                    raise ValueError(_secret_refusal(key, exc)) from None
-                raise ValueError(refusal_sentence(key, raw)) from None
-            normalized = getattr(cfg, key)
-            if isinstance(normalized, list):
-                to_persist[key] = "\n".join(str(x) for x in normalized)
-            else:
-                # Hand the scalar over with its type intact so config.toml holds
-                # `true` and `2560`, not `"True"` and `"2560"`.
-                to_persist[key] = normalized
-    except Exception:
-        _restore_snapshot(snapshot)
-        raise
+    for key, raw in updates.items():
+        if raw is None:
+            setattr(config, key, None)
+            to_delete.append(key)
+            continue
+        try:
+            setattr(config, key, _coerce_value(key, raw))
+        except ValidationError as exc:
+            if _is_write_only(key):
+                raise ValueError(_secret_refusal(key, exc)) from None
+            raise ValueError(refusal_sentence(key, raw)) from None
+        normalized = getattr(config, key)
+        if isinstance(normalized, list):
+            to_persist[key] = "\n".join(str(x) for x in normalized)
+        else:
+            # Hand the scalar over with its type intact so config.toml holds
+            # `true` and `2560`, not `"True"` and `"2560"`.
+            to_persist[key] = normalized
     return to_persist, to_delete
-
-
-def _restore_snapshot(snapshot: dict[str, Any]) -> None:
-    for key, value in snapshot.items():
-        setattr(cfg, key, value)
 
 
 def _reload_changed_roles(changed_keys: set[str]) -> None:
@@ -569,10 +594,11 @@ def apply_settings_update(
 ) -> SettingsUpdateResult:
     """Validate, apply, persist, and invalidate caches for a batch of updates.
 
-    Atomic on validation: a rejection rolls every field back and writes
-    nothing. Atomic on disk failure: an ``OSError`` from the TOML write, or a
-    parse error reloading a corrupt config.toml, restores the in-memory
-    snapshot before re-raising. Cache invalidation runs only after a
+    Atomic on validation: the batch validates on a copy of cfg, so a
+    rejection leaves cfg untouched and writes nothing. Atomic on disk
+    failure: an ``OSError`` from the TOML write, or a parse error
+    reloading a corrupt config.toml, restores the in-memory snapshot
+    before re-raising. Cache invalidation runs only after a
     successful persist.
 
     Pass ``allow_model_roles=False`` to reject ``chat_model`` /
@@ -599,7 +625,7 @@ def apply_settings_update(
             # attempt.
             _pin_legacy_store_meta()
         before = snapshot_settings(updates)
-        to_persist, to_delete = _apply_with_rollback(updates)
+        to_persist, to_delete = _commit(lambda draft: _apply_updates(draft, updates))
         written = False
         try:
             # A write can fail part way: the update lands and the delete raises.
@@ -614,8 +640,7 @@ def apply_settings_update(
                 _undo_update(before, invalidate_caches=False)
             else:
                 # The read refused before any write: the file stays the editor's.
-                _restore_snapshot(before.values)
-                cfg.embedding_dim = before.embedding_dim
+                _restore_values({**before.values, "embedding_dim": before.embedding_dim})
             raise
         # Decide the reset now, before settle's other steps can raise.
         txn.needs_provider_reset = bool(set(updates) & PROVIDER_SWITCHING_KEYS)
@@ -653,8 +678,7 @@ def _undo_update(before: SettingsSnapshot, *, invalidate_caches: bool) -> None:
     except Exception:
         # The caller sees the update fail, so no field may keep its new value.
         log.exception("Could not put the settings back after a failed update")
-        _restore_snapshot(before.values)
-        cfg.embedding_dim = before.embedding_dim
+        _restore_values({**before.values, "embedding_dim": before.embedding_dim})
 
 
 @dataclass(frozen=True)
@@ -695,8 +719,7 @@ def _put_back(snapshot: SettingsSnapshot, *, invalidate_caches: bool = True) -> 
     persistent_settings.delete_values(
         cfg.data_root, [key for key in snapshot.values if key not in snapshot.saved]
     )
-    _restore_snapshot(snapshot.values)
-    cfg.embedding_dim = snapshot.embedding_dim
+    _restore_values({**snapshot.values, "embedding_dim": snapshot.embedding_dim})
     if invalidate_caches:
         _invalidate_caches(set(snapshot.values))
 
@@ -730,13 +753,12 @@ def _settle(
     reindex_effective = effective if reindex_changed is None else reindex_changed
     try:
         if values is None:
-            persistent_settings.sync_from_resolver(cfg, keys)
+            _commit(lambda draft: persistent_settings.sync_from_resolver(draft, keys))
         else:
-            for key in keys:
-                setattr(cfg, key, values[key])
+            _commit(lambda draft: _set_each(draft, {key: values[key] for key in keys}))
         _rederive_from_resolved(effective)
     finally:
-        # A step that raises can leave keys set on cfg; no cache may keep the old value.
+        # A rederive that raises comes after the commit; no cache may keep the old value.
         _invalidate_caches(effective)
     reindex_required = bool((REINDEX_FIELDS - inert_reindex_keys()) & reindex_effective)
     if reindex_required or embed_in_batch:
