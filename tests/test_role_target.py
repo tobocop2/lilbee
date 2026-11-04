@@ -201,6 +201,13 @@ class TestCpuRoleArgvFromRealAdapter:
         assert "--fit-target" not in launch.argv
         assert "CUDA_VISIBLE_DEVICES" not in launch.env_overrides
 
+    def test_tei_cpu_target_hides_the_cards_in_its_own_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = InstancePlan(WorkerRole.EMBED, (), target=RoleTarget.CPU)
+        launch = _llama_launch(monkeypatch, tmp_path, plan, TEI)
+        assert launch.env_overrides["CUDA_VISIBLE_DEVICES"] == ""
+
     def test_llama_cpu_chat_drops_the_fit_margin(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -333,7 +340,7 @@ class TestDeviceTargets:
             (MistralAdapter, MISTRAL, "cuda128-sm89", {RoleTarget.CPU, RoleTarget.GPU}),
             (MistralAdapter, MISTRAL, "cpu", {RoleTarget.CPU}),
             (MistralAdapter, MISTRAL, None, {RoleTarget.CPU}),
-            (TeiAdapter, TEI, "cuda", {RoleTarget.GPU}),
+            (TeiAdapter, TEI, "cuda", {RoleTarget.CPU, RoleTarget.GPU}),
             (TeiAdapter, TEI, "cpu", {RoleTarget.CPU}),
         ],
     )

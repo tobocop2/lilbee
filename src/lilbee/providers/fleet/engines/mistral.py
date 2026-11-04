@@ -252,6 +252,9 @@ class MistralAdapter:
     def runtime_env(self) -> Mapping[str, str]:
         return {}
 
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+        return {}
+
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
         return {"useModelName": _SERVED_NAME}
 

@@ -90,6 +90,9 @@ class _SizedEngine(FakeAdapter):
     def runtime_env(self):
         return {}
 
+    def target_env(self, target):
+        return {}
+
     def swap_extras(self, launch):
         return {}
 

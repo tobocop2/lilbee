@@ -26,7 +26,7 @@ from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.host_caps import collect
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
 
 COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
@@ -419,6 +419,7 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
         ("model_meta", None),
         ("assert_loadable", None),
         ("runtime_env", {}),
+        ("target_env", {}),
         ("estimate_memory", None),
         ("check_readback", False),
         ("supports_fit_target", False),
@@ -432,6 +433,7 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
     IK_LLAMA.model_meta(path)
     IK_LLAMA.assert_loadable("repo", "file", None)
     IK_LLAMA.runtime_env()
+    IK_LLAMA.target_env(RoleTarget.CPU)
     IK_LLAMA.estimate_memory(None)  # type: ignore[arg-type]
     IK_LLAMA.check_readback(path)
     IK_LLAMA.supports_fit_target(path)
@@ -443,6 +445,7 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
         "model_meta",
         "assert_loadable",
         "runtime_env",
+        "target_env",
         "estimate_memory",
         "check_readback",
         "supports_fit_target",
