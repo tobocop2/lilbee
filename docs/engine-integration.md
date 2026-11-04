@@ -113,7 +113,7 @@ Evidence: row 32, row 33, row 46, row 47, row 76, row 78. Row 33 is a chat model
 
 ### E14 Response format and JSON schema
 
-A chat request with `response_format` of type `json_object` gets content that parses whole to an object, with no code fence and no trailing text. A request of type `json_schema` gets content that also holds every required key with the declared type and no other key. An engine that ignores the field fails. The row runs only when the engine claims `json`. The `/v1/chat/completions` route refuses a value that is not an object with a 400 that names the field, and forwards an object to the engine as sent. An engine that rejects a malformed object answers with its own error. Callers in `src/lilbee` send the field (`memory.py`, `searcher.py` and `extractor.py`).
+A chat request with `response_format` of type `json_object` gets content that parses whole to an object, with no code fence and no trailing text. A request of type `json_schema` gets content that also holds every required key with the declared type and no other key. An engine that ignores the field fails. The row runs only when the engine claims `json`. The `/v1/chat/completions` route refuses a value that is not an object with a 400 that names the field, and forwards an object to the engine as sent. An engine that rejects a malformed object answers with its own error. An engine whose profile has `structured_output` off (mlx-lm) gets no `json_object` field, and a `json_schema` request fails with a 400 before any request is sent. Callers in `src/lilbee` send the field (`memory.py`, `searcher.py` and `extractor.py`).
 
 Evidence: no spike row. Issue 1190 lists the field.
 

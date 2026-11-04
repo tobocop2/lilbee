@@ -376,3 +376,31 @@ def test_a_planner_launch_for_mlx_gives_a_provider_that_refuses_an_oversize_prom
         provider.chat([{"role": "user", "content": prompt}], model="org/repo#mlx")
     assert refused.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
     assert calls == []
+
+
+def test_mlx_profile_structured_output_false() -> None:
+    from lilbee.providers.fleet.engines import LLAMA
+    from lilbee.providers.fleet.engines.mistral import MISTRAL
+
+    assert MLX.request_profile(WorkerRole.CHAT).structured_output is False
+    assert LLAMA.request_profile(WorkerRole.CHAT).structured_output is True
+    assert MISTRAL.request_profile(WorkerRole.CHAT).structured_output is True
+
+
+@pytest.mark.parametrize(
+    ("window", "target", "want"), [(CONTEXT, 262144, CONTEXT), (262144, CONTEXT, CONTEXT)]
+)
+def test_mlx_launch_ctx_is_the_smaller_of_the_window_and_the_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, window: int, target: int, want: int
+) -> None:
+    from lilbee.providers.fleet import planning
+
+    folder = model_dir(tmp_path, {"max_position_embeddings": window})
+    (folder / "model.safetensors").write_bytes(b"\0" * 1024)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", target)
+    monkeypatch.setattr(cfg, "num_ctx_max", None)
+    monkeypatch.setattr(cfg, "placement", "")
+    monkeypatch.setattr(MLX, "binary", lambda: tmp_path / "mlx-lm-server")
+    launch = planning.build_single_role_launch(WorkerRole.CHAT, folder, engine=MLX)
+    assert launch.ctx == want
+    assert launch.ctx > 0

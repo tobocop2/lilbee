@@ -58,6 +58,7 @@ _PROFILE = RequestProfile(
     batch_overflow=None,
     unreadable_embedding_hint="mlx-lm serves no embeddings.",
     reasoning_field="reasoning",
+    structured_output=False,
 )
 
 

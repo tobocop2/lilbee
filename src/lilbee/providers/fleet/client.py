@@ -741,7 +741,11 @@ class LlamaServerClient:
         ``timeout`` overrides the client default for either path, so a
         caller-enforced deadline (vision OCR) ends the request itself.
         """
-        payload: dict[str, Any] = {"model": self._model, "messages": messages, **(options or {})}
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            **self._supported_options(options),
+        }
         request_timeout = timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
         if stream:
             return self._chat_stream(payload, request_timeout)
@@ -794,7 +798,12 @@ class LlamaServerClient:
         (total seconds, ``None`` for no limit) raises :class:`ChatDeadlineError`;
         a set *cancel* raises ``TaskCancelledError``.
         """
-        payload = {"model": self._model, "messages": messages, **(options or {}), "stream": True}
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            **self._supported_options(options),
+            "stream": True,
+        }
         with self._track():
             return asyncio.run(self._chat_until_stopped(payload, deadline_s, cancel))
 
@@ -855,7 +864,7 @@ class LlamaServerClient:
             "messages": self._prepare_chat_messages(messages),
             "tools": tools,
             "stream": False,
-            **(options or {}),
+            **self._supported_options(options),
         }
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
@@ -1014,8 +1023,27 @@ class LlamaServerClient:
             payload["tools"] = tools
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
-        payload.update(options or {})
+        payload.update(self._supported_options(options))
         return payload
+
+    def _supported_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
+        """*options* without the reply format this server cannot enforce.
+
+        A ``json_schema`` request is a promise that the reply fits the schema, so it is
+        refused. Any other format is advice, so it is dropped.
+        """
+        fields = dict(options or {})
+        if self._profile.structured_output or "response_format" not in fields:
+            return fields
+        reply_format = fields.pop("response_format")
+        if not (isinstance(reply_format, Mapping) and reply_format.get("type") == "json_schema"):
+            return fields
+        raise ProviderError(
+            f"{self._profile.label} does not enforce a JSON schema. "
+            "Use a llama.cpp model for structured output.",
+            provider=self._profile.label,
+            kind=ProviderErrorKind.BAD_REQUEST,
+        )
 
     def _prepare_chat_messages(
         self, messages: Sequence[Mapping[str, Any]]
