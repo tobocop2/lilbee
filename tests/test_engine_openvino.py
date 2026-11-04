@@ -11,12 +11,45 @@ from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engines import choice, proof
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
-from lilbee.providers.fleet.engines.openvino import GPU_MISSING, OPENVINO, OpenvinoAdapter
+from lilbee.providers.fleet.engines.openvino import (
+    GPU_MISSING,
+    OPENVINO,
+    OpenvinoAdapter,
+    parse_devices,
+)
 from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.roles import RoleTarget, WorkerRole
 
 FIXTURES = Path(__file__).parent / "fixtures" / "host_caps"
 BINARY = Path("/engines/bin/llama-server")
+TWO_GPU_LIST = (
+    Path(__file__).parent
+    / "conformance"
+    / "fixtures"
+    / "engines"
+    / "openvino-two-gpu.list-devices.log"
+).read_text(encoding="utf-8")
+ONE_GPU_LIST = (
+    "Available devices:\n"
+    "  OPENVINO0: GGML_OPENVINO_DEVICE=CPU - cpu (1 MiB, 1 MiB free)\n"
+    "  OPENVINO1: GGML_OPENVINO_DEVICE=GPU (selected) - Intel UHD (iGPU) (1 MiB, 1 MiB free)\n"
+)
+INTEL_AND_NVIDIA_LIST = (
+    "Available devices:\n"
+    "  OPENVINO0: GGML_OPENVINO_DEVICE=CPU - cpu (1 MiB, 1 MiB free)\n"
+    "  OPENVINO1: GGML_OPENVINO_DEVICE=GPU.0 - NVIDIA GeForce RTX 4050 (dGPU) (1 MiB, 1 MiB free)\n"
+    "  OPENVINO2: GGML_OPENVINO_DEVICE=GPU.1 - Intel(R) Arc(TM) A380 (dGPU) (1 MiB, 1 MiB free)\n"
+)
+MANY_INTEL_LIST = (
+    "Available devices:\n"
+    "  OPENVINO0: GGML_OPENVINO_DEVICE=GPU.10 - Intel(R) Arc(TM) A (dGPU) (1 MiB, 1 MiB free)\n"
+    "  OPENVINO1: GGML_OPENVINO_DEVICE=GPU.2 - Intel(R) Arc(TM) B (dGPU) (1 MiB, 1 MiB free)\n"
+)
+LOOKALIKE_LIST = (
+    "Available devices:\n"
+    "  OPENVINO0: GGML_OPENVINO_DEVICE=CPU - cpu (1 MiB, 1 MiB free)\n"
+    "  OPENVINO1: GGML_OPENVINO_DEVICE=GPUX - Intel(R) thing (1 MiB, 1 MiB free)\n"
+)
 
 
 def _host(name: str) -> HostCaps:
@@ -50,13 +83,13 @@ def _argv(target: RoleTarget) -> list[str]:
 @pytest.fixture
 def both_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        OpenvinoAdapter, "_listed", staticmethod(lambda _b: frozenset({"CPU", "GPU"}))
+        OpenvinoAdapter, "_listed", staticmethod(lambda _b: parse_devices(ONE_GPU_LIST))
     )
 
 
 @pytest.fixture
 def cpu_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(OpenvinoAdapter, "_listed", staticmethod(lambda _b: frozenset({"CPU"})))
+    monkeypatch.setattr(OpenvinoAdapter, "_listed", staticmethod(lambda _b: parse_devices("")))
 
 
 def test_a1_a_cpu_target_sets_the_cpu_device_for_that_process(both_devices: None) -> None:
@@ -104,6 +137,7 @@ def test_s4_a_gpu_target_without_the_runtime_refuses_in_user_words(cpu_only: Non
     with pytest.raises(ProviderError) as raised:
         _argv(RoleTarget.GPU)
     assert str(raised.value) == GPU_MISSING
+    assert "Intel graphics only" in GPU_MISSING
     assert "Intel compute runtime" in GPU_MISSING
     assert "does not switch to the CPU" in GPU_MISSING
 
@@ -151,3 +185,75 @@ def test_s12_a_pack_for_the_engine_is_not_published_yet() -> None:
 
 def test_the_adapter_ships_in_the_choice_table() -> None:
     assert choice.ADAPTERS[EngineName.OPENVINO] is OPENVINO
+
+
+def _with_list(monkeypatch: pytest.MonkeyPatch, output: str) -> None:
+    monkeypatch.setattr(OpenvinoAdapter, "_listed", staticmethod(lambda _b: parse_devices(output)))
+
+
+def test_the_two_gpu_list_keeps_both_full_names() -> None:
+    assert [d.name for d in parse_devices(TWO_GPU_LIST)] == ["CPU", "GPU.0", "GPU.1"]
+
+
+def test_a_host_with_no_intel_gpu_reports_the_gpu_as_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _with_list(monkeypatch, TWO_GPU_LIST)
+    assert OPENVINO.device_targets(BINARY) == {RoleTarget.CPU}
+    with pytest.raises(ProviderError) as raised:
+        _argv(RoleTarget.GPU)
+    assert str(raised.value) == GPU_MISSING
+
+
+def test_an_intel_gpu_next_to_an_nvidia_card_is_the_one_launched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _with_list(monkeypatch, INTEL_AND_NVIDIA_LIST)
+    assert OPENVINO.device_targets(BINARY) == {RoleTarget.CPU, RoleTarget.GPU}
+    assert _argv(RoleTarget.GPU)[1] == "GGML_OPENVINO_DEVICE=GPU.1"
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Intel(R) UHD Graphics 630 (iGPU)",
+        "Intel(R) Arc(TM) A770 Graphics (dGPU)",
+        "Intel(R) Iris(R) Xe Graphics (iGPU)",
+    ],
+)
+def test_real_intel_descriptions_are_offered(
+    monkeypatch: pytest.MonkeyPatch, description: str
+) -> None:
+    _with_list(
+        monkeypatch,
+        f"  OPENVINO0: GGML_OPENVINO_DEVICE=GPU.0 - {description} (1 MiB, 1 MiB free)\n",
+    )
+    assert _argv(RoleTarget.GPU)[1] == "GGML_OPENVINO_DEVICE=GPU.0"
+
+
+def test_a_card_that_only_mentions_intel_is_not_an_intel_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _with_list(
+        monkeypatch,
+        "  OPENVINO0: GGML_OPENVINO_DEVICE=GPU.0 - Foo (Intel-compatible) (1 MiB, 1 MiB free)\n",
+    )
+    assert OPENVINO.device_targets(BINARY) == {RoleTarget.CPU}
+
+
+def test_the_lowest_numbered_intel_gpu_wins_and_ten_follows_two(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _with_list(monkeypatch, MANY_INTEL_LIST)
+    assert _argv(RoleTarget.GPU)[1] == "GGML_OPENVINO_DEVICE=GPU.2"
+
+
+def test_a_name_that_only_starts_with_gpu_is_not_a_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_list(monkeypatch, LOOKALIKE_LIST)
+    assert OPENVINO.device_targets(BINARY) == {RoleTarget.CPU}
+
+
+def test_one_plain_gpu_still_launches_as_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_list(monkeypatch, ONE_GPU_LIST)
+    assert _argv(RoleTarget.GPU)[1] == "GGML_OPENVINO_DEVICE=GPU"
+    assert OPENVINO.device_targets(BINARY) == {RoleTarget.CPU, RoleTarget.GPU}

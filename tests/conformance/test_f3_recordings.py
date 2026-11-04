@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from lilbee.providers.fleet.engines.openvino import OPENVINO, listed_devices
+from lilbee.providers.fleet.engines.openvino import OPENVINO, parse_devices
 from lilbee.providers.roles import WorkerRole
 from tests.conformance.preset_check import Exchange, replaying
 
@@ -46,6 +46,10 @@ def _device_section(stem: str) -> str:
     return text[start : end if end != -1 else None]
 
 
+def _names(stem: str) -> set[str]:
+    return {d.name for d in parse_devices(_device_section(stem))}
+
+
 @pytest.mark.parametrize("stem", ["openvino-cpu", "openvino-gpu"])
 def test_a3_openvino_chat_replays_through_the_adapter_profile(stem: str) -> None:
     field = OPENVINO.request_profile(WorkerRole.CHAT).reasoning_field
@@ -59,8 +63,8 @@ def test_a3_openvino_chat_replays_through_the_adapter_profile(stem: str) -> None
 
 
 def test_a3_the_cpu_recording_lists_the_cpu_and_the_gpu_recording_lists_both() -> None:
-    assert listed_devices(_device_section("openvino-cpu")) == {"CPU"}
-    assert listed_devices(_device_section("openvino-gpu")) == {"CPU", "GPU"}
+    assert _names("openvino-cpu") == {"CPU"}
+    assert _names("openvino-gpu") == {"CPU", "GPU"}
 
 
 def test_a3_the_recording_serves_chat_only_as_the_adapter_claims() -> None:

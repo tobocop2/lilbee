@@ -1,0 +1,6 @@
+Available devices:
+  OPENVINO0: GGML_OPENVINO_DEVICE=CPU (selected) - AMD Ryzen 5 8645HS w/ Radeon 760M Graphics (15674 MiB, 9400 MiB free)
+  OPENVINO1: GGML_OPENVINO_DEVICE=GPU.0 - NVIDIA GeForce RTX 4050 Laptop GPU (dGPU) (6140 MiB, 6140 MiB free)
+  OPENVINO2: GGML_OPENVINO_DEVICE=GPU.1 - gfx1103 (iGPU) (6389 MiB, 6389 MiB free)
+
+[exit 0]
