@@ -63,12 +63,15 @@ if TYPE_CHECKING:
     from lilbee.app.services import Services
     from lilbee.cli.tui.screens.analyze_report import FinishedAnalysis
     from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
 log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
+# Textual's default screen, then the current view; anything higher is pushed over the view.
+_VIEW_DEPTH = 2
 # Long enough that a model-fallback notice or a load warning is readable before it fades.
 _FALLBACK_TOAST_TIMEOUT_S = 10.0
 
@@ -651,12 +654,13 @@ class LilbeeApp(App[None]):
         for warning in warnings:
             self.notify(warning, severity="warning")
 
-    def set_setting(self, key: str, value: object) -> bool:
+    def set_setting(self, key: str, value: object, *, ask_rebuild: bool = True) -> bool:
         """Apply a writable / model-role setting through the boundary, then fan out to the UI.
 
         Returns whether the value was saved. A failed config write (a read-only file, a full
         disk) toasts here, once, with the text the CLI, HTTP and MCP surfaces show, and
-        returns False so the caller does not record the value as saved.
+        returns False so the caller does not record the value as saved. With *ask_rebuild*
+        False the caller asks about a rebuild itself; the wiki wipe question still comes.
 
         Raises ``ValueError`` for keys outside ``WRITABLE_CONFIG_FIELDS | MODEL_ROLE_FIELDS``
         or values rejected by pydantic validation. Callers either catch and toast or let it
@@ -673,28 +677,26 @@ class LilbeeApp(App[None]):
             return False
         self.notify_warnings(result.warnings)
         self.publish_settings([key])
-        self._ask_after_change(result.reindex_required, key == "wiki" and cfg.wiki is False)
+        if ask_rebuild and result.reindex_required:
+            self.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE)
+        elif key == "wiki" and cfg.wiki is False:
+            self._offer_wiki_wipe()
         return True
 
     def reset_and_publish(self, keys: list[str], *, skip_unresettable: bool = False) -> list[str]:
         """Reset *keys* through the boundary, fan each out to the UI, and return the reset keys.
 
         Raises ``ValueError`` or ``OSError`` from the boundary; nothing changes on either.
+        A reset that turns the wiki off offers the wipe. It never offers a rebuild: the
+        Settings screen asks once when the user leaves.
         """
         wiki_was_on = cfg.wiki
         result = reset_settings(keys, skip_unresettable=skip_unresettable)
         self.notify_warnings(result.warnings)
         self.publish_settings(result.updated)
-        self._ask_after_change(result.reindex_required, wiki_was_on and cfg.wiki is False)
+        if wiki_was_on and cfg.wiki is False:
+            self._offer_wiki_wipe()
         return result.updated
-
-    def _ask_after_change(self, reindex_required: bool, wiki_turned_off: bool) -> None:
-        """Offer a rebuild, then the wiki wipe, each only when needed and one at a time."""
-        wipe = self._offer_wiki_wipe if wiki_turned_off else None
-        if reindex_required:
-            self.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE, then=wipe)
-        elif wipe is not None:
-            wipe()
 
     def adopt_external_settings(self) -> bool:
         """Take into cfg what another process changed in config.toml, and tell subscribers.
@@ -790,8 +792,9 @@ class LilbeeApp(App[None]):
             screen.action_cancel_stream()
             self.notify(msg.APP_QUIT_AGAIN_HINT)
             return
-        get_services().cancel_inference()
-        self.exit()
+        # A quit asks nothing: a rebuild the Settings edits need is named in the terminal.
+        settings = self.settings_screen()
+        self.exit(message=settings.leave() if settings is not None else None)
 
     def _view_is_refused(self, view_name: str) -> bool:
         """True when *view_name* cannot be entered now, having handled the refusal."""
@@ -807,7 +810,9 @@ class LilbeeApp(App[None]):
 
         Guards against concurrent switches via ``self._switching`` so rapid
         keypresses can't corrupt the screen stack. ``active_view`` is updated
-        after the switch completes.
+        after the switch completes. A screen pushed over the current view (the
+        catalog a model field opens, a dialog) is popped first, so the switch
+        replaces the view itself and no view stays on the stack under another.
         """
         if self._switching or self._view_is_refused(view_name):
             return
@@ -815,6 +820,7 @@ class LilbeeApp(App[None]):
         if view_name != self.active_view:
             self._previous_view = self.active_view
 
+        pops = self._pop_to_view()
         awaitable: AwaitComplete | None = None
         if view_name == msg.DEFAULT_VIEW:
             from lilbee.cli.tui.screens.chat import ChatScreen
@@ -843,11 +849,24 @@ class LilbeeApp(App[None]):
             # IndexError). Awaiting the transition first keeps the guard up for
             # the whole switch; call_next is flushed by the same event loop, so a
             # single completed switch still releases promptly.
+            for pop in pops:
+                await pop
             if awaitable is not None:
                 await awaitable
             self._switching = False
 
         self.call_next(_release)
+
+    def _pop_to_view(self) -> list[AwaitComplete]:
+        """Pop each screen pushed over the current view; views are the installed screens.
+
+        The view sits right above Textual's default screen, so the walk stops there
+        (the startup gate, not installed, holds that place until Chat replaces it).
+        """
+        pops: list[AwaitComplete] = []
+        while len(self.screen_stack) > _VIEW_DEPTH and not self.is_screen_installed(self.screen):
+            pops.append(self.pop_screen())
+        return pops
 
     def action_push_help(self) -> None:
         if self.screen.query("HelpPanel"):
@@ -1136,20 +1155,26 @@ class LilbeeApp(App[None]):
     def start_rebuild(self) -> None:
         """Queue a full reindex on the chat screen's task bar without leaving this view."""
         chat = self.chat_screen()
-        if chat is not None:
-            chat.run_sync(force_rebuild=True)
+        if chat is None:
+            return
+        chat.run_sync(force_rebuild=True)
+        # The rebuild builds the index with the values now in force: leaving Settings asks none.
+        settings = self.settings_screen()
+        if settings is not None:
+            settings.take_index_values()
 
-    def offer_rebuild(self, message: str, then: Callable[[], None] | None = None) -> None:
-        """Ask whether to rebuild the index, saying why in *message*; yes starts the rebuild.
+    def settings_screen(self) -> SettingsScreen | None:
+        """The Settings screen when it is on the screen stack, under any dialog."""
+        from lilbee.cli.tui.screens.settings import SettingsScreen
 
-        *then* runs once the question is answered, so a follow-up dialog never stacks on it.
-        """
+        return next((s for s in self.screen_stack if isinstance(s, SettingsScreen)), None)
+
+    def offer_rebuild(self, message: str) -> None:
+        """Ask whether to rebuild the index, saying why in *message*; yes starts the rebuild."""
 
         def _answered(rebuild: bool | None) -> None:
             if rebuild:
                 self.start_rebuild()
-            if then is not None:
-                then()
 
         self.push_screen(ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, message), _answered)
 

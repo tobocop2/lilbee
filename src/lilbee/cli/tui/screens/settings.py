@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -26,8 +26,16 @@ from textual.widgets import (
     TextArea,
 )
 
-from lilbee.app.settings import OCR_SETTING_KEYS, list_setting_value, setting_sources
+from lilbee.app.settings import (
+    OCR_SETTING_KEYS,
+    chunk_limit_loosened,
+    list_setting_value,
+    reindex_values,
+    reindex_values_differ,
+    setting_sources,
+)
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
+from lilbee.app.status import held_out_sources
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.screens.profile_tab import ProfileSnapshot, ProfileTab, load_snapshot
@@ -184,6 +192,8 @@ class SettingsScreen(Screen[None]):
         # What each editor showed when last built or refreshed; a save acts on a change from it.
         self._mount_display: dict[str, str] = {}
         self._stale_source_keys: set[str] = set()
+        # The index-changing values in force when the user came in; None while away.
+        self._index_values: dict[str, Any] | None = None
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
@@ -243,6 +253,33 @@ class SettingsScreen(Screen[None]):
         file_changed = self.app.adopt_external_settings()
         if file_changed or self._pane_is_populated(PROFILE_PANE_ID):
             self.reload_profile()
+        # A dialog closing resumes the screen too; only a visit takes the values.
+        if self._index_values is None:
+            self.take_index_values()
+
+    def on_screen_suspend(self) -> None:
+        """Offer one rebuild for the edits of this visit once another view replaces the screen.
+
+        A dialog on top suspends the screen too, but leaves it on the stack.
+        """
+        if self not in self.app.screen_stack and (message := self.leave()):
+            self.app.offer_rebuild(message)
+
+    def take_index_values(self) -> None:
+        """Count the values in force as the ones the index holds: leaving asks about later edits."""
+        self._index_values = reindex_values()
+
+    def leave(self) -> str | None:
+        """End the visit; the rebuild question its edits leave, or None when they leave none.
+
+        A rebuild is owed when the index was built with other values, or when a looser
+        chunk limit now admits files it held out: a rebuild retries those files.
+        """
+        before, self._index_values = self._index_values, None
+        if before is None:
+            return None
+        retry = chunk_limit_loosened(before) and held_out_sources()[1] > 0
+        return msg.settings_rebuild_text(reindex_values_differ(before), retry)
 
     def _on_setting_changed(self, change: tuple[str, object]) -> None:
         """Queue the changed key's source pill and editor, and the profile state, for a refresh."""
@@ -546,7 +583,7 @@ class SettingsScreen(Screen[None]):
         """
         try:
             parsed = self._parse_value(defn, raw)
-            if not self.app.set_setting(key, parsed):
+            if not self.app.set_setting(key, parsed, ask_rebuild=False):
                 return False
             self._refresh_help(key, defn)
             return True

@@ -20,7 +20,6 @@ from lilbee.app.profiles import (
     ChangeRow,
     DiscardResult,
     ProfileStatus,
-    RebuildReason,
 )
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
@@ -302,20 +301,14 @@ class ProfileTab(Vertical):
     def _discard(self, snapshot: ProfileSnapshot) -> None:
         name = snapshot.active.name
 
-        def _work() -> tuple[DiscardResult, RebuildReason | None]:
-            result = profiles.discard()
-            return result, profiles.rebuild_reason(result.dropped, result.reindex_required)
-
-        def _done(outcome: tuple[DiscardResult, RebuildReason | None]) -> None:
-            result, reason = outcome
+        # Leaving Settings asks about a rebuild, once, for every edit and discard of the visit.
+        def _done(result: DiscardResult) -> None:
             self.app.publish_settings(result.dropped)
             self.notify(msg.PROFILE_DISCARDED.format(name=name))
             self.app.notify_warnings(result.warnings)
             self._stale()
-            if reason is not None:
-                self.app.offer_rebuild(msg.profile_discard_rebuild_text(reason, name))
 
-        run_profile_op(self, _work, _done)
+        run_profile_op(self, profiles.discard, _done)
 
     def _reapply(self, snapshot: ProfileSnapshot) -> None:
         start_profile_switch(self.app, self, snapshot.active.name, self._stale)
