@@ -2438,6 +2438,33 @@ class TestLifespanWaitsForTheOpen:
                 pass
         waited.assert_called_once_with(5.0)
 
+    @mock.patch("lilbee.server.app.peek_services")
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_the_open_wait_runs_beside_the_provider_shutdown(self, mock_get_svc, mock_peek):
+        """Each side waits on a barrier the other must reach, so a run in sequence breaks it."""
+        from lilbee.server.app import _lifespan
+
+        mock_get_svc.return_value = mock.MagicMock()
+        svc = mock.MagicMock()
+        mock_peek.return_value = svc
+        both = threading.Barrier(2, timeout=10)
+        met: list[str] = []
+
+        def shutdown() -> None:
+            both.wait()
+            met.append("shutdown")
+
+        def wait(timeout: float) -> bool:
+            both.wait()
+            met.append("open wait")
+            return True
+
+        svc.provider.shutdown.side_effect = shutdown
+        with mock.patch("lilbee.server.app.wait_for_opens", side_effect=wait):
+            async with _lifespan(mock.MagicMock()):
+                pass
+        assert sorted(met) == ["open wait", "shutdown"]
+
 
 class TestSessionManagerPersistence:
     """Cover SessionManager.load_or_generate token-reuse semantics."""

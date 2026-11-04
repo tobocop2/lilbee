@@ -427,3 +427,61 @@ class TestExitAfterSignal:
         services_mod.exit_after_signal(130)
 
         assert exits == []
+
+
+class TestExitIfOpensRemain:
+    @pytest.mark.parametrize(
+        ("open_done", "expected_events", "expected_note"),
+        [
+            # The teardown atexit would run comes before the exit that skips atexit.
+            pytest.param(False, ["teardown", "exit 143"], True, id="open-still-running"),
+            pytest.param(True, [], False, id="no-open-running"),
+        ],
+    )
+    def test_exits_with_the_status_only_while_an_open_runs(
+        self, monkeypatch, capsys, open_done, expected_events, expected_note
+    ) -> None:
+        provider = _install_stub_services()
+        events: list[str] = []
+        provider.shutdown.side_effect = lambda: events.append("teardown")
+
+        def record_exit(status: int) -> None:
+            events.append(f"exit {status}")
+
+        monkeypatch.setattr(services_mod.os, "_exit", record_exit)
+        waits: list[float] = []
+
+        def wait(timeout: float) -> bool:
+            waits.append(timeout)
+            return open_done
+
+        monkeypatch.setattr(services_mod, "wait_for_opens", wait)
+
+        services_mod.exit_if_opens_remain(143)
+
+        assert waits == [0.0]
+        assert events == expected_events
+        stderr = capsys.readouterr().err
+        assert ("the library is still opening" in stderr) is expected_note
+
+    def test_the_exit_flushes_every_log_handler_first(self, monkeypatch) -> None:
+        order: list[str] = []
+
+        class _Recording(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                pass
+
+            def flush(self) -> None:
+                order.append("flush")
+
+        handler = _Recording()
+        named = logging.getLogger("lilbee.test_exit_flush")
+        named.addHandler(handler)
+        monkeypatch.setattr(services_mod.os, "_exit", lambda status: order.append(f"exit {status}"))
+        monkeypatch.setattr(services_mod, "wait_for_opens", lambda timeout: False)
+        try:
+            services_mod.exit_if_opens_remain(143)
+        finally:
+            named.removeHandler(handler)
+
+        assert order == ["flush", "exit 143"]
