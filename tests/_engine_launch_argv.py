@@ -25,7 +25,12 @@ def launch_argvs(
     """Engine name -> role value -> argv, with the host inputs of the argv pinned."""
     monkeypatch.setattr(adapters, "engine_thread_count", lambda: THREADS)
     monkeypatch.setattr(adapters, "engine_help", lambda _binary: HELP)
-    both = staticmethod(lambda _binary: frozenset({"CPU", "GPU"}))
+    both = staticmethod(
+        lambda _binary: (
+            openvino.ListedDevice("CPU", "cpu"),
+            openvino.ListedDevice("GPU", "Intel UHD (iGPU)"),
+        )
+    )
     monkeypatch.setattr(openvino.OpenvinoAdapter, "_listed", both)
     monkeypatch.setattr(cfg, "models_dir", models_dir)
     monkeypatch.setattr(
