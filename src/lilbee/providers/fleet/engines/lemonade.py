@@ -51,6 +51,12 @@ _MODES = {
     WorkerRole.RERANK: "reranking",
 }
 _TMP_SUFFIX = ".tmp"
+_INSTALL_HINT = (
+    "lilbee has no Lemonade pack. Install Lemonade from "
+    "https://lemonade-server.ai/docs/guide/install/ or unpack the lemonade-embeddable "
+    f"archive from https://github.com/lemonade-sdk/lemonade/releases/tag/v{_VERSION}, "
+    f"then put the folder with {_TOOL} on PATH."
+)
 
 _PROFILE = RequestProfile(
     embed_fields={},
@@ -163,6 +169,7 @@ class LemonadeAdapter:
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
     bundled = False
+    install_hint = _INSTALL_HINT
 
     def supports_architecture(self, architecture: str) -> bool:
         return True
@@ -183,11 +190,15 @@ class LemonadeAdapter:
         from lilbee.providers.fleet.engines.choice import store_tool
 
         tool = store_tool(self.pin_record(), _TOOL, session_host())
+        tool = tool or self.user_binary()
         if tool is None:
-            raise ProviderError(
-                "The Lemonade engine is not installed. Run lilbee engine install lemonade."
-            )
+            raise ProviderError(f"The Lemonade engine is not installed. {_INSTALL_HINT}")
         return tool
+
+    def user_binary(self) -> Path | None:
+        """The ``lemond`` that the user put on PATH, or ``None``."""
+        found = shutil.which(_TOOL)
+        return None if found is None else Path(found)
 
     def identity(self, binary: Path) -> str:
         return f"{self.name.value} {_VERSION} {binary}"
