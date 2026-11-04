@@ -79,9 +79,12 @@ from lilbee.cli.tui.widgets.autocomplete import (
     PATH_ARG_COMMANDS,
     CompletionOverlay,
     get_completions,
+    list_model_options,
     longest_common_prefix,
+    model_completions,
     path_completion_prefix,
     reads_a_folder,
+    reads_models,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.context_chip import ContextChip
@@ -469,6 +472,15 @@ class ChatScreen(Screen[None]):
         # The user-typed text the open dropdown is filtering against. While
         # navigating, the input holds a previewed candidate; Esc restores this.
         self._completion_origin: str | None = None
+        # The installed models, listed once while the input holds a model
+        # argument (/model, /remove) and dropped when it no longer does.
+        self._model_names: list[str] | None = None
+        self._listing_models = False
+        # Bumped when the input leaves the model argument; a listing started
+        # before the bump is stale and its result is dropped.
+        self._model_session = 0
+        # The latest model completion asked for while the listing runs.
+        self._model_request: tuple[str, Callable[[bool], None] | None] = ("", None)
         self._rebuild_owed = False
         self._input_history: list[str] = []
         self._history_index: int = -1
@@ -2845,12 +2857,15 @@ class ChatScreen(Screen[None]):
     def _open_completions(self, then: Callable[[bool], None]) -> None:
         """Show the dropdown for the current input, then call *then* with whether it opened.
 
-        A path argument is listed on the exclusive worker, so *then* runs after the
+        A path or model argument is listed on a worker, so *then* runs after the
         listing and only if the input text did not change meanwhile.
         """
         text = self._chat_input.value
         if reads_a_folder(text):
             self._list_path_completions(text, then)
+            return
+        if reads_models(text):
+            self._complete_models(text, then)
             return
         self._show_opened(text, get_completions(text), then)
 
@@ -2960,6 +2975,15 @@ class ChatScreen(Screen[None]):
     @on(ChatInput.Changed, "#chat-input")
     def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
         """Refresh arg-hint and auto-show or hide the completion dropdown."""
+        if not reads_models(self._chat_input.value):
+            # Also on a programmatic edit: a submit clears the input that way, and
+            # a /remove must not leave the removed model in the next listing.
+            self._model_names = None
+            # A listing still running belongs to the session that ended; the next
+            # model argument starts its own, and the old result is dropped.
+            self._model_session += 1
+            self._listing_models = False
+            self._model_request = ("", None)
         if self._suppress_refresh > 0:
             # A programmatic edit (preview / accept / revert) is managing the
             # overlay itself; consume one Changed and skip the live refresh.
@@ -2975,7 +2999,52 @@ class ChatScreen(Screen[None]):
         if reads_a_folder(text):
             self._list_path_completions(text)
             return
+        if reads_models(text):
+            self._complete_models(text)
+            return
         self._show_completions_for(text, get_completions(text))
+
+    def _complete_models(self, text: str, then: Callable[[bool], None] | None = None) -> None:
+        """Complete a model argument from the models listed once for this input.
+
+        Until the listing ends, keep the latest request and start one listing; keys
+        typed meanwhile neither wait for it nor start another.
+        """
+        if self._model_names is None:
+            self._model_request = (text, then)
+            if not self._listing_models:
+                self._listing_models = True
+                self._list_models(self._model_session)
+            return
+        options = model_completions(text, self._model_names)
+        if then is None:
+            self._show_completions_for(text, options)
+        else:
+            self._show_opened(text, options, then)
+
+    @work(thread=True, group="model_completions", exit_on_error=False)
+    def _list_models(self, session: int) -> None:
+        """List the installed models off the event loop: the listing probes local servers."""
+        names = list_model_options()
+        if _get_worker().is_cancelled:
+            return
+        call_from_thread(self, self._models_listed, session, names)
+
+    def _models_listed(self, session: int, names: list[str]) -> None:
+        """Keep *names* and answer the latest request, unless the input left the model argument.
+
+        A result from an earlier model argument session is dropped.
+        """
+        if session != self._model_session:
+            return
+        self._listing_models = False
+        text, then = self._model_request
+        self._model_request = ("", None)
+        current = self._chat_input.value
+        if not reads_models(current):
+            return
+        self._model_names = names
+        self._complete_models(current, then if text == current else None)
 
     @work(thread=True, exclusive=True, group="path_completions", exit_on_error=False)
     def _list_path_completions(self, text: str, then: Callable[[bool], None] | None = None) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import io
 import logging
@@ -5179,13 +5180,13 @@ async def test_chat_action_complete_with_space_fills_prefix():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         inp = app.screen.query_one("#chat-input", ChatInput)
-        inp.value = "/model q"
+        inp.value = "/set q"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
             return_value=["qwen:latest"],
         ):
             app.screen.action_complete()
-            assert inp.value == "/model qwen:latest"
+            assert inp.value == "/set qwen:latest"
 
 
 async def test_chat_action_complete_previews_then_steps():
@@ -5193,15 +5194,15 @@ async def test_chat_action_complete_previews_then_steps():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         inp = app.screen.query_one("#chat-input", ChatInput)
-        inp.value = "/model "
+        inp.value = "/set "
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
             return_value=["qwen:8b", "mistral:7b"],
         ):
             app.screen.action_complete()
-            assert inp.value == "/model qwen:8b"
+            assert inp.value == "/set qwen:8b"
             app.screen.action_complete_next()
-            assert inp.value == "/model mistral:7b"
+            assert inp.value == "/set mistral:7b"
 
 
 async def test_chat_preview_same_single_match_is_noop():
@@ -5975,6 +5976,127 @@ async def test_command_provider_model_commands_error():
         ):
             cmds = provider._model_commands()
             assert cmds == []
+
+
+async def test_the_palette_lists_models_once_per_open_and_off_the_event_loop():
+    """Typing in the palette never repeats the model lookup, which can reach the network."""
+    import threading
+
+    from textual.command import CommandList, CommandPalette
+
+    from lilbee.cli.tui.app import LilbeeApp
+
+    loop_thread = threading.get_ident()
+    lookup_threads: list[int] = []
+    # The lookup stays in flight while the keys arrive, as a slow server keeps it.
+    typed = threading.Event()
+
+    def _installed() -> list[str]:
+        lookup_threads.append(threading.get_ident())
+        assert typed.wait(timeout=30)
+        return ["qwen:latest"]
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        with patch("lilbee.modelhub.models.list_installed_models", side_effect=_installed):
+            app.action_command_palette()
+            assert await wait_until(pilot, lambda: isinstance(app.screen, CommandPalette))
+            await pilot.press(*"qwen")
+            typed.set()
+            assert await wait_until(
+                pilot, lambda: app.screen.query_one(CommandList).option_count == 1
+            )
+    assert len(lookup_threads) == 1
+    assert lookup_threads[0] != loop_thread
+
+
+async def test_a_model_listing_that_lands_after_the_palette_closes_is_dropped():
+    """The late rows go to no palette, and the chat screen stays on top."""
+    import threading
+
+    from textual.command import CommandPalette
+
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+    release = threading.Event()
+    landed: list[LilbeeCommandProvider] = []
+    real_landed = LilbeeCommandProvider._models_landed
+
+    def _slow_listing() -> list[str]:
+        release.wait(timeout=30)
+        return ["qwen:latest"]
+
+    def _record(self, palette, lookup):
+        real_landed(self, palette, lookup)
+        landed.append(self)
+
+    app = LilbeeApp()
+    try:
+        with (
+            patch("lilbee.modelhub.models.list_installed_models", side_effect=_slow_listing),
+            patch.object(LilbeeCommandProvider, "_models_landed", _record),
+        ):
+            async with app.run_test(size=(120, 40)) as pilot:
+                chat = await await_chat(app, pilot)
+                app.action_command_palette()
+                assert await wait_until(pilot, lambda: isinstance(app.screen, CommandPalette))
+                await pilot.press("escape")
+                assert await wait_until(pilot, lambda: app.screen is chat)
+                release.set()
+                assert await wait_until(pilot, lambda: len(landed) == 1)
+                assert app.screen is chat
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize(
+    ("typed", "rows", "searches_again"),
+    [
+        pytest.param("", [], False, id="no-models"),
+        pytest.param("fork", [("Set chat model → qwen:latest", "", None)], False, id="no-match"),
+        pytest.param("qwen", [("Set chat model → qwen:latest", "", None)], True, id="match"),
+        pytest.param("", [("Set chat model → qwen:latest", "", None)], True, id="discover"),
+    ],
+)
+async def test_landed_models_search_again_only_when_a_row_matches(typed, rows, searches_again):
+    """A fresh search moves the highlight, so it runs only when the list would change."""
+    from textual.command import CommandInput, CommandPalette
+
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.action_command_palette()
+        assert await wait_until(pilot, lambda: app.screen.has_class("-ready"))
+        palette = app.screen
+        assert isinstance(palette, CommandPalette)
+        palette.query_one(CommandInput).value = typed
+        await pilot.pause()
+        provider = LilbeeCommandProvider(app.screen_stack[-2], match_style=None)
+        lookup: asyncio.Future[list] = asyncio.get_running_loop().create_future()
+        lookup.set_result(rows)
+        with patch.object(palette, "post_message") as post:
+            provider._models_landed(palette, lookup)
+        assert post.called is searches_again
+        assert provider._models == rows
+
+
+async def test_a_cancelled_model_listing_adds_no_rows():
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        provider = LilbeeCommandProvider(chat, match_style=None)
+        lookup: asyncio.Future[list] = asyncio.get_running_loop().create_future()
+        lookup.cancel()
+        provider._models_landed(chat, lookup)
+        assert provider._models == []
 
 
 async def test_command_provider_single_delete_entry_regardless_of_index_size(mock_svc):
@@ -10444,14 +10566,14 @@ async def test_chat_action_complete_prev_with_space():
 
         inp = app.screen.query_one("#chat-input", ChatInput)
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
-        inp.value = "/model q"
+        inp.value = "/set q"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
             return_value=["qwen:latest", "qwen:8b"],
         ):
             app.screen.action_complete_prev()
             assert overlay.is_visible
-            assert inp.value == "/model qwen:8b"
+            assert inp.value == "/set qwen:8b"
 
 
 async def test_app_switch_to_tasks():

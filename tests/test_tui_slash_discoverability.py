@@ -1265,6 +1265,277 @@ class TestArgCompletionsLiveFilterAsync:
                 assert not overlay.is_visible
 
 
+class TestModelCompletionsOffTheLoopAsync:
+    """The model list behind /model and /remove can probe a local server over
+    HTTP, so the chat screen lists it once per model argument, on a thread."""
+
+    _MODELS = _LIVE_FILTER_MODELS
+
+    async def test_typing_a_model_argument_lists_models_once_and_off_the_event_loop(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        import threading
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        loop_thread = threading.get_ident()
+        lookup_threads: list[int] = []
+        # The lookup stays in flight while the keys arrive, as a slow server keeps it.
+        typed = threading.Event()
+
+        def _installed() -> list[str]:
+            lookup_threads.append(threading.get_ident())
+            assert typed.wait(timeout=30)
+            return list(self._MODELS)
+
+        app = _ChatHostApp()
+        try:
+            async with app.run_test() as pilot:
+                screen = app.screen
+                assert isinstance(screen, ChatScreen)
+                overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+                inp = screen.query_one("#chat-input")
+                with mock.patch(
+                    "lilbee.modelhub.models.list_installed_models", side_effect=_installed
+                ):
+                    await pilot.press(*"/model", "space", "q", "w")
+                    # Every key landed while the lookup still runs: the loop never waited.
+                    assert await pump_until(pilot, lambda: inp.value == "/model qw")
+                    assert not typed.is_set()
+                    typed.set()
+                    assert await pump_until(pilot, lambda: overlay.options == ["qwen3:8b"])
+        finally:
+            typed.set()
+        assert len(lookup_threads) == 1
+        assert lookup_threads[0] != loop_thread
+
+    async def test_a_lookup_that_ends_after_the_input_changed_is_dropped(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        import threading
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        calls: list[int] = []
+        release = threading.Event()
+
+        def _installed() -> list[str]:
+            calls.append(1)
+            assert release.wait(timeout=30)
+            return list(self._MODELS)
+
+        app = _ChatHostApp()
+        try:
+            async with app.run_test() as pilot:
+                screen = app.screen
+                assert isinstance(screen, ChatScreen)
+                overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+                inp = screen.query_one("#chat-input")
+                with mock.patch(
+                    "lilbee.modelhub.models.list_installed_models", side_effect=_installed
+                ):
+                    await pilot.press(*"/model", "space", "q")
+                    assert await pump_until(pilot, lambda: inp.value == "/model q")
+                    inp.value = "hello"
+                    assert await pump_until(pilot, lambda: inp.value == "hello")
+                    release.set()
+                    assert await pump_until(pilot, lambda: not screen._listing_models)
+                    assert not overlay.is_visible
+                    # A new model argument starts a new listing.
+                    inp.value = "/remove "
+                    assert await pump_until(
+                        pilot, lambda: set(overlay.options) == set(self._MODELS)
+                    )
+        finally:
+            release.set()
+        assert len(calls) == 2
+
+    async def test_tab_reopens_the_model_dropdown_from_the_listed_models(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        calls: list[int] = []
+
+        def _installed() -> list[str]:
+            calls.append(1)
+            return list(self._MODELS)
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            with mock.patch("lilbee.modelhub.models.list_installed_models", side_effect=_installed):
+                inp.value = "/model q"
+                assert await pump_until(pilot, lambda: overlay.options == ["qwen3:8b"])
+                await pilot.press("escape")
+                assert await pump_until(pilot, lambda: not overlay.is_visible)
+                await pilot.press("tab")
+                assert await pump_until(pilot, lambda: inp.value == "/model qwen3:8b")
+        assert len(calls) == 1
+
+    async def test_clearing_the_input_after_a_submit_lists_the_models_again(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        listings = [list(self._MODELS), ["mistral:7b"]]
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            with mock.patch(
+                "lilbee.modelhub.models.list_installed_models", side_effect=listings
+            ) as listed:
+                inp.value = "/remove q"
+                assert await pump_until(pilot, lambda: overlay.options == ["qwen3:8b"])
+                # A submit clears the input as a programmatic edit.
+                screen._set_input("")
+                assert await pump_until(pilot, lambda: screen._model_names is None)
+                # A recalled /model line lists again and no longer offers the removed model.
+                inp.value = "/model "
+                assert await pump_until(pilot, lambda: overlay.options == ["mistral:7b"])
+            assert listed.call_count == 2
+
+    async def test_a_listing_from_before_a_submit_does_not_offer_a_removed_model(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        import threading
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        old_started = threading.Event()
+        old_release = threading.Event()
+        old_done = threading.Event()
+        calls: list[int] = []
+
+        def _installed() -> list[str]:
+            calls.append(1)
+            if len(calls) > 1:
+                return ["mistral:7b"]
+            old_started.set()
+            try:
+                assert old_release.wait(timeout=30)
+                return list(self._MODELS)
+            finally:
+                old_done.set()
+
+        app = _ChatHostApp()
+        try:
+            async with app.run_test() as pilot:
+                screen = app.screen
+                assert isinstance(screen, ChatScreen)
+                overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+                inp = screen.query_one("#chat-input")
+                with mock.patch(
+                    "lilbee.modelhub.models.list_installed_models", side_effect=_installed
+                ):
+                    inp.value = "/remove "
+                    assert await pump_until(pilot, lambda: old_started.is_set())
+                    # A submit clears the input as a programmatic edit; the listing still runs.
+                    screen._set_input("")
+                    assert await pump_until(pilot, lambda: inp.value == "")
+                    inp.value = "/model "
+                    # The new model argument runs its own listing, not the old one.
+                    assert await pump_until(pilot, lambda: overlay.options == ["mistral:7b"])
+                    old_release.set()
+                    assert old_done.wait(timeout=30)
+                    for _ in range(5):
+                        await pilot.pause()
+                    assert overlay.options == ["mistral:7b"]
+                    assert screen._model_names == ["mistral:7b"]
+        finally:
+            old_release.set()
+        assert len(calls) == 2
+
+    async def test_a_listing_that_lands_before_the_edit_is_handled_offers_nothing(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        import threading
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def _installed() -> list[str]:
+            started.set()
+            assert release.wait(timeout=30)
+            return list(self._MODELS)
+
+        app = _ChatHostApp()
+        try:
+            async with app.run_test() as pilot:
+                screen = app.screen
+                assert isinstance(screen, ChatScreen)
+                overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+                inp = screen.query_one("#chat-input")
+                with mock.patch(
+                    "lilbee.modelhub.models.list_installed_models", side_effect=_installed
+                ):
+                    inp.value = "/model "
+                    assert await pump_until(pilot, lambda: started.is_set())
+                    session = screen._model_session
+                    # The input leaves the model argument; its Changed has not run yet,
+                    # so the session still matches when the listing result lands.
+                    inp.value = "hello"
+                    assert screen._model_session == session
+                    screen._models_listed(session, list(self._MODELS))
+                    assert screen._model_names is None
+                    assert not screen._listing_models
+                    release.set()
+                    for _ in range(5):
+                        await pilot.pause()
+                    assert screen._model_names is None
+                    assert not any(name in overlay.options for name in self._MODELS)
+        finally:
+            release.set()
+
+    async def test_a_lookup_that_ends_after_the_app_closed_does_not_raise(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        import threading
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        done = threading.Event()
+        release = threading.Event()
+
+        def _installed() -> list[str]:
+            try:
+                assert release.wait(timeout=30)
+                return list(self._MODELS)
+            finally:
+                done.set()
+
+        app = _ChatHostApp()
+        try:
+            with mock.patch("lilbee.modelhub.models.list_installed_models", side_effect=_installed):
+                async with app.run_test() as pilot:
+                    screen = app.screen
+                    assert isinstance(screen, ChatScreen)
+                    await pilot.press(*"/model", "space")
+                    assert await pump_until(pilot, lambda: screen._listing_models)
+                    # Closing the app cancels the worker; the lookup ends later.
+                    await app.action_quit()
+                release.set()
+                assert done.wait(timeout=30)
+        finally:
+            release.set()
+        assert screen._model_names is None
+
+
 class TestCompletionOpenAndAcceptAsync:
     """Opening a closed dropdown previews the first match; accepting a
     directory keeps the cursor on the slash so the user can keep descending."""
