@@ -7,10 +7,13 @@ from unittest import mock
 import pytest
 
 from lilbee.app import profiles
-from lilbee.app.profiles import RebuildReason
+from lilbee.app.profiles import DiffRow, ProfileDiff, ProfileEffect, RebuildReason
 from lilbee.app.services import set_services
 from lilbee.app.settings import apply_settings_update, index_has_chunks
+from lilbee.cli.tui.screens.profile_dialogs import switch_plan
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import SettingSource
+from lilbee.core.profile_files import ProfileFile
 from lilbee.data.store import Store
 from tests._profile_fixtures import (
     gate_releases_at_once,  # noqa: F401 -- autouse fixture, applied by import
@@ -99,3 +102,25 @@ def test_rebuild_reason_on_an_index_with_chunks_names_the_change(monkeypatch):
     monkeypatch.setattr(Store, "has_chunks", lambda self: True)
     assert profiles.rebuild_reason(("chunk_size",), True) is RebuildReason.CHANGES
     assert profiles.rebuild_reason(("chunk_size",), False) is RebuildReason.SETS_REINDEX
+
+
+def _reindex_plan():
+    row = DiffRow("chunk_size", 512, SettingSource.BUILT_IN, 900, ProfileEffect.REINDEX)
+    diff = ProfileDiff("big", (row,), (), 0)
+    profile = ProfileFile("big", None, (), None, 1, None, None, {"chunk_size": 900})
+    return switch_plan(profile, diff)
+
+
+def test_the_apply_dialog_plan_on_a_fresh_install_offers_no_rebuild_and_makes_no_library():
+    plan = _reindex_plan()
+    assert (plan.rebuild, plan.file_count) == (None, 0)
+    assert not cfg.lancedb_dir.exists()
+
+
+def test_the_apply_dialog_plan_on_an_index_with_chunks_counts_the_files(monkeypatch):
+    monkeypatch.setattr(Store, "has_chunks", lambda self: True)
+    monkeypatch.setattr(
+        Store, "get_sources", lambda self, **kw: [{"filename": "a"}, {"filename": "b"}]
+    )
+    plan = _reindex_plan()
+    assert (plan.rebuild, plan.file_count) == (RebuildReason.CHANGES, 2)
