@@ -25,7 +25,7 @@ from lilbee.providers.fleet.engine_store import (
     UnsupportedPlatformError,
     engines_root,
 )
-from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
+from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName, UserInstalled
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.engines.proof import is_proven
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
@@ -377,12 +377,14 @@ def release_pins(builds: Sequence[tuple[str, str, str, Path]]) -> set[tuple[str,
 
 
 def _is_installed(name: EngineName, adapter: EngineAdapter, store: EngineStore) -> bool:
-    """True for the engine in the package, or an adapter whose pin has a complete build.
+    """True for the engine in the package, or an adapter with a build or a user install.
 
     A read that fails (unreadable folder, a build of another wheel) leaves that
     engine not installed and is logged; it never touches the engine in the package.
     """
     if adapter.bundled:
+        return True
+    if isinstance(adapter, UserInstalled) and adapter.user_binary() is not None:
         return True
     from lilbee.catalog.runnable import session_host
 

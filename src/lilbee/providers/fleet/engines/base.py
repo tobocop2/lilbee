@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
@@ -188,3 +188,15 @@ class EngineAdapter(Protocol, Hashable):
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]: ...
 
     def request_profile(self, role: WorkerRole) -> RequestProfile: ...
+
+
+@runtime_checkable
+class UserInstalled(Protocol):
+    """An engine that lilbee has no pack for: the user installs it and lilbee finds it."""
+
+    install_hint: str
+    """How to get the engine, for a message that says it is missing."""
+
+    def user_binary(self) -> Path | None:
+        """The executable the user installed, or ``None`` when there is none."""
+        ...
