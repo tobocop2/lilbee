@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat as stat_module
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -207,6 +209,23 @@ def test_a_request_during_a_real_embed_restart_gets_the_new_server(
     assert results[0][0] is not old_client  # type: ignore[index]
 
 
+def _reporting_size(path: Path, size: int) -> Path:
+    """A path to the small file at *path* whose stat reports *size* bytes.
+
+    A truncated file is not sparse on NTFS, so a real several-GB file would write zeros.
+    Every size read in the planner goes through ``stat``, so one override covers them all.
+    """
+
+    class _SizedPath(type(path)):  # type: ignore[misc]
+        def stat(self, **kwargs: object) -> os.stat_result:
+            real = super().stat(**kwargs)  # type: ignore[arg-type]
+            fields = list(real)
+            fields[stat_module.ST_SIZE] = size
+            return os.stat_result(fields)
+
+    return _SizedPath(path)
+
+
 @pytest.mark.parametrize(
     ("free_gb", "captured", "names_other_processes"),
     [(1, True, True), (7, True, False), (1, False, False)],
@@ -220,9 +239,9 @@ def test_a_small_card_refusal_names_the_memory_other_processes_hold(
     captured: bool,
     names_other_processes: bool,
 ) -> None:
-    chat = tmp_path / "big-chat.gguf"
-    with chat.open("wb") as handle:
-        handle.truncate(6 * _GB)
+    small = tmp_path / "big-chat.gguf"
+    small.write_bytes(b"weights")
+    chat = _reporting_size(small, 6 * _GB)
     resolve = engine_params.resolve_model_path
     monkeypatch.setattr(
         engine_params, "resolve_model_path", lambda ref: chat if ref == _CHAT_REF else resolve(ref)
