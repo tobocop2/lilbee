@@ -96,6 +96,9 @@ class SpyEngine(BundledFakeAdapter):
     def runtime_env(self) -> Mapping[str, str]:
         return SPY_ENV
 
+    def target_env(self, target: Any) -> Mapping[str, str]:
+        return {}
+
     def swap_extras(self, launch: Any) -> Mapping[str, Any]:
         return SPY_EXTRAS
 
@@ -795,6 +798,73 @@ class TestProvider:
         provider._reload_pass()
         warnings = self._no_engine_warnings(routing)
         assert [code for code, _ in warnings] == [WarningCode.ENGINE_FALLBACK]
+
+
+class TestProviderCallersAskTheRoleEngine:
+    """Chat on the host engine and the other roles on a spy: a caller must ask the role's own."""
+
+    @pytest.fixture
+    def mixed(self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+        book = {**engines_for_all_roles(spy), WorkerRole.CHAT: LLAMA}
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(book, {}))
+        monkeypatch.setattr(planning, "snapshot_engine", lambda engines: LLAMA)
+
+    def test_supports_rerank_asks_the_rerank_engine(
+        self, spy: SpyEngine, mixed: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(type(spy), "served_roles", frozenset({WorkerRole.EMBED}))
+        assert WorkerRole.RERANK in LLAMA.served_roles
+        assert FleetProvider().supports_rerank() is False
+
+    def test_supports_rerank_is_false_when_no_engine_holds_the_rerank_role(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        book = {WorkerRole.CHAT: LLAMA}
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(book, {}))
+        assert FleetProvider().supports_rerank() is False
+
+    def test_embed_token_cap_reads_the_model_with_the_embed_engine(
+        self, spy: SpyEngine, mixed: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        FleetProvider().embed_token_cap()
+        assert spy.meta_paths
+
+    def test_embed_token_cap_is_none_when_the_embed_role_has_no_engine(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        book = {WorkerRole.CHAT: LLAMA}
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(book, {}))
+        assert FleetProvider().embed_token_cap() is None
+
+    def test_the_placeable_check_asks_each_role_engine_and_the_total_asks_the_host(
+        self, spy: SpyEngine, mixed: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import lilbee.providers.fleet.provider as prov_mod
+
+        asked: dict[WorkerRole, Any] = {}
+        totals: list[Any] = []
+
+        def _placeable(role: WorkerRole, model: str, total: int, *, engine: Any) -> bool:
+            asked[role] = engine
+            return True
+
+        plan = SimpleNamespace(
+            launches=[SimpleNamespace(role=role) for role in (WorkerRole.CHAT, WorkerRole.EMBED)],
+            skipped_not_installed={},
+            refused_roles={},
+        )
+        monkeypatch.setattr(planning, "plan_all_launches", lambda **_k: plan)
+        monkeypatch.setattr(planning, "role_model_placeable", _placeable)
+        monkeypatch.setattr(
+            planning, "placeable_total_vram", lambda engine: totals.append(engine) or 1
+        )
+        monkeypatch.setattr(prov_mod, "_configured_model_for", lambda role: "ref")
+        monkeypatch.setattr(prov_mod, "_demanded_chat_ctx", lambda launches, pairs: 0)
+        monkeypatch.setattr(prov_mod, "_demanded_vision_slots", lambda pairs: 0)
+        prov_mod._placeable_demand(LLAMA, {**engines_for_all_roles(spy), WorkerRole.CHAT: LLAMA})
+        assert asked == {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: spy}
+        assert totals == [LLAMA]
 
 
 class TestSelfCheck:

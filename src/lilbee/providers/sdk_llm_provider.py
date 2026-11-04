@@ -20,8 +20,6 @@ from typing import Any, Literal, overload
 
 import numpy as np
 
-from lilbee.catalog.types import ModelSource
-from lilbee.core.blocked_networks import check_request_address
 from lilbee.core.config import cfg
 from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
@@ -34,7 +32,6 @@ from lilbee.providers.base import (
     FinishReason,
     LLMProvider,
     ProviderError,
-    ProviderErrorKind,
     StreamFinish,
     ToolCall,
     ToolCallDelta,
@@ -65,19 +62,10 @@ _VISION_OCR_TIMEOUT_ERROR = "Vision OCR did not finish within {timeout:g} second
 
 
 def _checked_route(ref: ProviderModelRef, role: WorkerRole) -> ServerRoute | None:
-    """The route of a preset ref, checked for *role* and its address; None for any other ref."""
+    """The route of a preset ref, checked for *role*; None for any other ref."""
     if not ref.is_preset:
         return None
-    route = check_role(ref, role)
-    try:
-        check_request_address(route.base_url)
-    except ValueError as exc:
-        raise ProviderError(
-            f"The server preset {route.name!r} is refused: {exc}",
-            provider=ModelSource.REMOTE,
-            kind=ProviderErrorKind.BAD_REQUEST,
-        ) from None
-    return route
+    return check_role(ref, role)
 
 
 def _api_base_for(ref: ProviderModelRef, route: ServerRoute | None = None) -> str | None:

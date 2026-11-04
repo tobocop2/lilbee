@@ -83,6 +83,8 @@ class RequestProfile:
     """What to tell the user when embedding vectors do not decode."""
     reasoning_field: str
     """The response field that carries reasoning text apart from the answer."""
+    structured_output: bool = True
+    """Whether the server enforces ``response_format``; if not, the client drops or refuses it."""
     rerank_path: str | None = None
     """The route that scores a query against texts, or None to rank through embeddings."""
     batch_limit: int | None = None
@@ -170,6 +172,10 @@ class EngineAdapter(Protocol, Hashable):
 
     def runtime_env(self) -> Mapping[str, str]:
         """Extra environment variables for a spawned engine process."""
+        ...
+
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+        """Environment variables that pin a process to *target*, beyond ``launch_argv`` flags."""
         ...
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]: ...

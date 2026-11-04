@@ -32,6 +32,7 @@ from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "1.9.4"
 _CPU = "cpu"
+_CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
 _METAL = "metal"
 _CUDA_PREFIX = "cuda-sm"
 _MIN_COMPUTE = (7, 5)
@@ -202,7 +203,7 @@ class TeiAdapter:
 
         if self.pick_build(session_host()).backend in (None, _CPU):
             return frozenset({RoleTarget.CPU})
-        return frozenset({RoleTarget.GPU})
+        return frozenset({RoleTarget.GPU, RoleTarget.CPU})
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return MemoryEstimate(
@@ -229,6 +230,10 @@ class TeiAdapter:
 
     def runtime_env(self) -> Mapping[str, str]:
         return {}
+
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+        """A CPU role hides every card: the CUDA build of TEI has no CPU flag."""
+        return {_CUDA_VISIBLE_VAR: ""} if target is RoleTarget.CPU else {}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
         return {"checkEndpoint": "/health"}

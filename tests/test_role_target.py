@@ -201,6 +201,13 @@ class TestCpuRoleArgvFromRealAdapter:
         assert "--fit-target" not in launch.argv
         assert "CUDA_VISIBLE_DEVICES" not in launch.env_overrides
 
+    def test_tei_cpu_target_hides_the_cards_in_its_own_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = InstancePlan(WorkerRole.EMBED, (), target=RoleTarget.CPU)
+        launch = _llama_launch(monkeypatch, tmp_path, plan, TEI)
+        assert launch.env_overrides["CUDA_VISIBLE_DEVICES"] == ""
+
     def test_llama_cpu_chat_drops_the_fit_margin(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -209,6 +216,40 @@ class TestCpuRoleArgvFromRealAdapter:
         launch = _llama_launch(monkeypatch, tmp_path, plan, LLAMA)
         assert "--fit-target" not in launch.argv
         assert _flag(launch.argv, "--n-gpu-layers") == "0"
+
+    @pytest.mark.parametrize("engine", [LLAMA, IK_LLAMA], ids=lambda e: e.name.value)
+    def test_a_cpu_request_cannot_zero_the_layers_and_keep_the_card(
+        self, tmp_path: Path, engine
+    ) -> None:
+        """Measured 424 MiB: --n-gpu-layers 0 without --device none still opens the card."""
+        request = LaunchRequest(
+            binary=tmp_path / "server",
+            model_path=tmp_path / "m.gguf",
+            devices=(),
+            n_gpu_layers=99,
+            slots=1,
+            ctx_per_slot=4096,
+            target=RoleTarget.CPU,
+        )
+        spec = engine.role_spec(WorkerRole.EMBED, None, None)
+        argv = engine.launch_argv(spec, request)
+        assert _flag(argv, "--n-gpu-layers") == "0"
+        assert _flag(argv, "--device") == "none"
+
+    @pytest.mark.parametrize("names", [(), ("CUDA0",)])
+    def test_a_cpu_request_ignores_a_card_name_it_was_handed(self, tmp_path: Path, names) -> None:
+        request = LaunchRequest(
+            binary=tmp_path / "server",
+            model_path=tmp_path / "m.gguf",
+            devices=(),
+            device_names=names,
+            n_gpu_layers=99,
+            slots=1,
+            ctx_per_slot=4096,
+            target=RoleTarget.CPU,
+        )
+        argv = LLAMA.launch_argv(LLAMA.role_spec(WorkerRole.EMBED, None, None), request)
+        assert _flag(argv, "--device") == "none"
 
     def test_llama_gpu_role_keeps_its_card(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -299,7 +340,7 @@ class TestDeviceTargets:
             (MistralAdapter, MISTRAL, "cuda128-sm89", {RoleTarget.CPU, RoleTarget.GPU}),
             (MistralAdapter, MISTRAL, "cpu", {RoleTarget.CPU}),
             (MistralAdapter, MISTRAL, None, {RoleTarget.CPU}),
-            (TeiAdapter, TEI, "cuda", {RoleTarget.GPU}),
+            (TeiAdapter, TEI, "cuda", {RoleTarget.CPU, RoleTarget.GPU}),
             (TeiAdapter, TEI, "cpu", {RoleTarget.CPU}),
         ],
     )
@@ -436,15 +477,17 @@ class TestNoFallbackToAuto:
 
 
 class TestNoDevicePinIsOnePath:
-    def test_cpu_target_pins_none_with_no_refusal_warning(
-        self, caplog: pytest.LogCaptureFixture
+    def test_cpu_target_is_pinned_by_the_adapter_with_no_refusal_warning(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
+        plan = InstancePlan(WorkerRole.EMBED, (), target=RoleTarget.CPU)
         with caplog.at_level(logging.WARNING):
-            assert planning._no_device_pin(LLAMA, RoleTarget.CPU) == ("none",)
-        assert caplog.text == ""
+            launch = _llama_launch(monkeypatch, tmp_path, plan, LLAMA)
+        assert _flag(launch.argv, "--device") == "none"
+        assert "will not plan onto" not in caplog.text
 
-    def test_gpu_target_with_no_probe_pins_nothing(self) -> None:
-        assert planning._no_device_pin(LLAMA, RoleTarget.GPU) == ()
+    def test_no_probe_pins_nothing(self) -> None:
+        assert planning._no_device_pin(LLAMA) == ()
 
 
 class TestExplicitGpuOnABuildWithoutOne:

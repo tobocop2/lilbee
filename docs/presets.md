@@ -118,9 +118,10 @@ The gate does not apply to the CLI, the slash command or the settings screen. Tu
 
 lilbee checks the URL when you save a preset. It refuses a URL that is not well formed and an address in a blocked network. A host name with no DNS answer is saved.
 
-lilbee checks the address again before the request. Before the request, it resolves the host name and refuses the request if any address is blocked or if the host has no DNS answer. The SDK resolves the host name once more when it connects. A DNS change between the check and the connection is not caught.
+The SDK checks the address when it connects. It reads every address of the host name at that moment and refuses a blocked one. A DNS change after the save is caught. A host name with no DNS answer fails to connect.
 
 ## Related
 
 - [Usage](usage.md) lists the slash commands and the CLI commands.
 - [Settings reference](settings.md) lists `server_presets`, `allow_http_engines` and `mcp_presets_enabled`.
+- [Engine integration](engine-integration.md) lists what a server must do before lilbee can use it.

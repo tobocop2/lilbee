@@ -58,6 +58,7 @@ _PROFILE = RequestProfile(
     batch_overflow=None,
     unreadable_embedding_hint="mlx-lm serves no embeddings.",
     reasoning_field="reasoning",
+    structured_output=False,
 )
 
 
@@ -192,6 +193,9 @@ class MlxAdapter:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:
+        return {}
+
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
         return {}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:

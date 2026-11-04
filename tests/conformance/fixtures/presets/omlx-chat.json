@@ -24,6 +24,12 @@
    "detail": "kind=context_overflow"
   }
  },
+ "error_answers": [
+  [
+   400,
+   "{\"error\":{\"message\":\"Prompt is too long: 60009 tokens > 40960 maximum context length\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"context_length_exceeded\"}}"
+  ]
+ ],
  "exchanges": [
   {
    "method": "POST",

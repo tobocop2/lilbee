@@ -21,6 +21,7 @@ from lilbee.providers.fleet import ctx as fleet_ctx
 from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_CONCURRENCY,
+    NO_DEVICE,
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.binary import (
@@ -214,8 +215,6 @@ _ALL_LAYER_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.of
 _FLASH_ON = "on"
 _FLASH_OFF = "off"
 _FLASH_AUTO = "auto"
-# llama-server's documented way to say "offload nothing": --device none.
-_NO_DEVICE = "none"
 _TARGET_REFUSED = {
     RoleTarget.CPU: (
         "this engine's installed build cannot run on the CPU. "
@@ -1996,7 +1995,7 @@ def _launch_for(
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
         cpu_moe=expert_offload_all(meta),
         n_cpu_moe=expert_offload_layers(meta),
-        device_names=_device_names(chosen) or _no_device_pin(engine, plan.target),
+        device_names=_device_names(chosen) or _no_device_pin(engine),
         target=plan.target,
         memory_endpoint=engine.check_readback(binary),
         fit_target_mib=(
@@ -2024,7 +2023,11 @@ def _launch_for(
     launch = InstanceLaunch(
         role=plan.role,
         argv=engine.launch_argv(spec, request),
-        env_overrides={**visible_env(chosen), **engine.runtime_env()},
+        env_overrides={
+            **visible_env(chosen),
+            **engine.runtime_env(),
+            **engine.target_env(plan.target),
+        },
         model=model_ref,
         # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
         # doesn't truncate (it relies on the per-slot ctx headroom), so leave it None.
@@ -2867,8 +2870,10 @@ def clear_plan_probe() -> None:
     _plan_probe_store.clear()
 
 
-def _no_device_pin(engine: EngineAdapter, target: RoleTarget = RoleTarget.GPU) -> tuple[str, ...]:
-    """``("none",)`` for a cpu target or when lilbee refused every GPU the engine offered.
+def _no_device_pin(engine: EngineAdapter) -> tuple[str, ...]:
+    """``("none",)`` when lilbee refused every GPU the engine offered.
+
+    A cpu target needs no entry here: the adapter pairs it with the no-device name.
 
     Dropping a device from lilbee's view does not stop the engine using it. With
     no pin at all, ggml applies its own selection, and its fallback takes the
@@ -2877,8 +2882,6 @@ def _no_device_pin(engine: EngineAdapter, target: RoleTarget = RoleTarget.GPU) -
     placement budgeted against system RAM. Naming no device keeps the engine on
     the CPU the plan was shaped for.
     """
-    if target is RoleTarget.CPU:
-        return (_NO_DEVICE,)
     probe = _current_plan_probe(engine)
     if probe is None or not probe.engine_devices_all_refused:
         return ()
@@ -2887,7 +2890,7 @@ def _no_device_pin(engine: EngineAdapter, target: RoleTarget = RoleTarget.GPU) -
         "run on the CPU. Serving from one of them would be slower than the CPU or fail "
         "outright, and placement has been sized for system RAM."
     )
-    return (_NO_DEVICE,)
+    return (NO_DEVICE,)
 
 
 def _in_engine_reading(

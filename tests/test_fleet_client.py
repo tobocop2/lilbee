@@ -3140,3 +3140,91 @@ def test_a_missing_library_is_not_retried_or_rebuilt() -> None:
     assert kind not in client_mod._REBUILDABLE_KINDS
     assert not client_mod.is_rebuildable_failure(error)
     assert not client_mod.is_load_capacity_failure(error)
+
+
+_SCHEMA_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "city", "strict": True, "schema": {"type": "object"}},
+}
+
+
+def _recording_client(engine) -> tuple[LlamaServerClient, list[dict[str, object]]]:
+    sent: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    client = LlamaServerClient(
+        "http://gpu0",
+        "test-model",
+        http=http,
+        async_transport=httpx.MockTransport(handler),
+        profile=engine.request_profile(WorkerRole.CHAT),
+    )
+    client._needs_alternation = False
+    return client, sent
+
+
+def test_json_schema_refused_on_mlx() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    client, sent = _recording_client(MLX)
+    with pytest.raises(ProviderError) as refused:
+        client.chat_result(
+            [{"role": "user", "content": "hi"}], options={"response_format": _SCHEMA_FORMAT}
+        )
+    assert refused.value.kind is ProviderErrorKind.BAD_REQUEST
+    assert "mlx-lm" in str(refused.value)
+    assert "llama.cpp" in str(refused.value)
+    assert sent == []
+
+
+def test_json_object_dropped_on_mlx() -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    options = {"max_tokens": 8, "response_format": {"type": "json_object"}}
+    mlx, mlx_sent = _recording_client(MLX)
+    mlx.chat_result([{"role": "user", "content": "hi"}], options=dict(options))
+    assert "response_format" not in mlx_sent[0]
+    assert mlx_sent[0]["max_tokens"] == 8
+    llama, llama_sent = _recording_client(LLAMA)
+    llama.chat_result([{"role": "user", "content": "hi"}], options=dict(options))
+    assert llama_sent[0]["response_format"] == {"type": "json_object"}
+    assert options["response_format"] == {"type": "json_object"}
+
+
+def test_json_schema_passes_through_on_llama() -> None:
+    client, sent = _recording_client(LLAMA)
+    client.chat_result(
+        [{"role": "user", "content": "hi"}], options={"response_format": _SCHEMA_FORMAT}
+    )
+    assert sent[0]["response_format"] == _SCHEMA_FORMAT
+
+
+def _call_chat(client, how: str, options: dict[str, object]) -> None:
+    messages = [{"role": "user", "content": "hi"}]
+    if how == "chat":
+        client.chat(messages, options=options)
+    elif how == "chat_stream":
+        list(client.chat(messages, options=options, stream=True))
+    elif how == "chat_tools":
+        client.chat_tools(messages, tools=[], options=options)
+    elif how == "chat_abortable":
+        client.chat_abortable(messages, options=options)
+    else:
+        list(client.chat_stream_items(messages, options=options))
+
+
+@pytest.mark.parametrize(
+    "how", ["chat", "chat_stream", "chat_tools", "chat_abortable", "chat_stream_items"]
+)
+def test_every_chat_entry_point_keeps_a_schema_off_the_mlx_wire(how: str) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    client, sent = _recording_client(MLX)
+    with pytest.raises(ProviderError, match="does not enforce a JSON schema"):
+        _call_chat(client, how, {"response_format": _SCHEMA_FORMAT})
+    assert sent == []

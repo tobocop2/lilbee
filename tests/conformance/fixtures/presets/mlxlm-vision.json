@@ -16,6 +16,12 @@
    "detail": "ProviderError: The provider doesn't offer mlxlm-vision/mlx-community/Qwen3-VL-2B-Instruct-4bit on your account. Pick a different model or check the name."
   }
  },
+ "error_answers": [
+  [
+   404,
+   "{\"error\": \"Only 'text' content type is supported.\"}"
+  ]
+ ],
  "exchanges": [
   {
    "method": "POST",

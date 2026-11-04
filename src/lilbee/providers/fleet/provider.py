@@ -790,7 +790,7 @@ def _placeable_demand(
         for role in WorkerRole
         if role in placed
         and (model := _configured_model_for(role))
-        and role_model_placeable(role, model, total_vram, engine=engine)
+        and role_model_placeable(role, model, total_vram, engine=engines[role])
     }
     return _EngineDemand(
         pairs,
@@ -1734,8 +1734,8 @@ class FleetProvider:
         if launches:
             return launches[0].token_cap
         try:
-            engine = self._host_engine()
-        except ProviderError:
+            engine = self._engines()[WorkerRole.EMBED]
+        except (ProviderError, KeyError):
             return None
         return planning.planned_embed_token_cap(cfg.embedding_model, engine=engine)
 
@@ -2236,9 +2236,10 @@ class FleetProvider:
     def supports_rerank(self) -> bool:
         """Report whether the engine serves the rerank role."""
         try:
-            return WorkerRole.RERANK in self._host_engine().served_roles
-        except ProviderError:
+            engine = self._engines()[WorkerRole.RERANK]
+        except (ProviderError, KeyError):
             return False
+        return WorkerRole.RERANK in engine.served_roles
 
     def list_models(self) -> list[str]:
         """List installed models from the registry."""
