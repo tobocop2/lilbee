@@ -741,6 +741,7 @@ class TestServeExitsPastARunningOpen:
     ):
         """The exit comes after the locks are free; a normal stop keeps the normal exit."""
         from lilbee.app import services as services_mod
+        from lilbee.cli.commands import servers as servers_mod
         from lilbee.runtime.lock import acquire_server_lock
 
         def run(coro):
@@ -760,9 +761,56 @@ class TestServeExitsPastARunningOpen:
         mock_asyncio_run.side_effect = run
         monkeypatch.setattr(services_mod.os, "_exit", record_exit)
         monkeypatch.setattr(services_mod, "wait_for_opens", lambda timeout: open_done)
+        monkeypatch.setattr(servers_mod, "exit_if_opens_remain", services_mod.exit_if_opens_remain)
         result = runner.invoke(app, ["serve"])
         assert exits == expected_exits
         assert result.exit_code == 143
+
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.server.create_app")
+    def test_a_serve_test_returns_while_an_open_runs_without_its_own_patch(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, monkeypatch
+    ):
+        """The autouse guard keeps the real process exit out of a CliRunner serve test."""
+        from lilbee.app import services as services_mod
+
+        def run(coro):
+            coro.close()
+            return 0
+
+        def forbidden(status: int) -> None:
+            raise AssertionError("the test reached the real process exit")
+
+        mock_create_app.return_value = "fake_app"
+        mock_asyncio_run.side_effect = run
+        monkeypatch.setattr(services_mod.os, "_exit", forbidden)
+        monkeypatch.setattr(services_mod, "wait_for_opens", lambda timeout: False)
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0
+
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_runs_the_open_exit_when_the_loop_raises(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, monkeypatch, caplog
+    ):
+        """A raising run still ends the process while an open runs, and the error is logged."""
+        from lilbee.cli.commands import servers as servers_mod
+
+        def run(coro):
+            coro.close()
+            raise RuntimeError("the loop failed")
+
+        exits: list[int] = []
+        mock_create_app.return_value = "fake_app"
+        mock_asyncio_run.side_effect = run
+        monkeypatch.setattr(servers_mod, "exit_if_opens_remain", exits.append)
+        with caplog.at_level("ERROR"):
+            result = runner.invoke(app, ["serve"])
+        assert exits == [1]
+        assert isinstance(result.exception, RuntimeError)
+        assert "the loop failed" in caplog.text
 
 
 class TestServeHoldsLocksThroughTeardown:

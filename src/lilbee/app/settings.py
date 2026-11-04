@@ -504,10 +504,19 @@ def provider_reset_refused_message(action: str) -> str:
 
 def config_write_failure_message(exc: OSError) -> str:
     """User-facing text for a failed config write; names the fix when the file is locked."""
+    return _config_failure_message(exc, "write")
+
+
+def config_read_failure_message(exc: OSError) -> str:
+    """User-facing text for a failed config read; names the fix when the file is locked."""
+    return _config_failure_message(exc, "read")
+
+
+def _config_failure_message(exc: OSError, verb: str) -> str:
     if isinstance(exc, persistent_settings.ReadOnlyConfigError):
         # The error text already names the file by its full path.
         return f"{exc}."
-    detail = f"Could not write {CONFIG_FILE_NAME}: {exc}."
+    detail = f"Could not {verb} {CONFIG_FILE_NAME}: {exc}."
     if exc.errno in (errno.EACCES, errno.EPERM):
         detail += f" Close the program that holds {CONFIG_FILE_NAME} open and try again."
     return detail

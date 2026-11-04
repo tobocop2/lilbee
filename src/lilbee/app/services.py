@@ -613,6 +613,7 @@ def _write_exit_note(note: str) -> None:
 
 def _flush_logs() -> None:
     """Flush every log handler and stdio; ``os._exit`` drops what a buffer still holds."""
+    # loggerDict also holds PlaceHolder entries for loggers that have no object yet.
     named = [e for e in logging.Logger.manager.loggerDict.values() if isinstance(e, logging.Logger)]
     loggers = [logging.getLogger(), *named]
     for logger in loggers:
@@ -713,13 +714,9 @@ def _exit_if_stragglers(status: int) -> None:
 
 
 def exit_if_opens_remain(status: int) -> None:
-    """End the process with *status* when a library open still runs; else return.
-
-    The open runs on a daemon thread, and a daemon thread inside LanceDB at
-    interpreter finalization aborts Python 3.11 and 3.12 (CPython gh-87135).
-    The exit skips atexit, so the container teardown atexit would run comes
-    first. An upgrade the exit cuts short runs again at the next open.
-    """
+    """End the process with *status* when a library open still runs; else return."""
+    # A daemon thread inside LanceDB at finalization aborts Python 3.11 and 3.12
+    # (CPython gh-87135). The exit skips atexit, so the teardown runs first.
     if wait_for_opens(0.0):
         return
     reset_services_on_exit()

@@ -379,6 +379,21 @@ def test_set_rejects_overlap_at_or_above_chunk_size(project):
     assert "chunk_overlap" in result.output
 
 
+@pytest.mark.parametrize("command", [("get", "top_k"), ("list",)])
+def test_get_and_list_report_a_failed_read_as_a_read(project, monkeypatch, command):
+    from lilbee.app import settings as settings_mod
+
+    def refuse(*_args, **_kwargs):
+        raise PermissionError(13, "The process cannot access the file")
+
+    monkeypatch.setattr(settings_mod, "get_setting", refuse)
+    monkeypatch.setattr(settings_mod, "list_settings", refuse)
+    result = _invoke(project, *command)
+    assert result.exit_code == 1
+    assert "Could not read config.toml" in result.output
+    assert "Could not write" not in result.output
+
+
 def test_set_reports_a_failed_write_with_the_cause(project, monkeypatch):
     def refuse(_src, _dst):
         raise PermissionError(13, "The process cannot access the file")

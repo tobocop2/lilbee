@@ -340,7 +340,10 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         stops = [_wait_for_the_opens()]
         if svc is not None:
             stops.append(asyncio.to_thread(svc.provider.shutdown))
-        await asyncio.gather(*stops)
+        # A failed shutdown must not leave the open wait unawaited.
+        for outcome in await asyncio.gather(*stops, return_exceptions=True):
+            if isinstance(outcome, BaseException):
+                log.warning("A server shutdown step failed", exc_info=outcome)
 
 
 async def _wait_for_the_opens() -> None:

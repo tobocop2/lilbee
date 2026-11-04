@@ -233,7 +233,9 @@ def _timeout_note(config: pytest.Config) -> str:
     if limit <= 0:
         return "pytest-timeout is off."
     return (
-        f"The pytest-timeout limit is {limit:g}s. When a test passes that limit on Windows,"
+        f"The configured pytest-timeout limit is {limit:g}s"
+        " (a test with its own timeout marker can differ)."
+        " When a test passes that limit on Windows,"
         " pytest-timeout can end a worker with no traceback."
     )
 

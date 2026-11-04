@@ -153,6 +153,18 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _serve_never_ends_the_test_process(monkeypatch):
+    """Keep ``serve`` from reaching the real process exit while a library open runs.
+
+    A CliRunner serve test that meets a running open would end its xdist worker.
+    A test that checks the exit patches ``os._exit`` and restores the real function.
+    """
+    from lilbee.cli.commands import servers
+
+    monkeypatch.setattr(servers, "exit_if_opens_remain", lambda status: None)
+
+
+@pytest.fixture(autouse=True)
 def _download_without_a_child_process(request, monkeypatch):
     """Run a download's transfer in this process so a test's patches reach it.
 

@@ -607,7 +607,7 @@ class TestRoutingProvider:
         count_lock = threading.Lock()
 
         class FakeFleet:
-            def __init__(self, *, hold_warm: bool = False, config_refresh=None) -> None:
+            def __init__(self, *, hold_warm: bool = False, config_refresh: object = None) -> None:
                 with count_lock:
                     construct_count["n"] += 1
                 # Widen the check-then-set window: without it the cheap __init__
@@ -623,10 +623,14 @@ class TestRoutingProvider:
         self._to_shutdown.append(rp)
         barrier = threading.Barrier(8)
         results: list = []
+        errors: list[BaseException] = []
 
         def worker() -> None:
-            barrier.wait()
-            results.append(rp._get_local())
+            try:
+                barrier.wait()
+                results.append(rp._get_local())
+            except BaseException as exc:
+                errors.append(exc)
 
         threads = [threading.Thread(target=worker) for _ in range(8)]
         for t in threads:
@@ -634,6 +638,7 @@ class TestRoutingProvider:
         for t in threads:
             t.join()
 
+        assert errors == []
         assert construct_count["n"] == 1
         assert len({id(r) for r in results}) == 1
 
@@ -670,10 +675,14 @@ class TestRoutingProvider:
         self._to_shutdown.append(rp)
         barrier = threading.Barrier(8)
         results: list = []
+        errors: list[BaseException] = []
 
         def worker() -> None:
-            barrier.wait()
-            results.append(rp._get_sdk_provider())
+            try:
+                barrier.wait()
+                results.append(rp._get_sdk_provider())
+            except BaseException as exc:
+                errors.append(exc)
 
         threads = [threading.Thread(target=worker) for _ in range(8)]
         for t in threads:
@@ -681,6 +690,7 @@ class TestRoutingProvider:
         for t in threads:
             t.join()
 
+        assert errors == []
         assert construct_count["n"] == 1
         assert len({id(r) for r in results}) == 1
 
