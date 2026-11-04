@@ -910,6 +910,13 @@ def _engine_lifetime(engine_dir: Path) -> EngineLifetime:
     return EngineLifetime.BUILDER
 
 
+def _clear_engine_dir(engine_dir: Path) -> None:
+    """Reap dead leftovers in *engine_dir* and stop its recorded engine; caller holds its lock."""
+    reap_stale(engine_dir)
+    if engine_record_exists(engine_dir):
+        stop_engine(engine_dir)
+
+
 def _watch_bound_engine(engine_dir: Path) -> None:
     """Make sure a reaper watches the engine this process just bound in *engine_dir*.
 
@@ -1183,16 +1190,18 @@ class FleetProvider:
                 # Lock order: the slot's build lock, then the private dir's. No
                 # path takes the slot's build lock while it holds a private one.
                 with build_lock(overflow_dir):
-                    if self._bind_held_dir(overflow_dir, pin, demand):
-                        return True
+                    bound_private = self._bind_held_dir(overflow_dir, pin, demand)
+                if bound_private:
+                    # No live user holds the slot, so its engine is stopped, as
+                    # before a build, and its weights do not stay beside the private fleet.
+                    _clear_engine_dir(engine_dir)
+                    return True
             if not _can_build_engine(wanted):
                 return False
             # No live user holds this dir now: reap dead leftovers and stop any
             # recorded engine so planning sees true free VRAM and the build never
             # lands beside an unprobeable incumbent.
-            reap_stale(engine_dir)
-            if engine_record_exists(engine_dir):
-                stop_engine(engine_dir)
+            _clear_engine_dir(engine_dir)
             built = self._plan_and_spawn(engine_dir)
             if built:
                 self._hold_membership(engine_dir)
@@ -1530,10 +1539,13 @@ class FleetProvider:
             # The holds stay through the retry: a stream on a retired client and a
             # second thread's rebuild both need the dir held, and the ladder does not
             # count this process's own hold as a live user. The open count keeps any
-            # sweep from releasing a hold before this retry ends.
-            with self._lock:
-                self._open_rediscovers += 1
+            # sweep from releasing a hold before this retry ends. The count goes up
+            # inside the try, so an exception at any point after it brings it down.
+            opened = False
             try:
+                with self._lock:
+                    self._open_rediscovers += 1
+                    opened = True
                 self._drop_swap_refs()
                 # An owner that restarted its fleet for new settings wrote them first.
                 # With no group held, the replan the take starts returns at once, and
@@ -1542,9 +1554,14 @@ class FleetProvider:
                     self._config_refresh()
                 return call()
             finally:
-                with self._lock:
-                    self._open_rediscovers -= 1
-                self._release_unused_holds()
+                if opened:
+                    with self._lock:
+                        self._open_rediscovers -= 1
+                try:
+                    self._release_unused_holds()
+                except Exception:
+                    # A failed sweep must not replace the retry's own result or error.
+                    log.warning("Hold sweep after a rediscover failed", exc_info=True)
 
     def _retry_rebuilt(self, call: Callable[[], _T], role: WorkerRole, err: BaseException) -> _T:
         """Rebuild *role* so the retry is a different launch, and run *call* again.
@@ -1749,19 +1766,25 @@ class FleetProvider:
         sweep again (see _start_hold_sweep). While a rediscover is open its dropped
         groups have no dir yet, so the holds stay; its own retry ends with a sweep.
         The build lock keeps the sweep from releasing a dir that a build on another
-        thread is about to hold. Nothing is stopped here.
+        thread is about to hold. A first check without the build lock returns at once
+        when there is nothing to release, so the common sweep never waits on a build.
+        Nothing is stopped here.
         """
+        with self._lock:
+            if not self._unused_hold_dirs():
+                return
         with self._build_lock:
             with self._lock:
-                if self._open_rediscovers or any(
-                    client.in_flight for client in self._retiring_clients
-                ):
-                    return
-                used = set(self._group_dirs.values())
-                unused = [path for path in self._engine_holds if path not in used]
-                holds = [self._engine_holds.pop(path) for path in unused]
+                holds = [self._engine_holds.pop(path) for path in self._unused_hold_dirs()]
             for hold in holds:
                 hold.release_and_check_last()
+
+    def _unused_hold_dirs(self) -> list[Path]:
+        """The held dirs that no group uses, or none while a sweep must wait. Caller holds _lock."""
+        if self._open_rediscovers or any(client.in_flight for client in self._retiring_clients):
+            return []
+        used = set(self._group_dirs.values())
+        return [path for path in self._engine_holds if path not in used]
 
     def _start_hold_sweep(self) -> None:
         """Run the hold sweep on a new thread: a retired client ended its last request.
@@ -1770,13 +1793,17 @@ class FleetProvider:
         its locks. An abandoned stream also closes from garbage collection, inside
         whatever frame runs then, including one that holds the build lock. A sweep
         on that thread could wait on a lock the thread itself holds. A new thread
-        holds no lock and takes them in the sweep's own order.
+        holds no lock and takes them in the sweep's own order. At interpreter exit no
+        new thread can start; the sweep is skipped then, as the process ends anyway.
         """
-        threading.Thread(
-            target=self._release_unused_holds,
-            name=_HOLD_SWEEP_THREAD,
-            daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=self._release_unused_holds,
+                name=_HOLD_SWEEP_THREAD,
+                daemon=True,
+            ).start()
+        except RuntimeError:
+            log.debug("Hold sweep not started: no new thread can start", exc_info=True)
 
     def _drop_swap_refs(self, *, close_all: bool = False) -> None:
         """Clear every group's swap/clients and the chat capacity so the next call rebuilds.

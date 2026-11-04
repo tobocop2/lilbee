@@ -8,6 +8,7 @@ engine. A peer is a user lock under another pid.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import threading
@@ -346,6 +347,67 @@ def test_with_the_slot_free_a_private_fleet_that_does_not_match_leads_to_a_slot_
     joiner.shutdown()
     assert box.pids(box.private) == private_pids
     assert peer_hold.release_and_check_last() is True
+
+
+def test_a_bind_of_the_private_fleet_stops_a_slot_engine_with_no_live_user(
+    real_planner, box: _Box, monkeypatch, tmp_path: Path
+) -> None:
+    box.seed_fleet(box.slot)
+    _pick_reranker(monkeypatch, tmp_path)
+    private_pids = box.seed_fleet(box.private)
+    peer_hold = hold_user_lock(box.private, pid=_PEER_PID)
+    joiner = _process(monkeypatch)
+    assert joiner._acquire_engine(box.root) is True
+    assert set(joiner._group_dirs.values()) == {box.private}
+    assert box.stopped == [_SLOT]
+    assert box.records[_SLOT] == {}
+    assert box.pids(box.private) == private_pids
+    joiner.shutdown()
+    assert peer_hold.release_and_check_last() is True
+
+
+def _assert_builds_in_the_slot_and_leaves_the_private_dir(
+    joiner: FleetProvider, box: _Box, private_pids: dict[SwapGroup, int]
+) -> None:
+    assert joiner._acquire_engine(box.root) is True
+    assert set(joiner._group_dirs.values()) == {box.slot}
+    assert not any(swap.bound for swap in joiner._swaps.values())
+    assert list(joiner._engine_holds) == [box.slot]
+    assert box.pids(box.private) == private_pids
+    assert box.stopped == []
+
+
+def test_with_the_slot_free_a_private_fleet_at_a_smaller_num_ctx_leads_to_a_slot_build(
+    real_planner, box: _Box, monkeypatch
+) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", 2048)
+    private_pids = box.seed_fleet(box.private)
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    _assert_builds_in_the_slot_and_leaves_the_private_dir(_process(monkeypatch), box, private_pids)
+
+
+def test_with_the_slot_free_a_private_fleet_of_another_engine_version_leads_to_a_slot_build(
+    real_planner, box: _Box, monkeypatch
+) -> None:
+    private_pids = box.seed_fleet(box.private)
+    box.records[_PRIVATE] = {
+        group: dataclasses.replace(state, engine_pin="another-engine-build")
+        for group, state in box.records[_PRIVATE].items()
+    }
+    _assert_builds_in_the_slot_and_leaves_the_private_dir(_process(monkeypatch), box, private_pids)
+
+
+def test_with_the_slot_free_a_dead_private_fleet_leads_to_a_slot_build(
+    real_planner, box: _Box, monkeypatch
+) -> None:
+    # The pids are gone and the ports are closed: the health probe finds nothing.
+    private_pids = box.seed_fleet(box.private)
+    monkeypatch.setattr(
+        prov_mod,
+        "_healthy_states",
+        lambda d: {} if d == box.private else dict(box.records[d.name]),
+    )
+    _assert_builds_in_the_slot_and_leaves_the_private_dir(_process(monkeypatch), box, private_pids)
 
 
 def test_an_overflowed_process_that_writes_a_setting_leaves_the_owner_running(

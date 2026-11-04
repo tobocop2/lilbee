@@ -3034,13 +3034,13 @@ def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, s
         )
 
 
-def _gb_text(num_bytes: int) -> str:
-    """*num_bytes* in GB with at most one decimal and no trailing zero."""
+def _gib_text(num_bytes: int) -> str:
+    """*num_bytes* in GiB with at most one decimal and no trailing zero."""
     return f"{round(num_bytes / 1024**3, 1):g}"
 
 
 def _other_processes_clause(launch: InstanceLaunch, devices: list[FleetDevice]) -> str:
-    """A sentence naming the memory other processes hold on the card, or ``""``.
+    """A sentence naming the memory other processes hold on the cards, or ``""``.
 
     Empty when there is no device, or when others hold no more than the model's
     own weights (then the weights are the cause, not the neighbours).
@@ -3049,12 +3049,11 @@ def _other_processes_clause(launch: InstanceLaunch, devices: list[FleetDevice]) 
     held = total - sum(d.free_bytes for d in devices)
     if not devices or held <= launch.weights_bytes:
         return ""
-    return f" Other processes hold {_gb_text(held)} GB of the card's {_gb_text(total)} GB."
+    owner = "the cards'" if len(devices) > 1 else "the card's"
+    return f" Other processes hold {_gib_text(held)} GiB of {owner} {_gib_text(total)} GiB."
 
 
-def _unusable_chat_ctx_reason(
-    launch: InstanceLaunch, devices: list[FleetDevice] | None = None
-) -> str | None:
+def _unusable_chat_ctx_reason(launch: InstanceLaunch, devices: list[FleetDevice]) -> str | None:
     """Reason to refuse a chat launch whose window cannot hold a grounded prompt.
 
     ``None`` for non-chat roles, for a window that holds the minimum grounded
@@ -3075,12 +3074,21 @@ def _unusable_chat_ctx_reason(
         return None
     if launch.ctx >= needed:
         return None
+    if devices and launch.weights_bytes > sum(d.free_bytes for d in devices):
+        opening = (
+            f"The chat model {launch.model} does not fit: its weights are larger than the "
+            f"free memory, which backs only a {launch.ctx}-token context"
+        )
+    else:
+        opening = (
+            f"The chat model {launch.model} loads, but the memory left after its weights "
+            f"backs only a {launch.ctx}-token context"
+        )
     return (
-        f"The chat model {launch.model} loads, but the memory left after its weights "
-        f"backs only a {launch.ctx}-token context, and a grounded answer needs about "
+        f"{opening}, and a grounded answer needs about "
         f"{needed} tokens (system prompt, a retrieved source, the question, and room "
         "for the answer), so it will not be served."
-        f"{_other_processes_clause(launch, devices or [])}"
+        f"{_other_processes_clause(launch, devices)}"
         " Use a smaller model or a smaller quant, or set num_ctx to force a larger window."
     )
 
