@@ -37,6 +37,7 @@ from lilbee.providers.fleet.devices import (
 )
 from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.engines.choice import LIST_HINT
+from lilbee.providers.fleet.gpu_env import ENGINE_TELEMETRY_OPT_OUT
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import installed_safetensors_bytes
@@ -1840,6 +1841,18 @@ def _charge_by_device(
     }
 
 
+def _launch_env(
+    engine: EngineAdapter, chosen: tuple[FleetDevice, ...], target: RoleTarget
+) -> dict[str, str]:
+    """The env a launch carries; the telemetry opt-outs come last so no adapter drops them."""
+    return {
+        **visible_env(chosen),
+        **engine.runtime_env(),
+        **engine.target_env(target),
+        **ENGINE_TELEMETRY_OPT_OUT,
+    }
+
+
 def _chat_fit_target_mib(
     binary: Path,
     chosen: tuple[FleetDevice, ...],
@@ -2023,11 +2036,7 @@ def _launch_for(
     launch = InstanceLaunch(
         role=plan.role,
         argv=engine.launch_argv(spec, request),
-        env_overrides={
-            **visible_env(chosen),
-            **engine.runtime_env(),
-            **engine.target_env(plan.target),
-        },
+        env_overrides=_launch_env(engine, chosen, plan.target),
         model=model_ref,
         # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
         # doesn't truncate (it relies on the per-slot ctx headroom), so leave it None.

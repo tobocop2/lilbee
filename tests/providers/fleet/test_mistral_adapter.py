@@ -19,7 +19,7 @@ from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet import devices, host_caps, swap_config
+from lilbee.providers.fleet import devices, engine_manifest, host_caps, swap_config
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
@@ -385,6 +385,7 @@ def test_the_engine_counts_as_installed_only_with_a_record_and_finds_its_tool(
 
 def test_a_pin_with_no_published_pack_refuses_a_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
     with pytest.raises(NoPublishedPackError, match=r"No pack of mistral\.rs is published yet\."):
         pin_lock(MISTRAL.pin_record())
 

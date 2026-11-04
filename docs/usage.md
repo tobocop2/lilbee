@@ -524,12 +524,13 @@ formats, not engines. The format name is `gguf`, `mlx`, `openvino` or
 
 ### Install an engine
 
-An engine that is not bundled needs a pack. No pack of ik_llama.cpp, mistral.rs,
-TEI or mlx is published yet, so today all four engines refuse to install and print
-the no-pack text. Nothing is installed, and llama.cpp stays in use.
+An engine that is not bundled needs a pack. Packs of ik_llama.cpp, mistral.rs and
+TEI are published for Linux x86_64. No pack of mlx is published yet, so mlx refuses
+to install and prints the no-pack text. A host with no pack for its platform gets the
+same text. Nothing is installed, and llama.cpp stays in use.
 
-When a pack exists, copy it into the `packs` folder of the engines folder. Name the file
-`<engine>-<version>-<backend>.whl`. Then run:
+To install from a local pack, copy it into the `packs` folder of the engines folder.
+Name the file `<engine>-<version>-<backend>.whl`. Then run:
 
 ```bash
 lilbee engine install <engine>
@@ -1328,7 +1329,7 @@ lilbee engine install
 ```
 
 The command downloads the CPU pack into lilbee's engine cache and checks its
-digest. It installs no GPU build. Until a pack is published, it reports that the
+digest. It installs no GPU build. If no pack is published for the computer, it reports that the
 pack is not published. If you skip it, lilbee runs the same install the
 first time a model needs an engine. A computer with no network needs the pack
 copied into the `packs` folder of the engine cache by hand. The error from a

@@ -18,7 +18,7 @@ from lilbee.cli import app as cli_app
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import adapters as fleet_adapters
-from lilbee.providers.fleet import host_caps
+from lilbee.providers.fleet import engine_manifest, host_caps
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, UnsafeWheelError, engines_root
 from lilbee.providers.fleet.engines import choice, ik_llama
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
@@ -43,13 +43,14 @@ def _host(system: str, machine: str, flags: list[str] | None) -> Any:
     )
 
 
-def _make_wheel(path: Path) -> str:
+def _make_wheel(path: Path, *, libraries: bool = True) -> str:
     with zipfile.ZipFile(path, "w") as archive:
         tool = zipfile.ZipInfo("lilbee_engine_ik/bin/llama-server")
         tool.external_attr = (stat.S_IFREG | 0o755) << 16
         archive.writestr(tool, "#!/bin/sh\n")
-        archive.writestr("lilbee_engine_ik/bin/libggml.so", "x")
-        archive.writestr("lilbee_engine_ik/bin/libllama.so", "x")
+        if libraries:
+            archive.writestr("lilbee_engine_ik/bin/libggml.so", "x")
+            archive.writestr("lilbee_engine_ik/bin/libllama.so", "x")
         archive.writestr("lilbee_engine_ik-1.dist-info/METADATA", "License-Expression: MIT\n")
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -90,15 +91,17 @@ def test_the_pin_names_the_commit_by_its_first_twelve_digits() -> None:
     assert choice.pin_lock({**pin, "sha256": "a" * 64}).version == "0+git13cffc006b82"
 
 
-def test_the_pinned_wheel_layout_of_one_ggml_library_installs_from_the_pin(
-    tmp_path: Path,
-) -> None:
+def test_the_pin_expects_no_shared_library() -> None:
+    assert "libraries" not in IK_LLAMA.pin_record()
+
+
+def test_the_static_server_only_pack_installs_from_the_pin(tmp_path: Path) -> None:
     wheel = tmp_path / "ik.whl"
-    sha = _make_wheel(wheel)
+    sha = _make_wheel(wheel, libraries=False)
     lock = choice.pin_lock({**IK_LLAMA.pin_record(), "sha256": sha})
     root = EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
-    assert lock.libraries == ("ggml",)
-    assert (root / "lilbee_engine_ik" / "bin" / "libggml.so").is_file()
+    assert lock.libraries == ()
+    assert (root / "lilbee_engine_ik" / "bin" / "llama-server").is_file()
 
 
 def test_the_llama_cpp_pin_refuses_the_one_ggml_library_layout(tmp_path: Path) -> None:
@@ -222,6 +225,7 @@ def test_install_with_no_published_pack_says_so_for_a_wheel_and_the_packs_folder
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
     wheel = tmp_path / "ik.whl"
     _make_wheel(wheel)
     packs = engines_root(cfg.models_dir) / "packs"

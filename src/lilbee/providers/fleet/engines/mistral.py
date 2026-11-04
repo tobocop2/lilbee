@@ -30,6 +30,8 @@ _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
 _LICENCES = ["MIT"]
+# The expression a CUDA pack declares: it bundles NVIDIA runtime libraries.
+_CUDA_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA AND BSD-3-Clause"]
 _CPU = "cpu"
 # The one id the engine serves a model under; it answers 400 to any other.
 _SERVED_NAME = "default"
@@ -156,7 +158,7 @@ class MistralAdapter:
             "launch": [_TOOL, "serve"],
             "platforms": platforms,
             "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},
-            "licenses": _LICENCES,
+            "licenses": _LICENCES if backend == _CPU else _CUDA_LICENCES,
         }
 
     def binary(self) -> Path:
