@@ -227,6 +227,46 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         _arm_stall(f"{report.nodeid} ({report.when})")
 
 
+def _timeout_note(config: pytest.Config) -> str:
+    raw = config.getoption("timeout", None) or config.getini("timeout")
+    limit = float(raw or 0)
+    if limit <= 0:
+        return "pytest-timeout is off."
+    return (
+        f"The pytest-timeout limit is {limit:g}s. When a test passes that limit on Windows,"
+        " pytest-timeout can end a worker with no traceback."
+    )
+
+
+def _dump_note(config: pytest.Config, worker: str, nodeid: str) -> str:
+    """The worker's early dump when it names this test, else a plain statement."""
+    path = Path(os.environ.get(_ENV_DIR) or config.rootpath) / f"hang-{worker}.txt"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    if f"hang dump: {nodeid} still running" in text:
+        return f"hang dump from {path}:\n{text}"
+    return f"No hang dump was written for {nodeid} by {worker}."
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_handlecrashitem(crashitem: str, report: pytest.TestReport, sched: object) -> None:
+    """Add the timeout limit and the worker's hang dump to a dead worker's report.
+
+    xdist calls this on the controller. The report text changes; the outcome does not.
+    """
+    node = report.node  # type: ignore[attr-defined]
+    worker = node.gateway.id
+    report.longrepr = "\n".join(
+        [
+            str(report.longrepr),
+            _timeout_note(node.config),
+            _dump_note(node.config, worker, crashitem),
+        ]
+    )
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_sessionfinish(session: pytest.Session) -> None:
     _cancel_stall()
