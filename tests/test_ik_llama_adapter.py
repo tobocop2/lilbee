@@ -18,7 +18,7 @@ from lilbee.cli import app as cli_app
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import adapters as fleet_adapters
-from lilbee.providers.fleet import host_caps
+from lilbee.providers.fleet import engine_manifest, host_caps
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, UnsafeWheelError, engines_root
 from lilbee.providers.fleet.engines import choice, ik_llama
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
@@ -225,6 +225,7 @@ def test_install_with_no_published_pack_says_so_for_a_wheel_and_the_packs_folder
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
     wheel = tmp_path / "ik.whl"
     _make_wheel(wheel)
     packs = engines_root(cfg.models_dir) / "packs"
