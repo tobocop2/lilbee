@@ -37,7 +37,7 @@ _GGUF_SUFFIX = ".gguf"
 # The model subcommand each role names; the device flags go after it.
 _SUBCOMMAND = {
     WorkerRole.EMBED: "embedding",
-    WorkerRole.VISION: "vision",
+    WorkerRole.VISION: "multimodal",
 }
 _TEXT = "text"
 _METAL = "metal"

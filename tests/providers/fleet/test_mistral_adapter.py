@@ -161,7 +161,7 @@ def test_chat_and_vision_serve_on_the_cpu_with_the_cpu_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
-    for role, subcommand in ((WorkerRole.CHAT, "text"), (WorkerRole.VISION, "vision")):
+    for role, subcommand in ((WorkerRole.CHAT, "text"), (WorkerRole.VISION, "multimodal")):
         spec = MISTRAL.role_spec(role, None, None)
         argv = MISTRAL.launch_argv(spec, request(tmp_path))
         assert argv == [
@@ -215,7 +215,7 @@ def test_the_swap_command_puts_the_port_before_the_subcommand(
     argv = MISTRAL.launch_argv(MISTRAL.role_spec(role, None, None), request(tmp_path))
     words = _split_like_the_swap(swap_config._command_line(argv, 4321))
     assert words.index("--port") < words.index(
-        {WorkerRole.EMBED: "embedding", WorkerRole.VISION: "vision"}.get(role, "text")
+        {WorkerRole.EMBED: "embedding", WorkerRole.VISION: "multimodal"}.get(role, "text")
     )
     assert words[words.index("--port") + 1] == "4321"
     assert words.count("--port") == 1
@@ -531,6 +531,6 @@ def test_device_flags_follow_the_subcommand(
     spec = MISTRAL.role_spec(role, None, None)
     argv = MISTRAL.launch_argv(spec, request(tmp_path, target=target))
     subcommand = argv.index(
-        {WorkerRole.EMBED: "embedding", WorkerRole.VISION: "vision"}.get(role, "text")
+        {WorkerRole.EMBED: "embedding", WorkerRole.VISION: "multimodal"}.get(role, "text")
     )
     assert argv.index("--cpu") == subcommand + 1
