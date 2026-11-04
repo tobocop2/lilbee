@@ -26,7 +26,7 @@ from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import RoleTarget, WorkerRole
 
 FIXTURES = Path(__file__).parent / "conformance" / "fixtures" / "engines"
 L4 = ("NVIDIA L4", (8, 9))
@@ -376,3 +376,29 @@ def test_the_launch_argv_carries_the_figure_the_profile_holds(
 def test_an_unreadable_platform_stands_and_is_never_auto_selected() -> None:
     gate = TEI.host_gate(_caps("", ""))
     assert (gate.ok, gate.known, gate.auto_selectable) == (True, False, False)
+
+
+def test_a_cuda_build_runs_a_role_on_the_card_or_the_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=("GPU", (8, 6))))
+    assert TEI.device_targets(Path("/b/router")) == {RoleTarget.GPU, RoleTarget.CPU}
+
+
+def test_a_cpu_role_hides_every_card_from_the_cuda_build() -> None:
+    assert TEI.target_env(RoleTarget.CPU) == {"CUDA_VISIBLE_DEVICES": ""}
+    assert TEI.target_env(RoleTarget.GPU) == {}
+
+
+def test_a_cpu_role_charges_the_fixed_reserve_to_system_memory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from lilbee.providers.fleet import planning
+
+    model = tmp_path / "embed.bin"
+    model.write_bytes(b"\0" * 4096)
+    monkeypatch.setattr(planning.engine_params, "resolve_model_path", lambda _ref: model)
+    sized = planning._estimate_cpu_role(
+        WorkerRole.EMBED, "org/embed", engine=TEI, skipped_not_installed={}
+    )
+    assert sized is not None
+    assert sized.est_vram_bytes == 0
+    assert sized.est_ram_bytes >= 2 * 1024**3

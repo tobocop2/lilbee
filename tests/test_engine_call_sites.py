@@ -96,6 +96,9 @@ class SpyEngine(BundledFakeAdapter):
     def runtime_env(self) -> Mapping[str, str]:
         return SPY_ENV
 
+    def target_env(self, target: Any) -> Mapping[str, str]:
+        return {}
+
     def swap_extras(self, launch: Any) -> Mapping[str, Any]:
         return SPY_EXTRAS
 

@@ -185,6 +185,9 @@ class LlamaCppAdapter:
     def runtime_env(self) -> Mapping[str, str]:
         return llama_server_runtime_env()
 
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+        return {}
+
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return estimate_memory(ModelFormat.GGUF, request)
 

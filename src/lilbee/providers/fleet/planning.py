@@ -1982,7 +1982,11 @@ def _launch_for(
     launch = InstanceLaunch(
         role=plan.role,
         argv=engine.launch_argv(spec, request),
-        env_overrides={**visible_env(chosen), **engine.runtime_env()},
+        env_overrides={
+            **visible_env(chosen),
+            **engine.runtime_env(),
+            **engine.target_env(plan.target),
+        },
         model=model_ref,
         # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
         # doesn't truncate (it relies on the per-slot ctx headroom), so leave it None.

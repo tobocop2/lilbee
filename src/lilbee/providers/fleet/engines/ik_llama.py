@@ -117,6 +117,9 @@ class IkLlamaAdapter:
     def runtime_env(self) -> Mapping[str, str]:
         return LLAMA.runtime_env()
 
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+        return LLAMA.target_env(target)
+
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return LLAMA.estimate_memory(request)
 
