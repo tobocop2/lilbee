@@ -289,14 +289,26 @@ def roles(config: Config = cfg) -> list[RoleView]:
     return views
 
 
+def _offered(adapter: EngineAdapter) -> bool:
+    """True when an install of *adapter* passes the host gate; a bundled engine reads nothing."""
+    return adapter.bundled or choice.install_answer(adapter, session_host()).ok
+
+
 def not_installed() -> list[str]:
     """The names of the engines with no installed build that the host gate lets this host run."""
     installed = installed_engines()
-    return [
-        str(name)
-        for name in choice.ADAPTERS
-        if name not in installed and choice.host_answer(name, session_host).ok
+    missing = [
+        (name, adapter) for name, adapter in choice.ADAPTERS.items() if name not in installed
     ]
+    offered = [str(name) for name, adapter in missing if _offered(adapter)]
+    hidden = [str(name) for name, _ in missing if str(name) not in offered]
+    host = session_host()
+    if hidden and (host.os is None or host.arch is None):
+        log.warning(
+            "The engine list hides %s: the OS or CPU of this host could not be read.",
+            ", ".join(hidden),
+        )
+    return offered
 
 
 def engine_names(model: str) -> list[str]:
@@ -376,8 +388,10 @@ def install(
             )
         return _install_llama_pack(wheel, on_update, on_retry, cancel)
     host = refresh_session_host()
-    gate = adapter.host_gate(host)
+    gate = choice.install_answer(adapter, host)
     if not gate.ok:
+        if not gate.known:
+            raise EngineRefusedError(gate.reason)
         raise EngineRefusedError(
             f"Engine {name} cannot run on this host. {gate.reason} {LLAMA.name} stays in use."
         )

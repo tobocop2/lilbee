@@ -37,11 +37,11 @@ def test_an_engine_the_gate_passes_is_listed(monkeypatch: pytest.MonkeyPatch) ->
     assert {"tei", "mistral.rs"} <= set(engine_service.not_installed())
 
 
-def test_a_host_that_could_not_be_read_lists_every_engine(
+def test_a_host_that_could_not_be_read_lists_no_engine_to_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _use_host(monkeypatch, "", "")
-    assert {"tei", "mistral.rs"} <= set(engine_service.not_installed())
+    assert engine_service.not_installed() == []
 
 
 def _install_mlx_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
