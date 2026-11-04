@@ -1099,7 +1099,8 @@ class FleetProvider:
         """The acquisition ladder: bind to a compatible engine, else build one.
 
         Machine slot first. An incumbent is replaced in place only when no live
-        user holds it. An engine with a live user that this process cannot bind
+        user holds it, and a matching fleet in the private dir is bound before
+        any build in a free slot. An engine with a live user that this process cannot bind
         sends the build to the config root's private overflow dir. Per-dir the
         step is all-or-nothing: every configured (role, model) pair bound, or
         built fresh. Runs under the cross-process build lock, so two starts
@@ -1115,8 +1116,9 @@ class FleetProvider:
         self._skipped_unusable_ctx = dict(demand.skipped_unusable_ctx)
         self._engine_refusal = None
         machine_dir = machine_engine_dir()
+        private = private_engine_dir(config_root)
         if kernel_arbitrates_locks(machine_dir):
-            machine = self._acquire_in_dir(machine_dir, pin, demand, is_overflow=False)
+            machine = self._acquire_in_dir(machine_dir, pin, demand, overflow_dir=private)
             if machine is not None:
                 return machine
             log.warning(
@@ -1136,13 +1138,17 @@ class FleetProvider:
                 ENGINE_DIR_ENV,
             )
         # The machine slot is out; use this config root's private engine dir.
-        private = private_engine_dir(config_root)
-        return self._acquire_in_dir(private, pin, demand, is_overflow=True) or False
+        return self._acquire_in_dir(private, pin, demand, overflow_dir=None) or False
 
     def _acquire_in_dir(
-        self, engine_dir: Path, pin: str, demand: _EngineDemand, *, is_overflow: bool
+        self, engine_dir: Path, pin: str, demand: _EngineDemand, *, overflow_dir: Path | None
     ) -> bool | None:
         """Bind or build one engine dir; ``None`` on the slot means overflow next.
+
+        *overflow_dir* is the private dir behind the machine slot, and ``None`` when
+        *engine_dir* is that private dir. Before a build in the slot, a matching
+        fleet in *overflow_dir* is bound instead, so the card never holds the
+        same models twice.
 
         Binds a compatible running engine. Whether an incumbent may be replaced
         is decided by kernel-refcounted membership, not the proxy HTTP probe: an
@@ -1159,10 +1165,7 @@ class FleetProvider:
         """
         wanted = demand.pairs
         with build_lock(engine_dir):
-            states = _healthy_states(engine_dir)
-            if wanted and self._bind_all_in_dir(engine_dir, states, pin, demand):
-                self._hold_membership(engine_dir)
-                _watch_bound_engine(engine_dir)
+            if self._bind_held_dir(engine_dir, pin, demand):
                 return True
             # This process's own hold is no reason to overflow: the ladder runs only
             # when this provider serves no group, so the hold is all that is left.
@@ -1172,10 +1175,16 @@ class FleetProvider:
                 # further to go, so serve nothing rather than kill the incumbent or
                 # load a second fleet's weights beside it (an OOM on a small-VRAM box).
                 log.info("The engine at %s has a live user and cannot serve this setup", engine_dir)
-                if is_overflow:
+                if overflow_dir is None:
                     self._engine_refusal = _ENGINES_IN_USE_MESSAGE
                     return False
                 return None
+            if overflow_dir is not None:
+                # Lock order: the slot's build lock, then the private dir's. No
+                # path takes the slot's build lock while it holds a private one.
+                with build_lock(overflow_dir):
+                    if self._bind_held_dir(overflow_dir, pin, demand):
+                        return True
             if not _can_build_engine(wanted):
                 return False
             # No live user holds this dir now: reap dead leftovers and stop any
@@ -1184,11 +1193,25 @@ class FleetProvider:
             reap_stale(engine_dir)
             if engine_record_exists(engine_dir):
                 stop_engine(engine_dir)
-            if self._plan_and_spawn(engine_dir):
+            built = self._plan_and_spawn(engine_dir)
+            if built:
                 self._hold_membership(engine_dir)
                 _watch_bound_engine(engine_dir)
-                return True
+            return built
+
+    def _bind_held_dir(self, engine_dir: Path, pin: str, demand: _EngineDemand) -> bool:
+        """Bind *engine_dir*'s running engine and join its users; caller holds its build lock.
+
+        The user lock taken here is what a peer's last-user stop counts, so a
+        bound engine is never stopped under this process.
+        """
+        if not demand.pairs:
             return False
+        if not self._bind_all_in_dir(engine_dir, _healthy_states(engine_dir), pin, demand):
+            return False
+        self._hold_membership(engine_dir)
+        _watch_bound_engine(engine_dir)
+        return True
 
     def _bind_all_in_dir(
         self,
