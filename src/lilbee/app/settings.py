@@ -835,11 +835,12 @@ def inert_reindex_keys() -> set[str]:
 def index_has_chunks() -> bool:
     """True when the index holds at least one chunk; a rebuild has nothing to change otherwise.
 
-    The store answers without opening the library when the library has no folder.
+    The store answers without opening the library when the library has no folder,
+    and no provider is built to ask.
     """
-    from lilbee.app.services import get_services
+    from lilbee.app.services import chunks_in_store
 
-    return get_services().store.has_chunks()
+    return chunks_in_store()
 
 
 def _embed_reindex_required() -> bool:
