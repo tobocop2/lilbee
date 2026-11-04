@@ -148,6 +148,102 @@ def test_a_reload_that_fails_serves_the_settings_in_memory_and_logs_once(
     assert client.get("/api/config").json()["top_k"] == before + 6
 
 
+_FIRST = {"top_k": 7, "temperature": 0.3, "chunk_size": 448, "lilbee_name": "a" * 120}
+_SECOND = {"top_k": 9, "temperature": 0.6, "chunk_size": 512, "lilbee_name": "b" * 120}
+
+
+def _seen(client: TestClient) -> dict[str, Any]:
+    body = client.get("/api/config").json()
+    return {key: body[key] for key in _FIRST}
+
+
+def _toml_of(values: dict[str, Any]) -> bytes:
+    import tomli_w
+
+    return tomli_w.dumps(values).encode()
+
+
+def _rewrite_in_place(data: bytes, tick: int) -> None:
+    """Truncate config.toml and write *data* into it, as an editor that saves in place."""
+    path = cfg.data_root / CONFIG_FILE_NAME
+    with path.open("r+b") as f:
+        f.truncate(0)
+        f.write(data)
+    stamp = _MTIME_NS + tick * 1_000_000_000
+    os.utime(path, ns=(stamp, stamp))
+
+
+@pytest.fixture()
+def first_file_taken(client: TestClient) -> TestClient:
+    persistent_settings.update_values(cfg.data_root, _FIRST)
+    os.utime(cfg.data_root / CONFIG_FILE_NAME, ns=(_MTIME_NS, _MTIME_NS))
+    assert _seen(client) == _FIRST
+    return client
+
+
+def test_half_of_a_file_written_in_place_leaves_every_value_as_it_was(first_file_taken):
+    second = _toml_of(_SECOND)
+    _rewrite_in_place(second[: len(second) // 2], tick=1)
+    assert _seen(first_file_taken) == _FIRST
+    _rewrite_in_place(second, tick=2)
+    assert _seen(first_file_taken) == _SECOND
+
+
+def test_a_reading_the_file_changed_under_is_not_taken_and_the_next_request_takes_it(
+    first_file_taken, monkeypatch
+):
+    real = persistent_settings.persisted_values
+    rewrites: list[int] = []
+
+    def read_while_an_editor_saves(root: Any) -> Any:
+        if rewrites:
+            return real(root)
+        rewrites.append(1)
+        values = real(root)
+        _rewrite_in_place(_toml_of(_SECOND), tick=2)
+        return values
+
+    monkeypatch.setattr(persistent_settings, "persisted_values", read_while_an_editor_saves)
+    _rewrite_in_place(b"", tick=1)
+    assert _seen(first_file_taken) == _FIRST
+    assert rewrites == [1]
+    assert _seen(first_file_taken) == _SECOND
+
+
+def test_a_settings_write_over_a_file_changed_under_its_read_keeps_the_file(
+    first_file_taken, monkeypatch
+):
+    import tomllib
+    from types import SimpleNamespace
+
+    path = cfg.data_root / CONFIG_FILE_NAME
+    second = _toml_of(_SECOND)
+    rewrites: list[int] = []
+
+    def load_while_an_editor_saves(f: Any) -> dict[str, Any]:
+        if rewrites:
+            return tomllib.load(f)
+        rewrites.append(1)
+        _rewrite_in_place(b"", tick=1)
+        values = tomllib.load(f)
+        _rewrite_in_place(second, tick=2)
+        return values
+
+    monkeypatch.setattr(
+        persistent_settings, "tomllib", SimpleNamespace(load=load_while_an_editor_saves)
+    )
+    response = first_file_taken.patch("/api/config", json={"top_k": 21})
+    assert response.status_code == 503
+    assert "changed while it was read; try again" in response.json()["detail"]
+    # The refused write puts nothing on disk: the file holds exactly the editor's bytes.
+    assert path.read_bytes() == second
+    assert tomllib.loads(path.read_bytes().decode()) == _SECOND
+    assert cfg.top_k == _FIRST["top_k"]
+    assert rewrites == [1]
+    assert first_file_taken.patch("/api/config", json={"top_k": 21}).status_code == 200
+    assert _seen(first_file_taken) == {**_SECOND, "top_k": 21}
+
+
 def test_a_provider_switch_waits_for_a_restart_as_the_settings_api_refuses_it(client, caplog):
     before = cfg.llm_provider
     other = LlmProvider.REMOTE if before != LlmProvider.REMOTE else LlmProvider.AUTO

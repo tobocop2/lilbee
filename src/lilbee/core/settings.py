@@ -71,13 +71,25 @@ def load(data_root: Path) -> dict[str, Any]:
     Values keep the types TOML gave them. Stringifying here used to turn a
     ``true`` into ``"True"`` in memory, which the next save then wrote back
     quoted, so the file drifted away from valid types for its own fields.
+
+    A file that changes while it is read raises ConfigChangedWhileReadError: an editor
+    that rewrites the file in place can leave it half written at that moment, and a
+    read-modify-write of that half would drop every key it does not hold yet.
     """
     path = _config_path(data_root)
     if not path.exists():
         return {}
     harden_private_file(path)
+    before = _stamp_of(path)
     with path.open("rb") as f:
-        return dict(tomllib.load(f))
+        values = dict(tomllib.load(f))
+    if _stamp_of(path) != before:
+        raise ConfigChangedWhileReadError(f"{path} changed while it was read; try again")
+    return values
+
+
+class ConfigChangedWhileReadError(OSError):
+    """config.toml changed while it was read, so the reading can hold half of a write."""
 
 
 class ReadOnlyConfigError(PermissionError):
@@ -233,12 +245,15 @@ def _overlay_file(root: Path) -> Path | None:
 def overlay_stamp(root: Path) -> tuple[int, int, int] | None:
     """What a write of the config.toml an overlay of *root* reads changes; None without one."""
     path = _overlay_file(root)
-    if path is None:
-        return None
+    return None if path is None else _stamp_of(path)
+
+
+def _stamp_of(path: Path) -> tuple[int, int, int] | None:
+    """What a write of the file at *path* changes; None when it is missing."""
     try:
         stat = path.stat()
     except OSError:
-        return None  # deleted since the check above
+        return None
     return stat.st_mtime_ns, stat.st_size, stat.st_ino
 
 
@@ -327,13 +342,28 @@ def persisted_values(root: Path) -> dict[str, Any] | None:
 def read_persisted(root: Path) -> tuple[tuple[int, int, int] | None, dict[str, Any] | None]:
     """The stamp of *root*'s config.toml and ``persisted_values``, from one locked read.
 
-    The read holds the lock a writer takes, so it never sees a write in progress.
-    Without the file there is nothing to lock, so the read creates no folder or lock file.
+    The read holds the lock a writer takes, so it never sees a write by lilbee in
+    progress. Without the file there is nothing to lock, so the read creates no folder
+    or lock file. Another program can rewrite the file in place without the lock: when
+    the stamp moves during the read, the reading can hold half of that write, so the
+    values are None, as for a file that does not parse, and the stamp is None, so the
+    next check reads the file again.
     """
     if overlay_stamp(root) is None:
-        return None, persisted_values(root)
+        return _stable_reading(root)
     with _config_write_lock(root):
-        return overlay_stamp(root), persisted_values(root)
+        return _stable_reading(root)
+
+
+def _stable_reading(
+    root: Path,
+) -> tuple[tuple[int, int, int] | None, dict[str, Any] | None]:
+    """``persisted_values`` of *root* and its stamp; both None when the stamp moved during it."""
+    stamp = overlay_stamp(root)
+    values = persisted_values(root)
+    if overlay_stamp(root) != stamp:
+        return None, None
+    return stamp, values
 
 
 @dataclass
