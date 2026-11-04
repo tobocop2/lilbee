@@ -1,8 +1,11 @@
 """The npm package carries the lilbee release version, mapped by one script."""
 
 import json
+import os
 import re
+import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -19,6 +22,7 @@ def _npm_version(version: str) -> subprocess.CompletedProcess[str]:
         ["bash", str(VERSION_SCRIPT), "npm-version", version],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
@@ -82,7 +86,11 @@ def test_a_version_with_no_mapping_is_refused(version):
 
 def test_every_stamped_file_exists_and_names_the_version_files():
     listed = subprocess.run(
-        ["bash", str(VERSION_SCRIPT), "files"], capture_output=True, text=True, check=True
+        ["bash", str(VERSION_SCRIPT), "files"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     ).stdout.split()
     assert "packages/lilbee/package.json" in listed
     assert "packages/lilbee/package-lock.json" in listed
@@ -102,11 +110,66 @@ def test_publish_uses_the_latest_tag_explicitly():
     assert re.search(r"npm publish\b.*--tag latest", publish[0])
 
 
+def _guard_step() -> dict:
+    return next(
+        s for s in _npm_job()["steps"] if s.get("name") == "Check package.json matches the tag"
+    )
+
+
+def _run_guard(
+    tmp_path: Path, tag: str, version: str, release: str
+) -> subprocess.CompletedProcess[str]:
+    """Run the publish job's own guard script against a scratch package.json."""
+    package = tmp_path / "packages" / "lilbee"
+    package.mkdir(parents=True)
+    (package / "package.json").write_text(
+        json.dumps({"version": version, "lilbee": {"release": release}}), encoding="utf-8"
+    )
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy(VERSION_SCRIPT, scripts / VERSION_SCRIPT.name)
+    return subprocess.run(
+        ["bash", "-c", _guard_step()["run"]],
+        cwd=package,
+        env={**os.environ, "TAG": tag},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+_NEEDS_BASH_AND_NODE = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("node") is None,
+    reason="the publish guard is a bash script that calls node",
+)
+
+
+@_NEEDS_BASH_AND_NODE
+def test_publish_guard_accepts_the_version_the_tag_maps_to(tmp_path):
+    done = _run_guard(tmp_path, "v0.6.90b1000", "0.6.90-beta.1000", "v0.6.90b1000")
+    assert done.returncode == 0, done.stderr
+
+
+@_NEEDS_BASH_AND_NODE
+@pytest.mark.parametrize(
+    ("version", "release"),
+    [
+        ("0.6.90-beta.691", "v0.6.90b1000"),
+        ("0.6.90-beta.1000", "v0.6.90b691"),
+        ("0.6.90-beta.1000", "v0.6.90b999"),
+    ],
+)
+def test_publish_guard_refuses_a_package_that_is_not_the_tags_release(tmp_path, version, release):
+    done = _run_guard(tmp_path, "v0.6.90b1000", version, release)
+    assert done.returncode == 1
+    assert "needs version 0.6.90-beta.1000" in done.stdout
+
+
 def test_publish_checks_the_version_against_the_tag_before_it_publishes():
     steps = _npm_job()["steps"]
     names = [s.get("name", "") for s in steps]
-    check = steps[names.index("Check package.json matches the tag")]
-    assert "release_version.sh npm-version" in check["run"]
+    check = _guard_step()
     publish_at = next(i for i, s in enumerate(steps) if "npm publish" in s.get("run", ""))
     assert names.index(check["name"]) < publish_at
     checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout"))
