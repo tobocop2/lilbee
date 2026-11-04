@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import ValidationError
 
-from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
+from lilbee.app.settings_map import CHUNK_LIMIT_KEY, SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS,
     PUBLIC_CONFIG_FIELDS,
@@ -391,6 +391,9 @@ def _commit(change: Callable[[Config], _T]) -> _T:
     validator can re-derive a field the change does not name. It is compared against
     cfg as it was at the copy, by value: a field another thread writes meanwhile keeps
     its new value, and a re-derived equal value is not published.
+
+    ``model_copy`` is shallow, so *change* must assign a field and never mutate a
+    mutable value in place: an in-place change would reach cfg before the publish.
     """
     draft = cfg.model_copy()
     base = dict(draft.__dict__)
@@ -413,6 +416,11 @@ def _set_each(config: Config, values: Mapping[str, Any]) -> None:
 def _restore_values(values: Mapping[str, Any]) -> None:
     """Put *values* back on cfg in one step."""
     _commit(lambda draft: _set_each(draft, values))
+
+
+def _restore_in_memory(snapshot: SettingsSnapshot) -> None:
+    """Put the values and the embedding dimension of *snapshot* back on cfg; config.toml stays."""
+    _restore_values({**snapshot.values, "embedding_dim": snapshot.embedding_dim})
 
 
 def _apply_updates(config: Config, updates: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -640,7 +648,7 @@ def apply_settings_update(
                 _undo_update(before, invalidate_caches=False)
             else:
                 # The read refused before any write: the file stays the editor's.
-                _restore_values({**before.values, "embedding_dim": before.embedding_dim})
+                _restore_in_memory(before)
             raise
         # Decide the reset now, before settle's other steps can raise.
         txn.needs_provider_reset = bool(set(updates) & PROVIDER_SWITCHING_KEYS)
@@ -678,7 +686,7 @@ def _undo_update(before: SettingsSnapshot, *, invalidate_caches: bool) -> None:
     except Exception:
         # The caller sees the update fail, so no field may keep its new value.
         log.exception("Could not put the settings back after a failed update")
-        _restore_values({**before.values, "embedding_dim": before.embedding_dim})
+        _restore_in_memory(before)
 
 
 @dataclass(frozen=True)
@@ -719,7 +727,7 @@ def _put_back(snapshot: SettingsSnapshot, *, invalidate_caches: bool = True) -> 
     persistent_settings.delete_values(
         cfg.data_root, [key for key in snapshot.values if key not in snapshot.saved]
     )
-    _restore_values({**snapshot.values, "embedding_dim": snapshot.embedding_dim})
+    _restore_in_memory(snapshot)
     if invalidate_caches:
         _invalidate_caches(set(snapshot.values))
 
@@ -762,9 +770,10 @@ def _settle(
         _invalidate_caches(effective)
     reindex_required = bool((REINDEX_FIELDS - inert_reindex_keys()) & reindex_effective)
     if reindex_required or embed_in_batch:
-        reindex_required = index_has_chunks() and (
-            reindex_required or (embed_in_batch and _embed_reindex_required())
-        )
+        if not index_has_chunks():
+            reindex_required = False
+        elif not reindex_required:
+            reindex_required = _embed_reindex_required()
     return SettingsUpdateResult(
         updated=sorted(keys),
         reindex_required=reindex_required,
@@ -852,9 +861,6 @@ def inert_reindex_keys() -> set[str]:
     if not cfg.semantic_chunking:
         inert.add("topic_threshold")
     return inert
-
-
-CHUNK_LIMIT_KEY = "max_chunks_per_file"
 
 
 def reindex_values() -> dict[str, Any]:

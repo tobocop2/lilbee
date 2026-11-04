@@ -79,6 +79,8 @@ class SettingDef:
     secret: bool = False
 
 
+CHUNK_LIMIT_KEY = "max_chunks_per_file"
+
 SETTINGS_MAP: dict[str, SettingDef] = {
     "chat_model": SettingDef(
         str,
@@ -1100,7 +1102,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Tokens of overlap between adjacent chunks (preserves context across boundaries)",
     ),
-    "max_chunks_per_file": SettingDef(
+    CHUNK_LIMIT_KEY: SettingDef(
         int,
         nullable=False,
         group=SettingGroup.INGEST,

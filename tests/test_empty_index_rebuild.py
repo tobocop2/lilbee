@@ -119,7 +119,16 @@ def test_rebuild_reason_on_an_index_with_chunks_names_the_change(monkeypatch):
 def _reindex_plan():
     row = DiffRow("chunk_size", 512, SettingSource.BUILT_IN, 900, ProfileEffect.REINDEX)
     diff = ProfileDiff("big", (row,), (), 0)
-    profile = ProfileFile("big", None, (), None, 1, None, None, {"chunk_size": 900})
+    profile = ProfileFile(
+        name="big",
+        description=None,
+        authors=(),
+        tested_on=None,
+        format=1,
+        min_lilbee=None,
+        evidence=None,
+        values={"chunk_size": 900},
+    )
     return switch_plan(profile, diff)
 
 

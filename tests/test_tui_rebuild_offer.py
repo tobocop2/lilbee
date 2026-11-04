@@ -464,6 +464,24 @@ async def test_a_dialog_over_settings_asks_nothing(index_holds_chunks) -> None:
         assert len(visit.dialogs) == 2
 
 
+@pytest.mark.parametrize("key", ["left_square_bracket", "right_square_bracket"])
+async def test_a_view_key_does_not_close_the_rebuild_offer_unanswered(
+    index_holds_chunks, key: str
+) -> None:
+    async with _Visit() as visit:
+        await visit.save(_REBUILD_KEY, "900")
+        await visit.leave()
+        dialog = await _dialog(visit.app, visit.pilot, ConfirmDialog)
+        view = visit.app.active_view
+        await visit.pilot.press(key)
+        await visit.pilot.pause()
+        assert visit.app.screen is dialog
+        assert visit.app.active_view == view
+        await visit.answer_offer("confirm-no")
+        assert len(visit.dialogs) == 1
+    visit.rebuild.assert_not_called()
+
+
 async def test_a_catalog_round_trip_leaves_no_settings_buried(index_holds_chunks) -> None:
     async with _Visit() as visit:
         visit.app.active_view = "Settings"

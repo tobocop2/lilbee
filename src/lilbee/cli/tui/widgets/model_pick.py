@@ -10,6 +10,7 @@ from lilbee.app.services import get_services
 from lilbee.app.settings import (
     SettingsSnapshot,
     embed_pick_needs_rebuild,
+    index_has_chunks,
     restore_settings,
     snapshot_settings,
 )
@@ -83,7 +84,7 @@ def apply_model_pick(
         return
     if key == "embedding_model" and ref != cfg.embedding_model:
         try:
-            ask = get_services().store.has_chunks() and embed_pick_needs_rebuild(ref)
+            ask = index_has_chunks() and embed_pick_needs_rebuild(ref)
         except STORE_ERRORS as exc:
             host.app.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
             return
