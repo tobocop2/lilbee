@@ -600,15 +600,22 @@ def apply_settings_update(
             _pin_legacy_store_meta()
         before = snapshot_settings(updates)
         to_persist, to_delete = _apply_with_rollback(updates)
+        written = False
         try:
             # A write can fail part way: the update lands and the delete raises.
             if to_persist:
                 persistent_settings.update_values(cfg.data_root, to_persist)
+                written = True
             if to_delete:
                 persistent_settings.delete_values(cfg.data_root, to_delete)
-        except Exception:
-            # No cache saw the new values yet, so none is dropped.
-            _undo_update(before, invalidate_caches=False)
+        except Exception as exc:
+            if written or not isinstance(exc, persistent_settings.ConfigChangedWhileReadError):
+                # No cache saw the new values yet, so none is dropped.
+                _undo_update(before, invalidate_caches=False)
+            else:
+                # The read refused before any write: the file stays the editor's.
+                _restore_snapshot(before.values)
+                cfg.embedding_dim = before.embedding_dim
             raise
         # Decide the reset now, before settle's other steps can raise.
         txn.needs_provider_reset = bool(set(updates) & PROVIDER_SWITCHING_KEYS)
