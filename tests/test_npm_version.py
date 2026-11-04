@@ -16,6 +16,12 @@ ROOT = Path(__file__).resolve().parent.parent
 NPM_PACKAGE = ROOT / "packages" / "lilbee"
 VERSION_SCRIPT = ROOT / "scripts" / "release_version.sh"
 
+# The release scripts run on the Linux and macOS runners only. On a Windows
+# runner, `bash` is the WSL launcher with no distribution installed.
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason="the release scripts run only on Linux and macOS"
+)
+
 
 def _npm_version(version: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -39,6 +45,7 @@ def _semver_key(version: str) -> tuple:
     return tuple(int(n) for n in core.split(".")), not pre, ids
 
 
+@_POSIX_ONLY
 def test_npm_version_is_the_lilbee_version_in_semver_form():
     package = json.loads((NPM_PACKAGE / "package.json").read_text(encoding="utf-8"))
     version = _lilbee_version()
@@ -55,6 +62,7 @@ def test_lock_file_carries_the_package_version():
     assert lock["packages"][""]["version"] == package["version"]
 
 
+@_POSIX_ONLY
 @pytest.mark.parametrize(
     ("lilbee", "npm"),
     [
@@ -70,6 +78,7 @@ def test_beta_number_becomes_a_numeric_prerelease_identifier(lilbee, npm):
     assert mapped.stdout.strip() == npm
 
 
+@_POSIX_ONLY
 def test_four_digit_beta_sorts_after_three_digit_beta():
     older = _npm_version("0.6.90b691").stdout.strip()
     newer = _npm_version("0.6.90b1000").stdout.strip()
@@ -77,6 +86,7 @@ def test_four_digit_beta_sorts_after_three_digit_beta():
     assert _semver_key(older) < _semver_key(newer) < _semver_key(final)
 
 
+@_POSIX_ONLY
 @pytest.mark.parametrize("version", ["0.7.0rc1", "0.7.0a1", "0.7.0b1.post1", "0.7", "v0.7.0"])
 def test_a_version_with_no_mapping_is_refused(version):
     mapped = _npm_version(version)
@@ -84,6 +94,7 @@ def test_a_version_with_no_mapping_is_refused(version):
     assert f"'{version}' has no npm version" in mapped.stderr
 
 
+@_POSIX_ONLY
 def test_every_stamped_file_exists_and_names_the_version_files():
     listed = subprocess.run(
         ["bash", str(VERSION_SCRIPT), "files"],
