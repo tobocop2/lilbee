@@ -19,7 +19,12 @@ from litestar.openapi import OpenAPIConfig
 
 from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.endpoints import MCP_PATH
-from lilbee.app.services import get_services, peek_services, wait_for_opens
+from lilbee.app.services import (
+    get_services,
+    peek_services,
+    set_config_refresh,
+    wait_for_opens,
+)
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.runtime.progress import LibraryUpgradeEvent
@@ -299,6 +304,7 @@ class _ConfigFileReload(ASGIMiddleware):
 
     def __init__(self) -> None:
         self._follower = ConfigFileFollower()
+        set_config_refresh(self._follower.take_now)
 
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
         await self._follower.take()

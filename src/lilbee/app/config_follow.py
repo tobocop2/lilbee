@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 from lilbee.app.settings import (
     ConfigReading,
@@ -24,24 +25,25 @@ class ConfigFileFollower:
     """Keeps a running process current with config.toml, one check per request.
 
     The check is two stat() calls against the last reading, off the loop and one at a
-    time. A change goes through the same settle step as a write through the settings
-    API, so this process's own writes are not applied twice. A provider switch waits for
-    a restart, as the settings API refuses it here. A check that fails leaves the
-    settings in memory and the request runs; the error is logged once per file state.
+    time: a request's check and the fleet's retry check share one thread lock. A change
+    goes through the same settle step as a write through the settings API, so this
+    process's own writes are not applied twice. A provider switch waits for a restart,
+    as the settings API refuses it here. A check that fails leaves the settings in
+    memory and the request runs; the error is logged once per file state.
     """
 
     def __init__(self) -> None:
         self._reading: ConfigReading = start_config_reading()
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
         # The file state of the last failed check, so the error is logged once per state.
         self._failed_stamp: object = _NO_FAILURE
 
-    async def _adopt(self) -> SettingsUpdateResult | None:
+    def _adopt(self) -> SettingsUpdateResult | None:
         """Take the outside changes; on an error, keep the settings in memory."""
-        async with self._lock:
+        with self._lock:
             try:
-                self._reading, result = await asyncio.to_thread(
-                    adopt_external_changes, self._reading, hold=PROVIDER_SWITCHING_KEYS
+                self._reading, result = adopt_external_changes(
+                    self._reading, hold=PROVIDER_SWITCHING_KEYS
                 )
             except Exception:
                 stamp = persistent_settings.overlay_stamp(cfg.data_root)
@@ -56,8 +58,12 @@ class ConfigFileFollower:
             return result
 
     async def take(self) -> None:
+        """Take the changes another process made to config.toml, off the event loop."""
+        await asyncio.to_thread(self.take_now)
+
+    def take_now(self) -> None:
         """Take the changes another process made to config.toml, and log what was taken."""
-        result = await self._adopt()
+        result = self._adopt()
         if result is None:
             return
         log.info("Took %s from config.toml.", ", ".join(result.updated))

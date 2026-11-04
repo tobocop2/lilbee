@@ -957,7 +957,12 @@ def _reaper_unloads_weights(engine_dir: Path) -> bool:
 class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
-    def __init__(self, *, hold_warm: bool = False) -> None:
+    def __init__(
+        self, *, hold_warm: bool = False, config_refresh: Callable[[], None] | None = None
+    ) -> None:
+        # Takes config.toml changes now. The process that follows the file injects it,
+        # so a retry plans on the settings an owner restarted its fleet with.
+        self._config_refresh = config_refresh
         # An interactive session (the TUI) owns this process for its whole
         # lifetime, so a fleet bound to it stays resident instead of idle-unloading
         # under a user who is still in the app; closing lilbee releases it. A
@@ -1490,6 +1495,11 @@ class FleetProvider:
             log.info("Engine unreachable; rediscovering before one retry")
             self._drop_swap_refs()
             self._release_holds()
+            # An owner that restarted its fleet for new settings wrote them first. With
+            # no group held, the replan the take starts returns at once, and the retry
+            # plans on the new settings, so it binds the restarted fleet.
+            if self._config_refresh is not None:
+                self._config_refresh()
             return call()
 
     def _retry_rebuilt(self, call: Callable[[], _T], role: WorkerRole, err: BaseException) -> _T:

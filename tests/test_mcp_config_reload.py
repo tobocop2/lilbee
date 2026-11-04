@@ -216,6 +216,7 @@ def test_the_stdio_entry_point_serves_a_server_that_follows_the_file(monkeypatch
     main()
     assert served == [built]
     assert isinstance(built._config_follower, ConfigFileFollower)
+    assert svc_mod._state.config_refresh == built._config_follower.take_now
 
 
 def test_the_http_mount_builds_a_server_that_does_not_follow_the_file():
