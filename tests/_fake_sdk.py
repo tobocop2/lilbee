@@ -1,6 +1,6 @@
 """A stand-in for the ``liter_llm`` module, injected where the extra is not installed.
 
-It models the declared surface of liter-llm 2.4.1 (its type stub), never the adapter's
+It models the declared surface of liter-llm 2.5.0 (its type stub), never the adapter's
 reading of it: reply objects carry the documented accessors and nothing the stub omits.
 It has the async ``chat`` / ``chat_stream`` / ``embed`` / ``rerank`` functions, the
 request and options types, and the typed exception hierarchy. Each call
@@ -32,6 +32,7 @@ ERROR_NAMES = (
     "LiterLlmTimeoutError",
     "NetworkError",
     "NotFoundError",
+    "OutboundForbiddenError",
     "ProviderQuotaExceededError",
     "RateLimitedError",
     "ServerError",
