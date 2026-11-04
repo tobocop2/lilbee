@@ -17,9 +17,10 @@ To ship a new npm version, bump `version` in a PR. In the same PR, move
 when it cannot look up the latest one. If the version is already on npm, the
 job skips the publish.
 
-In the same PR, set `version` in both places of `server.json` at the repo root
-to the new npm version. A test fails when they differ. After the npm publish,
-the job lists the new version in the MCP Registry. The registry checks the
+The job sets both `version` fields of `server.json` from `package.json` before
+it lists the package, so the listing always carries the npm version. Keep the
+committed `server.json` equal to it: a test fails when they differ. After the
+npm publish, the job lists the new version in the MCP Registry. The registry checks the
 published package for `mcpName`, and the login uses the job's OIDC token. The
 job asks the registry first, so a re-run after a failed listing lists the
 version. The job asks npm for the published version and waits up to 60

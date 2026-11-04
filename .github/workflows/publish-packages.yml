@@ -377,6 +377,14 @@ jobs:
         if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
         uses: sigstore/cosign-installer@v4.1.2
 
+      - name: Set the server.json version from package.json
+        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r .version packages/lilbee/package.json)
+          jq --arg v "${VERSION}" '.version = $v | .packages[].version = $v' server.json > "${RUNNER_TEMP}/server.json"
+          mv "${RUNNER_TEMP}/server.json" server.json
+
       - name: List lilbee in the MCP Registry
         if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
         timeout-minutes: 10
