@@ -12,7 +12,7 @@ import pytest
 
 from lilbee.app.settings import _reload_changed_roles
 from lilbee.core.config import cfg
-from lilbee.providers import engine_params
+from lilbee.providers import engine_params, gguf_meta
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
@@ -205,3 +205,46 @@ def test_a_request_during_a_real_embed_restart_gets_the_new_server(
     _join_fleet_threads()
     assert len(results) == 1
     assert results[0][0] is not old_client  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("free_gb", "captured", "names_other_processes"),
+    [(1, True, True), (7, True, False), (1, False, False)],
+    ids=["1gb-free", "7gb-free", "1gb-free-no-clean-box-snapshot"],
+)
+def test_a_small_card_refusal_names_the_memory_other_processes_hold(
+    real_planner,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    free_gb: int,
+    captured: bool,
+    names_other_processes: bool,
+) -> None:
+    chat = tmp_path / "big-chat.gguf"
+    with chat.open("wb") as handle:
+        handle.truncate(6 * _GB)
+    resolve = engine_params.resolve_model_path
+    monkeypatch.setattr(
+        engine_params, "resolve_model_path", lambda ref: chat if ref == _CHAT_REF else resolve(ref)
+    )
+    read = gguf_meta.read_gguf_metadata
+    chat_meta = {"general.architecture": "qwen3", "qwen3.context_length": "32768"}
+    monkeypatch.setattr(
+        gguf_meta, "read_gguf_metadata", lambda p: chat_meta if Path(p) == chat else read(p)
+    )
+    device = FleetDevice("CUDA", 0, "gpu", 8 * _GB, free_gb * _GB)
+    monkeypatch.setattr(
+        planning_mod,
+        "probe_devices",
+        lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
+    )
+    planning_mod.clear_plan_probe()
+    planning_mod.clear_read_device_cache()
+    if captured:
+        planning_mod.capture_plan_probe()
+
+    reason = planning_mod.plan_all_launches().skipped_unusable_ctx[WorkerRole.CHAT]
+
+    assert ("Other processes hold" in reason) is names_other_processes
+    if names_other_processes:
+        assert f"Other processes hold {8 - free_gb} GB of the card's 8 GB." in reason

@@ -3034,12 +3034,34 @@ def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, s
         )
 
 
-def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
+def _gb_text(num_bytes: int) -> str:
+    """*num_bytes* in GB with at most one decimal and no trailing zero."""
+    return f"{round(num_bytes / 1024**3, 1):g}"
+
+
+def _other_processes_clause(launch: InstanceLaunch, devices: list[FleetDevice]) -> str:
+    """A sentence naming the memory other processes hold on the card, or ``""``.
+
+    Empty when there is no device, or when others hold no more than the model's
+    own weights (then the weights are the cause, not the neighbours).
+    """
+    total = sum(d.total_bytes for d in devices)
+    held = total - sum(d.free_bytes for d in devices)
+    if not devices or held <= launch.weights_bytes:
+        return ""
+    return f" Other processes hold {_gb_text(held)} GB of the card's {_gb_text(total)} GB."
+
+
+def _unusable_chat_ctx_reason(
+    launch: InstanceLaunch, devices: list[FleetDevice] | None = None
+) -> str | None:
     """Reason to refuse a chat launch whose window cannot hold a grounded prompt.
 
     ``None`` for non-chat roles, for a window that holds the minimum grounded
     prompt, and for user knobs that ask for a smaller one (a ``num_ctx`` pin,
-    a sub-minimum ``num_ctx_max`` / ``chat_n_ctx_target``).
+    a sub-minimum ``num_ctx_max`` / ``chat_n_ctx_target``). *devices* are the
+    cards the launch runs on; they let the reason name memory that other
+    processes hold.
     """
     from lilbee.core.config import cfg
 
@@ -3057,8 +3079,9 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
         f"The chat model {launch.model} loads, but the memory left after its weights "
         f"backs only a {launch.ctx}-token context, and a grounded answer needs about "
         f"{needed} tokens (system prompt, a retrieved source, the question, and room "
-        "for the answer), so it will not be served. Use a smaller model or a smaller "
-        "quant, or set num_ctx to force a larger window."
+        "for the answer), so it will not be served."
+        f"{_other_processes_clause(launch, devices or [])}"
+        " Use a smaller model or a smaller quant, or set num_ctx to force a larger window."
     )
 
 
@@ -3083,6 +3106,9 @@ def _planned_launches(
     from lilbee.core.config import cfg
 
     unified_budget = _unified_memory_budget(devices)
+    # Only the clean-box snapshot's free bytes mean "what other tenants hold";
+    # a live probe is also missing the fleet's own residency.
+    clean_box = _current_plan_probe() is not None
     inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
         roles,
         unified_budget=unified_budget,
@@ -3096,9 +3122,7 @@ def _planned_launches(
         model_refs,
         devices,
         unified_budget=_unified_admission_budget(devices),
-        # Only the clean-box snapshot's free bytes mean "what other tenants hold";
-        # a live probe here would also be missing the fleet's own residency.
-        charge_against_free=_current_plan_probe() is not None,
+        charge_against_free=clean_box,
     )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
@@ -3122,7 +3146,9 @@ def _planned_launches(
             reserved_after_chat=reserved_after_chat,
             est_vram_bytes=charged.get(plan.role, 0),
         )
-        reason = _unusable_chat_ctx_reason(launch)
+        reason = _unusable_chat_ctx_reason(
+            launch, [by_index[i] for i in plan.devices if i in by_index] if clean_box else []
+        )
         if reason is not None:
             skipped_unusable_ctx[launch.role] = reason
             log.warning(reason)
