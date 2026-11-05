@@ -1557,7 +1557,7 @@ While `wiki` is off, generated pages are excluded from retrieval regardless of s
 - `lilbee wiki build` / `wiki list` / `wiki read` / `wiki citations` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune` / `wiki wipe`: wiki layer
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server
-- `lilbee launch <client>` (e.g. `opencode`): spawn the local server, install the lilbee skill, pass the provider + MCP wiring and the startup-model pin to the client per session (inline env config; the session's port and token are ephemeral, so nothing is persisted into the client's own config), exec the client, clean up on exit
+- `lilbee launch <client>` (e.g. `opencode`; pi gets lilbee's pi extension and skill by `-e` and `--skill`, with the server URL and token in its env): spawn the local server, install the lilbee skill, pass the provider + MCP wiring and the startup-model pin to the client per session (inline env config; the session's port and token are ephemeral, so nothing is persisted into the client's own config), exec the client, clean up on exit
 - `lilbee agent-config <client>` (`claude`, `hermes`, `opencode`, `litellm`): print the client config block for hand-wired persistent setups
 - `--json` / `-j` on any command for structured output
 
