@@ -145,3 +145,33 @@ def test_npm_package_tests_run_in_the_launcher_ci_job():
         s.get("working-directory") for job in ci["jobs"].values() for s in job.get("steps", [])
     ]
     assert "plugins/lilbee" not in workdirs
+
+
+SKILL_LINK = re.compile(r"\]\(([^)#\s]+)\)")
+
+
+def _local_links(skill_md: Path) -> list[str]:
+    text = skill_md.read_text(encoding="utf-8")
+    return [link for link in SKILL_LINK.findall(text) if "://" not in link]
+
+
+@pytest.mark.parametrize("skill_dir", SKILL_DIRS, ids=lambda p: p.name)
+def test_skill_stays_short_and_every_linked_file_exists(skill_dir):
+    skill_md = skill_dir / "SKILL.md"
+    assert len(skill_md.read_text(encoding="utf-8").splitlines()) < 200
+    for link in _local_links(skill_md):
+        assert (skill_dir / link).is_file(), f"{skill_dir.name} links to missing {link}"
+
+
+def test_the_main_skill_links_its_reference_files():
+    links = _local_links(PLUGIN / "skills" / "lilbee-mcp" / "SKILL.md")
+    assert sorted(links) == ["reference-settings.md", "reference-tuning.md"]
+
+
+def test_launcher_installs_the_reference_files_with_the_skill(tmp_path):
+    skill_dir = PLUGIN / "skills" / "lilbee-mcp"
+    installed = skill_install.install_bundled_skill(tmp_path / "skills" / "lilbee-mcp")
+    assert installed is not None
+    expected = sorted(p.name for p in skill_dir.iterdir())
+    assert "reference-tuning.md" in expected
+    assert sorted(p.name for p in installed.iterdir()) == expected
