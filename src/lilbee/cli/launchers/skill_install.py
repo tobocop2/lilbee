@@ -1,4 +1,4 @@
-"""Install the bundled lilbee-mcp guidance skill into an agent's skills directory."""
+"""Install the bundled lilbee-mcp skill, and locate the bundled skill and pi extension."""
 
 from __future__ import annotations
 
@@ -10,14 +10,28 @@ from pathlib import Path
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGED_SKILL = _PACKAGE_ROOT / "skills" / "lilbee_mcp"
 _CHECKOUT_SKILL = _PACKAGE_ROOT.parents[1] / "plugins" / "lilbee" / "skills" / "lilbee-mcp"
+_PACKAGED_AGENT_PLUGIN = _PACKAGE_ROOT / "agent_plugin"
+_CHECKOUT_AGENT_PLUGIN = _PACKAGE_ROOT.parents[1] / "packages" / "lilbee" / "plugin"
+_PI_EXTENSION = Path("extensions") / "lilbee.js"
+
+
+def _installed_or_checkout(packaged: Path, checkout: Path, marker: Path) -> Path:
+    """Return whichever of *packaged* and *checkout* holds *marker*, the installed one first."""
+    for candidate in (packaged, checkout):
+        if (candidate / marker).is_file():
+            return candidate
+    raise FileNotFoundError(f"{marker.as_posix()} not found under {packaged} or {checkout}")
 
 
 def bundled_skill_dir() -> Path:
     """Return the installed skill directory, or the checkout one in a source tree."""
-    for candidate in (_PACKAGED_SKILL, _CHECKOUT_SKILL):
-        if (candidate / "SKILL.md").is_file():
-            return candidate
-    raise FileNotFoundError(f"lilbee-mcp skill not found at {_PACKAGED_SKILL} or {_CHECKOUT_SKILL}")
+    return _installed_or_checkout(_PACKAGED_SKILL, _CHECKOUT_SKILL, Path("SKILL.md"))
+
+
+def bundled_pi_extension() -> Path:
+    """Return the lilbee pi extension the npm package ships, as the wheel or a checkout holds it."""
+    plugin = _installed_or_checkout(_PACKAGED_AGENT_PLUGIN, _CHECKOUT_AGENT_PLUGIN, _PI_EXTENSION)
+    return plugin / _PI_EXTENSION
 
 
 def install_bundled_skill(dest: Path) -> Path | None:

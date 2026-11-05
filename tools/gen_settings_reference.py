@@ -130,6 +130,9 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
         "Process plumbing: the load warnings this process tree already printed",
         True,
     ),
+    "LILBEE_OPENAI_URL": ("Launcher plumbing: the served OpenAI route for the pi extension", True),
+    "LILBEE_MCP_URL": ("Launcher plumbing: the served MCP route for the pi extension", True),
+    "LILBEE_PI_MODELS": ("Launcher plumbing: the pi model list for the pi extension", True),
     "LILBEE_SKIP_TOML_CONFIG": ("Test hook: ignore config.toml for hermetic runs", True),
     "LILBEE_SKIP_MODEL_TASK_VALIDATION": ("Test hook: skip catalog task validation", True),
 }
