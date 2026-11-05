@@ -178,17 +178,6 @@ _chars = st.one_of(
     st.characters(codec="utf-8", exclude_characters=_ESCAPED_ONLY),
 )
 _tokens = st.builds(_token, _chars, st.booleans())
-_segment = st.one_of(
-    st.just([]),
-    st.lists(_tokens, min_size=1, max_size=5),
-    st.lists(_tokens, min_size=1, max_size=40),
-    st.sampled_from(_DEVICE_SEGMENTS).map(lambda name: [_token(char, False) for char in name]),
-).filter(lambda tokens: "".join(token.char for token in tokens) not in _DOT_SEGMENTS)
-_last = st.one_of(
-    st.just(tuple(_token(char, False) for char in _LAST_SEGMENT)),
-    st.just(()),
-    _segment.map(tuple),
-)
 
 
 @dataclass(frozen=True)
@@ -211,16 +200,47 @@ class _Address:
         )
 
 
-_addresses = st.builds(
-    _Address,
-    st.sampled_from(sorted(_HOSTS)),
-    st.lists(_segment.map(tuple), min_size=1, max_size=3).map(tuple),
-    _last,
-    st.one_of(
-        st.none(),
-        st.lists(st.builds(_query_token, _chars, st.booleans()), min_size=1, max_size=8).map(tuple),
+def _addresses_of(tokens: st.SearchStrategy[_Token]) -> st.SearchStrategy[_Address]:
+    """Addresses whose path tokens come from *tokens*; the query always draws from every token."""
+    segment = st.one_of(
+        st.just([]),
+        st.lists(tokens, min_size=1, max_size=5),
+        st.lists(tokens, min_size=1, max_size=40),
+        st.sampled_from(_DEVICE_SEGMENTS).map(lambda name: [_token(char, False) for char in name]),
+    ).filter(lambda run: "".join(token.char for token in run) not in _DOT_SEGMENTS)
+    last = st.one_of(
+        st.just(tuple(_token(char, False) for char in _LAST_SEGMENT)),
+        st.just(()),
+        segment.map(tuple),
+    )
+    return st.builds(
+        _Address,
+        st.sampled_from(sorted(_HOSTS)),
+        st.lists(segment.map(tuple), min_size=1, max_size=3).map(tuple),
+        last,
+        st.one_of(
+            st.none(),
+            st.lists(st.builds(_query_token, _chars, st.booleans()), min_size=1, max_size=8).map(
+                tuple
+            ),
+        ),
+    )
+
+
+_addresses = _addresses_of(_tokens)
+# Path tokens that print and are no escape the address kept: the label test holds only for them.
+# They are built that way, not filtered from every token, which discarded two addresses in three.
+_PRINTABLE_TRICKY = tuple(c for c in _TRICKY if c not in _ESCAPED_ONLY and c.isprintable())
+_printable_chars = st.one_of(
+    st.sampled_from(_PRINTABLE_TRICKY),
+    st.sampled_from(_PRINTABLE_TRICKY),
+    st.characters(
+        codec="utf-8",
+        exclude_characters=_ESCAPED_ONLY,
+        exclude_categories=("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp", "Zs"),
     ),
 )
+_label_addresses = _addresses_of(st.builds(_token, _printable_chars, st.just(False)))
 
 
 def _near(token: _Token) -> list[list[_Token]]:
@@ -352,12 +372,10 @@ class TestSavedNames:
         assert len(saved.encode("utf-8")) <= _MAX_PATH_BYTES, url
 
     @_PROPERTY_SETTINGS
-    @given(address=_addresses, data=st.data())
+    @given(address=_label_addresses, data=st.data())
     def test_a_label_shows_no_escape_the_address_did_not_hold(
         self, address: _Address, data: st.DataObject
     ):
-        tokens = [t for part in (*address.segments, address.last) for t in part]
-        assume(all(not t.kept_escape and t.char.isprintable() for t in tokens))
         url = _url(address, data)
         label = source_label(f"_web/{url_to_filename(url)}")
         assert not _ESCAPE.search(label), (url, label)
@@ -372,6 +390,20 @@ class TestSavedNames:
         assume(word.upper() not in _DEVICE_NAMES)
         saved = url_to_filename(f"https://example.com/t/{word}")
         assert word in saved, (word, saved)
+
+    @settings(max_examples=200, deadline=None, derandomize=True, database=None)
+    @given(address=_label_addresses)
+    def test_every_label_address_meets_the_label_precondition_by_construction(
+        self, address: _Address
+    ):
+        """The label test drops no address, so it needs no `assume` that burns its time budget.
+
+        A test that dropped two drawn addresses in three ran three times its examples. On a
+        Windows runner that passed the 60 second test timeout, and pytest-timeout kills the
+        whole worker there.
+        """
+        tokens = [t for part in (*address.segments, address.last) for t in part]
+        assert all(not t.kept_escape and t.char.isprintable() for t in tokens), address
 
 
 # Two addresses the crawler treats as two pages: each pair must keep two saved paths.

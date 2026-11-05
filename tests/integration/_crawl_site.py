@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import socket
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -373,16 +374,30 @@ def _handler_for(site: CrawlSite) -> type[BaseHTTPRequestHandler]:
     return _Handler
 
 
+class _QuietServer(ThreadingHTTPServer):
+    """A server that stays silent when a client closes its connection.
+
+    A crawler resets a connection it no longer needs. The stock server prints a traceback for
+    that, and the print lands inside the output the CLI tests parse as JSON.
+    """
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        """Print the error as the stock server does, unless the client closed the connection."""
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            return
+        super().handle_error(request, client_address)  # type: ignore[arg-type]
+
+
 class RunningSite:
     """Context manager that serves a :class:`CrawlSite` on a free loopback port."""
 
     def __init__(self) -> None:
-        self._server: ThreadingHTTPServer | None = None
+        self._server: _QuietServer | None = None
         self._thread: threading.Thread | None = None
 
     def __enter__(self) -> CrawlSite:
         site = CrawlSite(port=0)
-        self._server = ThreadingHTTPServer((LOOPBACK, 0), _handler_for(site))
+        self._server = _QuietServer((LOOPBACK, 0), _handler_for(site))
         self._server.daemon_threads = True
         site.port = self._server.server_address[1]
         self._thread = threading.Thread(
