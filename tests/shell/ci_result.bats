@@ -129,7 +129,7 @@ path_group() {
   [ "$status" -eq 0 ]
   for p in 'src/**' 'tests/**' pyproject.toml uv.lock Makefile engine-versions.env \
     scripts/check_style_rules.py 'scripts/*.sh' 'scripts/qa/**' 'tools/qa/**' 'packages/lilbee/**' \
-    'tools/wheel-build/**' 'packaging/tools/**' '.github/workflows/**' '.github/actions/**'; do
+    'tools/wheel-build/**' 'packaging/tools/**' '.github/workflows/**' '.github/actions/**' server.json; do
     printf '%s\n' "$output" | grep -qxF -e "${p}" || { echo "code group lost ${p}" >&2; return 1; }
   done
 }

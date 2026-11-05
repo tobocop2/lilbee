@@ -20,13 +20,14 @@ job skips the publish.
 The job sets both `version` fields of `server.json` from `package.json` before
 it lists the package, so the listing always carries the npm version. Keep the
 committed `server.json` equal to it: a test fails when they differ. After the
-npm publish, the job lists the new version in the MCP Registry. The registry checks the
-published package for `mcpName`, and the login uses the job's OIDC token. The
-job asks the registry first, so a re-run after a failed listing lists the
-version. The job asks npm for the published version and waits up to 60
-seconds if npm does not show it yet. If the version has no `mcpName`, the job
-writes why it skipped the listing to the log and the job summary, and stays
-green. The job fails if npm still lacks the version after the wait.
+npm publish, the job lists the new version in the MCP Registry. The registry
+checks the published package for `mcpName`, and the login uses the job's OIDC
+token. The job asks the registry first, so a re-run after a failed listing
+lists the version. The job asks npm for the published version three times,
+waiting ten seconds between attempts, if npm does not show it yet. A published
+version whose `mcpName` is missing is refused by the registry, which fails the
+job: bump the version so npm publishes a package that carries it. The job also
+fails if npm still lacks the version after the attempts.
 
 ## One-time setup
 

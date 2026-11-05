@@ -47,6 +47,7 @@ jobs:
               - 'scripts/check_style_rules.py'
               - 'tools/qa/**'
               - 'packages/lilbee/**'
+              - 'server.json'
               - 'tools/wheel-build/**'
               - 'packaging/tools/**'
               - 'scripts/qa/**'
@@ -136,6 +137,17 @@ jobs:
 
       - run: make lint-shell
       - run: make test-shell
+
+      # The registry's own validator, at the release the publish script pins:
+      # an invalid server.json is red here, before a release tries to list it.
+      - name: Validate the MCP Registry listing
+        env:
+          MCP_PUBLISHER_VERSION: "v1.8.7"
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          ./mcp-publisher validate server.json
 
   npm-launcher:
     needs: [changes]
