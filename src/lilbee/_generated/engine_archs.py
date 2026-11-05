@@ -11,8 +11,8 @@ from __future__ import annotations
 # The ref is a build-time source coordinate, not a dependency: llama-server is
 # compiled from the llama.cpp commit below, cloned from ENGINE_LLAMA_CPP_REPO at
 # this ref. lilbee ships no llama.cpp package.
-ENGINE_LLAMA_CPP_REF = "memory-20261019-152820"
-LLAMA_CPP_COMMIT = "62be051e90f7ece1067b21a787299dab1306811d"
+ENGINE_LLAMA_CPP_REF = "memory-20261102-180518"
+LLAMA_CPP_COMMIT = "9e28e490797cd88bc45a6d140d7a6e9265592d0a"
 
 SUPPORTED_ARCHS: frozenset[str] = frozenset(
     {
@@ -33,6 +33,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "chatglm",
         "clef",
         "clip",
+        "clover_moe",
         "codeshell",
         "cogvlm",
         "cohere2",
@@ -45,6 +46,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "deepseek2-ocr",
         "deepseek32",
         "deepseek4",
+        "deepseek41",
         "dflash",
         "dots1",
         "dots3note",
@@ -58,6 +60,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "exaone4",
         "falcon",
         "falcon-h1",
+        "flint",
         "gemma",
         "gemma-embedding",
         "gemma-embedding2",
@@ -100,6 +103,8 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "laguna",
         "lfm2",
         "lfm2moe",
+        "lfm3",
+        "limite",
         "llada",
         "llada-moe",
         "llama",
@@ -117,6 +122,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "minimax-01",
         "minimax-m2",
         "minimax-m3",
+        "mistral-large4",
         "mistral3",
         "mistral4",
         "modern-bert",
@@ -164,6 +170,7 @@ SUPPORTED_ARCHS: frozenset[str] = frozenset(
         "rwkv6qwen2",
         "rwkv7",
         "seed_oss",
+        "sensenova_u1",
         "smallthinker",
         "smollm3",
         "spark2_5",
