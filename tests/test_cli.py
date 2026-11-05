@@ -1237,6 +1237,16 @@ class TestApplyOverrides:
         with pytest.raises(typer.BadParameter, match="--model"):
             apply_overrides(model="missing-model-x")
 
+    def test_a_value_the_config_refuses_leaves_the_setting_alone(self):
+        import typer
+
+        from lilbee.cli import apply_overrides
+
+        original_model = cfg.chat_model
+        with pytest.raises(typer.BadParameter, match="--model"):
+            apply_overrides(model="not a valid ref")
+        assert cfg.chat_model == original_model
+
     def test_a_refused_value_names_the_flag(self):
         import typer
 

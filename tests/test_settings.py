@@ -864,7 +864,6 @@ class TestTableModelSetting:
         from lilbee.app import settings as appset
 
         monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
-        monkeypatch.setattr(appset, "_index_has_chunks", lambda: True)
         monkeypatch.setattr(appset.cfg, "layout_detection", True)
         assert appset.apply_settings_update({"table_model": "tatr"}).reindex_required is True
         monkeypatch.setattr(appset.cfg, "layout_detection", False)
@@ -1898,13 +1897,15 @@ class TestEmbedReindexRequired:
         monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
         assert appset.apply_settings_update({"chunk_size": 300}).reindex_required is True
 
-    def test_a_chunking_change_with_no_services_built_keeps_the_rebuild_flag(self, monkeypatch):
+    def test_a_chunking_change_with_no_services_built_builds_none(self, tmp_path, monkeypatch):
         from lilbee.app import settings as appset
-        from lilbee.app.services import set_services
+        from lilbee.app.services import peek_services, set_services
 
         set_services(None)
+        monkeypatch.setattr(appset.cfg, "lancedb_dir", tmp_path / "lancedb")
         monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
-        assert appset.apply_settings_update({"chunk_size": 300}).reindex_required is True
+        assert appset.apply_settings_update({"chunk_size": 300}).reindex_required is False
+        assert peek_services() is None
 
     def test_no_index_needs_no_reindex(self, real_store):
         from lilbee.app import settings as appset

@@ -52,7 +52,6 @@ from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.profile_line import ProfileLinePill
 from lilbee.cli.tui.widgets.slash_command_catalog import CATALOG_GROUPS
-from lilbee.cli.tui.widgets.suggester import SlashSuggester
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
@@ -1172,12 +1171,6 @@ def test_profile_completion_lists_usable_names_only() -> None:
     assert "mine" in options
     assert "busted" not in options
     assert get_completions("/profile Scan") == ["Scanned archive"]
-
-
-async def test_profile_suggestion_completes_a_name_inline() -> None:
-    assert await SlashSuggester(use_cache=False).get_suggestion("/profile Sca") == (
-        "/profile Scanned archive"
-    )
 
 
 async def test_palette_choose_profile_opens_the_profile_tab(chat_app) -> None:

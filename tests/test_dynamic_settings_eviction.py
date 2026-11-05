@@ -157,12 +157,12 @@ def test_every_role_agnostic_load_key_has_a_drop_case():
 
 
 @pytest.mark.parametrize("key", sorted(_ROLE_AGNOSTIC_LOAD_WRITES))
-def test_each_role_agnostic_load_key_drops_fleet(key):
-    """Each launch-argument key drops the whole fleet once and reloads no single role."""
+def test_each_role_agnostic_load_key_replans_the_fleet(key):
+    """Each launch-argument key re-plans the fleet once and reloads no single role."""
     provider = _install_recording_provider()
     try:
         apply_settings_update({key: _ROLE_AGNOSTIC_LOAD_WRITES[key]})
-        assert provider.dropped == 1
+        assert provider.replanned == 1
         assert provider.reloaded_roles == []
     finally:
         _restore_services()

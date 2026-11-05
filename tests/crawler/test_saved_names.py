@@ -178,11 +178,6 @@ _chars = st.one_of(
     st.characters(codec="utf-8", exclude_characters=_ESCAPED_ONLY),
 )
 _tokens = st.builds(_token, _chars, st.booleans())
-_shown_tokens = st.builds(
-    _token,
-    _chars.filter(lambda char: char.isprintable() and char not in _ESCAPED_ONLY),
-    st.just(False),
-)
 
 
 def _segment_of(tokens: st.SearchStrategy[_Token]) -> st.SearchStrategy[list[_Token]]:
@@ -241,8 +236,19 @@ def _addresses_of(tokens: st.SearchStrategy[_Token]) -> st.SearchStrategy[_Addre
 
 
 _addresses = _addresses_of(_tokens)
-# Addresses whose path holds no kept escape and no character that fails to print.
-_shown_addresses = _addresses_of(_shown_tokens)
+# Path tokens that print and are no escape the address kept: the label test holds only for them.
+# They are built that way, not filtered from every token, which discarded two addresses in three.
+_PRINTABLE_TRICKY = tuple(c for c in _TRICKY if c not in _ESCAPED_ONLY and c.isprintable())
+_printable_chars = st.one_of(
+    st.sampled_from(_PRINTABLE_TRICKY),
+    st.sampled_from(_PRINTABLE_TRICKY),
+    st.characters(
+        codec="utf-8",
+        exclude_characters=_ESCAPED_ONLY,
+        exclude_categories=("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp", "Zs"),
+    ),
+)
+_label_addresses = _addresses_of(st.builds(_token, _printable_chars, st.just(False)))
 
 
 def _near(token: _Token) -> list[list[_Token]]:
@@ -374,7 +380,7 @@ class TestSavedNames:
         assert len(saved.encode("utf-8")) <= _MAX_PATH_BYTES, url
 
     @_PROPERTY_SETTINGS
-    @given(address=_shown_addresses, data=st.data())
+    @given(address=_label_addresses, data=st.data())
     def test_a_label_shows_no_escape_the_address_did_not_hold(
         self, address: _Address, data: st.DataObject
     ):

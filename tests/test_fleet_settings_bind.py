@@ -238,7 +238,7 @@ def test_an_ocr_change_with_a_vision_model_stops_vision_and_keeps_the_rest_binda
         "read_gguf_metadata",
         lambda path: {"general.architecture": "clip"} if Path(path) == vision_path else read(path),
     )
-    monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _ref: vision_path)
+    monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: vision_path)
     monkeypatch.setattr(cfg, "vision_model", _VISION_REF)
     provider, states = _owner(monkeypatch, tmp_path)
     assert SwapGroup.VISION in states

@@ -799,6 +799,7 @@ class LilbeeApp(App[None]):
             screen.action_cancel_stream()
             self.notify(msg.APP_QUIT_AGAIN_HINT)
             return
+        get_services().cancel_inference()
         # A quit asks nothing: a rebuild the Settings edits need is named in the terminal.
         settings = self.settings_screen()
         self.exit(message=settings.leave() if settings is not None else None)

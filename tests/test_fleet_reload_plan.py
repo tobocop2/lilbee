@@ -113,7 +113,7 @@ def test_an_ocr_change_with_a_vision_model_drops_only_the_vision_launch(
 ) -> None:
     projector = tmp_path / "mmproj.gguf"
     projector.write_bytes(b"projector")
-    monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _ref: projector)
+    monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: projector)
     monkeypatch.setattr(cfg, "vision_model", _CHAT_REF)
     cfg.ocr = "all"
     before = {launch.role: launch for launch in planning_mod.plan_all_launches().launches}
