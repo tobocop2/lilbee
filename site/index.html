@@ -844,10 +844,10 @@
           <span class="variant-tag">AMD · ROCm</span>
           <div class="install">
             <span class="prompt">$</span>
-            <span class="cmd">pip install --pre lilbee lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/</span>
+            <span class="cmd">pip install --pre lilbee</span>
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
-          <p class="variant-note">Linux only. The default build uses Metal on macOS, Vulkan on Windows.</p>
+          <p class="variant-note">Linux only. No ROCm engine pack exists yet: set <code>LILBEE_LLAMA_SERVER_PATH</code> to a ROCm <code>llama-server</code> you built, or use a bundled build.</p>
         </div>
         <div class="variant compat">
           <span class="variant-tag">older CPU · no AVX2</span>
@@ -856,7 +856,7 @@
             <span class="cmd">pip install --pre lilbee 'lancedb==0.40.0+compat' --extra-index-url https://lilbee.sh/compat/</span>
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
-          <p class="variant-note">no compat engine wheel exists: this installs lilbee without an engine, so use a bundled build instead, or point <code>LILBEE_LLAMA_SERVER_PATH</code> at your own <code>llama-server</code>.</p>
+          <p class="variant-note">lilbee downloads the CPU engine pack on first use. The pack runs on CPUs without AVX2.</p>
         </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-pip">details</button>
         <div class="notes-body" id="notes-pip" hidden>
@@ -884,10 +884,10 @@
           <span class="variant-tag">AMD · ROCm</span>
           <div class="install">
             <span class="prompt">$</span>
-            <span class="cmd">uv tool install --prerelease=allow lilbee --with lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/</span>
+            <span class="cmd">uv tool install --prerelease=allow lilbee</span>
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
-          <p class="variant-note">Linux only. The default build uses Metal on macOS, Vulkan on Windows.</p>
+          <p class="variant-note">Linux only. No ROCm engine pack exists yet: set <code>LILBEE_LLAMA_SERVER_PATH</code> to a ROCm <code>llama-server</code> you built, or use a bundled build.</p>
         </div>
         <div class="variant compat">
           <span class="variant-tag">older CPU · no AVX2</span>
@@ -896,7 +896,7 @@
             <span class="cmd">uv tool install --prerelease=allow --extra-index-url https://lilbee.sh/compat/ --with 'lancedb==0.40.0+compat' lilbee</span>
             <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
           </div>
-          <p class="variant-note">no compat engine wheel exists: this installs lilbee without an engine, so use a bundled build instead, or point <code>LILBEE_LLAMA_SERVER_PATH</code> at your own <code>llama-server</code>.</p>
+          <p class="variant-note">lilbee downloads the CPU engine pack on first use. The pack runs on CPUs without AVX2.</p>
         </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-uv">details</button>
         <div class="notes-body" id="notes-uv" hidden>

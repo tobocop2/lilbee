@@ -143,8 +143,8 @@ The default Vulkan build works on AMD cards, and stays the fallback if ROCm isn'
 | **Nix**      | `nix run github:tobocop2/lilbee#lilbee-rocm`                                                                         |
 | **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.rocm`                                                              |
 | **Binary**   | [`lilbee-linux-x86_64-rocm`](https://github.com/tobocop2/lilbee/releases/latest)                                     |
-| **pip** (devs) | `pip install --pre lilbee lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/` |
-| **uv** (devs)  | `uv tool install --prerelease=allow lilbee --with lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/` |
+| **pip** (devs) | `pip install --pre lilbee`, then set `LILBEE_LLAMA_SERVER_PATH` to your own ROCm `llama-server` |
+| **uv** (devs)  | `uv tool install --prerelease=allow lilbee`, then set `LILBEE_LLAMA_SERVER_PATH` to your own ROCm `llama-server` |
 
 Same `lilbee` command after install. Linux only. Cards: MI100, MI200, MI300, MI350, RDNA2, RDNA3, RDNA3.5 APUs and RDNA4. ROCm 7 ships no GEMM kernels for the MI50, so it needs the Vulkan build. Largest of the three builds, since the ROCm userspace and per-card kernels ship inside it.
 
@@ -176,9 +176,9 @@ Pre-2013 Intel or pre-Zen AMD CPUs lack [AVX2](https://en.wikipedia.org/wiki/Adv
 | **Snap**     | `curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-compat-linux-x86_64.snap && sudo snap install ./lilbee-compat-linux-x86_64.snap --dangerous --classic`    |
 | **Binary**   | [`lilbee-compat-linux-x86_64`](https://github.com/tobocop2/lilbee/releases/latest), [`lilbee-compat-windows-x86_64.exe`](https://github.com/tobocop2/lilbee/releases/latest), or [`lilbee-compat-macos-x86_64`](https://github.com/tobocop2/lilbee/releases/latest) (pre-AVX2 Intel Macs, e.g. the 2013 Mac Pro) |
 | **Binary + GPU** | [`lilbee-compat-linux-x86_64-cu124`](https://github.com/tobocop2/lilbee/releases/latest) (NVIDIA CUDA, driver 550+) or [`lilbee-compat-linux-x86_64-rocm`](https://github.com/tobocop2/lilbee/releases/latest) (AMD ROCm). These need a CPU with AVX (2011+); the Vulkan build above covers older chips. |
-| **pip** (devs) | `pip install --pre lilbee 'lancedb==0.40.0+compat' --extra-index-url https://lilbee.sh/compat/` — no engine: there is no compat engine wheel, so use a bundled build above or bring your own `llama-server` |
+| **pip** (devs) | `pip install --pre lilbee 'lancedb==0.40.0+compat' --extra-index-url https://lilbee.sh/compat/`. lilbee downloads the CPU engine pack on first use. The pack runs on CPUs without AVX2. |
 
-Use a bundled build here if you can. The compat index carries the patched lancedb only, so the `pip` row installs lilbee without an engine and every model call will fail until you point `LILBEE_LLAMA_SERVER_PATH` at a `llama-server` that runs on your CPU.
+Use a bundled build here if you can. The compat index carries the patched lancedb only, so the `pip` row installs lilbee only. lilbee downloads the CPU engine pack the first time a model needs it. To use your own engine instead, point `LILBEE_LLAMA_SERVER_PATH` at a `llama-server` that runs on your CPU.
 
 Same `lilbee` command after install. The crash is from [lancedb](https://lancedb.github.io/lancedb/)'s AVX2-compiled wheels; this build swaps in a [lancedb fork](https://github.com/tobocop2/lance) that picks instructions at runtime. A 👍 or comment on the upstream [lance PR](https://github.com/lance-format/lance/pull/6630) helps it land.
 
@@ -234,21 +234,10 @@ engine cache by hand. The error from a failed download names the file to copy.
 | Other x86_64 Linux and Windows   | CPU                        |
 
 No pack exists yet for AMD (ROCm), Vulkan, Linux on ARM, or Intel Macs. On those
-computers, use a bundled build. A `pip` or `uv` install can use the engine wheel
-from the index for your hardware instead. The wheel runs in place of the pack.
-
-The wheels are on lilbee's own
-[PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh`,
-because the CUDA and ROCm wheels run 444 MiB to 863 MiB each, several times
-[PyPI's default 100 MiB per-file limit](https://pypi.org/help/#file-size-limit).
-The index you pick is the build you get: `cpu` is compiled with every GPU
-backend off, `metal` publishes only a macOS arm64 wheel, `vulkan` only Linux and
-Windows ones.
-
-| Hardware          | Index    | Command                                                                                              |
-| ----------------- | -------- | ---------------------------------------------------------------------------------------------------- |
-| **AMD (ROCm)**    | `rocm`   | `pip install --pre lilbee lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/`         |
-| **Other GPUs**    | `vulkan` | `pip install --pre lilbee lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/vulkan/`       |
+computers, use a bundled build. A `pip` or `uv` install can run your own
+`llama-server` instead. Install lilbee with `pip install --pre lilbee`. Then set
+`LILBEE_LLAMA_SERVER_PATH` to a `llama-server` built for your hardware. The
+engine wheels for ROCm and Vulkan are not on the `lilbee.sh` index yet.
 
 </details>
 

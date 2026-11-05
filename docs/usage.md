@@ -1307,31 +1307,20 @@ same install the first time a model needs an engine. A computer with no network
 needs the pack copied into the `packs` folder of the engine cache by hand. The
 error from a failed download names the file to copy.
 
-**The engine wheel.** No pack exists for AMD (ROCm), Vulkan, Linux on ARM, or
-Intel Macs. On those computers, install the engine wheel from lilbee's own
-[PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh`. The
-wheel is not on PyPI. The CUDA and ROCm wheels
-run 444 MiB to 863 MiB each,
-several times [PyPI's default 100 MiB per-file limit](https://pypi.org/help/#file-size-limit),
-so every backend is published from that index. That
-is what `--extra-index-url` is for.
-
-The builds are not interchangeable, so pick the index for your hardware: `cpu` is
-built with every GPU backend off, `metal` ships only a macOS arm64 wheel, and
-`vulkan` only Linux and Windows ones.
+**Your own engine.** No pack exists for AMD (ROCm), Vulkan, Linux on ARM, or
+Intel Macs. The engine wheels for those backends are not on the `lilbee.sh`
+index yet. On those computers, use a bundled build, or run your own
+`llama-server`. Build `llama-server` from llama.cpp for your hardware. For ROCm,
+build with `GGML_HIP=ON`. For Vulkan, build with `GGML_VULKAN=ON`. Install
+lilbee with any of these commands. Then set `LILBEE_LLAMA_SERVER_PATH` to the
+binary.
 
 ```bash
-pip install --pre lilbee lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/     # AMD (ROCm)
-pip install --pre lilbee lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/vulkan/   # other GPUs
-```
-
-Use the `uv` form that matches how you installed lilbee.
-Swap the index the same way as above.
-
-```bash
-uv tool install --force --prerelease=allow lilbee --with lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/   # uv tool install
-uv pip install --prerelease=allow lilbee lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/                     # a uv venv
-pipx install --pip-args=--pre lilbee && pipx inject --pip-args='--extra-index-url https://lilbee.sh/rocm/' lilbee lilbee-engine-llama-cpp   # pipx
+pip install --pre lilbee                       # pip
+uv tool install --prerelease=allow lilbee      # uv tool install
+uv pip install --prerelease=allow lilbee       # a uv venv
+pipx install --pip-args=--pre lilbee           # pipx
+export LILBEE_LLAMA_SERVER_PATH=/path/to/llama-server
 ```
 
 </details>
