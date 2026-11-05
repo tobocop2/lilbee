@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import heapq
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
@@ -19,8 +21,14 @@ from lilbee.app.services import get_services
 from lilbee.app.settings import _is_settable
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
-from lilbee.cli.tui.command_registry import COMMANDS, completion_names
+from lilbee.cli.tui.command_registry import (
+    ANALYZE_OFF_ARG,
+    ANALYZE_REPORT_ARG,
+    COMMANDS,
+    completion_names,
+)
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
+from lilbee.core.profile_files import ProfileStore
 
 log = logging.getLogger(__name__)
 
@@ -46,9 +54,20 @@ _MAX_PATH_COMPLETIONS = 20
 # Commands whose argument is a filesystem path. They share _path_options and
 # the path-specific accept rules (typed-directory prefix kept, existing-path
 # collapse).
-PATH_ARG_COMMANDS = frozenset({"/add", "/import", "/export", "/export-chat"})
+PATH_ARG_COMMANDS = frozenset({"/add", "/import", "/export", "/export-chat", "/analyze"})
+# Words a path-argument command also takes, offered ahead of the paths.
+PATH_ARG_WORDS: dict[str, tuple[str, ...]] = {"/analyze": (ANALYZE_OFF_ARG, ANALYZE_REPORT_ARG)}
+# Commands whose argument is an installed model. Listing the models probes the
+# configured local servers over HTTP, so the chat screen lists them on a thread.
+MODEL_ARG_COMMANDS = frozenset({"/model", "/remove"})
 
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
+
+
+def reads_a_folder(text: str) -> bool:
+    """Whether the completions for *text* list a folder on disk (a path-argument command)."""
+    cmd, space, _ = text.partition(" ")
+    return bool(space) and cmd.lower() in PATH_ARG_COMMANDS
 
 
 def get_completions(text: str) -> list[str]:
@@ -71,7 +90,7 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     fully-typed argument collapses the dropdown and lets Enter submit,
     mirroring the command-discovery rule for slash commands.
     """
-    sources = _ARG_SOURCES.get(cmd)
+    sources = ARG_SOURCES.get(cmd)
     if sources is None:
         return []
     if cmd in PATH_ARG_COMMANDS:
@@ -82,23 +101,40 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
         # descends to list the directory's contents.
         if partial and not partial.endswith(_PATH_SEPARATORS) and _path_exists(partial):
             return []
+        words = [w for w in PATH_ARG_WORDS.get(cmd, ()) if w.startswith(partial.lower())]
         # _path_options already prefix-filters against the basename and returns
         # bare segment names (not the typed prefix), so the generic startswith
         # filter below would wrongly wipe them.
-        options = _path_options(partial)
-    else:
-        options = sources()
-        if partial:
-            # Substring match so a model's human name ("smol") finds its full
-            # ref without the HF org; prefix matches keep first place.
-            low = partial.lower()
-            prefixed = [o for o in options if o.lower().startswith(low)]
-            contained = [o for o in options if low in o.lower() and not o.lower().startswith(low)]
-            options = prefixed + contained
+        options = words + _path_options(partial)
+        return [o for o in options if o.lower() != partial.lower()]
+    return _match_args(sources(), partial)
+
+
+def _match_args(options: list[str], partial: str) -> list[str]:
+    """Filter *options* against the typed *partial*, dropping an exact match."""
+    if partial:
+        # Substring match so a model's human name ("smol") finds its full
+        # ref without the HF org; prefix matches keep first place.
+        low = partial.lower()
+        prefixed = [o for o in options if o.lower().startswith(low)]
+        contained = [o for o in options if low in o.lower() and not o.lower().startswith(low)]
+        options = prefixed + contained
     return [o for o in options if o.lower() != partial.lower()]
 
 
-def _model_options() -> list[str]:
+def reads_models(text: str) -> bool:
+    """Whether the completions for *text* list the installed models (a model-argument command)."""
+    cmd, space, _ = text.partition(" ")
+    return bool(space) and cmd.lower() in MODEL_ARG_COMMANDS
+
+
+def model_completions(text: str, names: list[str]) -> list[str]:
+    """Completions for a model-argument *text* from the already listed model *names*."""
+    return _match_args(names, text.partition(" ")[2])
+
+
+def list_model_options() -> list[str]:
+    """The installed model names; can probe a local server over HTTP, so keep it off the loop."""
     try:
         from lilbee.modelhub.models import list_installed_models
 
@@ -126,6 +162,10 @@ def _indexed_names() -> list[str]:
 def _document_options() -> list[str]:
     """``/delete`` targets: indexed sources, then held-out sources not indexed."""
     return removable_names(_indexed_names())
+
+
+def _profile_options() -> list[str]:
+    return ProfileStore().scan().usable_names()
 
 
 def _theme_options() -> list[str]:
@@ -160,16 +200,20 @@ def _path_options(partial: str = "") -> list[str]:
         if not parent.is_dir():
             return []
 
-        results: list[str] = []
-        for p in sorted(parent.iterdir()):
-            if p.name.startswith("."):
-                continue
-            if prefix and not p.name.lower().startswith(prefix):
-                continue
-            results.append(p.name + "/" if p.is_dir() else p.name)
-            if len(results) >= _MAX_PATH_COMPLETIONS:
-                break
-        return results
+        # One pass over the folder keeps the 20 smallest names in a heap, so a
+        # folder with thousands of entries is neither sorted nor stat-ed in full.
+        with os.scandir(parent) as entries:
+            names = heapq.nsmallest(
+                _MAX_PATH_COMPLETIONS,
+                (
+                    e.name
+                    for e in entries
+                    if not e.name.startswith(".") and e.name.lower().startswith(prefix)
+                ),
+                # The key the old sorted(Path) used: Windows compares names case-folded.
+                key=os.path.normcase,
+            )
+        return [name + "/" if (parent / name).is_dir() else name for name in names]
     except Exception:
         log.debug("Failed to list paths for autocomplete", exc_info=True)
         return []
@@ -201,13 +245,15 @@ def longest_common_prefix(values: list[str]) -> str:
     return shortest
 
 
-_ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
-    "/model": _model_options,
+ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
+    "/model": list_model_options,
     "/set": _setting_options,
     "/delete": _document_options,
-    "/remove": _model_options,
+    "/remove": list_model_options,
     "/theme": _theme_options,
+    "/profile": _profile_options,
     "/add": _path_options,
+    "/analyze": _path_options,
     "/import": _path_options,
     "/export": _path_options,
     "/export-chat": _path_options,

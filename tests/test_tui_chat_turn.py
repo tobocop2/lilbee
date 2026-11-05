@@ -258,7 +258,10 @@ async def test_adopt_and_retry_during_a_live_turn_is_refused(held):
         with _streaming(held):
             screen = await _start_held_turn(app, pilot, held)
             with (
-                patch("lilbee.app.models.adopt_embedder"),
+                patch(
+                    "lilbee.app.models.adopt_embedder",
+                    return_value=MagicMock(reindex_required=False),
+                ),
                 patch.object(screen, "notify") as notify,
             ):
                 await asyncio.to_thread(screen._do_adopt_and_retry, "embedder", "Q2")
@@ -386,3 +389,23 @@ async def test_a_send_during_a_fold_after_cancel_loses_no_turn():
         everything = held_by_summary + in_history
         expected = [t[:4] for t in turns] + ["Q1", "Q2", "A-Q2"]
         assert sorted(everything) == sorted(expected)
+
+
+async def test_a_question_uses_a_top_k_another_process_wrote_without_a_focus_event():
+    """A terminal with no focus events: the question itself picks up the new config.toml."""
+    from lilbee.core import settings as persistent_settings
+
+    seen: list[int] = []
+
+    def _record(screen, turn, chunk_type):
+        seen.append(cfg.top_k)
+
+    app = LilbeeApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await await_chat(app, pilot)
+        new_top_k = cfg.top_k + 7
+        persistent_settings.set_value(cfg.data_root, "top_k", new_top_k)
+        with patch.object(ChatScreen, "_do_stream_response", autospec=True, side_effect=_record):
+            screen._send_message("Q1")
+            assert await pump_until(pilot, lambda: bool(seen))
+        assert seen == [new_top_k]

@@ -29,6 +29,7 @@ from lilbee.runtime.progress import OcrBackendUsed
 # discovery.classify_file (PDFs and images grouped; others keyed by extension).
 PDF_CONTENT_TYPE = "pdf"
 IMAGE_CONTENT_TYPE = "image"
+CODE_CONTENT_TYPE = "code"
 MARKDOWN_OUTPUT = "markdown"
 MARKDOWN_MIME = "text/markdown"
 # Sync summary note for a skipped document whose extraction ran with OCR off.
@@ -186,6 +187,8 @@ class SyncResult(BaseModel):
     # Chunks whose text exceeded the embedder's char budget and were truncated
     # before embedding. Non-zero means some tail content did not reach the index.
     truncated: int = 0
+    # Folders the walk could not open, so the files in them were not looked at.
+    unreadable_folders: list[str] = []
     # Set when the index was built with another embedder than the one configured:
     # the sync left it as it is, and search refuses it until a rebuild or a switch back.
     index_mismatch: IndexMismatch | None = None
@@ -213,6 +216,10 @@ class SyncResult(BaseModel):
         ]
         lines += [[("  ", ""), (name, "yellow"), self._skip_note(name)] for name in self.skipped]
         lines += [[("  ", ""), (name, "red")] for name in self.failed]
+        lines += [
+            [("Could not open folder: ", "yellow"), (folder, "")]
+            for folder in self.unreadable_folders
+        ]
         return lines
 
     def _skip_note(self, name: str) -> tuple[str, str]:

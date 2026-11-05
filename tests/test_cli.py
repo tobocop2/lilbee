@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import click
 import numpy as np
+import pydantic
 import pytest
 from filelock import ReadWriteLock
 from filelock import Timeout as FileLockTimeout
@@ -31,7 +32,8 @@ from lilbee.cli import app
 from lilbee.cli.commands.ingest_sync import _CrawlOutcome, _FailedSource
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import OcrMode
+from lilbee.core.config.enums import OcrMode, SettingSource
+from lilbee.core.config.resolve import read_layers, resolve
 from lilbee.core.security import PathTraversalError
 from lilbee.crawler.bootstrap import CrawlEngineRefusedError, CrawlerBrowserError
 from lilbee.crawler.url_filter import UNPARSED_ADDRESS
@@ -64,6 +66,7 @@ from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
 from tests._mock_effects import repeat_last
 from tests.conftest import (
+    ctrl_c_reaches_python,
     make_mock_services,
     read_takes_hooked,
     reset_held_on_a_thread,
@@ -128,6 +131,7 @@ def mock_svc():
     store.entity_schema_state.return_value = None
     # No index identity persisted unless a test writes one.
     store.get_meta.return_value = None
+    store.count_chunks.return_value = 0
     store.index_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
@@ -403,6 +407,38 @@ class TestRebuild:
         assert result.exit_code != 0
         assert "Error: locked: notes[draft].txt" in result.output
 
+    def test_rebuild_with_failed_files_says_so_and_exits_nonzero(self, isolated_env):
+        failing = SyncResult(added=["a.txt"], failed=["b.txt", "c.txt"])
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=failing):
+            result = runner.invoke(app, ["rebuild"])
+        assert result.exit_code == 1
+        assert "Rebuilt: 1 documents ingested" in result.output
+        assert "2 documents failed to ingest: b.txt, c.txt" in result.output
+        assert "lilbee rebuild" in result.output
+
+    def test_json_rebuild_with_failed_files_has_an_error_key_and_exits_1(self, isolated_env):
+        failing = SyncResult(added=["a.txt"], failed=["b.txt"])
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=failing):
+            result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["failed"] == 1
+        assert "1 document failed to ingest: b.txt" in payload["error"]
+
+    def test_json_rebuild_without_failures_has_no_error_key(self, isolated_env):
+        result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 0
+        assert "error" not in json.loads(result.output)
+
+    def test_rebuild_names_five_failed_files_and_counts_the_rest(self, isolated_env):
+        failing = SyncResult(failed=[f"f{n}.txt" for n in range(7)])
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=failing):
+            result = runner.invoke(app, ["rebuild"])
+        assert "7 documents failed to ingest: f0.txt, f1.txt, f2.txt, f3.txt, f4.txt" in (
+            result.output.replace("\n", " ")
+        )
+        assert "and 2 more" in result.output.replace("\n", " ")
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_rebuild_processes_sets_ingest_processes(self, mock_sync, isolated_env):
         result = runner.invoke(app, ["rebuild", "--processes", "2"])
@@ -411,6 +447,21 @@ class TestRebuild:
 
 
 class TestAdd:
+    def test_add_starts_no_chat_warm_before_registration(self, isolated_env, tmp_path):
+        """Registration reads the store first, so the first services init starts in add."""
+        src_file = tmp_path / "manual.txt"
+        src_file.write_text("Engine oil capacity is 5 quarts.", encoding="utf-8")
+        cfg.worker_pool_eager_start = True
+        seen: list[bool] = []
+
+        def register(*_args: object, **_kwargs: object) -> None:
+            seen.append(cfg.worker_pool_eager_start)
+
+        with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", register):
+            result = runner.invoke(app, ["add", str(src_file)])
+        assert result.exit_code == 0, result.output
+        assert seen == [False]
+
     def test_add_single_file(self, isolated_env, tmp_path):
         """Adding a single file registers it as a root and ingests it in place."""
         src_file = tmp_path / "source" / "manual.txt"
@@ -901,6 +952,37 @@ class TestUseEmbedderCommand:
         assert payload["status"] == "already_active"
 
     @mock.patch("lilbee.app.models.adopt_embedder")
+    def test_use_embedder_json_carries_reindex_required(self, mock_adopt, mock_svc):
+        from lilbee.app.models import AdoptResult, AdoptStatus
+
+        mock_adopt.return_value = AdoptResult(
+            model="orgA/repoA/built.gguf", status=AdoptStatus.ADOPTED, reindex_required=True
+        )
+        result = runner.invoke(app, ["--json", "use-embedder", "orgA/repoA/built.gguf"])
+        assert json.loads(result.output)["reindex_required"] is True
+
+    @mock.patch("lilbee.app.models.adopt_embedder")
+    def test_use_embedder_text_shows_rebuild_hint_when_required(self, mock_adopt, mock_svc):
+        from lilbee.app.models import AdoptResult, AdoptStatus
+        from lilbee.cli.commands._shared import REBUILD_HINT
+
+        mock_adopt.return_value = AdoptResult(
+            model="orgA/repoA/built.gguf", status=AdoptStatus.ADOPTED, reindex_required=True
+        )
+        result = runner.invoke(app, ["use-embedder", "orgA/repoA/built.gguf"])
+        assert " ".join(result.output.split()).count(REBUILD_HINT) == 1
+
+    @mock.patch("lilbee.app.models.adopt_embedder")
+    def test_use_embedder_text_has_no_rebuild_hint_when_not_required(self, mock_adopt, mock_svc):
+        from lilbee.app.models import AdoptResult, AdoptStatus
+
+        mock_adopt.return_value = AdoptResult(
+            model="orgA/repoA/built.gguf", status=AdoptStatus.ADOPTED
+        )
+        result = runner.invoke(app, ["use-embedder", "orgA/repoA/built.gguf"])
+        assert "lilbee rebuild" not in result.output
+
+    @mock.patch("lilbee.app.models.adopt_embedder")
     def test_use_embedder_failure_exits_nonzero(self, mock_adopt, mock_svc):
         mock_adopt.side_effect = RuntimeError("no such model")
         result = runner.invoke(app, ["use-embedder", "bogus/ref.gguf"])
@@ -1147,15 +1229,37 @@ class TestApplyOverrides:
         apply_overrides(model=ref)
         assert cfg.chat_model == ref
 
-    def test_a_value_the_config_refuses_is_a_usage_error(self):
+    def test_a_refused_model_is_a_bad_parameter(self):
+        import typer
+
+        from lilbee.cli import apply_overrides
+
+        with pytest.raises(typer.BadParameter, match="--model"):
+            apply_overrides(model="missing-model-x")
+
+    def test_a_value_the_config_refuses_leaves_the_setting_alone(self):
         import typer
 
         from lilbee.cli import apply_overrides
 
         original_model = cfg.chat_model
-        with pytest.raises(typer.BadParameter, match="chat_model"):
+        with pytest.raises(typer.BadParameter, match="--model"):
             apply_overrides(model="not a valid ref")
         assert cfg.chat_model == original_model
+
+    def test_a_refused_value_names_the_flag(self):
+        import typer
+
+        from lilbee.cli import apply_overrides
+
+        with pytest.raises(typer.BadParameter, match="--top-k-sampling"):
+            apply_overrides(top_k_sampling=-5)
+
+    def test_a_refused_model_on_the_command_line_exits_2_with_one_message(self):
+        result = runner.invoke(app, ["--model", "missing-model-x", "settings", "list"])
+        assert result.exit_code == 2
+        assert "Traceback" not in result.output
+        assert not isinstance(result.exception, pydantic.ValidationError)
 
     def test_none_values_are_noop(self):
         from lilbee.cli import apply_overrides
@@ -1234,9 +1338,7 @@ class TestApplyOverrides:
         assert cfg.data_root == env_dir
         assert cfg.documents_dir == docs_dir
 
-    def test_lilbee_documents_dir_env_wins_over_config_toml(
-        self, tmp_path, monkeypatch, overlay_reads_config_toml
-    ):
+    def test_lilbee_documents_dir_env_wins_over_config_toml(self, tmp_path, monkeypatch):
         """LILBEE_DOCUMENTS_DIR also wins over a persisted documents_dir."""
         from lilbee.cli import apply_overrides
 
@@ -1250,6 +1352,21 @@ class TestApplyOverrides:
         monkeypatch.setenv("LILBEE_DOCUMENTS_DIR", str(docs_dir))
         apply_overrides(data_dir=root)
         assert cfg.documents_dir == docs_dir
+
+    @pytest.mark.parametrize("persisted", [True, False])
+    def test_blank_lilbee_documents_dir_is_unset(self, tmp_path, monkeypatch, persisted):
+        from lilbee.cli import apply_overrides
+
+        root = tmp_path / "root"
+        root.mkdir()
+        persisted_dir = tmp_path / "persisted"
+        if persisted:
+            (root / "config.toml").write_text(
+                f'documents_dir = "{persisted_dir.as_posix()}"\n', encoding="utf-8"
+            )
+        monkeypatch.setenv("LILBEE_DOCUMENTS_DIR", "  ")
+        apply_overrides(data_dir=root)
+        assert cfg.documents_dir == (persisted_dir if persisted else root / "documents")
 
     def test_generation_option_overrides(self):
         from lilbee.cli import apply_overrides
@@ -1277,7 +1394,7 @@ class TestApplyOverrides:
         assert cfg.temperature == 0.7
         cfg.temperature = None
 
-    def test_data_dir_overlays_per_root_config_toml(self, tmp_path, overlay_reads_config_toml):
+    def test_data_dir_overlays_per_root_config_toml(self, tmp_path):
         """A per-vault config.toml in the data-dir must be re-read when --data-dir lands.
 
         Regression: cfg's scalar fields (chat_model, embedding_model, ...) were
@@ -1301,43 +1418,85 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
 
-    def test_data_dir_config_toml_clearing_the_vision_model_beats_the_ambient_one(
-        self, tmp_path, overlay_reads_config_toml
-    ):
-        """An empty vision_model in the data-dir clears it; an empty chat_model does not."""
+    def test_data_dir_config_toml_clearing_the_vision_model_beats_the_ambient_one(self, tmp_path):
+        """An empty vision_model in the data-dir clears it; an empty chunk_size is unset."""
         from lilbee.cli import apply_overrides
 
         cfg.vision_model = "org/Ambient-Vision-GGUF/ambient-Q4_K_M.gguf"
-        cfg.chat_model = "ollama/ambient-chat:latest"
-        cfg.top_k = 5
         (tmp_path / "config.toml").write_text(
-            'vision_model = ""\nchat_model = ""\ntop_k = 9\n', encoding="utf-8"
+            'vision_model = ""\nchunk_size = ""\ntop_k = 9\n[profile.values]\nchunk_size = 900\n',
+            encoding="utf-8",
         )
 
         apply_overrides(data_dir=tmp_path)
 
         assert cfg.vision_model == ""
-        assert cfg.chat_model == "ollama/ambient-chat:latest"
+        assert cfg.chunk_size == 900
         assert cfg.top_k == 9
+        assert resolve("vision_model", read_layers(cfg.data_root)).source is SettingSource.USER
 
-    def test_data_dir_without_config_toml_leaves_cfg_unchanged(
-        self, tmp_path, overlay_reads_config_toml
-    ):
-        """An empty / missing config.toml must not stomp on existing cfg values."""
+    def test_callback_flags_survive_the_subcommand_overlay(self, tmp_path, monkeypatch):
+        """--model before the subcommand outlives the subcommand's own data-root overlay."""
+        from lilbee.cli import apply_overrides
+        from lilbee.cli.app import chat_model_overridden
+
+        (tmp_path / "config.toml").write_text(
+            'chat_model = "ollama/persisted:latest"\ntop_k = 7\n', encoding="utf-8"
+        )
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        apply_overrides(model="ollama/flag:latest", temperature=0.5)
+        apply_overrides()
+        assert cfg.chat_model == "ollama/flag:latest"
+        assert cfg.temperature == 0.5
+        assert cfg.top_k == 7
+        assert chat_model_overridden()
+
+    def test_each_invocation_starts_with_no_overrides(self):
+        """The callback forgets flags from an earlier invocation in the same process."""
+        from lilbee.cli import apply_overrides
+        from lilbee.cli.app import chat_model_overridden
+
+        apply_overrides(model="ollama/flag:latest")
+        assert chat_model_overridden()
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert not chat_model_overridden()
+
+    @pytest.mark.parametrize(
+        "text", [None, "", "chunk_overlap = 11\n"], ids=["no-file", "empty-file", "partial-file"]
+    )
+    def test_data_dir_keeps_the_models_a_root_does_not_name(self, tmp_path, text):
+        """A root that names no model keeps the models; every other key takes its built-in."""
         from lilbee.cli import apply_overrides
 
-        cfg.chat_model = "ollama/kept-from-import:latest"
-        cfg.embedding_model = "ollama/kept-embed:latest"
-        # tmp_path has no config.toml.
+        cfg.chat_model = "ollama/from-import-root:latest"
+        cfg.embedding_model = "ollama/from-import-root-embed:latest"
+        cfg.vision_model = "ollama/from-import-root-vision:latest"
+        cfg.reranker_model = "org/Held-Rerank-GGUF/held-Q4.gguf"
+        cfg.chunk_size = 900
+        if text is not None:
+            (tmp_path / "config.toml").write_text(text, encoding="utf-8")
 
         apply_overrides(data_dir=tmp_path)
 
-        assert cfg.chat_model == "ollama/kept-from-import:latest"
-        assert cfg.embedding_model == "ollama/kept-embed:latest"
+        assert cfg.chat_model == "ollama/from-import-root:latest"
+        assert cfg.embedding_model == "ollama/from-import-root-embed:latest"
+        assert cfg.vision_model == "ollama/from-import-root-vision:latest"
+        assert cfg.reranker_model == "org/Held-Rerank-GGUF/held-Q4.gguf"
+        assert cfg.chunk_size == 512
+        assert (tmp_path / "config.toml").exists() is (text is not None)
 
-    def test_data_dir_overlay_covers_writable_scalar_fields(
-        self, tmp_path, overlay_reads_config_toml
-    ):
+    def test_a_flag_survives_the_second_overlay_of_a_root_without_config_toml(self, tmp_path):
+        """A subcommand's own apply_overrides call overlays again; the flag stays."""
+        from lilbee.cli import apply_overrides
+
+        apply_overrides(data_dir=tmp_path, temperature=0.5)
+        apply_overrides(data_dir=tmp_path)
+
+        assert cfg.temperature == 0.5
+        assert cfg.top_k == 12
+
+    def test_data_dir_overlay_covers_writable_scalar_fields(self, tmp_path):
         """Writable scalar fields (e.g. temperature, top_k) overlay too, not just models."""
         from lilbee.cli import apply_overrides
 
@@ -1351,9 +1510,7 @@ class TestApplyOverrides:
         assert cfg.temperature == 0.2
         assert cfg.top_k == 20
 
-    def test_use_global_overlays_global_config_toml(
-        self, tmp_path, monkeypatch, overlay_reads_config_toml
-    ):
+    def test_use_global_overlays_global_config_toml(self, tmp_path, monkeypatch):
         """--global must also re-read the global root's config.toml."""
         from lilbee.cli import apply_overrides
 
@@ -1369,9 +1526,7 @@ class TestApplyOverrides:
         assert cfg.data_root == fake_global
         assert cfg.chat_model == "ollama/from-global:latest"
 
-    def test_lilbee_data_env_overlays_config_toml(
-        self, tmp_path, monkeypatch, overlay_reads_config_toml
-    ):
+    def test_lilbee_data_env_overlays_config_toml(self, tmp_path, monkeypatch):
         """The LILBEE_DATA env-var path must also overlay its config.toml."""
         from lilbee.cli import apply_overrides
 
@@ -1412,7 +1567,7 @@ class TestApplyOverrides:
         apply_overrides(use_global=True)
         assert os.environ.get("LILBEE_DATA") == str(fake_global)
 
-    def test_data_dir_overlay_skips_unknown_keys(self, tmp_path, overlay_reads_config_toml):
+    def test_data_dir_overlay_skips_unknown_keys(self, tmp_path):
         """Stale or unrecognised keys in config.toml don't blow up startup."""
         from lilbee.cli import apply_overrides
 
@@ -1426,9 +1581,7 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/from-vault:latest"
         assert not hasattr(cfg, "totally_unknown_key")
 
-    def test_data_dir_overlay_logs_and_skips_invalid_value(
-        self, tmp_path, caplog, overlay_reads_config_toml
-    ):
+    def test_data_dir_overlay_logs_and_skips_invalid_value(self, tmp_path, caplog):
         """A malformed persisted value is logged and skipped, not raised."""
         from lilbee.cli import apply_overrides
 
@@ -1445,9 +1598,7 @@ class TestApplyOverrides:
             "top_k keeps its value"
         ]
 
-    def test_data_dir_overlay_handles_unreadable_config_toml(
-        self, tmp_path, monkeypatch, caplog, overlay_reads_config_toml
-    ):
+    def test_data_dir_overlay_handles_unreadable_config_toml(self, tmp_path, monkeypatch, caplog):
         """A config.toml that does not parse is logged and treated as 'no overlay'."""
         from lilbee.cli import apply_overrides
 
@@ -1644,7 +1795,7 @@ class TestARefusedVariableStopsEveryEntry:
     """A LILBEE_* value its setting refuses stops every entry."""
 
     def test_a_command_stops_over_a_valid_stored_value(
-        self, tmp_path, overlay_reads_config_toml, variable, value, stored, line
+        self, tmp_path, variable, value, stored, line
     ):
         (tmp_path / "config.toml").write_text(f"{stored}\n", encoding="utf-8")
         with mock.patch("lilbee.cli.commands.meta.render_status") as status:
@@ -2050,6 +2201,13 @@ class TestSearch:
         result = runner.invoke(app, ["search", "q", "--top-k", "500"])
         assert result.exit_code == 0
         assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
+
+    def test_search_omitted_top_k_uses_configured_value(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        cfg.top_k = 7
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 7
 
     def test_search_rejects_non_positive_top_k(self, mock_svc):
         for bad in ("0", "-3"):
@@ -2975,6 +3133,22 @@ class TestRebuildJson:
         data = json.loads(result.output.strip())
         assert data["command"] == "rebuild"
         assert "ingested" in data
+
+
+class TestRebuildFailedJson:
+    def test_rebuild_json_counts_the_failed_files_and_exits_nonzero(self, isolated_env):
+        failing = SyncResult(added=["a.txt"], failed=["b.txt"])
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=failing):
+            result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert (data["ingested"], data["failed"]) == (1, 1)
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_rebuild_json_counts_zero_failed_on_success(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 0
+        assert json.loads(result.output.strip())["failed"] == 0
 
 
 class TestAddJson:
@@ -7881,18 +8055,20 @@ class TestSyncCancelledExit:
             yield
 
         def _library() -> list[str]:
-            """Every path of the data root but the files of the sync lock itself."""
+            """Every path of the data root but the files of the sync lock and the sync turn."""
             paths = (
                 path.relative_to(cfg.data_root).as_posix() for path in cfg.data_root.rglob("*")
             )
             return sorted(
-                path for path in paths if not path.startswith(("sync.lock", ".filelock-"))
+                path
+                for path in paths
+                if not path.startswith(("sync.lock", "sync.turn.", ".filelock-"))
             )
 
         # The reset holds until this block ends; its own limit only ends a test that hangs.
         with reset_held_on_a_thread(cfg.data_root, ends_after_s=_HANG_LIMIT_S) as resetter:
             before = _library()
-            with read_takes_hooked(_ctrl_c_once):
+            with read_takes_hooked(_ctrl_c_once), ctrl_c_reaches_python():
                 result = runner.invoke(app, command)
             reset_still_held = resetter.is_alive()
 

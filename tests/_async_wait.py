@@ -21,6 +21,7 @@ from textual.widget import Widget
 if TYPE_CHECKING:
     from textual.app import App
     from textual.pilot import Pilot
+    from textual.widget import Widget
 
 WidgetT = TypeVar("WidgetT", bound=Widget)
 
@@ -77,3 +78,31 @@ async def wait_for_widget(
         f"{selector} never mounted"
     )
     return app.screen.query_one(selector, widget_type)
+
+
+async def press_widget(
+    pilot: Pilot,
+    widget: Widget,
+    key: str = "enter",
+    *,
+    max_pauses: int = 50,
+) -> None:
+    """Focus *widget* and press *key* on it.
+
+    ``Widget.focus()`` only queues a ``call_later`` that sets focus on a
+    later message-loop tick. ``Screen.set_focus()`` is the synchronous
+    primitive it defers to, and calling it directly assigns focus with no
+    such delay, but only once ``widget.focusable`` is true, which is not
+    guaranteed on the first poll right after a dialog mounts (its layout
+    may not have settled yet). The call is retried on every failed poll
+    for that reason, not to survive something else repeatedly taking
+    focus back.
+    """
+
+    def _focused() -> bool:
+        if not widget.has_focus and widget.focusable:
+            widget.screen.set_focus(widget)
+        return widget.has_focus
+
+    assert await wait_until(pilot, _focused, max_pauses=max_pauses), widget
+    await pilot.press(key)

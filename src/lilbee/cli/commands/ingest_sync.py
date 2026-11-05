@@ -8,7 +8,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import typer
 from rich.text import Text
@@ -16,6 +16,7 @@ from rich.text import Text
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
+    from lilbee.data.ingest import SyncResult
     from lilbee.data.store.types import RemoveResult
     from lilbee.runtime.progress import DetailedProgressCallback
 
@@ -38,7 +39,8 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
+from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN, MAX_FAILURES_SHOWN
+from lilbee.cli.commands.analyze import print_tip_if_shown
 from lilbee.cli.commands.crawl_login import crawl_login
 from lilbee.cli.helpers import (
     add_paths,
@@ -435,7 +437,8 @@ def run_sync_with_signal_cancel(
     retry_skipped: bool = False,
     prune_ignored: bool = False,
     on_progress: DetailedProgressCallback | None = None,
-) -> object:
+    started_by: str = "lilbee sync",
+) -> SyncResult:
     """Run ``sync`` under Ctrl+C; a sync it stops ends the command with exit status 130."""
     cancel_event = threading.Event()
     with _ctrl_c_stops(cancel_event, AddRollback()):
@@ -445,7 +448,26 @@ def run_sync_with_signal_cancel(
             retry_skipped=retry_skipped,
             prune_ignored=prune_ignored,
             on_progress=on_progress,
+            started_by=started_by,
         )
+
+
+def _wait_shown_on_stderr(chain: DetailedProgressCallback) -> DetailedProgressCallback:
+    """Wrap *chain* so the notice of a sync that waits for another prints to stderr.
+
+    stderr keeps stdout to the one JSON document in JSON mode.
+    """
+    from lilbee.runtime.console import PlainConsole
+    from lilbee.runtime.progress import EventType, ProgressEvent, SyncWaitEvent
+
+    err = PlainConsole(stderr=True)
+
+    def _callback(event_type: EventType, data: ProgressEvent) -> None:
+        if event_type == EventType.SYNC_WAIT and isinstance(data, SyncWaitEvent):
+            err.print(data.message, style=theme.MUTED, soft_wrap=True)
+        chain(event_type, data)
+
+    return _callback
 
 
 def _default_progress() -> DetailedProgressCallback:
@@ -469,10 +491,12 @@ def _run_sync(
     prune_ignored: bool = False,
     on_progress: DetailedProgressCallback | None = None,
     before_sync: Callable[[], None] | None = None,
-) -> object:
+    started_by: str,
+) -> SyncResult:
     """Run ``sync`` on its own event loop; it polls *cancel_event* between files and pages.
 
-    *before_sync* runs once the eager warm is off, so a store read in it starts no model.
+    *before_sync* runs once the eager warm is off, before the sync starts. *started_by*
+    names the command for the notice of a sync that waits for this one.
     """
     from lilbee.data.ingest import sync
 
@@ -484,7 +508,9 @@ def _run_sync(
     if before_sync is not None:
         before_sync()
 
-    callback = _cancellable_progress(cancel_event, on_progress or _default_progress())
+    callback = _cancellable_progress(
+        cancel_event, _wait_shown_on_stderr(on_progress or _default_progress())
+    )
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
@@ -496,6 +522,7 @@ def _run_sync(
                 cancel=cancel_event,
                 retry_skipped=retry_skipped,
                 prune_ignored=prune_ignored,
+                started_by=started_by,
             )
         )
     finally:
@@ -523,7 +550,7 @@ def sync_cmd(
 
     try:
         result = run_sync_with_signal_cancel(
-            retry_skipped=retry_skipped, prune_ignored=prune_ignored
+            retry_skipped=retry_skipped, prune_ignored=prune_ignored, started_by="lilbee sync"
         )
     except RuntimeError as exc:
         if cfg.json_mode:
@@ -535,6 +562,48 @@ def sync_cmd(
         json_output(sync_result_to_json(result))
         return
     console.print(result)
+    if _changed_content(result):
+        print_tip_if_shown(cfg.data_root)
+
+
+def _changed_content(result: SyncResult) -> bool:
+    """True when the sync added, updated or removed a file: the tip is about new content."""
+    return bool(result.added or result.updated or result.removed)
+
+
+def rebuild_failure_message(failed: list[str]) -> str:
+    """The failed-file report of a rebuild: how many, which, and what to do next."""
+    shown = ", ".join(failed[:MAX_FAILURES_SHOWN])
+    if len(failed) > MAX_FAILURES_SHOWN:
+        shown += f" and {len(failed) - MAX_FAILURES_SHOWN} more"
+    noun = "document" if len(failed) == 1 else "documents"
+    return (
+        f"{len(failed)} {noun} failed to ingest: {shown}. "
+        "They keep their earlier chunks. Fix the cause, then run `lilbee rebuild` again."
+    )
+
+
+def rebuild_or_raise() -> SyncResult:
+    """Re-ingest every document in place; raises RuntimeError on a refused rebuild."""
+    from lilbee.data.ingest import SyncResult
+
+    result = run_sync_with_signal_cancel(force_rebuild=True, started_by="lilbee rebuild")
+    # untyped return: run_sync_with_signal_cancel returns object to avoid a heavy top-level import
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
+    return result
+
+
+def run_rebuild() -> SyncResult:
+    """Re-ingest every document in place; a refused rebuild exits 1 with its reason."""
+    try:
+        return rebuild_or_raise()
+    except RuntimeError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+            raise SystemExit(1) from None
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+        raise SystemExit(1) from None
 
 
 def rebuild(
@@ -545,34 +614,31 @@ def rebuild(
     max_cpus: int | None = _max_cpus_option,
     processes: int | None = _processes_option,
 ) -> None:
-    """Nuke the DB and re-ingest everything from documents/."""
+    """Re-ingest everything from documents/ over the index; a failed file exits 1."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
     if max_cpus is not None:
         cfg.ingest_workers = max_cpus
     if processes is not None:
         cfg.ingest_processes = processes
-    from lilbee.data.ingest import SyncResult
-
-    try:
-        result = run_sync_with_signal_cancel(force_rebuild=True)
-    except RuntimeError as exc:
-        if cfg.json_mode:
-            json_output({"error": str(exc)})
-            raise SystemExit(1) from None
-        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
-        raise SystemExit(1) from None
-    if not isinstance(result, SyncResult):
-        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
+    result = run_rebuild()
     if cfg.json_mode:
-        json_output(
-            {
-                "command": "rebuild",
-                "ingested": len(result.added),
-            }
-        )
-        return
-    console.print(f"Rebuilt: {len(result.added)} documents ingested")
+        payload: dict[str, Any] = {
+            "command": "rebuild",
+            "ingested": len(result.added),
+            "failed": len(result.failed),
+        }
+        if result.failed:
+            payload["error"] = rebuild_failure_message(result.failed)
+        json_output(payload)
+    else:
+        console.print(f"Rebuilt: {len(result.added)} documents ingested")
+        if result.failed:
+            print_prefixed(
+                console, "Error: ", rebuild_failure_message(result.failed), style=theme.ERROR
+            )
+    if result.failed:
+        raise SystemExit(1)
 
 
 def index(
@@ -723,13 +789,18 @@ def _register_and_sync(
 ) -> dict | None:
     """Register the files and sync; returns the JSON result, or None after human output."""
 
+    synced = False
+
     def _sync(registration: RegisterResult) -> object:
+        nonlocal synced
         rollback.absorbed_into = registration.absorbed_into
-
-        def _sync_starts() -> None:
-            rollback.registered(registration.revocable, cancel_event)
-
-        return _run_sync(cancel_event, before_sync=_sync_starts)
+        result = _run_sync(
+            cancel_event,
+            before_sync=lambda: rollback.registered(registration.revocable, cancel_event),
+            started_by="lilbee add",
+        )
+        synced = _changed_content(result)
+        return result
 
     if cfg.json_mode:
         return _add_json_mode(file_paths, crawled_paths, force=force, run_sync=_sync)
@@ -744,6 +815,9 @@ def _register_and_sync(
         )
     elif crawled_paths:
         console.print(_sync(RegisterResult()))
+    # After the result: a refused, cancelled or failed sync raises before this line.
+    if synced:
+        print_tip_if_shown(cfg.data_root)
     return None
 
 
@@ -767,6 +841,9 @@ def add(
 ) -> None:
     """Link files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    # Registration reads the store before the sync starts. The first services
+    # init must not warm a chat model that an add never uses.
+    cfg.worker_pool_eager_start = False
     _apply_ocr_overrides(ocr, ocr_timeout)
     try:
         typed_login = CrawlLogin(authorization, username, password, cookie)

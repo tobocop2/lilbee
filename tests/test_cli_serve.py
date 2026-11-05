@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from conftest import clean_env
 from lilbee.cli import app
+from lilbee.cli.launchers.server import _TERMINATE_GRACE_S
 from lilbee.core.config import cfg
 from lilbee.server.auth import server_json_path
 
@@ -20,6 +21,7 @@ runner = CliRunner()
 
 _SERVER_START_TIMEOUT_S = 120.0
 _SERVER_STOP_TIMEOUT_S = 60.0
+_OPEN_WAITING_LINE = "Waiting for another lilbee process to finish with the library"
 
 
 def _close_coro(coro, *_args, **_kwargs):
@@ -655,9 +657,160 @@ class TestServeExitStatus:
                     server.kill()
                     server.wait()
         stderr = (tmp_path / "err.txt").read_text(encoding="utf-8")
-        assert status == 128 + signal.SIGTERM
+        fault_log = tmp_path / "logs" / "server-fault.log"
+        faults = fault_log.read_text(encoding="utf-8") if fault_log.exists() else ""
+        # A native abort leaves its reason only here, so a failure prints both.
+        assert status == 128 + signal.SIGTERM, f"stderr:\n{stderr}\nfault log:\n{faults}"
         assert "Traceback" not in stderr
         assert "Application shutdown complete." in stderr
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+    def test_a_terminate_during_a_slow_open_exits_with_the_signal_status_in_time(self, tmp_path):
+        """The open waits on the write lock this test holds, so it outlives the exit bound."""
+        env = {
+            **clean_env(tmp_path),
+            "LILBEE_MODELS_DIR": str(tmp_path / "models"),
+            "LILBEE_NO_SPLASH": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        lancedb_dir = tmp_path / "data" / "lancedb"
+        lancedb_dir.mkdir(parents=True)
+        # An older lilbee's crawl file makes the open upgrade, under the write lock.
+        (tmp_path / "data" / "crawl_meta.json").write_text("{}", encoding="utf-8")
+        held = FileLock(lancedb_dir / ".lock")
+        held.acquire()
+        err_path = tmp_path / "err.txt"
+        try:
+            with (
+                (tmp_path / "out.txt").open("w+", encoding="utf-8") as out,
+                err_path.open("w+", encoding="utf-8") as err,
+            ):
+                server = subprocess.Popen(
+                    [sys.executable, "-m", "lilbee", "serve", "--port", "0"],
+                    env=env,
+                    stdout=out,
+                    stderr=err,
+                    stdin=subprocess.DEVNULL,
+                )
+                try:
+                    deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
+                    waiting = False
+                    while not waiting and server.poll() is None and time.monotonic() < deadline:
+                        time.sleep(0.1)
+                        waiting = _OPEN_WAITING_LINE in err_path.read_text(encoding="utf-8")
+                    assert waiting, err_path.read_text(encoding="utf-8")
+                    server.send_signal(signal.SIGTERM)
+                    signalled = time.monotonic()
+                    status = server.wait(timeout=_SERVER_STOP_TIMEOUT_S)
+                    elapsed = time.monotonic() - signalled
+                finally:
+                    if server.poll() is None:
+                        server.kill()
+                        server.wait()
+        finally:
+            held.release()
+        stderr = err_path.read_text(encoding="utf-8")
+        assert status == 128 + signal.SIGTERM, stderr
+        assert elapsed < _TERMINATE_GRACE_S, stderr
+        # The exit runs no finalization, and its last lines still reach the log.
+        assert "The library is still opening after 5 s" in stderr
+        assert stderr.endswith(
+            "lilbee: the library is still opening; exiting now. The next start finishes it.\n"
+        ), stderr
+
+
+class TestServeExitsPastARunningOpen:
+    @pytest.mark.parametrize(
+        ("open_done", "expected_exits"),
+        [
+            pytest.param(False, [143], id="open-still-running"),
+            pytest.param(True, [], id="normal-stop"),
+        ],
+    )
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_ends_the_process_only_while_an_open_runs(
+        self,
+        mock_create_app,
+        mock_asyncio_run,
+        mock_setup_logging,
+        monkeypatch,
+        open_done,
+        expected_exits,
+    ):
+        """The exit comes after the locks are free; a normal stop keeps the normal exit."""
+        from lilbee.app import services as services_mod
+        from lilbee.cli.commands import servers as servers_mod
+        from lilbee.runtime.lock import acquire_server_lock
+
+        def run(coro):
+            coro.close()
+            return 143
+
+        exits: list[int] = []
+
+        def record_exit(status: int) -> None:
+            # A successor can take the lock by the time the process ends.
+            reacquired = acquire_server_lock(cfg.data_dir, timeout=0.05)
+            assert reacquired is not None
+            reacquired.release()
+            exits.append(status)
+
+        mock_create_app.return_value = "fake_app"
+        mock_asyncio_run.side_effect = run
+        monkeypatch.setattr(services_mod.os, "_exit", record_exit)
+        monkeypatch.setattr(services_mod, "wait_for_opens", lambda timeout: open_done)
+        monkeypatch.setattr(servers_mod, "exit_if_opens_remain", services_mod.exit_if_opens_remain)
+        result = runner.invoke(app, ["serve"])
+        assert exits == expected_exits
+        assert result.exit_code == 143
+
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.server.create_app")
+    def test_a_serve_test_returns_while_an_open_runs_without_its_own_patch(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, monkeypatch
+    ):
+        """The autouse guard keeps the real process exit out of a CliRunner serve test."""
+        from lilbee.app import services as services_mod
+
+        def run(coro):
+            coro.close()
+            return 0
+
+        def forbidden(status: int) -> None:
+            raise AssertionError("the test reached the real process exit")
+
+        mock_create_app.return_value = "fake_app"
+        mock_asyncio_run.side_effect = run
+        monkeypatch.setattr(services_mod.os, "_exit", forbidden)
+        monkeypatch.setattr(services_mod, "wait_for_opens", lambda timeout: False)
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0
+
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_runs_the_open_exit_when_the_loop_raises(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, monkeypatch, caplog
+    ):
+        """A raising run still ends the process while an open runs, and the error is logged."""
+        from lilbee.cli.commands import servers as servers_mod
+
+        def run(coro):
+            coro.close()
+            raise RuntimeError("the loop failed")
+
+        exits: list[int] = []
+        mock_create_app.return_value = "fake_app"
+        mock_asyncio_run.side_effect = run
+        monkeypatch.setattr(servers_mod, "exit_if_opens_remain", exits.append)
+        with caplog.at_level("ERROR"):
+            result = runner.invoke(app, ["serve"])
+        assert exits == [1]
+        assert isinstance(result.exception, RuntimeError)
+        assert "the loop failed" in caplog.text
 
 
 class TestServeHoldsLocksThroughTeardown:

@@ -180,6 +180,25 @@ _chars = st.one_of(
 _tokens = st.builds(_token, _chars, st.booleans())
 
 
+def _segment_of(tokens: st.SearchStrategy[_Token]) -> st.SearchStrategy[list[_Token]]:
+    """A path segment written from *tokens*, or one of the device names."""
+    return st.one_of(
+        st.just([]),
+        st.lists(tokens, min_size=1, max_size=5),
+        st.lists(tokens, min_size=1, max_size=40),
+        st.sampled_from(_DEVICE_SEGMENTS).map(lambda name: [_token(char, False) for char in name]),
+    ).filter(lambda tokens: "".join(token.char for token in tokens) not in _DOT_SEGMENTS)
+
+
+def _last_of(tokens: st.SearchStrategy[_Token]) -> st.SearchStrategy[tuple[_Token, ...]]:
+    """The last path segment: the default name, none, or a segment written from *tokens*."""
+    return st.one_of(
+        st.just(tuple(_token(char, False) for char in _LAST_SEGMENT)),
+        st.just(()),
+        _segment_of(tokens).map(tuple),
+    )
+
+
 @dataclass(frozen=True)
 class _Address:
     """An address: a host, segments, a last segment (empty for a trailing slash), a query."""
@@ -201,23 +220,12 @@ class _Address:
 
 
 def _addresses_of(tokens: st.SearchStrategy[_Token]) -> st.SearchStrategy[_Address]:
-    """Addresses whose path tokens come from *tokens*; the query always draws from every token."""
-    segment = st.one_of(
-        st.just([]),
-        st.lists(tokens, min_size=1, max_size=5),
-        st.lists(tokens, min_size=1, max_size=40),
-        st.sampled_from(_DEVICE_SEGMENTS).map(lambda name: [_token(char, False) for char in name]),
-    ).filter(lambda run: "".join(token.char for token in run) not in _DOT_SEGMENTS)
-    last = st.one_of(
-        st.just(tuple(_token(char, False) for char in _LAST_SEGMENT)),
-        st.just(()),
-        segment.map(tuple),
-    )
+    """Addresses whose path is written from *tokens*; the query takes any character."""
     return st.builds(
         _Address,
         st.sampled_from(sorted(_HOSTS)),
-        st.lists(segment.map(tuple), min_size=1, max_size=3).map(tuple),
-        last,
+        st.lists(_segment_of(tokens).map(tuple), min_size=1, max_size=3).map(tuple),
+        _last_of(tokens),
         st.one_of(
             st.none(),
             st.lists(st.builds(_query_token, _chars, st.booleans()), min_size=1, max_size=8).map(

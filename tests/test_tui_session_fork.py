@@ -144,6 +144,30 @@ async def test_a_fork_from_normal_mode_lands_in_an_empty_input_in_insert_mode(se
         assert screen._chat_input.has_focus
 
 
+async def test_the_palette_runs_fork_while_the_model_listing_is_still_running(sessions):
+    """A slow model listing, as on Windows with no local server, never hides /fork."""
+    source = _seed(sessions)
+    release = threading.Event()
+
+    def _slow_listing() -> list[str]:
+        release.wait(timeout=30)
+        return ["qwen:latest"]
+
+    app = LilbeeApp()
+    try:
+        with patch("lilbee.modelhub.models.list_installed_models", side_effect=_slow_listing):
+            async with app.run_test(size=(120, 40)) as pilot:
+                screen = await await_chat(app, pilot)
+                screen.resume_session(source)
+                await pilot.press("ctrl+p")
+                await pilot.pause()
+                await pilot.press(*"/fork", "enter")
+                assert await pump_until(pilot, lambda: isinstance(app.screen, ForkPicker))
+                assert not release.is_set()
+    finally:
+        release.set()
+
+
 async def test_the_latest_answer_forks_everything(sessions):
     source = _seed(sessions)
     sessions.set_summary(source, "notes")

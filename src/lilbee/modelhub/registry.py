@@ -476,6 +476,16 @@ class ModelRegistry:
         except (KeyError, ValueError):
             return False
 
+    def has_manifest(self, ref: str) -> bool:
+        """True when a manifest, not only a cached blob, records *ref*.
+
+        ``is_installed`` also answers True for a GGUF found in the HF cache,
+        which the model list does not show until a manifest exists.
+        """
+        if is_bare_hf_repo(ref):
+            return self.installed_ref_for_repo(ref) is not None
+        return self.get_manifest(ref) is not None
+
     def install(
         self,
         hf_repo: str,
@@ -763,9 +773,9 @@ def _shard_accounting(first_shard_path: Path) -> tuple[int | None, list[str]]:
 def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     """Write a registry manifest for a freshly downloaded GGUF.
 
-    A failed manifest write is logged, not raised, when the GGUF is still in the
-    HF cache (``resolve`` recovers from it); if it isn't, the download itself is
-    broken and the failure propagates so the caller reports it.
+    A failed manifest write raises ``RuntimeError`` with a plain message. The
+    model list reads manifests only, so a pull that reported success without one
+    would leave a model that is installed but not listed.
     """
     registry = ModelRegistry(cfg.models_dir)
     gguf_filename = _repo_relative_gguf_name(file_path)
@@ -782,10 +792,10 @@ def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     try:
         registry.install(entry.hf_repo, gguf_filename, file_path, manifest)
         log.info("Registered %s/%s in manifest", entry.hf_repo, gguf_filename)
-    except Exception:
+    except OSError as exc:
         ref = format_native_gguf_ref(entry.hf_repo, gguf_filename)
-        if not registry.is_installed(ref):
-            raise
-        log.warning(
-            "Manifest write failed for %s; recovered via the model cache", ref, exc_info=True
-        )
+        raise RuntimeError(
+            f"{ref} downloaded, but lilbee cannot save its record in "
+            f"{cfg.models_dir}: {exc}. Fix the folder permissions or free disk space, "
+            "then pull again."
+        ) from exc

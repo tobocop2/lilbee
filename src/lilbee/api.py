@@ -55,6 +55,9 @@ if TYPE_CHECKING:
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
 
+# What a sync of this API is called in the notice of a sync that waits for it.
+_SYNC_STARTER = "the lilbee Python API"
+
 
 class Lilbee:
     """Programmatic access to lilbee's retrieval pipeline.
@@ -142,7 +145,7 @@ class Lilbee:
         from lilbee.data.ingest import sync as _sync
 
         with config_scope(self._config), services_scope(self._services):
-            return asyncio.run(_sync(quiet=quiet))
+            return asyncio.run(_sync(quiet=quiet, started_by=_SYNC_STARTER))
 
     def search(
         self, query: str, *, top_k: int = 0, scope: SearchScope = SearchScope.BOTH
@@ -170,7 +173,7 @@ class Lilbee:
         with config_scope(self._config), services_scope(self._services):
             if not register_sources(resolved, force=True).reached_corpus:
                 return SyncResult()
-            return asyncio.run(_sync(quiet=True))
+            return asyncio.run(_sync(quiet=True, started_by=_SYNC_STARTER))
 
     def remove(self, name: str) -> None:
         """Remove a document from the index by source name (source bytes are kept).
@@ -220,7 +223,7 @@ class Lilbee:
         from lilbee.data.ingest import sync as _sync
 
         with config_scope(self._config), services_scope(self._services):
-            return asyncio.run(_sync(force_rebuild=True, quiet=True))
+            return asyncio.run(_sync(force_rebuild=True, quiet=True, started_by=_SYNC_STARTER))
 
     def remember(
         self,

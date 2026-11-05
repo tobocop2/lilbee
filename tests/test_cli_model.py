@@ -90,6 +90,7 @@ class _FakeManager:
     ) -> None:
         self._native = list(native or [])
         self._remote = list(remote or [])
+        self.cache_only: set[str] = set()
         self.pull_calls: list[tuple[str, ModelSource]] = []
         self.remove_calls: list[tuple[str, ModelSource | None]] = []
 
@@ -106,6 +107,9 @@ class _FakeManager:
         if source is ModelSource.NATIVE:
             return model in self._native
         return model in self._remote
+
+    def is_registered(self, model: str) -> bool:
+        return model in self._native and model not in self.cache_only
 
     def get_source(self, model: str) -> ModelSource | None:
         if model in self._native:
@@ -515,6 +519,14 @@ class TestPullModelData:
         assert isinstance(result, PullResult)
         assert result.status == PullStatus.ALREADY_INSTALLED
         assert fake_manager.pull_calls == []
+
+    def test_cache_only_model_is_pulled_again_not_reported_installed(
+        self, fake_manager, native_manifests
+    ):
+        fake_manager.cache_only.add(_CHAT_REF)
+        result = model_mod.pull_model_data(_CHAT_REF, ModelSource.NATIVE)
+        assert result.status == PullStatus.OK
+        assert fake_manager.pull_calls == [(_CHAT_REF, ModelSource.NATIVE)]
 
     def test_already_installed_vision_ensures_mmproj(
         self, fake_manager, native_manifests, monkeypatch

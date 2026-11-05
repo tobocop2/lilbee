@@ -313,7 +313,7 @@ class TestTuiCatalog:
                 CatalogScreen, "app", new_callable=mock.PropertyMock, return_value=fake_app
             ),
             mock.patch.object(CatalogScreen, "notify") as notify,
-            mock.patch("lilbee.cli.tui.screens.catalog.apply_active_model") as apply,
+            mock.patch("lilbee.cli.tui.screens.catalog.apply_model_pick") as apply,
         ):
             screen._select_frontier_row(_gemini_row(KeyStatus.INVALID_KEY))
         apply.assert_not_called()

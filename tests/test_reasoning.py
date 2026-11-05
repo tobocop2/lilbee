@@ -5,7 +5,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.model_defaults import ModelDefaults
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     PSEUDO_THINKING_TAGS,
@@ -273,30 +272,11 @@ class TestEffectiveReasoningCap:
     @pytest.fixture(autouse=True)
     def _isolated(self):
         snapshot_cap = cfg.max_reasoning_chars
-        snapshot_defaults = cfg.model_defaults
-        cfg.clear_model_defaults()
         yield
         cfg.max_reasoning_chars = snapshot_cap
-        cfg.apply_model_defaults(snapshot_defaults)
 
-    def test_uses_cfg_when_no_per_model_override(self):
+    def test_uses_cfg(self):
         cfg.max_reasoning_chars = 8000
-        assert effective_reasoning_cap() == 8000
-
-    def test_per_model_override_wins(self):
-        cfg.max_reasoning_chars = 8000
-        cfg.apply_model_defaults(ModelDefaults(max_reasoning_chars=20_000))
-        assert effective_reasoning_cap() == 20_000
-
-    def test_per_model_zero_means_unlimited_for_that_model(self):
-        """A per-model 0 is an explicit opt-out, not 'fall through to global'."""
-        cfg.max_reasoning_chars = 8000
-        cfg.apply_model_defaults(ModelDefaults(max_reasoning_chars=0))
-        assert effective_reasoning_cap() == 0
-
-    def test_no_override_field_falls_through(self):
-        cfg.max_reasoning_chars = 8000
-        cfg.apply_model_defaults(ModelDefaults(temperature=0.7))
         assert effective_reasoning_cap() == 8000
 
     def test_global_zero_means_unlimited(self):

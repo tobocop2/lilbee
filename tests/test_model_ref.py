@@ -7,7 +7,8 @@ import pytest
 from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.core.config import Config
 from lilbee.modelhub.model_manager.types import RemoteModel
-from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.base import ChosenSeed, ProviderError, ProviderErrorKind, aux_options
+from lilbee.providers.engine_params import chat_options_to_kwargs
 from lilbee.providers.model_ref import (
     format_remote_ref,
     is_native_gguf_ref,
@@ -461,6 +462,36 @@ class TestTranslateOptions:
             {"temperature": 0.5, "response_format": reply_format, option: value}, ref
         )
         assert result == {"temperature": 0.5, "response_format": reply_format}
+
+    def test_anthropic_drops_the_seed_of_an_internal_call(self) -> None:
+        """A search seeds its LLM steps; a provider with no seed still answers them."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        assert translate_options(aux_options(64, seed=ChosenSeed(42)), ref) == {"max_tokens": 64}
+
+    @pytest.mark.parametrize(
+        "model", ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o", "ollama/qwen3"], ids=str
+    )
+    def test_only_llama_server_gets_the_prompt_cache_field(self, model: str) -> None:
+        options = aux_options(64, cache_prompt=False)
+        assert "cache_prompt" not in translate_options(options, parse_model_ref(model))
+
+    def test_llama_server_gets_the_prompt_cache_field(self) -> None:
+        kwargs = chat_options_to_kwargs(aux_options(64, cache_prompt=False))
+        assert kwargs["cache_prompt"] is False
+
+    @pytest.mark.parametrize("think", [True, False], ids=str)
+    def test_anthropic_refuses_the_seed_of_a_user_chat_that_sets_think(self, think: bool) -> None:
+        """A user seed beside a think setting is still the user's: the refusal names it."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        with pytest.raises(ProviderError) as caught:
+            translate_options({"seed": 7, "think": think}, ref)
+        assert "seed" in str(caught.value)
+
+    def test_anthropic_refuses_a_user_seed_on_an_internal_call(self) -> None:
+        """An internal call that carries the user's own seed gets the refusal too."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        with pytest.raises(ProviderError):
+            translate_options(aux_options(64, seed=7), ref)
 
     def test_anthropic_empty_response_format_counts_as_set(self) -> None:
         """A present response_format key is enough, even when its value is empty."""

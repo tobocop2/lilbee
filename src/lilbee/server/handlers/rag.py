@@ -122,15 +122,19 @@ def _classify_stream_error(exc: BaseException) -> tuple[SseErrorCodeValue | None
 
 
 async def search(
-    q: str, top_k: int = 5, chunk_type: ChunkType | None = None
+    q: str, top_k: int | None = None, chunk_type: ChunkType | None = None
 ) -> list[DocumentResult]:
-    """Search and return grouped DocumentResults."""
+    """Search and return grouped DocumentResults.
+
+    An omitted ``top_k`` resolves to ``cfg.top_k``, read live at call time.
+    """
     if not q or not q.strip():
         raise ValueError("query must not be empty")
+    resolved_top_k = top_k if top_k is not None else cfg.top_k
     # search() blocks on retrieval; run it off the event loop so other admitted
     # requests stay responsive, matching the sibling ask() handler.
     results = await asyncio.to_thread(
-        get_services().searcher.search, q, top_k=top_k, chunk_type=chunk_type
+        get_services().searcher.search, q, top_k=resolved_top_k, chunk_type=chunk_type
     )
     return group(results)
 

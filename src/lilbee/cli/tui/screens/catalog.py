@@ -35,7 +35,7 @@ from lilbee.catalog.download import _BYTES_PER_GB, download_bytes
 from lilbee.catalog.models import estimate_min_ram_gb
 from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.app import LilbeeApp, apply_active_model
+from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.catalog_grouping import (
     GridSection,
     flatten_sections,
@@ -80,6 +80,7 @@ from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+from lilbee.cli.tui.widgets.model_pick import apply_model_pick
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
@@ -1994,14 +1995,28 @@ class CatalogScreen(Screen[None]):
         elif row.catalog_model:
             self._install_model(row.catalog_model)
         elif row.remote_model:
-            apply_active_model(self.app, _model_field_for_task(row.remote_model.task), row.ref)
-            self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
+            self._activate(
+                _model_field_for_task(row.remote_model.task),
+                row.ref,
+                msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name),
+            )
+
+    def _activate(self, field: str, ref: str, notice: str) -> None:
+        """Make *ref* the active model of *field*; *notice* shows once the swap has taken."""
+        apply_model_pick(
+            self,
+            key=field,
+            ref=ref,
+            on_done=lambda: self.notify(notice),
+            reload_worker=field == "embedding_model",
+        )
 
     def _select_frontier_row(self, row: FrontierCatalogRow) -> None:
         """Activate a cloud model, or jump to settings when its key is missing or rejected."""
         if row.key_status == KeyStatus.READY:
-            apply_active_model(self.app, _model_field_for_task(row.task), row.ref)
-            self.notify(
+            self._activate(
+                _model_field_for_task(row.task),
+                row.ref,
                 msg.CATALOG_USING_FRONTIER.format(name=row.name, provider=row.provider),
             )
             return
@@ -2212,9 +2227,12 @@ class CatalogScreen(Screen[None]):
         field = _model_field_for_task(model.task)
         if getattr(cfg, field):
             return
-        apply_active_model(self.app, field, model.ref)
-        if field == "chat_model":
-            self.app.notify(msg.CHAT_READY_TOAST)
+
+        def _announce() -> None:
+            if field == "chat_model":
+                self.app.notify(msg.CHAT_READY_TOAST)
+
+        apply_model_pick(self, key=field, ref=model.ref, on_done=_announce, reload_worker=False)
 
     def action_go_back(self) -> None:
         # An open filter collapses to hidden (restoring grid/list focus);
@@ -2223,6 +2241,10 @@ class CatalogScreen(Screen[None]):
             self._search_input.value = ""
             self._search_input.add_class(_HIDDEN_CLASS)
             self._focus_list_or_grid()
+            return
+        # A catalog a model field pushed returns to the screen that opened it.
+        if not self.app.is_screen_installed(self):
+            self.dismiss()
             return
         self.app.go_back()
 

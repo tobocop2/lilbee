@@ -11,6 +11,7 @@ Run with:
 from __future__ import annotations
 
 import threading
+import time
 from unittest import mock
 
 import pytest
@@ -41,6 +42,24 @@ def _join_task_workers() -> None:
     for thread in threading.enumerate():
         if thread.name.startswith("task-"):
             thread.join(timeout=_TASK_WORKER_JOIN_S)
+
+
+# A sync of one small file takes seconds; the budget covers a slow shared
+# runner. It stays under the 180 s integration cap in conftest.py, so the
+# wait ends first and the test fails on its own assertion, not on the timeout.
+_SYNC_WAIT_S = 150.0
+
+
+async def _wait_sync_done(pilot, app, timeout_s: float = _SYNC_WAIT_S) -> bool:
+    """Pump frames until the chat screen's sync ends or the wall clock runs out.
+
+    Returns True when the sync finished. The limit is wall-clock time, so a
+    slow runner cannot turn a fixed pause count into a false failure.
+    """
+    deadline = time.monotonic() + timeout_s
+    while app.screen._sync_work_live() and time.monotonic() < deadline:
+        await pilot.pause(0.05)
+    return not app.screen._sync_work_live()
 
 
 class _IntegrationChatApp(LilbeeAppHost):
@@ -173,12 +192,9 @@ class TestAddAndSync:
             await pilot.pause()
             await _submit_slash(pilot, app, f"/add {test_file}")
 
-            for _ in range(600):
-                await pilot.pause()
-                if not app.screen._sync_active:
-                    break
-
-            assert not app.screen._sync_active, "Sync did not complete in time"
+            assert await _wait_sync_done(pilot, app), (
+                f"Sync did not complete within {_SYNC_WAIT_S:.0f} s"
+            )
 
             results = get_services().searcher.search("quantum entanglement teleportation")
             sources = [r.source for r in results]
@@ -336,10 +352,9 @@ class TestCrawlAndSync:
                 await pilot.pause()
                 await _submit_slash(pilot, app, f"/add {url}")
 
-                for _ in range(600):
-                    await pilot.pause()
-                    if not app.screen._sync_active:
-                        break
+                assert await _wait_sync_done(pilot, app), (
+                    f"Sync did not complete within {_SYNC_WAIT_S:.0f} s"
+                )
 
             results = get_services().searcher.search("bioluminescent jellyfish luciferin")
             assert len(results) > 0, "Expected crawled content to be searchable"

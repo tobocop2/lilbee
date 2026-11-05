@@ -12,7 +12,9 @@ from functools import lru_cache
 from importlib.util import find_spec
 from pathlib import Path
 
+from lilbee.app.profiles import ProfileEffect, ProfileStatus, RebuildReason
 from lilbee.core.config import cfg
+from lilbee.core.profile_files import NameProblem, ProfileFolder
 from lilbee.data.types import SyncResult
 from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
 from lilbee.runtime.progress import OcrBackendUsed
@@ -55,6 +57,14 @@ MODEL_FALLBACK_FAILED = (
     "{label} model {original!r} is unavailable ({reason}) and the fallback {effective!r} was "
     "rejected; keeping {original!r}. Pick a working {label} model in settings."
 )
+MODEL_ENV_PIN_UNUSABLE = (
+    "{label} model {original!r} is unavailable ({reason}). {env_var} sets it, so lilbee keeps it. "
+    "Unset {env_var} or point it at an installed model."
+)
+MODEL_CLI_PIN_UNUSABLE = (
+    "{label} model {original!r} is unavailable ({reason}). The --model flag sets it, so lilbee "
+    "keeps it. Pass a different model to --model or drop the flag."
+)
 MODEL_UNUSABLE_NO_FALLBACK = (
     "{label} model {original!r} is unavailable ({reason}) and nothing is installed to fall back "
     "to. Pick one from the catalog."
@@ -71,6 +81,10 @@ SETUP_CHROMIUM_DETAIL = "chromium: {done}/{total} MB"
 SETUP_CHROMIUM_DETAIL_UNKNOWN = "chromium: {done} MB"
 SETUP_CHROMIUM_CLI_PROGRESS = "  chromium: {pct}%"
 SYNC_FAILED_FILES = "Sync failed for {files}"
+SYNC_FAILED_TOAST = (
+    "Sync failed for {count} file(s). Press Esc to leave the prompt. "
+    "Then press t to see the reason. Fix it, then press S to sync again."
+)
 SYNC_SKIPPED_NO_VISION = (
     "Skipped (no text extracted): {files}. "
     "Configure a vision_model in Settings to OCR scanned PDFs."
@@ -82,13 +96,17 @@ SYNC_SKIPPED_OCR_OFF = (
 # Picker labels for settings whose raw values read poorly, keyed by setting then value.
 SETTING_CHOICE_LABELS: dict[str, dict[str, str]] = {
     "ocr": {"auto": "Read", "all": "Read every page", "off": "Skip"},
+    "flash_attention": {"True": "On", "False": "Off"},
 }
+# The blank row of a Select for a setting that can also be unset.
+SETTING_AUTO_LABEL = "Auto"
 SYNC_SKIPPED_VISION_FAILED = (
     "Skipped (vision OCR returned no text): {files}. See {log_path} for the underlying error."
 )
 SYNC_HELD_OUT = (
     '{count} file(s) stay held out of the index. Run "Retry skipped documents" to index them again.'
 )
+SYNC_UNREADABLE_FOLDER = "Could not open folder: {folder}"
 STATUS_HELD_OUT_TITLE = "Held out of the index"
 STATUS_HELD_OUT_EMPTY = "No files are held out."
 STATUS_HELD_OUT_MORE = "{count} more held out"
@@ -155,10 +173,13 @@ TASK_NAME_WIKI_WIPE = "Delete wiki"
 TASK_NAME_REBUILD = "Rebuild index"
 TASK_NAME_IMPORT = "Import {file}"
 TASK_NAME_EXPORT = "Export {file}"
+TASK_NAME_ANALYZE = "Analyze {folder}"
 IMPORT_STATUS_LOADING = "Loading dataset..."
 EXPORT_STATUS_RUNNING = "Exporting..."
 CMD_SET_UNKNOWN = "Unknown setting: {key}"
 CMD_SET_SUCCESS = "{key} = {value}"
+CMD_SET_AUTO = "auto"
+CMD_SET_EMPTY_LIST = "(empty list)"
 # Stands in for a credential's value wherever one would otherwise be echoed.
 MASKED_VALUE = "************"
 CMD_SET_INVALID = "Invalid value for {key}: {error}"
@@ -174,6 +195,9 @@ MODEL_SWAP_APPLYING = "Switching model, loading…"
 MODEL_SWAP_QUEUED = "Switching to {name} when this answer finishes"
 MODEL_SWAP_DONE = "Now using {name}"
 MODEL_SWAP_FAILED = "Could not switch model: {error}"
+MODEL_SWAP_STUCK = (
+    "Could not switch model: {error}. The old model could not be restored, so {name} is in use."
+)
 # Chat-input placeholder while a swap holds the input disabled: names the target
 # model and says the input is waiting on it, so the disabled box is never a
 # silent dead end. The warm progress itself shows in the task-bar footer.
@@ -303,6 +327,10 @@ SYNC_STATUS_FAILED = "Sync failed"
 SYNC_FILE_PROGRESS = "Syncing [{current}/{total}]: {file}"
 SYNC_TESSERACT_OCR = "Running Tesseract OCR on {file} ({total} pages in the file)"
 SYNC_ALREADY_ACTIVE = "Sync in progress, please wait"
+SYNC_CANCELLING = "A cancelled {kind} is still stopping, please wait"
+TASK_STATUS_CANCELLING = "cancelling"
+TASKBAR_CANCELLING = "Cancelling"
+REBUILD_OWED = "The rebuild starts when the current work ends"
 EMBEDDING_SET = "Embedding model: {name}"
 CONFIRM_YES_LABEL = "Yes (y)"
 CONFIRM_NO_LABEL = "No (n)"
@@ -435,15 +463,16 @@ CHAT_RENDERING = "Rendering: {label}"
 SETTINGS_READ_ONLY = "read-only"
 SETTINGS_INVALID_VALUE = "Invalid value: {error}"
 SETTINGS_RESET_TO_DEFAULT_TOOLTIP = "Reset to default"
+SETTINGS_SOURCE_USER_PILL = "set by you"
+SETTINGS_SOURCE_PROFILE_NAMED_PILL = "profile: {name}"
+SETTINGS_SOURCE_PROFILE_PILL = "profile"
+# The same word `lilbee settings list` prints for a value lilbee works out itself.
+SETTINGS_SOURCE_AUTO_PILL = "auto"
 
-EMBED_SWAP_CONFIRM_TITLE = "Switch embedding model?"
-EMBED_SWAP_CONFIRM_MESSAGE = (
-    "The vector store was built under a different embedder. "
-    "Switching invalidates it: search and ingest are disabled until you rebuild. "
-    "Run `lilbee rebuild` afterward (or press S to sync) to re-embed every document. "
-    "Continue?"
+EMBED_SWAP_REBUILD_MESSAGE = (
+    "This embedding model needs a rebuild of the index. "
+    "Switch now and rebuild? If you answer No, nothing changes."
 )
-EMBED_SWAP_CANCELLED = "Embedding model swap cancelled"
 MODEL_ASSIGN_REJECTED = "Model not set: {error}"
 
 EMBED_ADOPT_CONFIRM_TITLE = "Use this index's embedder?"
@@ -464,13 +493,16 @@ EMBED_ADOPT_CANCELLED = "Kept the current embedder."
 SETTINGS_RESET_ALL_LABEL = "Reset all defaults"
 SETTINGS_RESET_ALL_CONFIRM_TITLE = "Reset all settings?"
 SETTINGS_RESET_ALL_CONFIRM_MESSAGE = (
-    "Every writable setting will be restored to its built-in default. "
+    "Your value for every writable setting is removed, so each one falls back to its default. "
     "Readonly fields (like installed models) are not affected."
 )
 SETTINGS_RESET_ALL_SUCCESS = "All settings reset to defaults"
 SETTINGS_LIST_EDITOR_TITLE = "{key}  ({count} lines)"
 SETTINGS_LIST_EDITOR_INVALID_REGEX = "Invalid regex on line {n}: {error}"
 SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS = "Restore defaults"
+SETTINGS_ADVANCED_TITLE = "Advanced ({count})"
+SETTINGS_ADVANCED_TITLE_PROFILE = "Advanced ({count}, {profile_set} set by profile)"
+SETTINGS_LEAVE_FIELD = "Leave field"
 WIKI_EMPTY_STATE = "No wiki pages found"
 # spaCy installs its NER model as an importable top-level package.
 _SPACY_MODEL_PACKAGE = "en_core_web_sm"
@@ -741,6 +773,7 @@ TASKBAR_WARM_LOADING = "loading into VRAM"
 
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"
+TASK_CENTER_COUNTS_CANCELLING = "  ·  {cancelling} cancelling"
 TASK_CENTER_HINT = "r refresh   c cancel   C clear done   q back   j/k navigate"
 TASK_CENTER_EMPTY_HEADLINE = "✓ all caught up"
 TASK_CENTER_EMPTY_DETAIL = "no background tasks"
@@ -758,6 +791,7 @@ TASKBAR_SYNC_PENDING_PLURAL_INPUT = "[b]{count} docs to sync[/b] · Esc then S t
 SYNC_CANCELLED_RESUME = "Sync cancelled. Press S to resume."
 SYNC_EMBEDDING = "Embedding {file}"
 SYNC_FILE_DONE = "Done: {file}"
+SYNC_WAITING = "Waiting for the running sync"
 ADD_SYNCING_FILE = "Syncing {file}..."
 ADD_PAGE_PROGRESS = "{status} page {current} of {total}"
 ADD_FILE_DONE = "Done {file}"
@@ -815,3 +849,241 @@ MODEL_BAR_NOT_INSTALLED_TOOLTIP = (
 )
 MODEL_PICKER_TURN_OFF = "Turn off this model"
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
+
+# Settings Profile tab, the profile line, and the Apply and Save-as dialogs
+PROFILE_TAB_LABEL = "Profile"
+PROFILE_LINE_LABEL = PROFILE_TAB_LABEL
+PROFILE_LINE_COUNT_ONE = "1 value set by you"
+PROFILE_LINE_COUNT = "{count} values set by you"
+PROFILE_TAB_TITLE = "profile"
+PROFILE_TAB_HELP = (
+    "Settings for ingest, OCR, chunking and search. Models, hardware and API keys stay as they are."
+)
+PROFILE_TESTED_ON = "Tested on: {text}"
+PROFILE_CHANGES_TITLE = "Your changes"
+PROFILE_CHANGES_HELP = "These values override {name} in this project."
+PROFILE_CHANGES_NONE = "No values of yours override {name}."
+PROFILE_COL_SETTING = "Setting"
+PROFILE_COL_YOURS = "Your value"
+PROFILE_COL_PROFILE = "Profile value"
+PROFILE_COL_NOW = "Now"
+PROFILE_COL_AFTER = "After"
+PROFILE_COL_COST = "Cost"
+PROFILE_VALUE_ON = "on"
+PROFILE_VALUE_OFF = "off"
+PROFILE_VALUE_NONE = "none"
+PROFILE_ACTION_UPDATE = "Update {name}"
+PROFILE_ACTION_SAVE_AS = "Save as new profile"
+PROFILE_ACTION_DISCARD = "Discard my changes"
+PROFILE_ACTION_REAPPLY = "Re-apply {name}"
+PROFILE_APPLY_TITLE = "Switch to {name}?"
+PROFILE_REAPPLY_TITLE = "Re-apply {name}?"
+PROFILE_APPLY_CHANGES = "Changes"
+PROFILE_APPLY_KEEPS = "Keeps your values"
+PROFILE_APPLY_UNTOUCHED = "Models, hardware and API keys stay as they are."
+PROFILE_APPLY_NOTHING = "Nothing changes; lilbee records the profile's name."
+PROFILE_APPLY_REINDEX_ONE = "One change rebuilds the index of {files} files."
+PROFILE_APPLY_REINDEX_MANY = "{count} changes rebuild the index of {files} files."
+PROFILE_APPLY_SETS_REINDEX = "A rebuild applies the profile's settings that change the index."
+PROFILE_APPLY_HELD_OUT = "A rebuild retries the files that lilbee holds out."
+PROFILE_APPLY_REINDEX_LABEL = "Apply and reindex"
+PROFILE_APPLY_LABEL = "Apply"
+PROFILE_CANCEL_LABEL = "Cancel"
+PROFILE_APPLIED = "Switched to {name}."
+PROFILE_SAVE_TITLE = "Save as a new profile"
+PROFILE_SAVE_PLACEHOLDER = "Profile name"
+PROFILE_SAVE_TO = "Save to"
+PROFILE_SAVE_GLOBAL = "All my projects (global folder)"
+PROFILE_SAVE_PROJECT = "This project"
+PROFILE_SAVE_EXPLAIN_NONE = "The new profile holds {name}'s values. This project switches to it."
+PROFILE_SAVE_EXPLAIN_ONE = (
+    "The new profile holds {name}'s values and your 1 change. "
+    "This project switches to it, and your change stops showing as yours."
+)
+PROFILE_SAVE_EXPLAIN = (
+    "The new profile holds {name}'s values and your {count} changes. "
+    "This project switches to it, and your changes stop showing as yours."
+)
+PROFILE_SAVE_LABEL = "Save"
+PROFILE_SAVED = "Saved {name} to {path}."
+PROFILE_UPDATED = "Updated {name}."
+PROFILE_DISCARDED = "Your values are gone; {name}'s values show through."
+PROFILE_ALL_TITLE = "All profiles"
+PROFILE_ALL_HELP = "Apply, duplicate, rename, delete, export or import any profile."
+PROFILE_MANAGE_LABEL = "Manage profiles"
+PROFILE_LIBRARY_TITLE = "Profiles"
+PROFILE_LIBRARY_ACTIVE = "active"
+PROFILE_LIBRARY_SHADOWED = "shadowed"
+PROFILE_LIBRARY_BROKEN = "cannot load: {reason}"
+PROFILE_LIBRARY_SHADOWED_NOTE = "Hidden by the {folder} profile with the same name."
+PROFILE_LIBRARY_CHANGES = "Applying it changes"
+PROFILE_LIBRARY_NO_CHANGES = "Applying it changes nothing."
+PROFILE_LIBRARY_UNREACHABLE = (
+    "The name {name} picks another file, so lilbee cannot act on the {folder} one. "
+    "Rename or remove it in its folder."
+)
+PROFILE_KEY_APPLY = PROFILE_APPLY_LABEL
+PROFILE_KEY_DUPLICATE = "Duplicate"
+PROFILE_KEY_RENAME = "Rename"
+PROFILE_KEY_DELETE = "Delete"
+PROFILE_KEY_EXPORT = "Export"
+PROFILE_KEY_IMPORT = "Import"
+PROFILE_KEY_DUPLICATE_SHORT = "Dup"
+PROFILE_KEY_RENAME_SHORT = "Ren"
+PROFILE_KEY_DELETE_SHORT = "Del"
+PROFILE_KEY_EXPORT_SHORT = "Exp"
+PROFILE_KEY_IMPORT_SHORT = "Imp"
+PROFILE_KEY_CLOSE = "Close"
+PROFILE_DUPLICATE_TITLE = "Duplicate {name}"
+PROFILE_DUPLICATE_EXPLAIN = "The copy keeps {name}'s values, description and credit."
+PROFILE_DUPLICATE_INITIAL = "{name} copy"
+PROFILE_SCAN_FAILED = "Could not read the profiles: {reason}"
+PROFILE_RENAME_TITLE = "Rename {name}"
+PROFILE_RENAME_EXPLAIN = "The file stays in its folder. This project follows the new name."
+PROFILE_RENAMED = "Renamed {old} to {name}."
+PROFILE_DELETE_TITLE = "Delete {name}?"
+PROFILE_DELETE_MESSAGE = "This removes {path}. Projects that use it keep their recorded copy."
+PROFILE_DELETED = "Deleted {path}."
+PROFILE_PATH_PLACEHOLDER = "Path to a file or a folder"
+PROFILE_PATH_EMPTY = "Type a path."
+PROFILE_EXPORT_TITLE = "Export {name}"
+PROFILE_EXPORT_EXPLAIN = "Writes a file anyone can import. Give a folder or a file path."
+PROFILE_EXPORT_LABEL = PROFILE_KEY_EXPORT
+PROFILE_EXPORTED = "Exported {name} to {path}."
+PROFILE_IMPORT_TITLE = "Import a profile"
+PROFILE_IMPORT_EXPLAIN = "Checks a profile file and copies it into a profile folder."
+PROFILE_IMPORT_LABEL = PROFILE_KEY_IMPORT
+PROFILE_IMPORTED = "Imported {name} to {path}."
+SETTINGS_REINDEX_MESSAGE = (
+    "The index was built with values you changed. Rebuild it so search uses the new values."
+)
+
+PROFILE_EFFECT_TEXT: dict[ProfileEffect, str] = {
+    ProfileEffect.REINDEX: "reindex",
+    ProfileEffect.NEW_FILES_ONLY: "new files only",
+    ProfileEffect.NOW: "",
+}
+PROFILE_FOLDER_TEXT: dict[ProfileFolder, str] = {
+    ProfileFolder.PROJECT: "Saved in this project.",
+    ProfileFolder.GLOBAL: "Saved for all projects.",
+    ProfileFolder.BUILTIN: "A built-in profile that ships with lilbee.",
+}
+PROFILE_FOLDER_TAG: dict[ProfileFolder, str] = {
+    ProfileFolder.PROJECT: "project",
+    ProfileFolder.GLOBAL: "global",
+    ProfileFolder.BUILTIN: "built-in",
+}
+PROFILE_SAVE_FOLDER_TEXT: dict[ProfileFolder, str] = {
+    ProfileFolder.GLOBAL: PROFILE_SAVE_GLOBAL,
+    ProfileFolder.PROJECT: PROFILE_SAVE_PROJECT,
+}
+PROFILE_STATUS_PILL: dict[ProfileStatus, str] = {
+    ProfileStatus.CURRENT: "",
+    ProfileStatus.CHANGED: "file changed",
+    ProfileStatus.MISSING: "file missing",
+    ProfileStatus.BROKEN: "file broken",
+}
+PROFILE_NAME_PROBLEM_TEXT: dict[NameProblem, str] = {
+    NameProblem.EMPTY: "Type a name for the profile.",
+    NameProblem.INVALID: (
+        "Use 1 to 40 ASCII letters, digits, spaces, hyphens, underscores, parentheses."
+    ),
+    NameProblem.RESERVED: "A built-in profile already has this name.",
+    NameProblem.RESERVED_WORD: "This name already names a lilbee page or a Windows device.",
+    NameProblem.TAKEN: "A profile in that folder already has this name.",
+}
+
+# /analyze, the analyze report, and the analyze tip on the /add hint
+ANALYZE_STATUS_FINDING = "Finding files..."
+ANALYZE_STATUS_READING = "Reading {done} of {total}: {file}"
+ANALYZE_NOT_A_FOLDER = "{path} is not a folder."
+ANALYZE_FAILED = "Analyze failed: {error}"
+ANALYZE_TIP_HIDDEN = "The analyze tip is hidden for this project."
+ANALYZE_DONE = "Analyze of {folder} finished. Type /analyze report to see it."
+ANALYZE_NO_REPORT = "No analyze report yet. Run /analyze first."
+ANALYZE_TITLE = "What's in {folder}"
+ANALYZE_YOUR_DOCUMENTS = "your documents"
+ANALYZE_READ = "Read {read} of {total} documents without OCR. No AI model runs."
+ANALYZE_READ_COUNTED = (
+    "Read {read} of {total} documents without OCR and counted {counted} code, image and "
+    "archive files. No AI model runs."
+)
+ANALYZE_SAMPLED = "The documents are sampled evenly; analyze_max_files is {cap}."
+ANALYZE_FOUND = "Found"
+ANALYZE_FACT_TYPES = "File types"
+ANALYZE_FACT_CODE = "Code"
+ANALYZE_FACT_SCANS = "Scanned pages"
+ANALYZE_FACT_TABLES = "Tables"
+ANALYZE_FACT_LANGUAGES = "Languages"
+ANALYZE_FACT_PDF_LENGTH = "Typical PDF length"
+ANALYZE_FACT_TEXT_LENGTH = "Typical length"
+ANALYZE_TYPE_COUNT = "{count} {kind}"
+ANALYZE_SHARE_OF_FILES = "{share:.0%} of files"
+ANALYZE_SHARE_OF_PAGES = "{share:.0%} of pages"
+ANALYZE_TABLES_VALUE = "in {tables} of {files} PDFs"
+ANALYZE_LANGUAGE_SHARE = "{name} {share:.0%}"
+ANALYZE_LANGUAGES_TEXT = "{languages} (text files)"
+ANALYZE_LANGUAGES_NONE = "none detected"
+ANALYZE_PAGES_VALUE = "{pages:g} pages"
+ANALYZE_CHARS_VALUE = "{chars:,.0f} characters"
+ANALYZE_FAILED_TITLE = "Could not read"
+ANALYZE_UNREADABLE_TITLE = "Could not open"
+ANALYZE_COL_FOLDER = "Folder"
+ANALYZE_COL_FILE = "File"
+ANALYZE_COL_REASON = "Reason"
+ANALYZE_COL_WHY = "Why"
+ANALYZE_WHY_BUILTIN = "{builtin} sets it"
+ANALYZE_RECOMMEND_TITLE = "Recommendation: {name}"
+ANALYZE_RECOMMEND_DERIVED = (
+    "{builtin}, with these changes. Apply saves it to your profiles and switches this "
+    "project to it."
+)
+ANALYZE_RECOMMEND_BUILTIN = "{builtin} fits these files. Apply switches this project to it."
+ANALYZE_PICKED = "Picked because {reason}."
+ANALYZE_NO_CHANGES = "Applying it changes nothing."
+ANALYZE_KEEPS = "Keeps your values of {keys}."
+ANALYZE_NOTES_TITLE = "Notes"
+ANALYZE_SAVE_LABEL = "Save only"
+ANALYZE_TIP_LABEL = "tip"
+ANALYZE_TIP = (
+    "This project uses the Default profile. Run /analyze on the same path first to pick "
+    "settings for it, or /analyze off to hide this tip."
+)
+
+
+def profile_save_explain(name: str, count: int) -> str:
+    """The Save-as note: what the new profile holds, worded for 0, 1 or many changes."""
+    if count == 0:
+        return PROFILE_SAVE_EXPLAIN_NONE.format(name=name)
+    if count == 1:
+        return PROFILE_SAVE_EXPLAIN_ONE.format(name=name)
+    return PROFILE_SAVE_EXPLAIN.format(name=name, count=count)
+
+
+def profile_count_text(count: int) -> str:
+    """The profile line's count of values set by you; empty when there are none."""
+    if count == 0:
+        return ""
+    return PROFILE_LINE_COUNT_ONE if count == 1 else PROFILE_LINE_COUNT.format(count=count)
+
+
+def profile_rebuild_reason_text(reason: RebuildReason, count: int, files: int) -> str:
+    """The Apply dialog's line on why it offers a rebuild; empty when there is nothing to say."""
+    if reason is RebuildReason.HELD_OUT:
+        return PROFILE_APPLY_HELD_OUT
+    if reason is RebuildReason.SETS_REINDEX:
+        return PROFILE_APPLY_SETS_REINDEX
+    return profile_reindex_text(count, files) if files else ""
+
+
+def settings_rebuild_text(reindex: bool, held_out: bool) -> str | None:
+    """The rebuild question on leaving Settings: one text for both reasons, None for neither."""
+    reasons = ((SETTINGS_REINDEX_MESSAGE, reindex), (PROFILE_APPLY_HELD_OUT, held_out))
+    return " ".join(text for text, applies in reasons if applies) or None
+
+
+def profile_reindex_text(count: int, files: int) -> str:
+    """The Apply dialog's summary of the changes that rebuild the index."""
+    if count == 1:
+        return PROFILE_APPLY_REINDEX_ONE.format(files=files)
+    return PROFILE_APPLY_REINDEX_MANY.format(count=count, files=files)

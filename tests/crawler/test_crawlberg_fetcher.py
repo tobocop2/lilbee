@@ -23,8 +23,16 @@ from lilbee.crawler.backends.crawlberg.fetcher import (
     CrawlbergFetcher,
 )
 from lilbee.crawler.backends.crawlberg.links import _queued_url
-from lilbee.crawler.bootstrap import ChromiumMissingError, CrawlEngineRefusedError
-from lilbee.crawler.messages import ROBOTS_REFUSED_MESSAGE, ROBOTS_UNREACHABLE_MESSAGE
+from lilbee.crawler.bootstrap import (
+    ChromiumMissingError,
+    CrawlEngineRefusedError,
+    CrawlerBrowserError,
+)
+from lilbee.crawler.messages import (
+    CHROMIUM_LIBRARY_MISSING_MESSAGE,
+    ROBOTS_REFUSED_MESSAGE,
+    ROBOTS_UNREACHABLE_MESSAGE,
+)
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
 from lilbee.crawler.url_filter import _BLOCKED_NETWORKS
 from tests._crawlberg_stub import (
@@ -724,6 +732,75 @@ class TestFetchSingle:
         assert fetched == FetchedPage(url=SEED, success=False, error=ROBOTS_REFUSED_MESSAGE)
         assert "robots.txt" in ROBOTS_REFUSED_MESSAGE
         assert "crawl_respect_robots_txt" in ROBOTS_REFUSED_MESSAGE
+
+    @pytest.mark.parametrize(
+        ("runner", "command"),
+        [
+            (
+                ["/opt/lilbee/driver/node", "/opt/lilbee/driver/package/cli.js"],
+                "/opt/lilbee/driver/node /opt/lilbee/driver/package/cli.js install-deps chromium",
+            ),
+            (
+                ["/Users/a b/venv/bin/python", "-m", "playwright"],
+                "'/Users/a b/venv/bin/python' -m playwright install-deps chromium",
+            ),
+        ],
+        ids=["bundled-driver", "python-module"],
+    )
+    async def test_a_missing_library_message_prints_the_command_of_the_install_runner(
+        self, monkeypatch, runner, command
+    ):
+        monkeypatch.setattr(
+            "lilbee.crawler.bootstrap._resolve_playwright_runner", lambda: (runner, {})
+        )
+        reason = "x: error while loading shared libraries: libnss3.so: cannot open"
+        with StubCrawlberg([error(SEED, reason), complete(0)]).installed():
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
+        expected = CHROMIUM_LIBRARY_MISSING_MESSAGE.format(
+            library="libnss3.so", command=command, reason=reason
+        )
+        assert fetched == FetchedPage(url=SEED, success=False, error=expected)
+        assert command in expected
+        assert "administrator" in expected
+
+    async def test_a_missing_library_with_no_install_runner_keeps_crawlbergs_text(
+        self, monkeypatch
+    ):
+        def no_runner():
+            raise CrawlerBrowserError("no playwright")
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap._resolve_playwright_runner", no_runner)
+        reason = "x: error while loading shared libraries: libnss3.so: cannot open"
+        with StubCrawlberg([error(SEED, reason), complete(0)]).installed():
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
+        assert fetched == FetchedPage(url=SEED, success=False, error=reason)
+
+    async def test_a_browser_that_cannot_start_for_a_missing_library_names_it_and_the_fix(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "lilbee.crawler.bootstrap._resolve_playwright_runner",
+            lambda: (["/opt/lilbee/node", "/opt/lilbee/cli.js"], {}),
+        )
+        # The text host-run-2 captured on a fresh Ubuntu container without Chromium's libraries.
+        reason = (
+            "browser: failed to open page after relaunch: browser: failed to launch Chrome: "
+            "Input/Output error while resolving websocket URL from browser process, stderr: "
+            'BrowserStderr("/root/pw/chromium_headless_shell-1228/chrome-headless-shell-linux64/'
+            "chrome-headless-shell: error while loading shared libraries: libglib-2.0.so.0: "
+            'cannot open shared object file: No such file or directory"'
+        )
+        with StubCrawlberg([error(SEED, reason), complete(0)]).installed():
+            fetched = await _http().fetch_single(SEED, timeout=3, concurrency=NO_PACING)
+        command = "/opt/lilbee/node /opt/lilbee/cli.js install-deps chromium"
+        expected = CHROMIUM_LIBRARY_MISSING_MESSAGE.format(
+            library="libglib-2.0.so.0", command=command, reason=reason
+        )
+        assert fetched == FetchedPage(url=SEED, success=False, error=expected)
+        assert expected.startswith("Chromium cannot start because the system library")
+        assert "libglib-2.0.so.0" in expected
+        assert command in expected
+        assert reason in expected
 
     async def test_a_seed_whose_robots_txt_cannot_be_read_says_why_with_crawlbergs_reason(self):
         script = [error(SEED, "robots_unreachable: robots.txt returned 503"), complete(0)]

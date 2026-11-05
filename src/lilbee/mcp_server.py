@@ -16,15 +16,26 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar, cast
 from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import Tool as MCPTool
+from pydantic import Field
 
+from lilbee.app import profiles
+from lilbee.app.analyze import (
+    AnalyzeRequest,
+    hide_tip,
+    run_analysis,
+    server_directory,
+    tip_state,
+)
+from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.memory import (
     MEMORY_DISABLED_HINT,
     forget,
@@ -46,6 +57,7 @@ from lilbee.app.services import (
     get_services,
     reset_services,
     reset_store,
+    set_config_refresh,
 )
 from lilbee.app.settings import (
     SettingInfo,
@@ -60,6 +72,7 @@ from lilbee.app.settings import (
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.core.profile_files import ProfileFolder, ProfileStore, ProfileValidation
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import (
@@ -116,6 +129,8 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
 log = logging.getLogger(__name__)
+# What a sync of this server is called in the notice of a sync that waits for it.
+_SYNC_STARTER = "lilbee mcp"
 
 _INSTRUCTIONS = (
     "Local search engine over the user's files, code, and crawled pages. "
@@ -235,11 +250,17 @@ def _tool_if(when: Callable[[], bool]) -> Callable[[_F], _F]:
 # one over ``settings_set`` persists it, but the tool list only changes on the
 # next connection: MCP sends no ``tools/list_changed`` from here. The settings
 # reference documents that, and generates the list from this set.
-TOOL_GATE_SETTINGS: frozenset[str] = frozenset({"wiki", "memory_enabled", "mcp_sessions_enabled"})
+TOOL_GATE_SETTINGS: frozenset[str] = frozenset(
+    {"wiki", "memory_enabled", "mcp_sessions_enabled", "mcp_profiles_enabled"}
+)
 
 
 def _wiki_enabled() -> bool:
     return cfg.wiki
+
+
+def _profiles_enabled() -> bool:
+    return cfg.mcp_profiles_enabled
 
 
 def _error(msg: str) -> dict[str, Any]:
@@ -379,6 +400,7 @@ async def sync(
                 retry_skipped=retry_skipped,
                 prune_ignored=prune_ignored,
                 cancel=cancel,
+                started_by=_SYNC_STARTER,
             )
         except LIBRARY_REFUSALS as exc:
             return _error(str(exc))
@@ -395,7 +417,7 @@ async def _sync_after_add(
     if not reached_corpus:
         return None
     with temporary_ocr_config(ocr, ocr_timeout), _cancel_token() as cancel:
-        return (await run_sync(quiet=True, cancel=cancel)).model_dump()
+        return (await run_sync(quiet=True, cancel=cancel, started_by=_SYNC_STARTER)).model_dump()
 
 
 async def _crawl_add_urls(
@@ -821,7 +843,7 @@ def export_dataset(output: str, fmt: str = "", source: str = "") -> dict[str, An
 
     try:
         summary = export_to_path(Path(output), fmt, source or None, cancel=_caller_cancelled())
-    except DatasetError as exc:
+    except (DatasetError, OSError) as exc:  # OSError: output path unwritable or library unreadable
         return _error(str(exc))
     return summary.model_dump()
 
@@ -1112,12 +1134,14 @@ def _setting_info_to_dict(info: SettingInfo) -> dict[str, Any]:
         "help": info.help_text,
         "choices": list(info.choices) if info.choices else None,
         "reindex_required": info.reindex_required,
+        "source": info.source.value,
+        "advanced": info.advanced,
     }
 
 
 def _json_safe(value: Any) -> Any:
     """Coerce Path / frozenset / tuple to JSON-friendly primitives."""
-    if isinstance(value, str | int | float | bool | list | type(None)):
+    if isinstance(value, str | int | float | bool | list | dict | type(None)):
         return value
     return str(value)
 
@@ -1146,7 +1170,7 @@ def settings_get(key: str) -> dict[str, Any]:
 
     try:
         info = get_setting(key)
-    except KeyError as exc:
+    except (KeyError, ValueError) as exc:
         return _error(str(exc))
     return {"command": "settings_get", "setting": _setting_info_to_dict(info)}
 
@@ -1173,7 +1197,7 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
 
 @_tool
 def settings_reset(keys: list[str]) -> dict[str, Any]:
-    """Reset writable settings to their built-in defaults."""
+    """Drop your values; env, profile or default applies."""
     if _transport.http_mounted and requires_services_reset(dict.fromkeys(keys)):
         return _error(provider_reset_refused_message("Resetting"))
     try:
@@ -1186,7 +1210,296 @@ def settings_reset(keys: list[str]) -> dict[str, Any]:
         "command": "settings_reset",
         "updated": result.updated,
         "reindex_required": result.reindex_required,
+        "warnings": list(result.warnings),
     }
+
+
+class ProfileAction(StrEnum):
+    """A profile file operation ``profile_manage`` runs."""
+
+    NEW = "new"
+    SAVE = "save"
+    UPDATE = "update"
+    DISCARD = "discard"
+    DUPLICATE = "duplicate"
+    RENAME = "rename"
+    DELETE = "delete"
+    EXPORT = "export"
+    IMPORT = "import"
+    VALIDATE = "validate"
+
+
+# A plain string that lists the actions in the tool schema. A typed enum would make FastMCP
+# refuse an unknown action with a validation dump before the tool runs.
+_ProfileActionChoice = Annotated[
+    str, Field(json_schema_extra={"enum": [a.value for a in ProfileAction]})
+]
+
+
+@dataclass(frozen=True)
+class _ManageArgs:
+    """The arguments of one ``profile_manage`` call."""
+
+    name: str
+    new_name: str
+    folder: ProfileFolder
+    content: str
+    filename: str
+    from_profile: str
+    overwrite: bool
+
+
+def _profile_call(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Run a profile operation; a refusal returns its reason as the error."""
+    if not _profiles_enabled():
+        return _error(profiles.MCP_PROFILES_DISABLED_HINT)
+    try:
+        return operation()
+    except ValueError as exc:
+        return _error(str(exc))
+    except OSError as exc:
+        return _error(profiles.file_failure_message(exc))
+
+
+def _profile_store() -> ProfileStore:
+    return get_services().profile_store
+
+
+def _location_dict(location: profiles.ProfileLocation) -> dict[str, Any]:
+    from lilbee.server.models import ProfileLocationResponse
+
+    return ProfileLocationResponse.from_location(location).model_dump(mode="json")
+
+
+def _save_dict(result: profiles.SaveResult) -> dict[str, Any]:
+    from lilbee.server.models import ProfileSaveResponse
+
+    return ProfileSaveResponse.from_save(result).model_dump(mode="json")
+
+
+def _discard_dict(result: profiles.DiscardResult) -> dict[str, Any]:
+    from lilbee.server.models import ProfileDiscardResponse
+
+    return ProfileDiscardResponse.from_result(result).model_dump(mode="json")
+
+
+def _validation_dict(result: ProfileValidation) -> dict[str, Any]:
+    from lilbee.server.models import ProfileValidationResponse
+
+    return ProfileValidationResponse.from_validation(result).model_dump(mode="json")
+
+
+def _export_dict(store: ProfileStore, args: _ManageArgs) -> dict[str, Any]:
+    exported = profiles.export_text(store, args.name)
+    return {
+        "name": exported.profile.name,
+        "folder": exported.folder,
+        "filename": exported.filename,
+        "content": exported.text,
+    }
+
+
+_MANAGE_ACTIONS: dict[ProfileAction, Callable[[ProfileStore, _ManageArgs], dict[str, Any]]] = {
+    ProfileAction.NEW: lambda store, a: _location_dict(
+        profiles.new(store, a.name, a.folder, from_name=a.from_profile or None)
+    ),
+    ProfileAction.SAVE: lambda _store, a: _save_dict(profiles.save_as(a.name, a.folder)),
+    ProfileAction.UPDATE: lambda store, a: _save_dict(profiles.update(store, a.name or None)),
+    ProfileAction.DISCARD: lambda _store, _a: _discard_dict(profiles.discard()),
+    ProfileAction.DUPLICATE: lambda store, a: _location_dict(
+        profiles.duplicate(store, a.name, a.new_name, a.folder)
+    ),
+    ProfileAction.RENAME: lambda store, a: _location_dict(
+        profiles.rename(store, a.name, a.new_name)
+    ),
+    ProfileAction.DELETE: lambda store, a: _location_dict(profiles.delete(store, a.name)),
+    ProfileAction.EXPORT: _export_dict,
+    ProfileAction.IMPORT: lambda store, a: _location_dict(
+        profiles.import_text(store, a.content, a.filename, a.folder, overwrite=a.overwrite)
+    ),
+    ProfileAction.VALIDATE: lambda _store, a: _validation_dict(
+        profiles.validate_content(a.content, a.filename, a.folder)
+    ),
+}
+
+
+# The parameters each action cannot run without, so an empty one is refused by name.
+_MANAGE_REQUIRED: dict[ProfileAction, tuple[str, ...]] = {
+    ProfileAction.NEW: ("name",),
+    ProfileAction.SAVE: ("name",),
+    ProfileAction.DUPLICATE: ("name", "new_name"),
+    ProfileAction.RENAME: ("name", "new_name"),
+    ProfileAction.DELETE: ("name",),
+    ProfileAction.EXPORT: ("name",),
+    ProfileAction.IMPORT: ("content",),
+    ProfileAction.VALIDATE: ("content",),
+}
+
+
+def _missing_manage_parameters(chosen: ProfileAction, args: _ManageArgs) -> list[str]:
+    return [p for p in _MANAGE_REQUIRED.get(chosen, ()) if not getattr(args, p)]
+
+
+def _profile_listing() -> dict[str, Any]:
+    from lilbee.server.models import ActiveProfileResponse, ProfileEntryResponse
+
+    store = _profile_store()
+    active = ActiveProfileResponse.from_active(profiles.active(store))
+    entries = profiles.list_profiles(store).entries
+    return {
+        "active": active.model_dump(mode="json"),
+        "profiles": [ProfileEntryResponse.from_entry(e).model_dump(mode="json") for e in entries],
+    }
+
+
+def _profile_detail(name: str) -> dict[str, Any]:
+    from lilbee.server.models import ProfileDiffResponse, ProfileEntryResponse
+
+    store = _profile_store()
+    entry = profiles.show(store, name)
+    diff = profiles.diff(store, name) if entry.file is not None else None
+    return {
+        "profile": ProfileEntryResponse.from_entry(entry).model_dump(mode="json"),
+        "diff": ProfileDiffResponse.from_diff(diff).model_dump(mode="json") if diff else None,
+    }
+
+
+def _profile_applied(name: str) -> dict[str, Any]:
+    from lilbee.server.models import ProfileApplyResponse
+
+    result = profiles.apply(_profile_store(), name)
+    return ProfileApplyResponse.from_result(result).model_dump(mode="json")
+
+
+@_tool_if(_profiles_enabled)
+def profile_list() -> dict[str, Any]:
+    """The project's active profile and every profile, with credit and broken-file reasons."""
+    return _profile_call(_profile_listing)
+
+
+@_tool_if(_profiles_enabled)
+def profile_show(name: str) -> dict[str, Any]:
+    """One profile and what applying it changes (``diff`` is null for a broken file)."""
+    return _profile_call(lambda: _profile_detail(name))
+
+
+@_tool_if(_profiles_enabled)
+async def profile_apply(name: str, reindex: bool = False) -> dict[str, Any]:
+    """Make a profile the project's; your values stay. Rebuild when ``reindex_required``.
+
+    ``reindex`` also rebuilds the index when the profile needs it and blocks until
+    done: ``rebuild`` is the sync result, or null when no rebuild was needed.
+    """
+    applied = await asyncio.to_thread(_profile_call, lambda: _profile_applied(name))
+    if not reindex or "error" in applied:
+        return applied
+    return {**applied, **await _rebuild_after_apply(applied)}
+
+
+async def _rebuild_after_apply(applied: dict[str, Any]) -> dict[str, Any]:
+    """The ``rebuild`` result an apply needs, with ``rebuild_error`` when it is refused."""
+    needed = await asyncio.to_thread(
+        profiles.apply_needs_rebuild,
+        _profile_store(),
+        applied["name"],
+        applied["reindex_required"],
+    )
+    return await _rebuild_when(needed)
+
+
+async def _rebuild_after_discard(discarded: dict[str, Any]) -> dict[str, Any]:
+    """The ``rebuild`` result a discard needs, with ``rebuild_error`` when it is refused."""
+    reason = await asyncio.to_thread(
+        profiles.rebuild_reason, discarded["dropped"], discarded["reindex_required"]
+    )
+    return await _rebuild_when(reason is not None)
+
+
+async def _rebuild_when(needed: bool) -> dict[str, Any]:
+    """A forced sync's ``rebuild`` result when *needed*, else null; ``rebuild_error`` if refused."""
+    from lilbee.app.ingest import LIBRARY_REFUSALS
+    from lilbee.data.ingest import sync as run_sync
+
+    if not needed:
+        return {"rebuild": None}
+    with _cancel_token() as cancel:
+        try:
+            result = await run_sync(
+                quiet=True, force_rebuild=True, cancel=cancel, started_by=_SYNC_STARTER
+            )
+        except LIBRARY_REFUSALS as exc:
+            return {"rebuild": None, "rebuild_error": str(exc)}
+    return {"rebuild": result.model_dump()}
+
+
+@_tool_if(_profiles_enabled)
+async def profile_manage(
+    action: _ProfileActionChoice = "",
+    name: str = "",
+    new_name: str = "",
+    folder: ProfileFolder = ProfileFolder.GLOBAL,
+    content: str = "",
+    filename: str = "",
+    from_profile: str = "",
+    overwrite: bool = False,
+    reindex: bool = False,
+) -> dict[str, Any]:
+    """Profile files: new, save (as name), update, discard, duplicate/rename (to new_name),
+    delete, export (returns its content), import/validate (a file's content and its name).
+    ``folder``: global or project. ``reindex`` (discard only) also rebuilds the index when
+    the discard needs it and blocks until done: ``rebuild`` is the sync result, or null."""
+    try:
+        chosen = ProfileAction(action)
+    except ValueError:
+        allowed = ", ".join(a.value for a in ProfileAction)
+        return _error(f"Unknown profile action {action!r}. Use one of: {allowed}.")
+    args = _ManageArgs(name, new_name, folder, content, filename, from_profile, overwrite)
+    if missing := _missing_manage_parameters(chosen, args):
+        return _error(f"Action {chosen.value!r} needs: {', '.join(missing)}.")
+    managed = await asyncio.to_thread(
+        _profile_call, lambda: _MANAGE_ACTIONS[chosen](_profile_store(), args)
+    )
+    if not reindex or chosen is not ProfileAction.DISCARD or "error" in managed:
+        return managed
+    return {**managed, **await _rebuild_after_discard(managed)}
+
+
+@_tool_if(_profiles_enabled)
+async def analyze(
+    directory: str | None = None,
+    apply: bool = False,
+    save: str | None = None,
+    target: ProfileFolder | None = None,
+) -> dict[str, Any]:
+    """Read the corpus, or an absolute ``directory`` on the server, and recommend a profile.
+    ``apply`` saves it and switches to it; ``save`` saves it as that name without switching;
+    ``target`` (project or global) needs one of them. No AI model runs."""
+    from lilbee.server.models import AnalyzeResponse
+
+    if not _profiles_enabled():
+        return _error(profiles.MCP_PROFILES_DISABLED_HINT)
+    try:
+        request = AnalyzeRequest(server_directory(directory), apply, save, target)
+        with _cancel_token() as cancel:
+            report = await run_analysis(_profile_store(), request, cancel=cancel)
+    except ValueError as exc:
+        return _error(str(exc))
+    except OSError as exc:
+        return _error(profiles.file_failure_message(exc))
+    return AnalyzeResponse.from_report(report).model_dump(mode="json")
+
+
+def _tip_dismissed() -> dict[str, Any]:
+    from lilbee.server.models import AnalyzeStateResponse
+
+    hide_tip(cfg.data_root)
+    return AnalyzeStateResponse.from_state(tip_state(cfg.data_root)).model_dump(mode="json")
+
+
+@_tool_if(_profiles_enabled)
+def analyze_dismiss() -> dict[str, Any]:
+    """Hide the analyze tip for this project."""
+    return _profile_call(_tip_dismissed)
 
 
 @_tool
@@ -1507,6 +1820,28 @@ _NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'
 class LilbeeMCP(MCPServer):
     """MCP server that trims its tools wire and keeps it current with config."""
 
+    _config_follower: ConfigFileFollower | None = None
+
+    def follow_config_file(self) -> None:
+        """Take what another process writes to config.toml before each tool call.
+
+        Only the stdio server calls this. The HTTP mount sits behind the daemon's own
+        middleware, which already takes the file once per request.
+        """
+        self._config_follower = ConfigFileFollower()
+        set_config_refresh(self._config_follower.take_now)
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: Context[Any, Any] | None = None,
+    ) -> Any:
+        """Run a tool after the config.toml check; every tool call passes through here."""
+        if self._config_follower is not None:
+            await self._config_follower.take()
+        return await super().call_tool(name, arguments, context)
+
     async def list_tools(self) -> list[MCPTool]:
         """The registered tools with schema noise stripped and flat descriptions.
 
@@ -1784,4 +2119,6 @@ def main() -> None:
     if parent_pid is not None:
         watch_parent_thread(parent_pid, _exit_on_parent_death)
 
-    asyncio.run(_serve_stdio(build_mcp_server()))
+    server = build_mcp_server()
+    server.follow_config_file()
+    asyncio.run(_serve_stdio(server))

@@ -226,7 +226,7 @@ async def test_progress_reporter_update_writes_to_queue() -> None:
             lambda: None, "demo", TaskType.SYNC.value, indeterminate=False
         )
         controller.queue.advance(TaskType.SYNC.value)
-        reporter = ProgressReporter(controller, task_id)
+        reporter = ProgressReporter(controller, controller.queue.get_task(task_id))
 
         reporter.update(42.5, "half")
         task = controller.queue.get_task(task_id)
@@ -243,7 +243,7 @@ async def test_progress_reporter_update_raises_when_cancelled() -> None:
         task_id = controller.queue.enqueue(lambda: None, "demo", TaskType.SYNC.value)
         controller.queue.advance(TaskType.SYNC.value)
         controller.queue.cancel(task_id)
-        reporter = ProgressReporter(controller, task_id)
+        reporter = ProgressReporter(controller, controller.queue.get_task(task_id))
 
         with pytest.raises(TaskCancelledError):
             reporter.update(0, "nope")

@@ -523,7 +523,26 @@ class TestEnsureEngineReaper:
         assert kwargs["start_new_session"] is True
         assert kwargs["stdin"] is subprocess.DEVNULL
         assert kwargs["stdout"] is subprocess.DEVNULL
-        assert kwargs["stderr"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is not subprocess.DEVNULL
+
+    def test_a_reaper_that_dies_at_once_leaves_its_error_in_the_engine_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A real child that fails at import leaves its error in the reaper log and the warning."""
+        monkeypatch.setattr(sm, "_REAPER_MODULE", "lilbee_no_such_reaper_module")
+        with caplog.at_level(logging.WARNING, logger=sm.__name__):
+            assert sm.ensure_engine_reaper(tmp_path) is False
+        reaper_log = tmp_path / "logs" / "engine-reaper.log"
+        assert "lilbee_no_such_reaper_module" in reaper_log.read_text(encoding="utf-8")
+        assert str(reaper_log) in caplog.text
+        assert "lilbee_no_such_reaper_module" in caplog.text
+
+    def test_log_tail_since_skips_old_text_and_a_missing_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "reaper.log"
+        assert sm._log_tail_since(path, 0) == ""
+        path.write_bytes(b"old run\nnew failure\n")
+        assert sm._log_tail_since(path, len(b"old run\n")) == "\nnew failure"
+        assert sm._log_tail_since(path, path.stat().st_size) == ""
 
     def test_a_reaper_that_cannot_start_is_reported(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

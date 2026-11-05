@@ -1,0 +1,29 @@
+#analyze-report {
+    height: 1fr;
+    padding: 1 2;
+}
+
+.analyze-heading {
+    text-style: bold;
+    margin-top: 1;
+}
+
+.analyze-heading.first {
+    margin-top: 0;
+}
+
+.analyze-muted {
+    color: $text-muted;
+}
+
+#analyze-report DataTable {
+    height: auto;
+    margin-top: 1;
+}
+
+#analyze-actions {
+    height: 1;
+    width: 100%;
+    margin: 1 0 0 0;
+    align-horizontal: center;
+}

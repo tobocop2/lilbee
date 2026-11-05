@@ -6,13 +6,12 @@ import ipaddress
 import json
 import os
 import socket
-import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -32,6 +31,7 @@ from lilbee.crawler import (
     crawler_browsers_path,
     url_filter,
 )
+from tests._quiet_http_server import QuietHTTPServer
 from tests.integration.conftest import EMBED_ENTRY, EMBEDDING_DIM, _resolve_installed_ref
 
 LOOPBACK = "127.0.0.1"
@@ -374,31 +374,16 @@ def _handler_for(site: CrawlSite) -> type[BaseHTTPRequestHandler]:
     return _Handler
 
 
-class _QuietServer(ThreadingHTTPServer):
-    """A server that stays silent when a client closes its connection.
-
-    A crawler resets a connection it no longer needs. The stock server prints a traceback for
-    that, and the print lands inside the output the CLI tests parse as JSON.
-    """
-
-    def handle_error(self, request: object, client_address: object) -> None:
-        """Print the error as the stock server does, unless the client closed the connection."""
-        if isinstance(sys.exc_info()[1], ConnectionError):
-            return
-        super().handle_error(request, client_address)  # type: ignore[arg-type]
-
-
 class RunningSite:
     """Context manager that serves a :class:`CrawlSite` on a free loopback port."""
 
     def __init__(self) -> None:
-        self._server: _QuietServer | None = None
+        self._server: QuietHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def __enter__(self) -> CrawlSite:
         site = CrawlSite(port=0)
-        self._server = _QuietServer((LOOPBACK, 0), _handler_for(site))
-        self._server.daemon_threads = True
+        self._server = QuietHTTPServer((LOOPBACK, 0), _handler_for(site))
         site.port = self._server.server_address[1]
         self._thread = threading.Thread(
             target=self._server.serve_forever, name="crawl-fixture-site", daemon=True

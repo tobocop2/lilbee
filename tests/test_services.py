@@ -290,6 +290,21 @@ class TestSyncTokenizerBackend:
         ):
             bind_backend(BackendKind.TOKENIZER, provider)
 
+    def test_bind_survives_a_provider_that_stops_after_the_probe(self):
+        """A count failing after the probe cannot reach xberg's probe, which masks it as zero."""
+        import xberg
+
+        from lilbee.data.extract.backends import BackendKind, bind_backend
+        from lilbee.data.types import TokenizerBackendName
+        from lilbee.providers.base import ProviderError
+
+        provider = MagicMock()
+        provider.count_tokens.side_effect = [1, ProviderError("The embedding server stopped")]
+        with _isolated_tokenizer_binding():
+            bind_backend(BackendKind.TOKENIZER, provider)
+            assert TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends()
+        provider.count_tokens.assert_called_once()
+
     def test_bind_registers_an_sdk_backend_on_its_estimate(self, monkeypatch):
         """SDK embedders have no local tokenizer; the estimate still passes the
         real xberg probe, so registration succeeds."""
@@ -589,6 +604,124 @@ class TestResetStore:
         assert services_mod.peek_services() is None
         reset_store()
         assert services_mod.peek_services() is None
+
+
+class TestWaitForOpens:
+    """``wait_for_opens`` covers every store this process built, also one /reset made."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_registry(self):
+        """Start from no recorded stores, and put back the ones that were there."""
+        from lilbee.app.services import _state
+
+        with _state.stores_lock:
+            saved = list(_state.stores)
+            _state.stores.clear()
+        yield
+        with _state.stores_lock:
+            _state.stores.clear()
+            _state.stores.update(saved)
+
+    @pytest.fixture()
+    def held_open(self, monkeypatch):
+        """Make every Store open block until *release* is set; *started* marks an open under way."""
+        import threading
+
+        from lilbee.data.store import Store
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked_open(self):
+            started.set()
+            release.wait(timeout=30)
+            self._db = MagicMock()
+            return self._db
+
+        monkeypatch.setattr(Store, "_open_held", blocked_open)
+        yield started, release
+        release.set()
+
+    def test_waits_for_an_open_on_the_store_reset_made(self, held_open, tmp_path):
+        import threading
+
+        from lilbee.app import services as services_mod
+        from tests.conftest import make_mock_services
+
+        started, release = held_open
+        services_mod.set_services(make_mock_services(store=services_mod._new_store(cfg)))
+        try:
+            services_mod.reset_store()
+            new_store = services_mod.peek_services().store
+            opener = threading.Thread(target=new_store.get_db, daemon=True)
+            opener.start()
+            assert started.wait(timeout=10)
+            waiter_result: list[bool] = []
+            waiter = threading.Thread(
+                target=lambda: waiter_result.append(services_mod.wait_for_opens(10.0)),
+                daemon=True,
+            )
+            waiter.start()
+            waiter.join(timeout=0.3)
+            assert waiter.is_alive()  # still waiting while the open runs
+            release.set()
+            waiter.join(timeout=10)
+            opener.join(timeout=10)
+            assert waiter_result == [True]
+            assert new_store.is_open
+        finally:
+            release.set()
+            services_mod.set_services(None)
+
+    def test_waits_for_the_first_store_open(self, held_open):
+        import threading
+
+        from lilbee.app import services as services_mod
+
+        started, release = held_open
+        store = services_mod._new_store(cfg)
+        store.open_in_background()
+        assert started.wait(timeout=10)
+        result: list[bool] = []
+        waiter = threading.Thread(
+            target=lambda: result.append(services_mod.wait_for_opens(10.0)), daemon=True
+        )
+        waiter.start()
+        waiter.join(timeout=0.3)
+        assert waiter.is_alive()
+        release.set()
+        waiter.join(timeout=10)
+        assert result == [True]
+
+    def test_the_bound_is_shared_by_all_opens(self, monkeypatch):
+        from lilbee.app import services as services_mod
+        from lilbee.data.store import Store
+
+        clock = [100.0]
+        waits: list[float] = []
+
+        def hanging_wait(self, timeout):
+            waits.append(timeout)
+            clock[0] += timeout  # the open outlasts whatever it is given
+            return False
+
+        monkeypatch.setattr(services_mod.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(Store, "wait_for_open", hanging_wait)
+        first = services_mod._new_store(cfg)
+        second = services_mod._new_store(cfg)
+        assert services_mod.wait_for_opens(5.0) is False
+        assert sorted(waits) == [0.0, 5.0]  # the second gets what the first left
+        assert first is not second
+
+    def test_returns_at_once_when_no_open_runs(self):
+        import time
+
+        from lilbee.app import services as services_mod
+
+        services_mod._new_store(cfg)
+        begin = time.monotonic()
+        assert services_mod.wait_for_opens(5.0) is True
+        assert time.monotonic() - begin < 1.0
 
 
 class TestGetServicesThreadSafety:

@@ -104,6 +104,7 @@ from lilbee.data.store import (
 )
 from lilbee.data.title import derive_title
 from lilbee.data.types import (
+    CODE_CONTENT_TYPE,
     ChunkRecord,
     DocumentRecords,
     FileChangePlan,
@@ -120,7 +121,13 @@ from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
-from lilbee.runtime.lock import LockTimeoutError, sync_running
+from lilbee.runtime.lock import (
+    LockTimeoutError,
+    SyncTurnOwner,
+    sync_running,
+    sync_turn,
+    sync_wait_message,
+)
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -134,6 +141,7 @@ from lilbee.runtime.progress import (
     OcrStartEvent,
     ProgressEvent,
     SyncDoneEvent,
+    SyncWaitEvent,
     noop_callback,
 )
 from lilbee.runtime.progress.columns import literal_text_column
@@ -175,11 +183,14 @@ async def _rebuild_concept_clusters(
     added: Collection[str] = (),
     updated: Collection[str] = (),
     removed: Collection[str] = (),
+    *,
+    full: bool = False,
 ) -> None:
     """Re-run Leiden clustering after sync. No-op if disabled.
 
     Removals force a full pass: their rows are already gone, so the touched
-    communities are unrecoverable. Adds and updates recluster incrementally.
+    communities are unrecoverable, and so does a rebuild, which re-ingests every
+    source. Adds and updates recluster incrementally.
     """
     if not active_config().concept_graph:
         return
@@ -191,7 +202,7 @@ async def _rebuild_concept_clusters(
         cg = get_services().concepts
         if not cg.get_graph():
             return
-        if removed:
+        if removed or full:
             await to_ingest_thread(cg.rebuild_clusters)
         else:
             await to_ingest_thread(cg.rebuild_clusters, set(added), set(updated))
@@ -289,7 +300,7 @@ async def produce_records(
     records: list[ChunkRecord]
     ocr: OcrReport | None = None
     page_texts: list[PageTextRecord] = page_texts_out if page_texts_out is not None else []
-    if content_type == "code":
+    if content_type == CODE_CONTENT_TYPE:
         records = await to_ingest_thread(ingest_code_sync, path, source_name, on_progress)
         meta = SourceMeta(title=derive_title(source_name))
     elif path.suffix.lower() == ".md":
@@ -992,6 +1003,8 @@ def detect_pending() -> int:
 _EXCLUDED_LOG_SAMPLE = 5
 # The reason held out with a failed file whose failure named none.
 _NO_REASON = "ingestion produced nothing"
+# The text a rebuild embeds once to prove the embedder answers before it drops an index.
+_REBUILD_PROBE = "lilbee"
 
 
 def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
@@ -1065,17 +1078,34 @@ def _report_index_mismatch(store: Store) -> IndexMismatch | None:
     return mismatch.describe()
 
 
-def _force_rebuild_store(store: Any) -> None:
-    """Drop the store and re-embed the preserved memories table (blocking).
+def _prepare_forced_rebuild(store: Any) -> bool:
+    """Ready the index for a forced rebuild; True when the rebuild runs in place (blocking).
 
-    Run off the event loop by ``sync``. ``drop_all`` keeps the memories table, so
-    its vectors are refreshed under the (possibly changed) embedding model;
-    a no-op when empty or no embedder.
+    A store with chunks and no embedder mismatch, with or without a stamp, is rebuilt in
+    place and a file that fails keeps its chunks. An empty store, or one built by another
+    embedder, is dropped after one probe request. Memories are re-embedded either way.
+    Run off the event loop.
     """
-    store.drop_all()
+    in_place = store.index_mismatch() is None and (
+        store.get_meta() is not None or store.count_chunks() > 0
+    )
+    if not in_place:
+        _require_embedding_model()
     embedder = get_services().embedder
-    if embedder.embedding_available():
-        store.rebuild_memory_embeddings(lambda texts: embedder.embed_batch(texts))
+    try:
+        refreshed = 0
+        if embedder.embedding_available():
+            refreshed = store.rebuild_memory_embeddings(lambda texts: embedder.embed_batch(texts))
+        if not (in_place or refreshed):
+            embedder.embed_batch([_REBUILD_PROBE])
+    except Exception as error:
+        raise RuntimeError(
+            "Rebuild stopped and the index is unchanged: "
+            f"the embedding model did not answer ({error})."
+        ) from error
+    if not in_place:
+        store.drop_all()
+    return in_place
 
 
 def _reconcile_missing(
@@ -1171,6 +1201,27 @@ def _forget_refused(
     return removed
 
 
+def _finish_in_place_rebuild(store: Store, rules: IgnoreRules, any_failed: bool) -> list[str]:
+    """Drop the sources of vanished files; stamp the store when every file was rebuilt."""
+    if not any_failed:
+        store.restamp_meta()
+    return _forget_vanished(rules)
+
+
+def _forget_vanished(rules: IgnoreRules) -> list[str]:
+    """Drop the document sources whose file is gone, as a rebuild that dropped the index would.
+
+    A corpus-wide pass, run by the parent after the files were ingested again.
+    """
+    store = get_services().store
+    names = _absent_sources(store.get_sources(), discover_corpus(None, rules).files)
+    if not names:
+        return []
+    removed = list(store.remove_documents(names).removed)
+    _forget_in_wiki(removed)
+    return removed
+
+
 def _forget_in_wiki(removed: list[str]) -> None:
     """Drop removed sources from the wiki's browse index."""
     # circular: lilbee.app.ingest imports this module for sync
@@ -1228,6 +1279,7 @@ async def _run_post_ingest_passes(
     cluster_removed: Collection[str],
     touched: set[str],
     cancel: CancelSignal | None,
+    recluster_all: bool = False,
 ) -> None:
     """Index maintenance, concept clusters, the wiki hook, and the entity lifecycle.
 
@@ -1246,7 +1298,9 @@ async def _run_post_ingest_passes(
         store.ensure_vector_index()
         store.optimize_sources()
     if cluster_added or cluster_updated or cluster_removed:
-        await _rebuild_concept_clusters(cluster_added, cluster_updated, cluster_removed)
+        await _rebuild_concept_clusters(
+            cluster_added, cluster_updated, cluster_removed, full=recluster_all
+        )
     await to_ingest_thread(_show_current_paths_in_wiki)
     await _update_wiki(touched, active_config())
 
@@ -1310,6 +1364,7 @@ async def _sync_across_workers(
     store: Store,
     *,
     prune_ignored: bool = False,
+    rebuild: bool = False,
     options: ShardOptions,
     quiet: bool,
     on_progress: DetailedProgressCallback,
@@ -1328,6 +1383,12 @@ async def _sync_across_workers(
         await to_ingest_thread(_forget_missing_in_wiki)
         raise
     result = aggregate_results(verdicts)
+    if rebuild:
+        rules = IgnoreRules.for_corpus(active_config().data_root)
+        vanished = await to_ingest_thread(
+            _finish_in_place_rebuild, store, rules, bool(result.failed)
+        )
+        result.removed = [*vanished, *result.removed]
     touched = set(result.added) | set(result.updated) | set(result.relocated)
     # No worker tells the wiki index what it removed, and a pass with no extractor drops nothing.
     await to_ingest_thread(_forget_in_wiki, result.removed)
@@ -1345,6 +1406,7 @@ async def _sync_across_workers(
         cluster_removed=result.removed,
         touched=touched,
         cancel=cancel,
+        recluster_all=rebuild,
     )
     on_progress(
         EventType.SYNC_DONE,
@@ -1361,29 +1423,68 @@ async def _sync_across_workers(
 
 
 _SyncParams = ParamSpec("_SyncParams")
+# What a sync that names no starter is called in the message of a sync that waits for it.
+DEFAULT_SYNC_STARTER = "lilbee"
 
 
 def _marks_sync_running(
     run: Callable[_SyncParams, Coroutine[Any, Any, SyncResult]],
 ) -> Callable[_SyncParams, Coroutine[Any, Any, SyncResult]]:
-    """Hold the data root's sync mark for the whole run, so a reset refuses meanwhile."""
+    """Hold the data root's sync mark for the whole run, so a reset refuses meanwhile.
+
+    Under the mark, the sync also takes the data root's sync turn before it plans, so
+    syncs run one after another and none syncs the files of another that runs. A
+    fan-out worker runs under its parent's turn, and a data root that cannot hold the
+    mark cannot hold the turn either; neither takes it.
+    """
 
     @functools.wraps(run)
     async def _marked(*args: _SyncParams.args, **kwargs: _SyncParams.kwargs) -> SyncResult:
         data_root = active_config().data_root
-        # ``cancel`` is keyword-only on a sync, so it is never in *args*.
+        # ``cancel``, ``shard``, ``on_progress`` and ``started_by`` are keyword-only on a
+        # sync, so they are never in *args*.
         cancel = cast("CancelSignal | None", kwargs.get("cancel"))
+        worker = kwargs.get("shard") is not None
         # The services come before the mark.
         store = (await asyncio.to_thread(get_services)).store
-        async with sync_running(data_root, cancel):
+
+        async def _run() -> SyncResult:
             # The sync walks and names sources by the registry config.toml holds at its
             # start; a worker keeps its parent's.
-            if kwargs.get("shard") is None:
+            if not worker:
                 await asyncio.to_thread(settings.overlay_persisted_roots, active_config())
             with store.registry_pinned():
                 return await run(*args, **kwargs)
 
+        async with sync_running(data_root, cancel) as marked:
+            if not marked or worker:
+                return await _run()
+            async with _sync_turn_for(data_root, cancel, kwargs):
+                return await _run()
+
     return _marked
+
+
+def _sync_turn_for(
+    data_root: Path, cancel: CancelSignal | None, kwargs: dict[str, Any]
+) -> contextlib.AbstractAsyncContextManager[None]:
+    """The sync turn of *data_root* for the sync called with *kwargs*; a wait is reported."""
+    on_progress = cast("DetailedProgressCallback", kwargs.get("on_progress", noop_callback))
+    started_by = cast("str", kwargs.get("started_by", DEFAULT_SYNC_STARTER))
+
+    def _report_wait(owner: SyncTurnOwner | None) -> None:
+        message = sync_wait_message(owner)
+        log.info(message)
+        on_progress(
+            EventType.SYNC_WAIT,
+            SyncWaitEvent(
+                message=message,
+                holder=owner.started_by if owner else None,
+                pid=owner.pid if owner else None,
+            ),
+        )
+
+    return sync_turn(data_root, cancel, started_by=started_by, on_wait=_report_wait)
 
 
 @_marks_sync_running
@@ -1397,6 +1498,7 @@ async def sync(
     retry_skipped: bool = False,
     prune_ignored: bool = False,
     shard: ShardId | None = None,
+    started_by: str = DEFAULT_SYNC_STARTER,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
     Returns a SyncResult with the added/updated/removed/unchanged/failed/skipped lists.
@@ -1410,14 +1512,15 @@ async def sync(
     in, and removing what a past sync already indexed is the caller's decision.
     A *shard* runs this sync as one worker of a multi-GPU fan-out: it writes its
     slice of the corpus to the index and leaves the corpus-wide passes to the parent.
+    *started_by* names what started this sync, for the message a sync that waits for
+    it shows; ``_marks_sync_running`` reads it.
     """
     config = active_config()
     _store = get_services().store
 
-    if force_rebuild:
-        # drop_all + memory re-embedding are heavy blocking store work; run them
-        # off the event loop so a rebuild doesn't stall other admitted requests.
-        await to_ingest_thread(_force_rebuild_store, _store)
+    in_place = force_rebuild and (
+        shard is not None or await to_ingest_thread(_prepare_forced_rebuild, _store)
+    )
 
     config.documents_dir.mkdir(parents=True, exist_ok=True)
     index_mismatch = _report_index_mismatch(_store)
@@ -1427,7 +1530,8 @@ async def sync(
             specs,
             _store,
             prune_ignored=prune_ignored,
-            options=ShardOptions(parent_pid=os.getpid()),
+            options=ShardOptions(parent_pid=os.getpid(), rebuild=force_rebuild),
+            rebuild=in_place,
             quiet=quiet,
             on_progress=on_progress,
             cancel=cancel,
@@ -1438,8 +1542,10 @@ async def sync(
     scan = discover_corpus(shard, rules)
     disk_files = scan.files
     sources = _sources_in_scope(_store, shard)
-    existing_sources = {s["filename"]: s for s in sources}
-    held_hashes = await to_ingest_thread(_held_hashes, _store)
+    # A rebuild plans every file as new: nothing is unchanged, held out or moved, so each
+    # file is chunked and embedded again and replaces its own chunks when its write lands.
+    existing_sources = {} if force_rebuild else {s["filename"]: s for s in sources}
+    held_hashes = {} if force_rebuild else await to_ingest_thread(_held_hashes, _store)
 
     failed: dict[str, None] = {}
     # Refused formats start the run skipped; they get no held-out record (no planned hash).
@@ -1461,7 +1567,11 @@ async def sync(
     # identical file to its old key below. What was just removed leaves the set,
     # where it could otherwise capture a real move.
     gone = set(ignored) | set(refused)
-    moves = _move_pool(_store, shard, sources, disk_files, gone, rules)
+    moves = (
+        _MovePool([], {})
+        if force_rebuild
+        else _move_pool(_store, shard, sources, disk_files, gone, rules)
+    )
 
     # The planning pass stats (and where needed hashes) every file on disk, batch by
     # batch off the event loop and overlapped with ingest. A brand-new file whose
@@ -1515,6 +1625,11 @@ async def sync(
     held = [name for name in (*failed, *skipped) if name not in retry_next]
     await to_ingest_thread(_persist_failures, _store, pending_hashes, reasons, held)
 
+    vanished = (
+        await to_ingest_thread(_finish_in_place_rebuild, _store, rules, bool(failed))
+        if in_place and shard is None
+        else []
+    )
     if shard is None:
         # The passes are corpus-wide, so a fan-out runs them once, in the parent.
         await _run_post_ingest_passes(
@@ -1522,9 +1637,10 @@ async def sync(
             indexed_anything=bool(state.planned or relocated),
             cluster_added=added,
             cluster_updated=updated,
-            cluster_removed=[*ignored, *refused],
+            cluster_removed=[*ignored, *refused, *vanished],
             touched=set(added) | set(updated) | set(relocated),
             cancel=cancel,
+            recluster_all=in_place,
         )
 
     # Reconciliation guard against silent data loss: any on-disk document file that
@@ -1541,7 +1657,7 @@ async def sync(
     result = SyncResult(
         added=list(added),
         updated=list(updated),
-        removed=ignored + refused,
+        removed=ignored + refused + vanished,
         unchanged=state.unchanged,
         relocated=relocated,
         failed=list(failed),
@@ -1549,6 +1665,7 @@ async def sync(
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
         held_out=_describe_failures(_store, state.held_out),
         truncated=get_services().embedder.truncated_total - truncated_before,
+        unreadable_folders=list(scan.unreadable),
         index_mismatch=index_mismatch,
     )
     on_progress(
@@ -2258,11 +2375,12 @@ def _classify_result(
         updated.pop(result.name, None)
         skipped[result.name] = result.ocr
         if reasons is not None:
-            reasons[result.name] = (
-                "no text extracted (0 chunks)"
-                if not result.page_texts
-                else "stored page text only (0 searchable chunks)"
-            )
+            if result.page_texts:
+                reasons[result.name] = "stored page text only (0 searchable chunks)"
+            elif result.ocr is not None and result.ocr.backend is OcrBackendUsed.NONE:
+                reasons[result.name] = "no text extracted, OCR is off (0 chunks)"
+            else:
+                reasons[result.name] = "no text extracted (0 chunks)"
         return BatchStatus.SKIPPED if not result.page_texts else BatchStatus.INGESTED
     return BatchStatus.INGESTED
 

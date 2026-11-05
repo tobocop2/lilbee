@@ -1,0 +1,8 @@
+[profile]
+name = "Scanned archive"
+description = "Scanned paper records, where most pages are images of text."
+format = 1
+
+[values]
+ocr_strategy = "scanned_pages"
+layout_detection = true

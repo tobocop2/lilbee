@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from itertools import pairwise
 
 import httpx
@@ -15,14 +16,16 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from lilbee.providers.base import ProviderError, TokenUsage
+from lilbee.providers.base import ProviderError, StreamFinish, TokenUsage
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
+    StreamInterruptedError,
     _first_token_top_logprobs,
     _llm_rerank_score,
     _parse_sse_deltas,
     _ThinkInliner,
+    is_connection_failure,
 )
 from lilbee.providers.roles import RerankMode
 from lilbee.runtime.cancellation import TaskCancelledError
@@ -572,6 +575,22 @@ def test_chat_coerces_null_content_to_empty_string() -> None:
         return httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
 
     assert _client(handler).chat([{"role": "user", "content": "hi"}]) == ""
+
+
+def test_the_idle_callback_runs_when_the_last_request_ends_with_the_count_lock_free() -> None:
+    client = _client()
+    seen: list[tuple[int, bool]] = []
+    client.notify_when_idle(
+        lambda: seen.append((client.in_flight, client._in_flight_lock.locked()))
+    )
+    client.reserve()
+    client.reserve()
+    client.release()
+    assert seen == []
+    client.release()
+    assert seen == [(0, False)]
+    assert list(client.chat([{"role": "user", "content": "hi"}], stream=True)) == ["He", "llo"]
+    assert seen == [(0, False), (0, False)]
 
 
 def test_chat_stream_yields_deltas() -> None:
@@ -1131,6 +1150,43 @@ def test_raise_for_status_non_bind_death_stays_connection(monkeypatch) -> None:
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+
+
+def test_raise_for_status_truncated_model_file_names_the_file_and_the_fix(monkeypatch) -> None:
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+
+    monkeypatch.setattr(
+        client_mod,
+        "_upstream_failure_tail",
+        lambda resp: (
+            "llama_model_load: error loading model: tensor 'blk.3.ffn_up.weight' data is not "
+            "within the file bounds, model is corrupted or incomplete"
+        ),
+    )
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.MODEL_FILE_BROKEN
+    assert "incomplete or damaged" in str(excinfo.value)
+    assert "lilbee model rm'" in str(excinfo.value)
+
+
+def test_broken_model_file_message_names_the_model() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _upstream_death_message
+
+    text = _upstream_death_message(ProviderErrorKind.MODEL_FILE_BROKEN, 500, "o/r/m.gguf", None)
+    assert "o/r/m.gguf" in text
+    assert "lilbee model rm o/r/m.gguf" in text
+    assert "lilbee model pull o/r/m.gguf" in text
+
+
+def test_broken_file_marker_wins_over_a_memory_marker() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import classify_upstream_death
+
+    tail = "failed to allocate buffer\ntensor 'x' data is not within the file bounds"
+    assert classify_upstream_death(tail) is ProviderErrorKind.MODEL_FILE_BROKEN
 
 
 _LOAD_FAILURE_TAIL = "\n".join(
@@ -2482,9 +2538,16 @@ def test_chat_stream_items_closes_unterminated_reasoning() -> None:
     assert text == "<think>endless</think>"
 
 
+def _streamed_body_handler(request: httpx.Request) -> httpx.Response:
+    """Serve the chat stream as a streamed body, so httpx does not read it on arrival."""
+    if request.url.path == "/v1/chat/completions" and json.loads(request.content).get("stream"):
+        return httpx.Response(200, content=iter([_STREAM_BODY.encode()]))
+    return _handler(request)
+
+
 def test_stream_tracks_the_live_response_until_drained() -> None:
     """The SSE response is registered while iterating and dropped when done."""
-    client = _client()
+    client = _client(_streamed_body_handler)
     tokens = client.chat([{"role": "user", "content": "hi"}], stream=True)
     assert next(tokens) == "He"
     assert len(client._active_streams) == 1
@@ -2497,9 +2560,25 @@ def test_abort_streams_closes_registered_responses() -> None:
 
     client = _client()
     resp = MagicMock()
+    resp.extensions = {}
     client._active_streams.add(resp)
     client.abort_streams()
     resp.close.assert_called_once_with()
+
+
+def test_abort_streams_shuts_down_the_socket_and_leaves_the_close_to_the_reader() -> None:
+    import socket
+    from unittest.mock import MagicMock
+
+    client = _client()
+    resp = MagicMock()
+    sock = resp.extensions.get.return_value.get_extra_info.return_value
+    client._active_streams.add(resp)
+    client.abort_streams()
+    resp.extensions.get.assert_called_once_with("network_stream")
+    resp.extensions.get.return_value.get_extra_info.assert_called_once_with("socket")
+    sock.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+    resp.close.assert_not_called()
 
 
 def test_abort_streams_survives_close_errors() -> None:
@@ -2508,10 +2587,90 @@ def test_abort_streams_survives_close_errors() -> None:
 
     client = _client()
     failing, healthy = MagicMock(), MagicMock()
+    failing.extensions = healthy.extensions = {}
     failing.close.side_effect = RuntimeError("already closed")
     client._active_streams.update({failing, healthy})
     client.abort_streams()  # must not raise
     healthy.close.assert_called_once_with()
+
+
+def test_abort_streams_closes_the_response_when_the_shutdown_fails() -> None:
+    """A shutdown that raises ENOTCONN on a closed peer still closes the response."""
+    import errno
+    from unittest.mock import MagicMock
+
+    client = _client()
+    resp = MagicMock()
+    sock = resp.extensions.get.return_value.get_extra_info.return_value
+    sock.shutdown.side_effect = OSError(errno.ENOTCONN, "not connected")
+    client._active_streams.add(resp)
+    client.abort_streams()
+    sock.shutdown.assert_called_once()
+    resp.close.assert_called_once_with()
+
+
+class _ReleaseHookLock:
+    """A lock that runs a hook once, on the given thread, right after a release."""
+
+    def __init__(self, thread_id: int, hook: Callable[[], None]) -> None:
+        self._lock = threading.Lock()
+        self._thread_id = thread_id
+        self._hook: Callable[[], None] | None = hook
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+        if self._hook is not None and threading.get_ident() == self._thread_id:
+            hook, self._hook = self._hook, None
+            hook()
+
+
+def test_abort_streams_never_shuts_a_socket_the_reader_already_released(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reader that finishes while an abort runs gets no shutdown on its pooled socket.
+
+    The abort's first lock release lets the reader leave the registry and
+    finish before the abort goes on; every shutdown must then target a
+    response that is still registered.
+    """
+    from unittest.mock import MagicMock
+
+    client = _client()
+    resp = MagicMock(is_closed=False)
+    resp.stream = MagicMock(spec=httpx.SyncByteStream)
+    sock = resp.extensions.get.return_value.get_extra_info.return_value
+    still_registered: list[bool] = []
+    sock.shutdown.side_effect = lambda _how: still_registered.append(resp in client._active_streams)
+    registered = threading.Event()
+    abort_released = threading.Event()
+    reader_done = threading.Event()
+
+    def _let_the_reader_finish() -> None:
+        abort_released.set()
+        assert reader_done.wait(timeout=10)
+
+    monkeypatch.setattr(
+        client, "_in_flight_lock", _ReleaseHookLock(threading.get_ident(), _let_the_reader_finish)
+    )
+
+    def _read() -> None:
+        client._abortable(resp)
+        registered.set()
+        abort_released.wait(timeout=10)
+        resp.stream.close()  # what the response's own close calls
+        reader_done.set()
+
+    reader = threading.Thread(target=_read, daemon=True)
+    reader.start()
+    assert registered.wait(timeout=10)
+    client.abort_streams()
+    reader.join(timeout=10)
+    assert reader_done.is_set()
+    assert client._active_streams == set()
+    assert still_registered == [True]
 
 
 def test_chat_stream_items_requests_return_progress() -> None:
@@ -2745,3 +2904,449 @@ def test_chat_abortable_stops_reading_once_the_run_is_cancelled() -> None:
         client.chat_abortable([{"role": "user", "content": "hi"}], deadline_s=5.0, cancel=cancel)
     assert time.monotonic() - started < 2.0
     assert client.in_flight == 0
+
+
+class _LoopbackServer:
+    """A one-connection loopback server; a subclass writes ``_serve``."""
+
+    def __init__(self) -> None:
+        import socket
+
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.url = f"http://127.0.0.1:{self._sock.getsockname()[1]}"
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        self._thread.join(timeout=5)
+        self._sock.close()
+
+
+class _ClosingServer(_LoopbackServer):
+    """A loopback server that answers a chat stream, then closes mid-body.
+
+    ``frames`` is the number of SSE frames it sends before it drops the socket
+    without the closing chunk, as an engine does when its owner moves its group.
+    ``mode`` ``"reset"`` drops the socket with a reset. ``"silent"`` keeps it open
+    and sends nothing more, so the client read times out.
+    """
+
+    def __init__(self, frames: int, mode: str = "close") -> None:
+        self._frames = frames
+        self._mode = mode
+        self._release = threading.Event()
+        super().__init__()
+
+    def _serve(self) -> None:
+        import socket
+        import struct
+
+        conn, _ = self._sock.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            )
+            for _ in range(self._frames):
+                frame = b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+                conn.sendall(f"{len(frame):x}\r\n".encode() + frame + b"\r\n")
+            if self._mode == "silent":
+                self._release.wait(timeout=5)
+            elif self._mode == "reset":
+                time.sleep(0.05)
+                conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            else:
+                time.sleep(0.05)
+
+    def close(self) -> None:
+        self._release.set()
+        super().close()
+
+
+class _HeadersOnlyServer(_LoopbackServer):
+    """A loopback server that sends a chat stream's headers and then no body.
+
+    It then waits for the client to leave and sets ``client_gone`` when its
+    read sees the connection close.
+    """
+
+    def __init__(self) -> None:
+        self.client_gone = threading.Event()
+        super().__init__()
+
+    def _serve(self) -> None:
+        conn, _ = self._sock.accept()
+        with conn:
+            conn.settimeout(30)
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            )
+            with contextlib.suppress(OSError):
+                while conn.recv(65536):  # the rest of the request, then the client's FIN
+                    pass
+                self.client_gone.set()
+
+
+def test_abort_streams_wakes_a_reader_blocked_after_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancel stops a read that waits on a silent body and drops the connection."""
+    server = _HeadersOnlyServer()
+    http = httpx.Client(base_url=server.url, timeout=httpx.Timeout(30.0))
+    client = LlamaServerClient(server.url, "test-model", http=http)
+    client._needs_alternation = False
+    registered = threading.Event()
+    register = client._abortable
+
+    def _register_then_signal(resp: httpx.Response) -> None:
+        register(resp)
+        registered.set()
+
+    monkeypatch.setattr(client, "_abortable", _register_then_signal)
+    reader_done = threading.Event()
+    caught: list[BaseException] = []
+
+    def _read() -> None:
+        try:
+            list(client.chat_stream_items([{"role": "user", "content": "hi"}]))
+        except BaseException as exc:
+            caught.append(exc)
+        finally:
+            reader_done.set()
+
+    reader = threading.Thread(target=_read, daemon=True)
+    reader.start()
+    assert registered.wait(timeout=10)
+    client.abort_streams()
+    assert reader_done.wait(timeout=10)
+    assert server.client_gone.wait(timeout=10)
+    server.close()
+    assert len(caught) == 1
+    assert isinstance(caught[0], httpx.TransportError)
+    assert not isinstance(caught[0], httpx.TimeoutException)
+    assert client._active_streams == set()
+
+
+class _KeepAliveServer:
+    """A loopback server that answers each request on a connection with a whole SSE body.
+
+    ``accepted`` counts connections, so a test sees whether a request reused a pooled one.
+    """
+
+    _BODY = b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n'
+
+    def __init__(self) -> None:
+        import socket
+
+        self.accepted = 0
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(4)
+        self.url = f"http://127.0.0.1:{self._sock.getsockname()[1]}"
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                conn, _ = self._sock.accept()
+            except OSError:
+                return
+            self.accepted += 1
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn) -> None:
+        import re
+
+        head = (
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+            + f"Content-Length: {len(self._BODY)}\r\n\r\n".encode()
+        )
+        buf = b""
+        with conn, contextlib.suppress(OSError):
+            while True:
+                while b"\r\n\r\n" not in buf:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        return
+                    buf += chunk
+                request_head, _, buf = buf.partition(b"\r\n\r\n")
+                match = re.search(rb"(?i)content-length:\s*(\d+)", request_head)
+                length = int(match.group(1)) if match else 0
+                while len(buf) < length:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        return
+                    buf += chunk
+                buf = buf[length:]
+                conn.sendall(head + self._BODY)
+
+    def close(self) -> None:
+        self._sock.close()
+
+
+_READ_LOOPS: dict[str, Callable[[LlamaServerClient], list[object]]] = {
+    "chat_stream_items": lambda c: list(c.chat_stream_items([{"role": "user", "content": "hi"}])),
+    "chat_stream": lambda c: list(c.chat([{"role": "user", "content": "hi"}], stream=True)),
+}
+
+
+def _spy_on_connection_release(
+    monkeypatch: pytest.MonkeyPatch,
+    client: LlamaServerClient,
+    after: Callable[[], None] = lambda: None,
+) -> list[tuple[bool, bool]]:
+    """Record ``(pooled, registered)`` each time httpcore ends a response on its connection.
+
+    ``pooled`` is whether httpcore keeps the connection for reuse; ``registered`` is
+    whether the client still exposes a response to ``abort_streams`` at that moment.
+    ``after`` runs once the connection is released.
+    """
+    import h11
+    from httpcore._sync import http11
+
+    seen: list[tuple[bool, bool]] = []
+    original = http11.HTTP11Connection._response_closed
+
+    def _spy(conn: http11.HTTP11Connection) -> None:
+        state = conn._h11_state
+        pooled = state.our_state is h11.DONE and state.their_state is h11.DONE
+        seen.append((pooled, bool(client._active_streams)))
+        original(conn)
+        after()
+
+    monkeypatch.setattr(http11.HTTP11Connection, "_response_closed", _spy)
+    return seen
+
+
+@pytest.mark.parametrize("loop", sorted(_READ_LOOPS))
+def test_a_finished_stream_leaves_the_abort_registry_before_its_connection_is_pooled(
+    monkeypatch: pytest.MonkeyPatch, loop: str
+) -> None:
+    """httpx closes the response at its last chunk, inside the read loop; it deregisters first."""
+    server = _KeepAliveServer()
+    client = _real_client(server.url)
+    seen = _spy_on_connection_release(monkeypatch, client)
+    try:
+        assert _READ_LOOPS[loop](client)
+    finally:
+        client._http.close()
+        server.close()
+    assert seen == [(True, False)]
+    assert client._active_streams == set()
+
+
+@pytest.mark.parametrize("loop", sorted(_READ_LOOPS))
+def test_a_late_abort_after_a_finished_stream_spares_the_pooled_connection(
+    monkeypatch: pytest.MonkeyPatch, loop: str
+) -> None:
+    """An abort that lands right after a normal end leaves the next request its connection."""
+    server = _KeepAliveServer()
+    client = _real_client(server.url)
+    aborts: list[None] = []
+
+    def _late_abort() -> None:
+        if not aborts:
+            aborts.append(None)
+            client.abort_streams()
+
+    _spy_on_connection_release(monkeypatch, client, after=_late_abort)
+    try:
+        first = _READ_LOOPS[loop](client)
+        second = _READ_LOOPS[loop](client)
+    finally:
+        client._http.close()
+        server.close()
+    assert aborts == [None]
+    assert first == second
+    assert first
+    assert server.accepted == 1
+
+
+def test_a_stream_closed_early_leaves_the_registry_before_its_connection_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generator closed mid-stream deregisters before httpcore drops the unfinished connection."""
+    server = _KeepAliveServer()
+    client = _real_client(server.url)
+    seen = _spy_on_connection_release(monkeypatch, client)
+    tokens = client.chat([{"role": "user", "content": "hi"}], stream=True)
+    try:
+        assert next(tokens) == "Hi"
+    finally:
+        tokens.close()
+        client._http.close()
+        server.close()
+    assert seen == [(False, False)]
+    assert client._active_streams == set()
+
+
+def test_abort_streams_closes_a_socketless_stream_outside_the_registry_lock() -> None:
+    """The fallback close deregisters under the registry lock, so the sweep must not hold it."""
+    client = _client(_streamed_body_handler)
+    tokens = client.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert next(tokens) == "He"
+    assert len(client._active_streams) == 1
+    aborter = threading.Thread(target=client.abort_streams, daemon=True)
+    aborter.start()
+    aborter.join(timeout=10)
+    assert not aborter.is_alive()
+    assert client._active_streams == set()
+    tokens.close()
+
+
+def test_abortable_stream_closes_its_inner_stream_once() -> None:
+    """Two closes that race past httpx's own closed check release the connection once."""
+    from unittest.mock import MagicMock
+
+    from lilbee.providers.fleet.client import _AbortableStream
+
+    client = _client()
+    resp = MagicMock()
+    inner = MagicMock(spec=httpx.SyncByteStream)
+    inner.__iter__.return_value = iter([b"a", b"b"])
+    stream = _AbortableStream(inner, resp, client)
+    client._active_streams.add(resp)
+    assert list(stream) == [b"a", b"b"]
+    stream.close()
+    stream.close()
+    inner.close.assert_called_once_with()
+    assert client._active_streams == set()
+
+
+def test_a_response_read_whole_on_arrival_is_not_registered() -> None:
+    """A closed response has no connection to abort and no close left to deregister it."""
+    client = _client()
+    assert list(client.chat([{"role": "user", "content": "hi"}], stream=True)) == ["He", "llo"]
+    assert client._active_streams == set()
+
+
+def _real_client(url: str) -> LlamaServerClient:
+    client = LlamaServerClient(url, "test-model", http=httpx.Client(base_url=url))
+    client._needs_alternation = False
+    return client
+
+
+def test_stream_cut_after_first_frame_says_the_answer_is_cut() -> None:
+    server = _ClosingServer(frames=2)
+    stream = _real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert "stopped answering" in str(caught.value)
+    assert "restarted" not in str(caught.value)
+    assert "Send your message again" in str(caught.value)
+    assert not isinstance(caught.value, httpx.HTTPError)
+    assert not is_connection_failure(caught.value)
+    assert isinstance(caught.value.__cause__, httpx.TransportError)
+
+
+def test_stream_cut_by_a_read_timeout_keeps_its_cause_and_text() -> None:
+    """The engine is alive but silent: nothing restarted, and the text says so."""
+    server = _ClosingServer(frames=1, mode="silent")
+    http = httpx.Client(base_url=server.url, timeout=httpx.Timeout(0.2))
+    client = LlamaServerClient(server.url, "test-model", http=http)
+    client._needs_alternation = False
+    stream = client.chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert isinstance(caught.value.__cause__, httpx.ReadTimeout)
+    assert "stopped answering" in str(caught.value)
+    assert "restarted" not in str(caught.value)
+
+
+def test_stream_cut_by_a_reset_keeps_its_cause_and_text() -> None:
+    server = _ClosingServer(frames=1, mode="reset")
+    stream = _real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert isinstance(caught.value.__cause__, httpx.TransportError)
+    assert "stopped answering" in str(caught.value)
+    assert "restarted" not in str(caught.value)
+
+
+class _CleanEndServer(_LoopbackServer):
+    """A loopback server whose chat body ends cleanly, with the chosen closing frames.
+
+    It sends one text frame, then ``finish`` and ``sentinel`` as asked, then the
+    chunked terminator. A proxy that outlives a killed engine ends its body like
+    this when ``finish`` and ``sentinel`` are both off.
+    """
+
+    def __init__(self, *, finish: bool, sentinel: bool, text: bool = True) -> None:
+        self._text = text
+        self._finish = finish
+        self._sentinel = sentinel
+        super().__init__()
+
+    def _serve(self) -> None:
+        conn, _ = self._sock.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            )
+            frames = [b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'] if self._text else []
+            if self._finish:
+                frames.append(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+            if self._sentinel:
+                frames.append(b"data: [DONE]\n\n")
+            for frame in frames:
+                conn.sendall(f"{len(frame):x}\r\n".encode() + frame + b"\r\n")
+            conn.sendall(b"0\r\n\r\n")
+            # Close only after the client has read the body, so no reset hides it.
+            conn.settimeout(1.0)
+            with contextlib.suppress(OSError):
+                conn.recv(65536)
+
+
+@pytest.mark.parametrize(
+    ("finish", "sentinel"), [(True, True), (True, False), (False, True)], ids=lambda v: str(v)
+)
+def test_stream_with_a_finish_or_a_sentinel_ends_as_complete(finish: bool, sentinel: bool) -> None:
+    server = _CleanEndServer(finish=finish, sentinel=sentinel)
+    items = list(_real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}]))
+    server.close()
+    assert items[0] == "Hi"
+    assert any(isinstance(i, StreamFinish) for i in items) is finish
+
+
+def test_stream_ending_with_no_finish_and_no_sentinel_is_cut() -> None:
+    server = _CleanEndServer(finish=False, sentinel=False)
+    stream = _real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}])
+    assert next(stream) == "Hi"
+    with pytest.raises(StreamInterruptedError) as caught:
+        list(stream)
+    server.close()
+    assert "The model server stopped answering and the answer is cut." in str(caught.value)
+    assert "Send your message again." in str(caught.value)
+
+
+def test_stream_with_no_frame_at_all_is_not_called_cut() -> None:
+    """No frame was sent, so the caller's existing retry path decides, not this check."""
+    server = _CleanEndServer(finish=False, sentinel=False, text=False)
+    items = list(_real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}]))
+    server.close()
+    assert items == []
+
+
+def test_stream_cut_before_first_frame_keeps_the_transport_error() -> None:
+    """Nothing was sent, so the caller can still rediscover the engine and retry."""
+    server = _ClosingServer(frames=0)
+    stream = _real_client(server.url).chat_stream_items([{"role": "user", "content": "hi"}])
+    with pytest.raises(httpx.TransportError):
+        next(stream)
+    server.close()

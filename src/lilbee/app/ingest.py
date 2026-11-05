@@ -272,10 +272,10 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
         before = dict(persisted or {})
         roots = dict(before)
         result = _classify(paths, roots, docs_resolved, force=force)
-        config.linked_roots = roots  # refresh the in-process view (picks up merges)
         return roots, (result, before)
 
     result, before = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    settings.sync_from_resolver(config, ["linked_roots"])
     if result.registered:
         _follow_registered(before, result)
     names = SourceLocations(config.linked_roots)
@@ -458,10 +458,11 @@ def unregister_roots(names: Iterable[str]) -> list[str]:
                 continue
             del roots[label]
             removed.append(label)
-        config.linked_roots = roots  # refresh the in-process view
         return roots, removed
 
-    return settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    result = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    settings.sync_from_resolver(config, ["linked_roots"])
+    return result
 
 
 log = logging.getLogger(__name__)

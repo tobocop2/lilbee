@@ -111,6 +111,25 @@ class TestStreamResponseDispatch:
         assert "forcibly closed" not in rendered
         assert msg.STREAM_DISCONNECTED.strip("\n") in rendered
 
+    def test_cut_stream_shows_the_plain_message(self):
+        from lilbee.providers.fleet.client import StreamInterruptedError
+
+        screen = self._screen()
+        widget = MagicMock()
+        services = MagicMock()
+        services.searcher.ask_stream.side_effect = StreamInterruptedError()
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            screen._do_stream_response(_Turn("q", widget, 0, None), None)
+        rendered = " ".join(str(c.args) for c in widget.append_content.call_args_list)
+        assert "model server stopped answering" in rendered
+        assert "Send your message again" in rendered
+
     def test_other_error_shows_stream_error(self):
         screen = self._screen()
         widget = MagicMock()
@@ -167,7 +186,10 @@ class TestDoAdoptAndRetry:
         screen = _bare_screen()
         screen._send_message = MagicMock()  # type: ignore[method-assign]
         with (
-            patch("lilbee.app.models.adopt_embedder") as adopt,
+            patch(
+                "lilbee.app.models.adopt_embedder",
+                return_value=MagicMock(reindex_required=False),
+            ) as adopt,
             patch(
                 "lilbee.cli.tui.screens.chat.call_from_thread",
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
@@ -176,6 +198,25 @@ class TestDoAdoptAndRetry:
             screen._do_adopt_and_retry("orgA/repoA/built.gguf", "q")
         adopt.assert_called_once_with("orgA/repoA/built.gguf")
         screen._send_message.assert_called_once_with("q")
+
+    def test_an_index_that_still_mismatches_offers_a_rebuild_and_does_not_resend(self):
+        screen = _bare_screen()
+        screen._send_message = MagicMock()  # type: ignore[method-assign]
+        fake_app = MagicMock()
+        with (
+            patch(
+                "lilbee.app.models.adopt_embedder",
+                return_value=MagicMock(reindex_required=True),
+            ),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+            patch.object(type(screen), "app", new_callable=PropertyMock, return_value=fake_app),
+        ):
+            screen._do_adopt_and_retry("orgA/repoA/built.gguf", "q")
+        fake_app.offer_rebuild.assert_called_once_with(msg.SETTINGS_REINDEX_MESSAGE)
+        screen._send_message.assert_not_called()
 
     def test_failure_notifies_and_does_not_resend(self):
         screen = _bare_screen()

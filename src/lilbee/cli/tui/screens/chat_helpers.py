@@ -222,8 +222,15 @@ def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressC
             _show_tesseract_ocr(reporter, data)
         elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
             embed_tick(data)
+        elif event_type == EventType.SYNC_WAIT:
+            _show_sync_wait(reporter)
 
     return on_progress
+
+
+def _show_sync_wait(reporter: ProgressReporter) -> None:
+    """Show on the task bar that this sync waits for another; the sync logs the full notice."""
+    reporter.update(0, msg.SYNC_WAITING, indeterminate=True)
 
 
 def build_sync_progress_callback(
@@ -263,6 +270,8 @@ def build_sync_progress_callback(
             _show_tesseract_ocr(reporter, data)
         elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
             embed_tick(data)
+        elif event_type == EventType.SYNC_WAIT:
+            _show_sync_wait(reporter)
         elif event_type == EventType.SYNC_DONE and isinstance(data, SyncDoneEvent):
             total = data.added + data.updated + data.removed
             reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)

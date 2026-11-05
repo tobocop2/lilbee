@@ -17,6 +17,7 @@ from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Label, Static
 
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.task_queue import Task, TaskStatus, TaskType
 from lilbee.cli.tui.widgets.progress_cell import (
@@ -42,7 +43,8 @@ _STATUS_CLASSES: tuple[str, ...] = tuple(_STATUS_CLASS.values())
 
 # Pill palette: background color per task type. Sync/add/remove/import share
 # $secondary (data-mutating ops), download uses $accent (network), wiki
-# uses $warning (CPU-heavy generation), crawl uses $primary (external).
+# uses $warning (CPU-heavy generation), crawl uses $primary (external),
+# analyze uses its own green (reads only).
 _TASK_TYPE_BG: dict[str, str] = {
     TaskType.DOWNLOAD.value: "$accent",
     TaskType.SYNC.value: "$secondary",
@@ -51,6 +53,7 @@ _TASK_TYPE_BG: dict[str, str] = {
     TaskType.IMPORT.value: "$secondary",
     TaskType.EXPORT.value: "$primary",
     TaskType.CRAWL.value: "$primary",
+    TaskType.ANALYZE.value: "$success-darken-2",
     TaskType.WIKI.value: "$warning",
     TaskType.SETUP.value: "$warning-darken-1",
 }
@@ -73,7 +76,7 @@ _TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset(
 )
 
 
-def _build_head(task: Task, elapsed: str) -> Content:
+def _build_head(task: Task, elapsed: str, *, cancelling: bool = False) -> Content:
     """Build the top line: name + type pill + status pill, elapsed trailing.
 
     Kept as a module-level helper so tests can exercise the pill
@@ -87,7 +90,7 @@ def _build_head(task: Task, elapsed: str) -> Content:
         Content(" "),
         pill(task.task_type, type_bg, "$text"),
         Content(" "),
-        pill(task.status.value, status_bg, status_fg),
+        pill(msg.TASK_STATUS_CANCELLING if cancelling else task.status.value, status_bg, status_fg),
     ]
     if elapsed:
         parts.append(Content(" "))
@@ -134,7 +137,7 @@ class TaskRow(Widget, can_focus=True):
         yield Label("", id="row-meta", classes="row-meta")
         yield Static("", id="row-bar", classes="row-bar")
 
-    def update(self, task: Task, tick: int) -> None:
+    def update(self, task: Task, tick: int, *, cancelling: bool = False) -> None:
         """Re-render from a Task snapshot. Safe to call every poll tick.
 
         Quietly no-ops until the row's child labels have mounted, so the
@@ -158,7 +161,7 @@ class TaskRow(Widget, can_focus=True):
             return  # compose hasn't finished; retry on next poll
 
         elapsed = _format_elapsed(task)
-        head.update(_build_head(task, elapsed))
+        head.update(_build_head(task, elapsed, cancelling=cancelling))
 
         # A DONE task's detail is whatever the last progress tick wrote
         # ("442/610 MB", "Syncing foo.md..."): stale and confusing now that the

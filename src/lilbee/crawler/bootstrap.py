@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -278,6 +279,17 @@ def _resolve_playwright_runner() -> tuple[list[str], dict[str, str]]:
             return [sys.executable, "-m", "playwright"], dict(os.environ)
         raise
     return [str(driver_exe), str(driver_cli)], dict(get_driver_env())
+
+
+def install_deps_command() -> str:
+    """The shell command that installs the system libraries Chromium needs.
+
+    Built from the same runner as ``playwright install``, so it runs on a frozen
+    build and on a tool install, where no ``playwright`` is on PATH. Raises
+    :class:`CrawlerBrowserError` when no runner is available.
+    """
+    argv, _env = _resolve_playwright_runner()
+    return shlex.join([*argv, "install-deps", "chromium"])
 
 
 async def bootstrap_chromium(

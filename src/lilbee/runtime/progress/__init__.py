@@ -8,6 +8,7 @@ from lilbee.runtime.progress.callbacks import (
 from lilbee.runtime.progress.types import (
     CRAWL_TOTAL_UNKNOWN,
     UPGRADE_HEADLINE,
+    AnalyzeEvent,
     BatchProgressEvent,
     BatchStatus,
     CrawlDoneEvent,
@@ -28,6 +29,7 @@ from lilbee.runtime.progress.types import (
     SseErrorCode,
     SseEvent,
     SyncDoneEvent,
+    SyncWaitEvent,
     TableWork,
     UpgradePhase,
     WikiPageEvent,
@@ -38,6 +40,7 @@ from lilbee.runtime.progress.types import (
 __all__ = [
     "CRAWL_TOTAL_UNKNOWN",
     "UPGRADE_HEADLINE",
+    "AnalyzeEvent",
     "BatchProgressEvent",
     "BatchStatus",
     "CrawlDoneEvent",
@@ -60,6 +63,7 @@ __all__ = [
     "SseErrorCode",
     "SseEvent",
     "SyncDoneEvent",
+    "SyncWaitEvent",
     "TableWork",
     "UpgradePhase",
     "WikiPageEvent",

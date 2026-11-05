@@ -1,12 +1,13 @@
 """Persistent settings stored in config.toml alongside the data directory."""
 
+import logging
 import os
 import threading
 import tomllib
 import weakref
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
 from typing import Any, TypeVar
 
@@ -14,8 +15,24 @@ import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
-from lilbee.core.config.model import env_value, toml_value, toml_values
+from lilbee.core.config.defaults import SKIP_TOML_ENV
+from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.load_warnings import warn_on_load
+from lilbee.core.config.model import refusal_sentence, toml_value, toml_values
+from lilbee.core.config.resolve import (
+    PROFILE_NAME_KEY,
+    PROFILE_TABLE,
+    PROFILE_VALUES_KEY,
+    ROOT_DERIVED_FIELDS,
+    Resolved,
+    read_layers,
+    resolve_all,
+    sanitize_soft_fields,
+    toml_is_readable,
+)
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
+
+log = logging.getLogger(__name__)
 
 _settings_lock = threading.Lock()
 
@@ -25,6 +42,9 @@ T = TypeVar("T")
 # data root, so the in-process mutex alone lets two of them interleave a
 # read-modify-write and silently drop each other's keys.
 _CONFIG_LOCK_TIMEOUT_S = 10.0
+
+# An overlay leaves these on cfg when the root gives them no value of its own.
+HELD_AT_BUILT_IN = ROOT_DERIVED_FIELDS | set(MODEL_ROLE_FIELDS)
 
 
 def _config_path(data_root: Path) -> Path:
@@ -51,13 +71,29 @@ def load(data_root: Path) -> dict[str, Any]:
     Values keep the types TOML gave them. Stringifying here used to turn a
     ``true`` into ``"True"`` in memory, which the next save then wrote back
     quoted, so the file drifted away from valid types for its own fields.
+
+    A file that changes while it is read raises ConfigChangedWhileReadError: an editor
+    that rewrites the file in place can leave it half written at that moment, and a
+    read-modify-write of that half would drop every key it does not hold yet.
     """
     path = _config_path(data_root)
     if not path.exists():
         return {}
     harden_private_file(path)
+    before = _stamp_of(path)
     with path.open("rb") as f:
-        return dict(tomllib.load(f))
+        values = dict(tomllib.load(f))
+    if _stamp_of(path) != before:
+        raise ConfigChangedWhileReadError(f"{path} changed while it was read; try again")
+    return values
+
+
+class ConfigChangedWhileReadError(OSError):
+    """config.toml changed while it was read, so the reading can hold half of a write."""
+
+
+class ReadOnlyConfigError(PermissionError):
+    """config.toml exists and its owner has made it read-only; a write would replace it."""
 
 
 def save(data_root: Path, settings: dict[str, Any]) -> None:
@@ -77,6 +113,10 @@ def save(data_root: Path, settings: dict[str, Any]) -> None:
     validation.
     """
     path = _config_path(data_root)
+    if path.exists() and not os.access(path, os.W_OK):
+        # The atomic replace swaps the file through a temp file, which a read-only file
+        # does not stop: refuse here, the one writer every surface goes through.
+        raise ReadOnlyConfigError(f"{path} is read-only; make it writable and try again")
     present = {
         k: str(v) if isinstance(v, PurePath) else v
         for k, v in sorted(settings.items())
@@ -118,11 +158,32 @@ def update_values(data_root: Path, updates: dict[str, Any]) -> None:
 
 
 def delete_values(data_root: Path, keys: list[str]) -> None:
-    """Batch delete multiple keys from config.toml (single write)."""
+    """Batch delete multiple keys from config.toml (single write, none when no key is present)."""
     with _config_write_lock(data_root):
         current = load(data_root)
-        for key in keys:
+        present = [key for key in dict.fromkeys(keys) if key in current]
+        if not present:
+            return
+        for key in present:
+            del current[key]
+        save(data_root, current)
+
+
+def write_profile_table(
+    data_root: Path, name: str, values: Mapping[str, Any], drop: Iterable[str] = ()
+) -> None:
+    """Replace the ``[profile]`` table with *name* and *values* and remove the *drop* keys.
+
+    Other top-level keys stay as they are; one write does both.
+    """
+    table: dict[str, Any] = {PROFILE_NAME_KEY: name}
+    if values:
+        table[PROFILE_VALUES_KEY] = dict(values)
+    with _config_write_lock(data_root):
+        current = load(data_root)
+        for key in drop:
             current.pop(key, None)
+        current[PROFILE_TABLE] = table
         save(data_root, current)
 
 
@@ -143,10 +204,40 @@ def mutate_value(data_root: Path, key: str, fn: Callable[[Any], tuple[Any, T]]) 
     return result
 
 
+def _assign_resolved(
+    config: Config, resolved: Mapping[str, Resolved], keys: Iterable[str], root: Path
+) -> list[str]:
+    """Set each of *keys* on *config* to its resolved value, warning on one the field rejects.
+
+    Returns the keys it set.
+    """
+    sanitized = sanitize_soft_fields(dict(resolved), root)
+    assigned: list[str] = []
+    for key in keys:
+        entry = sanitized[key]
+        try:
+            setattr(config, key, entry.value)
+        except (ValueError, TypeError):
+            # A bad variable is the entry point's to refuse, in its one line.
+            if entry.source is not SettingSource.ENV:
+                warn_on_load(
+                    f"Ignoring {entry.source} value in {root}: {refusal_sentence(key, entry.value)}"
+                )
+            continue
+        assigned.append(key)
+    return assigned
+
+
+def sync_from_resolver(config: Config, keys: Iterable[str]) -> None:
+    """Set each of *keys* on *config* to the value the resolver gives under its data root."""
+    root = config.data_root
+    _assign_resolved(config, resolve_all(read_layers(root)), keys, root)
+
+
 def _overlay_file(root: Path) -> Path | None:
     """The config.toml an overlay of *root* reads: None without one or under the skip switch."""
     path = _config_path(root)
-    if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1" or not path.exists():
+    if os.environ.get(SKIP_TOML_ENV) == "1" or not path.exists():
         return None
     return path
 
@@ -154,30 +245,125 @@ def _overlay_file(root: Path) -> Path | None:
 def overlay_stamp(root: Path) -> tuple[int, int, int] | None:
     """What a write of the config.toml an overlay of *root* reads changes; None without one."""
     path = _overlay_file(root)
-    if path is None:
-        return None
+    return None if path is None else _stamp_of(path)
+
+
+def _stamp_of(path: Path) -> tuple[int, int, int] | None:
+    """What a write of the file at *path* changes; None when it is missing."""
     try:
         stat = path.stat()
     except OSError:
-        return None  # deleted since the check above
+        return None
     return stat.st_mtime_ns, stat.st_size, stat.st_ino
 
 
-def overlay_persisted_settings(root: Path) -> None:
-    """Set on cfg each writable setting ``<root>/config.toml`` holds and no variable sets.
+@dataclass(frozen=True)
+class OverlayReading:
+    """What one overlay read from a root's config.toml: the file's stamp and the values it set."""
 
-    A value Config refuses is left out with a warning that names the file, and
-    the setting keeps the value it had. ``LILBEE_SKIP_TOML_CONFIG=1`` disables it.
+    root: Path
+    stamp: tuple[int, int, int] | None
+    values: Mapping[str, Any]
+
+
+class _LastOverlay:
+    """The reading of the last overlay onto cfg, so a follower started later begins from it."""
+
+    def __init__(self) -> None:
+        self._reading: OverlayReading | None = None
+        self._lock = threading.Lock()
+
+    def record(self, reading: OverlayReading) -> None:
+        with self._lock:
+            self._reading = reading
+
+    def of(self, root: Path) -> OverlayReading | None:
+        with self._lock:
+            reading = self._reading
+        return reading if reading is not None and reading.root == root else None
+
+
+_last_overlay = _LastOverlay()
+
+
+def overlay_persisted_settings(root: Path) -> None:
+    """Set every overlayable key on cfg to its resolved value under ``root``.
+
+    A value in ``<root>/config.toml`` that Config refuses is left out with a warning
+    that names the file, and the setting keeps the value it had. A file that does not
+    parse is reported and changes nothing. A root-derived path at its built-in keeps the
+    value the caller set from ``root``, and a model role at its built-in keeps the
+    model cfg holds, so entering a fresh root leaves it usable. A root
+    without the file resolves as a root with an empty one, and
+    ``LILBEE_SKIP_TOML_CONFIG=1`` disables the overlay. The file is read once, under
+    the lock a writer takes, and ``last_overlay`` returns that reading.
     """
-    path = _overlay_file(root)
-    if path is None:
-        return
-    harden_private_file(path)
-    stored = toml_values(path)
-    overlayable = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
-    for key, value in stored.items():
-        if key in overlayable and env_value(key) is None:
-            setattr(cfg, key, value)
+    stamp, values = read_persisted(root)
+    for key, value in (values or {}).items():
+        setattr(cfg, key, value)
+    _last_overlay.record(OverlayReading(root, stamp, values or {}))
+
+
+def last_overlay(root: Path) -> OverlayReading | None:
+    """The reading the last overlay took, when it was of *root*; None otherwise."""
+    return _last_overlay.of(root)
+
+
+def persisted_values(root: Path) -> dict[str, Any] | None:
+    """The value the overlay of *root* sets on each key, as cfg holds it.
+
+    A key the overlay leaves alone is absent: a value Config refuses, a root-derived
+    path at its built-in, and a model role at its built-in. None under the skip switch
+    or when the file does not parse, because the overlay then changes nothing.
+    """
+    if os.environ.get(SKIP_TOML_ENV) == "1":
+        return None
+    path = _config_path(root)
+    accepted: Mapping[str, Any] = {}
+    if path.exists():
+        harden_private_file(path)
+        accepted = toml_values(path)
+        if not toml_is_readable(path):
+            return None
+    layers = read_layers(root)
+    refused = (layers.user.keys() - accepted.keys()) | layers.refused_user
+    resolved = resolve_all(
+        replace(layers, user={key: layers.user[key] for key in layers.user.keys() - refused})
+    )
+    keys = [
+        key
+        for key in sorted((set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS) - refused)
+        if not (key in HELD_AT_BUILT_IN and resolved[key].source is SettingSource.BUILT_IN)
+    ]
+    trial = cfg.model_copy()
+    return {key: getattr(trial, key) for key in _assign_resolved(trial, resolved, keys, root)}
+
+
+def read_persisted(root: Path) -> tuple[tuple[int, int, int] | None, dict[str, Any] | None]:
+    """The stamp of *root*'s config.toml and ``persisted_values``, from one locked read.
+
+    The read holds the lock a writer takes, so it never sees a write by lilbee in
+    progress. Without the file there is nothing to lock, so the read creates no folder
+    or lock file. Another program can rewrite the file in place without the lock: when
+    the stamp moves during the read, the reading can hold half of that write, so the
+    values are None, as for a file that does not parse, and the stamp is None, so the
+    next check reads the file again.
+    """
+    if overlay_stamp(root) is None:
+        return _stable_reading(root)
+    with _config_write_lock(root):
+        return _stable_reading(root)
+
+
+def _stable_reading(
+    root: Path,
+) -> tuple[tuple[int, int, int] | None, dict[str, Any] | None]:
+    """``persisted_values`` of *root* and its stamp; both None when the stamp moved during it."""
+    stamp = overlay_stamp(root)
+    values = persisted_values(root)
+    if overlay_stamp(root) != stamp:
+        return None, None
+    return stamp, values
 
 
 @dataclass

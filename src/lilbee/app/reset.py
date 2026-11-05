@@ -71,7 +71,7 @@ def perform_reset() -> ResetResult:
         # content reappears after a "factory reset". Other settings survive:
         # reset deletes data, not configuration.
         settings.delete_value(cfg.data_root, "linked_roots")
-        cfg.linked_roots = {}
+        settings.sync_from_resolver(cfg, ["linked_roots"])
         # The held-out record files of an older lilbee sit at data_root too; left
         # there, the next open would import them into the emptied index.
         remove_legacy_files(cfg.data_root)

@@ -29,6 +29,8 @@ from lilbee.server.handlers.config import (
     get_config,
     get_config_defaults,
     get_config_schema,
+    get_config_sources,
+    reset_config,
     update_config,
 )
 from lilbee.server.handlers.crawl import crawl_stream
@@ -173,17 +175,16 @@ async def warm_stream() -> AsyncGenerator[str, None]:
     provider = get_services().provider
     deadline = time.monotonic() + _WARM_STREAM_TIMEOUT_S
     while time.monotonic() < deadline:
+        # Same first question as /api/health: a served role is ready whatever the
+        # local tracker last recorded (a remote chat role leaves a stale local error).
+        if provider.role_ready(WorkerRole.CHAT):
+            yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.READY).model_dump())
+            break
         snapshot = provider.warm_progress()
         if snapshot is None:
-            if provider.role_ready(WorkerRole.CHAT):
-                yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.READY).model_dump())
-                break
             yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.STARTING).model_dump())
         else:
             yield sse_event(SseEvent.WARM, snapshot.model_dump())
-            # A stale READY after eviction must not short-circuit; wait for the role.
-            if snapshot.phase is WarmPhase.READY and provider.role_ready(WorkerRole.CHAT):
-                break
             if snapshot.phase is WarmPhase.ERROR:
                 break
         await asyncio.sleep(_WARM_POLL_INTERVAL_S)
@@ -331,6 +332,7 @@ __all__ = [
     "get_config",
     "get_config_defaults",
     "get_config_schema",
+    "get_config_sources",
     "get_source_content",
     "gpu_stats_stream",
     "gpus",
@@ -349,6 +351,7 @@ __all__ = [
     "placement_clear",
     "placement_preview",
     "placement_set",
+    "reset_config",
     "search",
     "set_chat_model",
     "set_embedding_model",

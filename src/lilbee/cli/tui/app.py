@@ -6,7 +6,8 @@ import contextlib
 import logging
 import os
 import sys
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -24,10 +25,20 @@ from textual.screen import Screen
 from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
-from lilbee.app.services import get_services, peek_services
-from lilbee.app.settings import SettingsUpdateResult, apply_settings_update
+from lilbee.app.services import get_services, peek_services, set_config_refresh
+from lilbee.app.settings import (
+    SettingsUpdateResult,
+    adopt_external_changes,
+    apply_settings_update,
+    config_write_failure_message,
+    reset_for_provider_switch,
+    reset_settings,
+    setting_sources,
+    start_config_reading,
+)
 from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.app.themes import DARK_THEMES
+from lilbee.cli.app import chat_model_overridden
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.color_compat import (
     EightBitPalette,
@@ -37,22 +48,31 @@ from lilbee.cli.tui.color_compat import (
     resolve_term_program,
 )
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.screens.analyze_report import start_analysis
 from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+from lilbee.cli.tui.widgets.drawer import first_direct_child
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg, load_warnings
+from lilbee.core.config.defaults import env_var_name
+from lilbee.core.config.enums import SettingSource
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.app.services import Services
+    from lilbee.cli.tui.screens.analyze_report import FinishedAnalysis
     from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
 log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
+# Textual's default screen, then the current view; anything higher is pushed over the view.
+_VIEW_DEPTH = 2
 # Long enough that a model-fallback notice or a load warning is readable before it fades.
 _FALLBACK_TOAST_TIMEOUT_S = 10.0
 
@@ -245,12 +265,17 @@ class LilbeeApp(App[None]):
         # so Footer / signal / worker wiring runs once per session.
         self._installed_screen_names: set[str] = set()
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
+        self._config_reading = start_config_reading()
+        # The app thread and the engine's retry thread both take config.toml changes.
+        self._config_lock = threading.Lock()
+        set_config_refresh(self.take_external_settings_now)
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
             self, "provider_availability_changed"
         )
         from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
+        self.last_analysis: FinishedAnalysis | None = None
 
     def notify(
         self,
@@ -474,6 +499,7 @@ class LilbeeApp(App[None]):
 
         chat_canon = canonicalize_chat_model()
         embedding_canon = canonicalize_embedding_model()
+        sources = setting_sources()
         for canon, field, label in (
             (chat_canon, "chat_model", "Chat"),
             (embedding_canon, "embedding_model", "Embedding"),
@@ -497,6 +523,27 @@ class LilbeeApp(App[None]):
                     )
                 continue
 
+            if field == "chat_model" and chat_model_overridden():
+                # --model outranks the env var and config.toml, so name the flag.
+                self._warn_with_toast(
+                    msg.MODEL_CLI_PIN_UNUSABLE.format(
+                        label=label, original=canon.original, reason=reason
+                    )
+                )
+                continue
+
+            if sources[field] is SettingSource.ENV:
+                # The env var outranks any swap, so name it instead of claiming one.
+                self._warn_with_toast(
+                    msg.MODEL_ENV_PIN_UNUSABLE.format(
+                        label=label,
+                        original=canon.original,
+                        reason=reason,
+                        env_var=env_var_name(field),
+                    )
+                )
+                continue
+
             # A rejected swap (validation or disk error) must not be fatal at startup.
             try:
                 apply_settings_update({field: canon.effective})
@@ -517,14 +564,19 @@ class LilbeeApp(App[None]):
                 # fallback worth a warning toast.
                 log.info(msg.MODEL_ADOPTED_LOG.format(label=label, effective=canon.effective))
                 continue
-            notice = msg.MODEL_FALLBACK_NOTICE.format(
-                label=label, original=canon.original, effective=canon.effective, reason=reason
-            )
-            log.warning(notice)
-            call_from_thread(
-                self, self.notify, notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S
+            self._warn_with_toast(
+                msg.MODEL_FALLBACK_NOTICE.format(
+                    label=label, original=canon.original, effective=canon.effective, reason=reason
+                )
             )
         call_from_thread(self, self._refresh_title)
+
+    def _warn_with_toast(self, notice: str) -> None:
+        """Log *notice* at WARNING and toast it from the worker thread."""
+        log.warning(notice)
+        call_from_thread(
+            self, self.notify, notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S
+        )
 
     def _refresh_title(self) -> None:
         """Re-derive the window title after canonicalization may have swapped the ref."""
@@ -541,8 +593,8 @@ class LilbeeApp(App[None]):
     def action_cycle_theme(self) -> None:
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
         name = DARK_THEMES[self._theme_index]
-        self._apply_and_persist_theme(name)
-        self.notify(msg.THEME_SET.format(name=name))
+        if self._apply_and_persist_theme(name):
+            self.notify(msg.THEME_SET.format(name=name))
 
     def action_toggle_lilbee_path(self) -> None:
         """Flip the status-bar pill between the friendly name and the data-root path."""
@@ -554,11 +606,20 @@ class LilbeeApp(App[None]):
             self._apply_and_persist_theme(name)
             self._sync_theme_index_to_current()
 
-    def _apply_and_persist_theme(self, name: str) -> None:
-        """Apply *name* live and write it to config.toml."""
+    def _apply_and_persist_theme(self, name: str) -> bool:
+        """Apply *name* live and write it to config.toml. Returns whether the write worked.
+
+        The theme stays applied for this session when the write fails; the error toast says
+        it was not saved.
+        """
 
         self.theme = name
-        apply_settings_update({"theme": name})
+        try:
+            apply_settings_update({"theme": name})
+        except OSError as exc:
+            self.notify(config_write_failure_message(exc), severity="error")
+            return False
+        return True
 
     def _reject_if_downloading(self, value: object) -> bool:
         """Toast and return True if *value* is a model ref still downloading, so a
@@ -571,29 +632,36 @@ class LilbeeApp(App[None]):
         self.notify(msg.MODEL_BEING_DOWNLOADED.format(name=downloading), severity="warning")
         return True
 
-    def set_active_model(self, key: str, value: str) -> None:
+    def set_active_model(self, key: str, value: str) -> SettingsUpdateResult | None:
         """Persist an active model ref through the shared write boundary.
 
         Refs whose download is still queued or active are refused before the
         boundary runs, so a half-pulled file cannot land in a model slot.
+        Returns the boundary's result, or None when the write is refused.
         """
         if self._reject_if_downloading(value):
-            return
+            return None
         try:
             result = apply_settings_update({key: value})
-        except ValueError as exc:
+        except (ValueError, OSError, RuntimeError) as exc:  # RuntimeError: a store error
             self.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
-            return
-        self._notify_update_warnings(result)
+            return None
+        self.notify_warnings(result.warnings)
         self.settings_changed_signal.publish((key, getattr(cfg, key)))
+        return result
 
-    def _notify_update_warnings(self, result: SettingsUpdateResult) -> None:
-        """Toast each warning a settings update reports."""
-        for warning in result.warnings:
+    def notify_warnings(self, warnings: Sequence[str]) -> None:
+        """Toast each warning a settings update, reset or discard reports."""
+        for warning in warnings:
             self.notify(warning, severity="warning")
 
-    def set_setting(self, key: str, value: object) -> None:
+    def set_setting(self, key: str, value: object, *, ask_rebuild: bool = True) -> bool:
         """Apply a writable / model-role setting through the boundary, then fan out to the UI.
+
+        Returns whether the value was saved. A failed config write (a read-only file, a full
+        disk) toasts here, once, with the text the CLI, HTTP and MCP surfaces show, and
+        returns False so the caller does not record the value as saved. With *ask_rebuild*
+        False the caller asks about a rebuild itself; the wiki wipe question still comes.
 
         Raises ``ValueError`` for keys outside ``WRITABLE_CONFIG_FIELDS | MODEL_ROLE_FIELDS``
         or values rejected by pydantic validation. Callers either catch and toast or let it
@@ -602,15 +670,94 @@ class LilbeeApp(App[None]):
         # A model-role ref still downloading must not land in a slot (parity with
         # set_active_model); toast and skip rather than half-pull.
         if key in MODEL_ROLE_FIELDS and self._reject_if_downloading(value):
-            return
-        self._notify_update_warnings(apply_settings_update({key: value}))
-        normalized = getattr(cfg, key)
-        if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:
-            self.theme = normalized
-            self._sync_theme_index_to_current()
-        self.settings_changed_signal.publish((key, normalized))
-        if key == "wiki" and normalized is False:
+            return False
+        try:
+            result = apply_settings_update({key: value})
+        except OSError as exc:
+            self.notify(config_write_failure_message(exc), severity="error")
+            return False
+        self.notify_warnings(result.warnings)
+        self.publish_settings([key])
+        if ask_rebuild and result.reindex_required:
+            self.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE, [key])
+        elif key == "wiki" and cfg.wiki is False:
             self._offer_wiki_wipe()
+        return True
+
+    def reset_and_publish(self, keys: list[str], *, skip_unresettable: bool = False) -> list[str]:
+        """Reset *keys* through the boundary, fan each out to the UI, and return the reset keys.
+
+        Raises ``ValueError`` or ``OSError`` from the boundary; nothing changes on either.
+        A reset that turns the wiki off offers the wipe. It never offers a rebuild: the
+        Settings screen asks once when the user leaves.
+        """
+        wiki_was_on = cfg.wiki
+        result = reset_settings(keys, skip_unresettable=skip_unresettable)
+        self.notify_warnings(result.warnings)
+        self.publish_settings(result.updated)
+        if wiki_was_on and cfg.wiki is False:
+            self._offer_wiki_wipe()
+        return result.updated
+
+    def adopt_external_settings(self) -> bool:
+        """Take into cfg what another process changed in config.toml, and tell subscribers.
+
+        Returns whether the file changed since the last check, so a caller can reload
+        state that lives outside cfg, such as the profile name. An editor the user is
+        typing in keeps its text; saving it writes that value over the other process's.
+        """
+        changed, result = self._take_external_changes()
+        if result is not None:
+            self._show_taken_settings(result)
+        return changed
+
+    def take_external_settings_now(self) -> None:
+        """Take config.toml changes from the thread the engine retries on.
+
+        The settings land on cfg in the calling thread. The app thread shows them;
+        on the app thread itself the take already happened and nothing is shown.
+        """
+        try:
+            _changed, result = self._take_external_changes()
+        except Exception:
+            log.exception("Could not take the changes in config.toml; the retry runs as before.")
+            return
+        if result is not None:
+            call_from_thread(self, self._show_taken_settings, result)
+
+    def _take_external_changes(self) -> tuple[bool, SettingsUpdateResult | None]:
+        """Take the outside changes under the lock every take shares; stop the fleet after it.
+
+        The reading moves with the values under the lock, so a take that waited finds the
+        file taken. A provider switch stops the fleet, seconds long, once the lock is free.
+        """
+        with self._config_lock:
+            before = self._config_reading
+            self._config_reading, result = adopt_external_changes(before, reset_providers=False)
+            changed = self._config_reading is not before
+        reset_for_provider_switch(result)
+        return changed, result
+
+    def _show_taken_settings(self, result: SettingsUpdateResult) -> None:
+        self.notify_warnings(result.warnings)
+        self.publish_settings(result.updated)
+
+    def on_app_focus(self) -> None:
+        """The terminal came back to the front: another shell may have changed config.toml."""
+        self.adopt_external_settings()
+
+    def publish_settings(self, keys: Iterable[str]) -> None:
+        """Apply a changed theme and tell subscribers each of *keys* now holds its cfg value."""
+        for key in keys:
+            normalized = getattr(cfg, key)
+            if (
+                key == "theme"
+                and isinstance(normalized, str)
+                and normalized in self.available_themes
+            ):
+                self.theme = normalized
+                self._sync_theme_index_to_current()
+            self.settings_changed_signal.publish((key, normalized))
 
     def _offer_wiki_wipe(self) -> None:
         """Ask whether to delete what the wiki generated, now that it is off.
@@ -653,7 +800,9 @@ class LilbeeApp(App[None]):
             self.notify(msg.APP_QUIT_AGAIN_HINT)
             return
         get_services().cancel_inference()
-        self.exit()
+        # A quit asks nothing: a rebuild the Settings edits need is named in the terminal.
+        settings = self.settings_screen()
+        self.exit(message=settings.leave() if settings is not None else None)
 
     def _view_is_refused(self, view_name: str) -> bool:
         """True when *view_name* cannot be entered now, having handled the refusal."""
@@ -669,7 +818,9 @@ class LilbeeApp(App[None]):
 
         Guards against concurrent switches via ``self._switching`` so rapid
         keypresses can't corrupt the screen stack. ``active_view`` is updated
-        after the switch completes.
+        after the switch completes. A screen pushed over the current view (the
+        catalog a model field opens, a dialog) is popped first, so the switch
+        replaces the view itself and no view stays on the stack under another.
         """
         if self._switching or self._view_is_refused(view_name):
             return
@@ -677,6 +828,7 @@ class LilbeeApp(App[None]):
         if view_name != self.active_view:
             self._previous_view = self.active_view
 
+        pops = self._pop_to_view()
         awaitable: AwaitComplete | None = None
         if view_name == msg.DEFAULT_VIEW:
             from lilbee.cli.tui.screens.chat import ChatScreen
@@ -705,11 +857,24 @@ class LilbeeApp(App[None]):
             # IndexError). Awaiting the transition first keeps the guard up for
             # the whole switch; call_next is flushed by the same event loop, so a
             # single completed switch still releases promptly.
+            for pop in pops:
+                await pop
             if awaitable is not None:
                 await awaitable
             self._switching = False
 
         self.call_next(_release)
+
+    def _pop_to_view(self) -> list[AwaitComplete]:
+        """Pop each screen pushed over the current view; views are the installed screens.
+
+        The view sits right above Textual's default screen, so the walk stops there
+        (the startup gate, not installed, holds that place until Chat replaces it).
+        """
+        pops: list[AwaitComplete] = []
+        while len(self.screen_stack) > _VIEW_DEPTH and not self.is_screen_installed(self.screen):
+            pops.append(self.pop_screen())
+        return pops
 
     def action_push_help(self) -> None:
         if self.screen.query("HelpPanel"):
@@ -771,8 +936,12 @@ class LilbeeApp(App[None]):
             and isinstance(self.focused, (Input, TextArea))
         ):
             return False
-        # Nothing to jump to when Chat is already the active view.
-        if action == "open_chat" and self.active_view == msg.DEFAULT_VIEW:
+        # Nothing to jump to when Chat is already the active view. [ and ] are
+        # priority bindings, which run before a modal screen's own handling, so
+        # over a dialog they would switch views and close it with no answer.
+        if (action == "open_chat" and self.active_view == msg.DEFAULT_VIEW) or (
+            action in ("nav_prev", "nav_next") and self.screen.is_modal
+        ):
             return False
         # False, not None: Textual drops a False binding from the row entirely
         # and renders a None one greyed but present. With sessions off there is
@@ -813,21 +982,25 @@ class LilbeeApp(App[None]):
         self.switch_view(msg.DEFAULT_VIEW)
 
     def _shows_placement_full_screen(self) -> bool:
-        """True when this screen shows the placement editor, tab or drawer.
+        """True when the current screen hosts a FleetBody directly, not via the drawer.
 
-        FleetDrawer composes a FleetBody, so this is also True while the drawer
-        is open. Callers that care about "nothing left to do" must rule the
-        drawer out first, as :meth:`_toggle_fleet_is_noop` does.
+        FleetScreen composes its FleetBody as a direct child, the same shape
+        FleetDrawer uses one level deeper; callers rule the drawer out first
+        (:meth:`_toggle_fleet_is_noop`), so a direct-child FleetBody here is
+        never the drawer's.
         """
-        return bool(self.screen.query("FleetBody"))
+        from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+        return first_direct_child(self.screen, FleetBody) is not None
 
     def _shows_sessions_full_screen(self) -> bool:
-        """True when this screen shows the session list, tab or drawer.
+        """True when the current screen hosts a SessionListPanel directly, not via the drawer.
 
-        SessionsDrawer composes a SessionListPanel, so the same caveat as
-        :meth:`_shows_placement_full_screen` applies.
+        See :meth:`_shows_placement_full_screen`.
         """
-        return bool(self.screen.query("SessionListPanel"))
+        from lilbee.cli.tui.widgets.session_list import SessionListPanel
+
+        return first_direct_child(self.screen, SessionListPanel) is not None
 
     def _toggle_fleet_is_noop(self) -> bool:
         """True when ctrl+g would do nothing, mirroring the action's own order.
@@ -838,7 +1011,7 @@ class LilbeeApp(App[None]):
         """
         from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 
-        if self.screen.query(FleetDrawer):
+        if first_direct_child(self.screen, FleetDrawer) is not None:
             return False
         return self._shows_placement_full_screen()
 
@@ -846,7 +1019,7 @@ class LilbeeApp(App[None]):
         """True when ctrl+o would do nothing. See :meth:`_toggle_fleet_is_noop`."""
         from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 
-        if self.screen.query(SessionsDrawer):
+        if first_direct_child(self.screen, SessionsDrawer) is not None:
             return False
         return self._shows_sessions_full_screen()
 
@@ -856,9 +1029,9 @@ class LilbeeApp(App[None]):
         already shows the full placement editor."""
         from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 
-        drawers = self.screen.query(FleetDrawer)
-        if drawers:
-            drawers.first().remove()
+        drawer = first_direct_child(self.screen, FleetDrawer)
+        if drawer is not None:
+            drawer.remove()
             return
         if self._shows_placement_full_screen():
             return
@@ -884,9 +1057,9 @@ class LilbeeApp(App[None]):
             return
         from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 
-        drawers = self.screen.query(SessionsDrawer)
-        if drawers:
-            drawers.first().remove()
+        drawer = first_direct_child(self.screen, SessionsDrawer)
+        if drawer is not None:
+            drawer.remove()
             return
         if self._shows_sessions_full_screen():
             return
@@ -950,13 +1123,13 @@ class LilbeeApp(App[None]):
 
         The TaskBar hint is rendered globally, so the trigger must work
         everywhere. Routes to the registered ChatScreen which owns the
-        ``_run_sync`` orchestration; switches to the Chat view first if
+        ``run_sync`` orchestration; switches to the Chat view first if
         not already there so the user can watch progress.
         """
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         if isinstance(self.screen, ChatScreen):
-            self.screen._run_sync()
+            self.screen.run_sync()
             return
         chat = self.chat_screen()
         if chat is None:
@@ -969,13 +1142,62 @@ class LilbeeApp(App[None]):
             if not self.screen_stack:
                 return  # the app is tearing down; nothing left to sync
             if isinstance(self.screen, ChatScreen):
-                chat._run_sync()
+                chat.run_sync()
                 return
             if attempts > 0:
                 self.switch_view(msg.DEFAULT_VIEW)
                 self.set_timer(0.05, lambda: _start(attempts - 1))
 
         self.call_later(_start)
+
+    def open_profile_tab(self) -> None:
+        """Switch to Settings with the Profile tab active and its dropdown focused."""
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+
+        self.switch_view("Settings")
+        screen = self.screen
+        # switch_view drops the request while an earlier switch is still settling
+        if isinstance(screen, SettingsScreen):
+            screen.call_after_refresh(screen.show_profile_tab)
+
+    def start_analyze(self) -> None:
+        """Queue analyze of the indexed documents; its report opens when it finishes."""
+        start_analysis(self, None)
+
+    def start_rebuild(self) -> None:
+        """Queue a full reindex on the chat screen's task bar without leaving this view."""
+        chat = self.chat_screen()
+        if chat is None:
+            return
+        chat.run_sync(force_rebuild=True)
+        # The rebuild builds the index with every value now in force.
+        self.rebuild_answered(None)
+
+    def rebuild_answered(self, keys: Iterable[str] | None) -> None:
+        """Count the values in force of *keys*, or of all when None, as asked about.
+
+        Leaving Settings then asks only about the other index values the visit changed.
+        """
+        settings = self.settings_screen()
+        if settings is not None:
+            settings.take_index_values(keys)
+
+    def settings_screen(self) -> SettingsScreen | None:
+        """The Settings screen when it is on the screen stack, under any dialog."""
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+
+        return next((s for s in self.screen_stack if isinstance(s, SettingsScreen)), None)
+
+    def offer_rebuild(self, message: str, keys: Iterable[str] = ()) -> None:
+        """Ask whether to rebuild the index for *keys*, saying why in *message*; yes starts it."""
+
+        def _answered(rebuild: bool | None) -> None:
+            if rebuild:
+                self.start_rebuild()
+            else:
+                self.rebuild_answered(keys)
+
+        self.push_screen(ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, message), _answered)
 
     def action_nav_prev(self) -> None:
         """Navigate to previous view ([ key)."""
@@ -990,11 +1212,11 @@ class LilbeeApp(App[None]):
         self.switch_view(view_names[(current_idx + 1) % len(view_names)])
 
 
-def apply_active_model(host_app: App[Any], key: str, value: str) -> None:
+def apply_active_model(host_app: App[Any], key: str, value: str) -> SettingsUpdateResult | None:
     """Route model writes through LilbeeApp.set_active_model."""
-    cast(LilbeeApp, host_app).set_active_model(key, value)
+    return cast(LilbeeApp, host_app).set_active_model(key, value)
 
 
-def apply_setting(host_app: App[Any], key: str, value: object) -> None:
-    """Route non-model settings writes through LilbeeApp.set_setting."""
-    cast(LilbeeApp, host_app).set_setting(key, value)
+def apply_setting(host_app: App[Any], key: str, value: object) -> bool:
+    """Route non-model settings writes through LilbeeApp.set_setting; True when saved."""
+    return cast(LilbeeApp, host_app).set_setting(key, value)

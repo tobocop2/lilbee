@@ -2953,41 +2953,82 @@ class TestUnusableChatCtxReason:
     """A chat window below the minimum grounded prompt is refused, not served."""
 
     @staticmethod
-    def _launch(role: WorkerRole, ctx: int):
+    def _launch(role: WorkerRole, ctx: int, weights_bytes: int = 0):
         from lilbee.providers.fleet.launch import InstanceLaunch
 
-        return InstanceLaunch(role=role, argv=[], env_overrides={}, model="org/m.gguf", ctx=ctx)
+        return InstanceLaunch(
+            role=role,
+            argv=[],
+            env_overrides={},
+            model="org/m.gguf",
+            ctx=ctx,
+            weights_bytes=weights_bytes,
+        )
 
     def test_collapsed_window_names_the_numbers(self, monkeypatch) -> None:
         from lilbee.providers.engine_params import min_usable_chat_ctx
 
         monkeypatch.setattr(cfg, "num_ctx", None)
-        reason = planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 512))
+        reason = planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 512), [])
         assert reason is not None
         assert "512" in reason
         assert str(min_usable_chat_ctx()) in reason
+        assert "loads, but" in reason
+
+    def test_weights_larger_than_the_free_memory_do_not_fit(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        card = FleetDevice("CUDA", 0, "gpu", 8 * _GB, 1 * _GB)
+        launch = self._launch(WorkerRole.CHAT, 512, weights_bytes=6 * _GB)
+        reason = planning_mod._unusable_chat_ctx_reason(launch, [card])
+        assert reason is not None
+        assert "does not fit" in reason
+        assert "loads" not in reason
+
+    def test_weights_within_the_free_memory_load(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        card = FleetDevice("CUDA", 0, "gpu", 8 * _GB, 7 * _GB)
+        launch = self._launch(WorkerRole.CHAT, 512, weights_bytes=6 * _GB)
+        reason = planning_mod._unusable_chat_ctx_reason(launch, [card])
+        assert reason is not None
+        assert "loads, but" in reason
+
+    def test_two_cards_name_the_cards_memory_in_gib(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        cards = [
+            FleetDevice("CUDA", 0, "gpu", 8 * _GB, 1 * _GB),
+            FleetDevice("CUDA", 1, "gpu", 8 * _GB, 1 * _GB),
+        ]
+        launch = self._launch(WorkerRole.CHAT, 512, weights_bytes=1 * _GB)
+        reason = planning_mod._unusable_chat_ctx_reason(launch, cards)
+        assert reason is not None
+        assert "Other processes hold 14 GiB of the cards' 16 GiB." in reason
 
     def test_usable_window_passes(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
-        assert planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 8192)) is None
+        launch = self._launch(WorkerRole.CHAT, 8192)
+        assert planning_mod._unusable_chat_ctx_reason(launch, []) is None
 
     def test_num_ctx_pin_bypasses_the_check(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", 512)
-        assert planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 512)) is None
+        launch = self._launch(WorkerRole.CHAT, 512)
+        assert planning_mod._unusable_chat_ctx_reason(launch, []) is None
 
     def test_sub_minimum_target_is_an_explicit_choice(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 1024)
-        assert planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 1024)) is None
+        launch = self._launch(WorkerRole.CHAT, 1024)
+        assert planning_mod._unusable_chat_ctx_reason(launch, []) is None
 
     def test_sub_minimum_num_ctx_max_is_an_explicit_choice(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
         monkeypatch.setattr(cfg, "num_ctx_max", 1024)
-        assert planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.CHAT, 512)) is None
+        launch = self._launch(WorkerRole.CHAT, 512)
+        assert planning_mod._unusable_chat_ctx_reason(launch, []) is None
 
     def test_non_chat_roles_are_ignored(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
-        assert planning_mod._unusable_chat_ctx_reason(self._launch(WorkerRole.EMBED, 512)) is None
+        launch = self._launch(WorkerRole.EMBED, 512)
+        assert planning_mod._unusable_chat_ctx_reason(launch, []) is None
 
 
 class TestPlacementFindingsLog:

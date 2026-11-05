@@ -11,14 +11,20 @@ from typing import TYPE_CHECKING, Any
 import anyio.to_thread
 from litestar import Litestar, MediaType, Request, Response
 from litestar.config.cors import CORSConfig
-from litestar.exceptions import HTTPException
+from litestar.exceptions import HTTPException, ValidationException
 from litestar.exceptions.responses import create_exception_response
 from litestar.middleware import ASGIMiddleware
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 
+from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.endpoints import MCP_PATH
-from lilbee.app.services import get_services, peek_services
+from lilbee.app.services import (
+    get_services,
+    peek_services,
+    set_config_refresh,
+    wait_for_opens,
+)
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.runtime.progress import LibraryUpgradeEvent
@@ -33,6 +39,7 @@ from lilbee.server.routes.agent_config import (
     agent_config_index_route,
     agent_config_route,
 )
+from lilbee.server.routes.analyze import analyze_router
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
     add_route,
@@ -45,8 +52,10 @@ from lilbee.server.routes.documents import (
 )
 from lilbee.server.routes.general import (
     config_defaults_route,
+    config_reset_route,
     config_route,
     config_schema_route,
+    config_sources_route,
     config_update_route,
     health_route,
     shutdown_route,
@@ -81,6 +90,7 @@ from lilbee.server.routes.placement import (
     placement_route,
     placement_set_route,
 )
+from lilbee.server.routes.profiles import profiles_router
 from lilbee.server.routes.search import (
     ask_route,
     ask_stream_route,
@@ -104,6 +114,7 @@ from lilbee.server.routes.setup import (
     setup_crawler_route,
     setup_crawler_status_route,
 )
+from lilbee.server.validation_format import plain_validation
 from lilbee.server.wiki import (
     wiki_build_route,
     wiki_citations_reverse_route,
@@ -223,6 +234,9 @@ def _log_embedding_model_state(embedder: Embedder) -> None:
 
 
 _UPGRADE_WAIT_SECONDS = 10.0
+# How long a stopping server waits for the library open it started, beside the provider
+# shutdown; an open still running then ends the process at once (exit_if_opens_remain).
+_OPEN_EXIT_WAIT_SECONDS = 5.0
 _UPGRADE_RETRY_AFTER_SECONDS = 10
 _UPGRADING_MESSAGE = "lilbee is upgrading the library. Try again in a few seconds."
 
@@ -282,6 +296,22 @@ class _LibraryOpenWait(ASGIMiddleware):
         await next_app(scope, receive, send)
 
 
+class _ConfigFileReload(ASGIMiddleware):
+    """Take what another process changed in config.toml before each request runs.
+
+    The MCP mount is served by this middleware too, so its server does not follow the
+    file itself.
+    """
+
+    def __init__(self) -> None:
+        self._follower = ConfigFileFollower()
+        set_config_refresh(self._follower.take_now)
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
+        await self._follower.take()
+        await next_app(scope, receive, send)
+
+
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
@@ -305,9 +335,24 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         session_manager.cleanup()
         # Terminate the provider's worker/fleet subprocesses so they don't
         # outlive the server (e.g. on parent-death shutdown in managed mode).
+        # The open wait runs beside it, so its bound counts from the same start.
         svc = peek_services()
+        stops = [_wait_for_the_opens()]
         if svc is not None:
-            svc.provider.shutdown()
+            stops.append(asyncio.to_thread(svc.provider.shutdown))
+        # A failed shutdown must not leave the open wait unawaited.
+        for outcome in await asyncio.gather(*stops, return_exceptions=True):
+            if isinstance(outcome, BaseException):
+                log.warning("A server shutdown step failed", exc_info=outcome)
+
+
+async def _wait_for_the_opens() -> None:
+    """Wait, within one bound, for every open; an open in LanceDB at exit aborts 3.12 on Linux."""
+    if not await asyncio.to_thread(wait_for_opens, _OPEN_EXIT_WAIT_SECONDS):
+        log.warning(
+            "The library is still opening after %.0f s; the server exits anyway.",
+            _OPEN_EXIT_WAIT_SECONDS,
+        )
 
 
 def _json_error_response(request: Request, exc: Exception) -> Response:
@@ -319,6 +364,11 @@ def _json_error_response(request: Request, exc: Exception) -> Response:
     response = create_exception_response(request, exc)
     response.media_type = MediaType.JSON
     return response
+
+
+def _validation_error_response(request: Request, exc: ValidationException) -> Response:
+    """Answer a body that fails validation as the JSON 400, with no internal class name."""
+    return _json_error_response(request, plain_validation(exc))
 
 
 def _unhandled_error_response(request: Request, exc: Exception) -> Response:
@@ -343,9 +393,10 @@ def create_app() -> Litestar:
     return Litestar(
         lifespan=[_lifespan, mcp_session_lifespan],
         logging_config=None,
-        middleware=[DefineMiddleware(AuthMiddleware), _LibraryOpenWait()],
+        middleware=[DefineMiddleware(AuthMiddleware), _LibraryOpenWait(), _ConfigFileReload()],
         exception_handlers={
             HTTPException: _json_error_response,
+            ValidationException: _validation_error_response,
             Exception: _unhandled_error_response,
         },
         route_handlers=[
@@ -356,7 +407,9 @@ def create_app() -> Litestar:
             shutdown_route,
             config_route,
             config_defaults_route,
+            config_reset_route,
             config_schema_route,
+            config_sources_route,
             config_update_route,
             source_content_route,
             search_route,
@@ -398,6 +451,8 @@ def create_app() -> Litestar:
             session_delete_route,
             export_route,
             import_route,
+            profiles_router,
+            analyze_router,
             placement_route,
             placement_preview_route,
             placement_set_route,

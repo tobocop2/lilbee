@@ -231,6 +231,18 @@ class TestEqualToOneProcess:
         assert fanned.sources() == ["new.txt"]
         _assert_equal_to_one_process(fanned, single)
 
+    async def test_a_rebuild_replaces_the_files_in_place_and_drops_the_deleted_one(self, tmp_path):
+        async def history(library):
+            library.write_notes("note", 12)
+            await library.sync()
+            (library.documents / "note7.txt").unlink()
+            await library.sync(force_rebuild=True)
+
+        fanned, single = await _play(tmp_path, history)
+        assert "note7.txt" not in fanned.sources()
+        assert len(fanned.sources()) == 11
+        _assert_equal_to_one_process(fanned, single)
+
     async def test_a_removed_file_stays_out_and_nothing_warns_about_force(self, tmp_path, caplog):
         async def history(library):
             library.write_notes("note", 12)
@@ -521,6 +533,34 @@ class TestEqualToOneProcess:
         assert len(fanned.chunk_sources()) == len(set(fanned.chunk_sources())) == 12
         _assert_equal_to_one_process(fanned, single)
 
+    async def test_the_workers_of_a_forced_rebuild_ingest_every_file_again(self, tmp_path):
+        library = Library(tmp_path / "lib", 2)
+        library.write_notes("note", 12)
+        await library.sync()
+        unchanged = await library.sync()
+        rebuilt = await library.sync(force_rebuild=True)
+        assert unchanged.added == []
+        assert sorted(rebuilt.added) == sorted(library.sources())
+        assert len(rebuilt.added) == 12
+
+    async def test_a_forced_rebuild_across_workers_reclusters_every_concept(
+        self, tmp_path, monkeypatch
+    ):
+        full_flags: list[bool] = []
+        real = pipeline_mod._rebuild_concept_clusters
+
+        async def recording(*args, full=False, **kwargs):
+            full_flags.append(full)
+            return await real(*args, full=full, **kwargs)
+
+        monkeypatch.setattr(pipeline_mod, "_rebuild_concept_clusters", recording)
+        library = Library(tmp_path / "lib", 2)
+        library.write_notes("note", 12)
+        await library.sync()
+        assert full_flags == [False]
+        await library.sync(force_rebuild=True)
+        assert full_flags == [False, True]
+
     async def test_a_refused_format_leaves_the_index(self, tmp_path, monkeypatch):
         from lilbee.data.ingest import discovery
 
@@ -558,9 +598,7 @@ class TestEqualToOneProcess:
 
 
 class TestASourceRowWithNoChunks:
-    async def test_a_rebuild_that_stops_after_its_first_drop_indexes_every_file_again(
-        self, tmp_path
-    ):
+    async def test_a_drop_that_stops_after_its_first_table_indexes_every_file_again(self, tmp_path):
         library = Library(tmp_path / "lib", 1)
         names = library.write_notes("note", 6)
         await library.sync()
@@ -577,7 +615,7 @@ class TestASourceRowWithNoChunks:
             mock.patch.object(type(database), "drop_table", _stops_after_one),
             pytest.raises(KeyboardInterrupt),
         ):
-            await library.sync(force_rebuild=True)
+            Store(cfg).drop_all()
         result = await library.sync()
 
         assert len(dropped) == 1
@@ -1343,28 +1381,41 @@ class TestTheWikiIndex:
         )
         self._assert_equal_to(library, clean)
 
-    async def test_a_file_written_inside_the_wiki_pass_of_another_sync_reaches_the_index(
+    async def test_a_file_another_writer_writes_inside_the_wiki_pass_reaches_the_index(
         self, tmp_path, monkeypatch
     ):
-        """Another sync writes a file after this pass read what it owes, and then stops."""
+        """A writer outside the sync turn writes a file after this pass read what it owes.
+
+        Two syncs take turns, so a second sync cannot write inside this pass. A
+        dataset import still can: it holds only the shared sync mark. The writer
+        here is the body of a sync without its mark and turn, stopped in its write,
+        so the row it leaves equals the row of a sync of that file.
+        """
         library = Library(tmp_path / "lib", 1)
         library.write_notes("note", 4)
         await library.sync()
         library.write_notes("report", 4)
         real_owed = stubs_mod._owed_sources
+        outside_the_turn = pipeline_mod.sync.__wrapped__
         written_inside = []
 
-        def _the_other_sync_writes_after_the_read(store, config, since):
+        async def _stopped_in_a_write() -> None:
+            cancel = threading.Event()
+            with monkeypatch.context() as patch:
+                TestAStoppedSync()._stop_at("in_a_write", cancel, patch)
+                with pytest.raises(asyncio.CancelledError):
+                    await outside_the_turn(quiet=True, cancel=cancel)
+
+        def _the_other_writer_writes_after_the_read(store, config, since):
             owed = real_owed(store, config, since)
             if not written_inside:
                 written_inside.append(library.write("late.txt", "A late file.").name)
-                with ThreadPoolExecutor(max_workers=1) as other_sync:
-                    stopped = self._stop_in_a_write(library, monkeypatch)
-                    other_sync.submit(asyncio.run, stopped).result()
+                with ThreadPoolExecutor(max_workers=1) as other_writer:
+                    other_writer.submit(asyncio.run, _stopped_in_a_write()).result()
             return owed
 
         with monkeypatch.context() as patch:
-            patch.setattr(stubs_mod, "_owed_sources", _the_other_sync_writes_after_the_read)
+            patch.setattr(stubs_mod, "_owed_sources", _the_other_writer_writes_after_the_read)
             await library.sync()
         assert written_inside == ["late.txt"]
         assert "late.txt" in library.sources()

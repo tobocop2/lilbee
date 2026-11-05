@@ -18,7 +18,7 @@ from lilbee.core.config import active_config
 from lilbee.core.system import is_ignored_dir
 from lilbee.data.extract.code_chunker import is_code_file
 from lilbee.data.ingest.ignore import IgnoreRules
-from lilbee.data.types import IMAGE_CONTENT_TYPE, PDF_CONTENT_TYPE, ShardId
+from lilbee.data.types import CODE_CONTENT_TYPE, IMAGE_CONTENT_TYPE, PDF_CONTENT_TYPE, ShardId
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +167,11 @@ class _ScanProgress:
         self._matched = 0
         self._started = time.monotonic()
         self._last = self._started
+        self.unreadable: list[str] = []
+
+    def could_not_open(self, error: OSError) -> None:
+        """Record a folder the walk could not list, so the result can name it."""
+        self.unreadable.append(str(error.filename))
 
     def tick(self, *, matched: bool) -> None:
         self._examined += 1
@@ -203,7 +208,7 @@ def classify_file(path: Path) -> str | None:
     if doc_type is not None:
         return doc_type
     if is_code_file(path):
-        return "code"
+        return CODE_CONTENT_TYPE
     return None
 
 
@@ -288,10 +293,11 @@ class ScannedFile(NamedTuple):
 
 
 class CorpusScan(NamedTuple):
-    """One walk's outcome: the files to ingest, and the refused ones keyed to their reason."""
+    """One walk's outcome: the files to ingest, the refused ones, the folders it could not open."""
 
     files: dict[str, Path]
     excluded: dict[str, ExclusionReason]
+    unreadable: tuple[str, ...] = ()
 
 
 def _scan_entry(path: Path, key: str) -> ScannedFile | None:
@@ -326,7 +332,8 @@ def _walk_root(
     file, so an excluded tree costs nothing to skip and no pattern beneath it can
     re-include a file -- git's rule, holding here because the walk never descends.
     """
-    for root, dirs, filenames in os.walk(base, topdown=True, followlinks=False):
+    walk = os.walk(base, topdown=True, onerror=progress.could_not_open, followlinks=False)
+    for root, dirs, filenames in walk:
         here = Path(root)
         dirs[:] = [
             d
@@ -383,7 +390,9 @@ def _roots_below(base: Path, roots: Iterable[str]) -> frozenset[Path]:
     )
 
 
-def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[ScannedFile]:
+def _walk_corpus(
+    rules: IgnoreRules | None = None, progress: _ScanProgress | None = None
+) -> Iterator[ScannedFile]:
     """Yield every file lilbee knows in the owned tree and in each registered root.
 
     A single-file root is the file the user named at ``add`` time, so no ignore
@@ -392,7 +401,7 @@ def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[ScannedFile]:
     its own entry alone.
     """
     config = active_config()
-    progress = _ScanProgress()
+    progress = progress if progress is not None else _ScanProgress()
     rules = rules if rules is not None else IgnoreRules.for_corpus(config.data_root)
     targets = list(config.linked_roots.values())
     if config.documents_dir.exists():
@@ -406,21 +415,35 @@ def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[ScannedFile]:
             yield entry
 
 
+def _as_scan(entries: Iterable[ScannedFile], progress: _ScanProgress) -> CorpusScan:
+    """Split walked entries into the files to ingest and the refused ones."""
+    files: dict[str, Path] = {}
+    excluded: dict[str, ExclusionReason] = {}
+    for entry in entries:
+        if entry.excluded is not None:
+            excluded[entry.key] = entry.excluded
+        else:
+            files[entry.key] = entry.path
+    return CorpusScan(files, excluded, tuple(progress.unreadable))
+
+
 def discover_corpus(shard: ShardId | None = None, rules: IgnoreRules | None = None) -> CorpusScan:
     """Scan the owned documents dir and every registered root into a :class:`CorpusScan`.
 
     A refused file (see ``excluded_extension_reasons``) lands in ``excluded``, not ``files``.
     """
-    files: dict[str, Path] = {}
-    excluded: dict[str, ExclusionReason] = {}
-    for entry in _walk_corpus(rules):
-        if shard is not None and not shard.owns(entry.key):
-            continue
-        if entry.excluded is not None:
-            excluded[entry.key] = entry.excluded
-        else:
-            files[entry.key] = entry.path
-    return CorpusScan(files, excluded)
+    progress = _ScanProgress()
+    entries = _walk_corpus(rules, progress)
+    return _as_scan((e for e in entries if shard is None or shard.owns(e.key)), progress)
+
+
+def discover_dir(directory: Path) -> CorpusScan:
+    """Scan *directory* as ``add`` would walk it, with the ``.lilbeeignore`` rules applied."""
+    config = active_config()
+    rules = IgnoreRules.for_corpus(config.data_root)
+    ignore_dirs = config.ignore_dirs
+    progress = _ScanProgress()
+    return _as_scan(_walk_root(directory, None, ignore_dirs, progress, rules), progress)
 
 
 def discover_files(

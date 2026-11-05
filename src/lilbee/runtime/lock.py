@@ -11,12 +11,13 @@ import asyncio
 import errno
 import json
 import logging
+import os
 import sqlite3
 import sys
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, Generator, Iterator
+from collections.abc import AsyncGenerator, Callable, Generator, Iterator
 from contextlib import (
     AbstractContextManager,
     asynccontextmanager,
@@ -27,7 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn, Self, overload
 
-from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
+import psutil
+from filelock import AsyncFileLock, AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import Config, cfg
@@ -52,6 +54,17 @@ _SERVER_LOCK_NAME = "server.lock"
 _SCOPE_LOCK_NAME = "server.scope.lock"
 _SCOPE_OWNER_NAME = "server.scope.owner.json"
 _SYNC_LOCK_NAME = "sync.lock"
+# One sync at a time plans and runs on a data root; the others wait for this lock.
+_SYNC_TURN_LOCK_NAME = "sync.turn.lock"
+# Who holds the turn, so a waiting sync can name it.
+_SYNC_TURN_OWNER_NAME = "sync.turn.owner.json"
+_TURN_OWNER_NOT_WRITTEN = "Could not record the sync owner in %s (%s)."
+_TURN_OWNER_NOT_REMOVED = "Could not delete %s (%s); it is safe to delete by hand."
+_STOP_WAITING = "Waiting for it to finish. Press Ctrl-C to stop waiting."
+_SYNC_WAIT_NAMED = (
+    "A sync started by {started_by} (process {pid}) is running on this library. " + _STOP_WAITING
+)
+_SYNC_WAIT_UNNAMED = "Another sync is running on this library. " + _STOP_WAITING
 _SYNC_PROBE_PREFIX = "sync.probe."
 # How long the probe waits out a momentary busy before it concludes the filesystem cannot lock.
 _PROBE_WAIT_S = 0.3
@@ -406,7 +419,7 @@ class _SyncLockAttempt:
 
 
 def _sync_lock_wait(cancel: CancelSignal | None) -> Iterator[_SyncLockAttempt]:
-    """Every wait for a side of the sync lock: yield one attempt after another until one takes it.
+    """Every wait for the sync lock or the sync turn: yield attempts until one takes it.
 
     The caller takes the lock inside the ``with`` of each attempt, for its ``seconds``.
     *cancel* is read after every attempt, the one that took the lock included: a set
@@ -428,19 +441,20 @@ def _is_set(cancel: CancelSignal | None) -> bool:
 @asynccontextmanager
 async def sync_running(
     data_root: Path, cancel: CancelSignal | None = None
-) -> AsyncGenerator[None, None]:
+) -> AsyncGenerator[bool, None]:
     """Mark a sync or import running on *data_root*, across processes; they share the mark.
 
     The wait for a reset to finish runs off the event loop. A *cancel* that is set
     during that wait, or when the mark is taken, raises ``asyncio.CancelledError``:
-    the block does not run and the mark is free.
+    the block does not run and the mark is free. The block gets False when the
+    filesystem cannot hold the mark, and runs unmarked.
     """
     # Opening the lock reads and writes files, so it runs off the event loop too.
     lock = await asyncio.to_thread(
         _open_sync_lock, data_root, write=False, refused=LibraryUnlockableError
     )
     if lock is None:
-        yield
+        yield False
         return
     try:
         try:
@@ -451,7 +465,7 @@ async def sync_running(
             raise asyncio.CancelledError from None
         except _SYNC_LOCK_ERRORS as exc:
             _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError, reader=True)
-        yield
+        yield True
     finally:
         try:
             await lock.close()
@@ -461,6 +475,93 @@ async def sync_running(
             # filelock keeps the worker thread of a lock whose close raised; wait until it ends.
             await asyncio.to_thread(lock.executor.shutdown)
             _raise_cancel_behind(exc)
+
+
+@dataclass(frozen=True)
+class SyncTurnOwner:
+    """The process that holds the sync turn of a data root, and what started its sync."""
+
+    started_by: str
+    pid: int
+
+
+def sync_wait_message(owner: SyncTurnOwner | None) -> str:
+    """What a sync that waits for the turn tells the user, naming *owner* when it is known."""
+    if owner is None:
+        return _SYNC_WAIT_UNNAMED
+    return _SYNC_WAIT_NAMED.format(started_by=owner.started_by, pid=owner.pid)
+
+
+def read_sync_turn_owner(data_root: Path) -> SyncTurnOwner | None:
+    """The recorded holder of *data_root*'s sync turn, or None when absent, unreadable or dead.
+
+    A holder killed with SIGKILL leaves its record, and the next holder replaces it only
+    after it takes the turn. A record whose process is gone is not the holder, so it reads
+    as no owner. ``psutil.pid_exists`` does the check on POSIX and on Windows.
+    """
+    try:
+        payload = json.loads((data_root / _SYNC_TURN_OWNER_NAME).read_text(encoding="utf-8"))
+        owner = SyncTurnOwner(started_by=str(payload["started_by"]), pid=int(payload["pid"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return owner if psutil.pid_exists(owner.pid) else None
+
+
+def _record_turn_owner(data_root: Path, started_by: str) -> None:
+    """Write who holds the turn; the record only names the holder, so a failure only warns."""
+    path = data_root / _SYNC_TURN_OWNER_NAME
+    try:
+        path.write_text(
+            json.dumps({"started_by": started_by, "pid": os.getpid()}), encoding="utf-8"
+        )
+    except OSError as exc:
+        log.warning(_TURN_OWNER_NOT_WRITTEN, path, exc)
+
+
+def _clear_turn_owner(data_root: Path) -> None:
+    """Delete the holder record before the turn is freed; a failure only warns."""
+    path = data_root / _SYNC_TURN_OWNER_NAME
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning(_TURN_OWNER_NOT_REMOVED, path, exc)
+
+
+@asynccontextmanager
+async def sync_turn(
+    data_root: Path,
+    cancel: CancelSignal | None,
+    *,
+    started_by: str,
+    on_wait: Callable[[SyncTurnOwner | None], None],
+) -> AsyncGenerator[None, None]:
+    """Hold *data_root*'s sync turn: one sync at a time plans and runs, across processes.
+
+    A sync that finds the turn held calls *on_wait* once with the holder, then waits
+    with no time limit. The OS frees the turn when its holder exits, however it died.
+    A *cancel* that is set during the wait raises ``asyncio.CancelledError``: the block
+    does not run and the turn is free.
+    """
+    lock = AsyncFileLock(data_root / _SYNC_TURN_LOCK_NAME)
+    try:
+        try:
+            told = False
+            for attempt in _sync_lock_wait(cancel):
+                with attempt:
+                    await lock.acquire(timeout=attempt.seconds)
+                if attempt.busy is not None and not told:
+                    told = True
+                    on_wait(await asyncio.to_thread(read_sync_turn_owner, data_root))
+        except SyncMarkWaitCancelledError:
+            raise asyncio.CancelledError from None
+        except _SYNC_LOCK_ERRORS as exc:
+            _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError, reader=True)
+        await asyncio.to_thread(_record_turn_owner, data_root, started_by)
+        yield
+    finally:
+        if lock.is_locked:
+            await asyncio.to_thread(_clear_turn_owner, data_root)
+            await lock.release()
 
 
 @contextmanager

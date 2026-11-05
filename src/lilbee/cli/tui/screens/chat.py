@@ -37,6 +37,7 @@ from textual.widgets import Footer, Markdown, Select, Static
 from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
+from lilbee.app.analyze import hide_tip
 from lilbee.app.ingest import (
     LIBRARY_REFUSALS,
     AddRollback,
@@ -48,13 +49,19 @@ from lilbee.app.ingest import (
 )
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
-from lilbee.app.settings_map import SETTINGS_MAP
+from lilbee.app.settings import list_setting_value
+from lilbee.app.settings_map import SETTINGS_MAP, SettingDef
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
-from lilbee.cli.tui.command_registry import runs_while_streaming
+from lilbee.cli.tui.command_registry import (
+    ANALYZE_OFF_ARG,
+    ANALYZE_REPORT_ARG,
+    runs_while_streaming,
+)
 from lilbee.cli.tui.log_routing import tui_log_path
+from lilbee.cli.tui.screens.analyze_report import open_report, start_analysis
 from lilbee.cli.tui.screens.chat_helpers import (
     add_indexed_anything,
     build_add_progress_callback,
@@ -65,18 +72,23 @@ from lilbee.cli.tui.screens.chat_helpers import (
     remember_from_input,
     unregister_added_roots,
 )
+from lilbee.cli.tui.screens.profile_dialogs import run_profile_op, start_profile_switch
 from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
     PATH_ARG_COMMANDS,
     CompletionOverlay,
     get_completions,
+    list_model_options,
     longest_common_prefix,
+    model_completions,
     path_completion_prefix,
+    reads_a_folder,
+    reads_models,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.context_chip import ContextChip
-from lilbee.cli.tui.widgets.drawer import drawer_holding
+from lilbee.cli.tui.widgets.drawer import drawer_holding, first_direct_child
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.fork_picker import ForkPicker, fork_points
@@ -143,6 +155,7 @@ from lilbee.sessions import (
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+    from lilbee.data.types import SyncResult
 log = logging.getLogger(__name__)
 
 # Coalesce per-token UI updates into ~50 ms windows. Tiny reasoning models can
@@ -183,6 +196,7 @@ class _TurnEnded(Message):
 # The stream worker's group. Only Textual's teardown cancels it: a turn stops
 # through its stop signal, so its body always runs and always ends the turn.
 _TURN_WORKER_GROUP = "chat_turn"
+_SYNC_FAILED_TOAST_SECONDS = 8.0
 
 
 # ``/crawl`` command flags.
@@ -222,11 +236,23 @@ def _stream_error_text(exc: Exception) -> str:
     return msg.STREAM_ERROR.format(error=exc)
 
 
-def _refusal_reason(exc: Exception) -> str | Exception:
-    """The sentence a config refusal carries, without pydantic's error scaffolding."""
+def _set_echo(key: str, parsed: object, *, secret: bool, show_stored: bool) -> object:
+    """What /set shows after a write: a bool or list setting shows what it stored."""
+    if secret and parsed:
+        return msg.MASKED_VALUE
+    if not show_stored:
+        return parsed
+    stored = getattr(cfg, key)
+    if stored is None:
+        return msg.CMD_SET_AUTO
+    return stored if stored != [] else msg.CMD_SET_EMPTY_LIST
+
+
+def _refusal_text(exc: ValueError | TypeError) -> str:
+    """Why a write refused, as one short sentence: a validator's own message, else the text."""
     if isinstance(exc, ValidationError):
-        return exc.errors()[0]["msg"].removeprefix("Value error, ")
-    return exc
+        return str(exc.errors()[0]["msg"]).removeprefix("Value error, ")
+    return str(exc)
 
 
 def _setting_type_hint(kind: type) -> str:
@@ -244,6 +270,11 @@ def _closest_source(name: str, known: set[str]) -> str | None:
     return matches[0] if matches else None
 
 
+def _whole_path(args: str) -> Path:
+    """The whole argument as one path, with surrounding quotes removed and ``~`` expanded."""
+    return Path(args.strip().strip('"').strip("'")).expanduser()
+
+
 def _parse_add_paths(args: str) -> list[Path]:
     """Resolve ``/add`` arguments to filesystem paths.
 
@@ -253,7 +284,7 @@ def _parse_add_paths(args: str) -> list[Path]:
     points at an existing file or directory, take it as one path; otherwise fall
     back to shell-style splitting for multiple, optionally quoted, paths.
     """
-    whole = Path(args.strip().strip('"').strip("'")).expanduser()
+    whole = _whole_path(args)
     if whole.exists():
         return [whole]
     try:
@@ -441,7 +472,16 @@ class ChatScreen(Screen[None]):
         # The user-typed text the open dropdown is filtering against. While
         # navigating, the input holds a previewed candidate; Esc restores this.
         self._completion_origin: str | None = None
-        self._sync_active: bool = False
+        # The installed models, listed once while the input holds a model
+        # argument (/model, /remove) and dropped when it no longer does.
+        self._model_names: list[str] | None = None
+        self._listing_models = False
+        # Bumped when the input leaves the model argument; a listing started
+        # before the bump is stale and its result is dropped.
+        self._model_session = 0
+        # The latest model completion asked for while the listing runs.
+        self._model_request: tuple[str, Callable[[bool], None] | None] = ("", None)
+        self._rebuild_owed = False
         self._input_history: list[str] = []
         self._history_index: int = -1
         # The warm tip is worth one toast per session, on the first prompt that
@@ -506,7 +546,11 @@ class ChatScreen(Screen[None]):
                 yield ContextChip(id="context-chip")
             yield Footer()
 
+    def on_unmount(self) -> None:
+        self._task_bar.unsubscribe_work_end(self._start_owed_rebuild)
+
     def on_mount(self) -> None:
+        self._task_bar.subscribe_work_end(self._start_owed_rebuild)
         self._update_input_style()
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
         # init=True paints the empty state on first mount when the gate landed
@@ -823,8 +867,8 @@ class ChatScreen(Screen[None]):
 
         if not args:
             return
-        if self._sync_active:
-            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+        if self._sync_work_live():
+            self._notify_sync_refused()
             return
         if is_url(args):
             self._cmd_crawl(args)
@@ -872,14 +916,10 @@ class ChatScreen(Screen[None]):
         """Spawn the add worker. Separated so overwrite confirm can reuse it."""
         from lilbee.cli.tui.task_queue import TaskType
 
-        self._sync_active = True
         label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
 
         def _target(reporter: ProgressReporter) -> None:
-            try:
-                self._do_add(paths, reporter, force=force)
-            finally:
-                self._sync_active = False
+            self._do_add(paths, reporter, force=force)
 
         self._task_bar.start_task(f"Add {label}", TaskType.ADD, _target, indeterminate=True)
 
@@ -933,14 +973,30 @@ class ChatScreen(Screen[None]):
         if not reg_result.reached_corpus:
             call_from_thread(self, self.notify, msg.CMD_ADD_NOTHING, severity="warning")
 
+    def _notify_unreadable_folders(self, result: SyncResult) -> None:
+        """Warn once per folder the sync could not open, worded as the CLI summary is."""
+        for folder in result.unreadable_folders:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.SYNC_UNREADABLE_FOLDER.format(folder=folder),
+                severity="warning",
+            )
+
     def _sync_added(self, registered: list[str], reporter: ProgressReporter) -> None:
         """Sync after /add and report the result; raises when the add's own roots failed."""
         from lilbee.data.ingest import sync
 
         reporter.update(0, f"Added {len(registered)} source(s), syncing...", indeterminate=True)
         sync_result = asyncio_loop.run(
-            sync(quiet=True, on_progress=build_add_progress_callback(reporter), cancel=reporter)
+            sync(
+                quiet=True,
+                on_progress=build_add_progress_callback(reporter),
+                cancel=reporter,
+                started_by="the lilbee TUI",
+            )
         )
+        self._notify_unreadable_folders(sync_result)
         if sync_result.failed:
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
@@ -1079,7 +1135,7 @@ class ChatScreen(Screen[None]):
                     render_mode=mode,
                     login=login,
                 ),
-                on_success=lambda: call_from_thread(self, self._run_sync),
+                on_success=lambda: call_from_thread(self, self.run_sync),
             )
 
         self.notify(msg.CMD_CRAWL_STARTED.format(url=shown))
@@ -1230,7 +1286,7 @@ class ChatScreen(Screen[None]):
     def _cmd_prune_ignored(self, args: str) -> None:
         """Sync with pruning on, dropping indexed documents the patterns now exclude."""
         del args
-        self._run_sync(prune_ignored=True)
+        self.run_sync(prune_ignored=True)
 
     def _cmd_delete(self, args: str) -> None:
         """Run /delete in a worker so the chat screen stays interactive."""
@@ -1295,7 +1351,8 @@ class ChatScreen(Screen[None]):
         reporter.update(0, msg.EXPORT_STATUS_RUNNING, indeterminate=True)
         try:
             summary = export_to_path(output, "", None)
-        except DatasetError as exc:
+        # OSError: output path unwritable or library unreadable
+        except (DatasetError, OSError) as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
             raise RuntimeError(str(exc)) from exc
         call_from_thread(
@@ -1310,18 +1367,15 @@ class ChatScreen(Screen[None]):
         if not path:
             self.notify(msg.CMD_IMPORT_USAGE, severity="warning")
             return
-        if self._sync_active:
-            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+        if self._sync_work_live():
+            self._notify_sync_refused()
             return
         from lilbee.cli.tui.task_queue import TaskType
-
-        self._sync_active = True
 
         def _target(reporter: ProgressReporter) -> None:
             try:
                 self._do_import(path, reporter)
             finally:
-                self._sync_active = False
                 self._task_bar.start_detect_pending()
 
         name = msg.TASK_NAME_IMPORT.format(file=Path(path).name)
@@ -1443,7 +1497,7 @@ class ChatScreen(Screen[None]):
         def _on_confirm(confirmed: bool | None) -> None:
             if not confirmed:
                 return
-            self._run_sync(force_rebuild=True)
+            self.run_sync(force_rebuild=True)
 
         self.app.push_screen(
             ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, msg.CMD_REBUILD_CONFIRM_MESSAGE),
@@ -1510,7 +1564,8 @@ class ChatScreen(Screen[None]):
             if key in CLEARABLE_MODEL_FIELDS:
                 parsed = "" if clears else value
             elif defn.type is bool:
-                parsed = value.lower() in ("true", "1", "yes", "on")
+                # The text goes to the shared write, which refuses what it cannot read.
+                parsed = value
             elif clears:
                 parsed = None
             else:
@@ -1521,7 +1576,7 @@ class ChatScreen(Screen[None]):
                     )
                     return
                 try:
-                    parsed = defn.type(value)
+                    parsed = list_setting_value(value) if defn.type is list else defn.type(value)
                 except (ValueError, TypeError):
                     self.notify(
                         msg.CMD_SET_TYPE_HINT.format(key=key, kind=_setting_type_hint(defn.type)),
@@ -1529,17 +1584,51 @@ class ChatScreen(Screen[None]):
                     )
                     return
             # Route through set_setting so settings_changed_signal subscribers
-            # (model bar, scope chip, status bar) refresh. The boundary's
-            # _invalidate_caches now handles llm_provider service reset.
-            self.app.set_setting(key, parsed)
-            shown = msg.MASKED_VALUE if defn.secret and parsed else parsed
-            self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
+            # (model bar, scope chip, status bar) refresh.
+            self._save_and_echo(key, defn, parsed)
         except (ValueError, TypeError) as exc:
-            error = _refusal_reason(exc)
-            self.notify(msg.CMD_SET_INVALID.format(key=key, error=error), severity="error")
+            reason = _refusal_text(exc)
+            self.notify(msg.CMD_SET_INVALID.format(key=key, error=reason), severity="error")
+
+    def _save_and_echo(self, key: str, defn: SettingDef, parsed: object) -> None:
+        """Save *parsed*, then echo it. A failed write toasts in set_setting and echoes nothing."""
+        if not self.app.set_setting(key, parsed):
+            return
+        shown = _set_echo(key, parsed, secret=defn.secret, show_stored=defn.type in (bool, list))
+        self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=shown))
 
     def _cmd_settings(self, _args: str) -> None:
         self.app.switch_view("Settings")
+
+    def _cmd_profile(self, args: str) -> None:
+        name = args.strip()
+        if not name:
+            self.app.open_profile_tab()
+            return
+        start_profile_switch(self.app, self, name, on_close=lambda: None)
+
+    def _cmd_analyze(self, args: str) -> None:
+        arg = args.strip()
+        words: dict[str, Callable[[], None]] = {
+            ANALYZE_OFF_ARG: self._hide_tip,
+            ANALYZE_REPORT_ARG: lambda: open_report(self.app),
+        }
+        word = words.get(arg.lower())
+        if word is not None:
+            word()
+            return
+        directory = _whole_path(arg) if arg else None
+        if directory is not None and not directory.is_dir():
+            self.notify(msg.ANALYZE_NOT_A_FOLDER.format(path=directory), severity="error")
+            return
+        start_analysis(self.app, directory)
+
+    def _hide_tip(self) -> None:
+        run_profile_op(self, lambda: hide_tip(cfg.data_root), self._tip_hidden)
+
+    def _tip_hidden(self, _result: None) -> None:
+        self._arg_hint.refresh_tip()
+        self.notify(msg.ANALYZE_TIP_HIDDEN)
 
     def _cmd_remember(self, args: str) -> None:
         """Run /remember in a worker so embedding the text never blocks the UI."""
@@ -1650,6 +1739,9 @@ class ChatScreen(Screen[None]):
         if self.streaming:
             self._notify_busy()
             return
+        # A terminal without focus events never tells the app that another shell changed
+        # config.toml, so each question checks the file before it reads cfg.
+        self.app.adopt_external_settings()
         log = self._chat_log
         with contextlib.suppress(NoMatches):
             log.query_one("#chat-welcome", ChatWelcome).remove()
@@ -2007,7 +2099,7 @@ class ChatScreen(Screen[None]):
         from lilbee.app.models import adopt_embedder
 
         try:
-            adopt_embedder(ref)
+            result = adopt_embedder(ref)
         except Exception as exc:  # surfaced to the user, never silently swallowed
             log.debug("Embedder adopt failed", exc_info=True)
             call_from_thread(
@@ -2015,7 +2107,14 @@ class ChatScreen(Screen[None]):
             )
             return
         call_from_thread(self, self.notify, msg.EMBED_ADOPTED.format(model=ref))
+        if result.reindex_required:  # the re-asked question would meet the same refusal
+            call_from_thread(self, self._offer_adopted_rebuild)
+            return
         call_from_thread(self, self._send_message, question)
+
+    def _offer_adopted_rebuild(self) -> None:
+        """Offer the rebuild an adopted embedder still needs."""
+        self.app.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE)
 
     def _consume_stream(self, stream: Any, turn: _Turn, response_parts: list[str]) -> None:
         """Pull tokens off *stream* into *turn*'s bubble, batching UI updates to ~50 ms windows."""
@@ -2483,14 +2582,50 @@ class ChatScreen(Screen[None]):
         label = "Markdown" if use_md else "Plain text"
         self.notify(msg.CHAT_RENDERING.format(label=label))
 
-    def _run_sync(self, *, force_rebuild: bool = False, prune_ignored: bool = False) -> None:
-        """Enqueue a document sync (or full rebuild) in the task bar."""
-        if self._sync_active:
-            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+    def _sync_work_live(self) -> bool:
+        """True while a sync, add or import is queued, running or unwinding after a cancel."""
+        return self._task_bar.has_live_work(self._sync_work_types())
+
+    @staticmethod
+    def _sync_work_types() -> frozenset[str]:
+        from lilbee.cli.tui.task_queue import TaskType
+
+        return frozenset({TaskType.SYNC.value, TaskType.ADD.value, TaskType.IMPORT.value})
+
+    def _notify_sync_refused(self) -> None:
+        """Say why a sync is refused: other work runs, or a cancelled task is still stopping."""
+        queue = self._task_bar.queue
+        rows = queue.queued_tasks + queue.active_tasks
+        running = any(t.task_type in self._sync_work_types() for t in rows)
+        stopping = [] if running else self._task_bar.cancelling_tasks(self._sync_work_types())
+        text = (
+            msg.SYNC_CANCELLING.format(kind=stopping[0].task_type)
+            if stopping
+            else msg.SYNC_ALREADY_ACTIVE
+        )
+        self.notify(text, severity="warning")
+
+    def run_sync(
+        self,
+        *,
+        force_rebuild: bool = False,
+        prune_ignored: bool = False,
+    ) -> None:
+        """Enqueue a document sync (or full rebuild) in the task bar.
+
+        While other work runs, a sync is refused and a rebuild waits for the work to end.
+        """
+        if self._sync_work_live():
+            if force_rebuild:
+                self._rebuild_owed = True
+                self.notify(msg.REBUILD_OWED)
+            else:
+                self._notify_sync_refused()
             return
         from lilbee.cli.tui.task_queue import TaskType
 
-        self._sync_active = True
+        if force_rebuild:
+            self._rebuild_owed = False
         # Clear the pending hint so the bar shows live sync progress
         # instead of the stale "N docs to sync" line.
         self._task_bar.clear_pending_sync()
@@ -2499,7 +2634,6 @@ class ChatScreen(Screen[None]):
             try:
                 self._do_sync(reporter, force_rebuild=force_rebuild, prune_ignored=prune_ignored)
             finally:
-                self._sync_active = False
                 # Re-detect after every sync attempt: success drives the
                 # count to 0, failure or cancel leaves the still-pending
                 # files counted so the hint reappears.
@@ -2507,6 +2641,13 @@ class ChatScreen(Screen[None]):
 
         label = msg.TASK_NAME_REBUILD if force_rebuild else msg.TASK_NAME_SYNC
         self._task_bar.start_task(label, TaskType.SYNC, _target, indeterminate=True)
+
+    def _start_owed_rebuild(self) -> None:
+        """Start the owed rebuild once the last sync, add or import has ended in any way."""
+        if not self._rebuild_owed or self._sync_work_live():
+            return
+        self._rebuild_owed = False
+        self.run_sync(force_rebuild=True)
 
     def _do_sync(
         self,
@@ -2528,13 +2669,23 @@ class ChatScreen(Screen[None]):
                     cancel=reporter,
                     force_rebuild=force_rebuild,
                     prune_ignored=prune_ignored,
+                    started_by="the lilbee TUI",
                 )
             )
         except asyncio.CancelledError as exc:
             raise TaskCancelledError(msg.SYNC_CANCELLED_RESUME) from exc
         if prune_ignored:
             call_from_thread(self, self.notify, msg.prune_ignored_message(len(result.removed)))
+        self._notify_unreadable_folders(result)
         if result.failed:
+            # The footer notice lasts under two seconds; the toast stays long enough to read.
+            call_from_thread(
+                self,
+                self.notify,
+                msg.SYNC_FAILED_TOAST.format(count=len(result.failed)),
+                severity="error",
+                timeout=_SYNC_FAILED_TOAST_SECONDS,
+            )
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
         if result.skipped:
             call_from_thread(
@@ -2606,10 +2757,20 @@ class ChatScreen(Screen[None]):
         if not self._insert_mode or not inp.has_focus:
             self._tab_into_fleet_or_next()
             return
-        overlay = self._completion_overlay
-        if not overlay.is_visible and not self._open_completions():
-            inp.insert("\t")
+        if self._completion_overlay.is_visible:
+            self._complete_from_overlay()
             return
+        self._open_completions(self._complete_after_open)
+
+    def _complete_after_open(self, opened: bool) -> None:
+        """Tab, once the dropdown listing is in: complete from it, else type a tab."""
+        if opened:
+            self._complete_from_overlay()
+        else:
+            self._chat_input.insert("\t")
+
+    def _complete_from_overlay(self) -> None:
+        """Fill the shared prefix of the open dropdown, else preview the next match."""
         if self._fill_common_prefix():
             return
         self._preview_next()
@@ -2637,11 +2798,10 @@ class ChatScreen(Screen[None]):
         """Jump Tab into the open Fleet drawer's first toggle so the placement
         editor is reachable without tabbing past every widget; once focus is
         inside the drawer, Tab cycles within it as usual."""
-        drawers = self.screen.query(FleetDrawer)
-        if not drawers:
+        drawer = first_direct_child(self.screen, FleetDrawer)
+        if drawer is None:
             self.screen.focus_next()
             return
-        drawer = drawers.first()
         focused = self.screen.focused
         inside = focused is not None and drawer in focused.ancestors_with_self
         toggles = drawer.query(".dev-toggle")
@@ -2656,14 +2816,26 @@ class ChatScreen(Screen[None]):
             # Not a completion here; skip so an open overlay (e.g. the sessions
             # drawer) can bind Ctrl+N instead of this priority binding eating it.
             raise SkipAction()
-        if self._completion_overlay.is_visible or self._open_completions():
+        if self._completion_overlay.is_visible:
             self._preview_next()
+        else:
+            self._open_completions(self._preview_next_if_opened)
 
     def action_complete_prev(self) -> None:
         """Ctrl+P: preview the previous match, opening the dropdown if it is closed."""
         if not self._chat_input.has_focus:
             return
-        if self._completion_overlay.is_visible or self._open_completions():
+        if self._completion_overlay.is_visible:
+            self._preview_prev()
+        else:
+            self._open_completions(self._preview_prev_if_opened)
+
+    def _preview_next_if_opened(self, opened: bool) -> None:
+        if opened:
+            self._preview_next()
+
+    def _preview_prev_if_opened(self, opened: bool) -> None:
+        if opened:
             self._preview_prev()
 
     def _preview_next(self) -> None:
@@ -2682,14 +2854,29 @@ class ChatScreen(Screen[None]):
         if display is not None:
             self._preview_completion(display)
 
-    def _open_completions(self) -> bool:
-        """Show the dropdown for the current input and remember it as the origin."""
-        options = get_completions(self._chat_input.value)
-        if not options:
-            return False
-        self._completion_origin = self._chat_input.value
-        self._completion_overlay.show_completions(options)
-        return True
+    def _open_completions(self, then: Callable[[bool], None]) -> None:
+        """Show the dropdown for the current input, then call *then* with whether it opened.
+
+        A path or model argument is listed on a worker, so *then* runs after the
+        listing and only if the input text did not change meanwhile.
+        """
+        text = self._chat_input.value
+        if reads_a_folder(text):
+            self._list_path_completions(text, then)
+            return
+        if reads_models(text):
+            self._complete_models(text, then)
+            return
+        self._show_opened(text, get_completions(text), then)
+
+    def _show_opened(self, text: str, options: list[str], then: Callable[[bool], None]) -> None:
+        """Show *options* as the dropdown for *text* and report whether any rows opened."""
+        if text != self._chat_input.value:
+            return
+        if options:
+            self._completion_origin = text
+            self._completion_overlay.show_completions(options)
+        then(bool(options))
 
     def _completion_value(self, display: str) -> str:
         """Full input text produced by accepting ``display``, keeping the typed prefix.
@@ -2788,6 +2975,15 @@ class ChatScreen(Screen[None]):
     @on(ChatInput.Changed, "#chat-input")
     def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
         """Refresh arg-hint and auto-show or hide the completion dropdown."""
+        if not reads_models(self._chat_input.value):
+            # Also on a programmatic edit: a submit clears the input that way, and
+            # a /remove must not leave the removed model in the next listing.
+            self._model_names = None
+            # A listing still running belongs to the session that ended; the next
+            # model argument starts its own, and the old result is dropped.
+            self._model_session += 1
+            self._listing_models = False
+            self._model_request = ("", None)
         if self._suppress_refresh > 0:
             # A programmatic edit (preview / accept / revert) is managing the
             # overlay itself; consume one Changed and skip the live refresh.
@@ -2799,9 +2995,77 @@ class ChatScreen(Screen[None]):
 
     def _refresh_completion_overlay(self) -> None:
         """Live-filter the dropdown against the current input, in command and arg modes alike."""
-        overlay = self._completion_overlay
         text = self._chat_input.value
+        if reads_a_folder(text):
+            self._list_path_completions(text)
+            return
+        if reads_models(text):
+            self._complete_models(text)
+            return
+        self._show_completions_for(text, get_completions(text))
+
+    def _complete_models(self, text: str, then: Callable[[bool], None] | None = None) -> None:
+        """Complete a model argument from the models listed once for this input.
+
+        Until the listing ends, keep the latest request and start one listing; keys
+        typed meanwhile neither wait for it nor start another.
+        """
+        if self._model_names is None:
+            self._model_request = (text, then)
+            if not self._listing_models:
+                self._listing_models = True
+                self._list_models(self._model_session)
+            return
+        options = model_completions(text, self._model_names)
+        if then is None:
+            self._show_completions_for(text, options)
+        else:
+            self._show_opened(text, options, then)
+
+    @work(thread=True, group="model_completions", exit_on_error=False)
+    def _list_models(self, session: int) -> None:
+        """List the installed models off the event loop: the listing probes local servers."""
+        names = list_model_options()
+        if _get_worker().is_cancelled:
+            return
+        call_from_thread(self, self._models_listed, session, names)
+
+    def _models_listed(self, session: int, names: list[str]) -> None:
+        """Keep *names* and answer the latest request, unless the input left the model argument.
+
+        A result from an earlier model argument session is dropped.
+        """
+        if session != self._model_session:
+            return
+        self._listing_models = False
+        text, then = self._model_request
+        self._model_request = ("", None)
+        current = self._chat_input.value
+        if not reads_models(current):
+            return
+        self._model_names = names
+        self._complete_models(current, then if text == current else None)
+
+    @work(thread=True, exclusive=True, group="path_completions", exit_on_error=False)
+    def _list_path_completions(self, text: str, then: Callable[[bool], None] | None = None) -> None:
+        """List the typed path's folder off the event loop; a newer request cancels this listing.
+
+        With *then* (a Tab press) the rows open the dropdown and *then* runs; without it
+        (a key press) the rows refresh the dropdown.
+        """
         options = get_completions(text)
+        if _get_worker().is_cancelled:
+            return
+        if then is None:
+            call_from_thread(self, self._show_completions_for, text, options)
+        else:
+            call_from_thread(self, self._show_opened, text, options, then)
+
+    def _show_completions_for(self, text: str, options: list[str]) -> None:
+        """Apply *options* if *text* is still the input; a stale listing is dropped."""
+        if text != self._chat_input.value:
+            return
+        overlay = self._completion_overlay
         if options:
             self._completion_origin = text
             overlay.show_completions(options)

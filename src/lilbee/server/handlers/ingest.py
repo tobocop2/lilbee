@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from lilbee.data.ingest import SyncResult
 
 log = logging.getLogger(__name__)
+# What a sync of this server is called in the notice of a sync that waits for it.
+_SYNC_STARTER = "lilbee serve"
 
 # Payload carried alongside each source key through _ingest_stream: a server
 # path (str) for /api/add, or an (filename, content) pair for /api/add/upload.
@@ -76,6 +78,7 @@ async def _run_sync_with_sentinel(
                 force_rebuild=force_rebuild,
                 retry_skipped=retry_skipped,
                 prune_ignored=prune_ignored,
+                started_by=_SYNC_STARTER,
             )
     finally:
         sse.queue.put_nowait(None)
@@ -88,15 +91,17 @@ async def sync_stream(
     force_rebuild: bool = False,
     retry_skipped: bool = False,
     prune_ignored: bool = False,
+    done_payload: Callable[[SyncResult], dict[str, Any]] = lambda result: result.model_dump(),
 ) -> AsyncGenerator[str, None]:
     """Trigger sync, yield SSE progress events, then done event.
 
-    When ``force_rebuild`` is true, the underlying sync drops every table and
-    re-ingests from ``cfg.documents_dir`` (the REST equivalent of ``lilbee rebuild``).
+    When ``force_rebuild`` is true, the underlying sync re-ingests every file from
+    ``cfg.documents_dir`` over the index (the REST equivalent of ``lilbee rebuild``).
     When ``retry_skipped`` is true, it clears the failed-file markers so files
     that were skipped on a previous sync get another attempt, without dropping
     the store. When ``prune_ignored`` is true, it also drops sources a
-    ``.lilbeeignore`` now excludes.
+    ``.lilbeeignore`` now excludes. ``done_payload`` builds the done event's data
+    from the sync's result.
     """
     sse = SseStream()
     task = asyncio.create_task(
@@ -104,7 +109,7 @@ async def sync_stream(
     )
     async for event in sse.drain(task, "Sync stream"):
         yield event
-    frame = sse.terminal_frame(task, lambda result: result.model_dump())
+    frame = sse.terminal_frame(task, done_payload)
     if frame is not None:
         yield frame
 
@@ -151,7 +156,9 @@ async def _run_add(
             return AddSummary(copied=[], name_taken=reg_result.name_taken, errors=errors)
 
         with temporary_ocr_config(ocr, ocr_timeout):
-            sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+            sync_result = await sync(
+                quiet=True, on_progress=sse.callback, cancel=sse.cancel, started_by=_SYNC_STARTER
+            )
 
         return AddSummary(
             copied=reg_result.registered,
@@ -357,7 +364,9 @@ async def _run_upload(
                 dest.write_bytes(content)
             written.append(name)
         with temporary_ocr_config(ocr, ocr_timeout):
-            sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+            sync_result = await sync(
+                quiet=True, on_progress=sse.callback, cancel=sse.cancel, started_by=_SYNC_STARTER
+            )
         return AddSummary(
             copied=written,
             errors=[],

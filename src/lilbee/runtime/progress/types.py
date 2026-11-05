@@ -19,6 +19,7 @@ class EventType(StrEnum):
     FILE_DONE = "file_done"
     BATCH_PROGRESS = "batch_progress"
     SYNC_DONE = "sync_done"
+    SYNC_WAIT = "sync_wait"
     EMBED = "embed"
     EXTRACT = "extract"
     OCR_START = "ocr_start"
@@ -31,6 +32,7 @@ class EventType(StrEnum):
     SETUP_DONE = "setup_done"
     WIKI_PHASE = "wiki_phase"
     WIKI_PAGE = "wiki_page"
+    ANALYZE = "analyze"
     LIBRARY_UPGRADE = "library_upgrade"
 
 
@@ -212,6 +214,17 @@ class SyncDoneEvent(BaseModel):
     relocated: int = 0
 
 
+class SyncWaitEvent(BaseModel):
+    """Emitted once when a sync starts to wait for another sync on the same library.
+
+    *holder* and *pid* name the running sync; both are None when it cannot be read.
+    """
+
+    message: str
+    holder: str | None = None
+    pid: int | None = None
+
+
 class SetupStartEvent(BaseModel):
     """Emitted when a setup/bootstrap operation begins."""
 
@@ -262,6 +275,14 @@ class WikiPageEvent(BaseModel):
     pages: int
     current: int
     total: int
+
+
+class AnalyzeEvent(BaseModel):
+    """Emitted after each batch of files corpus analysis reads."""
+
+    done: int
+    total: int
+    file: str
 
 
 class UpgradePhase(StrEnum):

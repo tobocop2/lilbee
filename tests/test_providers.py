@@ -607,7 +607,7 @@ class TestRoutingProvider:
         count_lock = threading.Lock()
 
         class FakeFleet:
-            def __init__(self, *, hold_warm: bool = False) -> None:
+            def __init__(self, *, hold_warm: bool = False, config_refresh: object = None) -> None:
                 with count_lock:
                     construct_count["n"] += 1
                 # Widen the check-then-set window: without it the cheap __init__
@@ -623,10 +623,14 @@ class TestRoutingProvider:
         self._to_shutdown.append(rp)
         barrier = threading.Barrier(8)
         results: list = []
+        errors: list[BaseException] = []
 
         def worker() -> None:
-            barrier.wait()
-            results.append(rp._get_local())
+            try:
+                barrier.wait()
+                results.append(rp._get_local())
+            except BaseException as exc:
+                errors.append(exc)
 
         threads = [threading.Thread(target=worker) for _ in range(8)]
         for t in threads:
@@ -634,6 +638,7 @@ class TestRoutingProvider:
         for t in threads:
             t.join()
 
+        assert errors == []
         assert construct_count["n"] == 1
         assert len({id(r) for r in results}) == 1
 
@@ -670,10 +675,14 @@ class TestRoutingProvider:
         self._to_shutdown.append(rp)
         barrier = threading.Barrier(8)
         results: list = []
+        errors: list[BaseException] = []
 
         def worker() -> None:
-            barrier.wait()
-            results.append(rp._get_sdk_provider())
+            try:
+                barrier.wait()
+                results.append(rp._get_sdk_provider())
+            except BaseException as exc:
+                errors.append(exc)
 
         threads = [threading.Thread(target=worker) for _ in range(8)]
         for t in threads:
@@ -681,6 +690,7 @@ class TestRoutingProvider:
         for t in threads:
             t.join()
 
+        assert errors == []
         assert construct_count["n"] == 1
         assert len({id(r) for r in results}) == 1
 
@@ -782,15 +792,6 @@ class TestRoutingProvider:
         caps = rp.get_capabilities("ollama/llava:7b")
         assert caps == ["completion", "vision"]
         mock_sdk.get_capabilities.assert_called_once_with("ollama/llava:7b")
-
-    def test_invalidate_load_cache_forwards_to_native(self) -> None:
-        """``invalidate_load_cache`` releases the native side; SDK has no cache."""
-        rp = self._make_provider()
-        mock_native = mock.MagicMock()
-        rp._local = mock_native
-
-        rp.invalidate_load_cache()
-        mock_native.invalidate_load_cache.assert_called_once_with(None)
 
     def test_warm_up_pool_forwards_to_native(self) -> None:
         """``warm_up_pool`` lazily constructs the native provider and warms it."""
@@ -3840,8 +3841,8 @@ class TestRoutingLifecycleForwarding:
         local.cancel_inference.assert_called_once_with()
         rp.reload_role(WorkerRole.EMBED)
         local.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=False)
-        rp.reload_placement(wait=True)
-        local.reload_placement.assert_called_once_with(wait=True)
+        rp.replan_fleet(wait=True)
+        local.replan_fleet.assert_called_once_with(wait=True)
 
     def test_cancel_and_reload_are_noop_without_local(self) -> None:
         from lilbee.providers.roles import WorkerRole
@@ -3850,21 +3851,7 @@ class TestRoutingLifecycleForwarding:
         rp = RoutingProvider()  # _local is None
         rp.cancel_inference()  # must not raise
         rp.reload_role(WorkerRole.CHAT)  # must not raise
-        rp.reload_placement()  # must not raise
-
-    def test_drop_loaded_models_async_forwards_to_local(self) -> None:
-        from lilbee.providers.routing_provider import RoutingProvider
-
-        rp = RoutingProvider()
-        local = mock.MagicMock()
-        rp._local = local
-        rp.drop_loaded_models_async()
-        local.drop_loaded_models_async.assert_called_once_with()
-
-    def test_drop_loaded_models_async_noop_without_local(self) -> None:
-        from lilbee.providers.routing_provider import RoutingProvider
-
-        RoutingProvider().drop_loaded_models_async()  # _local is None: must not raise
+        rp.replan_fleet()  # must not raise
 
     def test_max_concurrent_chats_defaults_to_one_without_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider

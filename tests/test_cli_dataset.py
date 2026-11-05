@@ -17,7 +17,12 @@ from lilbee.cli import app
 from lilbee.core.config import active_config, cfg
 from lilbee.data.store import Store
 from lilbee.runtime.lock import ResetRefusedError, _no_sync_running
-from tests.conftest import make_mock_services, read_takes_hooked, reset_held_on_a_thread
+from tests.conftest import (
+    ctrl_c_reaches_python,
+    make_mock_services,
+    read_takes_hooked,
+    reset_held_on_a_thread,
+)
 
 runner = CliRunner()
 # How long a held reset lasts when a test hangs; no test waits for it.
@@ -63,6 +68,14 @@ def _seed(store, source="doc.pdf"):
 
 
 class TestExportCommand:
+    def test_export_to_an_unwritable_path_prints_one_line_and_exits_1(self, store, tmp_path):
+        _seed(store)
+        out = tmp_path / "no-such-folder" / "pages.parquet"
+        result = runner.invoke(app, ["export", str(out)])
+        assert result.exit_code == 1
+        assert "Traceback" not in result.output
+        assert not isinstance(result.exception, OSError)
+
     def test_export_writes_file(self, store, tmp_path):
         _seed(store)
         out = tmp_path / "pages.parquet"
@@ -210,6 +223,7 @@ class TestImportCommand:
         with (
             reset_held_on_a_thread(data_root, ends_after_s=_HANG_LIMIT_S) as resetter,
             read_takes_hooked(_ctrl_c_once),
+            ctrl_c_reaches_python(),
         ):
             result = runner.invoke(app, ["import", str(out)])
             reset_still_held = resetter.is_alive()

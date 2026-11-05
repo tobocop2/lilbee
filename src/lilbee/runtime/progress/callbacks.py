@@ -3,6 +3,7 @@
 from collections.abc import Callable
 
 from lilbee.runtime.progress.types import (
+    AnalyzeEvent,
     BatchProgressEvent,
     CrawlDoneEvent,
     CrawlPageEvent,
@@ -19,6 +20,7 @@ from lilbee.runtime.progress.types import (
     SetupProgressEvent,
     SetupStartEvent,
     SyncDoneEvent,
+    SyncWaitEvent,
     WikiPageEvent,
     WikiPhaseEvent,
 )
@@ -31,6 +33,7 @@ ProgressEvent = (
     | OcrStartEvent
     | EmbedEvent
     | SyncDoneEvent
+    | SyncWaitEvent
     | CrawlStartEvent
     | CrawlPageEvent
     | CrawlPageFailedEvent
@@ -40,6 +43,7 @@ ProgressEvent = (
     | SetupDoneEvent
     | WikiPhaseEvent
     | WikiPageEvent
+    | AnalyzeEvent
     | LibraryUpgradeEvent
 )
 

@@ -24,6 +24,7 @@ import signal
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
 
     from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import Config
+    from lilbee.core.profile_files import ProfileStore
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
@@ -67,6 +69,14 @@ def _default_session_store() -> SessionStore:
     from lilbee.sessions import SessionStore
 
     return SessionStore()
+
+
+def _default_profile_store() -> ProfileStore:
+    """Build the profile store, importing it lazily."""
+    # circular: core.config -> catalog (model-ref validator) -> app.services -> core.profile_files
+    from lilbee.core.profile_files import ProfileStore
+
+    return ProfileStore()
 
 
 @dataclass
@@ -103,6 +113,7 @@ class Services:
     crawler_sync_state: CrawlerSyncState
     known_models: KnownModelCache
     session_store: SessionStore = field(default_factory=_default_session_store)
+    profile_store: ProfileStore = field(default_factory=_default_profile_store)
 
     def cancel_inference(self) -> None:
         """Interrupt any in-flight generation. Idempotent.
@@ -170,6 +181,12 @@ class _ServicesState:
         self.interactive: bool = False
         # Where this process shows a library upgrade; each surface sets its own.
         self.on_upgrade: DetailedProgressCallback | None = None
+        # How this process takes config.toml now; set by each surface that follows the file.
+        self.config_refresh: Callable[[], None] | None = None
+        # Every store this process built, so the exit can wait for any library open
+        # (the first, the one /reset makes, a lazy one) without each path telling it.
+        self.stores: weakref.WeakSet[Store] = weakref.WeakSet()
+        self.stores_lock = threading.Lock()
 
     def report_upgrade(self, event_type: EventType, event: ProgressEvent) -> None:
         """Pass a library upgrade event to the reporter the surface set last, if any."""
@@ -178,6 +195,31 @@ class _ServicesState:
 
 
 _state = _ServicesState()
+
+
+def _new_store(config: Config) -> Store:
+    """Build a Store and record it, so ``wait_for_opens`` sees its open; the one way to make one."""
+    from lilbee.data.store import Store
+
+    store = Store(config, on_upgrade=_state.report_upgrade)
+    with _state.stores_lock:
+        _state.stores.add(store)
+    return store
+
+
+def wait_for_opens(timeout: float) -> bool:
+    """Wait up to *timeout* seconds in all, for every library open still running.
+
+    Return False when an open is still running at the deadline.
+    """
+    deadline = time.monotonic() + timeout
+    with _state.stores_lock:
+        stores = list(_state.stores)
+    done = True
+    for store in stores:
+        if not store.wait_for_open(max(0.0, deadline - time.monotonic())):
+            done = False
+    return done
 
 
 def build_services(
@@ -204,7 +246,6 @@ def build_services(
     binds its own, not only get_services.
     """
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
     from lilbee.modelhub.registry import ModelRegistry
@@ -217,14 +258,16 @@ def build_services(
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    provider = provider or create_provider(config, hold_warm=interactive)
+    provider = provider or create_provider(
+        config, hold_warm=interactive, config_refresh=refresh_config
+    )
     from lilbee.data.extract.backends import sync_xberg_backends
 
     sync_xberg_backends(provider)
     registry = registry or ModelRegistry(config.models_dir)
     # The first point that sees env vars, --model and config.toml together.
     warn_unregistered_role_refs(config, registry)
-    store = Store(config, on_upgrade=_state.report_upgrade)
+    store = _new_store(config)
     embedder = Embedder(config, provider)
     reranker = Reranker(config)
     concepts = ConceptGraph(config, store)
@@ -334,6 +377,22 @@ def mark_interactive_session() -> None:
     _state.interactive = True
 
 
+def set_config_refresh(hook: Callable[[], None] | None) -> None:
+    """Register how this process takes config.toml changes now (None clears it).
+
+    serve, the stdio MCP server and the TUI register the check they already run, so
+    the local engine can take an owner's new settings before it retries a call.
+    """
+    _state.config_refresh = hook
+
+
+def refresh_config() -> None:
+    """Take config.toml changes now through the registered check; nothing without one."""
+    hook = _state.config_refresh
+    if hook is not None:
+        hook()
+
+
 def report_library_upgrade(callback: DetailedProgressCallback | None) -> None:
     """Show this process's library upgrades through *callback* (None: nowhere), for every store."""
     _state.on_upgrade = callback
@@ -342,6 +401,25 @@ def report_library_upgrade(callback: DetailedProgressCallback | None) -> None:
 def set_services(services: Services | None) -> None:
     """Replace the cached Services singleton (for testing)."""
     _state.singleton = services
+
+
+def chunks_in_store() -> bool:
+    """True when the index holds a chunk, asked of the store alone.
+
+    A bound container (scoped or cached) answers with its own store. Without
+    one, a short-lived store answers and no provider is built, so the check
+    starts no model warm-up.
+    """
+    from lilbee.core.config import cfg
+
+    bound = _state.override.get() or _state.singleton
+    if bound is not None:
+        return bound.store.has_chunks()
+    store = _new_store(cfg)
+    try:
+        return store.has_chunks()
+    finally:
+        store.close()
 
 
 def peek_services() -> Services | None:
@@ -390,7 +468,6 @@ def reset_store() -> None:
     from dataclasses import replace
 
     from lilbee.core.config import cfg
-    from lilbee.data.store import Store
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.query import Searcher
@@ -398,7 +475,7 @@ def reset_store() -> None:
     # Build the replacement, swap the reference, then close the old store last so
     # a new caller never observes a closed handle mid-swap.
     old_store = svc.store
-    store = Store(cfg, on_upgrade=_state.report_upgrade)
+    store = _new_store(cfg)
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
     searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
@@ -522,6 +599,8 @@ _STRAGGLER_BUDGET_S = 5.0
 
 _STRAGGLER_NOTE = "lilbee: a background task would not stop; exiting anyway.\n"
 
+_OPEN_EXIT_NOTE = "lilbee: the library is still opening; exiting now. The next start finishes it.\n"
+
 
 def _write_exit_note(note: str) -> None:
     """Print an exit-path status line; stderr may already be gone at exit."""
@@ -530,6 +609,27 @@ def _write_exit_note(note: str) -> None:
         sys.stderr.flush()
     except (OSError, ValueError):
         pass
+
+
+def _flush_logs() -> None:
+    """Flush every log handler and stdio; ``os._exit`` drops what a buffer still holds."""
+    # loggerDict also holds PlaceHolder entries for loggers that have no object yet.
+    named = [e for e in logging.Logger.manager.loggerDict.values() if isinstance(e, logging.Logger)]
+    loggers = [logging.getLogger(), *named]
+    for logger in loggers:
+        for handler in logger.handlers:
+            with suppress(OSError, ValueError):
+                handler.flush()
+    for stream in (sys.stdout, sys.stderr):
+        with suppress(AttributeError, OSError, ValueError):
+            stream.flush()
+
+
+def _exit_now(status: int, note: str) -> None:
+    """Write *note*, flush the logs, then end the process with *status*, skipping atexit."""
+    _write_exit_note(note)
+    _flush_logs()
+    os._exit(status)
 
 
 def _all_threads() -> list[threading.Thread]:
@@ -557,8 +657,7 @@ def wait_for_hard_exit_teardown() -> None:
                 _write_exit_note(_STOPPING_NOTE)
                 thread.join()
     except KeyboardInterrupt:
-        _write_exit_note(_FORCE_QUIT_NOTE)
-        os._exit(_FORCE_QUIT_EXIT_CODE)
+        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
 
 
 def reset_services_on_exit() -> None:
@@ -609,11 +708,19 @@ def _exit_if_stragglers(status: int) -> None:
         for thread in _straggler_threads():
             thread.join(max(0.0, deadline - time.monotonic()))
         if _straggler_threads():
-            _write_exit_note(_STRAGGLER_NOTE)
-            os._exit(status)
+            _exit_now(status, _STRAGGLER_NOTE)
     except KeyboardInterrupt:
-        _write_exit_note(_FORCE_QUIT_NOTE)
-        os._exit(_FORCE_QUIT_EXIT_CODE)
+        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
+
+
+def exit_if_opens_remain(status: int) -> None:
+    """End the process with *status* when a library open still runs; else return."""
+    # A daemon thread inside LanceDB at finalization aborts Python 3.11 and 3.12
+    # (CPython gh-87135). The exit skips atexit, so the teardown runs first.
+    if wait_for_opens(0.0):
+        return
+    reset_services_on_exit()
+    _exit_now(status, _OPEN_EXIT_NOTE)
 
 
 def exit_on_signals_in_loop(loop: asyncio.AbstractEventLoop) -> None:

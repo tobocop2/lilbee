@@ -27,8 +27,8 @@ log = logging.getLogger(__name__)
 # early rather than emitting an over-length chunk. Mirrors providers.fleet.client.
 _FALLBACK_CHARS_PER_TOKEN = 3
 
-# Non-empty input for the pre-registration count probe; the result is discarded.
-_PROBE_TEXT = "probe"
+# The text xberg's registration probe counts. Its bridge reports an exception as a zero count.
+_XBERG_PROBE_TEXT = "a"
 
 
 def _estimate_tokens(text: str) -> int:
@@ -43,10 +43,14 @@ class LilbeeTokenizerBackend:
     Only a backend without a local tokenizer degrades to the character estimate;
     any other failure raises to the caller. xberg requires a non-zero count for
     non-empty text, so a zero count degrades to the estimate as well.
+    After :meth:`probe`, xberg's registration probe is answered once without a
+    provider call, so a provider that stops after the probe cannot fail the
+    registration. Later counts of the same text go to the provider.
     """
 
     def __init__(self, *, count_fn: Callable[[str], int]) -> None:
         self._count_fn = count_fn
+        self._probe_count: int | None = None
 
     def name(self) -> str:
         return TokenizerBackendName.LILBEE
@@ -55,9 +59,20 @@ class LilbeeTokenizerBackend:
 
     def shutdown(self) -> None: ...
 
+    def probe(self) -> None:
+        """Count xberg's probe text through the provider; a count failure raises here."""
+        self._probe_count = self._count(_XBERG_PROBE_TEXT)
+
     def count_tokens(self, text: str) -> int:
         if not text:
             return 0
+        if text == _XBERG_PROBE_TEXT:
+            answer, self._probe_count = self._probe_count, None
+            if answer is not None:
+                return answer
+        return self._count(text)
+
+    def _count(self, text: str) -> int:
         try:
             count = self._count_fn(text)
         except NotImplementedError:  # SDK embedders expose no local tokenizer
@@ -69,8 +84,7 @@ class LilbeeTokenizerBackend:
 def _make_tokenizer_backend(provider: LLMProvider, cfg: Config) -> LilbeeTokenizerBackend:
     """Build the tokenizer backend, probing its count before xberg does."""
     backend = LilbeeTokenizerBackend(count_fn=provider.count_tokens)
-    # xberg masks a probe failure as a validation error; fail first with the real one.
-    backend.count_tokens(_PROBE_TEXT)
+    backend.probe()
     return backend
 
 

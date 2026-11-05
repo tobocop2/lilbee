@@ -374,6 +374,38 @@ async def test_the_container_is_built_behind_the_gate(monkeypatch):
     assert container.add_pool_listener.called, "the app subscribed to some other container"
 
 
+async def test_the_gate_opens_the_library_on_a_thread_the_interpreter_joins(monkeypatch):
+    """A quit during the open waits for it, so it cannot hit CPython gh-87135.
+
+    The daemon flag decides nothing here: an executor worker inherits it from
+    the thread that grew the pool, and the interpreter joins every executor
+    worker at exit (``concurrent.futures.thread._python_exit``) either way.
+    """
+    import threading
+    from concurrent.futures import thread as executor_threads
+
+    from lilbee.app.services import set_services
+    from lilbee.cli.tui.app import LilbeeApp
+    from tests._async_wait import wait_until
+
+    set_services(None)
+    opened_on: list[threading.Thread] = []
+    container = mock.MagicMock()
+    container.store.get_db.side_effect = lambda: opened_on.append(threading.current_thread())
+    monkeypatch.setattr("lilbee.cli.tui.app.get_services", lambda: container)
+    monkeypatch.setattr("lilbee.cli.tui.screens.startup_gate.get_services", lambda: container)
+    monkeypatch.setattr("lilbee.cli.tui.app.chat_ready", lambda: True)
+    monkeypatch.setattr("lilbee.cli.tui.app.embedding_ready", lambda: True)
+    monkeypatch.setattr(LilbeeApp, "canonicalize_persisted_models", lambda self: None)
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_until(pilot, lambda: bool(opened_on), max_pauses=200)
+
+    # The pool registers a worker just after starting it, so ask once the open is done.
+    assert [t in executor_threads._threads_queues for t in opened_on] == [True]
+
+
 async def test_gate_composes_and_styles_its_widgets(monkeypatch):
     """Render the gate for real: a bad CSS selector must fail here, not at launch.
 

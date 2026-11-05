@@ -16,8 +16,7 @@ Reasoning models (Qwen3, DeepSeek-R1) wrap their thinking process in
   :mod:`lilbee.server.chat_dispatch.reasoning_cap`, which keeps the
   canonical event stream intact so the chat surfaces still carry tool
   calls.
-- ``effective_reasoning_cap``: resolves the cap from the global config
-  with per-model ``ModelDefaults`` overrides.
+- ``effective_reasoning_cap``: the cap from the global config.
 """
 
 from __future__ import annotations
@@ -263,18 +262,8 @@ def filter_reasoning(
 
 
 def effective_reasoning_cap() -> int:
-    """Return the active reasoning cap; 0 means unlimited.
-
-    A per-model ``ModelDefaults.max_reasoning_chars`` value (including
-    ``0`` for "this model is allowed to think forever") beats the global
-    ``cfg.max_reasoning_chars`` setting. A missing (``None``) or negative
-    per-model value falls through to the global: ModelDefaults is an
-    unvalidated dataclass, so a negative is treated as "unset" rather than
-    trusted as a cap.
-    """
-    defaults = cfg.model_defaults
-    override = defaults.max_reasoning_chars if defaults is not None else None
-    return override if isinstance(override, int) and override >= 0 else cfg.max_reasoning_chars
+    """Return the active reasoning cap, ``cfg.max_reasoning_chars``; 0 means unlimited."""
+    return cfg.max_reasoning_chars
 
 
 def stream_chat_with_cap(

@@ -88,12 +88,18 @@ def _patch_chat_setup() -> Any:
         yield
 
 
-async def _walk_tab_chain(app: LilbeeApp, pilot: Any, max_presses: int = 60) -> list[str]:
+async def _walk_tab_chain(
+    app: LilbeeApp,
+    pilot: Any,
+    max_presses: int = 60,
+    stop_at: tuple[str, ...] = (),
+) -> list[str]:
     """Press Tab up to ``max_presses`` times; return the focused widget id chain.
 
     Stops early when the same widget instance is focused twice (a full
-    cycle). Each entry in the returned list is the focused widget's id
-    or class name; multiple unnamed widgets of the same class produce
+    cycle), or when the focused widget's id or class name is in
+    ``stop_at``. Each entry in the returned list is the focused widget's
+    id or class name; multiple unnamed widgets of the same class produce
     duplicate entries, which is intentional.
     """
     chain: list[str] = []
@@ -107,6 +113,8 @@ async def _walk_tab_chain(app: LilbeeApp, pilot: Any, max_presses: int = 60) -> 
         seen_ids.add(id(focused))
         marker = focused.id if focused.id else type(focused).__name__
         chain.append(marker)
+        if marker in stop_at:
+            break
         await pilot.press("tab")
         await pilot.pause()
     return chain
@@ -167,7 +175,7 @@ async def test_settings_tab_chain_visits_group_tabs_widget() -> None:
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause(0.2)
-        chain = await _walk_tab_chain(app, pilot, max_presses=80)
+        chain = await _walk_tab_chain(app, pilot, max_presses=80, stop_at=("ContentTabs", "Tabs"))
         assert any(name in chain for name in ("ContentTabs", "Tabs")), (
             f"Tabs widget missing from {chain}"
         )
@@ -192,7 +200,7 @@ async def test_settings_tab_rolls_over_to_next_pane() -> None:
         tabs = screen.query_one(TabbedContent)
         starting_pane = tabs.active
         body = screen.query_one(f"#{starting_pane}-body", _LazyGroupBody)
-        focusables = [w for w in body.query("*") if w.focusable]
+        focusables = [w for w in screen.focus_chain if body in w.ancestors]
         assert focusables, "active pane should expose at least one focusable"
         focusables[-1].focus()
         await pilot.pause()
@@ -229,7 +237,8 @@ async def test_settings_tab_advances_within_pane() -> None:
         tabs = screen.query_one(TabbedContent)
         starting_pane = tabs.active
         body = screen.query_one(f"#{starting_pane}-body", _LazyGroupBody)
-        focusables = [w for w in body.query("*") if w.focusable]
+        # Tab walks the visible fields; the Select's hidden overlay is focusable but is no stop.
+        focusables = [w for w in screen.focus_chain if body in w.ancestors]
         assert len(focusables) >= 2, "pane needs at least two focusables to test mid-pane move"
         focusables[0].focus()
         await pilot.pause()

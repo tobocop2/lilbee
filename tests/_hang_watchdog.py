@@ -29,6 +29,9 @@ report it receives. When no report arrives for ``_STALL_FACTOR`` times the
 backstop, it signals each worker to dump its stacks to its own file, then
 dumps its own stacks and ``_exit``\\s, so the run fails with every stack.
 
+``LILBEE_TEST_HANG_TEARDOWN_S`` sets the window for that teardown backstop.
+When unset, it equals ``LILBEE_TEST_HANG_DUMP_S``.
+
 Unset or ``0`` is a no-op, so local runs are untouched. Dumps go to
 ``LILBEE_TEST_HANG_DUMP_DIR/hang-<workerid>.txt`` (default: the pytest rootdir)
 for a CI step to print after the test step. The next test's setup truncates
@@ -51,6 +54,7 @@ import pytest
 
 _ENV_SECONDS = "LILBEE_TEST_HANG_DUMP_S"
 _ENV_DIR = "LILBEE_TEST_HANG_DUMP_DIR"
+_ENV_TEARDOWN_SECONDS = "LILBEE_TEST_HANG_TEARDOWN_S"
 
 # The early dump fires at this share of the test's own timeout.
 _EARLY_SHARE = 0.75
@@ -69,6 +73,7 @@ _PHASE_FAILED = pytest.StashKey[bool]()
 # so it must outlive every test; keep a module reference so it is not closed.
 _dump_handle: TextIO | None = None
 _timeout_s = 0.0
+_teardown_s = 0.0
 _early_timer: threading.Timer | None = None
 _early_fired = threading.Event()
 _stall_s = 0.0
@@ -199,11 +204,13 @@ def _cancel_stall() -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    global _dump_handle, _timeout_s
+    global _dump_handle, _timeout_s, _teardown_s
     raw = os.environ.get(_ENV_SECONDS, "").strip()
     _timeout_s = float(raw) if raw else 0.0
     if _timeout_s <= 0:
         return
+    raw_teardown = os.environ.get(_ENV_TEARDOWN_SECONDS, "").strip()
+    _teardown_s = float(raw_teardown) if raw_teardown else _timeout_s
     dump_dir = Path(os.environ.get(_ENV_DIR) or config.rootpath)
     dump_dir.mkdir(parents=True, exist_ok=True)
     # One file per worker: xdist workers share a rootdir but not a process.
@@ -225,6 +232,48 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if _stall_s > 0:
         _arm_stall(f"{report.nodeid} ({report.when})")
+
+
+def _timeout_note(config: pytest.Config) -> str:
+    raw = config.getoption("timeout", None) or config.getini("timeout")
+    limit = float(raw or 0)
+    if limit <= 0:
+        return "pytest-timeout is off."
+    return (
+        f"The configured pytest-timeout limit is {limit:g}s"
+        " (a test with its own timeout marker can differ)."
+        " When a test passes that limit on Windows,"
+        " pytest-timeout can end a worker with no traceback."
+    )
+
+
+def _dump_note(config: pytest.Config, worker: str, nodeid: str) -> str:
+    """The worker's early dump when it names this test, else a plain statement."""
+    path = Path(os.environ.get(_ENV_DIR) or config.rootpath) / f"hang-{worker}.txt"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    if f"hang dump: {nodeid} still running" in text:
+        return f"hang dump from {path}:\n{text}"
+    return f"No hang dump was written for {nodeid} by {worker}."
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_handlecrashitem(crashitem: str, report: pytest.TestReport, sched: object) -> None:
+    """Add the timeout limit and the worker's hang dump to a dead worker's report.
+
+    xdist calls this on the controller. The report text changes; the outcome does not.
+    """
+    node = report.node  # type: ignore[attr-defined]
+    worker = node.gateway.id
+    report.longrepr = "\n".join(
+        [
+            str(report.longrepr),
+            _timeout_note(node.config),
+            _dump_note(node.config, worker, crashitem),
+        ]
+    )
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -289,7 +338,7 @@ def pytest_runtest_teardown(item: pytest.Item) -> Generator[None, None, None]:
     before_header = _dump_handle.tell()
     _dump_handle.write(f"hang watchdog armed for the teardown of {item.nodeid}\n")
     _dump_handle.flush()
-    faulthandler.dump_traceback_later(_timeout_s, file=_dump_handle, exit=True)
+    faulthandler.dump_traceback_later(_teardown_s, file=_dump_handle, exit=True)
     try:
         return (yield)
     finally:

@@ -92,7 +92,27 @@ def wedged_teardown():
 def test_fails(wedged_teardown):
     assert False
 """
-# The controller stall limit is four times this, so the worker backstop fires first.
+# The setup blocks on an event that a child timer sets after the teardown window.
+_SLOW_SETUP_THEN_WEDGED = """
+import threading
+
+import pytest
+
+
+@pytest.fixture
+def wedged_teardown():
+    released = threading.Event()
+    threading.Timer(3, released.set).start()
+    released.wait()
+    yield
+    threading.Event().wait()
+
+
+def test_fails(wedged_teardown):
+    assert False
+"""
+# The teardown window of the backstop tests; the setup and call window stays long.
+# The controller stall limit is four times the long window, so the worker backstop fires first.
 _TEARDOWN_BACKSTOP_S = 2
 _FAILED_FAST = "def test_fails():\n    assert False\n"
 # The session ends after the failed test's teardown, slower than the backstop.
@@ -106,7 +126,7 @@ def pytest_sessionfinish(session):
 
 
 def _child_run(
-    tmp_path: Path, source: str, *extra: str, backstop_s: int
+    tmp_path: Path, source: str, *extra: str, backstop_s: int, teardown_s: int | None = None
 ) -> tuple[list[str], dict[str, str], Path]:
     """The command, environment and dump directory of a child pytest run."""
     test_file = tmp_path / "test_case.py"
@@ -116,6 +136,7 @@ def _child_run(
         **{k: v for k, v in os.environ.items() if not k.startswith(_PARENT_ENV_PREFIXES)},
         "LILBEE_TEST_HANG_DUMP_S": str(backstop_s),
         "LILBEE_TEST_HANG_DUMP_DIR": str(dump_dir),
+        **({} if teardown_s is None else {"LILBEE_TEST_HANG_TEARDOWN_S": str(teardown_s)}),
         "PYTHONPATH": str(_TESTS_DIR),
         "ENTERED": str(tmp_path / "entered"),
         "RELEASE": str(tmp_path / "release"),
@@ -140,9 +161,15 @@ def _child_run(
 
 
 def _run_pytest(
-    tmp_path: Path, source: str, *extra: str, backstop_s: int = _BACKSTOP_S
+    tmp_path: Path,
+    source: str,
+    *extra: str,
+    backstop_s: int = _BACKSTOP_S,
+    teardown_s: int | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
-    command, env, dump_dir = _child_run(tmp_path, source, *extra, backstop_s=backstop_s)
+    command, env, dump_dir = _child_run(
+        tmp_path, source, *extra, backstop_s=backstop_s, teardown_s=teardown_s
+    )
     result = subprocess.run(
         command,
         capture_output=True,
@@ -187,7 +214,7 @@ def test_a_failed_test_whose_teardown_blocks_ends_at_the_backstop(
     tmp_path: Path, extra: tuple[str, ...], dump_name: str
 ) -> None:
     result, dump_dir = _run_pytest(
-        tmp_path, _FAILED_THEN_WEDGED, *extra, backstop_s=_TEARDOWN_BACKSTOP_S
+        tmp_path, _FAILED_THEN_WEDGED, *extra, teardown_s=_TEARDOWN_BACKSTOP_S
     )
 
     assert result.returncode != 0
@@ -196,6 +223,24 @@ def test_a_failed_test_whose_teardown_blocks_ends_at_the_backstop(
     assert "wedged_teardown" in dump
     controller = (dump_dir / "hang-master.txt").read_text(encoding="utf-8")
     assert "no test report for" not in controller
+
+
+@pytest.mark.parametrize(
+    ("extra", "dump_name"),
+    [((), "hang-master.txt"), (("-n", "1"), "hang-gw0.txt")],
+    ids=["single-process", "xdist-worker"],
+)
+def test_a_setup_slower_than_the_teardown_window_still_ends_at_the_teardown_backstop(
+    tmp_path: Path, extra: tuple[str, ...], dump_name: str
+) -> None:
+    result, dump_dir = _run_pytest(
+        tmp_path, _SLOW_SETUP_THEN_WEDGED, *extra, teardown_s=_TEARDOWN_BACKSTOP_S
+    )
+
+    assert result.returncode != 0
+    dump = (dump_dir / dump_name).read_text(encoding="utf-8")
+    assert "hang watchdog armed for the teardown of test_case.py::test_fails" in dump
+    assert "wedged_teardown" in dump
 
 
 @pytest.mark.parametrize("extra", [(), ("-n", "1")], ids=["single-process", "xdist-worker"])
@@ -212,7 +257,7 @@ def test_a_failed_test_with_a_fast_teardown_leaves_no_dump(
 
 def test_a_failed_test_does_not_arm_the_backstop_past_its_teardown(tmp_path: Path) -> None:
     (tmp_path / "conftest.py").write_text(_SLOW_SESSION_FINISH, encoding="utf-8")
-    result, dump_dir = _run_pytest(tmp_path, _FAILED_FAST, backstop_s=_TEARDOWN_BACKSTOP_S)
+    result, dump_dir = _run_pytest(tmp_path, _FAILED_FAST, teardown_s=_TEARDOWN_BACKSTOP_S)
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "1 failed" in result.stdout
@@ -368,6 +413,106 @@ def test_a_report_re_arms_the_stall_timer_under_its_own_name(
     assert not second.cancelled
     assert (second.delay, second.args) == (4.0, ("test_case.py::test_a (call)",))
     assert len(stall_recorders.exit_dumps) == 2
+
+
+_CRASHED_TEST = "tests/test_case.py::test_wedged"
+
+
+class _FakeConfig:
+    """Answers the two timeout lookups the crash hook makes."""
+
+    def __init__(self, option: object, ini: object, rootpath: Path) -> None:
+        self.rootpath = rootpath
+        self._option = option
+        self._ini = ini
+
+    def getoption(self, name: str, default: object = None) -> object:
+        assert name == "timeout"
+        return self._option
+
+    def getini(self, name: str) -> object:
+        assert name == "timeout"
+        return self._ini
+
+
+def _crash_report(
+    config: _FakeConfig, worker: str = "gw2", nodeid: str = _CRASHED_TEST
+) -> types.SimpleNamespace:
+    """The report xdist builds for a dead worker, with its stock message."""
+    node = types.SimpleNamespace(gateway=types.SimpleNamespace(id=worker), config=config)
+    return types.SimpleNamespace(
+        node=node, longrepr=f"worker {worker!r} crashed while running {nodeid!r}"
+    )
+
+
+def test_a_crashed_worker_report_names_the_configured_timeout_and_the_dump(
+    watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dump = f"hang dump: {_CRASHED_TEST} still running after 45s\nall thread stacks:\n"
+    (tmp_path / "hang-gw2.txt").write_text(dump, encoding="utf-8")
+    monkeypatch.setenv("LILBEE_TEST_HANG_DUMP_DIR", str(tmp_path))
+    report = _crash_report(_FakeConfig(option=None, ini="37", rootpath=tmp_path))
+
+    result = watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
+
+    assert result is None
+    text = str(report.longrepr)
+    assert text.startswith("worker 'gw2' crashed while running 'tests/test_case.py::test_wedged'")
+    assert "The configured pytest-timeout limit is 37s (a test with its own" in text
+    assert "pytest-timeout can end a worker with no traceback" in text
+    assert f"hang dump from {tmp_path / 'hang-gw2.txt'}:" in text
+    assert text.endswith(dump)
+
+
+def test_a_command_line_timeout_overrides_the_ini_value_in_the_crash_report(
+    watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LILBEE_TEST_HANG_DUMP_DIR", str(tmp_path))
+    report = _crash_report(_FakeConfig(option=12.5, ini="60", rootpath=tmp_path))
+
+    watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
+
+    assert "The configured pytest-timeout limit is 12.5s (" in str(report.longrepr)
+
+
+def test_a_crash_with_no_dump_file_says_no_dump_was_written(
+    watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LILBEE_TEST_HANG_DUMP_DIR", str(tmp_path))
+    report = _crash_report(_FakeConfig(option=None, ini="60", rootpath=tmp_path))
+
+    watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
+
+    text = str(report.longrepr)
+    assert "The configured pytest-timeout limit is 60s (" in text
+    assert f"No hang dump was written for {_CRASHED_TEST} by gw2." in text
+    assert "hang dump from" not in text
+
+
+def test_a_dump_of_another_test_is_not_attached_to_the_crash_report(
+    watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    other = "hang dump: tests/test_case.py::test_other still running after 45s\n"
+    (tmp_path / "hang-gw2.txt").write_text(other, encoding="utf-8")
+    monkeypatch.setenv("LILBEE_TEST_HANG_DUMP_DIR", str(tmp_path))
+    report = _crash_report(_FakeConfig(option=None, ini="60", rootpath=tmp_path))
+
+    watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
+
+    text = str(report.longrepr)
+    assert f"No hang dump was written for {_CRASHED_TEST} by gw2." in text
+    assert "test_other" not in text
+
+
+def test_a_crash_report_without_a_timeout_says_the_timeout_is_off(
+    watchdog: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("LILBEE_TEST_HANG_DUMP_DIR", raising=False)
+    report = _crash_report(_FakeConfig(option=None, ini=0, rootpath=tmp_path))
+
+    watchdog.pytest_handlecrashitem(_CRASHED_TEST, report, None)
+
+    assert "pytest-timeout is off." in str(report.longrepr)
 
 
 def test_session_finish_cancels_the_stall_timer_and_the_exit(

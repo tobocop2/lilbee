@@ -762,6 +762,41 @@ def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
     return KvCacheType.F16
 
 
+def launch_settings(
+    role: WorkerRole,
+    rerank_mode: RerankMode | None,
+    meta: dict[str, str] | None,
+    model_path: Path,
+) -> str:
+    """The settings a launch of *role* bakes in, as the text two processes compare.
+
+    Only what this role's launch asks for, resolved from config and the model's
+    metadata, never from a device probe. The text records the request: chat carries
+    ``kv_cache_type`` whenever flash attention is not switched off, because whether
+    the argv applies it depends on the probed backend. A cache type change under
+    flash ``auto`` can restart a worker whose argv stays the same.
+    Chat and vision ctx sizing is not here
+    (see contract.chat_ctx_covers). The model is not here: the bind matches
+    (role, model) pairs.
+    """
+    from lilbee.core.config import cfg
+
+    spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
+    flash = _flash_enabled() if _role_launches_with_flash(role, rerank_mode) else None
+    values: dict[str, object] = {
+        "gpu_devices": cfg.gpu_devices,
+        "placement": spec.roles.get(role) if spec else None,
+        "n_gpu_layers": _role_gpu_layers(role),
+        "cpu_moe": expert_offload_all(meta),
+        "n_cpu_moe": expert_offload_layers(meta),
+        "flash_attention": flash,
+        "kv_cache_type": cfg.kv_cache_type if role is WorkerRole.CHAT and flash else None,
+        "rerank_mode": rerank_mode,
+        "embed_window": _role_ctx(role, model_path, meta) if role in _EMBED_ROLES else None,
+    }
+    return ";".join(f"{key}={value}" for key, value in values.items())
+
+
 def _replica_count(role: WorkerRole, device_count: int) -> int:
     """Requested data-parallel instances for *role* via the shared resolver."""
     return resolve_replica_count(role, device_count)
@@ -1782,6 +1817,7 @@ def _launch_for(
         est_vram_by_device=_charge_by_device(chosen, plan.tensor_split, est_vram_bytes),
         est_unreported_bytes=_unreported_bytes(plan.role, mmproj),
         est_host_bytes=_chat_host_estimate(model_path, ctx, slots) if fit_moves_chat else 0,
+        settings=launch_settings(plan.role, rerank_mode, meta, model_path),
     )
 
 
@@ -2998,12 +3034,33 @@ def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, s
         )
 
 
-def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
+def _gib_text(num_bytes: int) -> str:
+    """*num_bytes* in GiB with at most one decimal and no trailing zero."""
+    return f"{round(num_bytes / 1024**3, 1):g}"
+
+
+def _other_processes_clause(launch: InstanceLaunch, devices: list[FleetDevice]) -> str:
+    """A sentence naming the memory other processes hold on the cards, or ``""``.
+
+    Empty when there is no device, or when others hold no more than the model's
+    own weights (then the weights are the cause, not the neighbours).
+    """
+    total = sum(d.total_bytes for d in devices)
+    held = total - sum(d.free_bytes for d in devices)
+    if not devices or held <= launch.weights_bytes:
+        return ""
+    owner = "the cards'" if len(devices) > 1 else "the card's"
+    return f" Other processes hold {_gib_text(held)} GiB of {owner} {_gib_text(total)} GiB."
+
+
+def _unusable_chat_ctx_reason(launch: InstanceLaunch, devices: list[FleetDevice]) -> str | None:
     """Reason to refuse a chat launch whose window cannot hold a grounded prompt.
 
     ``None`` for non-chat roles, for a window that holds the minimum grounded
     prompt, and for user knobs that ask for a smaller one (a ``num_ctx`` pin,
-    a sub-minimum ``num_ctx_max`` / ``chat_n_ctx_target``).
+    a sub-minimum ``num_ctx_max`` / ``chat_n_ctx_target``). *devices* are the
+    cards the launch runs on; they let the reason name memory that other
+    processes hold.
     """
     from lilbee.core.config import cfg
 
@@ -3017,12 +3074,22 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch) -> str | None:
         return None
     if launch.ctx >= needed:
         return None
+    if devices and launch.weights_bytes > sum(d.free_bytes for d in devices):
+        opening = (
+            f"The chat model {launch.model} does not fit: its weights are larger than the "
+            f"free memory, which backs only a {launch.ctx}-token context"
+        )
+    else:
+        opening = (
+            f"The chat model {launch.model} loads, but the memory left after its weights "
+            f"backs only a {launch.ctx}-token context"
+        )
     return (
-        f"The chat model {launch.model} loads, but the memory left after its weights "
-        f"backs only a {launch.ctx}-token context, and a grounded answer needs about "
+        f"{opening}, and a grounded answer needs about "
         f"{needed} tokens (system prompt, a retrieved source, the question, and room "
-        "for the answer), so it will not be served. Use a smaller model or a smaller "
-        "quant, or set num_ctx to force a larger window."
+        "for the answer), so it will not be served."
+        f"{_other_processes_clause(launch, devices)}"
+        " Use a smaller model or a smaller quant, or set num_ctx to force a larger window."
     )
 
 
@@ -3047,6 +3114,9 @@ def _planned_launches(
     from lilbee.core.config import cfg
 
     unified_budget = _unified_memory_budget(devices)
+    # Only the clean-box snapshot's free bytes mean "what other tenants hold";
+    # a live probe is also missing the fleet's own residency.
+    clean_box = _current_plan_probe() is not None
     inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
         roles,
         unified_budget=unified_budget,
@@ -3060,9 +3130,7 @@ def _planned_launches(
         model_refs,
         devices,
         unified_budget=_unified_admission_budget(devices),
-        # Only the clean-box snapshot's free bytes mean "what other tenants hold";
-        # a live probe here would also be missing the fleet's own residency.
-        charge_against_free=_current_plan_probe() is not None,
+        charge_against_free=clean_box,
     )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
@@ -3086,7 +3154,9 @@ def _planned_launches(
             reserved_after_chat=reserved_after_chat,
             est_vram_bytes=charged.get(plan.role, 0),
         )
-        reason = _unusable_chat_ctx_reason(launch)
+        reason = _unusable_chat_ctx_reason(
+            launch, [by_index[i] for i in plan.devices if i in by_index] if clean_box else []
+        )
         if reason is not None:
             skipped_unusable_ctx[launch.role] = reason
             log.warning(reason)

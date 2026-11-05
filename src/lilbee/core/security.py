@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import stat
 import sys
-import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from filelock import FileLock
@@ -18,6 +18,8 @@ log = logging.getLogger(__name__)
 
 OWNER_ONLY_MODE = 0o600
 OWNER_ONLY_DIR_MODE = 0o700
+
+_Opener = Callable[[str, int], int]
 
 
 @contextmanager
@@ -83,23 +85,38 @@ def write_private_text(path: Path, text: str) -> None:
 
     Writing under the umask and chmod'ing afterwards leaves a window where any
     local user can read the file, and these callers persist a bearer token and
-    API keys. ``mkstemp`` creates at 0600 and ``os.replace`` keeps that mode,
-    atomically. The data is fsynced before the rename, so a crash cannot leave
-    the target empty.
+    API keys. The temp file is created 0600 and ``os.replace`` keeps that mode.
 
     Windows has no POSIX mode bits; there these rely on the inherited
     ``%LOCALAPPDATA%`` DACL.
     """
+    _write_atomically(path, text, private_opener)
+
+
+def write_text_atomically(path: Path, text: str) -> None:
+    """Write *text* to *path* atomically, with the mode the umask gives a new file."""
+    _write_atomically(path, text, None)
+
+
+def _write_atomically(path: Path, text: str, opener: _Opener | None) -> None:
+    """Write a temp file beside *path*, fsync it, then ``os.replace`` it onto *path*.
+
+    The data is fsynced before the rename, so a crash cannot leave the target empty.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        with open(tmp, "x", encoding="utf-8", newline="\n", opener=opener) as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
+        os.replace(tmp, path)
+    except BaseException as exc:
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        if isinstance(exc, OSError):
+            # The error names the file the user asked to write, not the hidden temp file.
+            raise OSError(exc.errno, exc.strerror, str(path)) from None
         raise
 
 
@@ -131,12 +148,17 @@ def ensure_private_dir(path: Path) -> None:
 
 
 def _narrow_mode(path: Path, mode: int) -> None:
-    """chmod *path* to *mode* unless it already has it; a refused chmod warns."""
+    """Clear the bits of *path* that *mode* lacks; a refused chmod warns.
+
+    Never adds a bit: a file its owner made read-only stays read-only.
+    """
     if sys.platform == "win32":  # pragma: no cover - Windows uses the DACL
         return
-    if stat.S_IMODE(path.stat().st_mode) == mode:
+    current = stat.S_IMODE(path.stat().st_mode)
+    narrowed = current & mode
+    if narrowed == current:
         return
     try:
-        path.chmod(mode)
+        path.chmod(narrowed)
     except OSError:
         log.warning("Could not restrict permissions on %s.", path, exc_info=True)

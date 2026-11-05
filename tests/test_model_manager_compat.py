@@ -230,3 +230,10 @@ class TestLoadabilityGate:
         chosen = self._capture_download(monkeypatch, tmp_path / "models")
         mgr.pull("acme/foo-GGUF", ModelSource.NATIVE)
         assert chosen == ["*.gguf"]
+
+
+def test_is_registered_follows_the_registry_manifest(tmp_path: Path) -> None:
+    mgr = ModelManager(tmp_path / "models")
+    with mock.patch.object(mgr._registry, "has_manifest", return_value=False) as has_manifest:
+        assert not mgr.is_registered("acme/foo-GGUF/foo.gguf")
+    has_manifest.assert_called_once_with("acme/foo-GGUF/foo.gguf")

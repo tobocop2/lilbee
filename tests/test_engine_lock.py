@@ -101,6 +101,15 @@ class TestUserLocks:
         assert hold.release_and_check_last() is True
         assert hold.release_and_check_last() is True
 
+    def test_exclude_self_skips_only_this_process_lock(self, tmp_path: Path):
+        own = hold_user_lock(tmp_path)
+        assert live_users_exist(tmp_path) is True
+        assert live_users_exist(tmp_path, exclude_self=True) is False
+        peer = hold_user_lock(tmp_path, pid=666_666)
+        assert live_users_exist(tmp_path, exclude_self=True) is True
+        assert peer.release_and_check_last() is False
+        assert own.release_and_check_last() is True
+
     def test_release_survives_a_lock_file_that_cannot_be_deleted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

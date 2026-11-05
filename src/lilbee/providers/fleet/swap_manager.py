@@ -81,6 +81,8 @@ _STATE_KEY_MEMBER_PORTS = "member_ports"
 _STATE_KEY_PROXY_PORT = "proxy_port"
 _STATE_KEY_LAUNCHES = "launches"
 _STATE_KEY_ENGINE_PIN = "engine_pin"
+_STATE_KEY_CONFIG_ROOT = "config_root"
+_STATE_KEY_FLEET_VIEW = "fleet_view"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
 _STATE_TMP_PREFIX = "."
@@ -124,6 +126,7 @@ _PROBE_TIMEOUT_S = 5.0
 _LIVENESS_TIMEOUT = httpx.Timeout(connect=0.5, read=2.0, write=2.0, pool=2.0)
 # Run as `python -m`; the frozen build dispatches `-m lilbee.*` to the module's main().
 _REAPER_MODULE = "lilbee.providers.fleet.engine_reaper"
+_REAPER_LOG_FILENAME = "engine-reaper.log"
 # A reaper reports running within one interpreter start; a frozen onefile start
 # on a slow disk is the long case.
 _REAPER_READY_TIMEOUT_S = 10.0
@@ -211,6 +214,15 @@ class SwapState:
     proxy_port: int | None = None
     launches: tuple[dict, ...] = ()
     engine_pin: str | None = None
+    origin: PlanOrigin | None = None
+
+
+@dataclass(frozen=True)
+class PlanOrigin:
+    """The config root a fleet was planned for, and what its config.toml set for the plan then."""
+
+    config_root: str
+    fleet_view: str | None
 
 
 class SwapManager:
@@ -248,6 +260,7 @@ class SwapManager:
         # The serving contract (per-role model/ctx/slots) persisted in every
         # state write, so a guest lilbee can bind to this live fleet.
         self._launches_payload: list[dict] = []
+        self._origin: PlanOrigin | None = None
         # True when this manager uses an engine another process built: it then
         # never writes state, never reaps, and never signals engine processes.
         self._bound = False
@@ -258,6 +271,7 @@ class SwapManager:
         *,
         ttl_seconds: int = 0,
         lifetime: EngineLifetime = EngineLifetime.BUILDER,
+        origin: PlanOrigin | None = None,
     ) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
 
@@ -278,7 +292,9 @@ class SwapManager:
         *lifetime* says what ends the engine. ``USERS`` needs the caller to hold
         the dir's build lock, and falls back to ``BUILDER`` when no reaper reports
         running for the dir, so the engine is never left unbound and unwatched.
+        *origin* goes into the state, so a peer can see a fleet planned before a config write.
         """
+        self._origin = origin
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
         self.reap_stale()
@@ -376,7 +392,15 @@ class SwapManager:
             _STATE_KEY_LAUNCHES: self._launches_payload,
             _STATE_KEY_ENGINE_PIN: engine_pin(),
         }
+        if self._origin is not None:
+            state[_STATE_KEY_CONFIG_ROOT] = self._origin.config_root
+            state[_STATE_KEY_FLEET_VIEW] = self._origin.fleet_view
         _atomic_write(self._state_path, json.dumps(state))
+
+    def restamp(self, origin: PlanOrigin) -> None:
+        """Record *origin* for the running swap: its plan still matches config.toml."""
+        self._origin = origin
+        self._write_state()
 
     @property
     def log_path(self) -> Path:
@@ -952,15 +976,20 @@ def ensure_engine_reaper(data_dir: Path) -> bool:
     """
     if reaper_running(data_dir):
         return True
+    reaper_log = data_dir / _LOGS_SUBDIR / _REAPER_LOG_FILENAME
     try:
-        reaper = subprocess.Popen(  # noqa: S603 - argv is this interpreter and a fixed module
-            [sys.executable, "-m", _REAPER_MODULE, str(data_dir)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS,
-        )
+        reaper_log.parent.mkdir(parents=True, exist_ok=True)
+        log_offset = reaper_log.stat().st_size if reaper_log.exists() else 0
+        # The child keeps its own copy of the handle; the parent closes its copy at once.
+        with reaper_log.open("ab") as reaper_err:
+            reaper = subprocess.Popen(  # noqa: S603 - argv is this interpreter and a fixed module
+                [sys.executable, "-m", _REAPER_MODULE, str(data_dir)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=reaper_err,
+                start_new_session=True,
+                creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS,
+            )
     except OSError:
         log.warning("Could not launch the engine reaper for %s.", data_dir)
         return False
@@ -972,8 +1001,25 @@ def ensure_engine_reaper(data_dir: Path) -> bool:
     # An exited reaper either lost the claim to a live one or failed to start.
     if reaper_running(data_dir):
         return True
-    log.warning("The engine reaper for %s did not report running.", data_dir)
+    log.warning(
+        "The engine reaper for %s did not report running. Its log is %s.%s",
+        data_dir,
+        reaper_log,
+        _log_tail_since(reaper_log, log_offset),
+    )
     return False
+
+
+def _log_tail_since(path: Path, offset: int) -> str:
+    """The text written to *path* after *offset*, capped, as a message suffix ('' when none)."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            data = handle.read()
+    except OSError:
+        return ""
+    text = data.decode(errors="replace").strip()[-_BOOT_LOG_TAIL_CHARS:]
+    return f"\n{text}" if text else ""
 
 
 def reap_stale(data_dir: Path) -> None:
@@ -1092,6 +1138,12 @@ def _load_state(path: Path) -> SwapState | None:
         raw_created = payload.get(_STATE_KEY_CREATED_AT)
         raw_ports = payload.get(_STATE_KEY_MEMBER_PORTS) or []
         raw_proxy = payload.get(_STATE_KEY_PROXY_PORT)
+        raw_root = payload.get(_STATE_KEY_CONFIG_ROOT)
+        origin = (
+            None
+            if raw_root is None
+            else PlanOrigin(str(raw_root), payload.get(_STATE_KEY_FLEET_VIEW))
+        )
         return SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
@@ -1100,6 +1152,7 @@ def _load_state(path: Path) -> SwapState | None:
             proxy_port=int(raw_proxy) if raw_proxy is not None else None,
             launches=tuple(payload.get(_STATE_KEY_LAUNCHES) or ()),
             engine_pin=payload.get(_STATE_KEY_ENGINE_PIN),
+            origin=origin,
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

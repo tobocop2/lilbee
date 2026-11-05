@@ -1,7 +1,7 @@
 """Coverage for the chat screen's TaskBarController-backed flows.
 
 These exercise the public entry points (``_cmd_add``, ``_start_crawl``,
-``_run_sync``) and the worker bodies (``_do_add``, ``_do_crawl``,
+``run_sync``) and the worker bodies (``_do_add``, ``_do_crawl``,
 ``_do_sync``) that the old screen-owned @work paths no longer cover.
 """
 
@@ -56,7 +56,7 @@ async def test_reporter_task_id_property_exposes_id() -> None:
     async with app.run_test():
         controller = TaskBarController(app)
         tid = controller.queue.enqueue(lambda: None, "demo", TaskType.SYNC.value)
-        reporter = ProgressReporter(controller, tid)
+        reporter = ProgressReporter(controller, controller.queue.get_task(tid))
         assert reporter.task_id == tid
 
 
@@ -610,7 +610,9 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
 
     from lilbee.data.ingest import SyncResult
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
         on_progress(
             EventType.FILE_START,
             FileStartEvent(file="a.pdf", current_file=1, total_files=2),
@@ -647,7 +649,9 @@ def test_do_sync_done_event_reports_completion() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
         on_progress(
             EventType.SYNC_DONE,
             SyncDoneEvent(added=3, updated=1, removed=0, failed=0),
@@ -692,7 +696,9 @@ def test_do_sync_reports_what_pruning_dropped() -> None:
     reporter = MagicMock(spec=ProgressReporter)
     notes: list[str] = []
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
         assert prune_ignored is True
         return SyncResult(removed=["vendor/lib.min.js"])
 
@@ -731,15 +737,24 @@ def test_do_sync_raises_on_sync_failed() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
-        return SyncResult(failed=["broken.pdf"])
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
+        return SyncResult(failed=["broken.pdf", "bad.md"])
 
     captured: list[Exception] = []
+    toasts: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def _worker() -> None:
         try:
-            with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
-                screen._do_sync(reporter)
+            with (
+                patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+                patch(
+                    "lilbee.cli.tui.screens.chat.call_from_thread",
+                    side_effect=lambda *a, **kw: toasts.append((a, kw)),
+                ),
+            ):
+                screen._do_sync(reporter, force_rebuild=True)
         except Exception as e:
             captured.append(e)
 
@@ -749,6 +764,11 @@ def test_do_sync_raises_on_sync_failed() -> None:
     assert captured, "worker should have raised"
     assert isinstance(captured[0], RuntimeError)
     assert "broken.pdf" in str(captured[0])
+    # The footer notice is short-lived: a toast tells the user how many files failed.
+    ((args, kwargs),) = toasts
+    assert "2 file(s)" in str(args[2])
+    assert kwargs["severity"] == "error"
+    assert float(kwargs["timeout"]) >= 5
 
 
 def test_do_sync_reports_a_cancel_with_the_resume_hint() -> None:
@@ -762,7 +782,9 @@ def test_do_sync_reports_a_cancel_with_the_resume_hint() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
         import asyncio as _asyncio
 
         raise _asyncio.CancelledError
@@ -795,7 +817,9 @@ def test_do_sync_hands_the_task_reporter_to_sync_as_its_cancel() -> None:
     reporter = MagicMock(spec=ProgressReporter)
     received: list[object] = []
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
         received.append(cancel)
         return SyncResult()
 
@@ -823,7 +847,9 @@ def test_do_add_hands_the_task_reporter_to_sync_as_its_cancel(tmp_path: Path) ->
     reporter = MagicMock(spec=ProgressReporter)
     received: list[object] = []
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
         received.append(cancel)
         return SyncResult(added=[src.name])
 
@@ -999,7 +1025,7 @@ async def test_cmd_add_rejects_when_sync_active(tmp_path: Path) -> None:
         await pilot.pause()
         screen = await await_chat(app, pilot)
         assert screen is not None
-        screen._sync_active = True
+        app.task_bar.add_task("Sync", TaskType.SYNC)
         notified: list[str] = []
         screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
         screen._cmd_add(str(src))
@@ -1035,7 +1061,7 @@ async def test_start_crawl_submits_task_to_controller() -> None:
 
 @pytest.mark.asyncio
 async def test_run_sync_submits_task_to_controller() -> None:
-    """_run_sync routes through TaskBarController.start_task with SYNC type."""
+    """run_sync routes through TaskBarController.start_task with SYNC type."""
 
     app = LilbeeApp()
     async with app.run_test() as pilot:
@@ -1043,7 +1069,7 @@ async def test_run_sync_submits_task_to_controller() -> None:
         screen = await await_chat(app, pilot)
         assert screen is not None
         with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
-            screen._run_sync()
+            screen.run_sync()
         assert mock_start.called
         assert mock_start.call_args.args[1] == TaskType.SYNC
 
@@ -1087,7 +1113,7 @@ async def test_cmd_import_rejects_when_sync_active() -> None:
         await pilot.pause()
         screen = await await_chat(app, pilot)
         assert screen is not None
-        screen._sync_active = True
+        app.task_bar.add_task("Sync", TaskType.SYNC)
         notified: list[str] = []
         screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
         with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
@@ -1131,17 +1157,17 @@ async def test_indexing_active_true_during_wiki_task() -> None:
 
 @pytest.mark.asyncio
 async def test_run_sync_rejects_when_already_active() -> None:
-    """_run_sync refuses when another sync is already running."""
+    """run_sync refuses when another sync is already running."""
 
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         screen = await await_chat(app, pilot)
         assert screen is not None
-        screen._sync_active = True
+        app.task_bar.add_task("Sync", TaskType.SYNC)
         notified: list[str] = []
         screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
-        screen._run_sync()
+        screen.run_sync()
         assert any("sync in progress" in n.lower() for n in notified)
 
 
@@ -1181,7 +1207,9 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
         on_progress(
             EventType.FILE_START,
             FileStartEvent(file="a.pdf", current_file=1, total_files=1),
@@ -1231,7 +1259,9 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
         # Per-page rasterization progress fires while the file is being
         # processed (FILE_START has already named it via the relative source
         # name); the BATCH_PROGRESS event itself is emitted by the OCR
@@ -1301,7 +1331,9 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
         # Three files start concurrently. The pipeline emits FILE_START for each.
         on_progress(
             EventType.FILE_START, FileStartEvent(file="a.pdf", current_file=1, total_files=3)
@@ -1858,7 +1890,7 @@ async def test_cancelling_a_tui_crawl_stops_its_sync(tmp_path, monkeypatch) -> N
             patch("lilbee.crawler.runner._ensure_crawler_ready", new_callable=AsyncMock),
             patch("lilbee.crawler.runner.crawl_single", side_effect=_fake_single),
             patch("lilbee.data.ingest.sync", _sync_until_cancelled),
-            patch.object(screen, "_run_sync") as follow_up_sync,
+            patch.object(screen, "run_sync") as follow_up_sync,
         ):
             screen._cmd_crawl("https://example.com/c --depth 0")
             assert await wait_until(pilot, sync_started.is_set, max_pauses=500)
@@ -1887,7 +1919,9 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+    ):
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=2, total_chunks=10))
 
@@ -1916,7 +1950,7 @@ async def test_run_task_worker_noop_when_target_popped_before_start() -> None:
         task_id = controller.queue.enqueue(lambda: None, "demo", TaskType.SYNC.value)
         # Simulate the race: entry popped before worker body runs.
         controller._task_targets.pop(task_id, None)
-        controller._run_task_worker(task_id)  # must not raise
+        controller._run_task_worker(controller.queue.get_task(task_id))  # must not raise
 
 
 @pytest.mark.asyncio
