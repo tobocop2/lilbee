@@ -2,14 +2,14 @@
 # Lists the version in a server.json in the MCP Registry, unless the registry
 # already holds it. The registry answers 200 for a listed version and 404 for an
 # unlisted one; any other answer, or a failed request, stops the script, so an
-# outage never reads as "not listed". The registry refuses an npm package that
-# lacks mcpName or names another server, so the script skips a package with no
-# mcpName and leaves every other refusal to the registry. It waits up to a
-# minute for npm to show a version it has just published. The publisher binary
-# is checked against its signature bundle before it runs.
+# outage never reads as "not listed". The registry owns every refusal about the
+# npm package, including a missing or wrong mcpName, so a broken listing is red
+# rather than skipped. npm gets three attempts to show a version it has just
+# published. The publisher binary is checked against its signature bundle
+# before it runs.
 # Usage: publish_mcp_registry.sh <server.json>
-# Env: MCP_REGISTRY_URL overrides the registry address, MCP_NPM_RETRY_WAIT the
-# seconds between npm lookups (tests only). GITHUB_STEP_SUMMARY gets each skip.
+# Env: MCP_REGISTRY_URL overrides the registry address. GITHUB_STEP_SUMMARY
+# gets the skip note.
 set -euo pipefail
 
 server_json="${1:?usage: publish_mcp_registry.sh <server.json>}"
@@ -51,39 +51,27 @@ case "${lookup_code}" in
     ;;
 esac
 
-# Ask npm for the document the registry asks for: the package at packages[].version.
+# npm must hold the package version before the registry can list it: npm view
+# is the existence probe, and three attempts cover npm's replication lag.
 package=$(jq -r '[.packages[]? | select(.registryType == "npm")][0].identifier // empty' "${server_json}")
 [ -n "${package}" ] || { echo "${server_json} has no npm package"; exit 1; }
 package_version=$(jq -r --arg v "${version}" '[.packages[]? | select(.registryType == "npm")][0].version // $v' "${server_json}")
-workdir=$(mktemp -d)
-npm_url="https://registry.npmjs.org/${package//\//%2F}/${package_version}"
-npm_waits=6
-npm_wait="${MCP_NPM_RETRY_WAIT:-10}"
-for attempt in $(seq 0 "${npm_waits}"); do
-  lookup 15 "${npm_url}" "${workdir}/npm.json"
-  if [ "${lookup_rc}" -ne 0 ]; then
-    echo "Could not reach npm to look up ${package}@${package_version} (curl exit ${lookup_rc})."
-    exit 1
+npm_attempts=3
+npm_retry_wait=10
+npm_seen=""
+for attempt in $(seq 1 "${npm_attempts}"); do
+  if npm view "${package}@${package_version}" > /dev/null 2>&1; then
+    npm_seen=1
+    break
   fi
-  [ "${lookup_code}" = "404" ] || break
-  if [ "${attempt}" -lt "${npm_waits}" ]; then sleep "${npm_wait}"; fi
+  if [ "${attempt}" -lt "${npm_attempts}" ]; then sleep "${npm_retry_wait}"; fi
 done
-case "${lookup_code}" in
-  200) ;;
-  404)
-    echo "npm has no ${package}@${package_version} after $((npm_waits * npm_wait)) seconds; publish it to npm before listing it."
-    exit 1
-    ;;
-  *)
-    echo "npm answered ${lookup_code} when asked for ${package}@${package_version}."
-    exit 1
-    ;;
-esac
-if [ -z "$(jq -r '.mcpName // empty' "${workdir}/npm.json")" ]; then
-  note "Skipped the MCP Registry listing: ${package}@${package_version} has no mcpName on npm. Bump the version so npm publishes a package that carries it."
-  exit 0
-fi
+[ -n "${npm_seen}" ] || {
+  echo "npm has no ${package}@${package_version} after ${npm_attempts} attempts; publish it to npm before listing it."
+  exit 1
+}
 
+workdir=$(mktemp -d)
 archive="mcp-publisher_linux_amd64.tar.gz"
 base_url="https://github.com/modelcontextprotocol/registry/releases/download/${publisher_version}"
 curl --fail --location --silent --show-error --retry 3 --output "${workdir}/${archive}" "${base_url}/${archive}"
