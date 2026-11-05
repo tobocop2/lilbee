@@ -35,7 +35,7 @@ from lilbee.providers.fleet.engines.base import (
     RequestProfile,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
-from lilbee.providers.fleet.host_caps import HostCaps
+from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.loadability import assert_engine_can_load
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
@@ -59,10 +59,20 @@ _PROFILE = RequestProfile(
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_LIBRARIES = ["ggml-base"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
-_PIN_WHEEL_BACKEND = "cpu"
+_CPU_PACK = "cpu"
+# The pack backend by (os, arch). The macOS arm64 pack is a Metal build. A host not listed
+# runs the cpu pack; the CUDA cells add their rows here.
+_PACK_BACKENDS: dict[tuple[HostOS | None, HostArch | None], str] = {
+    (HostOS.MACOS, HostArch.ARM64): "metal"
+}
 # The engines repo names the wheel 1.<N>.<build> for the upstream tag b<N> in
 # engines/llama.cpp.toml (b12032, release build 1). Move it with that tag.
 _WHEEL_VERSION = "1.12032.1"
+
+
+def pack_backend(host: HostCaps) -> str:
+    """The backend of the llama.cpp pack that *host* installs."""
+    return _PACK_BACKENDS.get((host.os, host.arch), _CPU_PACK)
 
 
 def _starts_with_gguf_magic(path: Path) -> bool:
@@ -101,9 +111,8 @@ class LlamaCppAdapter:
         from lilbee.catalog.runnable import session_host
         from lilbee.providers.fleet.engine_manifest import pack_platforms
 
-        platforms = pack_platforms(
-            self.name.value, _WHEEL_VERSION, session_host(), _PIN_WHEEL_BACKEND
-        )
+        host = session_host()
+        platforms = pack_platforms(self.name.value, _WHEEL_VERSION, host, pack_backend(host))
         return {
             "engine": self.name.value,
             "version": ENGINE_LLAMA_CPP_REF,
@@ -117,15 +126,17 @@ class LlamaCppAdapter:
         }
 
     def pack_pin(self) -> Mapping[str, Any]:
-        """The pin of the llama.cpp pack for the first-use install; it names a cpu build."""
+        """The pin of the llama.cpp pack for the first-use install; its backend follows the host."""
         from lilbee.catalog.runnable import session_host
         from lilbee.providers.fleet.engine_manifest import pack_digest
 
+        host = session_host()
+        backend = pack_backend(host)
         pin = dict(self.pin_record())
         pin.update(
             version=_WHEEL_VERSION,
-            backend=_PIN_WHEEL_BACKEND,
-            sha256=pack_digest(self.name.value, _WHEEL_VERSION, session_host(), _PIN_WHEEL_BACKEND),
+            backend=backend,
+            sha256=pack_digest(self.name.value, _WHEEL_VERSION, host, backend),
         )
         return pin
 

@@ -26,12 +26,12 @@ from lilbee.providers.fleet.binary import (
 )
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.llama import _PIN_WHEEL_BACKEND, _WHEEL_VERSION
+from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION
 from lilbee.providers.fleet.host_caps import collect
 from tests._published import render_table, wheel_name
 
 PACKAGE = "lilbee_engine_llama_cpp"
-CELL = f"linux-x86_64-{_PIN_WHEEL_BACKEND}"
+CELL = "linux-x86_64-cpu"
 NAMED = "The llama.cpp pack 1.12032.1 for linux-x86_64-cpu is not published yet."
 
 
@@ -258,8 +258,8 @@ def test_the_install_command_reports_a_lock_held_too_long(
 @pytest.mark.parametrize(
     ("engine", "version", "backend"),
     [
-        ("fx", _WHEEL_VERSION, _PIN_WHEEL_BACKEND),
-        ("llama.cpp", "0.0.1", _PIN_WHEEL_BACKEND),
+        ("fx", _WHEEL_VERSION, "cpu"),
+        ("llama.cpp", "0.0.1", "cpu"),
         ("llama.cpp", _WHEEL_VERSION, "cuda"),
     ],
     ids=["other-engine", "old-version", "other-backend"],
