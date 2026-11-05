@@ -29,3 +29,17 @@ def test_no_install_text_names_the_engine_extra() -> None:
         text = (ROOT / name).read_text(encoding="utf-8")
         assert "[engine" not in text, name
         assert ",engine" not in text, name
+
+
+def test_no_command_installs_the_wheel_from_an_index_that_lacks_it() -> None:
+    for name in ("README.md", "docs/usage.md", "site/index.html"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        assert "lilbee-engine-llama-cpp --extra-index-url" not in text, name
+        assert "lilbee-engine-llama-cpp lilbee" not in text, name
+
+
+def test_the_compat_rows_do_not_say_the_install_has_no_engine() -> None:
+    for name in ("README.md", "site/index.html"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        assert "without an engine" not in text, name
+        assert "no engine:" not in text, name
