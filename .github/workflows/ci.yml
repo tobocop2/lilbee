@@ -99,7 +99,8 @@ jobs:
         run: make imports-check
 
       - name: Check commit messages
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
+        # Dependabot writes the commit body; its lines exceed the limit.
         # Check the branch's own commits. HEAD is the synthetic merge commit
         # that GitHub builds for the event, and it is not ours to lint.
         run: |
