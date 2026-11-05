@@ -70,4 +70,4 @@ MANIFESTS = {
         },
     },
 }
-PACKAGES_URL = "https://index.test/packs/"
+PACKAGES_URL = "https://github.com/tobocop2/lilbee/releases/download/"

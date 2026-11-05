@@ -529,6 +529,10 @@ TEI are published for Linux x86_64. No pack of mlx is published yet, so mlx refu
 to install and prints the no-pack text. A host with no pack for its platform gets the
 same text. Nothing is installed, and llama.cpp stays in use.
 
+If the `[engine]` extra is installed, the llama.cpp of that extra runs. The llama.cpp
+pack stays unused. To run the pack, remove the extra with
+`pip uninstall lilbee-engine-llama-cpp`, then run `lilbee engine install`.
+
 To install from a local pack, copy it into the `packs` folder of the engines folder.
 Name the file `<engine>-<version>-<backend>.whl`. Then run:
 
