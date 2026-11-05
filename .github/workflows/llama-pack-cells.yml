@@ -70,7 +70,7 @@ jobs:
           fi
           test "${want}" = "${got}" || { echo "digest mismatch: ${want} ${got}"; exit 1; }
 
-      - name: Build llama-swap and gguf-parser
+      - name: Build llama-swap and gguf-parser, and collect the three licences
         run: |
           set -euo pipefail
           export GOTOOLCHAIN=local
@@ -78,22 +78,36 @@ jobs:
           case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) suffix=".exe" ;; esac
           bin="$PWD/packaging/engine-wheel/lilbee_engine_llama_cpp/bin"
           work="$(mktemp -d)"
-          mkdir -p "${bin}"
+          lic="$PWD/packaging/engine-wheel/licenses"
+          mkdir -p "${bin}" "${lic}"
+          gh api -H "Accept: application/vnd.github.raw" "repos/${UPSTREAM_REPO}/contents/LICENSE?ref=${UPSTREAM_TAG}" > "${lic}/LICENSE-llama.cpp"
           git clone -q --depth 1 --branch "${ENGINE_LLAMA_SWAP_VERSION}" https://github.com/mostlygeek/llama-swap.git "${work}/llama-swap"
           (cd "${work}/llama-swap" && go build -trimpath -o "${bin}/llama-swap${suffix}" .)
+          cp "${work}/llama-swap/LICENSE.md" "${lic}/LICENSE-llama-swap"
           git clone -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" "${ENGINE_GGUF_PARSER_REPO}" "${work}/gguf-parser-go"
           (cd "${work}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${bin}/gguf-parser${suffix}" .)
+          cp "${work}/gguf-parser-go/LICENSE" "${lic}/LICENSE-gguf-parser"
+          for f in "${lic}"/LICENSE-*; do test -s "${f}" || { echo "empty licence file ${f}"; exit 1; }; done
 
       - name: Repack the upstream archive into the wheel tree
         run: |
           set -euo pipefail
           python - "upstream/${ASSET}" packaging/engine-wheel/lilbee_engine_llama_cpp/bin <<'PY'
-          import re, shutil, sys, tarfile, tempfile, zipfile
+          import re, shutil, subprocess, sys, tarfile, tempfile, zipfile
           from pathlib import Path
 
           archive, bin_dir = Path(sys.argv[1]), Path(sys.argv[2])
           server = {"llama-server", "llama-server.exe"}
           library = re.compile(r"lib.+\.so(\.[\d.]+)?|.+\.dll|lib.+(\.[\d.]+)?\.dylib")
+
+          def install_name(entry):
+              """The file name dependents load for a dylib: its install id, else its own name."""
+              if entry.suffix != ".dylib":
+                  return entry.name
+              ident = subprocess.run(["otool", "-D", str(entry)], capture_output=True, text=True, check=True)
+              lines = ident.stdout.strip().splitlines()
+              return Path(lines[-1].strip()).name if len(lines) > 1 else entry.name
+
           with tempfile.TemporaryDirectory() as scratch:
               if archive.suffix == ".zip":
                   with zipfile.ZipFile(archive) as z:
@@ -106,11 +120,13 @@ jobs:
                   raise SystemExit(f"{archive.name}: expected one folder with llama-server, found {len(roots)}")
               (root,) = roots
               for entry in sorted(root.iterdir()):
-                  if entry.name == "LICENSE":
-                      shutil.copyfile(entry, bin_dir / "LICENSE-llama.cpp")
-                  elif entry.is_file() and (entry.name in server or library.fullmatch(entry.name)):
-                      # copy2 follows a dylib symlink, so the link name becomes a copy of its target.
-                      shutil.copy2(entry, bin_dir / entry.name)
+                  if entry.is_symlink():
+                      continue  # a link only repeats a file that the loop copies once
+                  if entry.is_file() and (entry.name in server or library.fullmatch(entry.name)):
+                      target = bin_dir / install_name(entry)
+                      if target.exists():
+                          raise SystemExit(f"{archive.name}: two files install as {target.name}")
+                      shutil.copy2(entry, target)
           if not any((bin_dir / n).exists() for n in server):
               raise SystemExit(f"{archive.name}: no llama-server in the tree")
           PY
@@ -120,16 +136,37 @@ jobs:
         if: runner.os == 'Windows'
         run: bash tools/wheel-build/bundle_windows_runtime.sh packaging/engine-wheel/lilbee_engine_llama_cpp/bin
 
+      - name: Drop vcomp140 when nothing imports it
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          cd packaging/engine-wheel/lilbee_engine_llama_cpp/bin
+          # This build uses libomp.dll. A binary that names vcomp140 keeps the file.
+          if grep -rilaF vcomp140 --include='*.dll' --include='*.exe' . | grep -vi '^./vcomp140.dll$'; then
+            echo "a binary imports vcomp140.dll"; exit 1
+          fi
+          rm -f vcomp140.dll
+
       - name: Build the wheel
         run: |
           set -euo pipefail
           cd packaging/engine-wheel
           python - "${WHEEL_VERSION}" <<'PY'
-          import pathlib, re, sys
+          import os, pathlib, re, sys
           p = pathlib.Path("pyproject.toml")
-          p.write_text(re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', p.read_text(), count=1))
+          text = re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', p.read_text(), count=1)
+          # License-Expression in METADATA needs setuptools 77 or later; lilbee refuses a wheel without it.
+          text = text.replace('requires = ["setuptools>=68"]', 'requires = ["setuptools>=77"]', 1)
+          text = text.replace('requires-python', 'license = "MIT"\nlicense-files = ["licenses/*"]\nrequires-python', 1)
+          p.write_text(text)
+          pin = "llama-cpp-{}+swap-{}+gguf-{}".format(
+              os.environ["UPSTREAM_TAG"], os.environ["ENGINE_LLAMA_SWAP_VERSION"], os.environ["ENGINE_GGUF_PARSER_REF"])
+          pathlib.Path("lilbee_engine_llama_cpp/pins.py").write_text(
+              '"""Engine build identity; written by the llama-pack-cells workflow."""\n\nENGINE_PIN = "%s"\n' % pin)
           PY
           python -m pip install build wheel
+          grep -E '^(license|license-files|requires)' pyproject.toml
+          cat lilbee_engine_llama_cpp/pins.py
           python -m build --wheel -C--build-option="--build-number=1.cpu"
           python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
           ls dist
@@ -191,6 +228,24 @@ jobs:
             for dll in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
               test -f "${bindir}/${dll}" || { echo "wheel lacks ${dll}"; exit 1; }
             done
+          fi
+          python -m zipfile -l out/*.whl | grep -E 'dist-info/(licenses/|METADATA)'
+          unzip -p out/*.whl '*.dist-info/METADATA' | grep -x 'License-Expression: MIT'
+          for lic in llama.cpp llama-swap gguf-parser; do
+            unzip -l out/*.whl | grep -q "dist-info/licenses/LICENSE-${lic}$" || { echo "wheel lacks the ${lic} licence"; exit 1; }
+          done
+          if [ "${RUNNER_OS}" = macOS ]; then
+            # Every library that a binary loads by @rpath or @loader_path must be a file beside it.
+            missing=0
+            for f in "${bindir}"/*; do
+              file "${f}" | grep -q 'Mach-O' || continue
+              for name in $(otool -L "${f}" | awk 'NR > 1 && $1 ~ /^@(rpath|loader_path)\// {n = split($1, a, "/"); print a[n]}'); do
+                test -f "${bindir}/${name}" || { echo "${f##*/} loads ${name}: missing"; missing=1; }
+              done
+            done
+            test "${missing}" -eq 0
+            find "${bindir}" -type l | grep . && { echo "unexpected symlink"; exit 1; }
+            du -sk "${bindir}"
           fi
           cd /
           "${exe}" --version
