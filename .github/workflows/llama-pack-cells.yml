@@ -78,7 +78,7 @@ jobs:
           case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) suffix=".exe" ;; esac
           bin="$PWD/packaging/engine-wheel/lilbee_engine_llama_cpp/bin"
           work="$(mktemp -d)"
-          lic="$PWD/packaging/engine-wheel/licenses"
+          lic="$PWD/packaging/engine-wheel"
           mkdir -p "${bin}" "${lic}"
           gh api -H "Accept: application/vnd.github.raw" "repos/${UPSTREAM_REPO}/contents/LICENSE?ref=${UPSTREAM_TAG}" > "${lic}/LICENSE-llama.cpp"
           git clone -q --depth 1 --branch "${ENGINE_LLAMA_SWAP_VERSION}" https://github.com/mostlygeek/llama-swap.git "${work}/llama-swap"
@@ -157,7 +157,7 @@ jobs:
           text = re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', p.read_text(), count=1)
           # License-Expression in METADATA needs setuptools 77 or later; lilbee refuses a wheel without it.
           text = text.replace('requires = ["setuptools>=68"]', 'requires = ["setuptools>=77"]', 1)
-          text = text.replace('requires-python', 'license = "MIT"\nlicense-files = ["licenses/*"]\nrequires-python', 1)
+          text = text.replace('requires-python', 'license = "MIT"\nlicense-files = ["LICENSE-*"]\nrequires-python', 1)
           p.write_text(text)
           pin = "llama-cpp-{}+swap-{}+gguf-{}".format(
               os.environ["UPSTREAM_TAG"], os.environ["ENGINE_LLAMA_SWAP_VERSION"], os.environ["ENGINE_GGUF_PARSER_REF"])
