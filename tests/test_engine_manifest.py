@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from lilbee.catalog import runnable
-from lilbee.providers.fleet import engine_manifest, first_use, host_caps
-from lilbee.providers.fleet.engine_digests import PACKAGES_URL
+from lilbee.providers.fleet import engine_manifest, engine_store, first_use, host_caps
+from lilbee.providers.fleet.engine_digests import MANIFESTS, PACKAGES_URL
 from lilbee.providers.fleet.engines import ik_llama, mistral, tei
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS, NoPublishedPackError, pin_lock
@@ -234,3 +235,59 @@ def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
     assert f"-1.{cell.rsplit('-', 1)[1]}-py3-none-" in pin["platforms"][cell]["url"]
+
+
+class _Reached(Exception):
+    """The download check passed and the fetch went on to the disk check."""
+
+
+def _fetch(monkeypatch: pytest.MonkeyPatch, url: str, tmp_path: Path) -> None:
+    def reached(*_args: object) -> str:
+        raise _Reached
+
+    monkeypatch.setattr(engine_store, "disk_shortfall", reached)
+    asset = engine_store.PlatformAsset(url=url, sha256="0" * 64, size=1, min_os=None)
+    lock = engine_store.PinLock(
+        engine="llama.cpp",
+        version="1",
+        backend="cpu",
+        platforms={"linux-x86_64-cpu": asset},
+        licences=(),
+        sha256="0" * 64,
+        tool="llama-server",
+    )
+    engine_store.fetch_frozen(lock, "linux-x86_64-cpu", dest=tmp_path)
+
+
+def test_the_shipped_pack_base_is_the_release_downloads_of_lilbee() -> None:
+    assert PACKAGES_URL == "https://github.com/tobocop2/lilbee/releases/download/"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/other/repo/releases/download/x/y.whl",
+        "https://github.com/tobocop2/lilbee/archive/y.whl",
+        "https://raw.githubusercontent.com/tobocop2/lilbee/main/y.whl",
+    ],
+)
+def test_the_shipped_pack_base_refuses_a_url_outside_the_lilbee_releases(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, url: str
+) -> None:
+    with pytest.raises(engine_store.PackUrlError, match="not on the pack index"):
+        _fetch(monkeypatch, url, tmp_path)
+
+
+def test_the_shipped_pack_base_accepts_every_committed_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    rows = [
+        row
+        for versions in MANIFESTS.values()
+        for cells in versions.values()
+        for row in cells.values()
+    ]
+    assert rows
+    for row in rows:
+        with pytest.raises(_Reached):
+            _fetch(monkeypatch, row["url"], tmp_path)
