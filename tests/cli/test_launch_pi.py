@@ -102,7 +102,9 @@ def test_launch_pi_without_binary_exits_1():
     assert "pi binary not found on PATH" in result.stderr
 
 
-def test_launch_pi_loads_the_extension_and_skill_and_pins_the_model():
+def test_launch_pi_loads_the_extension_and_skill_and_pins_the_model(monkeypatch):
+    served = 2 * _SERVED_CTX
+    monkeypatch.setattr("lilbee.cli.launchers.pi.client_chat_ctx", lambda _port: served)
     result, agent = _launch()
     assert result.exit_code == 0, result.output
     cmd, kwargs = agent
@@ -119,7 +121,9 @@ def test_launch_pi_loads_the_extension_and_skill_and_pins_the_model():
     assert env["LILBEE_TOKEN"] == _TOKEN
     assert env["LILBEE_OPENAI_URL"] == f"http://127.0.0.1:{_PORT}/v1"
     assert env["LILBEE_MCP_URL"] == f"http://127.0.0.1:{_PORT}/mcp"
-    assert json.loads(env["LILBEE_PI_MODELS"]) == pi_models([_CHAT_REF], _SERVED_CTX)
+    models = json.loads(env["LILBEE_PI_MODELS"])
+    assert models == pi_models([_CHAT_REF], served)
+    assert [m["contextWindow"] for m in models] == [served]
 
 
 def test_launch_pi_writes_no_file_under_home(tmp_path):
