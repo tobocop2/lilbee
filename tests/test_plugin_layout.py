@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from lilbee.cli.launchers import pi as pi_launcher
 from lilbee.cli.launchers import skill_install
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,8 +37,12 @@ def test_skill_name_matches_directory_and_description_fits(skill_dir):
 def test_wheel_maps_the_plugin_skill_to_the_installed_skill_path():
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
-    assert force_include == {"plugins/lilbee/skills/lilbee-mcp": "lilbee/skills/lilbee_mcp"}
-    assert (ROOT / next(iter(force_include)) / "SKILL.md").is_file()
+    assert force_include == {
+        "plugins/lilbee/skills/lilbee-mcp": "lilbee/skills/lilbee_mcp",
+        "packages/lilbee/plugin": "lilbee/agent_plugin",
+    }
+    assert (ROOT / "plugins/lilbee/skills/lilbee-mcp" / "SKILL.md").is_file()
+    assert (ROOT / "packages/lilbee/plugin" / "extensions" / "lilbee.js").is_file()
 
 
 def _live_shell_code(script: Path) -> str:
@@ -59,17 +64,22 @@ def test_a_comment_in_the_build_script_is_not_live_code(tmp_path):
     assert found == [("real", "dest")]
 
 
-def test_launcher_wheel_and_binary_agree_on_the_skill_location():
-    """The launcher reads the skill where the wheel and the frozen binary put it."""
+def test_launcher_wheel_and_binary_agree_on_the_skill_and_extension_locations():
+    """The launcher finds the skill and the pi extension where the wheel and the binary put them."""
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     wheel = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
     script = _live_shell_code(ROOT / "tools" / "wheel-build" / "build_lilbee_binary.sh")
     binary = dict(re.findall(r"--include-data-dir=(\S+)=(\S+)", script))
-    installed = skill_install._PACKAGED_SKILL.relative_to(ROOT / "src").as_posix()
-    checkout = skill_install._CHECKOUT_SKILL.relative_to(ROOT).as_posix()
-    expected = {checkout: installed}
+    pairs = [
+        (skill_install._CHECKOUT_SKILL, skill_install._PACKAGED_SKILL),
+        (skill_install._CHECKOUT_AGENT_PLUGIN, skill_install._PACKAGED_AGENT_PLUGIN),
+    ]
+    expected = {
+        checkout.relative_to(ROOT).as_posix(): installed.relative_to(ROOT / "src").as_posix()
+        for checkout, installed in pairs
+    }
     assert wheel == expected
-    assert {k: v for k, v in binary.items() if k.startswith("plugins/")} == expected
+    assert {k: v for k, v in binary.items() if k in expected} == expected
 
 
 def test_plugin_version_follows_the_lilbee_release_version():
@@ -145,3 +155,14 @@ def test_npm_package_tests_run_in_the_launcher_ci_job():
         s.get("working-directory") for job in ci["jobs"].values() for s in job.get("steps", [])
     ]
     assert "plugins/lilbee" not in workdirs
+
+
+@pytest.mark.parametrize(
+    "name",
+    [pi_launcher._OPENAI_URL_ENV_VAR, pi_launcher._MCP_URL_ENV_VAR, pi_launcher._MODELS_ENV_VAR],
+)
+def test_pi_extension_reads_the_env_vars_the_pi_launcher_sets(name):
+    extension = (ROOT / "packages" / "lilbee" / "plugin" / "extensions" / "lilbee.js").read_text(
+        encoding="utf-8"
+    )
+    assert f'"{name}"' in extension

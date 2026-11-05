@@ -88,3 +88,27 @@ def test_install_copies_the_packaged_skill_files(tmp_path, monkeypatch):
     dest = tmp_path / "skills" / "lilbee-mcp"
     assert install_bundled_skill(dest) == dest
     assert (dest / "SKILL.md").read_text(encoding="utf-8") == "packaged text"
+
+
+def test_bundled_pi_extension_prefers_installed_copy(tmp_path, monkeypatch):
+    extension = tmp_path / "agent_plugin" / "extensions" / "lilbee.js"
+    extension.parent.mkdir(parents=True)
+    extension.write_text("export default () => {}", encoding="utf-8")
+    monkeypatch.setattr(skill_install, "_PACKAGED_AGENT_PLUGIN", tmp_path / "agent_plugin")
+    assert skill_install.bundled_pi_extension() == extension
+
+
+def test_bundled_pi_extension_uses_checkout_copy_when_not_installed(tmp_path, monkeypatch):
+    monkeypatch.setattr(skill_install, "_PACKAGED_AGENT_PLUGIN", tmp_path / "absent")
+    result = skill_install.bundled_pi_extension()
+    assert result == skill_install._CHECKOUT_AGENT_PLUGIN / "extensions" / "lilbee.js"
+    assert "registerMcpServer" in result.read_text(encoding="utf-8")
+
+
+def test_bundled_pi_extension_names_both_locations_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(skill_install, "_PACKAGED_AGENT_PLUGIN", tmp_path / "no-installed")
+    monkeypatch.setattr(skill_install, "_CHECKOUT_AGENT_PLUGIN", tmp_path / "no-checkout")
+    with pytest.raises(
+        FileNotFoundError, match=r"extensions/lilbee\.js.*no-installed.*no-checkout"
+    ):
+        skill_install.bundled_pi_extension()

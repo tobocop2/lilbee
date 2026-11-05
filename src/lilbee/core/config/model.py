@@ -213,7 +213,7 @@ class Config(BaseSettings):
     # ~-substitution / left-truncation for project paths. Toggled by F4.
     show_lilbee_path: bool = ConfigField(default=False, writable=True)
 
-    # Whether an agent launcher (opencode, hermes) registers lilbee's MCP search
+    # Whether an agent launcher (opencode, hermes, pi) registers lilbee's MCP search
     # tool into the agent's config. Per-launch --mcp/--no-mcp overrides it.
     agent_mcp_enabled: bool = ConfigField(default=True, writable=True)
 

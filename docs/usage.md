@@ -504,6 +504,7 @@ lilbee agent-config litellm    # LiteLLM proxy config.yaml snippet
 ```
 
 opencode and hermes get lilbee as a model provider and as an MCP server.
+`lilbee launch pi` writes nothing into pi's config. It starts pi with lilbee's pi extension and the `lilbee-mcp` skill for that session only, and the extension registers lilbee as the provider and the MCP server from the launch environment. The launcher is tested with pi 1.5.0, and pi needs Node 22.19 or newer.
 Claude Code brings its own model, so it gets the MCP tools only. The claude
 block registers the running server over HTTP; the alternative block printed on
 stderr has Claude Code start `lilbee mcp` itself instead.
