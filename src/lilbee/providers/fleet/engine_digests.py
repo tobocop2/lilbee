@@ -17,6 +17,28 @@ MANIFESTS = {
             },
         },
     },
+    "llama.cpp": {
+        "1.12032.1": {
+            "linux-x86_64-cpu": {
+                "sha256": "b306bfa9ede1eaef1ce762fe1c772905ec2e10cfc315ea02b58138e77688899b",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261105/lilbee_engine_llama_cpp-1.12032.1-1.cpu-py3-none-manylinux_2_34_x86_64.whl",
+                "size": 45434295,
+                "min_os": "2.34",
+            },
+            "macos-arm64-metal": {
+                "sha256": "ddec445038beea9c83ff50a540ddf0e88a3b70c06edec301ef458cd1a46580ff",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261105/lilbee_engine_llama_cpp-1.12032.1-1.metal-py3-none-macosx_14_0_arm64.whl",
+                "size": 42006543,
+                "min_os": "14.0",
+            },
+            "windows-x86_64-cpu": {
+                "sha256": "91e9670756cf84252d8382050c74901ef4fc5f07fa7af803fef8bda5438c938d",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261105/lilbee_engine_llama_cpp-1.12032.1-1.cpu-py3-none-win_amd64.whl",
+                "size": 51673055,
+                "min_os": None,
+            },
+        },
+    },
     "mistral.rs": {
         "0.9.5": {
             "linux-x86_64-cpu": {
@@ -50,4 +72,4 @@ MANIFESTS = {
         },
     },
 }
-PACKAGES_URL = "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261104/"
+PACKAGES_URL = "https://github.com/tobocop2/lilbee/releases/download/"

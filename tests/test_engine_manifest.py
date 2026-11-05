@@ -8,12 +8,12 @@ from typing import Any
 import pytest
 
 from lilbee.catalog import runnable
-from lilbee.providers.fleet import engine_manifest, host_caps
+from lilbee.providers.fleet import engine_manifest, first_use, host_caps
 from lilbee.providers.fleet.engine_digests import PACKAGES_URL
 from lilbee.providers.fleet.engines import ik_llama, mistral, tei
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS, NoPublishedPackError, pin_lock
-from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION, LLAMA, LlamaCppAdapter
 from tests._published import render_table, wheel_name
 
 LINUX = "a" * 64
@@ -58,7 +58,7 @@ def test_every_shipped_row_lives_under_the_pack_index_and_matches_its_adapter(
     for engine, versions in engine_manifest.MANIFESTS.items():
         pin = _pin(monkeypatch, EngineName(engine), "Linux", "x86_64")
         assert pin["engine"] == engine
-        assert list(versions) == [pin["version"]]
+        assert list(versions) == [_WHEEL_VERSION if engine == EngineName.LLAMA else pin["version"]]
         for cells in versions.values():
             for row in cells.values():
                 assert row["url"].startswith(PACKAGES_URL)
@@ -203,3 +203,34 @@ def test_ik_llama_pin_record_does_not_read_the_llama_record(
 def test_no_adapter_keeps_a_single_pack_digest() -> None:
     for module in (mistral, tei, ik_llama):
         assert not hasattr(module, "PACK_SHA256")
+
+
+SHIPPED_LLAMA = {
+    ("Darwin", "arm64"): (
+        "macos-arm64-metal",
+        "ddec445038beea9c83ff50a540ddf0e88a3b70c06edec301ef458cd1a46580ff",
+    ),
+    ("Linux", "x86_64"): (
+        "linux-x86_64-cpu",
+        "b306bfa9ede1eaef1ce762fe1c772905ec2e10cfc315ea02b58138e77688899b",
+    ),
+    ("Windows", "AMD64"): (
+        "windows-x86_64-cpu",
+        "91e9670756cf84252d8382050c74901ef4fc5f07fa7af803fef8bda5438c938d",
+    ),
+}
+
+
+@pytest.mark.parametrize(("system", "machine"), SHIPPED_LLAMA)
+def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
+    system: str, machine: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cell, digest = SHIPPED_LLAMA[(system, machine)]
+    host = _host(system, machine)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
+    pin = LlamaCppAdapter().pack_pin()
+    assert pin["sha256"] == digest
+    assert list(pin["platforms"]) == [cell]
+    assert f"-1.{cell.rsplit('-', 1)[1]}-py3-none-" in pin["platforms"][cell]["url"]

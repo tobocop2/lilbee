@@ -153,20 +153,20 @@ def _llama_table(*keys: str, version: str | None = None) -> dict[str, Any]:
 
 def test_llama_pin_record_lists_release_artifacts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: _host("Darwin", "arm64"))
-    table = _llama_table("macos-arm64-cpu", "linux-x86_64-cpu")
+    table = _llama_table("macos-arm64-metal", "linux-x86_64-cpu")
     monkeypatch.setattr(engine_manifest, "MANIFESTS", table)
     pin = LLAMA.pin_record()
     assert _check_pin(pin) is Verdict.PASS
-    row = pin["platforms"]["macos-arm64-cpu"]
+    row = pin["platforms"]["macos-arm64-metal"]
     assert (row["sha256"], row["size"], row["min_os"]) == ("1" * 64, 1, "14.0")
     assert row["url"].startswith("https://")
-    assert set(pin["platforms"]) == {"macos-arm64-cpu"}
+    assert set(pin["platforms"]) == {"macos-arm64-metal"}
 
 
 def test_llama_pin_record_takes_the_cell_of_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: _host("Linux", "x86_64"))
     monkeypatch.setattr(
-        engine_manifest, "MANIFESTS", _llama_table("macos-arm64-cpu", "linux-x86_64-cpu")
+        engine_manifest, "MANIFESTS", _llama_table("macos-arm64-metal", "linux-x86_64-cpu")
     )
     pin = LLAMA.pin_record()
     assert _check_pin(pin) is Verdict.PASS
