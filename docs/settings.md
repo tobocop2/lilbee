@@ -286,7 +286,7 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Advanced | Description |
 |---|---|---|---|---|---|---|---|---|---|
-| `agent_mcp_enabled` | `LILBEE_AGENT_MCP_ENABLED` | `bool` | `true` | yes | yes | yes | no | no | Register lilbee's MCP search tool into agent launchers (opencode, hermes). Disable to bring your own MCP servers; lilbee stays the model provider. |
+| `agent_mcp_enabled` | `LILBEE_AGENT_MCP_ENABLED` | `bool` | `true` | yes | yes | yes | no | no | Register lilbee's MCP search tool into agent launchers (opencode, hermes, pi). Disable to bring your own MCP servers; lilbee stays the model provider. |
 | `documents_dir` | `LILBEE_DOCUMENTS_DIR` | `str` | *(computed)* | yes | yes | yes | no | no | Local documents root that lilbee sync ingests (blank = data_root/documents). |
 | `engine_idle_ttl_minutes` | `LILBEE_ENGINE_IDLE_TTL_MINUTES` | `int` | `5` | yes | yes | yes | no | yes | Idle minutes before the engine unloads its weights; with keep_engine_warm, counted from the last lilbee exit; 0 keeps them loaded. A change applies at the next engine start. |
 | `hf_token` | `LILBEE_HF_TOKEN` | `str` | *(empty)* | yes | write-only | write-only | no | no | HuggingFace access token. Avoids the unauthenticated download rate limit and unlocks gated repos. Stored in plain text in config.toml. Env vars (LILBEE_HF_TOKEN, HF_TOKEN) override. |

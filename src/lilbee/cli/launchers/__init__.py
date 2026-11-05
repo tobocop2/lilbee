@@ -7,8 +7,10 @@ import typer
 from lilbee.cli.launchers.claude import claude_cmd
 from lilbee.cli.launchers.hermes import hermes_cmd
 from lilbee.cli.launchers.opencode import opencode_cmd
+from lilbee.cli.launchers.pi import pi_cmd
 
 launch_app = typer.Typer(help="Launch a third-party AI client wired to lilbee.")
 launch_app.command("opencode")(opencode_cmd)
 launch_app.command("hermes")(hermes_cmd)
 launch_app.command("claude")(claude_cmd)
+launch_app.command("pi")(pi_cmd)
