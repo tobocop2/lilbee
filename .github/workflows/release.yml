@@ -276,7 +276,7 @@ jobs:
       #
       # lancedb is the one package left out of the constraints, because the
       # locked version is the one with no wheel here. nuitka and pip are build
-      # tools, unpinned on every cell. lilbee-engine leaves the export as well,
+      # tools, unpinned on every cell. lilbee-engine-llama-cpp leaves the export as well,
       # for a different reason: it is a local path, and uv rejects an unnamed
       # requirement as a constraint.
       #
@@ -293,7 +293,7 @@ jobs:
           set -euxo pipefail
           uv venv
           uv export --frozen --extra release --no-hashes \
-            --no-emit-project --no-emit-package lilbee-engine \
+            --no-emit-project --no-emit-package lilbee-engine-llama-cpp \
             --no-emit-package lancedb \
             --format requirements-txt -o intel-constraints.txt
           uv pip install --python-platform x86_64-apple-darwin \
@@ -319,7 +319,7 @@ jobs:
             lancedb==0.40.0+compat
 
       # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
-      # baked rpath) and install lilbee_engine so Nuitka bundles the whole
+      # baked rpath) and install lilbee_engine_llama_cpp so Nuitka bundles the whole
       # engine into this executable.
       - name: Bundle llama-server
         uses: ./.github/actions/bundle-llama-server
@@ -405,6 +405,19 @@ jobs:
           dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
           dnf install -y gh
           gh --version
+
+      # The engine wheel is checked on its own build; the executable rebundles the
+      # engine through Nuitka, so check the standalone tree it leaves under dist/
+      # before the step below deletes it.
+      - name: The executable bundles the engine it links
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          set -euo pipefail
+          bin_dir=$(bash tools/qa/find_engine_bin.sh dist)
+          uv run --no-sync python tools/qa/assert_engine_bundle.py \
+            --backend "${BACKEND}" --platform "${RUNNER_OS}" "${bin_dir}"
 
       # The onefile build leaves multi-GB intermediates beside the final binary,
       # and a runner has died of a full disk while restoring the smoke models

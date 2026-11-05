@@ -13,19 +13,30 @@ import sys
 import uuid
 import zipfile
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email import message_from_string
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from lilbee.catalog.download import disk_shortfall, retry_transfer
+from lilbee.catalog.download import (
+    RetryCallback,
+    disk_shortfall,
+    download_url,
+    url_filename,
+)
+from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.core.security import FileLockUnavailableError, file_lock
+from lilbee.providers.fleet.engine_digests import PACKAGES_URL
+from lilbee.providers.fleet.wheel_server import server_entry, server_problems
+from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 
 RECORD_NAME = "ENGINE-RECORD.json"
-PERMISSIVE_LICENCES = frozenset({"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause"})
+PERMISSIVE_LICENCES = frozenset({"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0"})
+REDISTRIBUTABLE_REFS = frozenset({"LicenseRef-NVIDIA-CUDA-EULA"})
+NVIDIA_NOTICE = "NOTICE-NVIDIA-CUDA"
 _LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
 _STAGE_PREFIX = ".stage-"
@@ -36,7 +47,6 @@ _NO_WAIT_S = 0.0
 _INSTALL_TIMEOUT_S = 1800.0
 _ENGINES_DIRNAME = "engines"
 _NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
-_TOOL_PATH = re.compile(r"[^/]+/bin/[^/]+")
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
 _PACK_DIR = "packs"
 _PACKAGE_INDEX = "https://lilbee.sh"
@@ -52,7 +62,7 @@ class LicenceRefusedError(Exception):
 
 
 class UnsafeWheelError(Exception):
-    """The wheel holds an entry that would land outside its install directory."""
+    """The wheel holds an entry outside its install directory, or no usable server."""
 
 
 class EngineConflictError(Exception):
@@ -61,6 +71,10 @@ class EngineConflictError(Exception):
 
 class MissingPackError(Exception):
     """The build is not installed, has no pack on disk, and cannot be downloaded."""
+
+
+class PackUrlError(Exception):
+    """The pin names a download url outside the pack index."""
 
 
 class UnsupportedPlatformError(Exception):
@@ -102,9 +116,7 @@ class InstallTool(StrEnum):
 class PlatformAsset:
     """One downloadable wheel of a pin, for one platform."""
 
-    repo: str
-    revision: str
-    filename: str
+    url: str
     sha256: str
     size: int
     min_os: str | None
@@ -120,11 +132,21 @@ class PinLock:
     platforms: Mapping[str, PlatformAsset]
     licences: tuple[str, ...]
     sha256: str
+    tool: str
+    """The file name of the engine server in the wheel."""
+    libraries: tuple[str, ...] = ()
+    """The shared libraries, by name without prefix or suffix, that the wheel must hold."""
 
     def __post_init__(self) -> None:
         for part in (self.engine, self.version, self.backend):
             if not _NAME_PATTERN.fullmatch(part):
                 raise ValueError(f"{part!r} cannot name an engine directory")
+
+    def for_cell(self, cell: str) -> PinLock:
+        """This pin with the digest of the cell *cell*; a pin with no cell is unchanged."""
+        if not cell:
+            return self
+        return replace(self, sha256=self.platforms[cell].sha256)
 
 
 @dataclass(frozen=True)
@@ -149,17 +171,25 @@ class RemoveResult:
     canary_warning: bool
 
 
-def licence_permitted(expression: str) -> bool:
-    """True when every OR/AND term of *expression* is on the permissive list."""
+def licence_permitted(expression: str, has_notice: bool = False) -> bool:
+    """True when every OR/AND term of *expression* is permissive.
+
+    The NVIDIA CUDA licence reference passes only when *has_notice* says the
+    package carries its NVIDIA notice file.
+    """
     terms = [term for term in _LICENCE_JOINER.split(expression.strip()) if term]
-    return bool(terms) and all(term in PERMISSIVE_LICENCES for term in terms)
+    return bool(terms) and all(
+        term in PERMISSIVE_LICENCES or (has_notice and term in REDISTRIBUTABLE_REFS)
+        for term in terms
+    )
 
 
 def _check_licences(lock: PinLock) -> None:
     if not lock.licences:
         raise LicenceRefusedError(f"Engine {lock.engine} {lock.version} lists no licence.")
     for expression in lock.licences:
-        if not licence_permitted(expression):
+        # A pin has no archive, so it cannot hold the notice; the wheel check requires it.
+        if not licence_permitted(expression, has_notice=True):
             raise LicenceRefusedError(
                 f"Engine {lock.engine} {lock.version} uses the licence {expression!r}, "
                 f"which is not on the permissive list."
@@ -171,21 +201,36 @@ def _check_wheel(lock: PinLock, wheel: Path) -> None:
         digest = hashlib.file_digest(handle, "sha256").hexdigest()
     if digest != lock.sha256.lower():
         raise ChecksumError(
-            f"The wheel for engine {lock.engine} {lock.version} does not match its pin."
+            f"The file for engine {lock.engine} {lock.version} ({lock.backend}) does not "
+            f"match its pin, so lilbee did not install it. Run the install again. "
+            f"If this happens again, report it."
         )
     with zipfile.ZipFile(wheel) as archive:
         _refuse_escaping_entries(lock, archive)
         _refuse_linked_binary(lock, archive)
         names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
         text = archive.read(names[0]).decode("utf-8") if names else None
-    _check_declared_licence(lock, text)
+        notice = any(_is_nvidia_notice(info) for info in archive.infolist())
+        _check_declared_licence(lock, text, notice)
+        _refuse_unusable_server(lock, archive)
 
 
-def _check_declared_licence(lock: PinLock, metadata_text: str | None) -> None:
-    """Refuse unless the METADATA text declares a permissive ``License-Expression``."""
+def _is_nvidia_notice(info: zipfile.ZipInfo) -> bool:
+    """True for a non-empty notice file directly in a top-level ``*.dist-info/licenses``."""
+    match info.filename.split("/"):
+        case [folder, "licenses", name] if name == NVIDIA_NOTICE:
+            return folder.endswith(".dist-info") and info.file_size > 0
+        case _:
+            return False
+
+
+def _check_declared_licence(
+    lock: PinLock, metadata_text: str | None, has_notice: bool = False
+) -> None:
+    """Refuse unless the METADATA text declares a permitted ``License-Expression``."""
     metadata = message_from_string(metadata_text) if metadata_text else None
     expression = (metadata.get("License-Expression") if metadata else None) or ""
-    if not licence_permitted(expression):
+    if not licence_permitted(expression, has_notice):
         raise LicenceRefusedError(
             f"The wheel for engine {lock.engine} {lock.version} declares the licence "
             f"{expression!r}, which is not on the permissive list."
@@ -203,11 +248,18 @@ def _check_staged_tree(lock: PinLock, stage: Path) -> str | None:
                 f"directory."
             )
     metadata = sorted(stage.glob("*.dist-info/METADATA"))
-    _check_declared_licence(lock, metadata[0].read_text(encoding="utf-8") if metadata else None)
+    notice = any(
+        path.is_file() and path.stat().st_size > 0
+        for path in stage.glob(f"*.dist-info/licenses/{NVIDIA_NOTICE}")
+    )
+    _check_declared_licence(
+        lock, metadata[0].read_text(encoding="utf-8") if metadata else None, notice
+    )
     tools = sorted(
         path.relative_to(stage).as_posix()
         for path in stage.glob("*/bin/*")
-        if _TOOL_PATH.fullmatch(path.relative_to(stage).as_posix())
+        if (path.is_file() or path.is_symlink())
+        and _is_server(path.relative_to(stage).as_posix(), lock.tool)
     )
     if tools and (stage / tools[0]).is_symlink():
         raise UnsafeWheelError(
@@ -237,7 +289,7 @@ def _refuse_escaping_entries(lock: PinLock, archive: zipfile.ZipFile) -> None:
 
 
 def _refuse_linked_binary(lock: PinLock, archive: zipfile.ZipFile) -> None:
-    name = _binary_of(archive)
+    name = _binary_of(archive, lock.tool)
     if name is not None and stat.S_ISLNK(archive.getinfo(name).external_attr >> 16):
         raise UnsafeWheelError(
             f"The wheel for engine {lock.engine} {lock.version} holds the tool {name!r} "
@@ -245,10 +297,22 @@ def _refuse_linked_binary(lock: PinLock, archive: zipfile.ZipFile) -> None:
         )
 
 
-def _binary_of(archive: zipfile.ZipFile) -> str | None:
-    """The first ``<package>/bin/<tool>`` file of the wheel, as a POSIX path."""
-    tools = sorted(n for n in archive.namelist() if _TOOL_PATH.fullmatch(n))
-    return tools[0] if tools else None
+def _refuse_unusable_server(lock: PinLock, archive: zipfile.ZipFile) -> None:
+    problems = server_problems(archive, lock.tool, lock.libraries)
+    if problems:
+        raise UnsafeWheelError(
+            f"The wheel for engine {lock.engine} {lock.version} {'; '.join(problems)}."
+        )
+
+
+def _is_server(path: str, tool: str) -> bool:
+    """True for a file of ``<package>/bin/`` named *tool*."""
+    return server_entry([path], tool) is not None
+
+
+def _binary_of(archive: zipfile.ZipFile, tool: str) -> str | None:
+    """The ``<package>/bin/<tool>`` file of the wheel, as a POSIX path; None when it has none."""
+    return server_entry(archive.namelist(), tool)
 
 
 def _binary_usable(binary: Path, directory: Path) -> bool:
@@ -371,7 +435,7 @@ class EngineStore:
             try:
                 _unpack(wheel, stage)
                 with zipfile.ZipFile(wheel) as archive:
-                    binary = _binary_of(archive)
+                    binary = _binary_of(archive, lock.tool)
                 self._swap_in(lock, stage, binary)
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
@@ -412,9 +476,18 @@ class EngineStore:
         return path
 
     def remove(
-        self, engine: str, version: str, backend: str, in_use: Callable[[str, str, str], bool]
+        self,
+        engine: str,
+        version: str,
+        backend: str,
+        in_use: Callable[[str, str, str], bool],
+        *,
+        wait_s: float = _LOCK_TIMEOUT_S,
     ) -> RemoveResult:
-        """Delete one build; refuse while *in_use* says a launch uses it."""
+        """Delete one build; refuse while *in_use* says a launch uses it.
+
+        The install lock of the engine is awaited for *wait_s* seconds.
+        """
         if _BUNDLED in (version, backend):
             raise BundledEngineError(
                 f"The {engine} engine inside the executable is not an installed build "
@@ -424,7 +497,7 @@ class EngineStore:
             if not _NAME_PATTERN.fullmatch(part):
                 raise StorePathError(f"{part!r} cannot name an engine build.")
         build = self.root / engine / f"{version}-{backend}"
-        with file_lock(self.root / _LOCK_DIR / engine, _LOCK_TIMEOUT_S):
+        with file_lock(self.root / _LOCK_DIR / engine, wait_s):
             if not build.is_dir():
                 raise EngineNotInstalledError(
                     f"Engine {engine} {version} ({backend}) is not installed."
@@ -450,18 +523,25 @@ class EngineStore:
         if not keep:
             raise ValueError("Prune needs at least one build to keep.")
         gone: list[Path] = []
-        for engine, version, backend, path in self._build_dirs():
+        for engine, version, backend, path in self.build_dirs():
             if (engine, version, backend) in keep:
                 continue
             try:
-                self.remove(engine, version, backend, in_use=in_use)
-            except (EngineInUseError, StorePathError, EngineNotInstalledError, OSError) as exc:
+                self.remove(engine, version, backend, in_use=in_use, wait_s=_NO_WAIT_S)
+            except (
+                BundledEngineError,
+                EngineInUseError,
+                StorePathError,
+                EngineNotInstalledError,
+                FileLockUnavailableError,
+                OSError,
+            ) as exc:
                 log.debug("Kept the engine build %s: %s", path, exc)
                 continue
             gone.append(path)
         return gone
 
-    def _build_dirs(self) -> list[tuple[str, str, str, Path]]:
+    def build_dirs(self) -> list[tuple[str, str, str, Path]]:
         """Every build folder by name, damaged ones too: (engine, version, backend, path)."""
         if not self.root.is_dir():
             return []
@@ -581,6 +661,30 @@ def sweep_engines(models_dir: Path) -> list[Path]:
     return EngineStore(engines_root(models_dir)).sweep()
 
 
+def prune_engines(models_dir: Path) -> list[Path]:
+    """Startup hook: remove builds no shipped pin names and no live process uses."""
+    if not models_dir.is_absolute():
+        return []
+    store = EngineStore(engines_root(models_dir))
+    try:
+        builds = store.build_dirs()
+    except OSError as exc:
+        log.warning("Skipped the engine prune of %s: %s", store.root, exc)
+        return []
+    if not builds:
+        return []
+    from lilbee.providers.fleet.engines.choice import release_pins
+
+    keep = release_pins(builds)
+    if not keep:
+        return []
+    try:
+        return store.prune(keep, in_use=launch_uses_engine)
+    except OSError as exc:
+        log.warning("Skipped the engine prune of %s: %s", store.root, exc)
+        return []
+
+
 def package_name(lock: PinLock) -> str:
     """The name of the engine's wheel on the package index."""
     return _PACKAGE_PREFIX + re.sub(r"[^a-z0-9]+", "-", lock.engine.lower()).strip("-")
@@ -603,20 +707,10 @@ def pip_install_argv(lock: PinLock, stage: Path, tool: InstallTool = InstallTool
         "--only-binary=:all:",
         "--require-hashes",
         "--index-url",
-        f"{_PACKAGE_INDEX}/{lock.backend}/",
+        f"{_PACKAGE_INDEX}/engines/simple/",
         "-r",
         "-",
     ]
-
-
-def _hub_download(
-    *, repo_id: str, revision: str, filename: str, local_dir: str | None = None
-) -> str:
-    from huggingface_hub import hf_hub_download
-
-    return str(
-        hf_hub_download(repo_id=repo_id, revision=revision, filename=filename, local_dir=local_dir)
-    )
 
 
 def fetch_frozen(
@@ -624,38 +718,37 @@ def fetch_frozen(
     platform: str,
     *,
     dest: Path,
-    downloader: Callable[..., str] = _hub_download,
+    on_progress: ProgressCallback | None = None,
+    on_retry: RetryCallback | None = None,
+    cancel: CancelSignal | None = None,
 ) -> Path:
-    """Download the wheel of *lock* for *platform* at its pinned commit into *dest*, unchecked."""
-    from huggingface_hub.errors import (
-        EntryNotFoundError,
-        RepositoryNotFoundError,
-        RevisionNotFoundError,
-    )
+    """Download the wheel of *lock* for the cell *platform* into *dest*, unchecked.
 
+    A pin with no cells ships as a pack only, so it has nothing to download.
+    """
+    if not lock.platforms:
+        raise FileNotFoundError(f"Engine {lock.engine} {lock.version} has no download.")
     asset = lock.platforms.get(platform)
     if asset is None:
         raise UnsupportedPlatformError(
             f"Engine {lock.engine} {lock.version} has no build for {platform}."
         )
-    shortfall = disk_shortfall(dest, asset.repo, asset.size)
+    if not PACKAGES_URL:
+        raise PackUrlError(
+            f"Engine {lock.engine} {lock.version} cannot download: this build of lilbee "
+            "lists no pack index."
+        )
+    if not asset.url.startswith(PACKAGES_URL):
+        raise PackUrlError(
+            f"Engine {lock.engine} {lock.version} points at {asset.url}, which is not on "
+            f"the pack index {PACKAGES_URL}. lilbee downloads packs from the index only."
+        )
+    shortfall = disk_shortfall(dest, url_filename(asset.url), asset.size)
     if shortfall is not None:
         raise EngineDiskError(shortfall)
-    try:
-        return Path(
-            retry_transfer(
-                lambda: downloader(
-                    repo_id=asset.repo,
-                    revision=asset.revision,
-                    filename=asset.filename,
-                    local_dir=str(dest),
-                )
-            )
-        )
-    except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError) as exc:
-        raise FileNotFoundError(
-            f"The hub has no {asset.filename} at {asset.revision} in {asset.repo}."
-        ) from exc
+    return download_url(
+        asset.url, dest, asset.size, on_progress=on_progress, on_retry=on_retry, cancel=cancel
+    )
 
 
 __all__ = [
@@ -671,6 +764,7 @@ __all__ = [
     "InstalledEngine",
     "LicenceRefusedError",
     "MissingPackError",
+    "PackUrlError",
     "PackageInstallError",
     "PinLock",
     "PlatformAsset",
@@ -686,5 +780,6 @@ __all__ = [
     "package_name",
     "pip_install_argv",
     "pip_requirement",
+    "prune_engines",
     "sweep_engines",
 ]

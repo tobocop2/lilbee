@@ -106,3 +106,42 @@ class TestExtractMemories:
     def test_chat_failure_yields_nothing(self):
         chat = MagicMock(side_effect=RuntimeError("model down"))
         assert extract_memories("q", "a", chat) == []
+
+
+def test_memory_extract_runs_on_mlx_profile() -> None:
+    """The memory request asks for json_object; an MLX client drops it and still answers."""
+    import json
+
+    import httpx
+
+    from lilbee.core.llm_json import json_reply_format
+    from lilbee.providers.fleet.client import LlamaServerClient
+    from lilbee.providers.fleet.engines.mlx import MLX
+    from lilbee.providers.roles import WorkerRole
+
+    sent: list[dict] = []
+    reply = '[{"text": "the user writes Rust daily", "kind": "fact"}]'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": reply}}]})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    client = LlamaServerClient(
+        "http://gpu0",
+        "m",
+        http=http,
+        async_transport=httpx.MockTransport(handler),
+        profile=MLX.request_profile(WorkerRole.CHAT),
+    )
+    client._needs_alternation = False
+
+    def chat(messages, **_kwargs):
+        return client.chat_result(
+            messages, options={"max_tokens": 64, "response_format": json_reply_format()}
+        ).text
+
+    assert extract_memories("q", "a", chat) == [
+        ExtractedMemory("the user writes Rust daily", MemoryKind.FACT)
+    ]
+    assert "response_format" not in sent[0]

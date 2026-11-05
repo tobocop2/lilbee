@@ -62,7 +62,7 @@ jobs:
           TAG: ${{ steps.fork.outputs.tag }}
         run: |
           sed -i "s|^ENGINE_LLAMA_CPP_REF=.*|ENGINE_LLAMA_CPP_REF=${TAG}|" engine-versions.env
-          sed -i -E "s|llama-cpp-[^+]+|llama-cpp-${TAG}|" packaging/engine-wheel/lilbee_engine/pins.py
+          sed -i -E "s|llama-cpp-[^+]+|llama-cpp-${TAG}|" packaging/engine-wheel/lilbee_engine_llama_cpp/pins.py
           make engine-archs
 
       - name: Push the rolling branch

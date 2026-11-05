@@ -1159,7 +1159,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.GENERATION,
-        help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
+        help_text="Fraction of GPU memory used to size the context window (0.1-1.0)",
     ),
     "usable_vram_fraction": SettingDef(
         float,
@@ -1437,7 +1437,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        help_text="Path to a llama-server binary (empty: bundled wheel or PATH)",
+        help_text="llama-server path (empty: bundled wheel, PATH, then the engine pack)",
     ),
     "wiki_summary_max_tokens": SettingDef(
         int,

@@ -18,6 +18,18 @@ CTX_CHARS = 100_000
 _HANG_S = 3.0
 _THINK_TOKENS = 256
 _ENVELOPE = {"error": {"message": "The requested endpoint does not exist"}}
+# oMLX 0.7.3 (row 85): the route exists and refuses the llama-server body, which has `content`.
+# The spike records the status only; the body shape here is an assumption.
+_TOKENIZE_REFUSAL = {
+    "detail": [{"type": "missing", "loc": ["body"], "msg": "Field required: messages or prompt"}]
+}
+
+
+# oMLX 0.7.3 (row 86): the 400 for a prompt past the window carries a code.
+_CODE_OVERFLOW = {
+    "message": "Prompt is too long: 60009 tokens > 40960 maximum context length",
+    "code": "context_length_exceeded",
+}
 
 
 @dataclass(frozen=True)
@@ -41,6 +53,7 @@ class Behaviour:
     deterministic: bool = True
     order_ok: bool = True
     envelope_404: bool = False
+    tokenize: str = "absent"
     dim: int = 8
 
 
@@ -66,6 +79,8 @@ PROFILES: dict[str, Profile] = {
     "lemonade_reranker_as_embed": Profile(
         (32,), Behaviour(health=404, live=200, embed="zero", envelope_404=True)
     ),
+    "omlx_chat": Profile((86,), Behaviour(overflow="400-code")),
+    "omlx_embed": Profile((85, 88), Behaviour(tokenize="422")),
     "mistralrs_cpu": Profile((43, 50, 52, 54, 55), Behaviour(overflow="400-seq")),
     "mistralrs_cuda": Profile((36, 37, 38, 44), Behaviour(chat="503")),
 }
@@ -149,6 +164,8 @@ class _Handler(BaseHTTPRequestHandler):
             "onebased",
         ):
             self._rerank(req)
+        elif self.path.endswith("/tokenize") and self.cfg.tokenize == "422":
+            self._send(422, _TOKENIZE_REFUSAL)
         elif self.path == "/rerank" and self.cfg.rerank == "tei":
             self._send(200, [{"index": i, "score": 0.5} for i in range(len(req["texts"]))])
         else:
@@ -161,6 +178,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, {"choices": [{"message": {"content": "late"}}]})
         elif mode == "500":
             self._send(500, {"error": {"message": "boom"}})
+        elif mode == "400-code":
+            self._send(400, {"error": {**_CODE_OVERFLOW, "type": "invalid_request_error"}})
         else:
             text = (
                 "request (300000 tokens) exceeds the available context size (40960 tokens)"

@@ -1243,6 +1243,13 @@ class TestSplitShardFilenames:
         ]
 
 
+@pytest.fixture
+def repo_lists_no_projector(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Hub listing names no projector, so a model download stays one file."""
+    monkeypatch.setattr(catalog.download, "_resolve_mmproj_filename", lambda repo, pat: None)
+
+
+@pytest.mark.usefixtures("repo_lists_no_projector")
 class TestSplitShardDownload:
     def test_fetches_all_shards_and_finalizes_once(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1296,6 +1303,7 @@ class TestSplitShardDownload:
         assert probes[-1] == "blob-m-00003-of-00003.gguf"
 
 
+@pytest.mark.usefixtures("repo_lists_no_projector")
 class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
@@ -1526,14 +1534,33 @@ def _bonsai_header(name: str) -> GgufHeader:
     return GgufHeader(architecture="qwen35", file_type="model")
 
 
+def _stub_listing(
+    monkeypatch: pytest.MonkeyPatch, *names: str, error: Exception | None = None
+) -> None:
+    """Answer the Hub repo listing with *names*, or raise *error*, through the Hub client."""
+    from huggingface_hub import HfApi
+
+    def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
+        if error is not None:
+            raise error
+        return SimpleNamespace(siblings=[RepoSibling(rfilename=name) for name in names])
+
+    monkeypatch.setattr(HfApi, "model_info", model_info)
+
+
+def _hub_http_error(status: int) -> Exception:
+    from huggingface_hub.errors import HfHubHTTPError
+
+    response = httpx.Response(status, request=httpx.Request("GET", "https://example.com"))
+    return HfHubHTTPError(f"HTTP {status}", response=response)
+
+
 class TestResolveFilename:
     """The pull path resolves a repo to the file whose header says it is the model."""
 
     @staticmethod
     def _siblings(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
-        data = {"siblings": [{"rfilename": name} for name in names]}
-        mock_resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://x"))
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        _stub_listing(monkeypatch, *names)
 
     @staticmethod
     def _headers(
@@ -1607,21 +1634,18 @@ class TestResolveFilename:
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
     def test_wildcard_api_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def raise_connect(*a: object, **kw: object) -> httpx.Response:
-            raise httpx.ConnectError("x")
-
-        monkeypatch.setattr(httpx, "get", raise_connect)
+        _stub_listing(monkeypatch, error=httpx.ConnectError("x"))
         with pytest.raises(RuntimeError, match="Cannot query files"):
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
     def test_wildcard_http_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(500))
-        with pytest.raises(RuntimeError):
+        _stub_listing(monkeypatch, error=_hub_http_error(500))
+        with pytest.raises(RuntimeError, match="Cannot query files"):
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
     def test_wildcard_401_raises_permission_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """HTTP 401 response raises PermissionError with auth message."""
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(401))
+        _stub_listing(monkeypatch, error=_hub_http_error(401))
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
@@ -2250,7 +2274,7 @@ class TestVisionMmprojFiles:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
         monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
-        monkeypatch.setattr(catalog.download, "repo_has_mmproj", lambda _repo: False)
+        monkeypatch.setattr(catalog.download, "_resolve_mmproj_filename", lambda repo, pat: None)
 
         download_calls: list[dict] = []
 
@@ -2271,7 +2295,6 @@ class TestVisionMmprojFiles:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
         monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
-        monkeypatch.setattr(catalog.download, "repo_has_mmproj", lambda _repo: True)
         monkeypatch.setattr(
             catalog.download,
             "_resolve_mmproj_filename",
@@ -2290,10 +2313,10 @@ class TestVisionMmprojFiles:
         filenames = [c["filename"] for c in download_calls]
         assert "mmproj-model-f16.gguf" in filenames
 
-    def test_download_model_vision_mmproj_resolution_fails(
+    def test_download_model_vision_repo_listing_no_projector_still_succeeds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When mmproj resolution fails, model download still succeeds."""
+        """A vision-named repo whose listing names no projector still downloads its model."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
         monkeypatch.setattr(
@@ -2305,6 +2328,26 @@ class TestVisionMmprojFiles:
 
         result = download_model(entry, engine=LLAMA)
         assert result.exists()
+
+    def test_download_model_succeeds_when_projector_listing_unreadable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable listing is not "no projector" and not a failed pull: the model stays."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        entry = PICKS_VISION[0]
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+        )
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
+
+        def _listing_down(hf_repo: str, *, timeout: float) -> list[str]:
+            raise RuntimeError("Cannot query files: 503")
+
+        monkeypatch.setattr(catalog.download, "_repo_sibling_files", _listing_down)
+
+        result = download_model(entry, engine=LLAMA)
+        assert result.exists()
+        assert not list(tmp_path.rglob("*mmproj*"))
 
     def test_download_mmproj_uses_cache_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2477,52 +2520,44 @@ class TestResolveMmprojFilename:
         assert result == "exact-mmproj.gguf"
 
     def test_wildcard_resolves_via_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        data = {
-            "siblings": [
-                {"rfilename": "model-Q4_K_M.gguf"},
-                {"rfilename": "model-mmproj-f16.gguf"},
-                {"rfilename": "model-mmproj-f32.gguf"},
-            ]
-        }
-        mock_resp = httpx.Response(
-            200, json=data, request=httpx.Request("GET", "https://example.com")
+        _stub_listing(
+            monkeypatch,
+            "model-Q4_K_M.gguf",
+            "model-mmproj-f16.gguf",
+            "model-mmproj-f32.gguf",
         )
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
 
         result = _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
         # Prefers f16 over f32
         assert result == "model-mmproj-f16.gguf"
 
-    def test_returns_none_on_api_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def raise_error(*a, **kw):
-            raise RuntimeError("network error")
+    def test_raises_on_api_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unreadable listing is not an empty one: the caller must hear of it."""
 
-        monkeypatch.setattr(httpx, "get", raise_error)
-        result = _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
-        assert result is None
+        _stub_listing(monkeypatch, error=RuntimeError("network error"))
+        with pytest.raises(_download.ProjectorListingError, match="vision projector of repo"):
+            _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+
+    def test_gated_repo_listing_raises_projector_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_listing(monkeypatch, error=_hub_http_error(401))
+        with pytest.raises(_download.ProjectorListingError, match="authentication"):
+            _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
 
     def test_returns_none_when_no_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        data = {"siblings": [{"rfilename": "model-Q4_K_M.gguf"}]}
-        mock_resp = httpx.Response(
-            200, json=data, request=httpx.Request("GET", "https://example.com")
-        )
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        _stub_listing(monkeypatch, "model-Q4_K_M.gguf")
 
         result = _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
         assert result is None
 
     def test_returns_first_when_no_f16(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When no f16 file exists, returns first match."""
-        data = {
-            "siblings": [
-                {"rfilename": "model-mmproj-f32.gguf"},
-                {"rfilename": "model-mmproj.bin"},
-            ]
-        }
-        mock_resp = httpx.Response(
-            200, json=data, request=httpx.Request("GET", "https://example.com")
+        _stub_listing(
+            monkeypatch,
+            "model-mmproj-f32.gguf",
+            "model-mmproj.bin",
         )
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
 
         result = _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
         assert result == "model-mmproj-f32.gguf"
@@ -3151,6 +3186,7 @@ class TestXetDefaultAtImport:
         assert out.stdout.strip() == ("1" if sys.platform == "win32" else "None")
 
 
+@pytest.mark.usefixtures("repo_lists_no_projector")
 class TestRegisterDownloadedModel:
     def _entry(self) -> object:
         from lilbee.catalog import CatalogModel

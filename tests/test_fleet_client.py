@@ -3015,3 +3015,216 @@ def test_llama_profile_keeps_tokenize_routes_and_has_no_rerank_route() -> None:
     profile = LLAMA.request_profile(WorkerRole.RERANK)
     assert (profile.tokenize_path, profile.detokenize_path) == ("/tokenize", "/detokenize")
     assert profile.rerank_path is None
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ["proxy: upstream exited: signal: illegal instruction (core dumped)", "Illegal instruction"],
+)
+def test_raise_for_status_death_on_an_illegal_instruction_names_the_cpu(monkeypatch, tail) -> None:
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+
+    monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda resp: tail)
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.CPU_UNSUPPORTED
+    assert "this CPU" in str(excinfo.value)
+    assert ProviderErrorKind.CPU_UNSUPPORTED not in client_mod._RETRY_KINDS
+    assert ProviderErrorKind.CPU_UNSUPPORTED not in client_mod._REBUILDABLE_KINDS
+
+
+def test_an_allocation_failure_beside_an_illegal_instruction_stays_capacity() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import classify_upstream_death
+
+    tail = "cudaMalloc failed\nsignal: illegal instruction"
+    assert classify_upstream_death(tail) is ProviderErrorKind.CAPACITY
+
+
+_LOADER_LINE = (
+    "/engine/llama-server: error while loading shared libraries: {lib}: "
+    "cannot open shared object file: No such file or directory\n"
+)
+
+
+def _log_stream_returning(monkeypatch, chunks: list[str]) -> None:
+    import lilbee.providers.fleet.client as client_mod
+
+    class _FakeStream:
+        def __enter__(self) -> _FakeStream:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def iter_text(self):
+            yield from chunks
+
+    monkeypatch.setattr(client_mod.httpx, "stream", lambda method, url, timeout: _FakeStream())
+
+
+def test_a_missing_libgomp_is_named_with_its_install_hint_and_no_log_path(monkeypatch) -> None:
+    from pathlib import Path
+
+    from lilbee.providers.base import ProviderErrorKind
+
+    _log_stream_returning(monkeypatch, [_LOADER_LINE.format(lib="libgomp.so.1")])
+    client = _unprobed_client()
+    client.engine_log = Path("/logs/embed-0.log")
+    with pytest.raises(ProviderError) as excinfo:
+        client._raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.MISSING_LIBRARY
+    assert str(excinfo.value) == (
+        "The engine needs the library libgomp.so.1. "
+        "Install libgomp1 (Debian, Ubuntu) or libgomp (Fedora)."
+    )
+
+
+def test_another_missing_library_is_named_without_a_package_hint(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    _log_stream_returning(monkeypatch, [_LOADER_LINE.format(lib="libfoo.so.3")])
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.MISSING_LIBRARY
+    assert str(excinfo.value) == "The engine needs the library libfoo.so.3."
+
+
+def test_a_death_without_the_loader_line_keeps_the_generic_message(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    _log_stream_returning(monkeypatch, ["error while loading model file\n"])
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+    assert (
+        str(excinfo.value) == "The engine for the model stopped before it could answer (HTTP 500)."
+    )
+
+
+def test_the_loader_line_survives_the_log_tail_window(monkeypatch) -> None:
+    # The fetched tail is the last 2000 characters of the replayed ring; the
+    # loader line is the engine's last output when it dies at load.
+    from lilbee.providers.base import ProviderErrorKind
+
+    _log_stream_returning(
+        monkeypatch, ["x" * 70000, _LOADER_LINE.format(lib="libgomp.so.1") + "proxy: exited\n"]
+    )
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.MISSING_LIBRARY
+    assert "libgomp.so.1" in str(excinfo.value)
+
+
+def test_the_loader_line_is_the_only_missing_library_signal() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import classify_upstream_death, missing_library
+
+    tail = _LOADER_LINE.format(lib="libgomp.so.1")
+    assert classify_upstream_death(tail) is ProviderErrorKind.MISSING_LIBRARY
+    assert missing_library(tail) == "libgomp.so.1"
+    assert classify_upstream_death("cannot open shared object file") is None
+    assert missing_library("cannot open shared object file") is None
+
+
+def test_a_missing_library_is_not_retried_or_rebuilt() -> None:
+    # Only an install fixes it: a retry or a rebuilt role dies the same way.
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+
+    kind = ProviderErrorKind.MISSING_LIBRARY
+    error = ProviderError("The engine needs the library libfoo.so.3.", kind=kind)
+    assert kind not in client_mod._RETRY_KINDS
+    assert kind not in client_mod._TRANSIENT_KINDS
+    assert kind not in client_mod._REBUILDABLE_KINDS
+    assert not client_mod.is_rebuildable_failure(error)
+    assert not client_mod.is_load_capacity_failure(error)
+
+
+_SCHEMA_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "city", "strict": True, "schema": {"type": "object"}},
+}
+
+
+def _recording_client(engine) -> tuple[LlamaServerClient, list[dict[str, object]]]:
+    sent: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    client = LlamaServerClient(
+        "http://gpu0",
+        "test-model",
+        http=http,
+        async_transport=httpx.MockTransport(handler),
+        profile=engine.request_profile(WorkerRole.CHAT),
+    )
+    client._needs_alternation = False
+    return client, sent
+
+
+def test_json_schema_refused_on_mlx() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    client, sent = _recording_client(MLX)
+    with pytest.raises(ProviderError) as refused:
+        client.chat_result(
+            [{"role": "user", "content": "hi"}], options={"response_format": _SCHEMA_FORMAT}
+        )
+    assert refused.value.kind is ProviderErrorKind.BAD_REQUEST
+    assert "mlx-lm" in str(refused.value)
+    assert "llama.cpp" in str(refused.value)
+    assert sent == []
+
+
+def test_json_object_dropped_on_mlx() -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    options = {"max_tokens": 8, "response_format": {"type": "json_object"}}
+    mlx, mlx_sent = _recording_client(MLX)
+    mlx.chat_result([{"role": "user", "content": "hi"}], options=dict(options))
+    assert "response_format" not in mlx_sent[0]
+    assert mlx_sent[0]["max_tokens"] == 8
+    llama, llama_sent = _recording_client(LLAMA)
+    llama.chat_result([{"role": "user", "content": "hi"}], options=dict(options))
+    assert llama_sent[0]["response_format"] == {"type": "json_object"}
+    assert options["response_format"] == {"type": "json_object"}
+
+
+def test_json_schema_passes_through_on_llama() -> None:
+    client, sent = _recording_client(LLAMA)
+    client.chat_result(
+        [{"role": "user", "content": "hi"}], options={"response_format": _SCHEMA_FORMAT}
+    )
+    assert sent[0]["response_format"] == _SCHEMA_FORMAT
+
+
+def _call_chat(client, how: str, options: dict[str, object]) -> None:
+    messages = [{"role": "user", "content": "hi"}]
+    if how == "chat":
+        client.chat(messages, options=options)
+    elif how == "chat_stream":
+        list(client.chat(messages, options=options, stream=True))
+    elif how == "chat_tools":
+        client.chat_tools(messages, tools=[], options=options)
+    elif how == "chat_abortable":
+        client.chat_abortable(messages, options=options)
+    else:
+        list(client.chat_stream_items(messages, options=options))
+
+
+@pytest.mark.parametrize(
+    "how", ["chat", "chat_stream", "chat_tools", "chat_abortable", "chat_stream_items"]
+)
+def test_every_chat_entry_point_keeps_a_schema_off_the_mlx_wire(how: str) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    client, sent = _recording_client(MLX)
+    with pytest.raises(ProviderError, match="does not enforce a JSON schema"):
+        _call_chat(client, how, {"response_format": _SCHEMA_FORMAT})
+    assert sent == []

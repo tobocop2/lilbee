@@ -140,6 +140,13 @@ def _canonical_prompt(request: _PromptBody, *, mode: ReasoningMode) -> Canonical
     return require_content_beside_images(req)
 
 
+def _is_image(block: object) -> bool:
+    """True for an image block, including one whose source did not validate."""
+    return isinstance(block, ImageBlockParam) or (
+        isinstance(block, UnknownBlockParam) and block.type == "image"
+    )
+
+
 def _count_images(messages: list[AnthropicMessage]) -> int:
     """Image blocks in *messages*, top level and inside tool results."""
     total = 0
@@ -147,10 +154,10 @@ def _count_images(messages: list[AnthropicMessage]) -> int:
         if isinstance(msg.content, str):
             continue
         for block in msg.content:
-            if isinstance(block, ImageBlockParam):
+            if _is_image(block):
                 total += 1
             elif isinstance(block, ToolResultBlockParam) and isinstance(block.content, list):
-                total += sum(isinstance(part, ImageBlockParam) for part in block.content)
+                total += sum(_is_image(part) for part in block.content)
     return total
 
 

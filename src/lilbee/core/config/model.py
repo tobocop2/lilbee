@@ -167,7 +167,10 @@ class Config(BaseSettings):
         description=(
             "Root directory for this library. Resolved at start from LILBEE_DATA, "
             "then a .lilbee/ directory walked up from the working directory, then "
-            "the platform default. Every other path below hangs off it"
+            "the platform default. The documents, index, config file and logs live "
+            "under it. The models folder (also the Hugging Face cache), the engines "
+            "folder, the machine engine slot and the gguf metadata cache stay in the "
+            "platform folders. LILBEE_MODELS_DIR and LILBEE_ENGINE_DIR move the first three"
         ),
     )
     # Writable so plugin-managed servers can pivot storage to a vault path on
@@ -427,8 +430,8 @@ class Config(BaseSettings):
     max_tokens: int | None = ConfigField(default=None, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
-    # Path to a llama-server binary. Empty = use the bundled lilbee-engine
-    # wheel binary, else a llama-server on PATH.
+    # Path to a llama-server binary. Empty = the bundled lilbee-engine-llama-cpp wheel
+    # binary, else a llama-server on PATH, else the llama.cpp pack installed on first use.
     llama_server_path: str = ConfigField(default="", writable=True)
     # Per-server local model-manager URLs. Blank means "use the server's spec
     # default" (resolved in providers.local_servers.config_urls); the default
@@ -942,8 +945,9 @@ class Config(BaseSettings):
 
     # Manual GPU placement override stored as a JSON scalar (the config.toml store
     # is flat, and core must not depend on the provider PlacementSpec type). When
-    # set, it fully replaces the automatic placement planner: each active role pins
-    # to the listed device indices, with an optional tensor_split and replica count.
+    # set, it fully replaces the automatic placement planner: each active role names
+    # a target (cpu, or gpu with device indices), with an optional tensor_split and
+    # replica count. A role with no target key runs on the listed device indices.
     # Edited via the placement CLI/MCP/HTTP/TUI surfaces rather than the generic
     # settings list, so public=False. None hands off to the VRAM-aware auto planner.
     placement: str | None = ConfigField(
@@ -952,8 +956,9 @@ class Config(BaseSettings):
         public=False,
         description=(
             "Manual multi-GPU placement spec. It fully replaces the automatic planner: "
-            "each active role pins to the listed device indices. Edit it with the "
-            "placement commands, not the settings list. Empty uses the VRAM-aware planner"
+            "each active role runs on the CPU or pins to the listed device indices. "
+            "Edit it with the placement commands, not the settings list. "
+            "Empty uses the VRAM-aware planner"
         ),
     )
 

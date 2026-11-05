@@ -18,7 +18,7 @@ A preset serves one or more of these roles: `embed`, `rerank`, `chat`, `vision`.
 
 A preset works with a server that offers the OpenAI-compatible routes for the roles you give it. These servers are the targets for presets: oMLX, vMLX, vllm-mlx, mlx-lm, TEI, Lemonade, GenieX, FastFlowLM, mistral.rs and Infinity.
 
-lilbee ran its output check against TEI, Lemonade and mistral.rs. The other servers are not run or not verified yet. See [Preset results](preset-results.md) for each server, role and result. Check which routes your server offers before you give it a role. Use `tei` as the rerank wire for TEI. For every other server, use the default `v1` only if the server documents `POST /v1/rerank`.
+lilbee ran its output check against TEI, Lemonade, mistral.rs, mlx-lm, oMLX, vMLX and vllm-mlx. On the MLX servers, context overflow fails on mlx-lm, vMLX and vllm-mlx, and vMLX rerank fails with the original checkpoint and with the MLX conversion `flaglow/BAAI-bge-reranker-v2-m3-mlx-fp16`. mlx-lm vision fails for `mlx-community/Qwen3-VL-2B-Instruct-4bit`: the server reads images only for Muse Spark. GenieX is not verified. See [Preset results](preset-results.md) for each server, role and result. Check which routes your server offers before you give it a role. Use `tei` as the rerank wire for TEI. For every other server, use the default `v1` only if the server documents `POST /v1/rerank`.
 
 ## The rerank wire
 
@@ -118,9 +118,10 @@ The gate does not apply to the CLI, the slash command or the settings screen. Tu
 
 lilbee checks the URL when you save a preset. It refuses a URL that is not well formed and an address in a blocked network. A host name with no DNS answer is saved.
 
-lilbee checks the address again before the request. Before the request, it resolves the host name and refuses the request if any address is blocked or if the host has no DNS answer. The SDK resolves the host name once more when it connects. A DNS change between the check and the connection is not caught.
+The SDK checks the address when it connects. It reads every address of the host name at that moment and refuses a blocked one. A DNS change after the save is caught. A host name with no DNS answer fails to connect.
 
 ## Related
 
 - [Usage](usage.md) lists the slash commands and the CLI commands.
 - [Settings reference](settings.md) lists `server_presets`, `allow_http_engines` and `mcp_presets_enabled`.
+- [Engine integration](engine-integration.md) lists what a server must do before lilbee can use it.

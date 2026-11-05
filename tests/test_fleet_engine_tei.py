@@ -18,6 +18,8 @@ from lilbee.app import engine_service
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.engine_params import EMBED_FALLBACK_CTX
+from lilbee.providers.fleet import engine_manifest
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engine_store import EngineNotInstalledError, EngineStore, PinLock
 from lilbee.providers.fleet.engines import choice
@@ -26,7 +28,7 @@ from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import RoleTarget, WorkerRole
 
 FIXTURES = Path(__file__).parent / "conformance" / "fixtures" / "engines"
 L4 = ("NVIDIA L4", (8, 9))
@@ -49,10 +51,8 @@ def _caps(
     return collect(
         system=system,
         machine=machine,
-        mac_ver="15.0" if system == "Darwin" else "",
         cpu_info={"flags": ["avx", "avx2"], "brand_raw": "Test CPU"},
         nvml=nvml,
-        npu_devices=[],
     )
 
 
@@ -188,6 +188,8 @@ def test_launch_raises_the_server_batch_limit_to_the_client_batch(tmp_path: Path
         "127.0.0.1",
         "--max-client-batch-size",
         "64",
+        "--max-batch-tokens",
+        "2176",
     ]
 
 
@@ -195,6 +197,7 @@ def test_pin_names_the_picked_build_and_refuses_a_lock_with_no_pack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=L4))
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
     pin = TEI.pin_record()
     assert (pin["engine"], pin["version"], pin["backend"]) == ("tei", "1.9.4", "cuda-sm89")
     assert pin["licenses"] == ["Apache-2.0"]
@@ -211,14 +214,15 @@ def test_binary_comes_from_the_store_record_of_the_pin(
         TEI.binary()
     wheel = tmp_path / "tei.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
-        tool = zipfile.ZipInfo("tei_fx/bin/router")
+        tool = zipfile.ZipInfo("tei_fx/bin/text-embeddings-router")
         tool.external_attr = (stat.S_IFREG | 0o755) << 16
         archive.writestr(tool, "#!/bin/sh\n")
         archive.writestr("tei_fx-1.dist-info/METADATA", "License-Expression: Apache-2.0\n")
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-    lock = PinLock("tei", "1.9.4", "cpu", {}, ("Apache-2.0",), digest)
+    lock = PinLock("tei", "1.9.4", "cpu", {}, ("Apache-2.0",), digest, "text-embeddings-router")
     EngineStore(tmp_path / "engines").install_from_wheel(lock, wheel)
-    assert TEI.binary() == tmp_path / "engines" / "tei" / "1.9.4-cpu" / "tei_fx" / "bin" / "router"
+    want = tmp_path / "engines" / "tei" / "1.9.4-cpu" / "tei_fx" / "bin"
+    assert TEI.binary() == want / "text-embeddings-router"
 
 
 def test_other_probes_of_the_adapter_answer_without_a_server(tmp_path: Path) -> None:
@@ -372,3 +376,84 @@ def test_the_launch_argv_carries_the_figure_the_profile_holds(
     )
     argv = TEI.launch_argv(TEI.role_spec(WorkerRole.EMBED, None, None), request)
     assert argv[argv.index("--max-client-batch-size") + 1] == "17"
+
+
+def _batch_tokens(tmp_path: Path, ctx: int, target: RoleTarget = RoleTarget.GPU) -> int:
+    request = LaunchRequest(
+        binary=tmp_path / "router",
+        model_path=tmp_path / "model",
+        devices=(),
+        n_gpu_layers=0,
+        slots=1,
+        ctx_per_slot=ctx,
+        target=target,
+    )
+    argv = TEI.launch_argv(TEI.role_spec(WorkerRole.EMBED, None, None), request)
+    return int(argv[argv.index("--max-batch-tokens") + 1])
+
+
+@pytest.mark.parametrize("target", [RoleTarget.CPU, RoleTarget.GPU])
+def test_the_default_chunk_size_bounds_the_warm_up_batch(
+    tmp_path: Path, target: RoleTarget
+) -> None:
+    """The default chunk size of 512 gives 512 * 4 chunk tokens plus 128 for a rerank query."""
+    assert cfg.chunk_size == 512
+    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX, target) == 2176
+
+
+def test_a_larger_chunk_size_raises_the_warm_up_batch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(cfg, "chunk_size", 1024)
+    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX) == 4224
+
+
+@pytest.mark.parametrize("ctx", [512, EMBED_FALLBACK_CTX, 8192, 32768])
+def test_the_warm_up_batch_does_not_follow_the_context_per_slot(tmp_path: Path, ctx: int) -> None:
+    assert _batch_tokens(tmp_path, ctx) == _batch_tokens(tmp_path, 512)
+
+
+def test_the_launch_argv_keeps_the_default_truncation_for_long_inputs(tmp_path: Path) -> None:
+    """With truncation off, TEI refuses to start when the model limit exceeds the batch."""
+    request = LaunchRequest(
+        binary=tmp_path / "router",
+        model_path=tmp_path / "model",
+        devices=(),
+        n_gpu_layers=0,
+        slots=1,
+        ctx_per_slot=512,
+    )
+    argv = TEI.launch_argv(TEI.role_spec(WorkerRole.EMBED, None, None), request)
+    assert "--auto-truncate" not in argv
+    assert not any(a.startswith("--auto-truncate=") for a in argv)
+
+
+def test_an_unreadable_platform_stands_and_is_never_auto_selected() -> None:
+    gate = TEI.host_gate(_caps("", ""))
+    assert (gate.ok, gate.known, gate.auto_selectable) == (True, False, False)
+
+
+def test_a_cuda_build_runs_a_role_on_the_card_or_the_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=("GPU", (8, 6))))
+    assert TEI.device_targets(Path("/b/router")) == {RoleTarget.GPU, RoleTarget.CPU}
+
+
+def test_a_cpu_role_hides_every_card_from_the_cuda_build() -> None:
+    assert TEI.target_env(RoleTarget.CPU) == {"CUDA_VISIBLE_DEVICES": ""}
+    assert TEI.target_env(RoleTarget.GPU) == {}
+
+
+def test_a_cpu_role_charges_the_fixed_reserve_to_system_memory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from lilbee.providers.fleet import planning
+
+    model = tmp_path / "embed.bin"
+    model.write_bytes(b"\0" * 4096)
+    monkeypatch.setattr(planning.engine_params, "resolve_model_path", lambda _ref: model)
+    sized = planning._estimate_cpu_role(
+        WorkerRole.EMBED, "org/embed", engine=TEI, skipped_not_installed={}
+    )
+    assert sized is not None
+    assert sized.est_vram_bytes == 0
+    assert sized.est_ram_bytes >= 2 * 1024**3

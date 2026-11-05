@@ -12,12 +12,16 @@ from typing import TypeVar
 
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.app.services import peek_services
+from lilbee.catalog.download import RetryCallback
+from lilbee.catalog.download_progress import make_download_callback
+from lilbee.catalog.models import DownloadProgress
 from lilbee.catalog.refs import model_format
-from lilbee.catalog.runnable import refresh_session_host
+from lilbee.catalog.runnable import refresh_session_host, session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, host_cell
 from lilbee.providers.fleet.engine_store import (
     BundledEngineError,
     ChecksumError,
@@ -29,15 +33,16 @@ from lilbee.providers.fleet.engine_store import (
     LicenceRefusedError,
     MissingPackError,
     PackageInstallError,
-    PinLock,
+    PackUrlError,
     StorePathError,
     UnsafeWheelError,
     UnsupportedPlatformError,
     engines_root,
+    fetch_frozen,
     launch_uses_engine,
 )
 from lilbee.providers.fleet.engines import choice
-from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
 from lilbee.providers.fleet.engines.choice import (
     AUTO,
     LIST_HINT,
@@ -45,8 +50,10 @@ from lilbee.providers.fleet.engines.choice import (
     engines_loading,
     installed_engines,
 )
+from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
 from lilbee.retrieval.canary_probe import embedder_trigger
+from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -119,7 +126,9 @@ _STORE_REFUSALS = (
     LicenceRefusedError,
     MissingPackError,
     PackageInstallError,
+    PackUrlError,
     UnsafeWheelError,
+    UnsupportedOsError,
     UnsupportedPlatformError,
 )
 
@@ -223,9 +232,36 @@ class BuildView:
 
 
 def builds(config: Config = cfg) -> list[BuildView]:
-    """Every engine build installed beside the models."""
+    """Every engine build installed beside the models that the host gate lets this host run."""
     store = EngineStore(engines_root(config.models_dir))
-    return [BuildView(b.engine, b.version, b.backend) for b in store.installed()]
+    return [
+        BuildView(b.engine, b.version, b.backend)
+        for b in store.installed()
+        if choice.host_answer(b.engine, session_host).ok
+    ]
+
+
+@dataclass(frozen=True)
+class EngineListView:
+    """What every surface returns for the engine list: the builds and the missing engines."""
+
+    builds: list[BuildView]
+    not_installed: list[str]
+
+    def payload(self) -> dict[str, list[dict[str, str]] | list[str]]:
+        """The list as plain data, the same on the CLI, REST and MCP."""
+        return {
+            "builds": [
+                {"engine": b.engine, "version": b.version, "backend": b.backend}
+                for b in self.builds
+            ],
+            "not_installed": self.not_installed,
+        }
+
+
+def engine_list(config: Config = cfg) -> EngineListView:
+    """The installed builds and the engines with no installed build."""
+    return EngineListView(builds(config), not_installed())
 
 
 def remove_build(engine: str, version: str, backend: str, config: Config = cfg) -> str:
@@ -253,10 +289,26 @@ def roles(config: Config = cfg) -> list[RoleView]:
     return views
 
 
+def _offered(adapter: EngineAdapter) -> bool:
+    """True when an install of *adapter* passes the host gate; a bundled engine reads nothing."""
+    return adapter.bundled or choice.install_answer(adapter, session_host()).ok
+
+
 def not_installed() -> list[str]:
-    """The names of the engines this build knows that have no installed build."""
+    """The names of the engines with no installed build that the host gate lets this host run."""
     installed = installed_engines()
-    return [str(name) for name in choice.ADAPTERS if name not in installed]
+    missing = [
+        (name, adapter) for name, adapter in choice.ADAPTERS.items() if name not in installed
+    ]
+    offered = [str(name) for name, adapter in missing if _offered(adapter)]
+    hidden = [str(name) for name, _ in missing if str(name) not in offered]
+    host = session_host()
+    if hidden and (host.os is None or host.arch is None):
+        log.warning(
+            "The engine list hides %s: the OS or CPU of this host could not be read.",
+            ", ".join(hidden),
+        )
+    return offered
 
 
 def engine_names(model: str) -> list[str]:
@@ -285,17 +337,22 @@ def prefer(name: str, confirmed: bool = False) -> str:
     return setting.value
 
 
-def _no_download(_lock: PinLock, _scratch: Path) -> Path:
-    """The fetch for an install with no wheel: engines have no download route."""
-    raise FileNotFoundError("Engines have no download route.")
+_RETRY_TEXT = "{cause}. Attempt {attempt} of {attempts} failed; trying again."
 
 
-def install(name: str, wheel: Path | None = None) -> InstalledBuild:
-    """Install the pinned build of engine *name* from *wheel*, else from its pack.
+def _retry_reporter(on_retry: Callable[[str], None] | None) -> RetryCallback | None:
+    """Turn each failed attempt into the sentence *on_retry* shows; None when nobody listens."""
+    if on_retry is None:
+        return None
 
-    The host gate of the engine runs first. The store checks the digest, the licence
-    and the files of the wheel and writes the record.
-    """
+    def report(attempt: int, attempts: int, cause: str) -> None:
+        on_retry(_RETRY_TEXT.format(cause=cause, attempt=attempt, attempts=attempts))
+
+    return report
+
+
+def _installable(name: str) -> EngineAdapter:
+    """The adapter of the engine named *name*; refuses a name with no adapter."""
     try:
         engine = EngineName(name)
     except ValueError:
@@ -305,11 +362,39 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         raise EngineRefusedError(
             f"Engine {name} has no build to install in this version of lilbee."
         )
+    return adapter
+
+
+def install(
+    name: str,
+    wheel: Path | None = None,
+    on_update: Callable[[DownloadProgress], None] | None = None,
+    on_retry: Callable[[str], None] | None = None,
+    cancel: CancelSignal | None = None,
+) -> InstalledBuild:
+    """Install the pinned build of engine *name* from *wheel*, a pack, or its release URL.
+
+    *on_update* hears the download bytes. *on_retry* hears each failed attempt with its
+    cause and attempt number. A set *cancel* ends the download, also while it waits to try again.
+
+    The host gate and the cell for this computer run first. The store checks the digest,
+    the licence and the files of the wheel and writes the record.
+    """
+    adapter = _installable(name)
     if adapter.bundled:
-        raise EngineRefusedError(f"Engine {name} ships with lilbee. There is nothing to install.")
-    gate = adapter.host_gate(refresh_session_host())
+        if not _pack_installable():
+            raise EngineRefusedError(
+                f"Engine {name} ships with lilbee. There is nothing to install."
+            )
+        return _install_llama_pack(wheel, on_update, on_retry, cancel)
+    host = refresh_session_host()
+    gate = choice.install_answer(adapter, host)
     if not gate.ok:
-        raise EngineRefusedError(f"Engine {name} cannot run on this host. {gate.reason}")
+        if not gate.known:
+            raise EngineRefusedError(gate.reason)
+        raise EngineRefusedError(
+            f"Engine {name} cannot run on this host. {gate.reason} {LLAMA.name} stays in use."
+        )
     try:
         lock = choice.pin_lock(adapter.pin_record())
     except choice.NoPublishedPackError as exc:
@@ -318,8 +403,21 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
         raise EngineRefusedError(f"Engine {name} cannot be installed: {exc}.") from exc
     store = EngineStore(engines_root(cfg.models_dir))
     try:
+        cell = host_cell(lock, host)
+        lock = lock.for_cell(cell)
         if wheel is None:
-            store.ensure(lock, _no_download)
+            on_bytes = make_download_callback(on_update) if on_update is not None else None
+            store.ensure(
+                lock,
+                lambda pin, scratch: fetch_frozen(
+                    pin,
+                    cell,
+                    dest=scratch,
+                    on_progress=on_bytes,
+                    on_retry=_retry_reporter(on_retry),
+                    cancel=cancel,
+                ),
+            )
         else:
             store.install_from_wheel(lock, wheel)
     except _STORE_REFUSALS as exc:
@@ -327,6 +425,41 @@ def install(name: str, wheel: Path | None = None) -> InstalledBuild:
     except _UNREADABLE_WHEEL as exc:
         raise EngineRefusedError(f"Engine {name} was not installed: {exc}") from exc
     return InstalledBuild(lock.engine, lock.version, lock.backend, gate.reason)
+
+
+def _pack_installable() -> bool:
+    """True on a computer where no wheel, path or PATH entry supplies llama.cpp."""
+    from lilbee.providers.fleet.binary import EngineTool, resolve_engine_tool
+
+    try:
+        resolve_engine_tool(EngineTool.LLAMA_SERVER, install=False)
+    except ProviderError:
+        return True
+    return False
+
+
+def _install_llama_pack(
+    wheel: Path | None,
+    on_update: Callable[[DownloadProgress], None] | None,
+    on_retry: Callable[[str], None] | None,
+    cancel: CancelSignal | None,
+) -> InstalledBuild:
+    """Install the llama.cpp pack through the store, as a first use does."""
+    from lilbee.providers.fleet import first_use
+
+    refresh_session_host()
+    try:
+        lock = first_use.install_pack(
+            wheel,
+            on_progress=make_download_callback(on_update) if on_update is not None else None,
+            on_retry=_retry_reporter(on_retry),
+            cancel=cancel,
+        )
+    except first_use.INSTALL_REFUSALS as exc:
+        raise EngineRefusedError(str(exc)) from exc
+    except _UNREADABLE_WHEEL as exc:
+        raise EngineRefusedError(f"Engine {EngineName.LLAMA} was not installed: {exc}") from exc
+    return InstalledBuild(lock.engine, lock.version, lock.backend, "")
 
 
 def http_refused_message() -> str:

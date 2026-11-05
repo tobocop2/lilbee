@@ -15,6 +15,7 @@
    "detail": "dims=[1024]"
   }
  },
+ "error_answers": [],
  "exchanges": [
   {
    "method": "POST",

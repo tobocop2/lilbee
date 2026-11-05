@@ -23,6 +23,12 @@
    "detail": "kind=context_overflow"
   }
  },
+ "error_answers": [
+  [
+   400,
+   "{\"error\":{\"message\":\"Prompt sequence length is greater than 40960, perhaps consider using `truncate_sequence`?\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  ]
+ ],
  "exchanges": [
   {
    "method": "POST",

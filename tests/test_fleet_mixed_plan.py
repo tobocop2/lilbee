@@ -23,6 +23,7 @@ from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
+from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, WorkerRole
 from tests._fleet_engines import (
@@ -87,6 +88,9 @@ class _SizedEngine(FakeAdapter):
         return False
 
     def runtime_env(self):
+        return {}
+
+    def target_env(self, target):
         return {}
 
     def swap_extras(self, launch):
@@ -445,6 +449,27 @@ class TestMixedPlanAcrossCards:
         assert sorted(cards, key=str) == sorted([(E, 0, ()), (E, 1, ()), (C, 0, (0,))], key=str)
         assert placement.unplaceable_roles == ()
 
+    def test_the_refusing_search_sizes_each_role_and_split_once(self) -> None:
+        asked: list[tuple[WorkerRole, tuple[int, ...]]] = []
+
+        def estimate(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
+            asked.append((role, ratio))
+            return tuple(6 * _GIB for _ in ratio)
+
+        placement = plan_placement(
+            [
+                ModelPlacementInput(role=C, est_vram_bytes=12 * _GIB),
+                ModelPlacementInput(role=E, est_vram_bytes=12 * _GIB),
+                ModelPlacementInput(role=WorkerRole.VISION, est_vram_bytes=12 * _GIB),
+            ],
+            [(0, 8 * _GIB), (1, 8 * _GIB)],
+            estimate_peak=estimate,
+            refuse_oversize=True,
+        )
+        assert placement.unplaceable_roles
+        assert len(asked) > 0
+        assert len(asked) == len(set(asked))
+
 
 @dataclass(frozen=True)
 class PinRow:
@@ -631,6 +656,18 @@ class TestMixedPlanPins:
         assert {launch.role for launch in plan.launches} == {C}
         assert "cannot be told which GPU to use" in _warnings(caplog)
         assert "using automatic placement" in _warnings(caplog)
+
+    def test_a_saved_placement_with_a_role_off_the_cards_refuses_the_pin_error(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        roles = (Role(C, 7), Role(E, 2), Role(V, 2))
+        prepare_host(monkeypatch, tmp_path, roles, 64 * _GIB)
+        spec = {"chat": {"devices": [0]}, "embed": {"devices": [1]}, "vision": {"target": "cpu"}}
+        monkeypatch.setattr(cfg, "placement", json.dumps(spec))
+        row = PinRow((8, 8), "Vulkan", roles, frozenset({E}), {})
+        with pytest.raises(PlacementError) as caught:
+            planning.plan_all_launches(engines=_pin_engines(tmp_path, row))
+        assert str(caught.value) == "the engine of embed cannot be told which GPU to use"
 
 
 class TestDeviceNameContract:

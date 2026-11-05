@@ -225,7 +225,8 @@ def resolve_chat_ctx(
     estimator cannot answer; it charges every layer as dense attention over the
     whole window, which under-grants linear-attention, sliding-window and MLA
     models. Either way the window stops at the smallest of the trained context,
-    ``cfg.num_ctx_max`` and the target.
+    ``cfg.num_ctx_max`` and the target. A fixed reserve takes that bound at once,
+    because its figure does not follow the window.
 
     A multi-GPU tensor-split chat is sized separately by the fleet against its
     per-device headroom (see :func:`lilbee.providers.fleet.ctx.fit_split_ctx`).
@@ -237,13 +238,16 @@ def resolve_chat_ctx(
     a reload sizes ctx like the boot did.
     """
     # call-time import: planning imports this module at load
+    from lilbee.providers.fleet.memory_types import MemoryKind
     from lilbee.providers.fleet.planning import fit_chat_ctx
 
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
     ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
+    upper = min(training_ctx, ceiling, cfg.chat_n_ctx_target)
+    if engine.memory_kind is MemoryKind.FIXED_RESERVE:
+        return upper
     if available_bytes is None:
         available_bytes = get_available_memory(cfg.gpu_memory_fraction)
-    upper = min(training_ctx, ceiling, cfg.chat_n_ctx_target)
 
     try:
         return fit_chat_ctx(

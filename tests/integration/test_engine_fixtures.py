@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -10,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from lilbee.core.config import cfg
 from lilbee.providers.factory import sdk_library
 from tests.conformance.preset_check import (
     ENGINE_FIXTURES,
@@ -21,9 +23,8 @@ from tests.conformance.preset_check import (
     steps_for,
 )
 
-# The replay drives the real provider, so it runs where the extra is installed:
-# the integration job names this directory's tests in `make test-integration`.
-pytest.importorskip(sdk_library().module)
+# The replay drives the real provider; a missing library fails the import.
+importlib.import_module(sdk_library().module)
 
 _FILES = sorted(ENGINE_FIXTURES.glob("**/*.json"))
 
@@ -38,6 +39,19 @@ def test_replay_gives_the_recorded_results(path: Path, tmp_path: Path) -> None:
         replayed = run_steps(setup)
     assert replayed == recorded
     assert all(outcome.ok for outcome in recorded.values())
+
+
+@pytest.mark.parametrize("path", _FILES, ids=lambda path: path.stem)
+def test_replay_ignores_models_set_before_it_starts(
+    path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model another test or the user's config set does not reach the replayed status."""
+    setup, recorded, exchanges, _doc = load_fixture(path)
+    for field in ("chat_model", "embedding_model", "reranker_model", "vision_model"):
+        monkeypatch.setattr(cfg, field, "ambient/Ambient-GGUF/ambient-Q4_K_M.gguf")
+    with replaying(exchanges) as url, configured(url, setup, tmp_path):
+        replayed = run_steps(setup)
+    assert replayed == recorded
 
 
 def _chat_bodies(exchanges: list[Exchange]) -> Iterator[tuple[Exchange, dict[str, Any]]]:

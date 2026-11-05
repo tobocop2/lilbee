@@ -10,7 +10,7 @@ import pytest
 from tests.conformance.harness import GOLDEN_DIR, REQUIREMENTS, golden
 
 DOC = Path(__file__).resolve().parents[2] / "docs" / "engine-integration.md"
-SPIKE_ROWS = range(1, 56)
+SPIKE_ROWS = range(1, 92)
 
 
 def _section(text: str, requirement: str) -> str:

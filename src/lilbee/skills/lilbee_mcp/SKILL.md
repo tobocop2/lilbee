@@ -148,7 +148,7 @@ These tools register only when the user turns on `mcp_engines_enabled` (off by d
 
 | Tool | Use |
 |---|---|
-| `lilbee_engine_list()` | The engine builds installed beside the models: name, version and backend. |
+| `lilbee_engine_list()` | The engine builds installed beside the models (name, version, backend) and `not_installed`, the engines with no installed build. |
 | `lilbee_engine_remove(engine, version, backend)` | Remove one installed build, as `list` shows it. Refused for the bundled engine and a build in use. |
 | `lilbee_engine_roles()` | The engine of each role: model, format, engine and the notice when the role fell back or has no engine. |
 | `lilbee_engine_use(role, model, engine)` | Choose the engine for the model of a role. `engine` `auto` removes the choice. |

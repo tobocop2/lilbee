@@ -6,6 +6,7 @@ role runs on the mlx adapter. A site that asks for the wrong role receives the w
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -25,7 +26,8 @@ from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as ingest_pipeline
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.choice import HostFacts, NoEngineError
+from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import WorkerRole
 from tests.conformance.fake_adapter import BundledFakeAdapter
 
@@ -62,7 +64,9 @@ def two_engines(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, MLX_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="darwin", machine="arm64")
+        engine_choice,
+        "session_host",
+        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
     )
 
 
@@ -398,15 +402,38 @@ def test_the_first_use_of_the_chat_role_raises_the_user_text(chat_without_engine
         chat_without_engine.provider.chat([{"role": "user", "content": "hi"}])
 
 
-def test_the_embed_offload_target_does_not_hide_a_missing_embed_engine(
-    chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from lilbee.core.config import cfg
-
+@pytest.fixture
+def embed_without_engine(chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The same container, with chat on a loadable format and embed on one no engine loads."""
+    monkeypatch.setattr(cfg, "chat_model", GGUF_REF)
     monkeypatch.setattr(cfg, "embedding_model", MLX_REF)
     monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
+    return chat_without_engine
+
+
+def test_a_chat_launch_config_builds_while_only_embed_has_no_engine(
+    embed_without_engine: Any,
+) -> None:
+    from lilbee.providers.fleet import swap_config
+    from lilbee.providers.fleet.launch import InstanceLaunch
+
+    launch = InstanceLaunch(
+        role=WorkerRole.CHAT, replica=0, argv=["/bin/llama-server"], env_overrides={}, model="m"
+    )
+    offload.max_workers.cache_clear()
+    config = json.loads(swap_config.build_swap_config([launch], {launch.model_id: 9000}))
+    assert config["models"][launch.model_id]["concurrencyLimit"] > 0
+
+
+def test_an_embed_run_still_refuses_with_the_user_text(embed_without_engine: Any) -> None:
     with pytest.raises(NoEngineError, match="For embed: No installed engine loads the mlx format"):
-        offload.embed_inflight_target()
+        embed_without_engine.provider.embed(["hello"])
+
+
+def test_the_embed_offload_target_is_zero_when_the_embed_engine_is_missing(
+    embed_without_engine: Any,
+) -> None:
+    assert offload.embed_inflight_target() == 0
 
 
 _NO_MLX_TEXT = "No installed engine loads the mlx format"

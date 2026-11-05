@@ -1,0 +1,15 @@
+engine: lemonade-cpu
+version: lemonade 2026.44.1 llama.cpp b11393 cpu
+host: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43
+backend: cpu
+models: chat=Qwen3-0.6B-GGUF,embed=Qwen3-Embedding-0.6B-GGUF,rerank=bge-reranker-v2-m3-GGUF,vision=Qwen2.5-VL-3B-Instruct-GGUF
+STEP lemonade-cpu template ok=True finish=stop
+STEP lemonade-cpu tool ok=True tool_calls=['get_weather']
+STEP lemonade-cpu overflow ok=True kind=context_overflow
+STEP lemonade-cpu json_object ok=True finish=stop
+STEP lemonade-cpu json_schema ok=True finish=stop
+STEP lemonade-cpu reasoning ok=True finish=stop
+STEP lemonade-cpu embed ok=True dims=[1024]
+STEP lemonade-cpu rerank ok=True best=1
+STEP lemonade-cpu vision ok=True red_named=True blue_called_red=False
+STEP lemonade-cpu named ok=True log=['served by engine=lemonade-cpu version=preset role=chat model=lemonade-cpu/Qwen3-0.6B-GGUF'] status={<WorkerRole.CHAT: 'chat'>: 'lemonade-cpu', <WorkerRole.EMBED: 'embed'>: 'lemonade-cpu', <WorkerRole.RERANK: 'rerank'>: 'lemonade-cpu'}

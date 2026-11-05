@@ -15,7 +15,7 @@ trap 'rm -rf "$work"' EXIT
 if [ -z "$requirements" ]; then
   requirements="$work/requirements.txt"
   uv export --locked --all-extras --no-hashes --no-annotate --no-dev \
-    --no-emit-project --no-emit-package lilbee-engine \
+    --no-emit-project --no-emit-package lilbee-engine-llama-cpp \
     | sed -e 's/ *;.*//' -e '/^#/d' > "$requirements"
 fi
 

@@ -66,12 +66,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
-        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'lilbee_engine-*.whl' --dir engine/
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'lilbee_engine_llama_cpp-*.whl' --dir engine/
       # No --backend here: a released wheel carries the -1.<backend>- build tag, so
       # each one declares its own flavor.
       - name: Every engine wheel carries the backend it claims
         shell: bash
-        run: python3 tools/qa/assert_engine_bundle.py engine/*.whl
+        run: python3 tools/qa/assert_engine_bundle.py --tool llama-server --library ggml-base engine/*.whl
       - name: Every GPU asset the matrices build is on the release
         shell: bash
         env:
@@ -244,9 +244,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-latest,  engine-pattern: "lilbee_engine-*-1.cpu-*manylinux*"}
-          - {os: macos-latest,   engine-pattern: "lilbee_engine-*-1.cpu-*macosx*"}
-          - {os: windows-latest, engine-pattern: "lilbee_engine-*-1.cpu-*win_amd64*"}
+          - {os: ubuntu-latest,  engine-pattern: "lilbee_engine_llama_cpp-*-1.cpu-*manylinux*"}
+          - {os: macos-latest,   engine-pattern: "lilbee_engine_llama_cpp-*-1.cpu-*macosx*"}
+          - {os: windows-latest, engine-pattern: "lilbee_engine_llama_cpp-*-1.cpu-*win_amd64*"}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -272,7 +272,7 @@ jobs:
           bin="smoke-venv/bin"
           [ -d "smoke-venv/Scripts" ] && bin="smoke-venv/Scripts"
           lilbee_whls=(wheels/lilbee-*.whl); lilbee_whl="${lilbee_whls[0]}"
-          engine_whls=(engine/lilbee_engine-*.whl); engine_whl="${engine_whls[0]}"
+          engine_whls=(engine/lilbee_engine_llama_cpp-*.whl); engine_whl="${engine_whls[0]}"
           [ -f "${lilbee_whl}" ] || { echo "no lilbee wheel downloaded" >&2; ls -la wheels/; exit 1; }
           [ -f "${engine_whl}" ] || { echo "no engine wheel downloaded" >&2; ls -la engine/; exit 1; }
           "${bin}/pip" install "${engine_whl}"

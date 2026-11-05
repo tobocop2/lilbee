@@ -348,7 +348,7 @@ jobs:
           echo 'C:\Program Files\Tesseract-OCR' >> "${GITHUB_PATH}"
 
       # Integration tests run real local inference, which now means a real
-      # llama-server. The lilbee-engine wheel ships empty bin/ in this lane
+      # llama-server. The lilbee-engine-llama-cpp wheel ships empty bin/ in this lane
       # (CI fills it only in the release wheel build), so download a prebuilt
       # llama.cpp release binary; resolve_llama_server() finds it on PATH.
       - name: Install llama-server (engine)
@@ -378,7 +378,7 @@ jobs:
 
       # The engine also needs llama-swap (process supervisor / OpenAI proxy) and
       # gguf-parser (footprint estimator), introduced with the llama-swap engine.
-      # The lilbee-engine wheel ships these only in the release build, so build the
+      # The lilbee-engine-llama-cpp wheel ships these only in the release build, so build the
       # pinned versions from source here; resolve_llama_swap()/resolve_gguf_parser()
       # then find them on PATH. Same Go toolchain the release wheel uses.
       - name: Read the pinned Go toolchain

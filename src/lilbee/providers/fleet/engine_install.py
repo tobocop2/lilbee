@@ -21,29 +21,11 @@ class InstallMethod(StrEnum):
     UNKNOWN = "unknown"
 
 
-# Hardware label and index name, one line each in the advice. One index per
-# hardware because the builds are not interchangeable: cpu has every GPU backend
-# off, metal ships only a macOS arm64 wheel, vulkan only Linux and Windows ones.
-_INDEXES: tuple[tuple[str, str], ...] = (
-    ("NVIDIA (CUDA)", "cu125"),
-    ("AMD (ROCm)", "rocm"),
-    ("Apple silicon", "metal"),
-    ("Other GPUs", "vulkan"),
-    ("No GPU", "cpu"),
+_INSTALL_COMMAND = (
+    "To download the engine, run 'lilbee engine install'. "
+    "To use a pack on a computer with no network, copy it into the packs folder "
+    "of the engines folder first."
 )
-_INDEX_URL = "https://lilbee.sh/{index}/"
-_COMMANDS: dict[InstallMethod, str] = {
-    InstallMethod.PIP: "pip install --pre 'lilbee[engine]' --extra-index-url {url}",
-    InstallMethod.UV_ENV: (
-        "uv pip install --prerelease=allow 'lilbee[engine]' --extra-index-url {url}"
-    ),
-    InstallMethod.UV_TOOL: (
-        "uv tool install --force --prerelease=allow 'lilbee[engine]' --extra-index-url {url}"
-    ),
-    InstallMethod.PIPX: (
-        "pipx install --force --pip-args='--pre --extra-index-url {url}' 'lilbee[engine]'"
-    ),
-}
 _BUNDLED_FORMS = (
     "Install a self-contained build again; it carries its own engine: "
     "'brew reinstall lilbee' (Homebrew), 'npm install -g lilbee' (npm launcher), "
@@ -79,30 +61,9 @@ def detect_install_method() -> InstallMethod:
     return InstallMethod.UV_ENV if made_by_uv else InstallMethod.PIP
 
 
-def _index_lines(method: InstallMethod) -> list[str]:
-    template = _COMMANDS[method]
-    return [
-        f"  {label + ':':<15}{template.format(url=_INDEX_URL.format(index=index))}"
-        for label, index in _INDEXES
-    ]
-
-
 def engine_install_hint(method: InstallMethod | None = None) -> str:
     """The advice for installing the engine, for *method* or the detected install."""
     method = detect_install_method() if method is None else method
     if method in (InstallMethod.HOMEBREW, InstallMethod.STANDALONE):
         return f"{_BUNDLED_FORMS} {_BRING_YOUR_OWN}"
-    intro = (
-        "The engine is lilbee's 'engine' extra, published on lilbee.sh rather than "
-        "PyPI, so the index is part of the command:"
-    )
-    if method is InstallMethod.UNKNOWN:
-        blocks = [
-            "With pip:",
-            *_index_lines(InstallMethod.PIP),
-            "With uv:",
-            *_index_lines(InstallMethod.UV_TOOL),
-        ]
-    else:
-        blocks = _index_lines(method)
-    return "\n".join([intro, *blocks, _BUNDLED_FORMS, _BRING_YOUR_OWN])
+    return f"{_INSTALL_COMMAND} {_BUNDLED_FORMS} {_BRING_YOUR_OWN}"

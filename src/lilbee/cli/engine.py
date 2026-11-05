@@ -8,16 +8,20 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.progress import BarColumn, Progress, TextColumn
 from rich.text import Text
 
 from lilbee.app import engine_service
+from lilbee.catalog.models import DownloadProgress
 from lilbee.cli import theme
 from lilbee.cli.app import console, json_out
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.swap_manager import stop_engine
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.engine_lock import build_lock, machine_engine_dir, private_engine_dir
+from lilbee.runtime.progress.columns import literal_text_column
 
 engine_app = typer.Typer(
     name="engine",
@@ -53,18 +57,10 @@ def stop() -> None:
 @engine_app.command("list")
 def list_builds() -> None:
     """List the engine builds installed beside the models."""
-    builds = engine_service.builds()
-    absent = engine_service.not_installed()
+    view = engine_service.engine_list()
+    builds, absent = view.builds, view.not_installed
     if cfg.json_mode:
-        json_out(
-            {
-                "command": "engine list",
-                "builds": [
-                    {"engine": b.engine, "version": b.version, "backend": b.backend} for b in builds
-                ],
-                "not_installed": absent,
-            }
-        )
+        json_out({"command": "engine list", **view.payload()})
         return
     if not builds:
         console.print(engine_service.NO_BUILDS)
@@ -85,7 +81,9 @@ def list_builds() -> None:
 
 @engine_app.command("install")
 def install(
-    name: str = typer.Argument(help="Engine name, as 'lilbee engine roles' shows it."),
+    name: str = typer.Argument(
+        EngineName.LLAMA.value, help="Engine name, as 'lilbee engine roles' shows it."
+    ),
     wheel: Annotated[
         Path | None,
         typer.Option("--wheel", help="Install from this wheel file instead of the packs folder."),
@@ -97,8 +95,24 @@ def install(
             "engine install",
             engine_service.EngineRefusedError(f"{wheel} is not a file. Name a wheel file."),
         )
+    err = PlainConsole(stderr=True)
     try:
-        built = engine_service.install(name, wheel)
+        with Progress(
+            literal_text_column("Downloading {task.description}"),
+            BarColumn(),
+            TextColumn("{task.percentage:>3.0f}%"),
+            literal_text_column("{task.fields[detail]}"),
+            console=err,
+            transient=True,
+        ) as progress:
+            task_id = progress.add_task(name, total=100, detail="")
+
+            def on_update(p: DownloadProgress) -> None:
+                progress.update(task_id, completed=p.percent, detail=p.detail)
+
+            built = engine_service.install(
+                name, wheel, on_update=on_update, on_retry=lambda text: err.print(text)
+            )
     except engine_service.EngineRefusedError as exc:
         raise _refuse("engine install", exc) from exc
     label = f"{built.engine} {built.version} ({built.backend})"

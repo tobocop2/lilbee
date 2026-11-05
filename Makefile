@@ -1,7 +1,7 @@
 .PHONY: lint license-check lint-shell test-shell format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint: lint-shell
-	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
+	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_digests.py tools/build_wheel_indexes.py hatch_build.py
 	uv run python scripts/check_style_rules.py
 	# docs/settings.md is generated from the Config fields; a new setting must
 	# land in the reference with the code that adds it.
@@ -15,7 +15,7 @@ license-check:  ## fail on a GPL or AGPL package in uv.lock (needs the network a
 
 lint-shell:  ## shellcheck the release scripts and actionlint every workflow
 	@if command -v shellcheck >/dev/null; then \
-	  shellcheck -s bash scripts/*.sh tools/ci/*.sh tools/qa/artifact_smoke.sh tests/shell/*.bash tests/shell/stubs/*; \
+	  shellcheck -s bash scripts/*.sh tools/ci/*.sh tools/qa/artifact_smoke.sh tools/qa/find_engine_bin.sh tests/shell/*.bash tests/shell/stubs/*; \
 	else echo "lint-shell: shellcheck is not installed, skipping"; fi
 	# actionlint also shellchecks every inline `run:` block.
 	@if command -v actionlint >/dev/null; then actionlint; \
@@ -26,10 +26,10 @@ test-shell:  ## Run the bats tests for the release scripts
 	bats tests/shell/
 
 format:
-	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
+	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_digests.py tools/build_wheel_indexes.py hatch_build.py
 
 format-check:
-	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
+	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_digests.py tools/build_wheel_indexes.py hatch_build.py
 
 typecheck:
 	uv run mypy src/lilbee/
@@ -39,7 +39,7 @@ typecheck:
 	uv run mypy tools/qa/placement_matrix/ tools/qa/multi_gpu_smoke.py
 	# hatch_build.py builds the PyPI long description, so a break here breaks
 	# the release rather than a test.
-	uv run mypy tools/readme_media.py tools/gen_formats_table.py hatch_build.py
+	uv run mypy tools/readme_media.py tools/gen_formats_table.py tools/gen_engine_digests.py tools/build_wheel_indexes.py hatch_build.py
 
 # A replaced worker deadlocks --dist loadgroup (pytest-dev/pytest-xdist#1378),
 # so a worker that dies fails the run instead.
@@ -61,9 +61,10 @@ imports-check:
 	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data.extract import chunk, code_chunker; from lilbee.data import store, ingest; from lilbee.retrieval import embedder, query"
 
 # The hosted-key tests need the providers extra, which only this job installs.
-# So do the real-types tests, which run the adapter on the library's own response types.
+# Every test that needs the library lives in tests/integration/ and imports it plainly,
+# so a job without the extra fails here and the plain test job never collects them.
 test-integration:
-	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py tests/providers/test_sdk_real_types.py tests/conformance/test_preset_fixtures.py tests/conformance/test_engine_fixtures.py -v
+	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py -v
 
 fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
 	uv run python scripts/qa/tui_fuzz.py smoke

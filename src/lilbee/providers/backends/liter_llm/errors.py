@@ -42,10 +42,10 @@ _KIND_MESSAGES: dict[ProviderErrorKind, str] = {
 
 # liter-llm exception class name -> error kind. Every HTTP status maps to one
 # typed class in liter-llm, and the classes are flat (each subclasses
-# ``LiterLlmError`` directly), so this one table covers all providers. Eight classes
+# ``LiterLlmError`` directly), so this one table covers all providers. Seven classes
 # are not in the table and classify as UNKNOWN (BudgetExceededError, HookRejectedError,
 # IdempotencyConflictError, IdempotencyInFlightError, InternalError,
-# InvalidHeaderError, OutboundForbiddenError, SerializationError). Names, not
+# InvalidHeaderError, SerializationError). Names, not
 # classes, so the table stays importable without the native module.
 _ERROR_KINDS: dict[str, ProviderErrorKind] = {
     "AuthenticationError": ProviderErrorKind.AUTH,
@@ -61,6 +61,16 @@ _ERROR_KINDS: dict[str, ProviderErrorKind] = {
     "StreamingError": ProviderErrorKind.CONNECTION,
     "ServiceUnavailableError": ProviderErrorKind.SERVER,
     "ServerError": ProviderErrorKind.SERVER,
+    "OutboundForbiddenError": ProviderErrorKind.BAD_REQUEST,
+}
+
+# Messages for single exception types that need their own wording. The SDK refuses a
+# preset's connection to a blocked network with ``OutboundForbiddenError``.
+_TYPE_MESSAGES: dict[str, str] = {
+    "OutboundForbiddenError": (
+        "The server for {model} resolves to an address that a server preset cannot use. "
+        "Fix the URL of the preset or pick a different model."
+    ),
 }
 
 # Operation labels prefixed onto the fallback message for an unrecognised error.
@@ -88,6 +98,6 @@ def _provider_error(fallback: str, exc: Exception, model: str) -> ProviderError:
     keep the raw ``{fallback}: {exc}`` shape so nothing is lost when debugging.
     """
     kind = _classify_error(exc)
-    template = _KIND_MESSAGES.get(kind)
+    template = _TYPE_MESSAGES.get(type(exc).__name__) or _KIND_MESSAGES.get(kind)
     message = template.format(model=model) if template is not None else f"{fallback}: {exc}"
     return ProviderError(message, provider=_PROVIDER_NAME, kind=kind)

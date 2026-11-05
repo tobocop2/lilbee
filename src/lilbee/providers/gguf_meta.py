@@ -7,6 +7,7 @@ metadata is available to any provider without loading a model into the engine.
 from __future__ import annotations
 
 import contextlib
+import enum
 import hashlib
 import json
 import logging
@@ -87,13 +88,18 @@ def train_ctx_from_meta(
 
 _METADATA_CACHE: dict[tuple[str, int, int], dict[str, str] | None] = {}
 _METADATA_CACHE_LOCK = threading.Lock()
+# Files this process asked about while no parser could answer. Kept apart from
+# the answers so an engine install can drop them and leave the answers alone.
+_UNANSWERED: set[tuple[str, int, int]] = set()
 
 # Bump when the extracted field set changes, or when the reader does, so old
 # entries are ignored rather than served stale. Version 2 reads through
 # gguf-parser: entries written by version 1 recorded "no metadata" for files
 # whose tensor type gguf-py did not know, and the key is (path, mtime, size),
 # so an unchanged file would keep serving that answer after the upgrade.
-_DISK_CACHE_VERSION = 2
+# Version 3: reads made with no parser, or where the parser did not run, were
+# cached as "no metadata" and indistinguishable from the parser's own answer.
+_DISK_CACHE_VERSION = 3
 _DISK_CACHE_DIRNAME = "gguf-meta"
 # Distinguishes "no entry on disk" from a cached "this file has no metadata".
 _DISK_MISS = object()
@@ -168,6 +174,8 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
             if key in _METADATA_CACHE:
                 cached = _METADATA_CACHE[key]
                 return dict(cached) if cached is not None else None
+            if key in _UNANSWERED:
+                return None
         from_disk = _disk_cache_load(key)
         if from_disk is not _DISK_MISS:
             entry = cast("dict[str, str] | None", from_disk)
@@ -175,11 +183,23 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
                 _METADATA_CACHE[key] = entry
             return dict(entry) if entry is not None else None
     result = _read_gguf_metadata_uncached(model_path)
+    if isinstance(result, _Unasked):
+        # No parser answered: remember it for this process only, never on disk.
+        if key is not None:
+            with _METADATA_CACHE_LOCK:
+                _UNANSWERED.add(key)
+        return None
     if key is not None:
         with _METADATA_CACHE_LOCK:
             _METADATA_CACHE[key] = result
         _disk_cache_store(key, result)
     return dict(result) if result is not None else None
+
+
+def forget_unanswered_reads() -> None:
+    """Drop the reads no parser answered, so the next read asks the parser again."""
+    with _METADATA_CACHE_LOCK:
+        _UNANSWERED.clear()
 
 
 # Array values report as ``{type, len, startOffset}`` rather than their contents,
@@ -204,10 +224,17 @@ class _Scalar(NamedTuple):
     is_string: bool
 
 
+class _Unasked(enum.Enum):
+    """Marks a read where no parser ran, so there is nothing to cache."""
+
+    NO_PARSER_ANSWER = enum.auto()
+
+
 def _kv_via_parser(model_path: Path) -> dict[str, _Scalar] | None:
     """Every scalar metadata key in *model_path*, read by the engine's own parser.
 
-    Returns ``None`` when there is no parser to ask.
+    Returns ``None`` when there is no parser to ask or the parser did not run, and
+    ``{}`` when it ran and rejected the file.
 
     gguf-parser is built from the pin that builds llama-server, so the tensor
     types it accepts are the ones the engine can decode. gguf-py carries its own
@@ -262,8 +289,11 @@ def _scalars(model_path: Path) -> dict[str, _Scalar]:
     return _kv_via_parser(model_path) or {}
 
 
-def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None:
-    kv = _scalars(model_path)
+def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None | _Unasked:
+    """The fields read from *model_path*, or ``_Unasked`` when the parser gave no answer."""
+    kv = _kv_via_parser(model_path)
+    if kv is None:
+        return _Unasked.NO_PARSER_ANSWER
     result: dict[str, str] = {}
 
     arch_field = kv.get(GGUF_ARCH_KEY)
@@ -326,6 +356,11 @@ def find_mmproj_for_model(model_path: Path) -> Path:
         "model through the catalog to get both files.",
         provider="llama-server",
     )
+
+
+def needs_sidecar_projector(model_path: Path) -> bool:
+    """False for a model folder, which holds its own vision weights; True for a GGUF."""
+    return not model_path.is_dir()
 
 
 def read_mmproj_projector_type(mmproj_path: Path) -> str | None:

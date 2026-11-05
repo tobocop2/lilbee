@@ -757,10 +757,10 @@ class TestShowModel:
 
 
 class TestGetCapabilities:
-    def test_returns_backend_capabilities_list(self) -> None:
-        backend = FakeBackend(show_model_result={"capabilities": ["completion", "vision"]})
+    def test_returns_backend_capabilities_without_vision(self) -> None:
+        backend = FakeBackend(show_model_result={"capabilities": ["completion", "vision", "tools"]})
         provider = SdkLLMProvider(backend)
-        assert provider.get_capabilities("ollama/m") == ["completion", "vision"]
+        assert provider.get_capabilities("ollama/m") == ["completion", "tools"]
 
     def test_empty_when_show_model_returns_none(self) -> None:
         backend = FakeBackend(show_model_result=None)

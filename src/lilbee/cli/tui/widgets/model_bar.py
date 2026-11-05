@@ -40,6 +40,7 @@ from lilbee.cli.tui.widgets.model_pick import apply_model_pick, config_key_for_s
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.security import FileLockUnavailableError
+from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
@@ -137,11 +138,14 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
         from lilbee.catalog.query import reclassify_by_name
 
+        loadable = set(loadable_refs(m.ref for m in manifests))
         for manifest in manifests:
             ref = manifest.ref
             if _is_mmproj(manifest.gguf_filename) or ref in seen:
                 continue
             task = reclassify_by_name(ref, manifest.task)
+            if task == ModelTask.CHAT and ref not in loadable:
+                continue
             label = _native_label(
                 manifest.hf_repo, manifest.gguf_filename, repo_counts[manifest.hf_repo]
             )

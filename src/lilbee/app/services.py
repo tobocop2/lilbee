@@ -364,7 +364,8 @@ def peek_services() -> Services | None:
 
 
 def answer_provider_waiters() -> None:
-    """Answer the callers that wait on the cached provider, now and later."""
+    """Mark the server as stopping and answer the callers that wait on the provider."""
+    _server_exit.mark_stopping()
     services = peek_services()
     if services is not None:
         services.provider.stop_waiting()
@@ -382,9 +383,9 @@ def reset_services() -> None:
     Swap the module reference to ``None`` *before* tearing the old instances
     down, so a new caller never observes a half-closed container. The swap is
     locked so concurrent callers (a signal's teardown thread plus an exiting
-    one) tear the container down exactly once. On the shared HTTP daemon every
-    entry point that would call this mid-flight is refused, so it only ever
-    runs single-client (CLI, TUI, stdio MCP).
+    one) tear the container down exactly once. On ``lilbee serve``, SIGTERM and
+    SIGHUP run it on the signal's teardown thread while requests are still
+    open; SIGINT and the shutdown route run it after those requests end.
     """
     with _reset_swap_lock:
         old = _state.singleton
@@ -439,9 +440,15 @@ class _ServerExit:
 
     def __init__(self) -> None:
         self._hook: Callable[[int], None] | None = None
+        self.stopping = False
 
     def set(self, hook: Callable[[int], None] | None) -> None:
         self._hook = hook
+        if hook is not None:
+            self.stopping = False
+
+    def mark_stopping(self) -> None:
+        self.stopping = True
 
     def request(self, status: int) -> bool:
         """Run the hook with the exit *status*; False when no server registered one."""
@@ -457,6 +464,11 @@ _server_exit = _ServerExit()
 def set_server_exit_hook(hook: Callable[[int], None] | None) -> None:
     """Register the running server's graceful-exit callback (None clears it)."""
     _server_exit.set(hook)
+
+
+def server_is_stopping() -> bool:
+    """Whether the running server has begun to stop."""
+    return _server_exit.stopping
 
 
 def request_server_exit(status: int = 0) -> bool:

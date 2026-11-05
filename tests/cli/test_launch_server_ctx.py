@@ -10,6 +10,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import EngineBackend, WorkerRole
+from tests._stated_sizes import state_size
 
 
 def _health(monkeypatch, body: dict) -> None:
@@ -147,20 +148,19 @@ def test_planned_chat_ctx_sizes_a_local_model_the_way_the_fleet_does(monkeypatch
 
 
 @pytest.mark.no_warm_default
-def test_planned_chat_ctx_sizes_against_the_gpu_the_fleet_will_use(monkeypatch, tmp_path):
+def test_planned_chat_ctx_sizes_against_the_gpu_the_fleet_will_use(
+    monkeypatch, tmp_path, stated_sizes
+):
     # The advertised window has to be the one the fleet will serve. Sized against
     # host memory instead, an 8 GiB card is told to expect the whole trained
     # window and the client trims history to a window it never gets.
-    import os
-
     from lilbee.cli.launchers import server as launch_mod
     from lilbee.core.config.enums import KvCacheType
     from lilbee.providers.fleet import planning as planning_mod
     from lilbee.providers.fleet.devices import FleetDevice
 
     gguf = tmp_path / "chat.gguf"
-    gguf.touch()
-    os.truncate(gguf, 2 * 1024**3)
+    state_size(gguf, 2 * 1024**3)
     meta = {
         "architecture": "qwen3",
         "block_count": "36",

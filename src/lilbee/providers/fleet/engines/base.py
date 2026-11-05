@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.adapters import RoleServerSpec
@@ -57,6 +57,7 @@ class LaunchRequest:
     memory_endpoint: bool = False
     fit_target_mib: tuple[int, ...] = ()
     kv_unified_per_slot: int | None = None
+    target: RoleTarget = RoleTarget.GPU
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,8 @@ class RequestProfile:
     """What to tell the user when embedding vectors do not decode."""
     reasoning_field: str
     """The response field that carries reasoning text apart from the answer."""
+    structured_output: bool = True
+    """Whether the server enforces ``response_format``; if not, the client drops or refuses it."""
     rerank_path: str | None = None
     """The route that scores a query against texts, or None to rank through embeddings."""
     batch_limit: int | None = None
@@ -100,6 +103,8 @@ class EngineAdapter(Protocol, Hashable):
     executable, ``discover_devices`` probes it, ``estimate_memory`` sizes a
     plan, ``role_spec`` and ``launch_argv`` build each command line, and
     ``check_readback`` says whether the running instance reports its memory.
+    ``device_targets`` runs after ``binary()``, before ``launch_argv``, and only
+    for a role that names a target other than gpu.
     """
 
     @property
@@ -111,7 +116,7 @@ class EngineAdapter(Protocol, Hashable):
     architectures: frozenset[str]
     served_roles: frozenset[WorkerRole]
     memory_kind: MemoryKind
-    """How far this engine's memory figures can be trusted, known without an estimate."""
+    """A fixed reserve's figure does not follow the window and has no share per card."""
     bundled: bool
     """Whether the engine ships in the package, so it needs no build in the engine store."""
     takes_device_names: bool
@@ -136,6 +141,10 @@ class EngineAdapter(Protocol, Hashable):
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]: ...
 
     def discover_devices(self, binary: Path) -> DeviceProbe: ...
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        """The targets *binary* can run a role on; ``launch_argv`` writes their flags."""
+        ...
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         """Size one instance; ``per_device`` follows a ratio only if ``launch_argv`` honours it."""
@@ -163,6 +172,10 @@ class EngineAdapter(Protocol, Hashable):
 
     def runtime_env(self) -> Mapping[str, str]:
         """Extra environment variables for a spawned engine process."""
+        ...
+
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+        """Environment variables that pin a process to *target*, beyond ``launch_argv`` flags."""
         ...
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]: ...

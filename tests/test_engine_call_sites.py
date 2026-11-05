@@ -96,6 +96,9 @@ class SpyEngine(BundledFakeAdapter):
     def runtime_env(self) -> Mapping[str, str]:
         return SPY_ENV
 
+    def target_env(self, target: Any) -> Mapping[str, str]:
+        return {}
+
     def swap_extras(self, launch: Any) -> Mapping[str, Any]:
         return SPY_EXTRAS
 
@@ -181,15 +184,113 @@ class TestDeviceReads:
         assert spy.probed == [spy.binary()]
 
     def test_gpu_device_count_counts_the_engine_devices(self, spy: SpyEngine) -> None:
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
         two = SpyEngine(
             spy.binary(), devices=(SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))
         )
         assert replicas.gpu_device_count(two) == 2
 
     def test_gpu_device_count_is_one_without_an_engine_binary(self, spy: SpyEngine) -> None:
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
         assert replicas.gpu_device_count(_binaryless(spy)) == 1
+
+    def test_gpu_device_count_reads_the_cards_again_once_the_binary_is_installed(
+        self, spy: SpyEngine
+    ) -> None:
+        """A count read with no binary is not kept: the engine counts its cards once installed."""
+
+        class LateBinary(SpyEngine):
+            installed = False
+
+            def binary(self) -> Path:
+                if not self.installed:
+                    raise ProviderError("spy binary missing", provider="spy")
+                return super().binary()
+
+        late = LateBinary(
+            spy.binary(), devices=(SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))
+        )
+        replicas._probed_gpu_count.cache_clear()
+        assert replicas.gpu_device_count(late) == 1
+        late.installed = True
+        assert replicas.gpu_device_count(late) == 2
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_gpu_device_count_is_one_when_the_engine_cannot_load(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sizing read needs no engine: a missing DLL sizes as a GPU-less host."""
+        from lilbee.providers.fleet.devices import EngineDllMissingError
+
+        def cannot_load(_binary: Path, _engine: object) -> None:
+            raise EngineDllMissingError("DLL missing", provider="llama")
+
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr(planning, "resolve_devices", cannot_load)
+        assert replicas.gpu_device_count(spy) == 1
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_gpu_device_count_is_one_when_the_engine_dies_on_an_illegal_instruction(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A build this CPU cannot run sizes as a GPU-less host, as a missing DLL does."""
+        from lilbee.providers.fleet.devices import EngineIllegalInstructionError
+
+        def cannot_run(_binary: Path, _engine: object) -> None:
+            raise EngineIllegalInstructionError("illegal instruction", provider="llama")
+
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr(planning, "resolve_devices", cannot_run)
+        assert replicas.gpu_device_count(spy) == 1
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_gpu_device_count_reads_the_cards_again_once_the_runtime_is_installed(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A count read while the DLL was missing is not kept: a live process sees both cards."""
+        from lilbee.providers.fleet.devices import EngineDllMissingError
+
+        def cannot_load(_binary: Path, _engine: object) -> None:
+            raise EngineDllMissingError("DLL missing", provider="llama")
+
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr(planning, "resolve_devices", cannot_load)
+        assert replicas.gpu_device_count(spy) == 1
+        two_cards = [SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4)]
+        monkeypatch.setattr(planning, "resolve_devices", lambda _binary, _engine: two_cards)
+        assert replicas.gpu_device_count(spy) == 2
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_a_sync_that_needs_no_engine_plans_with_an_engine_that_cannot_load(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sync on an empty library starts no engine, so a missing DLL must not stop its plan."""
+        from lilbee.data.ingest import fanout
+        from lilbee.providers.fleet.devices import EngineDllMissingError
+
+        def cannot_load(_binary: Path, _engine: object) -> None:
+            raise EngineDllMissingError("DLL missing", provider="llama")
+
+        services = SimpleNamespace(
+            engines=SimpleNamespace(for_role=lambda _role: SimpleNamespace(adapter=spy))
+        )
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr("lilbee.app.services._state.singleton", services)
+        monkeypatch.setattr(planning, "resolve_devices", cannot_load)
+        assert fanout.plan_fanout() == []
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_gpu_device_count_still_raises_a_wedged_probe(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def wedged(_binary: Path, _engine: object) -> None:
+            raise ProviderError("probe timed out", provider="llama")
+
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr(planning, "resolve_devices", wedged)
+        with pytest.raises(ProviderError, match="probe timed out"):
+            replicas.gpu_device_count(spy)
+        replicas._probed_gpu_count.cache_clear()
 
     def test_probed_devices_and_backend_come_from_the_engine(self, spy: SpyEngine) -> None:
         assert planning.probed_devices(spy) == (SPY_DEVICE,)
@@ -697,6 +798,73 @@ class TestProvider:
         provider._reload_pass()
         warnings = self._no_engine_warnings(routing)
         assert [code for code, _ in warnings] == [WarningCode.ENGINE_FALLBACK]
+
+
+class TestProviderCallersAskTheRoleEngine:
+    """Chat on the host engine and the other roles on a spy: a caller must ask the role's own."""
+
+    @pytest.fixture
+    def mixed(self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+        book = {**engines_for_all_roles(spy), WorkerRole.CHAT: LLAMA}
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(book, {}))
+        monkeypatch.setattr(planning, "snapshot_engine", lambda engines: LLAMA)
+
+    def test_supports_rerank_asks_the_rerank_engine(
+        self, spy: SpyEngine, mixed: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(type(spy), "served_roles", frozenset({WorkerRole.EMBED}))
+        assert WorkerRole.RERANK in LLAMA.served_roles
+        assert FleetProvider().supports_rerank() is False
+
+    def test_supports_rerank_is_false_when_no_engine_holds_the_rerank_role(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        book = {WorkerRole.CHAT: LLAMA}
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(book, {}))
+        assert FleetProvider().supports_rerank() is False
+
+    def test_embed_token_cap_reads_the_model_with_the_embed_engine(
+        self, spy: SpyEngine, mixed: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        FleetProvider().embed_token_cap()
+        assert spy.meta_paths
+
+    def test_embed_token_cap_is_none_when_the_embed_role_has_no_engine(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        book = {WorkerRole.CHAT: LLAMA}
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(book, {}))
+        assert FleetProvider().embed_token_cap() is None
+
+    def test_the_placeable_check_asks_each_role_engine_and_the_total_asks_the_host(
+        self, spy: SpyEngine, mixed: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import lilbee.providers.fleet.provider as prov_mod
+
+        asked: dict[WorkerRole, Any] = {}
+        totals: list[Any] = []
+
+        def _placeable(role: WorkerRole, model: str, total: int, *, engine: Any) -> bool:
+            asked[role] = engine
+            return True
+
+        plan = SimpleNamespace(
+            launches=[SimpleNamespace(role=role) for role in (WorkerRole.CHAT, WorkerRole.EMBED)],
+            skipped_not_installed={},
+            refused_roles={},
+        )
+        monkeypatch.setattr(planning, "plan_all_launches", lambda **_k: plan)
+        monkeypatch.setattr(planning, "role_model_placeable", _placeable)
+        monkeypatch.setattr(
+            planning, "placeable_total_vram", lambda engine: totals.append(engine) or 1
+        )
+        monkeypatch.setattr(prov_mod, "_configured_model_for", lambda role: "ref")
+        monkeypatch.setattr(prov_mod, "_demanded_chat_ctx", lambda launches, pairs: 0)
+        monkeypatch.setattr(prov_mod, "_demanded_vision_slots", lambda pairs: 0)
+        prov_mod._placeable_demand(LLAMA, {**engines_for_all_roles(spy), WorkerRole.CHAT: LLAMA})
+        assert asked == {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: spy}
+        assert totals == [LLAMA]
 
 
 class TestSelfCheck:

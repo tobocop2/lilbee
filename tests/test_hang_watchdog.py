@@ -186,6 +186,7 @@ def test_hung_test_dumps_stacks_to_the_job_log_before_its_timeout(
 def test_a_failed_test_whose_teardown_blocks_ends_at_the_backstop(
     tmp_path: Path, extra: tuple[str, ...], dump_name: str
 ) -> None:
+    (tmp_path / "conftest.py").write_text(_ARM_AFTER_A_REPORT, encoding="utf-8")
     result, dump_dir = _run_pytest(
         tmp_path, _FAILED_THEN_WEDGED, *extra, backstop_s=_TEARDOWN_BACKSTOP_S
     )

@@ -19,7 +19,7 @@ from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet import devices, host_caps, swap_config
+from lilbee.providers.fleet import devices, engine_manifest, host_caps, swap_config
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
@@ -33,7 +33,7 @@ from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.host_caps import CardMemory
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
 
 L4 = ("NVIDIA L4", (8, 9))
@@ -59,10 +59,8 @@ def caps(
     return host_caps.collect(
         system=system,
         machine=machine,
-        mac_ver="15.1" if system == "Darwin" else "",
         cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
         nvml=nvml,
-        npu_devices=[],
     )
 
 
@@ -163,7 +161,7 @@ def test_chat_and_vision_serve_on_the_cpu_with_the_cpu_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
-    for role in (WorkerRole.CHAT, WorkerRole.VISION):
+    for role, subcommand in ((WorkerRole.CHAT, "text"), (WorkerRole.VISION, "multimodal")):
         spec = MISTRAL.role_spec(role, None, None)
         argv = MISTRAL.launch_argv(spec, request(tmp_path))
         assert argv == [
@@ -173,6 +171,7 @@ def test_chat_and_vision_serve_on_the_cpu_with_the_cpu_build(
             "127.0.0.1",
             "--port",
             PORT_SLOT,
+            subcommand,
             "--cpu",
             "-m",
             str(tmp_path / "model"),
@@ -215,7 +214,9 @@ def test_the_swap_command_puts_the_port_before_the_subcommand(
 ) -> None:
     argv = MISTRAL.launch_argv(MISTRAL.role_spec(role, None, None), request(tmp_path))
     words = _split_like_the_swap(swap_config._command_line(argv, 4321))
-    assert words.index("--port") < (words.index("embedding") if "embedding" in words else 99)
+    assert words.index("--port") < words.index(
+        {WorkerRole.EMBED: "embedding", WorkerRole.VISION: "multimodal"}.get(role, "text")
+    )
     assert words[words.index("--port") + 1] == "4321"
     assert words.count("--port") == 1
     assert words[:2] == [str(tmp_path / "mistralrs"), "serve"]
@@ -376,7 +377,7 @@ def test_the_engine_counts_as_installed_only_with_a_record_and_finds_its_tool(
     publish(monkeypatch, EngineName.MISTRAL, sha)
     pin = MISTRAL.pin_record()
     assert (pin["engine"], pin["backend"]) == ("mistral.rs", "cpu")
-    lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha)
+    lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha, "mistralrs")
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, tmp_path / "pack.whl")
     assert EngineName.MISTRAL in installed_engines()
     assert MISTRAL.binary().parts[-3:] == ("pkg", "bin", "mistralrs")
@@ -384,6 +385,7 @@ def test_the_engine_counts_as_installed_only_with_a_record_and_finds_its_tool(
 
 def test_a_pin_with_no_published_pack_refuses_a_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
     with pytest.raises(NoPublishedPackError, match=r"No pack of mistral\.rs is published yet\."):
         pin_lock(MISTRAL.pin_record())
 
@@ -506,3 +508,30 @@ def test_rerank_is_refused_for_the_engine_before_its_install_is_read(
     with pytest.raises(engine_service.EngineRefusedError, match="does not serve rerank") as raised:
         engine_service.use_for_role(WorkerRole.RERANK, "org/repo/file.gguf", "mistral.rs")
     assert "chat, embed and vision" in str(raised.value)
+
+
+def test_binary_on_a_host_with_no_cell_says_the_engine_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    row = {"url": "https://example.test/x.whl", "sha256": "b" * 64, "size": 1, "min_os": None}
+    record = {**MISTRAL.pin_record(), "sha256": "a" * 64, "platforms": {"macos-arm64-cpu": row}}
+    monkeypatch.setattr(MISTRAL, "pin_record", lambda: record)
+    monkeypatch.setattr(cfg, "models_dir", tmp_path)
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
+    with pytest.raises(ProviderError, match="not installed"):
+        MISTRAL.binary()
+
+
+@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION])
+@pytest.mark.parametrize("target", [RoleTarget.CPU, RoleTarget.GPU])
+def test_device_flags_follow_the_subcommand(
+    role: WorkerRole, target: RoleTarget, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before the subcommand the engine ignores --cpu (20536 MiB measured)."""
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
+    spec = MISTRAL.role_spec(role, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, target=target))
+    subcommand = argv.index(
+        {WorkerRole.EMBED: "embedding", WorkerRole.VISION: "multimodal"}.get(role, "text")
+    )
+    assert argv.index("--cpu") == subcommand + 1

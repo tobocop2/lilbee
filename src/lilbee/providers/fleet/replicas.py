@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
@@ -38,22 +40,35 @@ def resolve_replica_count(role: WorkerRole, device_count: int) -> int:
     return getattr(cfg, knob) or max(_MIN_REPLICAS, device_count)
 
 
-@functools.cache
 def gpu_device_count(engine: EngineAdapter) -> int:
-    """Effective GPU count *engine* will use; fixed per engine for the process lifetime (cached).
+    """Effective GPU count *engine* will use, floored at one.
 
-    Resolved the same way planning does (binary ``--list-devices`` view), and
-    floored at one so auto means "one replica" on a GPU-less host. Returns one
-    when the engine binary is absent so callers that size concurrency (e.g.
-    ingest) degrade gracefully instead of raising.
+    Counts the devices auto placement packs, so a shared-memory GPU beside a dedicated
+    card adds no replica. An engine with no binary, or a binary that cannot load, sizes
+    as GPU-less: the paths that start the engine raise on their own. Neither count is
+    kept, so a process that outlives the fix counts its cards again.
     """
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.fleet.planning import resolve_devices
+    from lilbee.providers.fleet.devices import EngineDllMissingError, EngineIllegalInstructionError
 
     try:
         binary = engine.binary()
     except ProviderError:
         log.debug("engine binary not found; treating host as GPU-less for replica sizing")
         return _MIN_REPLICAS
-    devices = resolve_devices(binary, engine)
-    return max(_MIN_REPLICAS, len(devices))
+    try:
+        return _probed_gpu_count(engine, binary)
+    except (EngineDllMissingError, EngineIllegalInstructionError):
+        log.debug("engine cannot load; sizing for a GPU-less host")
+        return _MIN_REPLICAS
+
+
+@functools.cache
+def _probed_gpu_count(engine: EngineAdapter, binary: Path) -> int:
+    """Count *engine*'s packable devices once per process (cached); a missing DLL raises uncached.
+
+    Resolved the same way planning does (binary ``--list-devices`` view).
+    """
+    from lilbee.providers.fleet.planning import packable_devices, resolve_devices
+
+    return max(_MIN_REPLICAS, len(packable_devices(resolve_devices(binary, engine))))
