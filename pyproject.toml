@@ -87,17 +87,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The bundled llama-server and gguf-parser. Not a hard dependency because the
-# distribution is published on lilbee.sh rather than PyPI, and a hard reference
-# to a name PyPI answers 404 for made the documented install command backtrack
-# to a months-old release that predated it. Installing without this leaves a
-# working lilbee that says what to install the moment it needs an engine.
-# The floor is below every published engine wheel (they carry lilbee's own
-# version), so it never excludes a real release; its jobs are to keep the
-# in-repo 0.0.0 stub from satisfying an index install and, because the
-# specifier names a pre-release, to let plain `pip` resolve the beta-versioned
-# wheels without `--pre`.
-engine = ["lilbee-engine-llama-cpp>=0.6.90b1"]
 providers = ["liter-llm>=2.5.0,<3"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 # playwright installs the headless Chromium shell that browser-mode crawls launch.
@@ -137,30 +126,20 @@ packages = ["src/lilbee"]
 
 # Dev resolves the bundled engine from the in-repo wheel package; CI fills its
 # bin/ with the self-contained llama-server + llama-swap + gguf-parser before
-# building. Release installs (`pip install lilbee`) resolve `lilbee-engine-llama-cpp` from
-# the index instead -- this source override is workspace metadata, not published deps.
+# building. A release install (`pip install lilbee`) does not depend on the engine wheel:
+# lilbee downloads an engine pack. This source override is workspace metadata.
 [tool.uv.sources]
 lilbee-engine-llama-cpp = { path = "packaging/engine-wheel" }
-
-# `uv pip install <checkout>[engine] --extra-index-url ...` applies the source
-# above no matter the specifier (uv drops version bounds on sourced packages),
-# so it silently installed the binariless stub where the deployment wanted the
-# real engine wheel. This turns sources off for the `uv pip` interface only:
-# that command now resolves lilbee-engine-llama-cpp from the index, while `uv sync` /
-# `uv lock` (the project interface) keep using the stub.
-[tool.uv.pip]
-no-sources = true
 
 [dependency-groups]
 # Builds the PEP 503 indexes behind lilbee.sh (tools/build_wheel_indexes.py).
 index = ["dumb-pypi==1.15.0"]
 dev = [
     {include-group = "index"},
-    # The bundled engine is an optional extra for users, because the wheel is
-    # published on lilbee.sh rather than PyPI and a hard reference to a name
-    # PyPI answers 404 for breaks the documented install. Development and CI
-    # still need it: the pin test reads its metadata, and the local source
-    # below makes it a workspace path rather than an index lookup.
+    # The engine wheel is published on lilbee.sh rather than PyPI, so no
+    # runtime dependency names it. Development and CI need it: the pin test
+    # reads its metadata, and the local source above makes it a workspace path
+    # rather than an index lookup.
     "lilbee-engine-llama-cpp",
     # The saved-page names and their tests parse addresses with ada-url, which
     # otherwise only the crawler and release extras install.

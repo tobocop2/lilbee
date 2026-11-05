@@ -81,8 +81,8 @@ def assert_engine_can_load(
 
     Anything that is not a tensor failure (a 404, DNS, an expired token) is not a
     verdict: the probe stays quiet and lets the download report the real problem,
-    which is how the architecture probe already degrades. An install without the
-    engine extra has no parser to ask, and must still be able to pull.
+    which is how the architecture probe already degrades. An install with no
+    engine yet has no parser to ask, and must still be able to pull.
     """
     try:
         parser = resolve_gguf_parser()
