@@ -303,6 +303,9 @@ class LilbeeApp(App[None]):
     # Production never sets it. See tests/_lilbee_app_test_host.py.
     _test_skip_auto_init: ClassVar[bool] = False
 
+    # Keys pressed while the startup gate showed; the chat prompt takes them on show.
+    type_ahead: str = ""
+
     async def on_mount(self) -> None:
         # The app's own signal graph is part of being a working app, not
         # "heavyweight auto-init": wiring it before the test-skip guard lets a
@@ -384,6 +387,7 @@ class LilbeeApp(App[None]):
             if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
                 self.switch_view(self._initial_view)
         else:
+            self.type_ahead = ""
             self.switch_view(msg.CATALOG_VIEW)
         # Cheap detection only: filesystem walk + hash compare. The user
         # initiates sync explicitly via S or the command palette.
@@ -640,15 +644,15 @@ class LilbeeApp(App[None]):
         stream) get the cancel-first treatment; a background task like an
         engine warm or a sync never swallows a quit.
         """
-        get_services().cancel_inference()
-
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.screen
         if isinstance(screen, ChatScreen) and screen.streaming and not screen.stopping:
+            # The turn sets its stop flag first, then severs the stream.
             screen.action_cancel_stream()
             self.notify(msg.APP_QUIT_AGAIN_HINT)
             return
+        get_services().cancel_inference()
         self.exit()
 
     def _view_is_refused(self, view_name: str) -> bool:
@@ -759,8 +763,12 @@ class LilbeeApp(App[None]):
         # screen/app bindings see them (verified empirically: this holds for
         # priority bindings too), so `t`/`m` type literals there and the guard
         # exists purely to keep the footer honest.
-        if action in ("open_tasks", "open_catalog", "open_chat") and isinstance(
-            self.focused, (Input, TextArea)
+        # run_sync (S) is a priority binding. Live at the gate, it swaps chat in
+        # under the gate, which then skips its handover. Off, the gate keeps the
+        # key as typed text.
+        if (action == "run_sync" and self._gate_is_showing()) or (
+            action in ("open_tasks", "open_catalog", "open_chat")
+            and isinstance(self.focused, (Input, TextArea))
         ):
             return False
         # Nothing to jump to when Chat is already the active view.
@@ -781,6 +789,12 @@ class LilbeeApp(App[None]):
         if action == "toggle_sessions" and self._toggle_sessions_is_noop():
             return False
         return super().check_action(action, parameters)
+
+    def _gate_is_showing(self) -> bool:
+        """True while the startup gate is the screen on top."""
+        from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+        return isinstance(self.screen, StartupGate)
 
     def go_back(self) -> None:
         """Return to the view the user came from (Chat when there is none)."""

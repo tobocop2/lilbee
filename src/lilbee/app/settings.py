@@ -498,6 +498,8 @@ def apply_settings_update(
         raise
     _invalidate_caches(set(effective_updates))
     reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & set(updates))
+    if reindex_required:
+        reindex_required = _index_has_chunks()
     if embed_in_batch:
         reindex_required = reindex_required or _embed_reindex_required()
     return SettingsUpdateResult(
@@ -575,6 +577,17 @@ def _inert_reindex_keys() -> set[str]:
     while ``layout_detection`` is off is not worth a rebuild.
     """
     return set() if cfg.layout_detection else {"table_model"}
+
+
+def _index_has_chunks() -> bool:
+    """False only when a live store holds no chunk; with no services built, assume it does.
+
+    A settings write must not build the services (and their engines) to answer this.
+    """
+    from lilbee.app.services import peek_services
+
+    services = peek_services()
+    return services is None or services.store.has_chunks()
 
 
 def _embed_reindex_required() -> bool:

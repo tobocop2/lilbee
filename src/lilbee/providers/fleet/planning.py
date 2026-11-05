@@ -773,7 +773,7 @@ def chat_cache_type_flag() -> str | None:
     return None if kind is KvCacheType.F16 else kind.value
 
 
-def _vision_mmproj(model_ref: str) -> Path | None:
+def vision_mmproj(model_ref: str) -> Path | None:
     """Resolve a vision model's mmproj sidecar, or ``None`` if absent."""
     from lilbee.providers.base import ProviderError
     from lilbee.providers.gguf_meta import find_mmproj_for_model
@@ -803,7 +803,7 @@ def _estimate_role(
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     path = engine_params.resolve_model_path(model_ref)
-    mmproj = _vision_mmproj(model_ref) if role is WorkerRole.VISION else None
+    mmproj = vision_mmproj(model_ref) if role is WorkerRole.VISION else None
     meta = read_gguf_metadata(path)
     # Size the single-instance footprint against the placement reserve (a usable
     # KV floor for chat), so a model that fits weights-only on one card but not
@@ -918,7 +918,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
     def estimate_peak(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
         path = engine_params.resolve_model_path(model_refs[role])
         meta = read_gguf_metadata(path)
-        mmproj = _vision_mmproj(model_refs[role]) if role is WorkerRole.VISION else None
+        mmproj = vision_mmproj(model_refs[role]) if role is WorkerRole.VISION else None
         slots = _placement_estimate_slots(role, meta)
         ctx = _placement_estimate_ctx(role, path, meta)
         rerank_mode = _role_rerank_mode(role, meta)
@@ -991,7 +991,7 @@ def _role_weights_bytes(role: WorkerRole, ref: str) -> int:
     try:
         size = _weights_bytes(engine_params.resolve_model_path(ref))
         if role is WorkerRole.VISION:
-            mmproj = _vision_mmproj(ref)
+            mmproj = vision_mmproj(ref)
             if mmproj is not None:
                 size += int(mmproj.stat().st_size)
     except (ProviderError, OSError):
@@ -1095,7 +1095,7 @@ def _vision_without_mmproj(role: WorkerRole, ref: str) -> bool:
 
     The skip would silently disable OCR; the warning names the cause and the fix.
     """
-    if role is not WorkerRole.VISION or _vision_mmproj(ref) is not None:
+    if role is not WorkerRole.VISION or vision_mmproj(ref) is not None:
         return False
     log.warning(
         "Vision model %s has no mmproj (CLIP projector); OCR is disabled. "
@@ -1655,7 +1655,7 @@ def _launch_for(
     placed_device = chosen[0] if len(chosen) == 1 else None
     is_chat = plan.role is WorkerRole.CHAT
     is_vision = plan.role is WorkerRole.VISION
-    mmproj = _vision_mmproj(model_ref) if is_vision else None
+    mmproj = vision_mmproj(model_ref) if is_vision else None
     chat_on_network_fs = is_chat and is_network_path(model_path)
     if chat_on_network_fs and not _chat_no_mmap(weights_bytes, on_network_fs=True):
         log.warning(

@@ -3564,6 +3564,17 @@ async def test_chat_slash_set_nullable_none():
         assert cfg.temperature is None
 
 
+async def test_chat_slash_set_refused_list_value_reads_for_users():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("force_ocr_pages 0")
+        text = str(mock_notify.call_args_list[0].args[0])
+        assert "page numbers start at 1" in text
+        assert "validation error" not in text
+        assert mock_notify.call_args_list[0].kwargs["severity"] == "error"
+
+
 async def test_chat_slash_set_unknown_key():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -13396,6 +13407,35 @@ async def test_app_action_quit_when_streaming():
             mock_cancel.assert_called_once()
         # The two-step is discoverable: the cancel toast says how to quit.
         assert any("Ctrl+C" in str(c.args[0]) for c in mock_notify.call_args_list)
+
+
+async def test_app_action_quit_sets_the_stop_before_it_severs_the_stream():
+    """A live turn sees its stop flag before the engine call is cut."""
+    from lilbee.app.services import get_services
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ChatScreen)
+        screen.streaming = True
+        turn = MagicMock()
+        stop_seen_at_sever: list[bool] = []
+        services = get_services()
+        screen._turn = turn
+        with (
+            patch.object(
+                type(services),
+                "cancel_inference",
+                lambda _self: stop_seen_at_sever.append(turn.stop.set.called),
+            ),
+            patch.object(app, "notify"),
+        ):
+            await app.action_quit()
+        assert stop_seen_at_sever == [True]
 
 
 async def test_app_action_quit_ignores_background_tasks():

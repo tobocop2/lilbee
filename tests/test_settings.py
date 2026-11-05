@@ -445,6 +445,7 @@ class TestTableModelSetting:
         from lilbee.app import settings as appset
 
         monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        monkeypatch.setattr(appset, "_index_has_chunks", lambda: True)
         monkeypatch.setattr(appset.cfg, "layout_detection", True)
         assert appset.apply_settings_update({"table_model": "tatr"}).reindex_required is True
         monkeypatch.setattr(appset.cfg, "layout_detection", False)
@@ -1275,6 +1276,29 @@ class TestEmbedReindexRequired:
                 }
             ]
         )
+
+    def test_a_chunking_change_on_an_empty_index_needs_no_rebuild(self, real_store, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        result = appset.apply_settings_update({"chunk_size": 300})
+        assert result.updated == ["chunk_size"]
+        assert result.reindex_required is False
+
+    def test_a_chunking_change_on_a_built_index_needs_a_rebuild(self, real_store, monkeypatch):
+        from lilbee.app import settings as appset
+
+        self._index_one_chunk(real_store)
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        assert appset.apply_settings_update({"chunk_size": 300}).reindex_required is True
+
+    def test_a_chunking_change_with_no_services_built_keeps_the_rebuild_flag(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.app.services import set_services
+
+        set_services(None)
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        assert appset.apply_settings_update({"chunk_size": 300}).reindex_required is True
 
     def test_no_index_needs_no_reindex(self, real_store):
         from lilbee.app import settings as appset

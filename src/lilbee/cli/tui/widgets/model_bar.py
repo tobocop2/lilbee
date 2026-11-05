@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, ClassVar, NamedTuple
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.model_picker import PickerScope
-    from lilbee.modelhub.registry import ModelRegistry
 
 from textual import events, work
 from textual.app import ComposeResult
@@ -99,21 +98,6 @@ def _native_label(hf_repo: str, gguf_filename: str, repo_count: int) -> str:
     return f"{base} ({quant})" if quant else base
 
 
-def _has_vision_sidecar(registry: ModelRegistry, ref: str) -> bool:
-    """Return True if *ref* resolves to a model with an adjacent ``*mmproj*.gguf`` file.
-
-    Models like ``google/gemma-3-12b-it`` carry their vision capability in
-    a sibling ``mmproj`` GGUF; without checking the file system, the
-    ref's name alone gives no signal that the model is multimodal, so the
-    vision picker would silently miss it.
-    """
-    try:
-        path = registry.resolve(ref)
-    except (KeyError, ValueError):
-        return False
-    return any(path.parent.glob("*mmproj*.gguf"))
-
-
 def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
     """Add native registry models to buckets."""
     try:
@@ -144,7 +128,7 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
             # Surface it under the vision picker too without dropping its
             # primary classification, so a chat model with vision (e.g.
             # gemma-3 with mmproj) shows up in both pickers.
-            if task != ModelTask.VISION and _has_vision_sidecar(registry, ref):
+            if task != ModelTask.VISION and registry.has_vision_projector(ref):
                 buckets[ModelTask.VISION].append(ModelOption(label=label, ref=ref))
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)

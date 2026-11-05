@@ -491,6 +491,29 @@ def test_chat_routes_to_chat_server() -> None:
     client.chat_result.assert_called_once()
 
 
+def test_vision_without_server_names_the_missing_projector(
+    engine_installed: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(prov_mod, "_configured_model_for", lambda _role: "org/vlm/vlm.gguf")
+    monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: None)
+
+    message = prov_mod._no_server_message(WorkerRole.VISION)
+
+    assert "org/vlm/vlm.gguf has no mmproj" in message
+
+
+def test_vision_without_server_keeps_the_generic_message_when_the_projector_exists(
+    engine_installed: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(prov_mod, "_configured_model_for", lambda _role: "org/vlm/vlm.gguf")
+    monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: Path("/m/mmproj.gguf"))
+
+    message = prov_mod._no_server_message(WorkerRole.VISION)
+
+    assert "mmproj" not in message
+    assert "No vision model server is running" in message
+
+
 def test_chat_without_server_raises(engine_installed: Path) -> None:
     from lilbee.providers.base import ProviderError
 
@@ -5043,6 +5066,24 @@ def test_ladder_overflows_to_private_dir_on_pin_mismatch(monkeypatch, tmp_path: 
     assert swap.started  # built instead
     assert built and built[0] == tmp_path / "root" / "data" / "engine"
     holder.release_and_check_last()
+
+
+def test_ladder_warns_when_it_overflows_to_the_private_dir(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    with caplog.at_level(logging.WARNING, logger=prov_mod.__name__):
+        assert FleetProvider()._ensure_fleet() is True
+    holder.release_and_check_last()
+    assert "starting a private engine for this one" in caplog.text
 
 
 def test_ladder_private_path_stops_short_when_it_cannot_build(monkeypatch, tmp_path: Path) -> None:

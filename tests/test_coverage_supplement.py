@@ -1642,6 +1642,18 @@ class TestModelGridTruncateAndPad:
             assert grid._cell_at(0, mg._CARD_HEIGHT) is None
 
 
+def _app_without_type_ahead():
+    """Give a screen built without an app the app its show handler reads for type-ahead."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    return mock.patch.object(
+        ChatScreen,
+        "app",
+        new_callable=mock.PropertyMock,
+        return_value=mock.MagicMock(type_ahead=""),
+    )
+
+
 class TestChatScreenFocusBranches:
     """`ChatScreen` on_show normal-mode focus + chat input focus event."""
 
@@ -1653,7 +1665,7 @@ class TestChatScreenFocusBranches:
         screen._chat_log = mock.MagicMock()
         screen.refresh_model_bar = mock.MagicMock()  # type: ignore[method-assign]
         screen.set_focus = mock.MagicMock()  # type: ignore[method-assign]
-        with mock.patch("lilbee.runtime.splash.dismiss"):
+        with _app_without_type_ahead(), mock.patch("lilbee.runtime.splash.dismiss"):
             screen.on_show()
         screen.set_focus.assert_called_once_with(screen._chat_log)
 
@@ -1664,7 +1676,7 @@ class TestChatScreenFocusBranches:
         screen._insert_mode = True
         screen.refresh_model_bar = mock.MagicMock()  # type: ignore[method-assign]
         screen._enter_insert_mode = mock.MagicMock()  # type: ignore[method-assign]
-        with mock.patch("lilbee.runtime.splash.dismiss"):
+        with _app_without_type_ahead(), mock.patch("lilbee.runtime.splash.dismiss"):
             screen.on_show()
         screen._enter_insert_mode.assert_called_once()
 
@@ -2218,24 +2230,6 @@ class TestModelGridScrollIntoViewParentGuard:
             grid.watch_highlighted(None, 0)
         finally:
             del type(grid).size  # restore the descriptor inherited from Widget
-
-
-class TestModelBarVisionSidecarErrors:
-    """`_has_vision_sidecar` returns False when registry.resolve raises."""
-
-    def test_has_vision_sidecar_returns_false_on_missing_ref(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import _has_vision_sidecar
-
-        registry = mock.MagicMock()
-        registry.resolve.side_effect = KeyError
-        assert _has_vision_sidecar(registry, "missing/ref") is False
-
-    def test_has_vision_sidecar_returns_false_on_value_error(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import _has_vision_sidecar
-
-        registry = mock.MagicMock()
-        registry.resolve.side_effect = ValueError
-        assert _has_vision_sidecar(registry, "bad/ref") is False
 
 
 class TestScopeChipPillSelect:

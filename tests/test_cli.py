@@ -1147,6 +1147,16 @@ class TestApplyOverrides:
         apply_overrides(model=ref)
         assert cfg.chat_model == ref
 
+    def test_a_value_the_config_refuses_is_a_usage_error(self):
+        import typer
+
+        from lilbee.cli import apply_overrides
+
+        original_model = cfg.chat_model
+        with pytest.raises(typer.BadParameter, match="chat_model"):
+            apply_overrides(model="not a valid ref")
+        assert cfg.chat_model == original_model
+
     def test_none_values_are_noop(self):
         from lilbee.cli import apply_overrides
 

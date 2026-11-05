@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
 from unittest import mock
 
 import pytest
@@ -528,3 +529,126 @@ async def test_gate_mount_retires_the_splash_then_repaints(monkeypatch):
     with mock.patch.object(StartupGate, "_stopping", return_value=False):
         StartupGate._retire_splash.__wrapped__(gate)
     assert order == ["dismiss", "refresh"]
+
+
+async def test_keys_typed_at_the_gate_reach_the_prompt_not_a_view_binding(monkeypatch):
+    """Regression: a key typed while the gate shows fell to the app's view bindings.
+
+    "t" opened Tasks, and the gate then gave up its handover because it no longer
+    owned the screen. The gate now keeps printable keys and passes them to the app.
+    """
+    from textual.app import App, ComposeResult
+    from textual.binding import Binding, BindingType
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+    hits: list[str] = []
+
+    class _Host(App[None]):
+        BINDINGS: ClassVar[list[BindingType]] = [Binding("t", "hit", "hit")]
+
+        def compose(self) -> ComposeResult:
+            yield Static("host")
+
+        def on_mount(self) -> None:
+            self.push_screen(StartupGate())
+
+        def action_hit(self) -> None:
+            hits.append("t")
+
+    app = _Host()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("t", "h", "i", "enter", "ctrl+a")
+        await pilot.pause()
+        gate = app.screen
+        assert isinstance(gate, StartupGate)
+        assert hits == []
+        assert gate._typed == ["t", "h", "i"]
+
+
+async def test_text_pasted_at_the_gate_is_kept_like_typed_keys(monkeypatch):
+    """A paste is one Paste event, not Key events; the gate keeps its text too."""
+    from textual import events
+    from textual.app import App, ComposeResult
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+
+    class _Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Static("host")
+
+        def on_mount(self) -> None:
+            self.push_screen(StartupGate())
+
+    app = _Host()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        app.post_message(events.Paste("bc d"))
+        await pilot.pause()
+        gate = app.screen
+        assert isinstance(gate, StartupGate)
+        assert "".join(gate._typed) == "abc d"
+
+
+async def test_pressing_the_sync_key_at_the_gate_starts_no_sync(monkeypatch, tmp_path):
+    """S is a priority binding: left live, it swaps chat in under the gate.
+
+    The gate then finds another screen on top and skips its handover. With the
+    binding off, the key reaches the gate's key handler and is kept as typed text.
+    """
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+    monkeypatch.setattr("lilbee.cli.tui.app.chat_ready", lambda: False)
+    monkeypatch.setattr("lilbee.cli.tui.app.embedding_ready", lambda: False)
+    monkeypatch.setattr(LilbeeApp, "adopt_services", lambda self: None)
+    syncs: list[str] = []
+    monkeypatch.setattr(LilbeeApp, "action_run_sync", lambda self: syncs.append("sync"))
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, StartupGate)
+        await pilot.press("a", "S", "b")
+        await pilot.pause()
+        gate = app.screen
+        assert isinstance(gate, StartupGate)
+        assert syncs == []
+        assert gate._typed == ["a", "S", "b"]
+
+
+async def test_gate_release_hands_the_typed_keys_to_the_app():
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    gate = StartupGate()
+    app = mock.MagicMock()
+    app.screen = gate
+    gate._ui_app = app
+    for char in "hi":
+        gate._typed.append(char)
+    with mock.patch.object(StartupGate, "query_one"):
+        gate._release()
+    assert app.type_ahead == "hi"
+    app.reveal_landing.assert_called_once_with()
+
+
+def test_landing_on_the_catalog_drops_the_typed_keys():
+    """Keys typed at the gate are for the prompt; a catalog landing has none."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = mock.MagicMock()
+    app.chat_is_ready = False
+    app.type_ahead = "hi"
+    LilbeeApp.reveal_landing(app)
+    assert app.type_ahead == ""
+    app.switch_view.assert_called_once_with(msg.CATALOG_VIEW)
