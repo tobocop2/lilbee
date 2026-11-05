@@ -282,7 +282,7 @@ def _kv_via_parser(model_path: Path) -> dict[str, _Scalar] | None:
 def _scalars(model_path: Path) -> dict[str, _Scalar]:
     """Scalar metadata for *model_path*, or empty when there is no parser to ask.
 
-    An install without the engine extra has no gguf-parser, and also no
+    An install with no engine yet has no gguf-parser, and also no
     llama-server to load a model with, so the fields here have nothing left to
     size. Callers already treat absent metadata as a fallback case.
     """

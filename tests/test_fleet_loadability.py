@@ -197,7 +197,7 @@ class TestTransientFailures:
 
 
 class TestNoParserAvailable:
-    """An install without the engine extra has no parser to ask."""
+    """An install with no engine yet has no parser to ask."""
 
     def test_a_missing_parser_is_not_a_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _unavailable() -> Path:

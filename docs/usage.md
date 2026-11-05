@@ -529,8 +529,8 @@ TEI are published for Linux x86_64. No pack of mlx is published yet, so mlx refu
 to install and prints the no-pack text. A host with no pack for its platform gets the
 same text. Nothing is installed, and llama.cpp stays in use.
 
-If the `[engine]` extra is installed, the llama.cpp of that extra runs. The llama.cpp
-pack stays unused. To run the pack, remove the extra with
+If the `lilbee-engine-llama-cpp` wheel is installed, the llama.cpp of that wheel runs. The
+llama.cpp pack stays unused. To run the pack, remove the wheel with
 `pip uninstall lilbee-engine-llama-cpp`, then run `lilbee engine install`.
 
 To install from a local pack, copy it into the `packs` folder of the engines folder.
@@ -1306,44 +1306,39 @@ never drifts from the code.
 ## Optional extras
 
 Extras exist only on a `pip` or `uv` install. If you installed a bundled build
-(standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap, Scoop) all four
+(standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap, Scoop) all three
 are already inside it and none of this applies to you.
 
-Run `lilbee engine install` to get the CPU `llama-server` that runs your models,
-or let lilbee install it the first time a model needs it. Engine packs publish
-with a later release; until then the `[engine]` extra is the route. For a GPU
-build, use the `[engine]` extra with the index for your hardware. `[graph]`,
-`[crawler]` and `[providers]` add capabilities you can happily live without.
+The model engine is not an extra. Run `lilbee engine install` to get the
+`llama-server` that runs your models, or let lilbee install it the first time a
+model needs it. `[graph]`, `[crawler]` and `[providers]` add capabilities you
+can happily live without.
 
 <details>
 <summary><strong>pip / uv: installing the engine</strong></summary>
 
-Install the engine with the `[engine]` extra, which works today. The index below
-is the CPU build; the other indexes are listed further down.
-
-```bash
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/
-```
-
-Packs publish with a later release. After that, the pack route is:
+Install lilbee, then install the engine pack:
 
 ```bash
 pip install --pre lilbee
 lilbee engine install
 ```
 
-The command downloads the CPU pack into lilbee's engine cache and checks its
-digest. It installs no GPU build. If no pack is published for the computer, it reports that the
-pack is not published. If you skip it, lilbee runs the same install the
-first time a model needs an engine. A computer with no network needs the pack
-copied into the `packs` folder of the engine cache by hand. The error from a
-failed download names the file to copy.
+The command downloads the pack for your hardware into lilbee's engine cache and
+checks its digest. Packs exist for Apple silicon (Metal), NVIDIA on Linux and
+Windows (CUDA), and x86_64 Linux and Windows (CPU). lilbee picks the CUDA pack
+when it finds a usable NVIDIA driver. If you skip the command, lilbee runs the
+same install the first time a model needs an engine. A computer with no network
+needs the pack copied into the `packs` folder of the engine cache by hand. The
+error from a failed download names the file to copy.
 
-**The `[engine]` extra.** It is the route until packs publish, and the route for GPU builds. It is not on PyPI. The CUDA and ROCm wheels
+**The engine wheel.** No pack exists for AMD (ROCm), Vulkan, Linux on ARM, or
+Intel Macs. On those computers, install the engine wheel from lilbee's own
+[PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh`. The
+wheel is not on PyPI. The CUDA and ROCm wheels
 run 444 MiB to 863 MiB each,
 several times [PyPI's default 100 MiB per-file limit](https://pypi.org/help/#file-size-limit),
-so every backend is published from lilbee's own
-[PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh`. That
+so every backend is published from that index. That
 is what `--extra-index-url` is for.
 
 The builds are not interchangeable, so pick the index for your hardware: `cpu` is
@@ -1351,20 +1346,17 @@ built with every GPU backend off, `metal` ships only a macOS arm64 wheel, and
 `vulkan` only Linux and Windows ones.
 
 ```bash
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/    # NVIDIA (CUDA)
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/     # AMD (ROCm)
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/metal/    # Apple silicon
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/   # other GPUs
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/      # no GPU
+pip install --pre lilbee lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/     # AMD (ROCm)
+pip install --pre lilbee lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/vulkan/   # other GPUs
 ```
 
 Use the `uv` form that matches how you installed lilbee.
 Swap the index the same way as above.
 
 ```bash
-uv tool install --force --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/   # uv tool install
-uv pip install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/             # a uv venv or a source checkout
-pipx install --force --pip-args='--pre --extra-index-url https://lilbee.sh/cpu/' 'lilbee[engine]'     # pipx
+uv tool install --force --prerelease=allow lilbee --with lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/   # uv tool install
+uv pip install --prerelease=allow lilbee lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/rocm/                     # a uv venv
+pipx install --pip-args=--pre lilbee && pipx inject --pip-args='--extra-index-url https://lilbee.sh/rocm/' lilbee lilbee-engine-llama-cpp   # pipx
 ```
 
 </details>
@@ -1386,14 +1378,14 @@ uv tool install --prerelease=allow 'lilbee[crawler]'
 uv tool install --prerelease=allow 'lilbee[providers]'
 ```
 
-Install several at once, with the engine extra:
+Install several at once:
 
 ```bash
 # uv tool
-uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,providers]' --extra-index-url https://lilbee.sh/cu125/
+uv tool install --prerelease=allow 'lilbee[graph,crawler,providers]'
 
 # pip
-pip install --pre 'lilbee[engine,graph,crawler,providers]' --extra-index-url https://lilbee.sh/cu125/
+pip install --pre 'lilbee[graph,crawler,providers]'
 ```
 
 </details>
@@ -1406,7 +1398,7 @@ setups. Same `lilbee` command, links straight against your NVIDIA driver:
 brew install tobocop2/lilbee/lilbee-cuda
 paru -S lilbee-cuda
 nix run github:tobocop2/lilbee#lilbee-cuda
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/   # devs
+pip install --pre lilbee   # devs; downloads the CUDA engine pack
 ```
 
 The `lilbee-cuda` AUR package conflicts with `lilbee` and provides it, so

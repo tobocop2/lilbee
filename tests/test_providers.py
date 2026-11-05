@@ -2665,7 +2665,7 @@ class TestReadGgufMetadata:
     def test_returns_none_when_no_parser_is_installed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Without the engine extra there is no reader, and no engine to load with either."""
+        """With no engine installed there is no reader, and no engine to load with either."""
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
         def _no_parser() -> Path:
