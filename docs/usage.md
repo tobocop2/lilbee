@@ -1369,7 +1369,7 @@ The `lilbee-cuda` AUR package conflicts with `lilbee` and provides it, so
 `paru -S lilbee-cuda` swaps automatically. On Homebrew, run `brew
 uninstall lilbee` first because the two formulas both ship a `lilbee`
 binary. For older drivers swap `cu125` for `cu124` or `cu121` (run
-`nvidia-smi` to see which matches). cu121 and cu124 are wheel-index and
+`nvidia-smi` to see which matches). cu121 and cu124 are
 direct-download only; cu125 is the variant fanned out to the package
 managers.
 

@@ -11,11 +11,9 @@ engine binaries:
 
 The standalone executables bundle this wheel. lilbee has no `engine` extra: a
 `pip` or `uv` install downloads an engine pack with `lilbee engine install`.
-To install this wheel by hand, run
-`pip install lilbee-engine-llama-cpp --extra-index-url https://lilbee.sh/<backend>/`.
+Do not install this wheel by hand: the `lilbee.sh` indexes do not carry it yet.
 It is not on PyPI, since the CUDA and ROCm wheels run several times PyPI's
-default 100 MiB per-file limit, so all backends are published from lilbee's own
-PEP 503 index. CI fills `lilbee_engine_llama_cpp/bin/` with the three
+default 100 MiB per-file limit. CI fills `lilbee_engine_llama_cpp/bin/` with the three
 binaries and retags the wheel to the platform before publishing; a source
 checkout has an empty `bin/` and resolves via `PATH` or
 `LILBEE_LLAMA_SERVER_PATH` instead.
