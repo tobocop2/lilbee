@@ -23,6 +23,7 @@ curl -fsSL -o /etc/yum.repos.d/cuda-rhel9.repo \
   https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
 # nvcc 12.4 accepts gcc 13 at most; the image default is newer.
 dnf install -y "cuda-nvcc-${cuda_dash}" "cuda-cudart-devel-${cuda_dash}" "libcublas-devel-${cuda_dash}" \
+  "cuda-driver-devel-${cuda_dash}" \
   gcc-toolset-13-gcc-c++
 /opt/python/cp312-cp312/bin/python -m pip install -q cmake ninja
 export PATH="/opt/python/cp312-cp312/bin:${cuda_dir}/bin:${PATH}"
