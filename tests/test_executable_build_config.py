@@ -123,6 +123,14 @@ def test_a_narrowed_release_run_publishes_nothing() -> None:
     assert reversed_ == [], f"these guards run when only_asset is set: {reversed_}"
 
 
+def test_the_smoke_test_reads_the_skill_from_the_frozen_binary() -> None:
+    steps = _load(_WORKFLOWS / "release.yml")["jobs"]["build"]["steps"]
+    smoke = [step for step in steps if step.get("name") == "Smoke test"]
+
+    assert len(smoke) == 1
+    assert "lilbee.cli.launchers.skill_install import bundled_skill_dir" in smoke[0]["run"]
+
+
 def test_the_engine_mirror_is_skipped_when_its_release_tag_is_empty() -> None:
     steps = _load(_ACTIONS / "bundle-llama-server" / "action.yml")["runs"]["steps"]
     mirror = [step for step in steps if "publish-engine-asset" in str(step.get("uses", ""))]

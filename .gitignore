@@ -40,6 +40,7 @@ beads_bb/
 .beads/
 vault/
 plugins/
+!/plugins/
 .lilbee/
 .superpowers/
 node_modules/

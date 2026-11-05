@@ -30,8 +30,12 @@ tag="v${next}"
 echo "release: $cur -> $next ($tag)"
 
 perl -pi -e 's/^version = "\Q'"$cur"'\E"$/version = "'"$next"'"/' pyproject.toml uv.lock
+# The Claude Code plugin cache keys on the manifest version, so the plugin moves with every release.
+perl -pi -e 's/^(\s*"version": ")\Q'"$cur"'\E(",?)$/${1}'"$next"'${2}/' plugins/lilbee/.claude-plugin/plugin.json
+grep -q "\"version\": \"${next}\"" plugins/lilbee/.claude-plugin/plugin.json \
+  || { echo "release: plugin.json did not take version ${next}" >&2; git checkout -q -- pyproject.toml uv.lock plugins/lilbee/.claude-plugin/plugin.json; exit 1; }
 
-git add pyproject.toml uv.lock
+git add pyproject.toml uv.lock plugins/lilbee/.claude-plugin/plugin.json
 git commit -q -m "Release ${next}"
 # Lightweight: tag.gpgsign would otherwise want a message and open an editor.
 git tag --no-sign "$tag"

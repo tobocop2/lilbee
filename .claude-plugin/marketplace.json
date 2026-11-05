@@ -1,0 +1,17 @@
+{
+  "name": "lilbee",
+  "owner": {
+    "name": "tobocop2",
+    "url": "https://github.com/tobocop2"
+  },
+  "metadata": {
+    "description": "Local retrieval for coding agents: cited answers from your own code, docs and PDFs."
+  },
+  "plugins": [
+    {
+      "name": "lilbee",
+      "source": "./plugins/lilbee",
+      "description": "Search and manage a local lilbee knowledge base over MCP, with a worker agent for long operations."
+    }
+  ]
+}

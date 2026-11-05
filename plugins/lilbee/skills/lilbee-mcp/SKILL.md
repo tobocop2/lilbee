@@ -317,5 +317,5 @@ Never assume you can read a key back.
 
 ## Other skills
 
-- **Wiki tools** (per-concept and per-entity pages with citations) live in the separate `lilbee-mcp-wiki` skill (`docs/agent-skills/lilbee-mcp-wiki/SKILL.md` in the lilbee repository). Load that only when the user asks about wiki / synthesis pages, or when `lilbee_status` already shows a built wiki.
+- **Wiki tools** (per-concept and per-entity pages with citations) live in the separate `lilbee-mcp-wiki` skill (`plugins/lilbee/skills/lilbee-mcp-wiki/SKILL.md` in the lilbee repository). Load that only when the user asks about wiki / synthesis pages, or when `lilbee_status` already shows a built wiki.
 - **Non-MCP agents** that need to shell out to lilbee's CLI instead of MCP can use the `--json` flag on any command. See the JSON CLI fallback section of the usage guide (`docs/usage.md` in the lilbee repository).

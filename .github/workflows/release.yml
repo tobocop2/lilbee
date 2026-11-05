@@ -523,6 +523,18 @@ jobs:
             exit 1
           fi
 
+          # The launchers install the lilbee-mcp skill from the data directory that
+          # --include-data-dir copies next to the module. Prove the frozen binary
+          # finds it there, not in a source checkout. The payload names
+          # multiprocessing for the same reason as the quant table check above.
+          SK=$(mktemp)
+          "$EXE" -c "import multiprocessing; from lilbee.cli.launchers.skill_install import bundled_skill_dir; d = bundled_skill_dir(); print(d.as_posix()); print((d / 'SKILL.md').read_text(encoding='utf-8').splitlines()[1])" > "$SK" 2>&1 || true
+          if ! grep -q "skills/lilbee_mcp$" "$SK" || ! grep -q "^name: lilbee-mcp$" "$SK"; then
+            echo "FAIL: the lilbee-mcp skill is not bundled in the frozen binary"
+            cat "$SK"
+            exit 1
+          fi
+
           # Boot server, scan stderr for the spawn-loop pattern, verify /api/health version.
           export LILBEE_DATA="${{ runner.temp }}/lilbee-smoke"
           mkdir -p "$LILBEE_DATA"
