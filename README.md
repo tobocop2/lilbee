@@ -190,7 +190,7 @@ The Linux x86_64 wheel and binary bundle the Vulkan loader, so they start on any
 
 ### Optional extras
 
-These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[engine,crawler,providers]'` (combine multiple, and `--extra-index-url` still works). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all four, which is why they need none of this. Run `lilbee engine install` to get the CPU engine, or let lilbee install it the first time a model needs it. Engine packs publish with a later release; until then the `[engine]` extra is the route. For a GPU build (CUDA, ROCm, Metal, Vulkan) use the `[engine]` extra with the index for your hardware. lilbee works fine without the other three extras.
+These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[engine,crawler,providers]'` (combine multiple, and `--extra-index-url` still works). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all four, which is why they need none of this. Run `lilbee engine install` to get the llama.cpp engine pack (Metal on Apple silicon, CPU elsewhere), or let lilbee install it the first time a model needs it. Engine packs publish with a later release; until then the `[engine]` extra is the route. For a GPU build (CUDA, ROCm, Metal, Vulkan) use the `[engine]` extra with the index for your hardware. lilbee works fine without the other three extras.
 
 | Extra       | What it adds                                                                                                                                              |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -218,7 +218,7 @@ bundled builds above carry their own engine.
 | **From source** | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee`        | Needs `git` and `uv`. `uv sync` resolves the in-repo engine package, but CI is what fills its `bin/`, so a checkout has no engine binaries: install the `[engine]` extra from the index below, run `lilbee engine install` once packs publish, or point `LILBEE_LLAMA_SERVER_PATH` at your own `llama-server`. |
 
 **The engine.** `llama-server` runs every model. It is not part of the lilbee
-package. Run `lilbee engine install` once to download the CPU engine pack. If you skip
+package. Run `lilbee engine install` once to download the engine pack (Metal on Apple silicon, CPU elsewhere). If you skip
 this step, lilbee installs the pack the first time a model needs it. The pack
 goes into lilbee's engine cache and lilbee checks its digest. Packs publish with
 a later release; until then the command reports that the pack is not published,
