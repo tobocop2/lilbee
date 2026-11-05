@@ -25,6 +25,12 @@ MANIFESTS = {
                 "size": 45434295,
                 "min_os": "2.34",
             },
+            "linux-x86_64-cuda": {
+                "sha256": "6cdd44291d036a352fd496b2a2c146f0a5aaf35cd38f73e8f795ca5a2d87edd4",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261105-cuda/lilbee_engine_llama_cpp-1.12032.1-1.cuda-py3-none-manylinux_2_34_x86_64.whl",
+                "size": 670996649,
+                "min_os": "2.34",
+            },
             "macos-arm64-metal": {
                 "sha256": "ddec445038beea9c83ff50a540ddf0e88a3b70c06edec301ef458cd1a46580ff",
                 "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261105/lilbee_engine_llama_cpp-1.12032.1-1.metal-py3-none-macosx_14_0_arm64.whl",
@@ -35,6 +41,12 @@ MANIFESTS = {
                 "sha256": "91e9670756cf84252d8382050c74901ef4fc5f07fa7af803fef8bda5438c938d",
                 "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261105/lilbee_engine_llama_cpp-1.12032.1-1.cpu-py3-none-win_amd64.whl",
                 "size": 51673055,
+                "min_os": None,
+            },
+            "windows-x86_64-cuda": {
+                "sha256": "975be314c81ab5c518c40be68fd72edb080b4e4d3f3ba4adbbb3380985cd117c",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261105-cuda/lilbee_engine_llama_cpp-1.12032.1-1.cuda-py3-none-win_amd64.whl",
+                "size": 709531626,
                 "min_os": None,
             },
         },
