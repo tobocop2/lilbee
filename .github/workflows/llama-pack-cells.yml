@@ -1,0 +1,203 @@
+name: Llama pack cells (trial)
+
+# Builds the Windows x86_64 CPU and macOS arm64 CPU llama.cpp wheels from the upstream
+# release assets, repairs them, starts llama-server from the installed wheel, and keeps
+# each wheel with its sha256 as a run artifact. It publishes nothing and makes no release.
+# A workflow_dispatch trigger needs the file on the default branch, so this runs on a push
+# to one branch instead.
+on:
+  push:
+    branches: [ci/llama-pack-cells]
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_TAG: b12032
+  UPSTREAM_REPO: ggml-org/llama.cpp
+  WHEEL_VERSION: 1.12032.1
+  MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+jobs:
+  cell:
+    name: ${{ matrix.cell }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: windows-x86_64-cpu
+            runner: windows-2022
+            asset: llama-b12032-bin-win-cpu-x64.zip
+            platform: win_amd64
+          - cell: macos-arm64-cpu
+            runner: macos-14
+            asset: llama-b12032-bin-macos-arm64.tar.gz
+            platform: macosx_14_0_arm64
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ASSET: ${{ matrix.asset }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the engine pins
+        run: grep -E '^ENGINE_[A-Z_]+=' engine-versions.env >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.ENGINE_GO_VERSION }}
+          cache: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the upstream archive and check its digest
+        run: |
+          set -euo pipefail
+          gh release download "${UPSTREAM_TAG}" -R "${UPSTREAM_REPO}" --pattern "${ASSET}" --dir upstream
+          want="$(gh release view "${UPSTREAM_TAG}" -R "${UPSTREAM_REPO}" --json assets \
+            --jq ".assets[] | select(.name==\"${ASSET}\") | .digest")"
+          if command -v sha256sum >/dev/null; then
+            got="sha256:$(sha256sum "upstream/${ASSET}" | cut -d' ' -f1)"
+          else
+            got="sha256:$(shasum -a 256 "upstream/${ASSET}" | cut -d' ' -f1)"
+          fi
+          test "${want}" = "${got}" || { echo "digest mismatch: ${want} ${got}"; exit 1; }
+
+      - name: Build llama-swap and gguf-parser
+        run: |
+          set -euo pipefail
+          export GOTOOLCHAIN=local
+          suffix=""
+          case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) suffix=".exe" ;; esac
+          bin="$PWD/packaging/engine-wheel/lilbee_engine_llama_cpp/bin"
+          work="$(mktemp -d)"
+          mkdir -p "${bin}"
+          git clone -q --depth 1 --branch "${ENGINE_LLAMA_SWAP_VERSION}" https://github.com/mostlygeek/llama-swap.git "${work}/llama-swap"
+          (cd "${work}/llama-swap" && go build -trimpath -o "${bin}/llama-swap${suffix}" .)
+          git clone -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" "${ENGINE_GGUF_PARSER_REPO}" "${work}/gguf-parser-go"
+          (cd "${work}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${bin}/gguf-parser${suffix}" .)
+
+      - name: Repack the upstream archive into the wheel tree
+        run: |
+          set -euo pipefail
+          python - "upstream/${ASSET}" packaging/engine-wheel/lilbee_engine_llama_cpp/bin <<'PY'
+          import re, shutil, sys, tarfile, tempfile, zipfile
+          from pathlib import Path
+
+          archive, bin_dir = Path(sys.argv[1]), Path(sys.argv[2])
+          server = {"llama-server", "llama-server.exe"}
+          library = re.compile(r"lib.+\.so(\.[\d.]+)?|.+\.dll|lib.+(\.[\d.]+)?\.dylib")
+          with tempfile.TemporaryDirectory() as scratch:
+              if archive.suffix == ".zip":
+                  with zipfile.ZipFile(archive) as z:
+                      z.extractall(scratch)
+              else:
+                  with tarfile.open(archive) as t:
+                      t.extractall(scratch, filter="data")
+              roots = {p.parent for p in Path(scratch).rglob("*") if p.name in server}
+              if len(roots) != 1:
+                  raise SystemExit(f"{archive.name}: expected one folder with llama-server, found {len(roots)}")
+              (root,) = roots
+              for entry in sorted(root.iterdir()):
+                  if entry.name == "LICENSE":
+                      shutil.copyfile(entry, bin_dir / "LICENSE-llama.cpp")
+                  elif entry.is_file() and (entry.name in server or library.fullmatch(entry.name)):
+                      # copy2 follows a dylib symlink, so the link name becomes a copy of its target.
+                      shutil.copy2(entry, bin_dir / entry.name)
+          if not any((bin_dir / n).exists() for n in server):
+              raise SystemExit(f"{archive.name}: no llama-server in the tree")
+          PY
+          ls -l packaging/engine-wheel/lilbee_engine_llama_cpp/bin
+
+      - name: Add the Visual C++ runtime beside the exe
+        if: runner.os == 'Windows'
+        run: bash tools/wheel-build/bundle_windows_runtime.sh packaging/engine-wheel/lilbee_engine_llama_cpp/bin
+
+      - name: Build the wheel
+        run: |
+          set -euo pipefail
+          cd packaging/engine-wheel
+          python - "${WHEEL_VERSION}" <<'PY'
+          import pathlib, re, sys
+          p = pathlib.Path("pyproject.toml")
+          p.write_text(re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', p.read_text(), count=1))
+          PY
+          python -m pip install build wheel
+          python -m build --wheel -C--build-option="--build-number=1.cpu"
+          python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
+          ls dist
+
+      - name: Repair the macOS wheel with delocate
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          python -m pip install "delocate==0.13.0"
+          exe=packaging/engine-wheel/lilbee_engine_llama_cpp/bin/llama-server
+          minos="$(otool -l "${exe}" | awk '/LC_BUILD_VERSION/ {f = 1} f && $1 == "minos" {print $2; exit}')"
+          echo "minos of llama-server: ${minos}"
+          # A wheel tag holds the major version only, so the minos rounds up: 13.3 needs macosx_14_0.
+          [[ "${minos}" =~ ^([0-9]+)\.([0-9]+)(\.[0-9]+)?$ ]] || { echo "no minos for llama-server (got '${minos}')"; exit 1; }
+          major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]#.}"
+          if [ "${minor}" -gt 0 ] || [ "${patch:-0}" -gt 0 ]; then major=$((major + 1)); fi
+          [ "${major}" -le 14 ] || { echo "llama-server needs macOS ${minos}; the cell floor is ${MACOSX_DEPLOYMENT_TARGET}"; exit 1; }
+          delocate-wheel --require-archs arm64 -w repaired packaging/engine-wheel/dist/*.whl
+          ls repaired
+          for w in repaired/*.whl; do
+            case "${w}" in *-macosx_14_0_arm64.whl) ;; *) echo "wrong tag on ${w}"; exit 1 ;; esac
+            if python -m zipfile -l "${w}" | grep -q '\.dylibs/'; then echo "delocate grafted a library into ${w}"; exit 1; fi
+          done
+
+      - name: Collect the wheel
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [ "${RUNNER_OS}" = macOS ]; then
+            cp repaired/*.whl out/
+          else
+            cp packaging/engine-wheel/dist/*.whl out/
+          fi
+          wheels=(out/*.whl)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          if command -v sha256sum >/dev/null; then
+            (cd out && sha256sum "$(basename "${wheel}")" > "$(basename "${wheel}").sha256")
+          else
+            (cd out && shasum -a 256 "$(basename "${wheel}")" > "$(basename "${wheel}").sha256")
+          fi
+          cat out/*.sha256
+          ls -l out
+
+      - name: Start llama-server from the installed wheel
+        run: |
+          set -euo pipefail
+          python -m venv check-venv
+          if [ "${RUNNER_OS}" = Windows ]; then py=check-venv/Scripts/python.exe; else py=check-venv/bin/python; fi
+          "${py}" -m pip install -q out/*.whl
+          exe="$("${py}" -c "import lilbee_engine_llama_cpp as m; print(m.get_llama_server_path().as_posix())")"
+          echo "llama-server: ${exe}"
+          bindir="$(dirname "${exe}")"
+          ls "${bindir}"
+          for tool in llama-swap gguf-parser; do
+            test -e "${bindir}/${tool}" -o -e "${bindir}/${tool}.exe" || { echo "wheel lacks ${tool}"; exit 1; }
+          done
+          if [ "${RUNNER_OS}" = Windows ]; then
+            for dll in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
+              test -f "${bindir}/${dll}" || { echo "wheel lacks ${dll}"; exit 1; }
+            done
+          fi
+          cd /
+          "${exe}" --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: llama-pack-${{ matrix.cell }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7
