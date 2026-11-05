@@ -1,8 +1,10 @@
 name: Llama pack cells (trial)
 
-# Builds the Windows x86_64 CPU and macOS arm64 CPU llama.cpp wheels from the upstream
-# release assets, repairs them, starts llama-server from the installed wheel, and keeps
-# each wheel with its sha256 as a run artifact. It publishes nothing and makes no release.
+# Builds the Windows x86_64 CPU, macOS arm64 CPU and the two x86_64 CUDA llama.cpp wheels,
+# repairs them, starts llama-server from the installed wheel, and keeps each wheel with its
+# sha256 as a run artifact. The Windows cells repack the upstream release assets. The Linux
+# CUDA cell builds from source in the manylinux_2_34 image, because the upstream Linux CUDA
+# assets need glibc 2.38. It publishes nothing and makes no release.
 # A workflow_dispatch trigger needs the file on the default branch, so this runs on a push
 # to one branch instead.
 on:
@@ -22,7 +24,7 @@ jobs:
   cell:
     name: ${{ matrix.cell }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -32,17 +34,38 @@ jobs:
             runner: windows-2022
             asset: llama-b12032-bin-win-cpu-x64.zip
             platform: win_amd64
+            license: MIT
+            timeout: 45
+          - cell: windows-x86_64-cuda
+            backend: cuda
+            runner: windows-2022
+            asset: llama-b12032-bin-win-cuda-12.4-x64.zip
+            extra_asset: cudart-llama-bin-win-cuda-12.4-x64.zip
+            platform: win_amd64
+            license: MIT AND LicenseRef-NVIDIA-CUDA-EULA
+            timeout: 60
           - cell: macos-arm64-metal
             backend: metal
             runner: macos-14
             asset: llama-b12032-bin-macos-arm64.tar.gz
             platform: macosx_14_0_arm64
+            license: MIT
+            timeout: 45
+          - cell: linux-x86_64-cuda
+            backend: cuda
+            runner: ubuntu-22.04
+            build: source
+            platform: manylinux_2_34_x86_64
+            license: MIT AND LicenseRef-NVIDIA-CUDA-EULA
+            timeout: 350
     defaults:
       run:
         shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
       ASSET: ${{ matrix.asset }}
+      EXTRA_ASSET: ${{ matrix.extra_asset }}
+      LICENSE_EXPRESSION: ${{ matrix.license }}
       PLATFORM: ${{ matrix.platform }}
       BACKEND: ${{ matrix.backend }}
     steps:
@@ -60,18 +83,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Fetch the upstream archive and check its digest
+      - name: Fetch the upstream archives and check their digests
+        if: matrix.build != 'source'
         run: |
           set -euo pipefail
-          gh release download "${UPSTREAM_TAG}" -R "${UPSTREAM_REPO}" --pattern "${ASSET}" --dir upstream
-          want="$(gh release view "${UPSTREAM_TAG}" -R "${UPSTREAM_REPO}" --json assets \
-            --jq ".assets[] | select(.name==\"${ASSET}\") | .digest")"
-          if command -v sha256sum >/dev/null; then
-            got="sha256:$(sha256sum "upstream/${ASSET}" | cut -d' ' -f1)"
-          else
-            got="sha256:$(shasum -a 256 "upstream/${ASSET}" | cut -d' ' -f1)"
-          fi
-          test "${want}" = "${got}" || { echo "digest mismatch: ${want} ${got}"; exit 1; }
+          for name in "${ASSET}" ${EXTRA_ASSET}; do
+            gh release download "${UPSTREAM_TAG}" -R "${UPSTREAM_REPO}" --pattern "${name}" --dir upstream
+            want="$(gh release view "${UPSTREAM_TAG}" -R "${UPSTREAM_REPO}" --json assets \
+              --jq ".assets[] | select(.name==\"${name}\") | .digest")"
+            if command -v sha256sum >/dev/null; then
+              got="sha256:$(sha256sum "upstream/${name}" | cut -d' ' -f1)"
+            else
+              got="sha256:$(shasum -a 256 "upstream/${name}" | cut -d' ' -f1)"
+            fi
+            test "${want}" = "${got}" || { echo "digest mismatch ${name}: ${want} ${got}"; exit 1; }
+          done
 
       - name: Build llama-swap and gguf-parser, and collect the three licences
         run: |
@@ -92,14 +118,75 @@ jobs:
           cp "${work}/gguf-parser-go/LICENSE" "${lic}/LICENSE-gguf-parser"
           for f in "${lic}"/LICENSE-*; do test -s "${f}" || { echo "empty licence file ${f}"; exit 1; }; done
 
-      - name: Repack the upstream archive into the wheel tree
+      - name: Write the NVIDIA CUDA notice with the EULA text
+        if: matrix.backend == 'cuda'
         run: |
           set -euo pipefail
-          python - "upstream/${ASSET}" packaging/engine-wheel/lilbee_engine_llama_cpp/bin <<'PY'
+          python - packaging/engine-wheel/NOTICE-NVIDIA-CUDA <<'PY'
+          import html.parser, sys, urllib.request
+
+          class Text(html.parser.HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.parts, self.skip = [], 0
+
+              def handle_starttag(self, tag, attrs):
+                  if tag in ("script", "style"):
+                      self.skip += 1
+                  elif tag in ("p", "div", "li", "h1", "h2", "h3", "h4", "br", "tr"):
+                      self.parts.append("\n")
+
+              def handle_endtag(self, tag):
+                  if tag in ("script", "style"):
+                      self.skip -= 1
+
+              def handle_data(self, data):
+                  if not self.skip:
+                      self.parts.append(data)
+
+          url = "https://docs.nvidia.com/cuda/archive/12.4.1/eula/index.html"
+          page = urllib.request.urlopen(url, timeout=60).read().decode("utf-8")
+          parser = Text()
+          parser.feed(page)
+          body = "\n".join(line.strip() for line in "".join(parser.parts).splitlines() if line.strip())
+          if "Attachment A" not in body or len(body) < 20000:
+              raise SystemExit("the EULA text from " + url + " looks incomplete")
+          head = (
+              "This wheel carries NVIDIA CUDA 12.4 runtime files: the CUDA Runtime (cudart) and the\n"
+              "CUDA BLAS libraries (cublas, cublasLt). They are named in Attachment A of the NVIDIA\n"
+              "CUDA Toolkit End User License Agreement (https://docs.nvidia.com/cuda/eula/index.html#attachment-a).\n"
+              "The files are not modified. The EULA terms apply to these files. The GPU driver\n"
+              "(libcuda, nvcuda) is not part of this wheel.\n\n"
+              "NVIDIA CUDA Toolkit EULA, version 12.4.1, from " + url + "\n\n")
+          open(sys.argv[1], "w", encoding="utf-8").write(head + body + "\n")
+          PY
+          wc -c packaging/engine-wheel/NOTICE-NVIDIA-CUDA
+
+      - name: Build llama.cpp with CUDA 12.4 in the manylinux_2_34 image
+        if: matrix.build == 'source'
+        run: |
+          set -euo pipefail
+          # The runner disk is small; the build and the toolkit need several GB.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+          mkdir -p packaging/engine-wheel/lilbee_engine_llama_cpp/bin
+          docker run --rm -v "${PWD}:/work" -w /work \
+            -e UPSTREAM_REPO -e UPSTREAM_TAG \
+            -e BIN_DIR=/work/packaging/engine-wheel/lilbee_engine_llama_cpp/bin \
+            -e SHA_FILE=/work/cuda-libs.sha256 -e "OWNER=$(id -u):$(id -g)" \
+            quay.io/pypa/manylinux_2_34_x86_64@sha256:e0b7a1bdb4a0b7d519b29b301e2d3c626a33ea78e9bb5bb1590ce2d99d0ae62f \
+            bash /work/tools/wheel-build/llama_cuda_manylinux.sh
+          ls -l packaging/engine-wheel/lilbee_engine_llama_cpp/bin
+          cat cuda-libs.sha256
+
+      - name: Repack the upstream archives into the wheel tree
+        if: matrix.build != 'source'
+        run: |
+          set -euo pipefail
+          python - packaging/engine-wheel/lilbee_engine_llama_cpp/bin "upstream/${ASSET}" ${EXTRA_ASSET:+"upstream/${EXTRA_ASSET}"} <<'PY'
           import re, shutil, subprocess, sys, tarfile, tempfile, zipfile
           from pathlib import Path
 
-          archive, bin_dir = Path(sys.argv[1]), Path(sys.argv[2])
+          bin_dir, archives = Path(sys.argv[1]), [Path(a) for a in sys.argv[2:]]
           server = {"llama-server", "llama-server.exe"}
           library = re.compile(r"lib.+\.so(\.[\d.]+)?|.+\.dll|lib.+(\.[\d.]+)?\.dylib")
 
@@ -111,27 +198,34 @@ jobs:
               lines = ident.stdout.strip().splitlines()
               return Path(lines[-1].strip()).name if len(lines) > 1 else entry.name
 
-          with tempfile.TemporaryDirectory() as scratch:
-              if archive.suffix == ".zip":
-                  with zipfile.ZipFile(archive) as z:
-                      z.extractall(scratch)
-              else:
-                  with tarfile.open(archive) as t:
-                      t.extractall(scratch, filter="data")
-              roots = {p.parent for p in Path(scratch).rglob("*") if p.name in server}
-              if len(roots) != 1:
-                  raise SystemExit(f"{archive.name}: expected one folder with llama-server, found {len(roots)}")
-              (root,) = roots
-              for entry in sorted(root.iterdir()):
-                  if entry.is_symlink():
-                      continue  # a link only repeats a file that the loop copies once
-                  if entry.is_file() and (entry.name in server or library.fullmatch(entry.name)):
-                      target = bin_dir / install_name(entry)
-                      if target.exists():
-                          raise SystemExit(f"{archive.name}: two files install as {target.name}")
-                      shutil.copy2(entry, target)
+          def repack(archive, with_server):
+              """Copy the server and the libraries of one archive; a runtime-only archive has no server."""
+              with tempfile.TemporaryDirectory() as scratch:
+                  if archive.suffix == ".zip":
+                      with zipfile.ZipFile(archive) as z:
+                          z.extractall(scratch)
+                  else:
+                      with tarfile.open(archive) as t:
+                          t.extractall(scratch, filter="data")
+                  wanted = lambda p: p.name in server if with_server else library.fullmatch(p.name)
+                  roots = {p.parent for p in Path(scratch).rglob("*") if p.is_file() and wanted(p)}
+                  if len(roots) != 1:
+                      raise SystemExit(f"{archive.name}: expected one folder to repack, found {len(roots)}")
+                  (root,) = roots
+                  for entry in sorted(root.iterdir()):
+                      if entry.is_symlink():
+                          continue  # a link only repeats a file that the loop copies once
+                      if entry.is_file() and (entry.name in server or library.fullmatch(entry.name)):
+                          target = bin_dir / install_name(entry)
+                          if target.exists():
+                              raise SystemExit(f"{archive.name}: two files install as {target.name}")
+                          shutil.copy2(entry, target)
+
+          repack(archives[0], True)
+          for extra in archives[1:]:
+              repack(extra, False)
           if not any((bin_dir / n).exists() for n in server):
-              raise SystemExit(f"{archive.name}: no llama-server in the tree")
+              raise SystemExit(f"{archives[0].name}: no llama-server in the tree")
           PY
           ls -l packaging/engine-wheel/lilbee_engine_llama_cpp/bin
 
@@ -160,7 +254,8 @@ jobs:
           text = re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', p.read_text(), count=1)
           # License-Expression in METADATA needs setuptools 77 or later; lilbee refuses a wheel without it.
           text = text.replace('requires = ["setuptools>=68"]', 'requires = ["setuptools>=77"]', 1)
-          text = text.replace('requires-python', 'license = "MIT"\nlicense-files = ["LICENSE-*"]\nrequires-python', 1)
+          files = '["LICENSE-*", "NOTICE-*"]' if os.environ["BACKEND"] == "cuda" else '["LICENSE-*"]'
+          text = text.replace('requires-python', 'license = "%s"\nlicense-files = %s\nrequires-python' % (os.environ["LICENSE_EXPRESSION"], files), 1)
           p.write_text(text)
           pin = "llama-cpp-{}+swap-{}+gguf-{}".format(
               os.environ["UPSTREAM_TAG"], os.environ["ENGINE_LLAMA_SWAP_VERSION"], os.environ["ENGINE_GGUF_PARSER_REF"])
@@ -227,10 +322,24 @@ jobs:
             done
           fi
           python -m zipfile -l out/*.whl | grep -E 'dist-info/(licenses/|METADATA)'
-          unzip -p out/*.whl '*.dist-info/METADATA' | grep -x 'License-Expression: MIT'
+          unzip -p out/*.whl '*.dist-info/METADATA' | grep -x "License-Expression: ${LICENSE_EXPRESSION}"
           for lic in llama.cpp llama-swap gguf-parser; do
             unzip -l out/*.whl | grep -q "dist-info/licenses/LICENSE-${lic}$" || { echo "wheel lacks the ${lic} licence"; exit 1; }
           done
+          if [ "${BACKEND}" = cuda ]; then
+            unzip -l out/*.whl | grep -q "dist-info/licenses/NOTICE-NVIDIA-CUDA$" || { echo "wheel lacks the NVIDIA notice"; exit 1; }
+            if [ "${RUNNER_OS}" = Windows ]; then
+              for dll in ggml-cuda.dll cudart64_12.dll cublas64_12.dll cublasLt64_12.dll; do
+                test -f "${bindir}/${dll}" || { echo "wheel lacks ${dll}"; exit 1; }
+              done
+            else
+              # The NVIDIA files must match the toolkit's files byte for byte (EULA 2.3).
+              (cd "${bindir}" && sha256sum -c "${OLDPWD}/cuda-libs.sha256")
+              test -f "${bindir}/libggml-cuda.so"
+              test "$(find "${bindir}" -name 'libggml-cpu-*.so' | wc -l)" -ge 2
+              if ldd "${bindir}/llama-server" | grep 'not found'; then echo "llama-server has an unresolved library"; exit 1; fi
+            fi
+          fi
           if [ "${RUNNER_OS}" = macOS ]; then
             # Every library that a binary loads by @rpath or @loader_path must be a file beside it.
             missing=0
@@ -246,6 +355,7 @@ jobs:
           fi
           cd /
           "${exe}" --version
+          if [ "${BACKEND}" = cuda ]; then "${exe}" --list-devices; fi
 
       - uses: actions/upload-artifact@v7
         with:
