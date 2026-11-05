@@ -65,7 +65,9 @@ and retry the search on the same path.
 
 - Every fact you state must trace to a chunk that search returned. Cite the source file and
   the line range the chunk reported, exactly as returned (for example
-  `src/app/pipeline.py:216-247`).
+  `src/app/pipeline.py:216-247`). The CLI wraps the chunks in a `results` list. When
+  `line_start` and `line_end` are 0, the chunk has no line range: cite the file, and the
+  page for a PDF.
 - If a chunk does not support a claim, drop the claim. Search again before you guess.
 - "Not in the indexed files" is a valid answer. Say so, and offer to index the right path.
 - The user may open your citation in an editor. Never change a reported line range.
