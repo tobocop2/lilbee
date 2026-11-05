@@ -217,9 +217,19 @@ def test_a_prefix_that_is_not_https_is_refused(gen: ModuleType, prefix: str) -> 
         gen.render(packages, {TEI: 1}, prefix)
 
 
-def test_the_table_records_the_prefix_the_downloads_must_stay_under(gen: ModuleType) -> None:
+def test_the_table_records_the_release_base_whatever_the_prefix(gen: ModuleType) -> None:
     text = gen.render([], {}, "https://index.test/packs")
-    assert text.endswith(f'PACKAGES_URL = "{PREFIX}"\n')
+    assert text.endswith('PACKAGES_URL = "https://github.com/tobocop2/lilbee/releases/download/"\n')
+
+
+def test_a_package_url_replaces_the_prefix_for_that_wheel(gen: ModuleType) -> None:
+    other = "https://index.test/other/" + TEI
+    packages = [{"filename": TEI, "hash": f"sha256={SHA}", "url": other}]
+    cell = table(gen, [(TEI, f"sha256={SHA}", 99)])["tei"]["1.9.4"]["linux-x86_64-cpu"]
+    assert cell["url"] == PREFIX + TEI
+    tree = ast.parse(gen.render(packages, {TEI: 99}, PREFIX))
+    node = next(n.value for n in tree.body if isinstance(n, ast.Assign))
+    assert ast.literal_eval(node)["tei"]["1.9.4"]["linux-x86_64-cpu"]["url"] == other
 
 
 def test_the_command_refuses_an_http_prefix_and_exits_non_zero(
